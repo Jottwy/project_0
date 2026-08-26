@@ -2332,3 +2332,125 @@ fn three_divisions_only_fit_the_smaller_subregion_size() {
         );
     }
 }
+
+// -- ADR-087 enmienda 2: bahias dentro de la sala ---------------------------
+
+/// Sala sellada de 14x14 en origen alineado a tile, que es lo que produce
+/// ZONE_OFFICE tras ADR-087 paso 1. Devuelve (grid, x0, z0, x1, z1).
+fn office_room() -> (LayerGrid, i32, i32, i32, i32) {
+    let mut grid = LayerGrid::new_solid();
+    let (x0, z0) = (2, 2);
+    let (x1, z1) = (x0 + 14, z0 + 14);
+    stamp_sealed_room(&mut grid, x0, z0, x1, z1, 1, 2);
+    (grid, x0, z0, x1, z1)
+}
+
+fn wall_cells(grid: &LayerGrid, x0: i32, z0: i32, x1: i32, z1: i32) -> Vec<(i32, i32)> {
+    let mut v = Vec::new();
+    for z in (z0 + 1)..(z1 - 1) {
+        for x in (x0 + 1)..(x1 - 1) {
+            if grid.get(x as usize, z as usize).kind() == CellType::Wall {
+                v.push((x, z));
+            }
+        }
+    }
+    v
+}
+
+#[test]
+fn office_bays_are_inert_with_zero_step() {
+    let (mut grid, x0, z0, x1, z1) = office_room();
+    let before: Vec<_> = (0..CHUNK_CELLS)
+        .flat_map(|z| (0..CHUNK_CELLS).map(move |x| (x, z)))
+        .map(|(x, z)| grid.get(x, z).kind())
+        .collect();
+    stamp_office_bays(&mut grid, x0, z0, x1, z1, 1, 0);
+    let after: Vec<_> = (0..CHUNK_CELLS)
+        .flat_map(|z| (0..CHUNK_CELLS).map(move |x| (x, z)))
+        .map(|(x, z)| grid.get(x, z).kind())
+        .collect();
+    assert_eq!(
+        before, after,
+        "con paso 0 la planta tiene que ser literalmente un no-op: es lo que \
+         mantiene byte-identicas las zonas que no son OFFICE"
+    );
+}
+
+#[test]
+fn office_bays_partition_lands_on_a_tile_boundary() {
+    let (mut grid, x0, z0, x1, z1) = office_room();
+    stamp_office_bays(&mut grid, x0, z0, x1, z1, 1, 6);
+    let cells = wall_cells(&grid, x0, z0, x1, z1);
+    assert!(!cells.is_empty(), "no se estampo ni un tabique");
+    // El eje mayor empata, asi que la espina sale horizontal y los tabiques
+    // corren en X constante. Esa X tiene que ser PAR o la conversion a tiles
+    // se come la pared sin avisar.
+    for (x, _) in &cells {
+        assert_eq!(
+            x % 2,
+            0,
+            "tabique en celda impar ({x}): tile_walls_from_grid lo pierde"
+        );
+    }
+    // Y se comprueba contra la conversion de verdad, no solo contra la paridad.
+    let at = cells[0].0;
+    let walls = tile_walls_from_grid(&grid);
+    let tile_x = (at / 2) as usize;
+    let tile_z = (cells[0].1 / 2) as usize;
+    assert_ne!(
+        walls[tile_x][tile_z] & WALL_W,
+        0,
+        "el tabique no aparece como pared de tile: es exactamente el fallo que \
+         la verificacion (e) de ADR-087 vigila"
+    );
+}
+
+#[test]
+fn office_bays_keep_the_spine_open() {
+    let (mut grid, x0, z0, x1, z1) = office_room();
+    stamp_office_bays(&mut grid, x0, z0, x1, z1, 1, 6);
+    let cells = wall_cells(&grid, x0, z0, x1, z1);
+    let at = cells[0].0;
+    // Interior 12 celdas: espina en las dos centrales.
+    let iz0 = z0 + 1;
+    let spine_lo = iz0 + (12 - 2) / 2;
+    for z in spine_lo..=(spine_lo + 1) {
+        assert!(
+            grid.get(at as usize, z as usize).is_walkable(),
+            "el tabique cruza la espina en z={z}: la bahia se queda sin vano"
+        );
+    }
+}
+
+#[test]
+fn office_bays_never_seal_a_carved_entrance() {
+    let (mut grid, x0, z0, x1, z1) = office_room();
+    // Entrada tallada JUSTO donde va a arrancar el tabique.
+    let at = x0 + 6;
+    grid.set(
+        at as usize,
+        z0 as usize,
+        Cell::new(CellType::Corridor, 2, 0),
+    );
+    stamp_office_bays(&mut grid, x0, z0, x1, z1, 1, 6);
+    assert!(
+        grid.get(at as usize, (z0 + 1) as usize).is_walkable(),
+        "el tabique tapio la entrada: mejor un tabique que no llega a la pared"
+    );
+}
+
+#[test]
+fn office_bays_leave_every_bay_reachable() {
+    let (mut grid, x0, z0, x1, z1) = office_room();
+    stamp_office_bays(&mut grid, x0, z0, x1, z1, 1, 6);
+    // Flood-fill SOLO sobre el interior: sin salir de la sala, toda bahia
+    // tiene que alcanzarse desde cualquier otra por la espina. Si esto falla,
+    // la sala depende de repair_connectivity, que es lo que (d) prohibe.
+    let (reached, total) = flood_fill_walkable(&grid);
+    assert_eq!(
+        reached,
+        total,
+        "quedan {} celdas transitables aisladas tras estampar las bahias",
+        total - reached
+    );
+}

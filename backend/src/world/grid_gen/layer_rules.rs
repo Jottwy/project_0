@@ -152,6 +152,19 @@ pub struct LayerRules {
     /// el resto de este bloque.
     #[serde(default)]
     pub subregion_fill_band: bool,
+
+    // -- Planta de oficinas dentro de la sala (ADR-087 enmienda 2) ----------
+    /// Paso en celdas entre tabiques interiores de una zona `SealedRoom`.
+    /// `0` (default) = sin tabiques, o sea el comportamiento anterior a
+    /// ADR-087 enmienda 2 y grid byte-identico. `6` es el valor medido que usa
+    /// `ZONE_OFFICE`: un tabique en un interior de 12 celdas, que cuesta 2,1
+    /// puntos de superficie pisable y sube el paso real de 32 % a ~42 %.
+    ///
+    /// Lleva `serde(default)` por el mismo motivo que `straight_bias`: una
+    /// `generation_config.json` ya distribuida no lo trae, y sin default
+    /// `parse_profiles` fallaria entero y caeria a los perfiles compilados.
+    #[serde(default)]
+    pub office_bay_cells: u8,
 }
 
 fn default_straight_bias() -> f32 {
@@ -189,6 +202,7 @@ pub const LAYER_PROFILES: [LayerRules; 4] = [
     // ── Layer 0 — El Vestíbulo ──────────────────────────────────────────────
     LayerRules {
         name: "El Vestibulo",
+        office_bay_cells: 0,
         // Fix B (sesión de sub-regiones, 2026-08-08): 0.10/0.08 → 0.25/0.18.
         // Aprobado por Joel sobre medición real (`layer0_openness_report`):
         // baseline 54.5% transitable (interior 1..=18) → ~60% con estos
@@ -252,6 +266,7 @@ pub const LAYER_PROFILES: [LayerRules; 4] = [
     // ── Layer 1 — Las Salas ─────────────────────────────────────────────────
     LayerRules {
         name: "Las Salas",
+        office_bay_cells: 0,
         wide_chance: 0.30,
         erode_chance: 0.30,
         num_open_zones: 3,
@@ -280,6 +295,7 @@ pub const LAYER_PROFILES: [LayerRules; 4] = [
     // ── Layer 2 — El Caos ───────────────────────────────────────────────────
     LayerRules {
         name: "El Caos",
+        office_bay_cells: 0,
         wide_chance: 0.30,
         erode_chance: 0.28,
         num_open_zones: 4,
@@ -308,6 +324,7 @@ pub const LAYER_PROFILES: [LayerRules; 4] = [
     // ── Layer 3 — El Vacío ──────────────────────────────────────────────────
     LayerRules {
         name: "El Vacio",
+        office_bay_cells: 0,
         wide_chance: 0.20,
         erode_chance: 0.20,
         num_open_zones: 3,

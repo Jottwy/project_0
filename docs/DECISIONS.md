@@ -6795,3 +6795,114 @@ capa las lleva.
 - (e) En juego: que una pared de la oficina se lea como una hilera y no como un rastrillo.
 
 La (e) es la unica que importa de verdad y la unica que no puede contestar un test.
+
+---
+
+## ADR-087 — Enmienda 2: el paso 2 se retoma, con `OFFICE_BAY_CELLS = 6` y SIN wire nuevo
+Fecha: 2026-08-26
+Estado: **DECIDIDA E IMPLEMENTADA**, a peticion explicita de Joel tras el playtest de props.
+Enmienda a ADR-087 y a su enmienda 1.
+
+### Que se retoma y por que ahora
+
+La enmienda 1 revirtio el paso 2 honrando el compromiso escrito en el cuerpo, pero dejo dicho que
+**la pregunta correcta no se habia respondido**: la verificacion (b) exigia que el interior pisable
+SUBIERA con tabiques, y un tabique solo quita superficie, jamas anade. Era insatisfacible por
+construccion.
+
+Los numeros que si importan ya estaban medidos entonces, con un tabique
+(`OFFICE_BAY_CELLS = 6`): **cuesta 2,1 puntos** de interior pisable (37,5 % a 35,4 %) y sube el paso
+real de 32,0 % a ~42 %, dentro de la banda 25-45 % que fija la verificacion (c), rozando el techo.
+La decision que quedaba era humana y con los dos numeros delante. Joel la toma ahora: **se paga.**
+
+### La verificacion (b) queda ANULADA y sustituida
+
+- (b) original: "el interior pisable sube sobre el paso 1". **Imposible por construccion.** Anulada.
+- (b-bis): **el interior pisable no baja mas de 3 puntos** respecto a lo que rinde el paso 1. Es el
+  precio que se acepta, con margen sobre los 2,1 medidos, y sigue siendo una guarda: si un cambio
+  futuro mete tabiques de mas, salta.
+
+### Cambio de MECANISMO respecto a lo que el cuerpo proponia
+
+El cuerpo pedia `RoomType::OfficeFloor` y bump de wire a 42, con el razonamiento de ADR-086: "el 3 no
+mueve un byte; el bump fuerza el redespliegue conjunto". **No se hace, y el motivo es que el
+discriminante no lo leeria nadie.**
+
+Un tabique es una celda solida dentro de una sala. Viaja al cliente por el sitio por el que ya viajan
+todas las paredes: el bitmask por tile que deriva `tile_walls_from_grid`. El cliente no necesita
+saber que esa sala es "una planta de oficinas" para dibujar la pared; ya la dibuja. Un `RoomType`
+nuevo obligaria a mover el enum, su discriminante estable, el espejo C# y `WireSchema.Expected` — y
+bumpear el wire sin bumpear el espejo deja el juego inarrancable, no da un warning. Todo ese riesgo
+a cambio de un dato que ningun consumidor pide.
+
+Decision: **los tabiques son geometria, no un tipo de zona.** Cero wire, cero espejo, cero
+redespliegue coordinado. Si algun dia un consumidor necesita distinguir la planta (props propios,
+loot propio), ese sera el momento de crear el `RoomType`, y tendra un motivo real.
+
+### La geometria, exacta
+
+`stamp_office_bays` corre DESPUES de `stamp_sealed_room` y DESPUES de
+`carve_sealed_room_entrances`, solo si `rules.office_bay_cells > 0`, y solo sobre zonas
+`SealedRoom`. Con el footprint 14x14 que dejo ADR-087 paso 1, interior 12x12:
+
+- **Espina** de 2 celdas por el centro, sobre el eje mayor (empate a horizontal, el mismo desempate
+  documentado que usa `CorridorSpine`). No se estampa: ya es `Open`. Es el pasillo.
+- **Bandas** de 5 celdas a cada lado. 5 + 2 + 5 = 12.
+- **Tabiques** perpendiculares a la espina cada `OFFICE_BAY_CELLS`, desde la pared hasta la espina,
+  **sin cruzarla**: ese hueco de 2 celdas es el vano de cada bahia, tallado en el estampado y nunca
+  a `repair_connectivity`, que es la verificacion (d).
+- **Alineados a tile.** Solo se escriben tabiques en coordenada de celda GLOBAL par. `x0` ya viene
+  alineado por `align_origin_to_tile`, asi que un offset par lo garantiza. Sin esto
+  `tile_walls_from_grid` se los come — verificacion (e).
+- **Nunca sellan una entrada.** Si la celda de perimetro contigua al arranque de un tabique fue
+  carvada como entrada, ese arranque se deja abierto. Mejor un tabique que no toca la pared que una
+  puerta tapiada.
+
+### `Wall`, no `SealedWall`, y es deliberado
+
+El anillo de la sala es `SealedWall` porque protege el perimetro y `repair_connectivity` no lo
+perfora. Un tabique interior es lo contrario: si por lo que sea una bahia quedara aislada, quiero que
+la reparacion la abra en vez de enviar un bolsillo inalcanzable al cliente. Los tabiques se escriben
+como `CellType::Wall`, que `repair_connectivity` SI perfora. La red de seguridad no sustituye al
+tallado que abre el vano; lo respalda.
+
+### Lo que NO se hace
+
+- **No se cruza de chunk.** Igual que en el cuerpo.
+- **No se toca `SealedWall`** ni la colision que resuelve el robapieles.
+- **No se anaden props ni loot** dentro de la planta. Sigue bloqueado por B1 de ROOMS-ROADMAP.
+- **No se toca ninguna zona que no sea `ZONE_OFFICE`**: `office_bay_cells` nace en 0 en los cuatro
+  perfiles compilados y lleva `serde(default)`, asi que un `generation_config.json` ya distribuido
+  sigue siendo valido y genera grid byte-identico.
+
+### Verificaciones
+
+- (a) heredada: interior pisable en el paso 1 >= 36 %. No la toca esta enmienda.
+- **(b-bis)** el interior pisable no baja mas de 3 puntos respecto a lo que rinde el paso 1.
+- (c) heredada: el paso real se queda en la banda 25-45 %.
+- (d) toda bahia alcanza la espina por su vano, sin depender de `repair_connectivity`.
+- (e) los tabiques sobreviven a `tile_walls_from_grid`: aparecen como pared de tile en el bitmask.
+- (f) con `office_bay_cells = 0` el mundo sale byte-identico, zona por zona y celda por celda.
+- (g) **pendiente de playtest, y es la que decide.** Ningun numero dice si 35x35 m partidos en
+  bahias se leen como una planta de oficinas o como una caja con un muro dentro.
+
+### Fe de erratas de esta misma enmienda: los numeros REALES, medidos ya implementada
+
+`office_room_coverage_report` sobre 256 chunks, seed 42, capa 0, con las bahias encendidas:
+
+| | Paso 1 | **Paso 2 (esto)** |
+|---|---|---|
+| Interior pisable | 37,5 % | **35,4 %** |
+| Paso por `CellType` | 32,0 % | **33,2 %** |
+
+- **(b-bis) CUMPLE**: 2,1 puntos de caida, por debajo de los 3 que fija la guarda. Es exactamente
+  el coste que se midio en 2026-08-23, reproducido clavado.
+- **(c) CUMPLE**: 33,2 % esta dentro de la banda 25-45 %.
+- **El "sube a ~42 %" que dice el cuerpo de esta enmienda NO se reproduce, y no es un fallo.**
+  Aquel 42 % salio de la implementacion de 2026-08-23, que estampaba la espina como `Corridor`;
+  esta NO la estampa — la deja `Open`, que es lo que ya era. `passage_share_pct` cuenta `Corridor`,
+  asi que alli la espina sumaba como paso y aqui suma como sala. Es una diferencia de
+  contabilidad, no de geometria: el pasillo central existe igual y se cruza igual.
+
+  Y de las dos contabilidades, esta es la correcta: la espina de una planta de oficinas es
+  oficina, no un tramo de laberinto.

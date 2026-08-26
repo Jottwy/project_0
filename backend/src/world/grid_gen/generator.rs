@@ -506,6 +506,106 @@ pub(super) fn stamp_corridor_spine(
     }
 }
 
+/// Ancho CAMINABLE de la espina central de una planta de oficinas, en celdas.
+/// 2 celdas = 5 m, el mismo ancho que `CORRIDOR_SPINE_WIDTH` y el mismo
+/// argumento: por debajo deja de leerse como pasillo.
+const OFFICE_SPINE_WIDTH: i32 = 2;
+
+/// ADR-087 enmienda 2 -- Parte el interior de una `SealedRoom` en bahias.
+///
+/// Corre DESPUES de `stamp_sealed_room` y DESPUES de
+/// `carve_sealed_room_entrances`, y solo cuando `bay_cells > 0` (o sea, solo
+/// en `ZONE_OFFICE`: los cuatro perfiles compilados lo dejan en 0 y el mundo
+/// sale byte-identico).
+///
+/// Geometria: una espina de `OFFICE_SPINE_WIDTH` celdas por el centro sobre el
+/// eje mayor -- que NO se estampa, ya es `Open`, es el pasillo -- y tabiques
+/// perpendiculares cada `bay_cells` que van de la pared a la espina SIN
+/// cruzarla. Ese hueco es el vano de cada bahia, tallado aqui y nunca dejado a
+/// `repair_connectivity`.
+///
+/// Dos cosas que no se pueden perder de vista:
+///
+/// 1. **Los tabiques van en celda GLOBAL par.** `x0`/`z0` ya vienen alineados
+///    por `align_origin_to_tile`, asi que basta con avanzar en multiplos pares
+///    desde el origen. Un tabique en celda impar cae DENTRO de un tile de 5 m y
+///    `tile_walls_from_grid` se lo come sin avisar (verificacion (e)).
+///
+/// 2. **Son `Wall`, no `SealedWall`, a proposito.** El anillo de la sala se
+///    sella porque protege el perimetro; un tabique interior es lo contrario:
+///    si una bahia quedara aislada, se prefiere que `repair_connectivity` la
+///    abra a mandar al cliente un bolsillo inalcanzable. La red de seguridad no
+///    sustituye al tallado que abre el vano, lo respalda.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn stamp_office_bays(
+    grid: &mut LayerGrid,
+    x0: i32,
+    z0: i32,
+    x1: i32,
+    z1: i32,
+    zid: u16,
+    bay_cells: i32,
+) {
+    if bay_cells <= 0 {
+        return;
+    }
+    // Interior utilizable, sin el anillo sellado.
+    let (ix0, iz0, ix1, iz1) = (x0 + 1, z0 + 1, x1 - 1, z1 - 1);
+    let (w, h) = (ix1 - ix0, iz1 - iz0);
+    // Espina (2) mas una banda minima de 2 celdas a cada lado. Por debajo de
+    // eso no hay planta que estampar y se sale sin tocar nada.
+    if w < OFFICE_SPINE_WIDTH + 4 || h < OFFICE_SPINE_WIDTH + 4 {
+        return;
+    }
+    // Empate a horizontal: el mismo desempate determinista y documentado que
+    // usa `CorridorSpine` cuando sz_x == sz_z.
+    let horizontal = w >= h;
+    let (long_lo, long_hi) = if horizontal { (ix0, ix1) } else { (iz0, iz1) };
+    let (short_lo, short_hi) = if horizontal { (iz0, iz1) } else { (ix0, ix1) };
+    let short_len = short_hi - short_lo;
+    let spine_lo = short_lo + (short_len - OFFICE_SPINE_WIDTH) / 2;
+    let spine_hi = spine_lo + OFFICE_SPINE_WIDTH - 1;
+
+    let origin = if horizontal { x0 } else { z0 };
+    let mut step = bay_cells;
+    while origin + step <= long_hi - 3 {
+        let at = origin + step;
+        step += bay_cells;
+        // Margen: una bahia de menos de 2 celdas no es una bahia.
+        if at < long_lo + 2 {
+            continue;
+        }
+        // Celda global par o `tile_walls_from_grid` no lo ve.
+        if at % 2 != 0 {
+            continue;
+        }
+        for band in 0..2u8 {
+            let (from, to) = if band == 0 {
+                (short_lo, spine_lo - 1)
+            } else {
+                (spine_hi + 1, short_hi - 1)
+            };
+            for s in from..=to {
+                let (cx, cz) = if horizontal { (at, s) } else { (s, at) };
+                // Si el tabique arranca pegado a una entrada carvada, ese
+                // arranque se deja abierto: mejor un tabique que no llega a la
+                // pared que una puerta tapiada.
+                let touches_wall = s == short_lo || s == short_hi - 1;
+                if touches_wall {
+                    let (px, pz) = if horizontal {
+                        (at, if s == short_lo { z0 } else { z1 - 1 })
+                    } else {
+                        (if s == short_lo { x0 } else { x1 - 1 }, at)
+                    };
+                    if grid.get(px as usize, pz as usize).is_walkable() {
+                        continue;
+                    }
+                }
+                grid.set(cx as usize, cz as usize, Cell::new(CellType::Wall, 0, zid));
+            }
+        }
+    }
+}
 /// Candidatos de entrada para una `SealedRoom`: cada celda de perímetro que
 /// NO es esquina (dirección de breach ambigua en una esquina), con su
 /// dirección de carvado hacia fuera. Mismo criterio que `aperture_pos`
@@ -893,6 +993,18 @@ pub fn generate_layer(
                         z0,
                         x1,
                         z1,
+                    );
+                    // ADR-087 enmienda 2: la planta dentro de la sala. Inerte
+                    // salvo en ZONE_OFFICE, que es la unica zona que sube
+                    // `office_bay_cells` por encima de 0.
+                    stamp_office_bays(
+                        &mut grid,
+                        x0,
+                        z0,
+                        x1,
+                        z1,
+                        zid,
+                        rules.office_bay_cells as i32,
                     );
                 }
                 RoomType::CorridorSpine => {

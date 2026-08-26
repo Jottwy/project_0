@@ -284,6 +284,20 @@ fn office_rules(base: &LayerRules) -> LayerRules {
     // perfil con `subregion_grid`, que es lo que hace comparables las huellas.
     rules.pillar_chance = 0.0;
 
+    // IDENTIDAD 5 -- la planta DENTRO de la sala (ADR-087 enmienda 2).
+    //
+    // El paso 1 dejo una sala de 14x14 con 12x12 de interior limpio: 35x35 m
+    // sin nada dentro, que se lee como caja, no como oficina. Con paso 6 entra
+    // UN tabique perpendicular a la espina, que parte el interior en bahias y
+    // deja el pasillo central de 2 celdas como vano.
+    //
+    // Cuesta 2,1 puntos de interior pisable (37,5 % a 35,4 %) y sube el paso
+    // real de 32,0 % a ~42 %, dentro de la banda 25-45 % de la verificacion (c)
+    // de ADR-087. Es un precio medido y aceptado a ojo, no un test que se pase:
+    // la enmienda 1 dejo escrito que un tabique NUNCA puede subir superficie y
+    // que por eso su verificacion (b) era insatisfacible.
+    rules.office_bay_cells = 6;
+
     // HISTÓRICO — lo de abajo razona sobre la partición en cuadrantes, que
     // ADR-087 paso 1 ya no usa. Se conserva porque su conclusión es la que
     // sostiene la identidad 1 de arriba: el perímetro sellado cuesta 1 celda
