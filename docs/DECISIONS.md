@@ -7315,6 +7315,114 @@ es lo que bloquea F4.
 
 ---
 
+## ADR-096 — Troceado de WorldGen3: regiones sembradas con contrato en la junta, y los bucles primero (2026-08-27) — ACEPTADA
+
+Cierra la decisión que ADR-095 dejó fuera a propósito y que bloqueaba F4.
+
+### Contexto: lo que se sabe ahora y no se sabía al escribir ADR-095
+
+Entre medias, el compositor se portó a Rust y se conectó al `game_loop` (`5aa53240`), con `wg3::demo`
+borrado. Se sirvió mundo A3 —recorrido finito desde una semilla— **como interino y sin ADR**: esa
+decisión no llegó a escribirse en este registro. Queda dicha aquí, y sustituida.
+
+Y midiéndolo aparecieron dos cosas que cambian la comparación entre las tres rutas:
+
+**1. A3 no hace un mundo finito, hace uno de tamaño IMPREDECIBLE.** Con tope de 300 piezas, seis
+semillas dan entre **20 y 268 piezas** (de 134 m a 921 m de lado). El presupuesto es un techo, no un
+objetivo. Una semilla que rinde 20 piezas es un mundo de dos chunks, y para un juego cuya progresión
+es la profundidad eso no es una limitación: es un defecto.
+
+**2. La frontera se seca sola, y la causa es que el compositor NO CIERRA BUCLES.** Cada pieza abre
+una o dos bocas y consume una; entre el tapón deliberado de L21 y los forzados por solape, el
+recorrido se ahoga. Estaba anotado como problema de liminalidad al ver la primera planta —«el mundo
+sale en árbol y nunca vuelve a conectar»—; resulta que además es **lo que limita el tamaño del
+mundo**. Subir el presupuesto no lo arregla.
+
+**3. Componer es gratis: 0 a 9 ms para 300 piezas.** Ese número mata la única objeción seria que
+tenían las regiones.
+
+### Decisión
+
+**Regiones sembradas (A2), unidas por contrato de frontera SOLO en sus juntas.**
+
+El mundo se divide en regiones de N×N chunks. Cada una se compone entera por `hash(seed, región)`, y
+eso es **exactamente lo que el compositor ya hace**: un recorrido finito desde una semilla. Se
+reutiliza tal cual el port de Rust, con su oráculo intacto. El mundo es infinito porque las regiones
+lo son.
+
+Las regiones **no nacen selladas**. En la junta entre dos, las bocas del borde son función pura del
+hash de esa junta, así que las dos regiones coinciden sin hablarse — es la idea de A1, aplicada al
+borde de región en vez de al de chunk.
+
+**Por qué en la junta y no en cada chunk.** La parte difícil de A1 es decidir si taponar una boca
+deja una zona inalcanzable **sin poder consultar el mundo entero**. Aplicado a cada frontera de
+chunk, ese problema aparece constantemente. Aplicado a la junta de región, aparece pocas veces y
+sobre una superficie acotada, que es la diferencia entre un problema abierto y una regla que se
+escribe.
+
+### Por qué no A1 puro, y por qué no A3
+
+**A1 puro** es más limpio y su cimiento **ya está probado** —`chunk::build_chunk_raster` recorta sin
+modificar, 5040 celdas idénticas a los dos lados—. Pero exige un compositor **nuevo**, no un port: el
+actual solapa contra todo lo colocado y camina en secuencia. Y tira el oráculo de composición, que
+fija el comportamiento A3. Se descarta **por ahora, no para siempre**: A2 → A1 es una evolución
+—cambia de dónde salen las colocaciones— y no una reescritura, porque el reparto por chunk y el
+recorte de ráster siguen valiendo igual.
+
+**A3** contradice la dirección del juego.
+
+### Los bucles van ANTES, y no es orden de conveniencia
+
+Sin cerrar bucles, cada región se ahoga y queda medio vacía: el mundo sería un tablero de bloques
+dispersos, que es justo la cuadrícula de la que WG3 viene huyendo. Y además **dimensionar las
+regiones con los números de un compositor que se ahoga sería dimensionarlas mal**: el tamaño de
+región correcto sale de medir cuánto llena el compositor CON bucles, no sin ellos.
+
+**Qué es cerrar un bucle, en concreto.** Al procesar una boca abierta, mirar antes si hay OTRA boca
+abierta ya colocada en el mismo punto de mundo, enfrentada y compatible. Si la hay, se unen las dos
+en vez de colocar pieza nueva. Es barato (un índice de punto cuantizado → boca), determinista, y
+convierte el árbol en un grafo con anillos.
+
+**Rompe el oráculo de composición, y eso se acepta con una condición.** El oráculo fija el mundo sin
+bucles, que es lo que produce el compositor de C#. El de Rust pasa a ser la autoridad —es el que
+sirve el `game_loop`— así que el cierre de bucles entra SOLO en Rust, detrás de un ajuste
+(`close_loops`) que el test del oráculo deja apagado. El oráculo sigue vigilando la paridad del
+algoritmo base; los bucles llevan sus propios tests. Sin ese ajuste, la única alternativa sería
+implementar bucles también en C# para poder reexportar, y eso es mantener dos veces una regla que ya
+solo importa en un idioma.
+
+### Lo que este ADR NO decide
+
+- **El tamaño de región (N).** Es un número, y sale de medir el mundo con bucles cerrados: N tal que
+  una región típica llene su superficie sin dejar cuadrantes muertos. Adivinarlo ahora sería fijar
+  en el registro lo que la medición va a corregir, que es lo que ya pasó con los 20 KB de D1.
+- **La regla de junta concreta** (qué bocas declara el contrato, con qué anchura y a qué cota). Sale
+  después de N.
+- **La retirada de WG2.** Sigue siendo F7.
+
+### Riesgos aceptados
+
+1. **Juntas de región visibles.** Si el contrato es pobre, la costura se lee como una cuadrícula de
+   bloques. Es el riesgo principal y la señal de que hay que ir a A1.
+2. **Composición a ráfagas.** Cruzar a una región nueva compone de golpe. Medido hoy en ≤9 ms para
+   300 piezas; con bucles serán más piezas y hay que volver a medirlo antes de cerrar F4.
+3. **El oráculo cubre menos de lo que cubría.** Vigila el algoritmo base, no el mundo que se sirve.
+   Se compensa con tests propios de bucles, y queda dicho para que nadie lea un verde de más.
+
+### Verificaciones
+
+- (a) Con `close_loops` apagado, el compositor de Rust sigue reproduciendo el oráculo de las cinco
+  semillas al centímetro. Es lo que impide que los bucles se lleven por delante la paridad ya ganada.
+- (b) Con bucles encendidos existe al menos un ciclo real: dos piezas conectadas por dos caminos
+  distintos. Un test que solo cuente uniones no distingue un bucle de una rama más.
+- (c) Medido y anotado: piezas y superficie por semilla, con y sin bucles, sobre las mismas seis
+  semillas del número de arriba. De ahí sale N.
+- (d) Una región compuesta dos veces da el mismo mundo, y dos regiones vecinas coinciden en su junta
+  sin consultarse.
+- (e) En juego: cruzar una junta de región andando, sin costura visible ni tirón perceptible.
+
+---
+
 ### Enmienda 4 a ADR-095 (2026-08-27) — el compositor sirve el mundo, y A3 queda como INTERINO declarado
 
 Decisión de Joel, tomada al preguntársele en vez de deducirla del código: **se conecta el compositor
