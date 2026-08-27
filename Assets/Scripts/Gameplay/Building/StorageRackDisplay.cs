@@ -117,7 +117,7 @@ namespace BackroomsSurvival.Gameplay.Building
 
             if (_visuals[index] != null)
             {
-                Destroy(_visuals[index]);
+                SafeDestroy(_visuals[index]);
                 _visuals[index] = null;
             }
 
@@ -188,14 +188,27 @@ namespace BackroomsSurvival.Gameplay.Building
             foreach (var mb in go.GetComponentsInChildren<MonoBehaviour>(true))
             {
                 if (mb is not Interactable)
-                    Destroy(mb);
+                    SafeDestroy(mb);
             }
             foreach (var interactable in go.GetComponentsInChildren<Interactable>(true))
-                Destroy(interactable);
+                SafeDestroy(interactable);
             foreach (var rb in go.GetComponentsInChildren<Rigidbody>(true))
-                Destroy(rb);
+                SafeDestroy(rb);
             foreach (var col in go.GetComponentsInChildren<Collider>(true))
-                Destroy(col);
+                SafeDestroy(col);
+        }
+
+        // Destroy() defers to end-of-frame and is only valid in Play mode — correct (and the only
+        // path players ever hit) for real gameplay, but this component's own EditMode test
+        // (Assets/Tests/EditMode/StorageRackDisplayTests.cs) drives RefreshSlot synchronously
+        // outside Play, where Destroy() logs an error instead of running. Application.isPlaying is
+        // always true for an actual player, so this changes nothing about shipped behavior.
+        private static void SafeDestroy(UnityEngine.Object obj)
+        {
+            if (Application.isPlaying)
+                Destroy(obj);
+            else
+                DestroyImmediate(obj);
         }
 
         private void OnDestroy()
