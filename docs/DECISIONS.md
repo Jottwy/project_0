@@ -7270,3 +7270,45 @@ su propio fichero y con ese nombre precisamente para que no se disfrace de siste
 
 Verde: **1042 tests**, clippy `--all-targets -D warnings`, `cargo fmt`, y `CompileCheckClient` sin
 errores en las cuatro asambleas.
+
+---
+
+## ADR-095 — Enmienda 3: aprobado, y la verificación (e) CUMPLIDA (2026-08-27)
+
+**Joel aprobó el ADR** tras leerlo; la cabecera dice PROPUESTA y la regla append-only impide
+editarla, así que queda dicho aquí.
+
+**Verificación (e) cumplida y medida, no declarada.** Sesión real con `BACKROOMS_WG3=1`, escena
+`Assets/Scenes/WorldGen3Live.unity`:
+
+```
+[IPCClient] Wire schema v46 confirmed · WorldGen3 activo, catálogo 506c37a0bc96…
+[WG3] jugador colocado dentro de la primera pieza en (79.06, 1.00, -6.08)
+[WG3] VERIFICACIÓN (e) OK — el jugador se sostiene en la geometría servida por el backend.
+      pos=(79.06, 0.08, -6.08) caída=0,92 m, grounded=True
+```
+
+La cadena entera: el backend lee el manifiesto, coloca, manda la lista por wire v46; el cliente
+compara digests, monta la geometría de su catálogo horneado, y **el jugador se apoya en ella**. Dos
+procesos derivando lo mismo de la misma chuleta, que es la tesis del ADR.
+
+**Tres cosas que costaron el primer intento y quedan escritas.**
+
+1. **`Builds/Backend/` EXISTE y GANA.** STATE.md daba por hecho que había desaparecido y que
+   `cargo build --release` ya desplegaba. Es falso: `NetworkInitializer` lanzó el exe de
+   `Builds/Backend/`, de un día antes y sin WG3, y la sesión arrancó en WG2 sin decir nada raro —
+   solo no llegaba ningún chunk. Hay que pasar por `tools/dev/CopyReleaseBackendToBuild.ps1`.
+   Comprobación barata que lo caza: buscar `request_wg3_chunk` como cadena dentro del exe.
+2. **El primer veredicto dio ROJO y el fallo era del criterio, no del sistema.** Exigía "no ha
+   caído", pero al jugador se le suelta un metro por encima del suelo a propósito, así que caer
+   ~1 m es lo correcto. Lo que hay que comprobar es que **la caída termina** —que hay algo debajo—,
+   no que no haya. Un test que mide otra cosa que la que dice medir es peor que no tenerlo: manda a
+   depurar donde no hay nada roto.
+3. **El teleport al arranque no es comodidad.** El andamio deja un chunk de cada tres vacío, así
+   que el origen del mundo cae en el aire con bastante probabilidad; aparecer ahí y caerse se lee
+   como "el mundo no ha cargado".
+
+**Y el compositor ya está portado a Rust** (carril paralelo en worktree, fusionado): reproduce el
+oráculo de composición de las cinco semillas al centímetro. Sigue **sin wirear** — `wg3::demo` es lo
+que responde el `game_loop` — porque enchufarlo exige la decisión de troceado, que sigue abierta y
+es lo que bloquea F4.

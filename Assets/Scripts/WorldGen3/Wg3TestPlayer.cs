@@ -110,7 +110,16 @@ namespace BackroomsSurvival.WorldGen3
         /// regeneración: sin esto, un mundo nuevo te deja dentro de una pared del anterior.</summary>
         public void Respawn()
         {
-            Vector3 point = world != null ? world.SpawnPoint : new Vector3(0f, 1f, 0f);
+            Respawn(world != null ? world.SpawnPoint : new Vector3(0f, 1f, 0f));
+        }
+
+        /// <summary>Coloca al jugador en un punto concreto. Lo usa el arranque en vivo, donde el
+        /// mundo no lo compone esta escena sino que llega por el wire.</summary>
+        public void Respawn(Vector3 point)
+        {
+            // El `CharacterController` IGNORA una asignación de `transform.position` mientras está
+            // activo: mueve por `Move` y reimpone su posición interna. Apagarlo es la única forma
+            // de teletransportar, y olvidarlo se ve como un teleport que "no hace nada".
             _controller.enabled = false;
             transform.position = point;
             _controller.enabled = true;

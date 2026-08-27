@@ -21,6 +21,7 @@ namespace BackroomsSurvival.EditorTools
     public static class Wg3TestSceneCreator
     {
         private const string ScenePath = "Assets/Scenes/WorldGen3Test.unity";
+        private const string LiveScenePath = "Assets/Scenes/WorldGen3Live.unity";
         private const string MatFolder = "Assets/Materials/WorldGen3";
 
         [MenuItem("Backrooms/WorldGen3/Crear escena de prueba")]
@@ -87,6 +88,88 @@ namespace BackroomsSurvival.EditorTools
             Debug.Log($"[WG3] escena creada en {ScenePath}. Entra a Play: WASD para andar, " +
                       $"R para otra semilla. El criterio de cierre de F0 es chocar con una columna " +
                       $"interior y NO chocar con el rodapié.");
+        }
+
+        /// <summary>
+        /// Crea `Assets/Scenes/WorldGen3Live.unity`: la escena de la verificación (e) de ADR-095.
+        ///
+        /// A diferencia de la escena de prueba, aquí el mundo NO lo compone el cliente: lo sirve el
+        /// backend con `BACKROOMS_WG3=1` y llega por el wire v46. Es lo único que puede demostrar
+        /// que lo que se dibuja y lo que colisiona son lo mismo, porque son dos procesos distintos
+        /// derivándolo de la misma chuleta horneada.
+        /// </summary>
+        [MenuItem("Backrooms/WorldGen3/Crear escena en vivo")]
+        public static void CreateLiveScene()
+        {
+            if (!EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo()) return;
+
+            var materials = new Wg3Materials
+            {
+                floor = Mat("Wg3_Floor", new Color(0.21f, 0.25f, 0.19f), 0.06f),
+                structure = Mat("Wg3_Structure", new Color(0.86f, 0.86f, 0.82f), 0.10f),
+                ceiling = Mat("Wg3_Ceiling", new Color(0.80f, 0.80f, 0.77f), 0.04f),
+                decoration = Mat("Wg3_Trim", new Color(0.95f, 0.95f, 0.93f), 0.22f)
+            };
+            if (materials.floor == null) return;
+
+            UnityEngine.SceneManagement.Scene scene =
+                EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
+
+            RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Flat;
+            RenderSettings.ambientLight = new Color(0.10f, 0.10f, 0.095f);
+            RenderSettings.fog = false;
+            RenderSettings.skybox = null;
+
+            var worldGo = new GameObject("WorldGen3Live");
+            var streamer = worldGo.AddComponent<Wg3ChunkStreamer>();
+            streamer.materials = materials;
+            streamer.radius = 1;
+
+            var playerGo = new GameObject("Player");
+            var controller = playerGo.AddComponent<CharacterController>();
+            controller.height = 1.75f;
+            controller.radius = 0.3f;
+            controller.center = new Vector3(0f, 0.875f, 0f);
+            controller.stepOffset = 0.32f;
+            var player = playerGo.AddComponent<Wg3TestPlayer>();
+
+            var eyeGo = new GameObject("Eye");
+            eyeGo.transform.SetParent(playerGo.transform, false);
+            eyeGo.transform.localPosition = new Vector3(0f, 0.72f, 0f);
+            var cam = eyeGo.AddComponent<Camera>();
+            cam.tag = "MainCamera";
+            cam.clearFlags = CameraClearFlags.SolidColor;
+            cam.backgroundColor = Color.black;
+            cam.nearClipPlane = 0.05f;
+            cam.farClipPlane = 300f;
+            cam.fieldOfView = 70f;
+
+            streamer.viewer = playerGo.transform;
+
+            var boot = worldGo.AddComponent<Wg3LiveBootstrap>();
+            boot.streamer = streamer;
+            boot.player = player;
+            boot.worldSeed = 42;
+
+            if (!AssetDatabase.IsValidFolder("Assets/Scenes"))
+                AssetDatabase.CreateFolder("Assets", "Scenes");
+            EditorSceneManager.SaveScene(scene, LiveScenePath);
+
+            Debug.Log($"[WG3] escena EN VIVO creada en {LiveScenePath}. Entra a Play: arranca el " +
+                      "backend con WorldGen3 activo, pide chunks y te deja dentro de la primera pieza.");
+        }
+
+        [MenuItem("Backrooms/WorldGen3/Abrir escena en vivo")]
+        public static void OpenLiveScene()
+        {
+            if (!System.IO.File.Exists(LiveScenePath))
+            {
+                Debug.LogWarning($"[WG3] no existe {LiveScenePath}; usa «Crear escena en vivo».");
+                return;
+            }
+            if (!EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo()) return;
+            EditorSceneManager.OpenScene(LiveScenePath, OpenSceneMode.Single);
+            Debug.Log($"[WG3] escena en vivo abierta: {LiveScenePath}");
         }
 
         /// <summary>Abre la escena de prueba sin volver a crearla. Separado de

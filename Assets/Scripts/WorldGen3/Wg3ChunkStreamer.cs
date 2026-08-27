@@ -158,7 +158,29 @@ namespace BackroomsSurvival.WorldGen3
                 var single = new Wg3World();
                 single.placements.Add(placement);
                 Wg3SceneAssembler.Assemble(single, root.transform, materials, _meshes, spawnLights);
+
+                if (!_hasSpawn)
+                {
+                    // Centro de la PRIMERA pieza que llega, a la altura de los ojos. Es adonde hay
+                    // que llevar al jugador: el andamio deja un chunk de cada tres vacío, así que
+                    // el origen del mundo cae en el aire con bastante probabilidad y aparecer ahí
+                    // se lee como "el mundo no cargó" cuando lo que pasa es que ahí no hay nada.
+                    _spawn = new Vector3(
+                        placement.originX + placement.SizeX * 0.5f, 1.0f,
+                        placement.originZ + placement.SizeZ * 0.5f);
+                    _hasSpawn = true;
+                }
             }
+        }
+
+        private Vector3 _spawn;
+        private bool _hasSpawn;
+
+        /// <summary>Centro de la primera pieza recibida, si ya ha llegado alguna.</summary>
+        public bool TryGetSpawnPoint(out Vector3 point)
+        {
+            point = _spawn;
+            return _hasSpawn;
         }
 
         /// <summary>Tira lo que quedó fuera del radio, con un margen de un chunk. El margen evita

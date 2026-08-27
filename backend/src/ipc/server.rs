@@ -489,4 +489,78 @@ mod tests {
             "the message buffered before connect must arrive AFTER the hello, not instead of it"
         );
     }
+
+    /// ADR-095 — el saludo lleva la bandera y el digest cuando WG3 está encendido.
+    ///
+    /// Es lo primero que ve el cliente y lo único que le dice a qué mundo se ha conectado. Si esto
+    /// se cae, el cliente pide por el camino de WG2 y se queda esperando para siempre un chunk que
+    /// nadie va a mandar — sin error, sin log, sin nada.
+    #[tokio::test]
+    async fn the_hello_announces_wg3_and_its_catalogue() {
+        let manifest = crate::world::wg3::manifest::Wg3Manifest {
+            version: crate::world::wg3::manifest::WG3_MANIFEST_FORMAT,
+            digest: "a".repeat(64),
+            pieces: Vec::new(),
+        };
+        let config = crate::world::wg3::config::Wg3Config::with_manifest(manifest);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (to_game_tx, _rx) = mpsc::channel::<ClientMessage>(8);
+        let (state_tx, state_rx) = broadcast::channel::<ServerMessage>(8);
+        let (voice_tx, _) = broadcast::channel::<ServerMessage>(8);
+        let (disconnect_tx, _drx) = mpsc::channel::<()>(4);
+        drop(state_tx);
+
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        let (stream, peer) = listener.accept().await.unwrap();
+        tokio::spawn(handle_connection(
+            stream,
+            peer,
+            to_game_tx,
+            state_rx,
+            voice_tx.subscribe(),
+            disconnect_tx,
+            config,
+        ));
+
+        let frame = read_frame(&mut client).await;
+        match decode::<ServerMessage>(&frame).unwrap() {
+            ServerMessage::Hello(hello) => {
+                assert!(hello.wg3_enabled, "el saludo no anuncia WG3");
+                assert_eq!("a".repeat(64), hello.wg3_manifest_digest);
+            }
+            other => panic!("primera trama {other:?}, no Hello"),
+        }
+    }
+
+    /// ADR-095 — la petición que ESCRIBE C# se decodifica aquí.
+    ///
+    /// Los bytes están puestos a mano copiando lo que emite `IPCClient.SendRequestWg3Chunk`, y ésa
+    /// es la gracia: codificar el `ClientMessage` con `rmp_serde` y volver a leerlo solo probaría
+    /// que Rust se entiende consigo mismo. Lo que puede romperse de verdad es el NOMBRE — la
+    /// etiqueta `request_wg3_chunk` o una clave `cx`/`cz` —, y un nombre que no case no da error
+    /// aquí: da un `ClientMessage` que no se reconoce y una petición que se traga el silencio.
+    #[tokio::test]
+    async fn the_request_the_client_writes_by_hand_decodes_here() {
+        let mut body: Vec<u8> = vec![0x83]; // fixmap, 3 entradas
+        body.push(0xa4);
+        body.extend_from_slice(b"type");
+        body.push(0xb1); // fixstr de 17
+        body.extend_from_slice(b"request_wg3_chunk");
+        body.push(0xa2);
+        body.extend_from_slice(b"cx");
+        body.push(0x07); // positive fixint
+        body.push(0xa2);
+        body.extend_from_slice(b"cz");
+        body.push(0xfd); // negative fixint = −3
+
+        match decode::<ClientMessage>(&body).expect("los bytes de C# tienen que decodificar") {
+            ClientMessage::RequestWg3Chunk { cx, cz } => {
+                assert_eq!(7, cx);
+                assert_eq!(-3, cz, "el negativo se perdió por el camino");
+            }
+            other => panic!("decodificó como {other:?}, no como RequestWg3Chunk"),
+        }
+    }
 }

@@ -39,6 +39,13 @@ namespace BackroomsSurvival.Net
         /// <summary>World seed handed to the backend as WORLD_SEED. Observable so the
         /// port-passed-as-seed regression stays covered by a test.</summary>
         public int LastSelectedWorldSeed { get; private set; }
+        /// <summary>ADR-095 — arranca el backend sirviendo mundo de WorldGen3 en vez de WG2.
+        /// Apagado por defecto: los dos mundos conviven hasta el borrado (D3), y el que se sirve
+        /// hoy en toda sesión normal sigue siendo WG2.</summary>
+        [Header("WorldGen3 (ADR-095)")]
+        [Tooltip("Arranca el backend con BACKROOMS_WG3=1. Exige haber exportado el manifiesto.")]
+        public bool enableWorldGen3;
+
         public string LastSelectedIpcAddress { get; private set; } = "127.0.0.1";
         public string LastEffectiveRole { get; private set; } = "none";
         public string LastConnectTo { get; private set; } = "<none>";
@@ -148,6 +155,7 @@ namespace BackroomsSurvival.Net
             };
             AddIpcAddressEnv(env, config.IpcAddress, config.IpcPort);
             AddRoomManifestEnv(env);
+            AddWorldGen3Env(env);
 
             // Fase 6B (Slice 1): debug-spawn the robapieles on the host. The backend reads
             // DEBUG_SPAWN_PHANTOM from its env (inherited from Unity via UseShellExecute=false);
@@ -201,6 +209,7 @@ namespace BackroomsSurvival.Net
             };
             AddIpcAddressEnv(env, config.IpcAddress, config.IpcPort);
             AddRoomManifestEnv(env);
+            AddWorldGen3Env(env);
 
             LogLaunchConfig(
                 sessionMode,
@@ -720,6 +729,36 @@ namespace BackroomsSurvival.Net
             else
                 Debug.LogWarning($"[NetworkInitializer] Sin manifiesto de salas en {path} — el mundo " +
                                  "saldrá sin salas autoradas. Ejecuta Backrooms ▸ Export Room Manifest.");
+        }
+
+        /// <summary>
+        /// Enciende WorldGen3 en el backend si <see cref="enableWorldGen3"/> está marcado.
+        ///
+        /// Se DECLARAN las dos variables, no se heredan: <see cref="BuildChildEnvironment"/> es una
+        /// lista blanca estricta, así que una variable que no se declare aquí no llega al hijo por
+        /// mucho que esté puesta en el entorno de Unity. Es deliberado — la alternativa fue la que
+        /// dejó a un host arrancando como joiner porque heredó un <c>CONNECT_TO</c> viejo.
+        ///
+        /// Sin manifiesto NO se enciende la bandera, aunque esté marcada: el backend con WG3 activo
+        /// y sin catálogo sirve chunks vacíos —un mundo sin suelo por el que se cae— y eso es peor
+        /// que quedarse en WG2. El backend hace la misma comprobación por su cuenta; ésta es para
+        /// que el aviso salga en la consola de Unity, que es donde se está mirando.
+        /// </summary>
+        private void AddWorldGen3Env(Dictionary<string, string> env)
+        {
+            if (!enableWorldGen3) return;
+
+            string path = System.IO.Path.Combine(Application.streamingAssetsPath, "wg3_manifest.json");
+            if (!System.IO.File.Exists(path))
+            {
+                Debug.LogError($"[NetworkInitializer] WorldGen3 pedido pero no hay manifiesto en {path}. " +
+                               "Ejecuta Backrooms ▸ WorldGen3 ▸ Exportar manifiesto. Se arranca con WG2.");
+                return;
+            }
+
+            env["BACKROOMS_WG3"] = "1";
+            env["BACKROOMS_WG3_MANIFEST"] = path;
+            Debug.Log($"[NetworkInitializer] WorldGen3 ACTIVO — manifiesto {path}");
         }
 
         // ADR-056: a new session is starting, so clear SessionEndHandler's once-per-session latch.
