@@ -1842,6 +1842,80 @@ fn probe_ring_geometry() {
     }
 }
 
+/// **¿EL MUNDO SERVIDO ES UNA SOLA PIEZA O SON ISLAS?** — Joel mandó una captura cenital y se ven
+/// grupos de geometría separados por vacío.
+///
+/// R7 dice «conectividad por construcción», y el compositor es un ÁRBOL desde una semilla, así que
+/// todo lo que crece de ella está conectado. Lo que el árbol no cubre son las **anclas de junta**:
+/// `compose_region` las coloca PRIMERO y como raíces sueltas, y si el crecimiento no llega hasta
+/// ellas se quedan flotando. Esta sonda cuenta componentes conexas: 1 = un mundo; más = islas.
+///
+/// Dos piezas cuentan como conectadas si una boca de una cae sobre una boca de la otra (2 cm), que
+/// es la misma condición con la que el compositor las enganchó.
+#[test]
+fn probe_is_the_served_world_one_piece_or_islands() {
+    let m = real_manifest();
+
+    for (rx, rz) in [(0, 0), (1, 0), (0, 1), (-1, 2)] {
+        let region = Wg3RegionCoord { x: rx, z: rz };
+        let world = Wg3ServedWorld::compose_region(&m, SERVED_SEED, region);
+        let n = world.placements().len();
+
+        // Bocas de cada pieza, en mundo.
+        let mouths: Vec<Vec<(f32, f32)>> = world
+            .placements()
+            .iter()
+            .map(|p| {
+                let piece = m.piece(p.piece).expect("pieza fuera del catálogo");
+                (0..piece.sockets.len())
+                    .map(|i| p.world_socket_point(piece, i))
+                    .collect()
+            })
+            .collect();
+
+        // Union-find sobre bocas coincidentes.
+        let mut parent: Vec<usize> = (0..n).collect();
+        fn find(parent: &mut Vec<usize>, mut a: usize) -> usize {
+            while parent[a] != a {
+                parent[a] = parent[parent[a]];
+                a = parent[a];
+            }
+            a
+        }
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let touch = mouths[i].iter().any(|a| {
+                    mouths[j]
+                        .iter()
+                        .any(|b| (a.0 - b.0).abs() < 0.02 && (a.1 - b.1).abs() < 0.02)
+                });
+                if touch {
+                    let (ri, rj) = (find(&mut parent, i), find(&mut parent, j));
+                    if ri != rj {
+                        parent[ri] = rj;
+                    }
+                }
+            }
+        }
+
+        let mut sizes = std::collections::HashMap::<usize, usize>::new();
+        for i in 0..n {
+            let r = find(&mut parent, i);
+            *sizes.entry(r).or_default() += 1;
+        }
+        let mut counts: Vec<usize> = sizes.values().copied().collect();
+        counts.sort_unstable_by(|a, b| b.cmp(a));
+        let biggest = counts.first().copied().unwrap_or(0);
+
+        println!(
+            "[wg3] región ({rx},{rz}): {n} piezas en **{} islas** — la mayor tiene {biggest} ({:.0} %), tamaños {:?}",
+            counts.len(),
+            biggest as f32 * 100.0 / n.max(1) as f32,
+            &counts[..counts.len().min(8)]
+        );
+    }
+}
+
 /// **¿CUÁNTO CIERRA `deliberate_cap_chance`?** — Joel: «llega un punto que se cierra y no hay
 /// manera de moverte».
 ///
