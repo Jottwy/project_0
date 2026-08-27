@@ -6906,3 +6906,73 @@ tallado que abre el vano; lo respalda.
 
   Y de las dos contabilidades, esta es la correcta: la espina de una planta de oficinas es
   oficina, no un tramo de laberinto.
+
+---
+
+## ADR-036 — Enmienda 2: props de PARED y de TECHO, con catalogo propio por zona
+Fecha: 2026-08-27
+Estado: **DECIDIDA E IMPLEMENTADA**, encargo abierto de Joel tras el playtest ("mejoras en la
+generacion de las oficinas: escaleras, ascensores, props nuevos, alturas"). Cliente puro — el wire
+NO cambia. Enmienda a ADR-036 y compatible con su enmienda 1.
+
+### Problema
+
+El sitio se lee PLANO, y no es por falta de piezas. Los dos packs traen 14 senales (EXIT, WC,
+flechas, numeracion), 4 conductos, 3 rejillas, extintores, alarmas de incendio, cuadros electricos,
+relojes, camaras y 7 lamparas. **Ninguna se puede colocar**, porque `PlaceProps` solo sabe poner
+cosas en el suelo: la unica ruta que no toca el suelo es un caso especial cableado por cadena de
+texto (`type == "cable"`), que cuelga a `LayerHeight` y nada mas.
+
+Un pasillo de oficinas sin una senal de salida, sin una rejilla de ventilacion y sin un extintor no
+parece un pasillo de oficinas: parece un pasillo. Y el techo es hoy una superficie muerta en toda la
+region, que es justo lo que la lista de compra marcaba como hueco.
+
+### Decision
+
+**Catalogos SEPARADOS, no una bandera metida en la lista de suelo.** `ZonePropSet` gana:
+
+- `wallProps` + `wallPropDensity`
+- `ceilingProps` + `ceilingPropDensity`
+
+Los dos vacios y a 0 por defecto, o sea: toda capa y toda zona que no los autorice se comporta byte
+a byte como antes.
+
+**Por que separados y no un campo `mount` en la misma lista.** Un prop de pared y un mueble no
+compiten por el mismo sitio: caben los dos en el mismo tile. Metiendolos en la misma lista
+ponderada, poner una senal EXIT costaria una mesa, y subir `propsPerTile` para compensar
+reintroduce justo el desorden que el playtest hizo quitar. Con catalogos aparte, el suelo se queda
+en un prop por tile y la pared y el techo tienen su propia densidad, su propio hash y su propio
+tope.
+
+**Colocacion de pared.** Se reutiliza el mismo lado con pared que ya elige el arrimo
+(`PickWallSide`, ADR-036 enmienda 1): el prop se pega al plano de esa pared, mirando a la sala con
+su +Z, a la altura que diga `mountHeight` (2,0 m si no se autora). Un tile sin ningun lado con pared
+no recibe prop de pared, porque no hay donde colgarlo.
+
+**Colocacion de techo.** Centro del tile, a `LayerHeight` menos el descuelgue que diga
+`mountHeight`. Sin giro cuando `canBeRotated` es falso (una rejilla alineada al tile), con giro
+libre cuando es verdadero.
+
+**Todo por hash puro**, con salts propios (`PropSaltWall*`, `PropSaltCeil*`), igual que el resto:
+dos clientes con la misma seed ponen la misma senal en la misma pared sin que viaje un byte.
+
+### Lo que NO hace
+
+- **No toca el catalogo de suelo** ni su densidad ni sus pesos ni sus hashes.
+- **No toca el caso `cable`**, que sigue donde estaba. Es deuda conocida (un caso especial por
+  cadena de texto), pero moverlo cambiaria props ya colocados en las cuatro capas y no es lo que se
+  viene a hacer.
+- **No pone colision nueva en servidor.** Una senal o un conducto son decorado; el robapieles los
+  atraviesa igual que atraviesa todo lo demas que no sea celda de `grid_gen`.
+- **No cuelga nada de una pared que no exista.** El bitmask manda.
+
+### Verificaciones
+
+- (a) Con los dos catalogos vacios, una zona coloca LOS MISMOS props en LOS MISMOS tiles que antes.
+- (b) Un prop de pared aterriza en el plano de un lado que el bitmask declara con pared, nunca en
+  una abertura.
+- (c) Un tile sin ningun lado con pared no recibe prop de pared.
+- (d) Un prop de techo aterriza por encima de la cabeza de quien juega (`LayerHeight` menos el
+  descuelgue autorado), nunca a ras de suelo.
+- (e) En juego: que un pasillo de oficinas tenga salida senalizada y que el techo deje de ser una
+  superficie muerta.

@@ -190,5 +190,89 @@ namespace BackroomsSurvival.Tests
             foreach (var kv in map)
                 Assert.AreEqual(2, kv.Key.y, "hay un prop en un tile sin pared: " + kv.Key);
         }
+
+        // -- ADR-036 enm. 2: props de pared y de techo -------------------------------
+
+        private const float TileSize = 5f;
+        private const float CeilingY = 4f;   // GridConstants.LayerHeight
+
+        private LayerVisualConfig MountedConfig(PropEntry[] wall, float wallD,
+            PropEntry[] ceil, float ceilD)
+        {
+            var cfg = OfficeConfig(false, false);
+            var set = cfg.zonePropSets[0];
+            set.wallProps = wall;
+            set.wallPropDensity = wallD;
+            set.ceilingProps = ceil;
+            set.ceilingPropDensity = ceilD;
+            cfg.zonePropSets[0] = set;
+            return cfg;
+        }
+
+        private PropEntry Mounted(string name, float height)
+        {
+            var e = Entry(name);
+            e.mountHeight = height;
+            e.floorOnly = false;
+            return e;
+        }
+
+        private static List<Transform> Named(GameObject root, string prefix)
+        {
+            var list = new List<Transform>();
+            foreach (Transform c in root.transform)
+                if (c.name.StartsWith(prefix)) list.Add(c);
+            return list;
+        }
+
+        [Test]
+        public void MountedPropsAreInertWithEmptyCatalogues()
+        {
+            _root = Build(NorthWallRow(2), MountedConfig(null, 1f, null, 1f));
+            Assert.IsEmpty(Named(_root, "StubWall"));
+            Assert.IsEmpty(Named(_root, "StubCeil"));
+        }
+
+        [Test]
+        public void WallPropHangsOnAWalledSideAtItsHeight()
+        {
+            var cfg = MountedConfig(new[] { Mounted("StubWall", 2.2f) }, 1f, null, 0f);
+            _root = Build(NorthWallRow(2), cfg);
+            var hung = Named(_root, "StubWall");
+            Assert.IsNotEmpty(hung, "no se colgo ni un prop de pared");
+            foreach (var h in hung)
+            {
+                Assert.AreEqual(2.2f, h.localPosition.y, 0.01f,
+                    "el prop de pared no respeta su mountHeight");
+                int tz = Mathf.FloorToInt(h.localPosition.z / TileSize);
+                Assert.AreEqual(2, tz,
+                    "hay un prop de pared en una fila sin pared: " + h.localPosition);
+                // La pared es la NORTE (-Z), asi que el prop se pega a ese plano.
+                float insideTile = h.localPosition.z - tz * TileSize;
+                Assert.Less(insideTile, 0.5f,
+                    "el prop no esta pegado al plano de su pared, sino suelto en el tile");
+            }
+        }
+
+        [Test]
+        public void NoWallPropWhereThereIsNoWall()
+        {
+            var cfg = MountedConfig(new[] { Mounted("StubWall", 2f) }, 1f, null, 0f);
+            _root = Build(EmptyWalls(), cfg);
+            Assert.IsEmpty(Named(_root, "StubWall"),
+                "se colgo algo de una pared que no existe");
+        }
+
+        [Test]
+        public void CeilingPropHangsFromTheCeiling()
+        {
+            var cfg = MountedConfig(null, 0f, new[] { Mounted("StubCeil", 0.4f) }, 1f);
+            _root = Build(EmptyWalls(), cfg);
+            var hung = Named(_root, "StubCeil");
+            Assert.IsNotEmpty(hung, "no se colgo ni un prop de techo");
+            foreach (var h in hung)
+                Assert.AreEqual(CeilingY - 0.4f, h.localPosition.y, 0.01f,
+                    "el prop de techo no cuelga a la altura pedida");
+        }
     }
 }

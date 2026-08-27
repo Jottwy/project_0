@@ -531,6 +531,12 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 PlaceProps(root.transform, walls, cfg, mats, chunkX, chunkZ, zoneKindQuery,
                     roomZones, stairPlan, _roomPlanScratch);
 
+            // ADR-036 enm. 2: senales, conductos y lamparas. Catalogo y densidad propios, y
+            // queda fuera de ese gate porque una zona puede querer solo senaletica.
+            if (styled)
+                PlaceMountedProps(root.transform, walls, cfg, chunkX, chunkZ, zoneKindQuery,
+                    stairPlan, _roomPlanScratch);
+
             // Enmienda a ADR-081 — el cartel que anuncia que en esta sala se puede construir. Va
             // fuera del gate de `cfg.props` a propósito: los props son decorado y pueden faltar en
             // una capa entera, pero este cartel es la ÚNICA señal de una regla del juego, y una capa
@@ -739,6 +745,14 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         private const uint  PropSaltVarA   = 0x56415241U; // "VARA" — type variation (cable len)
         private const uint  PropSaltVarB   = 0x56415242U; // "VARB" — chair tip
         private const uint  PropSaltSide   = 0x53494445U; // "SIDE" — Pieza E, wall to hug
+        // ADR-036 enm. 2 - montados en pared y techo. Salts propios para que encender un
+        // catalogo nuevo no mueva ni un prop de suelo.
+        private const uint  PropSaltWallGate = 0x57474154U; // "WGAT" - hay prop de pared?
+        private const uint  PropSaltWallPick = 0x5750434BU; // "WPCK" - cual
+        private const uint  PropSaltWallSide = 0x57534944U; // "WSID" - en que pared
+        private const uint  PropSaltCeilGate = 0x43474154U; // "CGAT" - hay prop de techo?
+        private const uint  PropSaltCeilPick = 0x4350434BU; // "CPCK" - cual
+        private const uint  PropSaltCeilYaw  = 0x43594157U; // "CYAW" - giro si es girable
 
         // ── Fase 2 — salas autoradas (RoomPool) ────────────────────────────────
         //

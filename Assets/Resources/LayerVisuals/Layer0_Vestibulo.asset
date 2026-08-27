@@ -462,36 +462,43 @@ MonoBehaviour:
     spawnWeight: 3
     canBeRotated: 0
     floorOnly: 1
+    mountHeight: 0
   - prefab: {fileID: 0}
     placeholderType: chair
     spawnWeight: 4
     canBeRotated: 1
     floorOnly: 1
+    mountHeight: 0
   - prefab: {fileID: 0}
     placeholderType: paper
     spawnWeight: 3
     canBeRotated: 1
     floorOnly: 1
+    mountHeight: 0
   - prefab: {fileID: 0}
     placeholderType: bin
     spawnWeight: 2
     canBeRotated: 0
     floorOnly: 1
+    mountHeight: 0
   - prefab: {fileID: 0}
     placeholderType: stain
     spawnWeight: 2
     canBeRotated: 1
     floorOnly: 1
+    mountHeight: 0
   - prefab: {fileID: 0}
     placeholderType: cabinet
     spawnWeight: 2
     canBeRotated: 0
     floorOnly: 1
+    mountHeight: 0
   - prefab: {fileID: 0}
     placeholderType: cable
     spawnWeight: 1
     canBeRotated: 1
     floorOnly: 0
+    mountHeight: 0
   propDensity: 0.18
   propClusterBias: 0.3
   zonePropSets:
@@ -503,56 +510,214 @@ MonoBehaviour:
       spawnWeight: 5
       canBeRotated: 0
       floorOnly: 1
+      mountHeight: 0
     - prefab: {fileID: 3265363405077278364, guid: 47d7ec7f02e54cb43b3d215210b446d6, type: 3}
       placeholderType: monitor
       spawnWeight: 4
       canBeRotated: 0
       floorOnly: 1
+      mountHeight: 0
     - prefab: {fileID: 1777938545306116330, guid: edbaab5f0eeddf94e8b7226d4d5d0e9a, type: 3}
       placeholderType: desk
       spawnWeight: 3
       canBeRotated: 0
       floorOnly: 1
+      mountHeight: 0
     - prefab: {fileID: 5080495160986350093, guid: b84edd9490d4318409a564450ded5d2c, type: 3}
       placeholderType: filecab
       spawnWeight: 3
       canBeRotated: 0
       floorOnly: 1
+      mountHeight: 0
     - prefab: {fileID: 4849472495293709905, guid: 804c9286a82807f438df9e84c3beeaf8, type: 3}
       placeholderType: boxes
       spawnWeight: 3
       canBeRotated: 0
       floorOnly: 1
+      mountHeight: 0
     - prefab: {fileID: 2000420125523736556, guid: 92162c258f5135e428817b64aa040b78, type: 3}
       placeholderType: chair
       spawnWeight: 2
       canBeRotated: 1
       floorOnly: 1
+      mountHeight: 0
     - prefab: {fileID: 4218327434642138713, guid: f60892355c8e881408866f7609198565, type: 3}
       placeholderType: paper
       spawnWeight: 2
       canBeRotated: 1
       floorOnly: 1
+      mountHeight: 0
     - prefab: {fileID: 5666458164133390239, guid: c9fd1ec49a3797046955d7035b7f0136, type: 3}
       placeholderType: plant
       spawnWeight: 2
       canBeRotated: 0
       floorOnly: 1
+      mountHeight: 0
     - prefab: {fileID: 2369638434688564725, guid: 0aba2d60184e6944e87b5aaac09a0f18, type: 3}
       placeholderType: meeting
       spawnWeight: 1
       canBeRotated: 0
       floorOnly: 1
+      mountHeight: 0
     - prefab: {fileID: 3530015438775303862, guid: fbbda32f4b2bcab49b1a7f5bef86fcd4, type: 3}
       placeholderType: whiteboard
       spawnWeight: 1
       canBeRotated: 0
       floorOnly: 1
+      mountHeight: 0
+    - prefab: {fileID: 8889941654291683593, guid: 9189c6fb653413d41b7dd99f0f3befdc, type: 3}
+      placeholderType: reception
+      spawnWeight: 1
+      canBeRotated: 0
+      floorOnly: 1
+      mountHeight: 0
+    - prefab: {fileID: 6976231934191724962, guid: cc14dd47b0dac7343954adb5e7daac58, type: 3}
+      placeholderType: restroom
+      spawnWeight: 1
+      canBeRotated: 0
+      floorOnly: 1
+      mountHeight: 0
+    - prefab: {fileID: 4865702872666430181, guid: 88ae7fcb364b44e4c8eeb01e424a9fbc, type: 3}
+      placeholderType: breakroom
+      spawnWeight: 1
+      canBeRotated: 0
+      floorOnly: 1
+      mountHeight: 0
+    - prefab: {fileID: 3555280224573455909, guid: 9c345902ce3003548b2bdc8c56030993, type: 3}
+      placeholderType: archive
+      spawnWeight: 2
+      canBeRotated: 0
+      floorOnly: 1
+      mountHeight: 0
+    - prefab: {fileID: 4137015289258361133, guid: dcf8514c47260e043840d94b96bae2db, type: 3}
+      placeholderType: elevator
+      spawnWeight: 1
+      canBeRotated: 0
+      floorOnly: 1
+      mountHeight: 0
+    - prefab: {fileID: 1894240576758900602, guid: 30c245cb5c874704e9bcddfb0ea20187, type: 3}
+      placeholderType: lockers
+      spawnWeight: 2
+      canBeRotated: 0
+      floorOnly: 1
+      mountHeight: 0
     densityScale: 2.2
     maxPropsPerChunk: 96
     propsPerTile: 1
     rowCoherentProps: 1
     wallOnlyProps: 1
+    wallProps:
+    - prefab: {fileID: 1030991348, guid: abc00000000014387159212231171615, type: 3}
+      placeholderType: 
+      spawnWeight: 3
+      canBeRotated: 0
+      floorOnly: 0
+      mountHeight: 2.6
+    - prefab: {fileID: 1030991436, guid: abc00000000000323936307452250237, type: 3}
+      placeholderType: 
+      spawnWeight: 2
+      canBeRotated: 0
+      floorOnly: 0
+      mountHeight: 2.1
+    - prefab: {fileID: 1030991502, guid: abc00000000009494061514697147816, type: 3}
+      placeholderType: 
+      spawnWeight: 2
+      canBeRotated: 0
+      floorOnly: 0
+      mountHeight: 2.1
+    - prefab: {fileID: 1030991634, guid: abc00000000005278454787946961142, type: 3}
+      placeholderType: 
+      spawnWeight: 1
+      canBeRotated: 0
+      floorOnly: 0
+      mountHeight: 2
+    - prefab: {fileID: 1030992822, guid: abc00000000006810745797610004285, type: 3}
+      placeholderType: 
+      spawnWeight: 3
+      canBeRotated: 0
+      floorOnly: 0
+      mountHeight: 1.05
+    - prefab: {fileID: 1030991964, guid: abc00000000011573595639066693374, type: 3}
+      placeholderType: 
+      spawnWeight: 2
+      canBeRotated: 0
+      floorOnly: 0
+      mountHeight: 1.55
+    - prefab: {fileID: 1030991744, guid: abc00000000013337428064537114426, type: 3}
+      placeholderType: 
+      spawnWeight: 2
+      canBeRotated: 0
+      floorOnly: 0
+      mountHeight: 1.6
+    - prefab: {fileID: 1030993350, guid: abc00000000009162974499857303161, type: 3}
+      placeholderType: 
+      spawnWeight: 1
+      canBeRotated: 0
+      floorOnly: 0
+      mountHeight: 2.85
+    - prefab: {fileID: 1030991788, guid: abc00000000012208975832061749391, type: 3}
+      placeholderType: 
+      spawnWeight: 2
+      canBeRotated: 0
+      floorOnly: 0
+      mountHeight: 0.35
+    - prefab: {fileID: 6309715440465617538, guid: d4a574267eaa44d428f6f7b2d747d27a, type: 3}
+      placeholderType: 
+      spawnWeight: 2
+      canBeRotated: 0
+      floorOnly: 0
+      mountHeight: 2.4
+    - prefab: {fileID: 3690420608563280441, guid: 68706f228f144764094f72d5e4121a30, type: 3}
+      placeholderType: 
+      spawnWeight: 2
+      canBeRotated: 0
+      floorOnly: 0
+      mountHeight: 1.85
+    - prefab: {fileID: 225684490108368207, guid: ac6c375dbb66e024ea5c3bed0bc1d4f1, type: 3}
+      placeholderType: 
+      spawnWeight: 1
+      canBeRotated: 0
+      floorOnly: 0
+      mountHeight: 1.55
+    wallPropDensity: 0.2
+    ceilingProps:
+    - prefab: {fileID: 8991580613925425716, guid: 135ecd6d3e1228e43a6d48daf57a9782, type: 3}
+      placeholderType: 
+      spawnWeight: 4
+      canBeRotated: 1
+      floorOnly: 0
+      mountHeight: 0.05
+    - prefab: {fileID: 1030992426, guid: abc00000000006109724517552103718, type: 3}
+      placeholderType: 
+      spawnWeight: 3
+      canBeRotated: 1
+      floorOnly: 0
+      mountHeight: 0.05
+    - prefab: {fileID: 1030991898, guid: abc00000000011563839615630391644, type: 3}
+      placeholderType: 
+      spawnWeight: 2
+      canBeRotated: 0
+      floorOnly: 0
+      mountHeight: 0.12
+    - prefab: {fileID: 1030991854, guid: abc00000000013741971990407356702, type: 3}
+      placeholderType: 
+      spawnWeight: 2
+      canBeRotated: 0
+      floorOnly: 0
+      mountHeight: 0.35
+    - prefab: {fileID: 6832303494087838077, guid: 9d71ddab5aeac8e4a95a2613a502229f, type: 3}
+      placeholderType: 
+      spawnWeight: 2
+      canBeRotated: 0
+      floorOnly: 0
+      mountHeight: 1.4
+    - prefab: {fileID: 1030992272, guid: abc00000000009085393541468798263, type: 3}
+      placeholderType: 
+      spawnWeight: 1
+      canBeRotated: 0
+      floorOnly: 0
+      mountHeight: 1.2
+    ceilingPropDensity: 0.33
   floorTintVariants: []
   wallTintVariants: []
   ceilingTintVariants: []

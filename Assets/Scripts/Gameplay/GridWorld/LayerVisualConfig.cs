@@ -546,6 +546,10 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         public float      spawnWeight;     // relative weight in the per-tile pick
         public bool       canBeRotated;    // false → wall-aligned (no random yaw)
         public bool       floorOnly;       // false → may hang from the ceiling (cables)
+        /// <summary>ADR-036 enm. 2 - Altura de montaje en metros. En un catalogo de PARED
+        /// es la altura sobre el suelo (0 = 2 m por defecto); en uno de TECHO es cuanto
+        /// DESCUELGA por debajo de su techo (0 = a ras). Sin efecto en el de suelo.</summary>
+        public float      mountHeight;
     }
 
     /// <summary>
@@ -595,6 +599,24 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                  "candidato, o sea el mobiliario se pega al perimetro y el centro de la " +
                  "sala queda libre. Apagado = el comportamiento de siempre.")]
         public bool wallOnlyProps;
+
+        [Tooltip("ADR-036 enm. 2 - Catalogo de props de PARED de esta zona. Cada uno se " +
+                 "pega al plano de un lado que el bitmask declare con pared, mirando a la " +
+                 "sala. Vacio (el default) = ninguno, y la zona se comporta como antes.")]
+        public PropEntry[] wallProps;
+
+        [Tooltip("Probabilidad por TILE de colgar un prop de pared. 0 (el default) = " +
+                 "apagado. Es independiente de la densidad de suelo: una senal no le " +
+                 "quita el sitio a un mueble.")]
+        [Range(0f, 1f)] public float wallPropDensity;
+
+        [Tooltip("ADR-036 enm. 2 - Catalogo de props de TECHO de esta zona: conductos, " +
+                 "rejillas, lamparas colgantes. Vacio (el default) = ninguno.")]
+        public PropEntry[] ceilingProps;
+
+        [Tooltip("Probabilidad por TILE de colgar un prop de techo. 0 (el default) = " +
+                 "apagado.")]
+        [Range(0f, 1f)] public float ceilingPropDensity;
 
         /// <summary>True si este set aplica a <paramref name="zoneKindQuery"/>. Un −1 ("zona aún
         /// desconocida") no casa con ningún set específico, porque −1 no es un zone_kind válido;

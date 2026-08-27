@@ -55,6 +55,12 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 case "plant":     return Plant(mat);
                 case "whiteboard": return Whiteboard(mat);
                 case "meeting":   return Meeting(mat);
+                case "reception": return Reception(mat);
+                case "restroom":  return Restroom(mat);
+                case "breakroom": return BreakRoom(mat);
+                case "archive":   return Archive(mat);
+                case "elevator":  return Elevator(mat);
+                case "lockers":   return Lockers(mat);
                 case "paper":   return Paper(mat);
                 case "cable":   return Cable(mat, hA);
                 case "stain":   return Stain(mat);
@@ -176,6 +182,76 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// caeria en el fallback de tipo desconocido y amueblaria la reunion con un
         /// armario, que es justo lo que vigila EveryOfficePlaceholderTypeBuildsSomething.
         /// </summary>
+        /// ADR-036 enm. 2 - Primitivas de las escenas de oficina. Existen por la misma
+        /// razon que Meeting(): el catalogo autora estos tipos, y sin builder propio
+        /// caerian en el fallback de tipo desconocido y amueblarian una recepcion con un
+        /// armario gris. Son toscas a proposito: el prefab compuesto es lo que se ve, esto
+        /// es solo la red por si falta.
+        private static GameObject Reception(Material mat)
+        {
+            var root = new GameObject("Prop_reception");
+            Box(root.transform, mat, Wood, new Vector3(0f, 0.55f, 0.5f),
+                new Vector3(3.6f, 1.10f, 0.7f), keepCollider: true);
+            Box(root.transform, mat, PartitionCol, new Vector3(0f, 1.70f, -0.3f),
+                new Vector3(4.2f, 3.40f, 0.12f), keepCollider: true);
+            return root;
+        }
+
+        private static GameObject Restroom(Material mat)
+        {
+            var root = new GameObject("Prop_restroom");
+            Box(root.transform, mat, BoardCol, new Vector3(0f, 0.45f, 0f),
+                new Vector3(2.4f, 0.90f, 0.6f), keepCollider: true);
+            Box(root.transform, mat, DarkGrey, new Vector3(0f, 1.70f, -0.28f),
+                new Vector3(2.4f, 1.00f, 0.04f), keepCollider: false);
+            return root;
+        }
+
+        private static GameObject BreakRoom(Material mat)
+        {
+            var root = new GameObject("Prop_breakroom");
+            Box(root.transform, mat, Wood, new Vector3(0f, 0.45f, 0f),
+                new Vector3(2.0f, 0.90f, 0.65f), keepCollider: true);
+            Box(root.transform, mat, Metal, new Vector3(1.6f, 0.90f, 0f),
+                new Vector3(0.8f, 1.80f, 0.7f), keepCollider: true);
+            return root;
+        }
+
+        private static GameObject Archive(Material mat)
+        {
+            var root = new GameObject("Prop_archive");
+            Box(root.transform, mat, Metal, new Vector3(0f, 0.90f, 0f),
+                new Vector3(4.9f, 1.80f, 0.5f), keepCollider: true);
+            for (int i = 0; i < 3; i++)
+                Box(root.transform, mat, CardboardCol,
+                    new Vector3(1.9f, 0.16f + i * 0.32f, 0.45f),
+                    new Vector3(0.5f, 0.32f, 0.4f), keepCollider: true);
+            return root;
+        }
+
+        private static GameObject Elevator(Material mat)
+        {
+            var root = new GameObject("Prop_elevator");
+            Box(root.transform, mat, Metal, new Vector3(0f, 1.25f, -0.2f),
+                new Vector3(2.4f, 2.50f, 0.3f), keepCollider: true);
+            Box(root.transform, mat, DarkGrey, new Vector3(0f, 1.10f, -0.02f),
+                new Vector3(1.6f, 2.20f, 0.06f), keepCollider: false);
+            Box(root.transform, mat, ScreenCol, new Vector3(1.05f, 1.30f, 0.0f),
+                new Vector3(0.18f, 0.30f, 0.04f), keepCollider: false);
+            return root;
+        }
+
+        private static GameObject Lockers(Material mat)
+        {
+            var root = new GameObject("Prop_lockers");
+            for (int i = 0; i < 2; i++)
+                Box(root.transform, mat, Metal, new Vector3(-0.45f + i * 0.9f, 1.15f, 0f),
+                    new Vector3(0.85f, 2.30f, 0.5f), keepCollider: true);
+            Box(root.transform, mat, SeatWood, new Vector3(0f, 0.22f, 1.05f),
+                new Vector3(1.7f, 0.44f, 0.4f), keepCollider: true);
+            return root;
+        }
+
         private static GameObject Meeting(Material mat)
         {
             var root = new GameObject("Prop_meeting");

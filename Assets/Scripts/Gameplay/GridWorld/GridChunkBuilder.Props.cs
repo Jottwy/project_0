@@ -272,6 +272,92 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             return -1;
         }
 
+        /// <summary>
+        /// ADR-036 enm. 2 - Props montados en PARED y en TECHO, con catalogo y densidad
+        /// propios por zona. Corre DESPUES de "PlaceProps" y no comparte nada con el:
+        /// ni salts, ni cupo, ni tile elegido. Encender un catalogo aqui no mueve ni un
+        /// mueble de suelo, que es lo que hace la enmienda segura.
+        ///
+        /// Las exclusiones son las mismas que las de suelo (tile central, escalera, sala
+        /// autorada, tile macizo, tile con columna): un conducto dentro de la geometria de
+        /// una escalera es el mismo fallo que un archivador dentro.
+        /// </summary>
+        private static void PlaceMountedProps(Transform parent, byte[,] walls,
+            LayerVisualConfig cfg, int chunkX, int chunkZ, int zoneKind,
+            OfficeStairs.Plan stairPlan, List<RoomPlan> authoredRooms)
+        {
+            if (!cfg.TryGetZonePropSet(zoneKind, out var set)) return;
+
+            var wall = set.wallProps;
+            var ceil = set.ceilingProps;
+            float wallDensity = Mathf.Clamp01(set.wallPropDensity);
+            float ceilDensity = Mathf.Clamp01(set.ceilingPropDensity);
+            bool anyWall = wall != null && wall.Length > 0 && wallDensity > 0f;
+            bool anyCeil = ceil != null && ceil.Length > 0 && ceilDensity > 0f;
+            if (!anyWall && !anyCeil) return;
+
+            float wallWeight = 0f, ceilWeight = 0f;
+            if (anyWall)
+                for (int i = 0; i < wall.Length; i++) wallWeight += Mathf.Max(0f, wall[i].spawnWeight);
+            if (anyCeil)
+                for (int i = 0; i < ceil.Length; i++) ceilWeight += Mathf.Max(0f, ceil[i].spawnWeight);
+            anyWall = anyWall && wallWeight > 0f;
+            anyCeil = anyCeil && ceilWeight > 0f;
+            if (!anyWall && !anyCeil) return;
+
+            int centre = Tiles / 2;
+            for (int tz = 0; tz < Tiles; tz++)
+            for (int tx = 0; tx < Tiles; tx++)
+            {
+                if (tx == centre && tz == centre) continue;
+                if (stairPlan.valid && tx == stairPlan.tx && tz == stairPlan.tz) continue;
+                if (authoredRooms != null && IsAuthoredRoomTile(authoredRooms, tx, tz)) continue;
+                if ((walls[tx, tz] & 0x0F) == 0x0F) continue;
+                if ((walls[tx, tz] & PillarMask) != 0) continue;
+
+                int gx = chunkX * Tiles + tx, gz = chunkZ * Tiles + tz;
+
+                if (anyWall && Hash01(gx, gz, PropSaltWallGate) < wallDensity)
+                {
+                    int side = PickWallSide(walls[tx, tz], gx, gz, 0);
+                    if (side >= 0)
+                    {
+                        var e = PickProp(wall, Hash01(gx, gz, PropSaltWallPick) * wallWeight);
+                        if (e.prefab != null)
+                        {
+                            var hug = WallHugTable[side];
+                            float h = e.mountHeight > 0f ? e.mountHeight : DefaultWallMountHeight;
+                            var go = Object.Instantiate(e.prefab, parent, false);
+                            go.transform.localPosition = TileCenter(tx, tz)
+                                + new Vector3(hug.ox * WallMountInset, h, hug.oz * WallMountInset);
+                            go.transform.localRotation = Quaternion.Euler(0f, hug.yaw, 0f);
+                        }
+                    }
+                }
+
+                if (anyCeil && Hash01(gx, gz, PropSaltCeilGate) < ceilDensity)
+                {
+                    var e = PickProp(ceil, Hash01(gx, gz, PropSaltCeilPick) * ceilWeight);
+                    if (e.prefab != null)
+                    {
+                        var go = Object.Instantiate(e.prefab, parent, false);
+                        go.transform.localPosition = TileCenter(tx, tz)
+                            + new Vector3(0f, LayerHeight - e.mountHeight, 0f);
+                        float yaw = e.canBeRotated ? Hash01(gx, gz, PropSaltCeilYaw) * 360f : 0f;
+                        go.transform.localRotation = Quaternion.Euler(0f, yaw, 0f);
+                    }
+                }
+            }
+        }
+
+        /// Altura por defecto de un prop de pared cuando el autor no fija `mountHeight`:
+        /// 2 m, por encima de la cabeza y por debajo de un techo de 5 m.
+        private const float DefaultWallMountHeight = 2.0f;
+
+        /// Cuanto se separa un prop de pared respecto al centro de su tile. Medio tile menos
+        /// 6 cm, o sea pegado al plano sin z-fighting contra el panel.
+        private const float WallMountInset = Ts * 0.5f - 0.06f;
+
         private static PropEntry PickProp(PropEntry[] props, float r)
         {
             float acc = 0f;
