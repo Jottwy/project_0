@@ -147,6 +147,22 @@ namespace BackroomsSurvival.Tests
         }
 
         [Test]
+        public void TheSocketCarriesTheNominalWidthAndNotTheDrawnOne()
+        {
+            // El horno perdona 5 cm al decidir el tipo, pero el CASADO exige 1 mm en los dos
+            // idiomas (`Wg3Validator.WidthMatchTolerance` y `WIDTH_MATCH_TOLERANCE` en Rust).
+            // Guardar el ancho dibujado daría bocas que no casan nunca entre sí, y el síntoma no
+            // sería un error sino contenido que desaparece: dos piezas dibujadas en días distintos,
+            // cada una con su deriva de ratón, dejarían de conectarse.
+            Wg3PieceBake.Result baked = Wg3PieceBake.From(Corridor(holeWidth: 2.38f), "cor_test");
+
+            Assert.IsTrue(baked.Ok, string.Join("\n", baked.issues));
+            Assert.AreEqual(Wg3Catalog.CorridorWidth, baked.sockets[0].width,
+                Wg3Validator.WidthMatchTolerance,
+                "el socket se quedó con el ancho dibujado, así que no casará con otra boca");
+        }
+
+        [Test]
         public void AWidthTheComposerCannotMatchRefusesToBake()
         {
             // 1,60 m es el ancho por defecto de una puerta en el editor de salas, así que este es el

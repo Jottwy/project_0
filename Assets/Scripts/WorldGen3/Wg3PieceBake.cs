@@ -176,7 +176,17 @@ namespace BackroomsSurvival.WorldGen3
                 Vector2 outward = new Vector2(dir.y, -dir.x).normalized;
                 int wgSide = outward.y > 0.5f ? 0 : outward.x > 0.5f ? 1 : outward.y < -0.5f ? 2 : 3;
 
-                Vector2 centre = a + dir * Mathf.Clamp01(h.along);
+                // `along` FUERA DE RANGO SE RECHAZA, no se recorta. Recortarlo movería la boca a la
+                // esquina en silencio, y el autor recibiría más adelante un error del validador
+                // sobre un sitio donde él no puso ninguna boca.
+                if (h.along < 0f || h.along > 1f)
+                {
+                    result.issues.Add($"{what} tiene along={h.along:0.###}, fuera de 0..1. La boca " +
+                                      "se recorre sobre su propia pared: 0 es una esquina y 1 la otra");
+                    continue;
+                }
+
+                Vector2 centre = a + dir * h.along;
                 Vector2 face = centre + outward * t;
                 float toEdge = wgSide == 0 ? Mathf.Abs(face.y - max.y)
                              : wgSide == 1 ? Mathf.Abs(face.x - max.x)
@@ -208,7 +218,22 @@ namespace BackroomsSurvival.WorldGen3
                     continue;
                 }
 
-                sockets.Add(new Wg3Socket(wgSide, offset, h.width, type, 0f, h.height));
+                // VA EL ANCHO NOMINAL, NO EL DIBUJADO, y es la diferencia entre que el catálogo
+                // funcione o no. Aquí se admite ±5 cm para no pelearse con el ratón, pero el casado
+                // —`Wg3Validator.WidthMatchTolerance` y `WIDTH_MATCH_TOLERANCE` en Rust— exige
+                // 1 MILÍMETRO. Guardar 2,38 daría una boca que no casa NUNCA con una de 2,40, y dos
+                // piezas dibujadas en días distintos, cada una con su deriva, no conectarían entre
+                // ellas. El síntoma no sería un error: sería `rejected_by_validator` subiendo y un
+                // mundo con menos contenido, que es el fallo silencioso que ya se pagó con las salas
+                // autoradas.
+                //
+                // La malla conserva el hueco tal y como se dibujó: el socket es un CONTRATO, no una
+                // medida. Los 5 cm que se perdonan aquí caben de sobra en la jamba.
+                float nominal = type == Wg3SocketType.Wide
+                    ? Wg3Catalog.WideWidth
+                    : Wg3Catalog.CorridorWidth;
+
+                sockets.Add(new Wg3Socket(wgSide, offset, nominal, type, 0f, h.height));
             }
 
             return sockets;
@@ -221,6 +246,13 @@ namespace BackroomsSurvival.WorldGen3
         /// <see cref="RoomColliderBuilder"/> solo emite lo que BLOQUEA, así que R25 —la decoración
         /// no cruza la frontera de autoridad— se cumple aquí por construcción. El rodapié y las
         /// molduras de una pieza autorada viven en su malla, que el servidor no llega a ver.
+        ///
+        /// LÍMITE CONOCIDO: la clasificación es suelo / techo / TODO LO DEMÁS pared. Una columna o
+        /// un escalón horneados salen como <see cref="Wg3VolumeKind.Wall"/>, porque
+        /// <c>RoomPool.CollisionBox</c> no lleva de qué es la caja y aquí solo queda su forma. Para
+        /// COLISIONAR da igual —el tipo no lo mira nadie al chocar— pero un volcado del backend se
+        /// lee peor, y un test que cuente columnas por tipo no encontrará ninguna en una pieza
+        /// autorada. Arreglarlo de verdad exige que el tipo salga de `RoomColliderBuilder`.
         /// </summary>
         private static List<Wg3Volume> BakeVolumes(RoomDefinition def, Vector2 min)
         {

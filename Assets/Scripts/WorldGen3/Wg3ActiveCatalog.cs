@@ -18,6 +18,21 @@ namespace BackroomsSurvival.WorldGen3
     /// </summary>
     public static class Wg3ActiveCatalog
     {
+        // ⚠ MINA EN EL CAMINO DE CONMUTACIÓN, sin resolver todavía (anotada 2026-08-27).
+        //
+        // El día que la biblioteca deje de estar vacía, este método cambia lo que ve el manifiesto —
+        // pero el ORÁCULO DE COMPOSICIÓN se sigue exportando desde `Wg3Catalog.Build()`
+        // (`Wg3CompositionOracleExporter`). Ese día se cae la suite de Rust por tres sitios: el
+        // digest del oráculo deja de casar con el del manifiesto, los tests que buscan piezas por id
+        // (`cor_straight`, `room_pillars`…) no las encuentran, y `a_pillar_blocks_where_it_is_drawn`
+        // exige cuatro columnas que ninguna pieza horneada emite (el horno no clasifica columnas).
+        //
+        // Hay que DECIDIRLO antes de llenar la biblioteca, no al descubrirlo: o el oráculo pasa a
+        // salir de la biblioteca —y entonces se mueve cada vez que alguien dibuja, que es justo lo
+        // que un oráculo de regresión no debe hacer—, o el catálogo de código se congela como
+        // fixture y se acepta que vigila el ALGORITMO con un catálogo que ya no es el del juego.
+        // La segunda es más coherente con para qué existe el oráculo, pero no está hecha.
+
         public static List<Wg3Piece> Build() => Build(out _);
 
         /// <summary>
