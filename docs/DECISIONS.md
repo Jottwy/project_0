@@ -7180,3 +7180,55 @@ WG2. Cambiar de generador las invalida. Se dice ahora y no en F7.
   cruzando el idioma.
 - (g) Medido y anotado en `perf-baseline.md` antes de cerrar F2: bytes por chunk del ráster,
   µs de rasterizado por pieza y µs de `generate_chunk_layer` con WG3 activo contra el actual.
+
+---
+
+## ADR-095 — Enmienda 1: las dos cifras de D1, ya medidas (2026-08-27)
+
+F2 tanda 1 (`backend/src/world/wg3/`, 17 tests) mide lo que D1 daba por bueno. **Una de las dos
+cifras del ADR estaba mal y se corrige aquí en vez de dejarla en pie.**
+
+**1. El vano sobrevive con margen del doble. D1 confirmado.**
+
+El rasterizado es CONSERVADOR —una celda bloquea si la caja la toca lo más mínimo— y no podía ser
+otra cosa: una pared mide 0,15 m y una celda 0,5 m, así que muestrear el centro haría desaparecer
+paredes entre dos centros y se atravesarían andando mientras el cliente las sigue dibujando. El
+precio es que cada pared se infla hasta media celda y **eso come vano**.
+
+Medido sobre las 14 piezas, los cuatro giros y todas sus bocas, con el origen deliberadamente
+desalineado de la rejilla para no medir el mejor caso: **el vano más estrecho queda en 1,50 m
+libres**, de una boca autorada de 2,4 m. El jugador necesita 0,70 m (`PLAYER_RADIUS` × 2). Sobra el
+doble, así que **la celda de 0,5 m se queda**; no hace falta bajar a 0,25 m y cuadruplicar la
+memoria.
+
+**2. La memoria es 159 KB por chunk, no 20 KB. El ADR se equivocó, y por un motivo concreto.**
+
+La cifra de 20 KB del ADR salía de suponer dos bytes por celda, que es lo que costaría un **mapa de
+alturas plano**. D2 eligió columnas de tramos, y un tramo son cuatro bytes más la tabla de
+desplazamientos. Medido: **peor caso 65 B/m², que proyecta 159 KB por chunk de 50 m**; con 25
+chunks cargados, unos 4 MB. Cabe, pero es ocho veces lo anunciado y no se deja escrito el número
+bonito.
+
+Dos matices que hay que leer junto a esa cifra, ninguno de los cuales la anula:
+
+- Está medida sobre rásters del tamaño de una PIEZA, donde el margen de una celda por lado y la
+  tabla de desplazamientos pesan mucho por metro cuadrado. En un chunk entero la tabla es fija
+  (40 KB) y solo los tramos escalan con el contenido, así que la cifra real bajará. **Se vuelve a
+  medir sobre un chunk de verdad al cerrar F2 tanda 2**, y esa es la que va a `perf-baseline.md`.
+- Con tramos **no hay un ráster por chunk y capa, hay uno por chunk**: una columna es continua y
+  cubre toda la altura. Contra las cuatro capas de WG2 la comparación honesta es 159 KB contra
+  cuatro `ChunkLayoutV1`, no contra uno.
+
+**3. Lo que la tanda deja construido y verde.** `manifest.rs` (espejo serde, **sin `OnceLock`** — el
+de las salas autoradas es un global de proceso y costó una sesión de números falsos; R3 lo prohíbe,
+así que el manifiesto viaja por parámetro), `placement.rs` (espejo exacto de la rotación de C#) y
+`raster.rs` (tramos en `i16` de centímetros, 4 bytes, fundidos cuando se TOCAN y no solo cuando se
+solapan — si no, la losa de suelo y la pared que se apoya en ella quedan con una junta de espesor
+cero por la que una consulta se cuela).
+
+Verificado en verde: 17 tests propios, **1035 de la suite completa**, clippy `--all-targets -D
+warnings` y `cargo fmt` limpios. Entre los 17, tres que valen por el resto: que ninguna pared se
+pierde entre dos centros de celda, que la escalera de `room_stair` **sube escalón a escalón en el
+ráster** (D2 cobrándose dentro de una pieza, aunque entre piezas siga siendo F5), y que las cuatro
+columnas de `room_pillars` bloquean donde se dibujan — que es el criterio de cierre de F0 cruzado al
+otro lado del idioma.

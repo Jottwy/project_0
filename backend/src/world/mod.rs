@@ -19,6 +19,7 @@ pub mod phantom_spawn;
 /// ADR-068 — pintadas de spray, ancladas al chunk y no a coordenadas globales.
 pub mod spray;
 pub mod volumetric_grid;
+pub mod wg3;
 /// ADR-033: `zone_kind` → `LayerRules` para las rutas grid_gen de render y
 /// robapieles. Vive aquí (no en `grid_gen`) porque lee `world/`.
 pub mod zone_density;
