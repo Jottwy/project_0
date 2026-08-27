@@ -123,11 +123,39 @@ namespace BackroomsSurvival.WorldGen3
         /// sin ninguno se lee como pasillo de metro, y uno con demasiados, como laberinto.</summary>
         public bool isDeadEnd;
 
-        /// <summary>Clave del modelo que la dibuja. En la tanda 2 resuelve a un
-        /// <c>RoomDefinition</c>; la composición nunca lo mira.</summary>
+        /// <summary>Clave del modelo que la dibuja. Hoy es informativa —la geometría sale de los
+        /// campos de abajo—; queda como gancho para cuando el autorado venga de un asset y no de
+        /// código. La composición nunca la mira.</summary>
         public string geometryId;
 
         public Wg3Socket[] sockets = Array.Empty<Wg3Socket>();
+
+        // ── geometría autorada (L18: la irregularidad se autora, no se genera) ──────────────
+        //
+        // NO se reutiliza `RoomDefinition`, y no por capricho: se mide en TILES DE 5 m
+        // (`tilesX`/`tilesZ`), así que un pasillo de 11 × 2,4 m no se puede expresar con él.
+        // Colgar WG3 de ese modelo sería devolverlo a la retícula de la que viene huyendo. Estos
+        // campos son la versión en METROS de lo mismo, y son la ÚNICA fuente de la que salen tanto
+        // la malla como la colisión (R2).
+
+        /// <summary>Grosor de las paredes, hacia DENTRO de la huella. Hacia dentro y no centradas
+        /// en el borde para que la huella sea el extremo exterior: dos piezas encajadas dejan sus
+        /// dos paredes espalda contra espalda en vez de solapándose.</summary>
+        public float wallThickness = 0.15f;
+
+        /// <summary>Columnas interiores. REGLA L14: son ESTRUCTURA, no decoración — bloquean la
+        /// vista, parten la sala y obligan a rodearlas, y por eso llevan colisión exacta.</summary>
+        public Wg3Pillar[] pillars = Array.Empty<Wg3Pillar>();
+
+        /// <summary>Volúmenes macizos interiores. Cubren de una vez L4 (habitación dentro de
+        /// habitación, con un bloque grande) y L13 (paredes parciales, con uno estrecho y largo):
+        /// son el mismo dato con proporciones distintas, y separarlos en dos tipos solo duplicaría
+        /// el código que los talla.</summary>
+        public Wg3Block[] blocks = Array.Empty<Wg3Block>();
+
+        /// <summary>Tramos de escalera. En F0 solo aportan silueta y colisión escalonada; el
+        /// desnivel de verdad —que las dos bocas queden a cotas distintas— es F5.</summary>
+        public Wg3StairRun[] stairs = Array.Empty<Wg3StairRun>();
 
         /// <summary>Longitud del lado <paramref name="side"/> de una pieza de <paramref name="w"/>
         /// por <paramref name="d"/>. N y S corren en X; E y O corren en Z.</summary>
