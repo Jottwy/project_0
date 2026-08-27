@@ -1381,6 +1381,71 @@ fn both_sides_of_a_gate_build_their_stub() {
     }
 }
 
+/// ADR-096 verificación (e), la mitad que se puede probar sin abrir Unity: **la junta SE CRUZA**.
+///
+/// Los dos tests de arriba prueban que las regiones acuerdan la puerta y que las dos ponen su tramo.
+/// Eso todavía no es cruzarla: dos tramos enfrentados pueden dejar un muro entre medias si el
+/// rasterizado conservador engorda las paredes hasta cerrar el vano, o un escalón si las cotas no
+/// casan. Esto camina la línea, metro a metro, por el MISMO ráster que usa la colisión del jugador —
+/// y componiendo la región de cada punto por separado, igual que hace el servidor.
+#[test]
+fn a_gate_can_actually_be_walked_through() {
+    let m = real_manifest();
+    let seed = composer_seed(SERVED_SEED);
+    let here = Wg3RegionCoord { x: 0, z: 0 };
+
+    let gates: Vec<_> = junction::gates_of_region(seed, here.x, here.z, here.bounds())
+        .into_iter()
+        .filter(|g| g.outward_side == 1)
+        .collect();
+    assert!(!gates.is_empty(), "el borde E no sorteó ninguna puerta");
+
+    // Altura de muestreo: por encima del rodapié y por debajo del dintel. Si a esta cota hay materia
+    // en toda la travesía, el vano no existe por mucho que las dos piezas estén puestas.
+    const HEAD_M: f32 = 1.0;
+    const REACH_M: f32 = 8.0;
+    const STEP_M: f32 = 0.25;
+
+    for gate in gates {
+        let mut walked = 0;
+        let mut t = -REACH_M;
+        while t <= REACH_M {
+            let (x, z) = (gate.x + t, gate.z);
+
+            // Cada punto se resuelve como lo resolvería el servidor: su chunk, su región, su ráster.
+            // Componer una sola región y consultar los dos lados sería hacer trampa — probaría un
+            // mundo que en producción no existe.
+            let chunk = chunk::Wg3ChunkCoord::containing(x, z);
+            let region = Wg3RegionCoord::of_chunk(chunk);
+            let world = Wg3ServedWorld::compose_region(&m, SERVED_SEED, region);
+            let raster =
+                chunk::build_chunk_raster(&m, &world.placements_touching_chunk(&m, chunk), chunk);
+
+            assert!(
+                !raster.blocked_standing_at(x, 0.0, z, HEAD_M),
+                "la puerta ({:.2},{:.2}) está tapiada a {t:+.2} m: no se puede cruzar",
+                gate.x,
+                gate.z
+            );
+            assert!(
+                raster.floor_below(x, HEAD_M, z).is_some(),
+                "la puerta ({:.2},{:.2}) no tiene suelo a {t:+.2} m: se cae al cruzar",
+                gate.x,
+                gate.z
+            );
+
+            walked += 1;
+            t += STEP_M;
+        }
+        println!(
+            "[wg3] puerta ({:.2},{:.2}): {walked} puntos caminables a lo largo de {:.0} m",
+            gate.x,
+            gate.z,
+            REACH_M * 2.0
+        );
+    }
+}
+
 /// El margen de puerta tiene que ser mayor que el fondo del tramo, o dos tramos de bordes que se
 /// encuentran en una esquina se pisarían. Es una relación entre dos constantes, y sin este test se
 /// rompe el día que alguien alargue el tramo sin mirar la otra.
