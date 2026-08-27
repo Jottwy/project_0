@@ -1842,6 +1842,74 @@ fn probe_ring_geometry() {
     }
 }
 
+/// **¿HAY VANOS AL VACÍO EN EL MUNDO QUE SE JUEGA?** — reportado andando: «pasillos que dan a la
+/// nada y te caerías del mapa».
+///
+/// El invariante «ninguna boca al vacío» SÍ está probado… pero sobre `compose::compose`, el mundo
+/// SIN ACOTAR. El mundo que se sirve es `compose_region`, acotado a la caja de su región, y ahí
+/// nadie lo comprobaba: una candidata que se sale de la caja se rechaza, y si la boca que la iba a
+/// recibir no se tapona después, queda un vano abierto a donde no hay nada.
+///
+/// La sonda mide el síntoma, no la teoría: por cada boca de cada pieza colocada, mira un metro POR
+/// FUERA del vano y pregunta al ráster —el mismo con el que colisiona el jugador— si hay suelo. Sin
+/// suelo ahí, se sale y se cae.
+#[test]
+fn probe_open_mouths_in_the_served_world() {
+    let m = real_manifest();
+
+    const OUT_M: f32 = 1.0;
+    const HEAD_M: f32 = 1.0;
+
+    for (rx, rz) in [(0, 0), (1, 0), (0, 1), (-1, 2)] {
+        let region = Wg3RegionCoord { x: rx, z: rz };
+        let world = Wg3ServedWorld::compose_region(&m, SERVED_SEED, region);
+
+        let mut mouths = 0usize;
+        let mut holes = 0usize;
+        let mut first: Option<(f32, f32)> = None;
+
+        for p in world.placements() {
+            let piece = m.piece(p.piece).expect("pieza fuera del catálogo");
+            for i in 0..piece.sockets.len() {
+                mouths += 1;
+                let (mx, mz) = p.world_socket_point(piece, i);
+                let (nx, nz) = match p.world_side(piece, i) {
+                    0 => (0.0, 1.0),
+                    1 => (1.0, 0.0),
+                    2 => (0.0, -1.0),
+                    _ => (-1.0, 0.0),
+                };
+                let (x, z) = (mx + nx * OUT_M, mz + nz * OUT_M);
+
+                // Se resuelve como el servidor: el chunk del punto, su región, su ráster. Un punto
+                // justo fuera de la región cae en la de al lado, y eso es exactamente lo que hay
+                // que mirar: es donde el jugador se caería.
+                let chunk = chunk::Wg3ChunkCoord::containing(x, z);
+                let its_region = Wg3RegionCoord::of_chunk(chunk);
+                let w = Wg3ServedWorld::compose_region(&m, SERVED_SEED, its_region);
+                let raster =
+                    chunk::build_chunk_raster(&m, &w.placements_touching_chunk(&m, chunk), chunk);
+
+                if raster.floor_below(x, HEAD_M, z).is_none() {
+                    holes += 1;
+                    if first.is_none() {
+                        first = Some((x, z));
+                    }
+                }
+            }
+        }
+
+        println!(
+            "[wg3] región ({rx},{rz}): {} piezas, {mouths} bocas, **{holes} sin suelo al otro lado**{}",
+            world.placements().len(),
+            match first {
+                Some((x, z)) => format!(" — la primera en ({x:.1}, {z:.1})"),
+                None => String::new(),
+            }
+        );
+    }
+}
+
 /// **Cuánto catálogo hace falta** — la decisión 5 del brief, medida en vez de estimada.
 ///
 /// La repetición no se nota por cuántas piezas tenga el catálogo, sino por cada cuánto vuelve la
