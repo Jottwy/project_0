@@ -35,7 +35,7 @@ const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 /// Rust↔C# `WireSchema.Expected` mismatch history). If the false-rejection case is ever hit
 /// in practice, promote to a dedicated `P2P_PROTOCOL_VERSION` then — don't patch around it
 /// in the gate.
-pub const WIRE_SCHEMA_VERSION: u32 = 45;
+pub const WIRE_SCHEMA_VERSION: u32 = 46;
 
 /// Run the IPC server until a fatal accept error.
 ///
@@ -61,6 +61,10 @@ pub async fn run(
     // never sends it), so folding it into the wire-schema enum would blur "what Unity can
     // actually serialize" with in-process control flow.
     local_disconnect_tx: mpsc::Sender<()>,
+    // ADR-095 D3 — qué mundo sirve este backend. Se pasa por parámetro y no se lee del entorno
+    // aquí: el saludo tiene que decir lo MISMO que responde el bucle de juego, y la única forma de
+    // garantizarlo es que los dos miren el mismo valor cargado una vez.
+    wg3: crate::world::wg3::config::Wg3Config,
 ) -> std::io::Result<()> {
     let listener = TcpListener::bind(&ipc_addr).await?;
     info!("IPC server listening on {ipc_addr} (wire schema v{WIRE_SCHEMA_VERSION})");
@@ -83,6 +87,7 @@ pub async fn run(
             state_rx,
             voice_rx,
             local_disconnect_tx,
+            wg3.clone(),
         ));
     }
 }
@@ -98,6 +103,7 @@ async fn handle_connection(
     state_rx: broadcast::Receiver<ServerMessage>,
     voice_rx: broadcast::Receiver<ServerMessage>,
     local_disconnect_tx: mpsc::Sender<()>,
+    wg3: crate::world::wg3::config::Wg3Config,
 ) {
     let (reader, mut writer) = stream.into_split();
 
@@ -107,6 +113,12 @@ async fn handle_connection(
     // so "first" has to be literal, not merely early.
     match encode(&ServerMessage::Hello(super::ServerHello {
         schema_version: WIRE_SCHEMA_VERSION,
+        // ADR-095 — el cliente tiene que saber a qué mundo se ha conectado ANTES de pedir un solo
+        // chunk, o pediría por el camino equivocado y se quedaría esperando una respuesta que nadie
+        // va a mandar. Y el digest le permite rechazar una partida cuyo catálogo no es el suyo, que
+        // es el único aviso posible antes de empezar a atravesar paredes que se ven.
+        wg3_enabled: wg3.is_enabled(),
+        wg3_manifest_digest: wg3.digest().to_string(),
     })) {
         Ok(frame) => {
             if let Err(e) = writer.write_all(&frame).await {
@@ -290,6 +302,7 @@ mod tests {
             state_tx.subscribe(),
             voice_tx.subscribe(),
             disconnect_tx,
+            crate::world::wg3::config::Wg3Config::disabled(),
         ));
 
         drop(client);
@@ -327,6 +340,7 @@ mod tests {
             state_tx.subscribe(),
             voice_tx.subscribe(),
             disconnect_tx,
+            crate::world::wg3::config::Wg3Config::disabled(),
         ));
 
         let fired_early =
@@ -455,6 +469,7 @@ mod tests {
             state_rx,
             voice_tx.subscribe(),
             disconnect_tx,
+            crate::world::wg3::config::Wg3Config::disabled(),
         ));
 
         let first = read_frame(&mut client).await;

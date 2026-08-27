@@ -53,6 +53,14 @@ pub enum ClientMessage {
     /// it as a 5 m tile-wall bitmask (see `ServerMessage::ChunkData`). Independent
     /// of the legacy `world/` ChunkView path.
     RequestChunk { cx: i32, cz: i32, layer: u8 },
+    /// ADR-095 — pide el chunk de WorldGen3: la LISTA DE PIEZAS colocadas, no geometría.
+    ///
+    /// Variante propia y no un campo en `RequestChunk` (regla R4): WG2 y WG3 conviven hasta el
+    /// borrado, y mezclarlos en un mensaje obligaría a que el día del borrado hubiera que tocar el
+    /// camino que se queda. Sin `layer`, y no es un olvido: con columnas de tramos la capa deja de
+    /// existir como restricción de geometría (ADR-095 D2), así que un chunk de WG3 es uno solo y
+    /// cubre toda la altura.
+    RequestWg3Chunk { cx: i32, cz: i32 },
     /// ADR-046 — one encoded voice frame from the LOCAL player's microphone.
     ///
     /// A top-level variant rather than a `PlayerAction`, for the same reason as
@@ -236,6 +244,48 @@ pub enum ServerMessage {
     /// ADR-078 — trozo de un trazo que OTRO jugador está pintando ahora. Efímero: el cliente lo
     /// dibuja como previa y lo tira al llegar el `SprayPlaced` con el mismo `place_id`.
     SprayDraft(SprayDraftView),
+    /// ADR-095 — el chunk de WorldGen3: qué piezas hay puestas y dónde. Respuesta a
+    /// `RequestWg3Chunk`.
+    Wg3Chunk(Wg3ChunkView),
+}
+
+/// ADR-095 — una pieza colocada, tal y como viaja.
+///
+/// ONCE BYTES. Es la propiedad que hace barato el paradigma entero: el catálogo ya está en el build
+/// de las dos partes, así que por el cable solo va QUÉ pieza, girada CÓMO y puesta DÓNDE. Mandar la
+/// geometría —o la chuleta rasterizada— sería mandar por sesión y por chunk algo que el cliente ya
+/// tiene en disco.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Wg3PlacementWire {
+    /// Índice en el manifiesto. La cadena `id` NO viaja: identificar por nombre costaría bytes por
+    /// chunk para nombrar algo que las dos partes ya tienen indexado igual.
+    pub piece: u16,
+    /// Cuartos de vuelta, horario visto desde +Y. 0..=3.
+    pub rotation: u8,
+    /// Esquina mínima de la huella girada, en CENTÍMETROS ENTEROS.
+    ///
+    /// Enteros y no `f32` por la misma razón que en `wg3::placement`: esto se compara entre dos
+    /// procesos y tiene que coincidir bit a bit. Un flotante acumulado a lo largo de una cadena de
+    /// piezas no lo garantiza, y la divergencia saldría como una pared medio metro corrida en un
+    /// solo cliente.
+    pub origin_x_cm: i32,
+    pub origin_z_cm: i32,
+}
+
+/// ADR-095 — lo que WG3 entrega por chunk.
+///
+/// Sin `layer`: con columnas de tramos (D2) la capa deja de existir como restricción, así que un
+/// chunk cubre toda la altura. Es la simplificación que se cobra D2 sola, y también es lo que hace
+/// que este mensaje no pueda mezclarse con `GridChunkData` aunque se pareciesen.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Wg3ChunkView {
+    pub cx: i32,
+    pub cz: i32,
+    /// Vacío es un resultado VÁLIDO y frecuente: un chunk donde no cae ninguna pieza. El cliente
+    /// tiene que saber distinguirlo de "todavía no ha llegado", que es lo que distingue un mundo
+    /// con huecos de un mundo a medio cargar.
+    #[serde(default)]
+    pub placements: Vec<Wg3PlacementWire>,
 }
 
 /// ADR-078 — lo que el backend entrega a Unity por cada trozo de trazo ajeno. Es
@@ -265,6 +315,35 @@ pub struct SprayDraftView {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerHello {
     pub schema_version: u32,
+
+    /// ADR-095 D3 — si este backend sirve mundo de WorldGen3.
+    ///
+    /// La bandera viaja en el saludo y no se deduce: el cliente tiene que saber A QUÉ MUNDO se ha
+    /// conectado antes de pedir un solo chunk, o pediría por el camino equivocado y se quedaría
+    /// esperando una respuesta que nadie va a mandar.
+    ///
+    /// `skip_serializing_if` con WG3 apagado, que es el estado de toda sesión de hoy: así el saludo
+    /// sale BYTE A BYTE igual que en v45. El lector de C# ya salta claves desconocidas, así que no
+    /// hacía falta para que la puerta de ADR-061 aguante — pero esa puerta es lo único que informa
+    /// de un desajuste de versión, y no se le añade ni un byte de superficie por una bandera que
+    /// hoy está apagada en todas partes.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub wg3_enabled: bool,
+
+    /// ADR-095 — digest del manifiesto que este backend cargó, o vacío si no hay.
+    ///
+    /// **Es lo que impide el fallo silencioso más caro del sistema.** Cliente y servidor hornean el
+    /// catálogo por separado; si el del cliente no es el del servidor, la geometría que se dibuja y
+    /// la que bloquea son de mundos distintos, nada da error, y el síntoma es atravesar paredes que
+    /// se ven. Comparar dos cadenas en el saludo lo convierte en un rechazo con motivo.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub wg3_manifest_digest: String,
+}
+
+/// Para `skip_serializing_if` sobre un `bool`. Existe porque serde entrega `&bool` y el idioma con
+/// `std::ops::Not::not` ahí se lee peor de lo que ahorra.
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// ADR-046 — a voice frame on its way to the local Unity client. `peer_id` is the
@@ -1070,7 +1149,12 @@ mod tests {
     /// future field added to `ServerHello` must not push the tag out of first position.
     #[test]
     fn hello_frame_puts_the_type_tag_first_on_the_wire() {
-        let frame = encode(&ServerMessage::Hello(ServerHello { schema_version: 26 })).unwrap();
+        let frame = encode(&ServerMessage::Hello(ServerHello {
+            schema_version: 26,
+            wg3_enabled: false,
+            wg3_manifest_digest: String::new(),
+        }))
+        .unwrap();
 
         let body = &frame[4..];
         assert_eq!(
@@ -1089,5 +1173,45 @@ mod tests {
         expected.push(26); // positive fixint
 
         assert_eq!(body, expected.as_slice());
+    }
+
+    /// ADR-095 — con WG3 apagado el saludo tiene que salir BYTE A BYTE como antes de que existiera.
+    ///
+    /// No es cosmética: el saludo es lo ÚNICO que informa de un desajuste de versión (ADR-061), así
+    /// que es el peor sitio del protocolo para añadir superficie. Un campo que solo aparece cuando
+    /// alguien lo enciende no puede romper la puerta de nadie.
+    #[test]
+    fn the_hello_frame_is_unchanged_while_wg3_is_off() {
+        let off = encode(&ServerMessage::Hello(ServerHello {
+            schema_version: 46,
+            wg3_enabled: false,
+            wg3_manifest_digest: String::new(),
+        }))
+        .unwrap();
+
+        // Fixmap de DOS entradas: `type` y `schema_version`, nada más.
+        assert_eq!(0x82, off[4], "el saludo apagado creció de tamaño de mapa");
+
+        let on = encode(&ServerMessage::Hello(ServerHello {
+            schema_version: 46,
+            wg3_enabled: true,
+            wg3_manifest_digest: "abc123".into(),
+        }))
+        .unwrap();
+        assert_eq!(
+            0x84, on[4],
+            "el saludo encendido debe llevar las cuatro claves"
+        );
+        assert!(on.len() > off.len());
+
+        // Y el ida y vuelta conserva los dos campos, que es lo que el cliente va a leer.
+        let decoded: ServerMessage = decode(&on[4..]).unwrap();
+        match decoded {
+            ServerMessage::Hello(h) => {
+                assert!(h.wg3_enabled);
+                assert_eq!("abc123", h.wg3_manifest_digest);
+            }
+            other => panic!("esperaba hello, llegó {other:?}"),
+        }
     }
 }

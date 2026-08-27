@@ -410,6 +410,9 @@ pub async fn run(
     // overlooked — the write it triggers is the same idempotent atomic save the timer autosave
     // already performs at an arbitrary cadence, just early.
     mut local_disconnect_rx: mpsc::Receiver<()>,
+    // ADR-095 D3 — el mismo valor que anunció el saludo. Compartirlo en vez de releerlo es lo que
+    // impide que el backend prometa un mundo y sirva otro.
+    wg3: crate::world::wg3::config::Wg3Config,
 ) {
     let mut player = Player::new(net.local_id, &net.local_name);
     let mut world = World::new(net.world_seed);
@@ -758,6 +761,41 @@ pub async fn run(
                 }
                 ClientMessage::UiEvent(ev) => {
                     debug!("ui event: {}", ev.event_type);
+                }
+                ClientMessage::RequestWg3Chunk { cx, cz } => {
+                    // ADR-095 — el chunk de WG3: QUÉ piezas hay y DÓNDE, no geometría. El catálogo
+                    // ya está en el build de las dos partes, así que por el cable van once bytes
+                    // por pieza.
+                    //
+                    // Con WG3 apagado se responde con la lista VACÍA en vez de callar. Un cliente
+                    // que pidió y no recibe nada no puede distinguir "aquí no hay nada" de "el
+                    // backend no me ha contestado todavía", y esperaría para siempre por un chunk
+                    // que nunca va a llegar. El saludo ya le dijo que WG3 está apagado; esto es la
+                    // red de seguridad para el cliente que preguntó igualmente.
+                    let placements = match wg3.manifest() {
+                        Some(manifest) if wg3.is_enabled() => {
+                            crate::world::wg3::demo::placements_for_chunk(
+                                manifest,
+                                net.world_seed,
+                                crate::world::wg3::chunk::Wg3ChunkCoord { x: cx, z: cz },
+                            )
+                            .into_iter()
+                            .map(|p| crate::ipc::Wg3PlacementWire {
+                                piece: p.piece,
+                                rotation: p.rotation,
+                                origin_x_cm: p.origin_x_cm,
+                                origin_z_cm: p.origin_z_cm,
+                            })
+                            .collect()
+                        }
+                        _ => Vec::new(),
+                    };
+
+                    let _ = to_clients.send(ServerMessage::Wg3Chunk(crate::ipc::Wg3ChunkView {
+                        cx,
+                        cz,
+                        placements,
+                    }));
                 }
                 ClientMessage::RequestChunk { cx, cz, layer } => {
                     // Fase 4.1: grid_gen is the world source of truth. Generate the

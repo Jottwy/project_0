@@ -642,3 +642,42 @@ mantiene su indistinguibilidad, ni ningún faceling — esos aún no existen en 
 un peer viejo no decodifica el campo y decodifica 0 (humano), que es el único valor que circula
 hoy — cero cambio visible hasta E1/E2. `WireSchema.Expected` (C#) a 43 en el mismo commit —
 `the_csharp_mirror_declares_the_same_wire_schema_version` lo vigila.
+
+## v46 — ADR-095 F2: el carril de WorldGen3 (2026-08-27)
+
+Dos mensajes nuevos y dos campos en el saludo. **Ningún mensaje existente cambia** — es lo que
+ADR-095 D3 quiere decir con "wire propio": WG3 no toca `GridChunkData` ni ninguna otra estructura de
+WG2, para que el día del borrado sea borrar y no desenredar. (Que el bump ocurra igual es
+inevitable: `ServerMessage` es un enum etiquetado sobre un solo socket, así que **añadir una
+variante ya es un cambio de esquema**. Anotado en ADR-095 enmienda 2.)
+
+- **`ClientMessage::RequestWg3Chunk { cx, cz }`** — pide el chunk de WG3. Variante propia y no un
+  campo en `RequestChunk`, por la regla R4. **Sin `layer`, y no es un olvido**: con columnas de
+  tramos (D2) la capa deja de existir como restricción de geometría, así que un chunk de WG3 es uno
+  solo y cubre toda la altura.
+- **`ServerMessage::Wg3Chunk(Wg3ChunkView)`** — `{ cx, cz, placements[] }`, donde cada colocación es
+  `{ piece: u16, rotation: u8, origin_x_cm: i32, origin_z_cm: i32 }`. **Once bytes por pieza**, y
+  ésa es la propiedad que hace barato el paradigma: el catálogo ya está en el build de las dos
+  partes, así que por el cable solo va qué pieza, girada cómo y puesta dónde. El origen va en
+  centímetros ENTEROS porque se compara entre dos procesos y tiene que coincidir bit a bit; un `f32`
+  acumulado a lo largo de una cadena de piezas no lo garantiza. `placements` vacío es un resultado
+  VÁLIDO —un chunk sin nada—, y el cliente tiene que saber distinguirlo de "aún no ha llegado".
+- **`ServerHello.wg3_enabled: bool`** y **`ServerHello.wg3_manifest_digest: String`**, los dos con
+  `serde(default, skip_serializing_if)`.
+
+**El saludo sale byte a byte como en v45 mientras WG3 esté apagado**, que es el estado de toda
+sesión de hoy. No hacía falta para la compatibilidad —el parser de `HelloMsg` en C# ya salta claves
+desconocidas (`else r.Skip()`), así que un cliente viejo lee `schema_version` y reporta el desajuste
+igual—, pero el saludo es lo ÚNICO que informa de un desajuste de versión (ADR-061) y es el peor
+sitio del protocolo para añadir superficie por una bandera que hoy está apagada en todas partes. Lo
+fija el test `the_hello_frame_is_unchanged_while_wg3_is_off`.
+
+El digest no es decoración: cliente y servidor hornean el catálogo por separado, y si no coinciden,
+la geometría que se dibuja y la que bloquea son de mundos distintos, **nada da error**, y el síntoma
+es atravesar paredes que se ven. Comparar dos cadenas en el saludo lo convierte en un rechazo con
+motivo.
+
+Degradación: un backend con `BACKROOMS_WG3` sin poner responde `RequestWg3Chunk` con la lista vacía
+en vez de callar — un cliente que pidió y no recibe nada no puede distinguir "aquí no hay nada" de
+"no me han contestado todavía", y esperaría para siempre. `WireSchema.Expected` (C#) a 46 en el
+mismo commit.

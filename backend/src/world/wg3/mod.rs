@@ -8,6 +8,8 @@
 //! fichero de `grid_gen`.
 
 pub mod chunk;
+pub mod config;
+pub mod demo;
 pub mod manifest;
 pub mod placement;
 pub mod raster;

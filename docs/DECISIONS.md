@@ -7232,3 +7232,41 @@ pierde entre dos centros de celda, que la escalera de `room_stair` **sube escal�
 ráster** (D2 cobrándose dentro de una pieza, aunque entre piezas siga siendo F5), y que las cuatro
 columnas de `room_pillars` bloquean donde se dibujan — que es el criterio de cierre de F0 cruzado al
 otro lado del idioma.
+
+---
+
+## ADR-095 — Enmienda 2: "wire propio" no puede significar cero bump, y qué significa entonces (2026-08-27)
+
+D3 dice «WG3 estrena wire propio; **no se bumpea el actual**». Al implementarlo, la primera mitad se
+cumple y **la segunda es imposible**, por una razón estructural que el ADR no tuvo delante:
+`ServerMessage` es un enum ETIQUETADO que viaja por un solo socket, y la puerta de ADR-061 exige
+igualdad exacta de versión. Añadir una variante —aunque no toque ninguna existente— ya es un cambio
+de esquema para cualquier cliente que no la conozca. No hay forma de meter un mensaje nuevo en ese
+enum sin bump, salvo abriendo un segundo socket, que sería un segundo transporte que mantener por
+una feature que va a absorber al primero.
+
+**Lo que D3 quiere decir, y sí se cumple:** WG3 **no toca ni un mensaje existente**. `GridChunkData`,
+`PlayerInput`, `RemotePlayerState` y el resto quedan byte a byte como estaban. El día del borrado de
+WG2 será borrar variantes, no desenredar campos de estructuras compartidas. Y el saludo, que es lo
+único que informa de un desajuste de versión, **sale idéntico a v45 mientras WG3 esté apagado**
+(`skip_serializing_if`), así que la superficie añadida a la puerta de ADR-061 es exactamente cero
+para toda sesión que no haya encendido la bandera.
+
+Wire **v45 → v46**, con `WireSchema.Expected` y la entrada de `docs/systems/ipc-wire-schema.md` en el
+mismo commit, como manda la cabecera de ese documento.
+
+**Lo que entra.** `ClientMessage::RequestWg3Chunk { cx, cz }` (sin `layer`: con tramos la capa deja
+de existir como restricción), `ServerMessage::Wg3Chunk` con la lista de colocaciones a **once bytes
+por pieza**, y en `ServerHello` la bandera `wg3_enabled` más `wg3_manifest_digest`.
+
+**El digest en el saludo no estaba en el ADR y hace falta.** Cliente y servidor hornean el catálogo
+por separado; si no coinciden, la geometría que se dibuja y la que bloquea son de mundos distintos,
+**nada da error**, y el síntoma es atravesar paredes que se ven. Es el fallo silencioso más caro que
+tiene este diseño, y comparar dos cadenas en el saludo lo convierte en un rechazo con motivo.
+
+**Andamio declarado:** `wg3::demo` coloca UNA pieza por chunk sorteada por hash, sin emparejar bocas
+y sin garantizar que dos vecinas conecten. No es el compositor y **se borra entero en F4**; vive en
+su propio fichero y con ese nombre precisamente para que no se disfrace de sistema y se quede.
+
+Verde: **1042 tests**, clippy `--all-targets -D warnings`, `cargo fmt`, y `CompileCheckClient` sin
+errores en las cuatro asambleas.

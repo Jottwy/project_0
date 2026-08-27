@@ -133,9 +133,15 @@ async fn main() {
     // two seconds is worthless — a shorter queue drops it sooner instead of playing it late.
     let (voice_tx, _) = broadcast::channel::<ipc::ServerMessage>(64);
 
+    // ADR-095 D3 — se lee UNA vez y la comparten el saludo y el bucle de juego. Si cada uno lo
+    // leyera por su cuenta, el saludo podría anunciar un mundo y el bucle servir otro, y la
+    // discrepancia solo se vería como chunks que nunca llegan.
+    let wg3 = world::wg3::config::Wg3Config::from_env();
+
     // IPC server task (Unity ↔ Rust on localhost:7777).
     let ipc_state_tx = state_tx.clone();
     let ipc_voice_tx = voice_tx.clone();
+    let ipc_wg3 = wg3.clone();
     let ipc_handle = tokio::spawn(async move {
         if let Err(e) = ipc::server::run(
             to_game_tx,
@@ -143,6 +149,7 @@ async fn main() {
             ipc_voice_tx,
             ipc_addr,
             local_disconnect_tx,
+            ipc_wg3,
         )
         .await
         {
@@ -193,6 +200,7 @@ async fn main() {
         voice_tx,
         net,
         local_disconnect_rx,
+        wg3,
     ));
 
     // If either core task ends, the process should come down with it.
