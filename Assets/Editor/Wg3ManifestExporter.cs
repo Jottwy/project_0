@@ -32,7 +32,33 @@ namespace BackroomsSurvival.EditorTools
         [MenuItem("Backrooms/WorldGen3/Exportar manifiesto")]
         public static void Export()
         {
-            List<Wg3Piece> catalog = Wg3Catalog.Build();
+            // La biblioteca autorada SUSTITUYE al catálogo de código, no se suma a él. Sumarlos
+            // colocaría las piezas autoradas detrás de las de código, y como el índice entra en el
+            // hash de colocación, cada pieza nueva reescribiría el mundo entero. Sustituir tiene el
+            // mismo efecto UNA vez, el día que la biblioteca deja de estar vacía, y a partir de ahí
+            // añadir al final es estable.
+            //
+            // Un mundo de dos piezas autoradas no llega a exportarse por accidente: el validador de
+            // catálogo exige tapón por cada tipo de boca, y una biblioteca a medio llenar no lo
+            // cumple.
+            Wg3PieceLibrary library = Wg3PieceLibrary.Load();
+            bool authored = library != null && library.pieces.Length > 0;
+
+            if (authored)
+            {
+                List<string> libraryIssues = library.Validate();
+                if (libraryIssues.Count > 0)
+                {
+                    Debug.LogError($"[WG3] biblioteca inválida, {libraryIssues.Count} motivos — NO " +
+                                   "se exporta:\n" + string.Join("\n", libraryIssues), library);
+                    return;
+                }
+            }
+
+            List<Wg3Piece> catalog = authored ? library.BuildCatalog() : Wg3Catalog.Build();
+            string source = authored
+                ? $"biblioteca autorada ({library.pieces.Length} piezas)"
+                : "catálogo de código";
 
             // REGLA R6 — una pieza que no valida no existe, así que tampoco se exporta. Exportar un
             // catálogo inválido es la receta del fallo silencioso: el backend coloca lo que puede,
@@ -63,7 +89,7 @@ namespace BackroomsSurvival.EditorTools
                 boxes += p.collision.Length;
             }
 
-            Debug.Log($"[WG3] manifiesto v{manifest.version} exportado a {ManifestPath}: " +
+            Debug.Log($"[WG3] manifiesto v{manifest.version} desde {source} exportado a {ManifestPath}: " +
                       $"{manifest.pieces.Length} piezas, {sockets} bocas, {boxes} cajas de " +
                       $"colisión, {json.Length} bytes. digest {manifest.digest.Substring(0, 12)}…");
         }
