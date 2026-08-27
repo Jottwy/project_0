@@ -7,6 +7,7 @@
 //! Convive con WG2 tras bandera hasta el borrado (R4 y D3 del ADR): nada de aquí toca un solo
 //! fichero de `grid_gen`.
 
+pub mod chunk;
 pub mod manifest;
 pub mod placement;
 pub mod raster;

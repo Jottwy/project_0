@@ -6,6 +6,7 @@
 
 use std::path::PathBuf;
 
+use super::chunk;
 use super::manifest::{self, Wg3Manifest, Wg3Piece};
 use super::placement::{self, PlacedBox, Wg3Placement};
 use super::raster::{Span, Wg3Raster, Wg3RasterBuilder, CM_PER_M, WG3_CELL_M};
@@ -454,4 +455,299 @@ fn an_empty_box_is_ignored_instead_of_poisoning_a_column() {
     });
     let raster = builder.finish();
     assert_eq!(0, raster.span_count());
+}
+
+// ── el oráculo: la juntura entre los dos idiomas ────────────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+struct OracleBox {
+    cx: f32,
+    cy: f32,
+    cz: f32,
+    sx: f32,
+    sy: f32,
+    sz: f32,
+    yaw: f32,
+    kind: u8,
+}
+
+#[derive(serde::Deserialize)]
+struct OracleCase {
+    piece: u16,
+    rotation: u8,
+    boxes: Vec<OracleBox>,
+}
+
+#[derive(serde::Deserialize)]
+struct Oracle {
+    origin_x_cm: i32,
+    origin_z_cm: i32,
+    digest: String,
+    cases: Vec<OracleCase>,
+}
+
+/// LO ÚNICO QUE PUEDE CAZAR UNA DERIVA ENTRE C# Y RUST.
+///
+/// La rotación está escrita dos veces a propósito: el cliente dibuja sin preguntar y el servidor
+/// colisiona sin dibujar. Pero un test dentro de cada idioma no sirve de nada aquí — los dos pueden
+/// ser internamente consistentes y diferir entre ellos. Y el modo de fallo es silencioso: nada
+/// revienta, simplemente la pared de una pieza girada tapa la puerta de su vecina y el síntoma
+/// aparece a cien metros de la causa.
+///
+/// Así que uno escribe los números (`Backrooms ▸ WorldGen3 ▸ Exportar oráculo de rotación`) y el
+/// otro los verifica. Las 14 piezas, los cuatro giros, caja a caja.
+#[test]
+fn the_rust_rotation_matches_the_one_unity_baked() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("wg3_rotation_oracle.json");
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!(
+            "sin oráculo en {}: {e}. Reexpórtalo desde Unity con \
+             «Backrooms ▸ WorldGen3 ▸ Exportar oráculo de rotación».",
+            path.display()
+        )
+    });
+    let oracle: Oracle = serde_json::from_str(&text).expect("oráculo ilegible");
+
+    let m = real_manifest();
+
+    // El oráculo lleva el digest del catálogo que lo produjo. Sin esta comparación, cambiar una
+    // pieza y olvidar reexportar deja el test verde comparando dos cosas viejas entre sí, que es la
+    // peor forma de estar verde.
+    assert_eq!(
+        m.digest, oracle.digest,
+        "el oráculo es de otro catálogo — reexpórtalo desde Unity"
+    );
+    assert_eq!(m.pieces.len() * 4, oracle.cases.len());
+
+    let mut compared = 0;
+    for case in &oracle.cases {
+        let piece = m
+            .piece(case.piece)
+            .expect("pieza del oráculo fuera del catálogo");
+        let p = Wg3Placement {
+            piece: case.piece,
+            rotation: case.rotation,
+            origin_x_cm: oracle.origin_x_cm,
+            origin_z_cm: oracle.origin_z_cm,
+        };
+        let ours = placement::placed_collision(piece, &p);
+
+        assert_eq!(
+            case.boxes.len(),
+            ours.len(),
+            "{} giro {}: {} cajas contra {} del oráculo",
+            piece.id,
+            case.rotation,
+            ours.len(),
+            case.boxes.len()
+        );
+
+        for (i, (theirs, mine)) in case.boxes.iter().zip(ours.iter()).enumerate() {
+            let tag = format!("{} giro {} caja {i}", piece.id, case.rotation);
+            close(theirs.cx, mine.center[0], &tag, "centro X");
+            close(theirs.cy, mine.center[1], &tag, "centro Y");
+            close(theirs.cz, mine.center[2], &tag, "centro Z");
+            close(theirs.sx, mine.size[0], &tag, "tamaño X");
+            close(theirs.sy, mine.size[1], &tag, "tamaño Y");
+            close(theirs.sz, mine.size[2], &tag, "tamaño Z");
+            // El giro se compara en la circunferencia: 360 y 0 son el mismo giro, y C# suma sin
+            // normalizar. Comparar los números crudos daría un falso rojo en el cuarto cuarto.
+            let delta = (theirs.yaw - mine.yaw_degrees).rem_euclid(360.0);
+            assert!(
+                !(1e-2..=360.0 - 1e-2).contains(&delta),
+                "{tag}: giro {} contra {}",
+                theirs.yaw,
+                mine.yaw_degrees
+            );
+            assert_eq!(theirs.kind, mine.kind, "{tag}: tipo");
+            compared += 1;
+        }
+    }
+    assert!(compared > 400, "solo {compared} cajas comparadas");
+    println!("[wg3] oráculo: {compared} cajas idénticas entre C# y Rust");
+}
+
+fn close(expected: f32, got: f32, tag: &str, what: &str) {
+    // Milímetro. Más apretado empezaría a cazar el redondeo de `f32` al viajar por JSON; más flojo
+    // dejaría pasar medio centímetro de deriva, que sobre una pared de 15 cm ya es un décimo.
+    assert!(
+        (expected - got).abs() < 1e-3,
+        "{tag}: {what} {expected} contra {got}"
+    );
+}
+
+// ── chunk ───────────────────────────────────────────────────────────────────────────────────
+
+/// Una colocación que cae a caballo de los chunks (0,0) y (1,0), y que además NO empieza en un
+/// múltiplo de la celda: si empezara, el recorte del borde coincidiría con el de la rejilla por
+/// suerte y la prueba de costura no probaría nada.
+fn straddling(m: &Wg3Manifest) -> (u16, Wg3Placement) {
+    let piece = piece_by_id(m, "hall_void");
+    let (w, _) = (piece.size_x, piece.size_z);
+    // Centrada sobre la frontera x = 50 m.
+    let origin_x_cm = (50.0 * CM_PER_M) as i32 - (w * CM_PER_M * 0.5) as i32 + 13;
+    (
+        piece.index,
+        Wg3Placement {
+            piece: piece.index,
+            rotation: 1,
+            origin_x_cm,
+            origin_z_cm: 1_233,
+        },
+    )
+}
+
+#[test]
+fn a_piece_straddling_two_chunks_rasterises_the_same_on_both_sides() {
+    // LA PROPIEDAD DE LA QUE COLGARÁ A1. El borde del chunk RECORTA, nunca modifica. Si cambiara el
+    // resultado, la misma pieza tendría colisión distinta a cada lado de una línea invisible y el
+    // síntoma —quedarse enganchado en mitad de un pasillo— no señalaría jamás a la frontera. Y sin
+    // esto, dos chunks vecinos no podrían coincidir sin hablarse ni con el sorteo idéntico.
+    let m = real_manifest();
+    let (index, p) = straddling(&m);
+    let piece = m.piece(index).unwrap();
+
+    let touched = chunk::chunks_touched(&m, &p);
+    assert!(
+        touched.len() >= 2,
+        "la pieza de prueba no cruza ninguna frontera: {touched:?}"
+    );
+
+    // Referencia: un ráster que la contiene entera, sin fronteras de por medio.
+    let (min_x, min_z, max_x, max_z) = p.bounds(piece);
+    let whole = {
+        let mut b = Wg3RasterBuilder::covering(min_x, min_z, max_x, max_z);
+        for pb in placement::placed_collision(piece, &p) {
+            b.add_box(&pb);
+        }
+        b.finish()
+    };
+
+    let mut compared = 0;
+    for coord in &touched {
+        let chunk_raster = chunk::build_chunk_raster(&m, std::slice::from_ref(&p), *coord);
+        let (cx0, cz0, _, _) = coord.bounds();
+
+        for iz in 0..chunk_raster.cells_z() {
+            for ix in 0..chunk_raster.cells_x() {
+                // Centro de celda en coordenadas de mundo: es lo único que las dos rejillas
+                // comparten, porque tienen orígenes distintos.
+                let x = cx0 + (ix as f32 + 0.5) * WG3_CELL_M;
+                let z = cz0 + (iz as f32 + 0.5) * WG3_CELL_M;
+                if x < min_x || x > max_x || z < min_z || z > max_z {
+                    continue;
+                }
+                assert_eq!(
+                    whole.column_at(x, z),
+                    chunk_raster.column(ix, iz),
+                    "la celda de mundo ({x:.2}, {z:.2}) sale distinta al recortarla por el chunk \
+                     {coord:?}"
+                );
+                compared += 1;
+            }
+        }
+    }
+    assert!(compared > 2_000, "solo {compared} celdas comparadas");
+    println!("[wg3] costura: {compared} celdas idénticas a los dos lados de la frontera");
+}
+
+#[test]
+fn a_chunk_that_no_piece_touches_comes_out_empty() {
+    let m = real_manifest();
+    let (_, p) = straddling(&m);
+    let far = chunk::Wg3ChunkCoord { x: 40, z: -17 };
+    let raster = chunk::build_chunk_raster(&m, std::slice::from_ref(&p), far);
+    assert_eq!(0, raster.span_count());
+}
+
+#[test]
+fn chunk_coords_do_not_mirror_at_the_origin() {
+    // `div_euclid` contra la división que trunca hacia cero: sin ella, −1 y +1 caen en el mismo
+    // chunk y todo el hemisferio negativo sale espejado. Invisible salvo que se mire a propósito, y
+    // es el mismo fallo que ya obligó a `div_euclid` al tallar salas entre dos chunks.
+    assert_eq!(0, chunk::Wg3ChunkCoord::containing(1.0, 1.0).x);
+    assert_eq!(-1, chunk::Wg3ChunkCoord::containing(-1.0, -1.0).x);
+    assert_eq!(-1, chunk::Wg3ChunkCoord::containing(-49.9, 0.0).x);
+    assert_eq!(-2, chunk::Wg3ChunkCoord::containing(-50.1, 0.0).x);
+    assert_eq!(1, chunk::Wg3ChunkCoord::containing(50.0, 0.0).x);
+}
+
+#[test]
+fn a_piece_ending_exactly_on_the_border_does_not_claim_the_next_chunk() {
+    // El máximo es EXCLUSIVO. Reclamar un chunk en el que no se pone ni una celda haría
+    // re-rasterizar de más en cada colocación, y peor: un chunk vacío que se cree ocupado.
+    let m = real_manifest();
+    let piece = piece_by_id(&m, "cor_straight");
+    let p = Wg3Placement {
+        piece: piece.index,
+        rotation: 0,
+        origin_x_cm: (50.0 * CM_PER_M) as i32 - (piece.size_x * CM_PER_M) as i32,
+        origin_z_cm: 0,
+    };
+    let touched = chunk::chunks_touched(&m, &p);
+    assert_eq!(vec![chunk::Wg3ChunkCoord { x: 0, z: 0 }], touched);
+}
+
+// ── presupuesto sobre un chunk de verdad (ADR-095 enmienda 1) ───────────────────────────────
+
+#[test]
+fn the_chunk_budget_is_measured_on_a_real_chunk() {
+    // La enmienda 1 dejó los 159 KB anotados como PROYECCIÓN desde rásters del tamaño de una pieza,
+    // donde el margen y la tabla de desplazamientos pesan mucho por metro cuadrado. Ésta es la
+    // medida de verdad, y es la que va a `perf-baseline.md`.
+    let m = real_manifest();
+
+    // Un chunk lleno hasta arriba: piezas grandes cubriendo los 50 × 50 m. No es un mundo
+    // realista, es el PEOR caso, que es lo que hay que presupuestar.
+    let hall = piece_by_id(&m, "hall_large");
+    let mut placements = Vec::new();
+    let mut z = 0.0f32;
+    while z < 50.0 {
+        let mut x = 0.0f32;
+        while x < 50.0 {
+            placements.push(Wg3Placement {
+                piece: hall.index,
+                rotation: 0,
+                origin_x_cm: (x * CM_PER_M) as i32,
+                origin_z_cm: (z * CM_PER_M) as i32,
+            });
+            x += hall.size_x;
+        }
+        z += hall.size_z;
+    }
+
+    let coord = chunk::Wg3ChunkCoord { x: 0, z: 0 };
+    let start = std::time::Instant::now();
+    let raster = chunk::build_chunk_raster(&m, &placements, coord);
+    let elapsed = start.elapsed();
+
+    let kb = raster.bytes() as f32 / 1024.0;
+    // El perfil se declara en vez de suponerse: la misma línea salía antes diciendo DEBUG al
+    // correrla con `--release`, y un número de rendimiento con el perfil equivocado al lado es
+    // peor que no tenerlo.
+    let profile = if cfg!(debug_assertions) {
+        "debug, sin optimizar"
+    } else {
+        "release"
+    };
+    println!(
+        "[wg3] chunk lleno: {} colocaciones, {} celdas, {} tramos, {kb:.0} KB, \
+         rasterizado en {:.1} ms ({profile})",
+        placements.len(),
+        raster.cells_x() * raster.cells_z(),
+        raster.span_count(),
+        elapsed.as_secs_f32() * 1000.0
+    );
+
+    assert_eq!(
+        chunk::WG3_CHUNK_CELLS * chunk::WG3_CHUNK_CELLS,
+        raster.cells_x() * raster.cells_z()
+    );
+    assert!(
+        kb < 512.0,
+        "el peor chunk ocupa {kb:.0} KB, fuera de presupuesto"
+    );
 }

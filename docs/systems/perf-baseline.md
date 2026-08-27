@@ -336,3 +336,65 @@ En partida real el ahorro es medible sin sonda: el log `MPTRACE step=R15` lleva
   reposo; medirlo pide una partida instrumentada.
 - El escenario sigue siendo el mundo recién generado de 49 chunks. Una base grande mueve la
   aguja de los rosters, no de esta tabla.
+
+---
+
+## WorldGen3 — el ráster de colisión (medición 2026-08-27)
+
+> Reproducible:
+> ```
+> cargo test --manifest-path backend/Cargo.toml --release world::wg3 -- --nocapture --test-threads=1
+> ```
+> Las sondas están dentro de los tests normales de `world::wg3`, no en un `#[ignore]` aparte: son
+> aserciones con techo (`< 512 KB`) que además imprimen. Si el coste se dispara, la suite se pone
+> roja antes de que nadie tenga que acordarse de correr una sonda.
+
+ADR-095 D1 decide que la chuleta de colisión se **rasteriza** a una rejilla de 0,5 m con columnas de
+tramos, en vez de viajar como lista de cajas con giro. Estos son los números que sostienen esa
+decisión, y **uno de ellos corrigió al ADR**.
+
+### Memoria
+
+| escenario | celdas | tramos | bytes |
+|---|---|---|---|
+| peor pieza suelta, proyectada a 50 m | 10 000 | — | **159 KB** (proyección) |
+| chunk de 50 m LLENO de naves grandes | 10 000 | 19 057 | **114 KB** (medido) |
+
+La proyección de 159 KB salía de rásters del tamaño de una PIEZA, donde el margen de una celda por
+lado y la tabla de desplazamientos pesan mucho por metro cuadrado. Sobre un chunk de verdad son
+**114 KB**. Con 25 chunks cargados, ~2,8 MB.
+
+**El ADR original decía 20 KB y estaba mal**: esa cifra suponía dos bytes por celda, que es lo que
+costaría un mapa de alturas plano. D2 eligió columnas de tramos —cuatro bytes por tramo más la tabla
+de desplazamientos— y cuestan más. Corregido en ADR-095 enmienda 1.
+
+Al comparar con WG2 hay que tener delante una diferencia estructural: con tramos **hay un ráster por
+chunk, no uno por chunk y capa**. Una columna es continua y cubre toda la altura, así que 114 KB se
+comparan con cuatro `ChunkLayoutV1`, no con uno.
+
+### Tiempo
+
+| operación | debug | release |
+|---|---|---|
+| rasterizar un chunk lleno (6 piezas grandes, 19 057 tramos) | 3,4 ms | **0,7 ms** |
+
+El escenario es el PEOR caso a propósito: naves de 34 × 24 m empaquetadas hasta cubrir los 2500 m².
+Un chunk de mundo real tiene menos superficie construida y más hueco.
+
+### Lo que estos números NO dicen
+
+- **No hay medida de consulta.** Está medido CONSTRUIR el ráster, no leerlo. El coste de
+  `resolve_move` contra tramos —que es el que corre en caliente, y por jugador— llega con F5, que es
+  cuando la colisión pasa a tener memoria de en qué tramo va el jugador.
+- **No hay comparación contra `generate_chunk_layer`.** La verificación (g) de ADR-095 la pide y
+  sigue pendiente: exige WG3 enchufado al camino real, que es la tanda del wire.
+- El chunk lleno se rasteriza de una vez. Cuando entre la colocación incremental habrá que decidir
+  si se re-rasteriza el chunk entero por pieza nueva o solo su huella, y eso cambia el número.
+
+### Y una medida que no es de rendimiento pero se toma aquí
+
+**El vano más estrecho tras rasterizar mide 1,50 m libres**, de una boca autorada de 2,4 m, medido
+sobre las 14 piezas × 4 giros con el origen desalineado de la rejilla a propósito. El jugador
+necesita 0,70 m. Sobra el doble, y por eso la celda de D1 se queda en 0,5 m en vez de bajar a 0,25 y
+cuadruplicar todo lo de arriba. Es la cifra que convierte "conservador pero pasable" de esperanza en
+dato.
