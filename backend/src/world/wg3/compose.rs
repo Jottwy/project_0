@@ -77,6 +77,22 @@ pub struct Wg3ComposerSettings {
     pub repeat_parent_penalty: f32,
     /// Penalización si repite la de dos pasos atrás. Más suave: A-B-A cansa menos que A-A.
     pub repeat_grandparent_penalty: f32,
+
+    /// ADR-096 — unir dos bocas abiertas que caen enfrentadas en el mismo punto, en vez de tratar
+    /// cada una por su lado.
+    ///
+    /// **Convierte el árbol en un grafo con anillos, y eso arregla DOS cosas a la vez.** La que se
+    /// veía: un mundo que nunca vuelve sobre sí mismo no tiene el «esto ya lo he visto» que sostiene
+    /// media liminalidad. Y la que no se veía hasta medirla: la frontera se seca sola —con tope de
+    /// 300 piezas, seis semillas daban de 20 a 268—, porque cada rama termina en tapones y nadie
+    /// reengancha. Subir el presupuesto no lo arreglaba.
+    ///
+    /// **`false` por defecto A PROPÓSITO.** El compositor de C# no cierra bucles, y el oráculo de
+    /// composición fija ese mundo. Encenderlo por defecto pondría rojo el test que vigila la paridad
+    /// entre los dos idiomas, que es lo único que caza una deriva silenciosa. Lo enciende quien
+    /// sirve el mundo (`wg3::world`); el oráculo lo deja apagado y sigue vigilando el algoritmo
+    /// base.
+    pub close_loops: bool,
 }
 
 impl Default for Wg3ComposerSettings {
@@ -90,6 +106,7 @@ impl Default for Wg3ComposerSettings {
             scale_far_bonus: 0.22,
             repeat_parent_penalty: 0.18,
             repeat_grandparent_penalty: 0.45,
+            close_loops: false,
         }
     }
 }
@@ -139,6 +156,11 @@ pub struct Wg3ComposedWorld {
     pub rejected_by_validator: u32,
     /// Bocas selladas por no haber ninguna candidata viable.
     pub forced_caps: u32,
+
+    /// ADR-096 — bucles cerrados: veces que dos bocas abiertas se unieron entre sí en vez de abrir
+    /// rama nueva. Cero con `close_loops` apagado; con él encendido es la medida de cuánto deja de
+    /// ser un árbol el mundo, y de dónde sale el tamaño de región.
+    pub loops_closed: u32,
 }
 
 /// Compone el mundo de una semilla. Función pura: mismo manifiesto y mismos ajustes ⇒ mismo mundo,
@@ -188,6 +210,7 @@ struct Composer<'a> {
     rejected_by_overlap: u32,
     rejected_by_validator: u32,
     forced_caps: u32,
+    loops_closed: u32,
 }
 
 impl<'a> Composer<'a> {
@@ -199,6 +222,7 @@ impl<'a> Composer<'a> {
             nodes: Vec::new(),
             caps: Vec::new(),
             candidates: Vec::with_capacity(64),
+            loops_closed: 0,
             rejected_by_overlap: 0,
             rejected_by_validator: 0,
             forced_caps: 0,
@@ -238,6 +262,15 @@ impl<'a> Composer<'a> {
             let parent_world_side = (parent_socket.side + self.nodes[pi].rotation) % 4;
             let needed_side = (parent_world_side + 2) % 4;
             let child_depth = self.nodes[pi].depth + 1;
+
+            // ADR-096 — antes que nada, mirar si esta boca ya tiene con quién casar entre lo puesto.
+            // Va PRIMERO, delante del tapón deliberado: sellar una boca que podía cerrar un anillo
+            // es perder el anillo, y los anillos son lo escaso. Las paredes ciegas, no.
+            if self.settings.close_loops
+                && self.try_close_loop(pi, si, px, pz, needed_side, &parent_socket)
+            {
+                continue;
+            }
 
             // A veces la boca se sella aunque hubiera con qué seguir. Es lo que produce paredes ciegas
             // y espacios residuales; sin ello el mundo se lee como un árbol de pasillos.
@@ -374,6 +407,65 @@ impl<'a> Composer<'a> {
         &self.manifest.pieces[self.nodes[node].piece as usize]
     }
 
+    /// ADR-096 — busca otra boca ABIERTA en el mismo punto de mundo, enfrentada y compatible, y las
+    /// une. Devuelve `true` si cerró un bucle.
+    ///
+    /// # Se compara en CENTÍMETROS ENTEROS, no con epsilon
+    ///
+    /// Las dos bocas llegaron a ese punto por cadenas de sumas distintas, así que en `f32` sus
+    /// coordenadas casi nunca son idénticas bit a bit. Cuantizar al centímetro —la misma resolución
+    /// que viaja por el wire y la que el ráster de 0,5 m puede distinguir— convierte «casi igual» en
+    /// una comparación de enteros, que además es reproducible: un `abs() < eps` haría que el mundo
+    /// dependiera del orden en que se acumularon los errores.
+    ///
+    /// # Barrido lineal, y es a propósito
+    ///
+    /// Un índice por punto sería más rápido, pero un `HashMap` recorre en orden no determinista y
+    /// aquí puede haber más de una candidata: elegir «la que salga» haría que el mundo cambiara
+    /// entre ejecuciones sin que cambie nada más. El barrido devuelve SIEMPRE la primera en orden
+    /// (nodo, boca), que es un criterio estable. A 300 piezas son unas decenas de miles de
+    /// comparaciones de enteros por mundo: gratis.
+    fn try_close_loop(
+        &mut self,
+        node: usize,
+        socket: usize,
+        px: f32,
+        pz: f32,
+        needed_side: u8,
+        parent_socket: &Wg3Socket,
+    ) -> bool {
+        let key = (quantize_cm(px), quantize_cm(pz));
+
+        for other in 0..self.nodes.len() {
+            if other == node {
+                continue;
+            }
+            let other_piece = self.piece_of(other);
+            for os in 0..self.nodes[other].socket_state.len() {
+                if self.nodes[other].socket_state[os] != SOCKET_OPEN {
+                    continue;
+                }
+                let other_socket = &other_piece.sockets[os];
+                if (other_socket.side + self.nodes[other].rotation) % 4 != needed_side {
+                    continue;
+                }
+                let (ox, oz) = world_socket_point(&self.nodes[other], other_piece, os);
+                if (quantize_cm(ox), quantize_cm(oz)) != key {
+                    continue;
+                }
+                if !connection_ok(parent_socket, other_socket) {
+                    continue;
+                }
+
+                self.nodes[node].socket_state[socket] = SOCKET_CONNECTED;
+                self.nodes[other].socket_state[os] = SOCKET_CONNECTED;
+                self.loops_closed += 1;
+                return true;
+            }
+        }
+        false
+    }
+
     fn place(
         &mut self,
         piece: u16,
@@ -441,6 +533,7 @@ impl<'a> Composer<'a> {
             rejected_by_overlap: self.rejected_by_overlap,
             rejected_by_validator: self.rejected_by_validator,
             forced_caps: self.forced_caps,
+            loops_closed: self.loops_closed,
         }
     }
 }
@@ -525,6 +618,12 @@ fn overlaps_any(nodes: &[Node], manifest: &Wg3Manifest, x: f32, z: f32, w: f32, 
             && n.origin_z < z + d - OVERLAP_EPS
             && n.origin_z + nd - OVERLAP_EPS > z
     })
+}
+
+/// Centímetros enteros para COMPARAR, no para emitir. Redondeo al más cercano, que es lo que hace
+/// que dos bocas llegadas por cadenas de sumas distintas caigan en el mismo entero.
+fn quantize_cm(v: f32) -> i32 {
+    (v * 100.0).round() as i32
 }
 
 fn world_socket_point(node: &Node, piece: &Wg3Piece, index: usize) -> (f32, f32) {

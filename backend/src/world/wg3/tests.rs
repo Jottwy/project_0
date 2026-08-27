@@ -812,6 +812,10 @@ fn settings_from(oracle: &CompositionOracle, budget: usize) -> compose::Wg3Compo
         scale_far_bonus: oracle.scale_far_bonus,
         repeat_parent_penalty: oracle.repeat_parent_penalty,
         repeat_grandparent_penalty: oracle.repeat_grandparent_penalty,
+        // ADR-096 — APAGADO, y es lo que mantiene vivo este oráculo. C# no cierra bucles, así que
+        // encenderlo aquí no probaría una deriva: probaría que hemos cambiado el algoritmo. La
+        // paridad se vigila sobre el algoritmo base; los bucles llevan sus propios tests.
+        close_loops: false,
     }
 }
 
@@ -972,7 +976,7 @@ fn a_composed_world_has_no_overlaps_and_no_sockets_left_open() {
 
 // ── el mundo servido: componer una vez, repartir por chunk ──────────────────────────────────
 
-use super::world::{Wg3ServedWorld, Wg3WorldCache};
+use super::world::{composer_seed, Wg3ServedWorld, Wg3WorldCache, INTERIM_BUDGET};
 
 /// Semilla de las pruebas del mundo servido. Es la del oráculo con los 32 bits altos puestos: así
 /// el test también ejercita `composer_seed`, que se queda con los bajos.
@@ -1153,6 +1157,114 @@ fn the_interim_world_is_worth_walking() {
             elapsed.as_millis()
         );
     }
+}
+
+/// ADR-096 verificación (c) — CUÁNTO cambia el mundo al cerrar bucles.
+///
+/// De aquí sale el tamaño de región, y por eso se mide antes de fijarlo. Dimensionar las regiones
+/// con los números de un compositor que se ahoga sería dimensionarlas mal: el número que importa no
+/// es cuántas piezas caben, sino cuánto terreno llena de verdad una composición.
+///
+/// No afirma un mínimo de bucles por semilla. Puede haber geometrías donde ninguna boca caiga sobre
+/// otra, y exigirlo convertiría una propiedad del catálogo en un fallo del código. Lo que sí exige
+/// es que **cerrar bucles nunca ENCOJA el mundo**: unir dos ramas no puede costar piezas.
+#[test]
+fn closing_loops_measures_how_much_more_world_there_is() {
+    let m = real_manifest();
+    let seeds = [SERVED_SEED, 7, 42, 1337, 900_001, 0];
+
+    let open = compose::Wg3ComposerSettings {
+        budget: INTERIM_BUDGET,
+        close_loops: false,
+        ..compose::Wg3ComposerSettings::default()
+    };
+    let looped = compose::Wg3ComposerSettings {
+        close_loops: true,
+        ..open.clone()
+    };
+
+    let mut total_loops = 0u32;
+    for seed in seeds {
+        let a = compose::compose(composer_seed(seed), &m, &open);
+        let b = compose::compose(composer_seed(seed), &m, &looped);
+        total_loops += b.loops_closed;
+
+        println!(
+            "[wg3] semilla {seed}: sin bucles {} piezas / con bucles {} piezas, \
+             {} bucles cerrados, tapones forzados {} → {}",
+            a.placements.len(),
+            b.placements.len(),
+            b.loops_closed,
+            a.forced_caps,
+            b.forced_caps
+        );
+
+        assert!(
+            b.placements.len() >= a.placements.len(),
+            "semilla {seed}: cerrar bucles ENCOGIÓ el mundo, de {} a {} piezas",
+            a.placements.len(),
+            b.placements.len()
+        );
+        assert_eq!(
+            0, a.loops_closed,
+            "con la perilla apagada no se cierra nada"
+        );
+    }
+
+    println!(
+        "[wg3] bucles cerrados en total sobre {} semillas: {total_loops}",
+        seeds.len()
+    );
+}
+
+/// SONDA — ¿por qué no se cierra NI UN bucle, y lo arreglaría un catálogo en módulo?
+///
+/// `#[ignore]` porque no afirma nada del código actual: mide una hipótesis sobre el CATÁLOGO,
+/// deformándolo en memoria. Lánzala con
+/// `cargo test --manifest-path backend/Cargo.toml modular_catalogue -- --ignored --nocapture`.
+///
+/// La hipótesis: unir dos bocas exige que caigan en el mismo punto al centímetro, y las posiciones
+/// salen de cadenas de sumas sobre piezas de 11, 26, 9, 13… m con offsets de 1,2, 6,4, 2,2. El
+/// máximo común divisor de todo eso es 0,1 m, así que la rejilla implícita es tan fina que dos ramas
+/// no se encuentran jamás. Un kit modular de verdad vive sobre un módulo —es lo que significa
+/// "modular"—, y sobre él las coincidencias dejan de ser casualidad.
+///
+/// Si esta sonda da bucles y la de arriba da cero, el arreglo NO es más código: es autorar el
+/// catálogo en módulo.
+#[test]
+#[ignore = "sonda de diseño: deforma el catálogo para medir una hipótesis, no prueba el código"]
+fn a_modular_catalogue_would_close_loops() {
+    let mut m = real_manifest();
+
+    // Redondeo de todo lo que decide una posición: huella y offset de cada boca. La anchura NO se
+    // toca — cambiarla rompería la compatibilidad entre tipos y mediría otra cosa.
+    const MODULE: f32 = 0.5;
+    let snap = |v: f32| (v / MODULE).round() * MODULE;
+    for p in &mut m.pieces {
+        p.size_x = snap(p.size_x);
+        p.size_z = snap(p.size_z);
+        for s in &mut p.sockets {
+            s.offset = snap(s.offset);
+        }
+    }
+
+    let settings = compose::Wg3ComposerSettings {
+        budget: INTERIM_BUDGET,
+        close_loops: true,
+        ..compose::Wg3ComposerSettings::default()
+    };
+
+    let mut total = 0u32;
+    for seed in [SERVED_SEED, 7, 42, 1337, 900_001, 0] {
+        let w = compose::compose(composer_seed(seed), &m, &settings);
+        total += w.loops_closed;
+        println!(
+            "[wg3] MÓDULO {MODULE} m — semilla {seed}: {} piezas, {} bucles",
+            w.placements.len(),
+            w.loops_closed
+        );
+    }
+    println!("[wg3] MÓDULO {MODULE} m — bucles en total: {total}");
 }
 
 /// La semilla del mundo es `u64` y la del compositor `i32`: se cogen los 32 bits bajos. Dos semillas

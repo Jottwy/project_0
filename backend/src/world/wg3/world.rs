@@ -84,6 +84,10 @@ impl Wg3ServedWorld {
     pub fn compose(manifest: &Wg3Manifest, world_seed: u64) -> Self {
         let settings = Wg3ComposerSettings {
             budget: INTERIM_BUDGET,
+            // ADR-096 — el mundo que se SIRVE cierra bucles; el que fija el oráculo, no. El default
+            // es `false` porque el oráculo vigila la paridad con C#, y C# no los cierra: encenderlo
+            // ahí pondría rojo lo único que caza una deriva silenciosa entre los dos idiomas.
+            close_loops: true,
             ..Wg3ComposerSettings::default()
         };
         Self::compose_with(manifest, world_seed, &settings)
