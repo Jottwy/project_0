@@ -10,9 +10,11 @@
 pub mod chunk;
 pub mod config;
 pub mod demo;
+pub mod hash;
 pub mod manifest;
 pub mod placement;
 pub mod raster;
+pub mod scale;
 
 #[cfg(test)]
 mod tests;
