@@ -7623,3 +7623,45 @@ problema que la enmienda 2 deja abierto.
 - (c) El margen despeja el fondo del tramo. **Hecho, en compilación.**
 - (e) **PENDIENTE**: cruzar una junta andando, sin costura visible ni tirón. Con región de 150 m toca
   una junta cada 150 m, así que es fácil de encontrar y difícil de ignorar.
+
+---
+
+## ADR-096 — Enmienda 4: la junta se cruza. ADR CUMPLIDO (2026-08-27)
+
+Verificación (e), por los dos caminos.
+
+**En el ráster del servidor**, que es lo que de verdad decide si se pasa: 65 puntos caminables a lo
+largo de 16 m a través de la puerta en `(150.00, 49.21)`, sin punto tapiado ni sin suelo. Y cada
+punto se resuelve **como lo resolvería el servidor** —su chunk, su región, su ráster—: componer una
+sola región y consultar los dos lados habría probado un mundo que en producción no existe.
+
+**En juego**, sesión real con `BACKROOMS_WG3=1`:
+
+```
+[WG3] CRUCE: junta en x=0, entrando por z=59,00
+[WG3] CRUCE OK — la junta x=0 se cruza andando. recorrido 12,0 m,
+      y final 0,08, y mínima 0,08 (caída 0,00 m)
+```
+
+**Caída cero**: ni escalón, ni agujero, ni muro. El paso entre dos regiones compuestas por separado
+es plano y continuo.
+
+**Y el cliente no pregunta dónde está la puerta.** No conoce el contrato —ni tiene por qué: solo
+recibe piezas— así que barre la línea del borde con raycasts buscando suelo debajo y hueco a la
+altura de la cabeza. Si lo encuentra, ahí hay una puerta. Teletransportar a una coordenada que el
+servidor hubiera chivado habría probado que el servidor sabe dónde puso la puerta, no que se pueda
+pasar por ella.
+
+**Con esto ADR-096 queda cumplido entero.** El mundo de WG3 es infinito, sus regiones no nacen
+selladas, y las juntas se cruzan.
+
+### Tres trampas del camino, para quien vuelva a lanzarlo
+
+1. **`Builds/Backend/` estaba bloqueado por un backend vivo**, y el script de despliegue dijo *«copied
+   successfully»* avisando solo con un *size mismatch* en otra línea. El exe desplegado seguía siendo
+   el viejo. Matar huérfanos ANTES de copiar y comparar tamaños después.
+2. **Unity no recompila mientras está en Play**, así que esperar al DLL con el editor jugando espera
+   para siempre. El indicador fiable de si Play está activo no es el resultado del menú: es si vive
+   el proceso del backend.
+3. El toggle `Edit/Play` por menú **puede quedar desincronizado** con lo que uno cree. Confirmar por
+   el backend, no por el `OK` del disparador.
