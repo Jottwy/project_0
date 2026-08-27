@@ -45,8 +45,35 @@ namespace BackroomsSurvival.WorldGen3
                 type == Wg3SocketType.Wide ? WideWidth : CorridorWidth,
                 type, 0f, DefaultCeiling);
 
-        /// <summary>El catálogo de F0. El PRIMER elemento es la pieza semilla: cambiarlo mueve
-        /// todos los mundos ya generados, así que no se reordena a la ligera.</summary>
+        /// <summary>
+        /// PESOS REEQUILIBRADOS CONTRA MEDIDA (2026-08-28), no a ojo.
+        ///
+        /// La sonda `how_soon_the_same_piece_comes_round_again` dijo que con los pesos originales
+        /// `cor_straight` se llevaba el <b>27 % del mundo</b> y el catálogo EFECTIVO —1/Σpᵢ², o sea
+        /// cuántas piezas distintas se comporta como si hubiera— era de <b>7,4 sobre 14</b>. Medio
+        /// catálogo estaba autorado y sin usar.
+        ///
+        /// Y el peso no era el único culpable: <b>el tamaño también pesa</b>. `hall_void` (42 × 30)
+        /// salía al 0,8 % no por su peso sino porque una pieza grande choca contra algo ya colocado
+        /// mucho más a menudo y se descarta. Por eso los pesos nuevos NO son planos: son los que
+        /// hacen plana la distribución OBSERVADA, corrigiendo cada peso por lo lejos que su cuota
+        /// real quedaba de 1/14 (exponente 0,7 para no pasarse). Las piezas grandes suben mucho
+        /// —se les compensa el rechazo— y las pequeñas y omnipresentes bajan.
+        ///
+        /// DOS COSAS QUE NO SE APLANAN, y son decisiones y no descuidos:
+        ///  · <b>la rareza sigue racionada</b> (R30): `room_stair` y `room_weird` suben de 0,5 % a
+        ///    un objetivo de ~2,5 %, no a 1/14. Si todo es raro, lo raro es la norma;
+        ///  · <b>los tapones suben poco</b>. Su frecuencia no es variedad, es estructura: cada
+        ///    callejón cierra una rama, así que doblarlos encogería el mundo — y el mundo ya se
+        ///    seca solo por el rechazo por solape.
+        ///
+        /// CAMBIAR ESTOS PESOS CAMBIA EL MUNDO Y EL DIGEST DEL MANIFIESTO. Hay que reexportar el
+        /// manifiesto, los dos oráculos y volver a congelar `wg3_oracle_catalog.json`, o la suite de
+        /// Rust se cae con «el oráculo es de otro catálogo» (ADR-095 enmienda 5).
+        ///
+        /// Y el PRIMER elemento sigue siendo la pieza semilla: cambiarlo mueve todos los mundos
+        /// ya generados, así que no se reordena a la ligera.
+        /// </summary>
         public static List<Wg3Piece> Build()
         {
             var c = new List<Wg3Piece>();
@@ -55,7 +82,7 @@ namespace BackroomsSurvival.WorldGen3
             {
                 id = "cor_straight", geometryId = "cor_straight",
                 sizeX = 11f, sizeZ = CorridorWidth, heightMeters = DefaultCeiling,
-                scale = Wg3Scale.Narrow, weight = 1.5f,
+                scale = Wg3Scale.Narrow, weight = 0.60f,
                 sockets = new[]
                 {
                     Sock(3, CorridorWidth * 0.5f, Wg3SocketType.Corridor),
@@ -67,7 +94,7 @@ namespace BackroomsSurvival.WorldGen3
             {
                 id = "cor_long", geometryId = "cor_long",
                 sizeX = 26f, sizeZ = CorridorWidth, heightMeters = DefaultCeiling,
-                scale = Wg3Scale.Narrow, weight = 1.2f,
+                scale = Wg3Scale.Narrow, weight = 1.15f,
                 sockets = new[]
                 {
                     Sock(3, CorridorWidth * 0.5f, Wg3SocketType.Corridor),
@@ -82,7 +109,7 @@ namespace BackroomsSurvival.WorldGen3
             {
                 id = "cor_bend", geometryId = "cor_bend",
                 sizeX = 9f, sizeZ = 9f, heightMeters = DefaultCeiling,
-                scale = Wg3Scale.Narrow, weight = 1.3f,
+                scale = Wg3Scale.Narrow, weight = 1.00f,
                 sockets = new[]
                 {
                     Sock(3, 6.4f, Wg3SocketType.Corridor),
@@ -101,7 +128,7 @@ namespace BackroomsSurvival.WorldGen3
             {
                 id = "cor_transition", geometryId = "cor_transition",
                 sizeX = 9f, sizeZ = WideWidth, heightMeters = DefaultCeiling,
-                scale = Wg3Scale.Narrow, weight = 0.8f,
+                scale = Wg3Scale.Narrow, weight = 0.70f,
                 sockets = new[]
                 {
                     Sock(3, WideWidth * 0.5f, Wg3SocketType.Corridor),
@@ -113,7 +140,7 @@ namespace BackroomsSurvival.WorldGen3
             {
                 id = "cor_wide", geometryId = "cor_wide",
                 sizeX = 16f, sizeZ = WideWidth, heightMeters = 3.6f,
-                scale = Wg3Scale.Medium, weight = 0.9f,
+                scale = Wg3Scale.Medium, weight = 1.20f,
                 sockets = new[]
                 {
                     Sock(3, WideWidth * 0.5f, Wg3SocketType.Wide),
@@ -132,7 +159,7 @@ namespace BackroomsSurvival.WorldGen3
             {
                 id = "room_small", geometryId = "room_small",
                 sizeX = 13f, sizeZ = 10f, heightMeters = DefaultCeiling,
-                scale = Wg3Scale.Medium, weight = 1.4f,
+                scale = Wg3Scale.Medium, weight = 0.90f,
                 sockets = new[]
                 {
                     Sock(3, 2.2f, Wg3SocketType.Corridor),
@@ -145,7 +172,7 @@ namespace BackroomsSurvival.WorldGen3
             {
                 id = "room_pillars", geometryId = "room_pillars",
                 sizeX = 20f, sizeZ = 15f, heightMeters = 3.6f,
-                scale = Wg3Scale.Medium, weight = 1.1f,
+                scale = Wg3Scale.Medium, weight = 0.95f,
                 sockets = new[]
                 {
                     Sock(3, 3.4f, Wg3SocketType.Corridor),
@@ -166,7 +193,7 @@ namespace BackroomsSurvival.WorldGen3
             {
                 id = "room_core", geometryId = "room_core",
                 sizeX = 23f, sizeZ = 18f, heightMeters = 3.6f,
-                scale = Wg3Scale.Medium, weight = 0.9f, minDepth = 1,
+                scale = Wg3Scale.Medium, weight = 0.82f, minDepth = 1,
                 sockets = new[]
                 {
                     Sock(3, 10.5f, Wg3SocketType.Corridor),
@@ -180,7 +207,7 @@ namespace BackroomsSurvival.WorldGen3
             {
                 id = "hall_large", geometryId = "hall_large",
                 sizeX = 34f, sizeZ = 24f, heightMeters = 4.5f,
-                scale = Wg3Scale.Large, weight = 1.0f, minDepth = 1,
+                scale = Wg3Scale.Large, weight = 1.40f, minDepth = 1,
                 sockets = new[]
                 {
                     Sock(3, 9f, Wg3SocketType.Wide),
@@ -201,7 +228,7 @@ namespace BackroomsSurvival.WorldGen3
             {
                 id = "hall_void", geometryId = "hall_void",
                 sizeX = 42f, sizeZ = 30f, heightMeters = 5.5f,
-                scale = Wg3Scale.Large, weight = 0.7f, minDepth = 2,
+                scale = Wg3Scale.Large, weight = 2.50f, minDepth = 2,
                 sockets = new[]
                 {
                     Sock(3, 13f, Wg3SocketType.Wide),
@@ -222,7 +249,7 @@ namespace BackroomsSurvival.WorldGen3
             {
                 id = "room_stair", geometryId = "room_stair",
                 sizeX = 21f, sizeZ = 17f, heightMeters = 6.0f,
-                scale = Wg3Scale.Weird, weight = 0.5f, minDepth = 2,
+                scale = Wg3Scale.Weird, weight = 1.50f, minDepth = 2,
                 sockets = new[]
                 {
                     Sock(3, 4.2f, Wg3SocketType.Corridor),
@@ -238,7 +265,7 @@ namespace BackroomsSurvival.WorldGen3
             {
                 id = "room_weird", geometryId = "room_weird",
                 sizeX = 18f, sizeZ = 18f, heightMeters = 4.0f,
-                scale = Wg3Scale.Weird, weight = 0.35f, minDepth = 3,
+                scale = Wg3Scale.Weird, weight = 1.00f, minDepth = 3,
                 sockets = new[]
                 {
                     Sock(3, 9f, Wg3SocketType.Corridor),
@@ -259,7 +286,7 @@ namespace BackroomsSurvival.WorldGen3
             {
                 id = "dead_corridor", geometryId = "dead_corridor",
                 sizeX = 9f, sizeZ = 7f, heightMeters = DefaultCeiling,
-                scale = Wg3Scale.Narrow, weight = 0.55f, minDepth = 2, isDeadEnd = true,
+                scale = Wg3Scale.Narrow, weight = 0.75f, minDepth = 2, isDeadEnd = true,
                 sockets = new[] { Sock(3, 3.5f, Wg3SocketType.Corridor) },
                 blocks = new[] { new Wg3Block(7f, 3.5f, 1.2f, 3f, DefaultCeiling) }
             });
@@ -270,7 +297,7 @@ namespace BackroomsSurvival.WorldGen3
             {
                 id = "alcove_wide", geometryId = "alcove_wide",
                 sizeX = 8f, sizeZ = WideWidth, heightMeters = 3.6f,
-                scale = Wg3Scale.Medium, weight = 0.4f, minDepth = 1, isDeadEnd = true,
+                scale = Wg3Scale.Medium, weight = 0.60f, minDepth = 1, isDeadEnd = true,
                 sockets = new[] { Sock(3, WideWidth * 0.5f, Wg3SocketType.Wide) }
             });
 

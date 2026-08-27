@@ -1,6 +1,6 @@
 {
     "version": 1,
-    "digest": "506c37a0bc96f70e3f3dd8366cb095666b5e33fb6d71072855b04ec6d51c267f",
+    "digest": "1fe768b508f79282af66fec87df904e5a5f840cf305791f8485bce86f82c9e23",
     "pieces": [
         {
             "index": 0,
@@ -9,7 +9,7 @@
             "size_z": 2.4000000953674318,
             "height_meters": 3.200000047683716,
             "scale": 0,
-            "weight": 1.5,
+            "weight": 0.6000000238418579,
             "min_depth": 0,
             "dead_end": false,
             "sockets": [
@@ -80,7 +80,7 @@
             "size_z": 2.4000000953674318,
             "height_meters": 3.200000047683716,
             "scale": 0,
-            "weight": 1.2000000476837159,
+            "weight": 1.149999976158142,
             "min_depth": 0,
             "dead_end": false,
             "sockets": [
@@ -151,7 +151,7 @@
             "size_z": 9.0,
             "height_meters": 3.200000047683716,
             "scale": 0,
-            "weight": 1.2999999523162842,
+            "weight": 1.0,
             "min_depth": 0,
             "dead_end": false,
             "sockets": [
@@ -282,7 +282,7 @@
             "size_z": 5.0,
             "height_meters": 3.200000047683716,
             "scale": 0,
-            "weight": 0.800000011920929,
+            "weight": 0.699999988079071,
             "min_depth": 0,
             "dead_end": false,
             "sockets": [
@@ -373,7 +373,7 @@
             "size_z": 5.0,
             "height_meters": 3.5999999046325685,
             "scale": 1,
-            "weight": 0.8999999761581421,
+            "weight": 1.2000000476837159,
             "min_depth": 0,
             "dead_end": false,
             "sockets": [
@@ -464,7 +464,7 @@
             "size_z": 10.0,
             "height_meters": 3.200000047683716,
             "scale": 1,
-            "weight": 1.399999976158142,
+            "weight": 0.8999999761581421,
             "min_depth": 0,
             "dead_end": false,
             "sockets": [
@@ -585,7 +585,7 @@
             "size_z": 15.0,
             "height_meters": 3.5999999046325685,
             "scale": 1,
-            "weight": 1.100000023841858,
+            "weight": 0.949999988079071,
             "min_depth": 0,
             "dead_end": false,
             "sockets": [
@@ -754,7 +754,7 @@
             "size_z": 18.0,
             "height_meters": 3.5999999046325685,
             "scale": 1,
-            "weight": 0.8999999761581421,
+            "weight": 0.8199999928474426,
             "min_depth": 1,
             "dead_end": false,
             "sockets": [
@@ -893,7 +893,7 @@
             "size_z": 24.0,
             "height_meters": 4.5,
             "scale": 2,
-            "weight": 1.0,
+            "weight": 1.399999976158142,
             "min_depth": 1,
             "dead_end": false,
             "sockets": [
@@ -1062,7 +1062,7 @@
             "size_z": 30.0,
             "height_meters": 5.5,
             "scale": 2,
-            "weight": 0.699999988079071,
+            "weight": 2.5,
             "min_depth": 2,
             "dead_end": false,
             "sockets": [
@@ -1231,7 +1231,7 @@
             "size_z": 17.0,
             "height_meters": 6.0,
             "scale": 3,
-            "weight": 0.5,
+            "weight": 1.5,
             "min_depth": 2,
             "dead_end": false,
             "sockets": [
@@ -1472,7 +1472,7 @@
             "size_z": 18.0,
             "height_meters": 4.0,
             "scale": 3,
-            "weight": 0.3499999940395355,
+            "weight": 1.0,
             "min_depth": 3,
             "dead_end": false,
             "sockets": [
@@ -1613,7 +1613,7 @@
             "size_z": 7.0,
             "height_meters": 3.200000047683716,
             "scale": 0,
-            "weight": 0.550000011920929,
+            "weight": 0.75,
             "min_depth": 2,
             "dead_end": true,
             "sockets": [
@@ -1716,7 +1716,7 @@
             "size_z": 5.0,
             "height_meters": 3.5999999046325685,
             "scale": 1,
-            "weight": 0.4000000059604645,
+            "weight": 0.6000000238418579,
             "min_depth": 1,
             "dead_end": true,
             "sockets": [
