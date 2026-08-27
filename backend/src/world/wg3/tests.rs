@@ -33,11 +33,60 @@ fn real_manifest() -> Wg3Manifest {
     manifest::parse_manifest(&text).expect("el manifiesto exportado no pasa la validación")
 }
 
+/// EL CATÁLOGO CONGELADO DE LOS ORÁCULOS. Decisión de Joel, 2026-08-28.
+///
+/// Los dos oráculos —composición y rotación— prueban que **Rust reproduce el ALGORITMO de C#**, y
+/// para eso el catálogo es decorado: hace falta que sea el MISMO a los dos lados, no que sea el que
+/// se juega. Cuando la biblioteca autorada sustituya al catálogo de código, el manifiesto servido
+/// cambiará cada vez que alguien dibuje una pieza; un oráculo que se mueve con él deja de ser una
+/// prueba de regresión y pasa a ser un espejo que siempre se da la razón.
+///
+/// Así que los oráculos leen ESTA foto —el catálogo de código tal y como se exportó— y no
+/// `StreamingAssets`. La comparación de digest se conserva y sigue cazando lo de siempre: cambiar
+/// una pieza del catálogo de código y olvidar reexportar el oráculo.
+///
+/// **Lo que esto NO cubre, dicho aquí para que nadie lea un verde de más:** el catálogo que se sirve
+/// de verdad. De eso responden los tests que sí leen el manifiesto servido —ráster, chunk,
+/// geometría— y los invariantes que no dependen del catálogo: determinismo, cero solapes, ninguna
+/// boca al vacío, la junta se cruza.
+///
+/// Y una consecuencia que es correcta aunque moleste: el día de la conmutación, los tests que buscan
+/// piezas por id en el manifiesto SERVIDO (`cor_straight`, `room_pillars`…) van a fallar con un
+/// panic claro. Deben hacerlo — siguen la realidad, y re-apuntarlos es parte de conmutar.
+fn frozen_catalog() -> Wg3Manifest {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("wg3_oracle_catalog.json");
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!(
+            "no se pudo leer el catálogo congelado {}: {e}",
+            path.display()
+        )
+    });
+    manifest::parse_manifest(&text).expect("el catálogo congelado no pasa la validación")
+}
+
 fn piece_by_id<'a>(m: &'a Wg3Manifest, id: &str) -> &'a Wg3Piece {
     m.pieces
         .iter()
         .find(|p| p.id == id)
-        .unwrap_or_else(|| panic!("el catálogo no tiene la pieza {id}"))
+        .unwrap_or_else(|| {
+            // El motivo probable NO es un bug: es que el catálogo servido ya no es el de código.
+            // Un panic que solo dice "no encontrada" manda a buscar un fallo donde solo hay una
+            // conmutación pendiente, así que dice qué hacer.
+            panic!(
+                "el catálogo no tiene la pieza «{id}» ({} piezas: {}). Si la biblioteca autorada \
+                 ya sustituyó al catálogo de código, este test busca por id y hay que reapuntarlo a \
+                 una pieza que exista — no es un fallo del ráster",
+                m.pieces.len(),
+                m.pieces
+                    .iter()
+                    .map(|p| p.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })
 }
 
 fn raster_for(piece: &Wg3Piece, placement: &Wg3Placement) -> Wg3Raster {
@@ -513,7 +562,9 @@ fn the_rust_rotation_matches_the_one_unity_baked() {
     });
     let oracle: Oracle = serde_json::from_str(&text).expect("oráculo ilegible");
 
-    let m = real_manifest();
+    // Catálogo CONGELADO, no el servido: esto mide paridad de algoritmo entre dos idiomas, y para
+    // eso los dos tienen que estar mirando las mismas piezas. Ver `frozen_catalog`.
+    let m = frozen_catalog();
 
     // El oráculo lleva el digest del catálogo que lo produjo. Sin esta comparación, cambiar una
     // pieza y olvidar reexportar deja el test verde comparando dos cosas viejas entre sí, que es la
@@ -843,7 +894,9 @@ fn settings_from(oracle: &CompositionOracle, budget: usize) -> compose::Wg3Compo
 #[test]
 fn the_rust_composer_reproduces_the_world_unity_composes() {
     let oracle = composition_oracle();
-    let m = real_manifest();
+    // Catálogo CONGELADO, no el servido. Ver `frozen_catalog`: el oráculo mide que Rust reproduzca
+    // el algoritmo de C#, y eso exige que los dos miren las mismas piezas, no las que se jueguen hoy.
+    let m = frozen_catalog();
 
     // Sin esta comparación, cambiar una pieza y olvidar reexportar deja el test verde comparando dos
     // cosas viejas entre sí, que es la peor forma de estar verde.
