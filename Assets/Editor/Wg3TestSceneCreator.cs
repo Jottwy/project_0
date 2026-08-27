@@ -151,6 +151,13 @@ namespace BackroomsSurvival.EditorTools
             boot.player = player;
             boot.worldSeed = 42;
 
+            // CRUCE AUTOMÁTICO APAGADO. Era el arnés de la verificación (e) de ADR-096 —buscar una
+            // junta y cruzarla solo— y ya está cumplida y registrada. Dejarlo encendido secuestra al
+            // jugador en cuanto aterriza y se lo lleva al borde de la región, así que esta escena
+            // dejaría de servir para lo que hace falta ahora: mirar el mundo. Se vuelve a encender
+            // marcando la casilla en el inspector, sin tocar código.
+            boot.autoCrossJunction = false;
+
             if (!AssetDatabase.IsValidFolder("Assets/Scenes"))
                 AssetDatabase.CreateFolder("Assets", "Scenes");
             EditorSceneManager.SaveScene(scene, LiveScenePath);
