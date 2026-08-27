@@ -1168,3 +1168,33 @@ fn the_world_seed_is_truncated_to_the_composers_thirty_two_bits() {
     let plain = Wg3ServedWorld::compose(&m, 42);
     assert_eq!(plain.placements(), disguised.placements());
 }
+
+/// EL ORIGEN DEL MUNDO TIENE SUELO, y con el andamio no lo tenía.
+///
+/// `demo` dejaba un chunk de cada tres vacío, así que aparecer en (0,0) era caerse al vacío con
+/// probabilidad alta y eso obligó a teleportar al jugador a mano para poder probar nada. El
+/// compositor pone la pieza semilla CENTRADA en el origen, así que el sitio donde aparece el jugador
+/// es el interior de un pasillo. Se comprueba sobre el ráster del chunk, que es lo que decide de
+/// verdad si hay algo debajo.
+#[test]
+fn the_world_has_floor_where_the_player_appears() {
+    let m = real_manifest();
+    let world = Wg3ServedWorld::compose(&m, SERVED_SEED);
+
+    let coord = chunk::Wg3ChunkCoord::containing(0.0, 0.0);
+    let placements = world.placements_touching_chunk(&m, coord);
+    let raster = chunk::build_chunk_raster(&m, &placements, coord);
+
+    let floor = raster
+        .floor_below(0.0, 1.0, 0.0)
+        .expect("el origen del mundo no tiene suelo debajo");
+    assert!(floor.abs() < 0.02, "el suelo del origen está a {floor}");
+
+    let head = raster
+        .headroom_above_floor(0.0, 1.0, 0.0)
+        .expect("el origen del mundo no tiene techo");
+    assert!(
+        head >= 2.0,
+        "hueco de {head} m en el origen: no se cabe de pie"
+    );
+}
