@@ -7,6 +7,7 @@
 use std::path::PathBuf;
 
 use super::chunk;
+use super::compose;
 use super::manifest::{self, Wg3Manifest, Wg3Piece};
 use super::placement::{self, PlacedBox, Wg3Placement};
 use super::raster::{Span, Wg3Raster, Wg3RasterBuilder, CM_PER_M, WG3_CELL_M};
@@ -750,4 +751,221 @@ fn the_chunk_budget_is_measured_on_a_real_chunk() {
         kb < 512.0,
         "el peor chunk ocupa {kb:.0} KB, fuera de presupuesto"
     );
+}
+
+// ── el compositor: el oráculo del mundo entero ──────────────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+struct OraclePlacement {
+    piece: u16,
+    rotation: u8,
+    origin_x_cm: i32,
+    origin_z_cm: i32,
+    depth: i32,
+}
+
+#[derive(serde::Deserialize)]
+struct OracleWorld {
+    seed: i32,
+    budget: usize,
+    caps: usize,
+    forced_caps: u32,
+    rejected_by_overlap: u32,
+    placements: Vec<OraclePlacement>,
+}
+
+#[derive(serde::Deserialize)]
+struct CompositionOracle {
+    digest: String,
+    deliberate_cap_chance: f32,
+    cap_grace_count: usize,
+    scale_exact_bonus: f32,
+    scale_near_bonus: f32,
+    scale_far_bonus: f32,
+    repeat_parent_penalty: f32,
+    repeat_grandparent_penalty: f32,
+    worlds: Vec<OracleWorld>,
+}
+
+fn composition_oracle() -> CompositionOracle {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("wg3_composition_oracle.json");
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!(
+            "sin oráculo en {}: {e}. Reexpórtalo desde Unity con «Backrooms ▸ WorldGen3 ▸ \
+             Exportar oráculo de composición».",
+            path.display()
+        )
+    });
+    serde_json::from_str(&text).expect("oráculo de composición ilegible")
+}
+
+fn settings_from(oracle: &CompositionOracle, budget: usize) -> compose::Wg3ComposerSettings {
+    compose::Wg3ComposerSettings {
+        budget,
+        deliberate_cap_chance: oracle.deliberate_cap_chance,
+        cap_grace_count: oracle.cap_grace_count,
+        scale_exact_bonus: oracle.scale_exact_bonus,
+        scale_near_bonus: oracle.scale_near_bonus,
+        scale_far_bonus: oracle.scale_far_bonus,
+        repeat_parent_penalty: oracle.repeat_parent_penalty,
+        repeat_grandparent_penalty: oracle.repeat_grandparent_penalty,
+    }
+}
+
+/// EL CRITERIO DE CIERRE DEL PORT.
+///
+/// El compositor está escrito dos veces —C# autora y prueba el catálogo, Rust sirve el mundo— y dos
+/// implementaciones internamente consistentes pueden diferir entre ellas sin que nada reviente: la
+/// pieza treinta aparece un metro corrida y el síntoma es una pared donde debía haber una puerta,
+/// cien metros y media hora después de la causa.
+///
+/// Así que uno escribe el mundo entero («Backrooms ▸ WorldGen3 ▸ Exportar oráculo de composición») y
+/// el otro lo reproduce, pieza a pieza y en orden. La semilla −19 está en la lista a propósito: es
+/// donde un `%` que trunca hacia cero en vez de un módulo euclídeo produce otro mundo, y es un fallo
+/// que este proyecto ya ha pagado dos veces.
+///
+/// AL CENTÍMETRO Y NO BIT A BIT: C# compone en `f32` y por el wire viajan centímetros enteros. Exigir
+/// igualdad de flotantes sería exigir que Rust reprodujera también el orden exacto de las sumas de
+/// C#, atando el port a la FORMA del original en vez de a su RESULTADO.
+#[test]
+fn the_rust_composer_reproduces_the_world_unity_composes() {
+    let oracle = composition_oracle();
+    let m = real_manifest();
+
+    // Sin esta comparación, cambiar una pieza y olvidar reexportar deja el test verde comparando dos
+    // cosas viejas entre sí, que es la peor forma de estar verde.
+    assert_eq!(
+        m.digest, oracle.digest,
+        "el oráculo es de otro catálogo — reexpórtalo desde Unity"
+    );
+    assert!(!oracle.worlds.is_empty());
+
+    let mut compared = 0;
+    for expected in &oracle.worlds {
+        let settings = settings_from(&oracle, expected.budget);
+        let world = compose::compose(expected.seed, &m, &settings);
+
+        assert_eq!(
+            expected.placements.len(),
+            world.placements.len(),
+            "semilla {}: {} piezas contra {} del oráculo",
+            expected.seed,
+            world.placements.len(),
+            expected.placements.len()
+        );
+
+        for (i, want) in expected.placements.iter().enumerate() {
+            let got = &world.placements[i];
+            assert_eq!(
+                (
+                    want.piece,
+                    want.rotation,
+                    want.origin_x_cm,
+                    want.origin_z_cm,
+                    want.depth
+                ),
+                (
+                    got.placement.piece,
+                    got.placement.rotation,
+                    got.placement.origin_x_cm,
+                    got.placement.origin_z_cm,
+                    got.depth
+                ),
+                "semilla {}: diverge la colocación {} (el oráculo pone {}, aquí sale {})",
+                expected.seed,
+                i,
+                m.piece(want.piece).map(|p| p.id.as_str()).unwrap_or("?"),
+                m.piece(got.placement.piece)
+                    .map(|p| p.id.as_str())
+                    .unwrap_or("?")
+            );
+            compared += 1;
+        }
+
+        // Los tapones y los descartes no viajan, pero son la contabilidad del recorrido: si el port
+        // llegara a las mismas piezas por otro camino —otra rama sellada, otra candidata pisada—
+        // estos números lo delatan y la lista de arriba no.
+        assert_eq!(
+            expected.caps,
+            world.caps.len(),
+            "semilla {}: tapones",
+            expected.seed
+        );
+        assert_eq!(
+            expected.forced_caps, world.forced_caps,
+            "semilla {}: tapones forzados",
+            expected.seed
+        );
+        assert_eq!(
+            expected.rejected_by_overlap, world.rejected_by_overlap,
+            "semilla {}: candidatas descartadas por solape",
+            expected.seed
+        );
+    }
+    assert!(
+        compared >= 100,
+        "solo se compararon {compared} colocaciones"
+    );
+}
+
+/// R3 en forma de test: el compositor no guarda estado entre llamadas ni lo lee del proceso.
+#[test]
+fn composing_twice_gives_the_same_world() {
+    let m = real_manifest();
+    let settings = compose::Wg3ComposerSettings::default();
+    let a = compose::compose(-19, &m, &settings);
+    let b = compose::compose(-19, &m, &settings);
+    assert_eq!(a.placements, b.placements);
+    assert!(a.placements.len() > 1);
+}
+
+/// Conectividad por construcción (R7): ni una pieza pisa a otra, ni una boca queda mirando al vacío.
+///
+/// Se comprueba sobre las coordenadas EMITIDAS —en centímetros— y no sobre las internas: son las que
+/// va a rasterizar el servidor, así que es donde un solape se convierte en dos suelos en la misma
+/// celda.
+#[test]
+fn a_composed_world_has_no_overlaps_and_no_sockets_left_open() {
+    let m = real_manifest();
+    let settings = compose::Wg3ComposerSettings::default();
+
+    for seed in [42, 7, 1337, -19, 900001] {
+        let world = compose::compose(seed, &m, &settings);
+
+        let mut sockets = 0usize;
+        for (i, a) in world.placements.iter().enumerate() {
+            let pa = m
+                .piece(a.placement.piece)
+                .expect("pieza fuera del catálogo");
+            sockets += pa.sockets.len();
+            let (ax0, az0, ax1, az1) = a.placement.bounds(pa);
+
+            for (j, b) in world.placements.iter().enumerate().skip(i + 1) {
+                let pb = m
+                    .piece(b.placement.piece)
+                    .expect("pieza fuera del catálogo");
+                let (bx0, bz0, bx1, bz1) = b.placement.bounds(pb);
+                let eps = 0.02;
+                assert!(
+                    ax0 >= bx1 - eps || bx0 >= ax1 - eps || az0 >= bz1 - eps || bz0 >= az1 - eps,
+                    "semilla {seed}: {} #{i} pisa a {} #{j}",
+                    pa.id,
+                    pb.id
+                );
+            }
+        }
+
+        // Cada boca acaba conectada (dos por junta) o taponada. Sin esta igualdad, «no usar todos los
+        // sockets» y «nada da al vacío» se contradicen sin que nada falle.
+        let connections = world.placements.len().saturating_sub(1) * 2;
+        assert_eq!(
+            sockets,
+            connections + world.caps.len(),
+            "semilla {seed}: {sockets} bocas contra {connections} conectadas y {} taponadas",
+            world.caps.len()
+        );
+    }
 }

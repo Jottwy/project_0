@@ -8,6 +8,7 @@
 //! fichero de `grid_gen`.
 
 pub mod chunk;
+pub mod compose;
 pub mod config;
 pub mod demo;
 pub mod hash;
