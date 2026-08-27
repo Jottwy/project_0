@@ -1842,6 +1842,54 @@ fn probe_ring_geometry() {
     }
 }
 
+/// **¿CUÁNTO CIERRA `deliberate_cap_chance`?** — Joel: «llega un punto que se cierra y no hay
+/// manera de moverte».
+///
+/// La perilla sella una boca A PROPÓSITO aunque hubiera con qué seguir (L21: paredes ciegas y
+/// espacio residual). Sobre el papel eso da textura; andando, a 0,17, es un callejón cada pocos
+/// metros. El barrido existe para elegir el valor con un número en vez de a ojo — que es lo que hice
+/// con los pesos y salió mal.
+///
+/// Mide lo que de verdad importa para «se puede recorrer»: piezas por región y RAMA MÁS LARGA, o sea
+/// hasta dónde se puede andar sin volver sobre los pasos. Contar piezas solo no vale: un mundo de 40
+/// piezas en ocho ramas de cinco se cierra igual que uno de 20.
+#[test]
+fn probe_how_much_the_deliberate_cap_closes_the_world() {
+    let m = real_manifest();
+
+    for chance in [0.17_f32, 0.10, 0.05, 0.02, 0.0] {
+        let mut pieces = 0usize;
+        let mut deepest = 0i32;
+        let mut regions = 0usize;
+
+        for (rx, rz) in [(0, 0), (1, 0), (0, 1), (-1, 2)] {
+            let region = Wg3RegionCoord { x: rx, z: rz };
+            let (min_x, min_z, max_x, max_z) = region.bounds();
+            let settings = compose::Wg3ComposerSettings {
+                deliberate_cap_chance: chance,
+                // INTERIM_BUDGET y NO el 30 por defecto: compose_region usa 300, y con 30 el
+                // barrido topaba contra el presupuesto y yo leia el techo como si fuera geometria.
+                budget: INTERIM_BUDGET,
+                bounds: Some((min_x, min_z, max_x, max_z)),
+                seed_at: Some(((min_x + max_x) * 0.5, (min_z + max_z) * 0.5)),
+                ..Default::default()
+            };
+            let world = compose::compose(composer_seed(SERVED_SEED), &m, &settings);
+
+            regions += 1;
+            pieces += world.placements.len();
+            for c in &world.placements {
+                deepest = deepest.max(c.depth);
+            }
+        }
+
+        println!(
+            "[wg3] cap_chance {chance:.2}: {:.0} piezas por región, rama más larga {deepest}",
+            pieces as f32 / regions as f32
+        );
+    }
+}
+
 /// **¿HAY VANOS AL VACÍO EN EL MUNDO QUE SE JUEGA?** — reportado andando: «pasillos que dan a la
 /// nada y te caerías del mapa».
 ///

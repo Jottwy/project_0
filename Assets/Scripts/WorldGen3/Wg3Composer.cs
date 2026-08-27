@@ -11,10 +11,19 @@ namespace BackroomsSurvival.WorldGen3
         /// <summary>Tope de piezas. En F0 acota la escena; bajo A1 lo sustituirá el chunk.</summary>
         public int budget = 30;
 
-        /// <summary>REGLA L21 — probabilidad de NO usar una boca aunque haya candidata. Es lo que
-        /// produce paredes ciegas y espacios residuales. A 0 el mundo se ramifica hasta llenar el
-        /// presupuesto y se lee como un árbol; a 0,5 se ahoga enseguida.</summary>
-        public float deliberateCapChance = 0.17f;
+        /// <summary>
+        /// REGLA L21 — probabilidad de NO usar una boca aunque haya candidata. Es lo que produce
+        /// paredes ciegas y espacios residuales. A 0,5 el mundo se ahoga enseguida.
+        ///
+        /// BAJADA DE 0,17 A 0,05 EL 2026-08-28, con barrido y no a ojo. Joel andó el mundo y dijo
+        /// «llega un punto que se cierra y no hay manera de moverte». El barrido
+        /// (`probe_how_much_the_deliberate_cap_closes_the_world`) dice dos cosas: bajarla da +43 %
+        /// de contenido —21 a 28 piezas por región— pero **la rama más larga se queda en 10 aunque
+        /// la perilla valga CERO**. O sea que el tapón deliberado NO es lo que cierra el mundo: el
+        /// mundo se seca solo por rechazo de solape alrededor de la décima pieza. Se baja porque el
+        /// contenido es gratis, no porque arregle lo que Joel sintió.
+        /// </summary>
+        public float deliberateCapChance = 0.05f;
 
         /// <summary>Piezas colocadas antes de permitir tapones voluntarios. Sin esto la semilla
         /// puede sellarse a sí misma y el mundo son dos piezas.</summary>

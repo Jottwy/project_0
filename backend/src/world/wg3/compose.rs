@@ -142,7 +142,7 @@ impl Default for Wg3ComposerSettings {
     fn default() -> Self {
         Self {
             budget: 30,
-            deliberate_cap_chance: 0.17,
+            deliberate_cap_chance: 0.05,
             cap_grace_count: 3,
             scale_exact_bonus: 4.2,
             scale_near_bonus: 1.0,
