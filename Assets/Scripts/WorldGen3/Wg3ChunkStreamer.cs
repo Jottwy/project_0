@@ -46,7 +46,12 @@ namespace BackroomsSurvival.WorldGen3
 
         private void OnEnable()
         {
-            _catalog = Wg3Catalog.Build();
+            // Por Wg3ActiveCatalog y no por Wg3Catalog directamente: el exportador del manifiesto
+            // hace esta misma pregunta, y si cada uno la respondiera por su cuenta el servidor
+            // colocaría de un catálogo y el cliente dibujaría de otro.
+            _catalog = Wg3ActiveCatalog.Build(out string catalogSource);
+            if (_catalog.Count == 0)
+                Debug.LogError($"[WG3] catálogo vacío — {catalogSource}. No se va a dibujar nada.", this);
             var client = IPCClient.Instance;
             if (client != null) client.AddWg3ChunkListener(OnWg3Chunk);
         }

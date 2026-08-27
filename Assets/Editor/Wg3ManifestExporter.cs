@@ -41,24 +41,12 @@ namespace BackroomsSurvival.EditorTools
             // Un mundo de dos piezas autoradas no llega a exportarse por accidente: el validador de
             // catálogo exige tapón por cada tipo de boca, y una biblioteca a medio llenar no lo
             // cumple.
-            Wg3PieceLibrary library = Wg3PieceLibrary.Load();
-            bool authored = library != null && library.pieces.Length > 0;
-
-            if (authored)
+            List<Wg3Piece> catalog = Wg3ActiveCatalog.Build(out string source);
+            if (catalog.Count == 0)
             {
-                List<string> libraryIssues = library.Validate();
-                if (libraryIssues.Count > 0)
-                {
-                    Debug.LogError($"[WG3] biblioteca inválida, {libraryIssues.Count} motivos — NO " +
-                                   "se exporta:\n" + string.Join("\n", libraryIssues), library);
-                    return;
-                }
+                Debug.LogError($"[WG3] catálogo vacío — {source}. NO se exporta.");
+                return;
             }
-
-            List<Wg3Piece> catalog = authored ? library.BuildCatalog() : Wg3Catalog.Build();
-            string source = authored
-                ? $"biblioteca autorada ({library.pieces.Length} piezas)"
-                : "catálogo de código";
 
             // REGLA R6 — una pieza que no valida no existe, así que tampoco se exporta. Exportar un
             // catálogo inválido es la receta del fallo silencioso: el backend coloca lo que puede,
