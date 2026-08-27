@@ -7423,6 +7423,67 @@ solo importa en un idioma.
 
 ---
 
+## ADR-096 — Enmienda 1: los bucles no se disparan, y el orden se invierte (2026-08-27)
+
+El ADR ponía los bucles ANTES del troceado sobre una premisa mía: que hacían crecer el mundo y por
+eso hacían falta para dimensionar las regiones. **Se implementaron, se midieron, y la premisa era
+falsa.** Joel aprobó invertir el orden con los números delante.
+
+**Cero bucles cerrados en seis semillas.** Y cero también con el catálogo deformado a un módulo de
+0,5 m, así que la hipótesis obvia —«las piezas no están en módulo, por eso nunca coinciden»— queda
+refutada por medición y no por argumento.
+
+**La causa es estructural: el rechazo por solape impide que dos ramas se acerquen.** Cuando una rama
+se curva hacia otra, la pieza que la traería a tocarla pisa primero la huella de la otra y se
+descarta. Las dos ramas nunca llegan a la distancia en la que sus bocas podrían coincidir: se
+rechazan a una pieza de distancia. Cerrar bucles POR COINCIDENCIA no puede funcionar en este diseño,
+con módulo o sin él.
+
+El mecanismo se deja puesto igualmente (`close_loops`, apagado por defecto) porque el coste es nulo y
+el día que haya piezas que lo permitan, funciona. Lo que hace falta para bucles de verdad es un
+mecanismo **activo** —buscar una boca abierta cercana y colocar una pieza que salve exactamente ese
+hueco—, y eso exige una familia de conectores de longitudes distintas. Sale del troceado y pasa a
+ser su propio problema, de liminalidad y no de tamaño.
+
+**Y A2 no los necesita.** Los bucles hacían falta bajo A3, donde el mundo entero es una composición y
+una semilla de 20 piezas es todo lo que hay. Bajo A2, una región que se seca pronto es una región
+dispersa, y la de al lado es una composición nueva: **la varianza deja de importar**. Ésa es la razón
+real por la que A2 gana, y no se vio hasta medir.
+
+### El tamaño de región, medido — y el primer número estaba mal
+
+ADR-096 dejó N fuera a propósito, «porque sale de medir». Bien hecho: el primer valor que puse (8
+chunks, 400 m) salía de mirar la EXTENSIÓN de los mundos sin acotar, y el barrido lo desmintió con
+llenados del 1 al 12 %. **La extensión no es el dato bueno** — un mundo puede medir 900 m y ser
+cuatro ramas finas. El dato bueno es la superficie construida:
+
+| chunks | lado | llenado medio | mínimo | piezas |
+|---|---|---|---|---|
+| 2 | 100 m | 19 % | 9 % | 6–17 |
+| **3** | **150 m** | **20 %** | **11 %** | **13–30** |
+| 4 | 200 m | 14 % | 5 % | 15–42 |
+| 6 | 300 m | 6 % | 1 % | 4–60 |
+| 8 | 400 m | 6 % | 1 % | 5–85 |
+
+**N = 3.** Gana en las dos métricas, y la que decide es el mínimo: una región al 1 % es un descampado
+con cuatro edificios sueltos, y con regiones grandes eso le toca a alguien.
+
+**El precio, dicho: una costura cada 150 m.** Es frecuente y hace el contrato de junta más urgente de
+lo que parecía. Se acepta porque un mundo con costuras frecuentes y siempre poblado se anda mejor que
+uno con costuras lejanas del que un tercio está vacío.
+
+**Y el 20 % de llenado sigue siendo poco**: cuatro quintos de cada región son vacío. Eso no lo
+arregla el tamaño — lo arreglará que el compositor deje de ser un árbol, que es el problema que
+acaba de quedar aparte.
+
+### Estado
+
+Implementado y en verde (1060 tests, clippy, fmt): el compositor acota por caja, el `game_loop` sirve
+por región, y la caché guarda varias. **Las regiones nacen SELLADAS**, que es lo único de ADR-096 que
+todavía no se cumple; el contrato de junta necesitaba este cimiento puesto y es el siguiente paso.
+
+---
+
 ### Enmienda 4 a ADR-095 (2026-08-27) — el compositor sirve el mundo, y A3 queda como INTERINO declarado
 
 Decisión de Joel, tomada al preguntársele en vez de deducirla del código: **se conecta el compositor
