@@ -39,8 +39,9 @@
 //! las colocaciones que TOCAN el chunk, porque una pared que cruza la frontera tiene que bloquear a
 //! los dos lados. Repartir es cosa de lo que se dibuja, no de lo que choca.
 
-use super::chunk::Wg3ChunkCoord;
+use super::chunk::{Wg3ChunkCoord, WG3_CHUNK_M};
 use super::compose::{self, Wg3ComposerSettings};
+use super::hash;
 use super::manifest::Wg3Manifest;
 use super::placement::Wg3Placement;
 
@@ -61,6 +62,78 @@ use super::placement::Wg3Placement;
 /// límite conocido.
 pub const INTERIM_BUDGET: usize = 300;
 
+/// ADR-096 — lado de una región, en chunks. `3 × 50 m = 150 m`.
+///
+/// **Sale de un barrido, y el primer intento estaba mal.** Se eligió 8 (400 m) mirando la EXTENSIÓN
+/// de los mundos sin acotar —de 134 a 921 m— y medirlo lo desmintió: llenados del 1 al 12 %. La
+/// extensión no es el dato bueno; un mundo puede medir 900 m y ser cuatro ramas finas. El dato
+/// bueno es la superficie CONSTRUIDA. Barrido (`region_size_sweep`, siete regiones cada uno):
+///
+/// | chunks | lado  | llenado medio | mínimo | piezas |
+/// |--------|-------|---------------|--------|--------|
+/// | 2      | 100 m | 19 %          | 9 %    | 6–17   |
+/// | **3**  | 150 m | **20 %**      | **11 %** | 13–30 |
+/// | 4      | 200 m | 14 %          | 5 %    | 15–42  |
+/// | 6      | 300 m | 6 %           | 1 %    | 4–60   |
+/// | 8      | 400 m | 6 %           | 1 %    | 5–85   |
+///
+/// Gana 3 en las dos métricas, y la que decide es **el mínimo**: una región al 1 % es un descampado
+/// con cuatro edificios sueltos, y con regiones grandes eso le toca a alguien. A 150 m el peor caso
+/// sigue teniendo 13 piezas.
+///
+/// EL PRECIO, dicho: una costura de región cada 150 m. Es frecuente, y hace el contrato de junta más
+/// urgente de lo que parecía — pero un mundo con costuras cada 150 m y siempre poblado se anda mejor
+/// que uno con costuras cada 400 m del que un tercio está vacío.
+///
+/// Y el 20 % de llenado sigue siendo poco en absoluto: cuatro quintos de cada región son vacío. Eso
+/// NO lo arregla el tamaño, lo arreglará que el compositor deje de ser un árbol. Es el mismo límite
+/// que ya se midió en `closing_loops_measures_how_much_more_world_there_is`.
+pub const REGION_CHUNKS: i32 = 3;
+
+/// Lado de región en metros.
+pub const REGION_M: f32 = REGION_CHUNKS as f32 * WG3_CHUNK_M;
+
+/// Coordenada de región. La región `(0,0)` va de `(0,0)` a `(400,400)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Wg3RegionCoord {
+    pub x: i32,
+    pub z: i32,
+}
+
+impl Wg3RegionCoord {
+    /// La región a la que pertenece un chunk. `div_euclid` y no `/`: la división trunca hacia cero,
+    /// así que los chunks −1 y +1 caerían en la misma región y todo el hemisferio negativo saldría
+    /// espejado. Es el mismo fallo que ya obligó a `div_euclid` dos veces en este proyecto.
+    pub fn of_chunk(chunk: Wg3ChunkCoord) -> Self {
+        Self {
+            x: chunk.x.div_euclid(REGION_CHUNKS),
+            z: chunk.z.div_euclid(REGION_CHUNKS),
+        }
+    }
+
+    /// `(min_x, min_z, max_x, max_z)` en metros.
+    pub fn bounds(&self) -> (f32, f32, f32, f32) {
+        let x = self.x as f32 * REGION_M;
+        let z = self.z as f32 * REGION_M;
+        (x, z, x + REGION_M, z + REGION_M)
+    }
+
+    /// Semilla del compositor para esta región.
+    ///
+    /// Mezcla la del mundo con la coordenada, así que dos regiones vecinas del mismo mundo componen
+    /// cosas distintas y la misma región del mismo mundo compone siempre lo mismo — que es todo lo
+    /// que A2 necesita para ser determinista sin que las regiones se hablen.
+    pub fn composer_seed(&self, world_seed: u64) -> i32 {
+        // `composer_seed(world_seed)` ya recorta los 32 bits bajos y ese recorte está documentado
+        // allí: dos semillas que solo difieran en los altos dan el mismo mundo de WG3.
+        hash::mix(composer_seed(world_seed), self.x, self.z, REGION_SALT) as u32 as i32
+    }
+}
+
+/// Sal propia del sorteo de región, para que la coordenada de región no quede correlacionada con
+/// ninguna otra decisión que se tome en el mismo punto.
+const REGION_SALT: i32 = 0x5EED_0A2Bu32 as i32;
+
 /// Semilla del compositor a partir de la del mundo.
 ///
 /// La del mundo es `u64` y la del compositor `i32`, porque nació de un `int` de C# y el oráculo lo
@@ -80,6 +153,29 @@ pub struct Wg3ServedWorld {
 }
 
 impl Wg3ServedWorld {
+    /// ADR-096 — compone UNA REGIÓN: acotada a su caja y sembrada en su centro.
+    ///
+    /// Es lo que hace el mundo infinito sin tocar el compositor: una región es exactamente lo que
+    /// éste ya sabía hacer —un recorrido finito desde una semilla—, y hay infinitas regiones.
+    ///
+    /// **Las regiones nacen SELLADAS en este paso, y es deuda declarada.** ADR-096 pide que no lo
+    /// estén; el contrato de junta que las abre viene después y necesita este cimiento puesto.
+    /// Mientras tanto la costura entre regiones se ve, y verla es lo que dirá si el contrato tiene
+    /// que ser fino o basta con poco.
+    pub fn compose_region(manifest: &Wg3Manifest, world_seed: u64, region: Wg3RegionCoord) -> Self {
+        let settings = Wg3ComposerSettings {
+            budget: INTERIM_BUDGET,
+            close_loops: true,
+            bounds: Some(region.bounds()),
+            ..Wg3ComposerSettings::default()
+        };
+        let composed = compose::compose(region.composer_seed(world_seed), manifest, &settings);
+        Self {
+            world_seed,
+            placements: composed.placements.iter().map(|c| c.placement).collect(),
+        }
+    }
+
     /// Compone con los ajustes del mundo interino.
     pub fn compose(manifest: &Wg3Manifest, world_seed: u64) -> Self {
         let settings = Wg3ComposerSettings {
@@ -171,24 +267,48 @@ impl Wg3ServedWorld {
 /// ceremonia que ésta.
 #[derive(Debug, Default)]
 pub struct Wg3WorldCache {
-    world: Option<Wg3ServedWorld>,
+    world_seed: u64,
+    regions: std::collections::HashMap<Wg3RegionCoord, Wg3ServedWorld>,
 }
 
+/// Regiones vivas a la vez. Cada una son ~300 piezas de `Wg3Placement` (11 bytes) más el vector:
+/// unos kilobytes. El tope existe para que una sesión larga que recorra mucho mundo no acumule sin
+/// fin, no porque una región pese.
+const MAX_CACHED_REGIONS: usize = 16;
+
 impl Wg3WorldCache {
-    /// El mundo de esta semilla, componiéndolo si hace falta.
-    pub fn world_for(&mut self, manifest: &Wg3Manifest, world_seed: u64) -> &Wg3ServedWorld {
-        let stale = match &self.world {
-            Some(w) => w.world_seed != world_seed,
-            None => true,
-        };
-        if stale {
-            let world = Wg3ServedWorld::compose(manifest, world_seed);
+    /// ADR-096 — la región de un chunk, componiéndola si hace falta.
+    ///
+    /// La caché se vacía entera si cambia la semilla: servir el mundo de otra semilla es servir un
+    /// mundo que el resto de la partida no ve, y un *joiner* no la sabe hasta el HandshakeAck.
+    pub fn region_for(
+        &mut self,
+        manifest: &Wg3Manifest,
+        world_seed: u64,
+        coord: Wg3ChunkCoord,
+    ) -> &Wg3ServedWorld {
+        if self.world_seed != world_seed {
+            self.regions.clear();
+            self.world_seed = world_seed;
+        }
+
+        let region = Wg3RegionCoord::of_chunk(coord);
+        if !self.regions.contains_key(&region) {
+            // Poda tonta y a propósito: al pasar del tope se tira TODO en vez de mantener un LRU.
+            // Recomponer cuesta milisegundos, y un LRU aquí sería estado con orden que mantener —
+            // justo lo que R3 evita— a cambio de ahorrar algo que ya es barato.
+            if self.regions.len() >= MAX_CACHED_REGIONS {
+                self.regions.clear();
+            }
+            let world = Wg3ServedWorld::compose_region(manifest, world_seed, region);
             log::info!(
-                "[wg3] mundo compuesto para la semilla {world_seed}: {} piezas",
+                "[wg3] región ({},{}) compuesta para la semilla {world_seed}: {} piezas",
+                region.x,
+                region.z,
                 world.placements().len()
             );
-            self.world = Some(world);
+            self.regions.insert(region, world);
         }
-        self.world.as_ref().expect("se acaba de componer")
+        self.regions.get(&region).expect("se acaba de componer")
     }
 }

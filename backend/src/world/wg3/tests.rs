@@ -816,6 +816,10 @@ fn settings_from(oracle: &CompositionOracle, budget: usize) -> compose::Wg3Compo
         // encenderlo aquí no probaría una deriva: probaría que hemos cambiado el algoritmo. La
         // paridad se vigila sobre el algoritmo base; los bucles llevan sus propios tests.
         close_loops: false,
+        // Y SIN ACOTAR, por lo mismo: el oráculo es el mundo A3 que compone C#, que no conoce
+        // regiones. Acotarlo aquí no mediría paridad, mediría otra cosa.
+        bounds: None,
+        seed_at: None,
     }
 }
 
@@ -976,7 +980,9 @@ fn a_composed_world_has_no_overlaps_and_no_sockets_left_open() {
 
 // ── el mundo servido: componer una vez, repartir por chunk ──────────────────────────────────
 
-use super::world::{composer_seed, Wg3ServedWorld, Wg3WorldCache, INTERIM_BUDGET};
+use super::world::{
+    composer_seed, Wg3RegionCoord, Wg3ServedWorld, Wg3WorldCache, INTERIM_BUDGET, REGION_CHUNKS,
+};
 
 /// Semilla de las pruebas del mundo servido. Es la del oráculo con los 32 bits altos puestos: así
 /// el test también ejercita `composer_seed`, que se queda con los bajos.
@@ -1099,12 +1105,200 @@ fn the_cache_recomposes_when_the_seed_changes() {
     let m = real_manifest();
     let mut cache = Wg3WorldCache::default();
 
-    let first: Vec<_> = cache.world_for(&m, SERVED_SEED).placements().to_vec();
-    let second: Vec<_> = cache.world_for(&m, SERVED_SEED + 1).placements().to_vec();
+    let origin = chunk::Wg3ChunkCoord { x: 0, z: 0 };
+
+    let first: Vec<_> = cache
+        .region_for(&m, SERVED_SEED, origin)
+        .placements()
+        .to_vec();
+    let second: Vec<_> = cache
+        .region_for(&m, SERVED_SEED + 1, origin)
+        .placements()
+        .to_vec();
     assert_ne!(first, second, "dos semillas dan el mismo mundo");
 
-    let again: Vec<_> = cache.world_for(&m, SERVED_SEED).placements().to_vec();
+    let again: Vec<_> = cache
+        .region_for(&m, SERVED_SEED, origin)
+        .placements()
+        .to_vec();
     assert_eq!(first, again);
+}
+
+/// ADR-096 — dos chunks de la MISMA región comparten composición, y dos regiones distintas no.
+///
+/// Es la propiedad que hace infinito el mundo sin que las regiones se hablen: la coordenada entra en
+/// la semilla, así que cada una compone lo suyo y siempre lo mismo.
+#[test]
+fn regions_are_independent_and_reproducible() {
+    let m = real_manifest();
+    let mut cache = Wg3WorldCache::default();
+
+    let inside_a = chunk::Wg3ChunkCoord { x: 1, z: 1 };
+    let inside_b = chunk::Wg3ChunkCoord {
+        x: REGION_CHUNKS - 1,
+        z: 0,
+    };
+    let other = chunk::Wg3ChunkCoord {
+        x: REGION_CHUNKS,
+        z: 0,
+    };
+
+    assert_eq!(
+        Wg3RegionCoord::of_chunk(inside_a),
+        Wg3RegionCoord::of_chunk(inside_b),
+        "dos chunks de la misma región salieron en regiones distintas"
+    );
+    assert_ne!(
+        Wg3RegionCoord::of_chunk(inside_a),
+        Wg3RegionCoord::of_chunk(other)
+    );
+
+    let a: Vec<_> = cache
+        .region_for(&m, SERVED_SEED, inside_a)
+        .placements()
+        .to_vec();
+    let b: Vec<_> = cache
+        .region_for(&m, SERVED_SEED, inside_b)
+        .placements()
+        .to_vec();
+    assert_eq!(a, b, "el mismo chunk-región compuso dos cosas distintas");
+
+    let c: Vec<_> = cache
+        .region_for(&m, SERVED_SEED, other)
+        .placements()
+        .to_vec();
+    assert_ne!(a, c, "dos regiones vecinas compusieron lo mismo");
+}
+
+/// ADR-096 verificación (c) — CUÁNTO llena una región, que es de donde sale su tamaño.
+///
+/// El número que importa no es cuántas piezas caben sino cuánto terreno ocupan de verdad: una
+/// región medio vacía se lee como un descampado con edificios sueltos, y una que se ahoga contra el
+/// borde desperdicia el catálogo. Se mide sobre varias regiones porque una sola puede salir con
+/// suerte, igual que pasaba con las semillas.
+#[test]
+fn a_region_is_worth_its_size() {
+    let m = real_manifest();
+    let region_area = (REGION_CHUNKS * REGION_CHUNKS) as f32 * 50.0 * 50.0;
+
+    let mut worst_fill = f32::MAX;
+    for (rx, rz) in [(0, 0), (1, 0), (0, 1), (-1, -1), (3, -2), (7, 11)] {
+        let region = Wg3RegionCoord { x: rx, z: rz };
+        let started = std::time::Instant::now();
+        let world = Wg3ServedWorld::compose_region(&m, SERVED_SEED, region);
+        let elapsed = started.elapsed();
+
+        // Superficie construida, sumando huellas. No descuenta solapes porque no los hay: el
+        // compositor rechaza toda candidata que pise algo ya puesto.
+        let mut built = 0.0f32;
+        for p in world.placements() {
+            let piece = m.piece(p.piece).expect("pieza fuera del catálogo");
+            let (x0, z0, x1, z1) = p.bounds(piece);
+            built += (x1 - x0) * (z1 - z0);
+        }
+        let fill = built / region_area * 100.0;
+        worst_fill = worst_fill.min(fill);
+
+        println!(
+            "[wg3] región ({rx},{rz}): {} piezas, {built:.0} m² de {region_area:.0} ({fill:.0} %), \
+             {:.0} ms",
+            world.placements().len(),
+            elapsed.as_secs_f32() * 1000.0
+        );
+
+        assert!(
+            !world.placements().is_empty(),
+            "región ({rx},{rz}) vacía: la semilla no cabe en su propia caja"
+        );
+        assert!(
+            elapsed.as_millis() < 250,
+            "región ({rx},{rz}): componer costó {} ms y ocurre al cruzar la frontera",
+            elapsed.as_millis()
+        );
+    }
+
+    println!("[wg3] región de {REGION_CHUNKS} chunks: llenado mínimo {worst_fill:.0} %");
+}
+
+/// SONDA — barrido del tamaño de región.
+///
+/// `#[ignore]` porque no afirma nada: busca un número. Lánzala con
+/// `cargo test --manifest-path backend/Cargo.toml region_size_sweep -- --ignored --nocapture`.
+///
+/// La primera elección (8 chunks = 400 m) salió de la extensión de los mundos SIN acotar, y medirla
+/// la desmintió: llenados del 1 al 12 %. La extensión no es el dato bueno —un mundo puede medir
+/// 900 m y ser cuatro ramas finas—; el dato bueno es la SUPERFICIE CONSTRUIDA, y de ahí sale el
+/// lado que la contiene sin sobrarle medio kilómetro de vacío.
+#[test]
+#[ignore = "sonda de dimensionado: busca el lado de región, no comprueba el código"]
+fn region_size_sweep() {
+    let m = real_manifest();
+
+    for chunks in [2i32, 3, 4, 6, 8] {
+        let side = chunks as f32 * 50.0;
+        let area = side * side;
+        let mut fills = Vec::new();
+        let mut counts = Vec::new();
+
+        for (rx, rz) in [(0, 0), (1, 0), (0, 1), (-1, -1), (3, -2), (7, 11), (2, 5)] {
+            let (min_x, min_z) = (rx as f32 * side, rz as f32 * side);
+            let settings = compose::Wg3ComposerSettings {
+                budget: INTERIM_BUDGET,
+                close_loops: true,
+                bounds: Some((min_x, min_z, min_x + side, min_z + side)),
+                ..compose::Wg3ComposerSettings::default()
+            };
+            // Misma semilla por región que en producción, para que el barrido mida el mundo real.
+            let seed = Wg3RegionCoord { x: rx, z: rz }.composer_seed(SERVED_SEED);
+            let w = compose::compose(seed, &m, &settings);
+
+            let mut built = 0.0f32;
+            for c in &w.placements {
+                let piece = m.piece(c.placement.piece).expect("pieza");
+                let (x0, z0, x1, z1) = c.placement.bounds(piece);
+                built += (x1 - x0) * (z1 - z0);
+            }
+            fills.push(built / area * 100.0);
+            counts.push(w.placements.len());
+        }
+
+        let mean: f32 = fills.iter().sum::<f32>() / fills.len() as f32;
+        let min = fills.iter().cloned().fold(f32::MAX, f32::min);
+        let max = fills.iter().cloned().fold(f32::MIN, f32::max);
+        println!(
+            "[wg3] región {chunks} chunks ({side:.0} m): llenado medio {mean:.0} % \
+             (min {min:.0}, max {max:.0}), piezas {counts:?}"
+        );
+    }
+}
+
+/// ADR-096 — ninguna pieza asoma fuera de su región.
+///
+/// Mientras no haya contrato de junta, una pieza a caballo de dos regiones es geometría que la
+/// región vecina no sabe que existe: compondría encima sin enterarse, y el solape solo se vería al
+/// llegar el jugador. El precio es que las regiones nacen selladas, y está declarado.
+#[test]
+fn no_piece_leaves_its_region() {
+    let m = real_manifest();
+
+    for (rx, rz) in [(0, 0), (1, 0), (-2, 3), (5, -7)] {
+        let region = Wg3RegionCoord { x: rx, z: rz };
+        let world = Wg3ServedWorld::compose_region(&m, SERVED_SEED, region);
+        let (min_x, min_z, max_x, max_z) = region.bounds();
+
+        for p in world.placements() {
+            let piece = m.piece(p.piece).expect("pieza fuera del catálogo");
+            let (x0, z0, x1, z1) = p.bounds(piece);
+            assert!(
+                x0 >= min_x - 0.01
+                    && z0 >= min_z - 0.01
+                    && x1 <= max_x + 0.01
+                    && z1 <= max_z + 0.01,
+                "región ({rx},{rz}): una pieza asoma — {x0:.1}..{x1:.1} × {z0:.1}..{z1:.1} \
+                 fuera de {min_x:.0}..{max_x:.0} × {min_z:.0}..{max_z:.0}"
+            );
+        }
+    }
 }
 
 /// Lo que el mundo interino da de sí, MEDIDO y no supuesto: cuántas piezas, cuánto terreno y cuánto

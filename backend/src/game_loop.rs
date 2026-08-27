@@ -780,12 +780,19 @@ pub async fn run(
                     // red de seguridad para el cliente que preguntó igualmente.
                     //
                     // ADR-095 F4 — las piezas salen del COMPOSITOR, no del andamio: las bocas casan
-                    // por construcción y el mundo se puede andar. A cambio el mundo es finito (A3,
-                    // el troceado sigue abierto en su propio ADR), así que lejos del origen la lista
-                    // vacía deja de ser rara y pasa a ser el borde del mundo.
+                    // por construcción y el mundo se puede andar.
+                    //
+                    // ADR-096 — y salen de la REGIÓN del chunk, no de una composición única. El
+                    // mundo deja de ser finito: cada región es un recorrido acotado a su caja, y hay
+                    // infinitas. Una lista vacía sigue siendo válida —dentro de una región hay
+                    // hueco— pero ya no significa "se acabó el mundo".
                     let placements = match wg3.manifest() {
                         Some(manifest) if wg3.is_enabled() => wg3_world
-                            .world_for(manifest, net.world_seed)
+                            .region_for(
+                                manifest,
+                                net.world_seed,
+                                crate::world::wg3::chunk::Wg3ChunkCoord { x: cx, z: cz },
+                            )
                             .placements_for_chunk(
                                 manifest,
                                 crate::world::wg3::chunk::Wg3ChunkCoord { x: cx, z: cz },

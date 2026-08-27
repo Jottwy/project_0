@@ -93,6 +93,24 @@ pub struct Wg3ComposerSettings {
     /// sirve el mundo (`wg3::world`); el oráculo lo deja apagado y sigue vigilando el algoritmo
     /// base.
     pub close_loops: bool,
+
+    /// ADR-096 — caja `(min_x, min_z, max_x, max_z)` fuera de la cual no se coloca nada.
+    ///
+    /// **Es lo que convierte una composición en una REGIÓN.** Sin ella el recorrido se va donde
+    /// quiera y dos composiciones vecinas se pisarían: cada una colocaría piezas en el terreno de
+    /// la otra sin saberlo, y el solape solo se vería al llegar el jugador.
+    ///
+    /// Se rechaza la candidata que ASOME, no la que tenga el centro fuera: una pieza a medias entre
+    /// dos regiones es exactamente el caso que no puede existir mientras no haya contrato de junta.
+    ///
+    /// `None` compone sin límite, que es el mundo A3 de antes y lo que sigue usando el oráculo.
+    pub bounds: Option<(f32, f32, f32, f32)>,
+
+    /// Dónde va la pieza semilla. `None` la centra en el origen del mundo.
+    ///
+    /// Con `bounds` puesto se centra en la caja: sembrar en el origen y acotar a una región lejana
+    /// daría una región vacía, porque la primera pieza ya caería fuera.
+    pub seed_at: Option<(f32, f32)>,
 }
 
 impl Default for Wg3ComposerSettings {
@@ -107,6 +125,8 @@ impl Default for Wg3ComposerSettings {
             repeat_parent_penalty: 0.18,
             repeat_grandparent_penalty: 0.45,
             close_loops: false,
+            bounds: None,
+            seed_at: None,
         }
     }
 }
@@ -156,6 +176,11 @@ pub struct Wg3ComposedWorld {
     pub rejected_by_validator: u32,
     /// Bocas selladas por no haber ninguna candidata viable.
     pub forced_caps: u32,
+
+    /// ADR-096 — candidatas descartadas por asomar fuera de la región. Es la medida de cuánto
+    /// aprieta el borde: si crece mucho respecto a `rejected_by_overlap`, la región va pequeña para
+    /// el catálogo.
+    pub rejected_by_bounds: u32,
 
     /// ADR-096 — bucles cerrados: veces que dos bocas abiertas se unieron entre sí en vez de abrir
     /// rama nueva. Cero con `close_loops` apagado; con él encendido es la medida de cuánto deja de
@@ -211,6 +236,7 @@ struct Composer<'a> {
     rejected_by_validator: u32,
     forced_caps: u32,
     loops_closed: u32,
+    rejected_by_bounds: u32,
 }
 
 impl<'a> Composer<'a> {
@@ -223,6 +249,7 @@ impl<'a> Composer<'a> {
             caps: Vec::new(),
             candidates: Vec::with_capacity(64),
             loops_closed: 0,
+            rejected_by_bounds: 0,
             rejected_by_overlap: 0,
             rejected_by_validator: 0,
             forced_caps: 0,
@@ -234,13 +261,24 @@ impl<'a> Composer<'a> {
             return;
         };
 
-        // La semilla es la PRIMERA pieza del catálogo, centrada en el origen del mundo. Elegirla por
-        // sorteo haría que cambiar el catálogo moviera mundos ya generados.
+        // La semilla es la PRIMERA pieza del catálogo. Elegirla por sorteo haría que cambiar el
+        // catálogo moviera mundos ya generados.
+        //
+        // ADR-096 — va al centro de la región cuando hay una. Sembrar siempre en el origen del
+        // mundo y luego acotar daría regiones VACÍAS en todas partes menos en el centro: la primera
+        // pieza ya caería fuera de su caja.
+        let (seed_x, seed_z) = match (self.settings.seed_at, self.settings.bounds) {
+            (Some(at), _) => at,
+            (None, Some((min_x, min_z, max_x, max_z))) => {
+                ((min_x + max_x) * 0.5, (min_z + max_z) * 0.5)
+            }
+            (None, None) => (0.0, 0.0),
+        };
         self.place(
             seed_piece.index,
             0,
-            -seed_piece.size_x * 0.5,
-            -seed_piece.size_z * 0.5,
+            seed_x - seed_piece.size_x * 0.5,
+            seed_z - seed_piece.size_z * 0.5,
             0,
             None,
         );
@@ -377,6 +415,15 @@ impl<'a> Composer<'a> {
                 let (lx, lz) = local_point(needed_side, socket.offset, w, d);
                 let ox = px - lx;
                 let oz = pz - lz;
+
+                // ADR-096 — fuera de la región no se coloca. Va ANTES del solape porque es más
+                // barato y porque una pieza que asoma ya está descartada aunque no pise nada.
+                if let Some((bmin_x, bmin_z, bmax_x, bmax_z)) = self.settings.bounds {
+                    if ox < bmin_x || oz < bmin_z || ox + w > bmax_x || oz + d > bmax_z {
+                        self.rejected_by_bounds += 1;
+                        continue;
+                    }
+                }
 
                 if overlaps_any(&self.nodes, manifest, ox, oz, w, d) {
                     self.rejected_by_overlap += 1;
@@ -534,6 +581,7 @@ impl<'a> Composer<'a> {
             rejected_by_validator: self.rejected_by_validator,
             forced_caps: self.forced_caps,
             loops_closed: self.loops_closed,
+            rejected_by_bounds: self.rejected_by_bounds,
         }
     }
 }
