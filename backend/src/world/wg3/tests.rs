@@ -1788,3 +1788,83 @@ fn probe_ring_geometry() {
         );
     }
 }
+
+/// **Cuánto catálogo hace falta** — la decisión 5 del brief, medida en vez de estimada.
+///
+/// La repetición no se nota por cuántas piezas tenga el catálogo, sino por cada cuánto vuelve la
+/// MISMA pieza a ponerse cerca. Por eso lo que se mide es la distancia de cada pieza a la copia más
+/// próxima de sí misma y no el reparto de frecuencias: dos naves iguales a 200 m no las junta
+/// nadie, dos iguales a 15 m se leen como la misma esquina otra vez.
+///
+/// No asegura nada todavía: es una SONDA, y su salida es el número con el que dimensionar el
+/// catálogo autorado. Poner aquí un mínimo antes de saber cuánto da el catálogo actual sería fijar
+/// el listón a ojo y llamarlo medida.
+#[test]
+fn how_soon_the_same_piece_comes_round_again() {
+    let m = real_manifest();
+
+    let mut gaps: Vec<f32> = Vec::new();
+    let mut used = std::collections::HashMap::<u16, usize>::new();
+    let mut regions = 0usize;
+    let mut total = 0usize;
+
+    for seed in [SERVED_SEED, 7, 42, 1337, 900_001] {
+        for (rx, rz) in [(0, 0), (1, 0), (0, 1), (-1, 2)] {
+            let world = Wg3ServedWorld::compose_region(&m, seed, Wg3RegionCoord { x: rx, z: rz });
+            regions += 1;
+            total += world.placements().len();
+
+            // El CENTRO de cada pieza, no su origen. Dos naves de 42 m con los orígenes a 30 m se
+            // solapan a la vista; medir por esquina escondería justo el caso que duele.
+            let centres: Vec<(u16, f32, f32)> = world
+                .placements()
+                .iter()
+                .map(|p| {
+                    let piece = m.piece(p.piece).expect("pieza fuera del catálogo");
+                    let (x0, z0, x1, z1) = p.bounds(piece);
+                    (p.piece, (x0 + x1) * 0.5, (z0 + z1) * 0.5)
+                })
+                .collect();
+
+            for (piece, _, _) in &centres {
+                *used.entry(*piece).or_default() += 1;
+            }
+
+            for (i, a) in centres.iter().enumerate() {
+                let mut nearest = f32::MAX;
+                for (j, b) in centres.iter().enumerate() {
+                    if i == j || a.0 != b.0 {
+                        continue;
+                    }
+                    nearest = nearest.min(((a.1 - b.1).powi(2) + (a.2 - b.2).powi(2)).sqrt());
+                }
+                // Una pieza sin copia en su región no aporta distancia: contarla como "infinito"
+                // subiría la mediana justo por las piezas que NO se repiten.
+                if nearest < f32::MAX {
+                    gaps.push(nearest);
+                }
+            }
+        }
+    }
+
+    gaps.sort_by(|a, b| a.partial_cmp(b).expect("distancias sin NaN"));
+    let median = gaps[gaps.len() / 2];
+    let worst_decile = gaps[gaps.len() / 10];
+
+    let mut ranking: Vec<(u16, usize)> = used.iter().map(|(k, v)| (*k, *v)).collect();
+    ranking.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+
+    println!(
+        "[wg3] catálogo de {} piezas | {regions} regiones, {total} colocaciones | \
+         distintas usadas {} | vuelve a {median:.0} m de mediana, {worst_decile:.0} m en el peor decil",
+        m.pieces.len(),
+        used.len()
+    );
+    for (piece, n) in &ranking {
+        let id = &m.piece(*piece).expect("pieza fuera del catálogo").id;
+        println!(
+            "[wg3]   {id:<16} {n:>4}  ({:.1} %)",
+            *n as f32 * 100.0 / total as f32
+        );
+    }
+}
