@@ -157,6 +157,20 @@ namespace BackroomsSurvival.WorldGen3
         /// desnivel de verdad —que las dos bocas queden a cotas distintas— es F5.</summary>
         public Wg3StairRun[] stairs = Array.Empty<Wg3StairRun>();
 
+        /// <summary>
+        /// Volúmenes YA HORNEADOS de una pieza AUTORADA. Cuando no está vacío manda sobre
+        /// <see cref="wallThickness"/>, <see cref="pillars"/>, <see cref="blocks"/> y
+        /// <see cref="stairs"/>: la geometría no se genera, se leyó de un modelo dibujado a mano.
+        ///
+        /// El comentario de arriba sigue en pie — WG3 NO cuelga su modelo de <c>RoomDefinition</c>,
+        /// que se mide en tiles de 5 m. Lo que cambia es de dónde sale este array: el editor de
+        /// salas es el TABLERO DE DIBUJO, y al hornear el dibujo se traduce a metros y a esquina
+        /// mínima. Aquí no llega un tile, ni un pivote centrado, ni el tipo del sistema viejo: solo
+        /// cajas, que es lo único que WG3 y Rust entienden. Por eso F7 puede borrar WG2 sin tocar
+        /// una pieza ya horneada.
+        /// </summary>
+        public Wg3Volume[] bakedVolumes = Array.Empty<Wg3Volume>();
+
         /// <summary>Longitud del lado <paramref name="side"/> de una pieza de <paramref name="w"/>
         /// por <paramref name="d"/>. N y S corren en X; E y O corren en Z.</summary>
         public static float SideLength(int side, float w, float d) =>

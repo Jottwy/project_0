@@ -137,6 +137,18 @@ namespace BackroomsSurvival.WorldGen3
             var volumes = new List<Wg3Volume>(32);
             if (piece == null) return volumes;
 
+            // PIEZA AUTORADA: sus volúmenes ya salieron de un modelo dibujado a mano y se hornearon.
+            // Interceptar aquí —y no en el exportador— es lo que mantiene a esta clase como fuente
+            // única: malla, colisión y manifiesto siguen leyendo del mismo sitio, venga la pieza de
+            // un dibujo o de los campos de abajo. Si el corte estuviera en el exportador, la malla
+            // del cliente se seguiría construyendo de `blocks`/`pillars` y volveríamos a tener dos
+            // recorridos que pueden divergir, que es exactamente lo que R2 prohíbe.
+            if (piece.bakedVolumes != null && piece.bakedVolumes.Length > 0)
+            {
+                volumes.AddRange(piece.bakedVolumes);
+                return volumes;
+            }
+
             float w = piece.sizeX, d = piece.sizeZ, h = piece.heightMeters;
             float t = Mathf.Max(0.02f, piece.wallThickness);
 
