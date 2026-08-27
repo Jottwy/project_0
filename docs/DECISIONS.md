@@ -7665,3 +7665,39 @@ selladas, y las juntas se cruzan.
    el proceso del backend.
 3. El toggle `Edit/Play` por menú **puede quedar desincronizado** con lo que uno cree. Confirmar por
    el backend, no por el `OK` del disparador.
+
+## ADR-095 — Enmienda 5: el oráculo mira un catálogo congelado (2026-08-28)
+
+Decisión de Joel, tomada al salir en una revisión del horno de piezas y antes de que pudiera morder.
+
+**El problema.** El exportador ya sustituye el catálogo de código por la biblioteca autorada cuando
+ésta deja de estar vacía. Los dos oráculos —composición y rotación— comparan su digest contra el del
+manifiesto servido, así que el día de la conmutación los dos se ponen rojos **sin que nada esté
+roto**: el mundo servido pasa a ser otro y el oráculo lo lee como una deriva entre idiomas.
+
+**La decisión: el catálogo de código se congela como fixture.**
+`backend/tests/fixtures/wg3_oracle_catalog.json` es la foto del catálogo tal y como se exportó con la
+biblioteca vacía, y los oráculos leen de ahí.
+
+**Por qué congelar y no reexportar desde la biblioteca.** El oráculo prueba que **Rust reproduce el
+algoritmo de C#**; para eso el catálogo es decorado, y lo que hace falta es que sea el MISMO a los dos
+lados, no que sea el que se juega. Un oráculo que se reexporta cada vez que alguien dibuja una pieza
+deja de ser una prueba de regresión y pasa a ser un espejo que siempre se da la razón: cualquier
+divergencia real entre los dos idiomas queda tapada por el ruido de un catálogo que cambia. La
+comparación de digest se conserva entera y sigue cazando lo que cazaba: tocar el catálogo de código y
+olvidar reexportar el oráculo.
+
+**Lo que esto NO cubre, dicho para que nadie lea un verde de más:** el catálogo que se sirve de
+verdad. De eso responden los tests que sí leen el manifiesto servido —ráster, chunk, geometría— y los
+invariantes que no dependen del catálogo: determinismo, cero solapes, ninguna boca al vacío, la junta
+se cruza. La cobertura no se pierde, se reparte, y conviene saber por dónde queda repartida.
+
+**Y una consecuencia que es correcta aunque moleste:** el día de la conmutación, los tests que buscan
+piezas por id en el manifiesto servido (`cor_straight`, `room_pillars`…) fallarán. Deben hacerlo
+—siguen la realidad, y reapuntarlos es parte de conmutar, no un daño colateral—. Su panic dice ahora
+qué hacer y lista las piezas que sí existen, para que no mande a buscar un bug donde solo hay una
+conmutación pendiente.
+
+**Verificado con mutaciones, no declarado:** con el manifiesto servido alterado el oráculo sigue
+verde (ya no lo lee); con el congelado alterado falla con «el oráculo es de otro catálogo». Commit
+`37d0e309`, suite 1065/0/34.
