@@ -72,6 +72,105 @@ namespace BackroomsSurvival.WorldGen3
             string shot = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "wg3_live.png");
             ScreenCapture.CaptureScreenshot(shot);
             Debug.Log($"[WG3] captura de la vista de juego en {shot}");
+
+            if (autoCrossJunction && grounded)
+            {
+                _cross = Cross.Searching;
+                // Un radio más para que la región de enfrente esté montada ANTES de pisar la junta:
+                // cruzar hacia geometría que aún no ha llegado mediría el streaming, no la junta.
+                if (streamer != null) streamer.radius = Mathf.Max(streamer.radius, 2);
+            }
+        }
+
+        /// <summary>
+        /// Busca por dónde se cruza la junta más cercana, y lo hace MIRANDO LA GEOMETRÍA en vez de
+        /// preguntando dónde están las puertas.
+        ///
+        /// El cliente no conoce el contrato de junta —ni tiene por qué: solo recibe piezas—, así que
+        /// barre la línea del borde buscando un punto con suelo debajo y hueco a la altura de la
+        /// cabeza. Si lo encuentra, ahí hay una puerta; y si el contrato estuviera roto, no habría
+        /// ninguno y el barrido lo diría. Es una comprobación más honesta que teletransportar a una
+        /// coordenada que el servidor haya chivado.
+        /// </summary>
+        private void BeginCrossing()
+        {
+            Vector3 at = player.transform.position;
+            _crossBorderX = Mathf.Round(at.x / RegionMeters) * RegionMeters;
+
+            const float Span = 70f;
+            const float Step = 0.5f;
+            float bestZ = float.NaN;
+            float bestDistance = float.MaxValue;
+
+            for (float z = at.z - Span; z <= at.z + Span; z += Step)
+            {
+                var probe = new Vector3(_crossBorderX, at.y + 2.5f, z);
+                if (!Physics.Raycast(probe, Vector3.down, out RaycastHit hit, 6f)) continue;
+
+                // Hueco a la altura de la cabeza sobre ese suelo. Sin esto, el barrido se casaría con
+                // el techo de una pieza o con la cara superior de un bloque macizo.
+                Vector3 stand = hit.point + Vector3.up * 0.9f;
+                if (Physics.CheckSphere(stand, 0.35f)) continue;
+
+                float d = Mathf.Abs(z - at.z);
+                if (d < bestDistance)
+                {
+                    bestDistance = d;
+                    bestZ = hit.point.z;
+                }
+            }
+
+            if (float.IsNaN(bestZ))
+            {
+                Debug.LogError(
+                    $"[WG3] CRUCE: no hay ni un punto caminable en la junta x={_crossBorderX:0} " +
+                    $"a lo largo de {Span * 2:0} m. O el contrato de junta no está poniendo puertas, " +
+                    $"o la región de enfrente no ha llegado.", this);
+                _cross = Cross.Done;
+                return;
+            }
+
+            // Se arranca ANTES de la junta y se cruza de lado a lado, para que el veredicto cubra el
+            // paso y no solo el llegar.
+            _crossStartX = _crossBorderX - 7f;
+            player.Respawn(new Vector3(_crossStartX, player.transform.position.y, bestZ));
+            _crossLowestY = player.transform.position.y;
+            _crossDeadline = Time.time + 20f;
+            _cross = Cross.Walking;
+            Debug.Log($"[WG3] CRUCE: junta en x={_crossBorderX:0}, entrando por z={bestZ:0.00}");
+        }
+
+        private void StepCrossing()
+        {
+            var controller = player.GetComponent<CharacterController>();
+            controller.Move((Vector3.right * 2.5f + Vector3.down * 4f) * Time.deltaTime);
+            _crossLowestY = Mathf.Min(_crossLowestY, player.transform.position.y);
+
+            float travelled = player.transform.position.x - _crossStartX;
+            bool crossed = player.transform.position.x > _crossBorderX + 5f;
+
+            if (crossed)
+            {
+                _cross = Cross.Done;
+                float fell = _crossStartX == 0f ? 0f : player.transform.position.y - _crossLowestY;
+                Debug.Log(
+                    $"[WG3] CRUCE OK — la junta x={_crossBorderX:0} se cruza andando. " +
+                    $"recorrido {travelled:0.0} m, y final {player.transform.position.y:0.00}, " +
+                    $"y mínima {_crossLowestY:0.00} (caída {fell:0.00} m)");
+                string shot = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "wg3_cross.png");
+                ScreenCapture.CaptureScreenshot(shot);
+                return;
+            }
+
+            if (Time.time > _crossDeadline)
+            {
+                _cross = Cross.Done;
+                Debug.LogError(
+                    $"[WG3] CRUCE FALLA — 20 s empujando y no se pasa de x={player.transform.position.x:0.0} " +
+                    $"(junta en {_crossBorderX:0}). Hay algo tapiando la puerta.", this);
+                string shot = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "wg3_cross.png");
+                ScreenCapture.CaptureScreenshot(shot);
+            }
         }
 
         private void Start()
@@ -87,10 +186,33 @@ namespace BackroomsSurvival.WorldGen3
             Debug.Log($"[WG3] arrancando sesión en vivo, semilla {worldSeed}, WorldGen3 ACTIVO");
         }
 
+        [Header("Cruce de junta (ADR-096 verificación (e))")]
+        [Tooltip("Tras aterrizar, busca una junta de región y la cruza andando, solo.")]
+        public bool autoCrossJunction = true;
+
+        /// <summary>
+        /// Lado de región en metros. **Espejo de `REGION_M` en Rust**, y duplicado a sabiendas: el
+        /// cliente no necesita saber de regiones para jugar —solo recibe piezas— y este número
+        /// existe únicamente para que el arnés sepa DÓNDE mirar. Si algún día el cliente necesitara
+        /// la región para algo real, iría por el wire y no por una constante repetida.
+        /// </summary>
+        public const float RegionMeters = 150f;
+
+        private enum Cross { Idle, Searching, Walking, Done }
+        private Cross _cross = Cross.Idle;
+        private float _crossStartX;
+        private float _crossBorderX;
+        private float _crossLowestY;
+        private float _crossDeadline;
+
         private void Update()
         {
             if (_placed && !_verdictGiven && _verdictAt > 0f && Time.time >= _verdictAt)
                 GiveVerdict();
+
+            if (_cross == Cross.Searching) BeginCrossing();
+            else if (_cross == Cross.Walking) StepCrossing();
+
             if (_placed) return;
 
             if (streamer != null && player != null && streamer.TryGetSpawnPoint(out Vector3 point))
