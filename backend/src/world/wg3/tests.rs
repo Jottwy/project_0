@@ -1504,3 +1504,96 @@ fn the_world_has_floor_where_the_player_appears() {
         "hueco de {head} m en el origen: no se cabe de pie"
     );
 }
+
+/// SONDA DE MEDIDA, no aserción — ADR-096 enmienda 2. Imprime la geometría de los anillos que NO se
+/// cierran: a qué distancia quedan las bocas abiertas compatibles, cuántas llegan a mirarse de frente
+/// y con cuánto desvío lateral. De aquí salen los números de esa enmienda.
+///
+/// `#[ignore]` porque no afirma nada y tarda: es una regla para medir, no un criterio de corrección.
+/// Lanzarla sola:
+/// `cargo test --manifest-path backend/Cargo.toml probe_ring_geometry -- --ignored --nocapture`
+#[test]
+#[ignore = "sonda de medida: imprime, no afirma"]
+fn probe_ring_geometry() {
+    let m = real_manifest();
+    let settings = compose::Wg3ComposerSettings {
+        budget: 300,
+        ..compose::Wg3ComposerSettings::default()
+    };
+
+    for seed in [42i32, 7, 1337, -19, 900_001, 0] {
+        let w = compose::compose(seed, &m, &settings);
+
+        // Todas las bocas del mundo, en coordenadas de mundo.
+        let mut sockets: Vec<(f32, f32, u8, u8, f32, f32)> = Vec::new();
+        for c in &w.placements {
+            let Some(piece) = m.piece(c.placement.piece) else {
+                continue;
+            };
+            for i in 0..piece.sockets.len() {
+                let (x, z) = c.placement.world_socket_point(piece, i);
+                let sk = &piece.sockets[i];
+                sockets.push((
+                    x,
+                    z,
+                    c.placement.world_side(piece, i),
+                    sk.kind,
+                    sk.width,
+                    sk.floor_y,
+                ));
+            }
+        }
+
+        // Conectada = otra boca en el mismo punto. El resto están abiertas o taponadas, que para
+        // esta medida es lo mismo: son las que un anillo podría haber usado.
+        let open: Vec<_> = sockets
+            .iter()
+            .filter(|a| {
+                sockets
+                    .iter()
+                    .filter(|b| (b.0 - a.0).abs() < 0.01 && (b.1 - a.1).abs() < 0.01)
+                    .count()
+                    < 2
+            })
+            .collect();
+
+        let mut nearest = f32::MAX;
+        let mut facing: Vec<(f32, f32)> = Vec::new();
+        for (i, a) in open.iter().enumerate() {
+            for b in open.iter().skip(i + 1) {
+                let compatible = (a.2 + 2) % 4 == b.2
+                    && a.3 == b.3
+                    && (a.4 - b.4).abs() <= 0.001
+                    && (a.5 - b.5).abs() <= 0.01;
+                if !compatible {
+                    continue;
+                }
+                let (dx, dz) = (b.0 - a.0, b.1 - a.1);
+                nearest = nearest.min((dx * dx + dz * dz).sqrt());
+
+                // En el marco de la boca `a`: cuánto hay que avanzar y cuánto corregir de lado.
+                let (nx, nz) = placement::outward_normal(a.2);
+                let axial = dx * nx + dz * nz;
+                if axial > 0.0 {
+                    facing.push((axial, (dx * nz - dz * nx).abs()));
+                }
+            }
+        }
+
+        let aligned = facing.iter().filter(|f| f.1 < 0.02).count();
+        let best = facing
+            .iter()
+            .min_by(|x, y| x.1.partial_cmp(&y.1).unwrap_or(std::cmp::Ordering::Equal));
+        println!(
+            "[wg3] semilla {seed}: {} piezas, {} bocas ({} sin pareja) | mas cercana {:.2} m | se miran {} | alineadas <2cm {} | mejor alineada: {}",
+            w.placements.len(),
+            sockets.len(),
+            open.len(),
+            nearest,
+            facing.len(),
+            aligned,
+            best.map(|f| format!("lateral {:.2} m con {:.1} m de avance", f.1, f.0))
+                .unwrap_or_else(|| "ninguna".into())
+        );
+    }
+}

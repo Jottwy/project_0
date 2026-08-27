@@ -7526,3 +7526,43 @@ malas: elegir `WORLD_SEED` deja de ser indiferente mientras esto siga así.
 
 Verde al cerrar: **1055 tests**, clippy `--all-targets -D warnings`, `cargo fmt`. Siete tests nuevos,
 y el que mide el tamaño del mundo imprime las cifras en vez de suponerlas.
+
+---
+
+## ADR-096 — Enmienda 2: qué tendría que ser un conector, medido (2026-08-27)
+
+La enmienda 1 cierra bien el diagnóstico —los bucles por coincidencia no pueden funcionar, y la causa
+es el rechazo por solape— y apunta un remedio: *"un mecanismo activo […] exige una familia de
+conectores de longitudes distintas"*. **Esa frase, tal cual, manda a autorar lo que no basta.** Medido
+desde el otro lado, con una sonda independiente (`probe_ring_geometry`, `#[ignore]` con motivo), sobre
+las mismas semillas y sin acotar por región:
+
+| | medida |
+|---|---|
+| Par de bocas abiertas compatibles más cercano | **6,25 m** (peor semilla: 71 m) |
+| Pares por debajo de 3 m | **0**, en las seis semillas |
+| Pares que además se MIRAN (normales enfrentadas) | 23 a 258 por mundo |
+| De ésos, con desvío lateral < 2 cm | **0** |
+| El mejor alineado de todos | 0,10 m de lateral, con **52,7 m** de avance |
+
+Es la misma conclusión de la enmienda 1 vista con otra regla, y confirma su causa: las ramas se
+rechazan **a una pieza de distancia**, que aquí sale como ese suelo de 6 m que nunca se baja.
+
+**Lo que añade, y es lo único que cambia una decisión de autorado:** el problema NO es de longitud.
+Ninguna pareja está alineada — el desvío lateral es de metros, y el hueco a salvar de decenas o
+cientos de metros. Una familia de pasillos rectos de longitudes variadas no cierra ni uno solo de los
+anillos medidos. Lo que hace falta es **ruta**: longitud, giro y corrección lateral, o sea una cadena
+de piezas tendida a propósito hacia un destino. Un conector recto, por muchas tallas que tenga, es la
+pieza equivocada.
+
+**Consecuencia práctica, que es donde duele:** esto deja de ser trabajo de catálogo y vuelve a ser
+trabajo de algoritmo. Autorar diez pasillos de diez longitudes es una tarde de modelado y no habría
+cerrado nada; el enrutador es la pieza cara. Decirlo ahora vale una tarde y evita que el resultado se
+lea como "los conectores no funcionan".
+
+**Esta enmienda no decide nada**: no propone construir el enrutador, no mueve N y no toca A2. Deja
+apuntado con números qué forma tiene el problema para cuando los bucles vuelvan, que es lo que la
+enmienda 1 dejó "aparte" y sin dimensionar.
+
+La sonda queda en el árbol e ignorada por defecto —imprime, no afirma—, con el comando para lanzarla
+sola en su propio comentario. Un número de un ADR que nadie puede volver a medir envejece a mentira.
