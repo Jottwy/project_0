@@ -134,6 +134,11 @@ namespace BackroomsSurvival.Net
         private readonly List<SprayHandler> _sprayListeners = new List<SprayHandler>();
 
         /// <summary>ADR-078 — trozos de trazo ajeno en vivo.</summary>
+        /// <summary>ADR-095 — un chunk de WorldGen3 recién llegado. Se notifica en el hilo
+        /// principal por la misma razón que los demás: el consumidor instancia GameObjects.</summary>
+        public delegate void Wg3ChunkHandler(Wg3ChunkMsg chunk);
+        private readonly List<Wg3ChunkHandler> _wg3ChunkListeners = new List<Wg3ChunkHandler>();
+
         public delegate void SprayDraftHandler(SprayDraftMsg draft);
         private readonly List<SprayDraftHandler> _sprayDraftListeners = new List<SprayDraftHandler>();
 
@@ -149,6 +154,8 @@ namespace BackroomsSurvival.Net
         public void RemoveSprayListener(SprayHandler handler) { lock (_sprayListeners) _sprayListeners.Remove(handler); }
         public void AddSprayDraftListener(SprayDraftHandler handler) { lock (_sprayDraftListeners) _sprayDraftListeners.Add(handler); }
         public void RemoveSprayDraftListener(SprayDraftHandler handler) { lock (_sprayDraftListeners) _sprayDraftListeners.Remove(handler); }
+        public void AddWg3ChunkListener(Wg3ChunkHandler handler) { lock (_wg3ChunkListeners) _wg3ChunkListeners.Add(handler); }
+        public void RemoveWg3ChunkListener(Wg3ChunkHandler handler) { lock (_wg3ChunkListeners) _wg3ChunkListeners.Remove(handler); }
 
         /// <summary>
         /// Suscriptores que ya lanzaron y cuyo fallo ya se reportó.
@@ -207,6 +214,14 @@ namespace BackroomsSurvival.Net
             lock (_deltaListeners) snapshot = _deltaListeners.ToArray();
             foreach (var h in snapshot)
                 try { h(delta); } catch (Exception e) { ReportListenerFailure(h, e); }
+        }
+
+        private void NotifyWg3ChunkListeners(Wg3ChunkMsg chunk)
+        {
+            Wg3ChunkHandler[] snapshot;
+            lock (_wg3ChunkListeners) snapshot = _wg3ChunkListeners.ToArray();
+            foreach (var h in snapshot)
+                try { h(chunk); } catch (Exception e) { ReportListenerFailure(h, e); }
         }
 
         private void NotifyChunkDataListeners(GridChunkDataMsg data)
@@ -379,6 +394,7 @@ namespace BackroomsSurvival.Net
         private readonly ConcurrentQueue<GridChunkDataMsg> _pendingChunkDataNotify = new ConcurrentQueue<GridChunkDataMsg>();
         private readonly ConcurrentQueue<SprayMsg> _pendingSprayNotify = new ConcurrentQueue<SprayMsg>();
         private readonly ConcurrentQueue<SprayDraftMsg> _pendingSprayDraftNotify = new ConcurrentQueue<SprayDraftMsg>();
+        private readonly ConcurrentQueue<Wg3ChunkMsg> _pendingWg3ChunkNotify = new ConcurrentQueue<Wg3ChunkMsg>();
 
         private void Update()
         {
@@ -398,6 +414,8 @@ namespace BackroomsSurvival.Net
                 NotifySprayListeners(spray);
             while (_pendingSprayDraftNotify.TryDequeue(out var draft))
                 NotifySprayDraftListeners(draft);
+            while (_pendingWg3ChunkNotify.TryDequeue(out var wg3Chunk))
+                NotifyWg3ChunkListeners(wg3Chunk);
         }
 
         private void OnDestroy() => Shutdown();
@@ -580,6 +598,11 @@ namespace BackroomsSurvival.Net
                     // Texture2D y GameObjects, que la API de Unity solo permite ahí).
                     _pendingSprayNotify.Enqueue(SprayPlacedMsg.Parse(r, remaining));
                     break;
+                case ProtocolMessageTypes.Wg3Chunk:
+                    // ADR-095: la lista de piezas de un chunk de WG3 → Wg3ChunkStreamer, en el hilo
+                    // principal, porque acaba instanciando GameObjects y mallas.
+                    _pendingWg3ChunkNotify.Enqueue(Wg3ChunkMsg.Parse(r, remaining));
+                    break;
                 case ProtocolMessageTypes.SprayDraft:
                     // ADR-078: trozo de un trazo ajeno en curso. Por la misma cola de hilo
                     // principal y por la misma razón: acaba creando texturas.
@@ -620,11 +643,26 @@ namespace BackroomsSurvival.Net
         /// socket. Closing it from the network thread first would steal that save. `_schemaMismatch`
         /// covers the gap instead — later frames are dropped without being parsed.
         /// </summary>
+        /// <summary>ADR-095 — si el backend de esta sesión sirve mundo de WorldGen3. Falso hasta
+        /// que llega el saludo, que es el estado correcto: antes de él no se sabe.</summary>
+        public bool Wg3Enabled { get; private set; }
+
+        /// <summary>ADR-095 — digest del catálogo que cargó el backend, o vacío. Lo compara el
+        /// consumidor de WG3 contra el suyo antes de dibujar nada.</summary>
+        public string Wg3ManifestDigest { get; private set; } = "";
+
         private void HandleHello(HelloMsg hello)
         {
+            // Se guardan ANTES de la puerta de versión: si la versión no casa la sesión se rechaza
+            // igual, pero dejar estos campos sin poner haría que un consumidor que los mirase
+            // creyera que el backend es de WG2 en vez de que la sesión no vale.
+            Wg3Enabled = hello.wg3Enabled;
+            Wg3ManifestDigest = hello.wg3ManifestDigest ?? "";
+
             if (WireSchema.IsCompatible(hello.schemaVersion))
             {
-                Debug.Log($"[IPCClient] Wire schema v{hello.schemaVersion} confirmed");
+                Debug.Log($"[IPCClient] Wire schema v{hello.schemaVersion} confirmed" +
+                          (Wg3Enabled ? $" · WorldGen3 activo, catálogo {Wg3ManifestDigest.Substring(0, Math.Min(12, Wg3ManifestDigest.Length))}…" : ""));
                 return;
             }
 
@@ -834,6 +872,26 @@ namespace BackroomsSurvival.Net
             w.WriteString("cx"); w.WriteInt(cx);
             w.WriteString("cz"); w.WriteInt(cz);
             w.WriteString("layer"); w.WriteInt(layer);
+            return SendFrame(w);
+        }
+
+        /// <summary>
+        /// ADR-095 — pide el chunk de WorldGen3 (<c>ClientMessage::RequestWg3Chunk</c>).
+        ///
+        /// SIN `layer`, y no es un olvido: con columnas de tramos la capa deja de existir como
+        /// restricción de geometría, así que un chunk de WG3 es uno solo y cubre toda la altura.
+        ///
+        /// Devuelve false si la trama no llegó a salir. El llamante lo usa para NO marcar el chunk
+        /// como pedido — es la misma trampa que <see cref="SendRequestChunk"/> ya documenta: un
+        /// chunk marcado por una petición que nunca salió se queda vacío para siempre.
+        /// </summary>
+        public bool SendRequestWg3Chunk(int cx, int cz)
+        {
+            var w = RentWriter();
+            w.WriteMapHeader(3);
+            w.WriteString("type"); w.WriteString("request_wg3_chunk");
+            w.WriteString("cx"); w.WriteInt(cx);
+            w.WriteString("cz"); w.WriteInt(cz);
             return SendFrame(w);
         }
 
