@@ -42,6 +42,7 @@ namespace BackroomsSurvival.EditorTools
             asset.heightMeters = baked.heightMeters;
             asset.sockets = baked.sockets;
             asset.volumes = baked.volumes;
+            asset.visualPivot = baked.pivot;
 
             EditorUtility.SetDirty(asset);
             AssetDatabase.SaveAssets();

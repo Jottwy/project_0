@@ -50,6 +50,12 @@ namespace BackroomsSurvival.WorldGen3
             /// dicen: un autor que esperaba tres bocas y ve dos merece saber por qué.</summary>
             public int windows;
 
+            /// <summary>Dónde queda el origen del MODELO en coordenadas de la pieza. El editor de
+            /// salas dibuja centrado en (0,0) y WG3 mide desde la esquina mínima, así que este
+            /// desplazamiento es lo que hace que la malla autorada caiga sobre su propia colisión y
+            /// no media pieza más allá.</summary>
+            public Vector2 pivot;
+
             public List<string> issues = new List<string>();
             public bool Ok => issues.Count == 0;
         }
@@ -91,6 +97,10 @@ namespace BackroomsSurvival.WorldGen3
             result.sizeX = max.x - min.x;
             result.sizeZ = max.y - min.y;
             result.heightMeters = def.heightMeters;
+
+            // El origen del modelo, visto desde la esquina mínima. Es la MISMA traslación que se
+            // aplica a las cajas unas líneas más abajo, guardada para que la malla la reciba también.
+            result.pivot = -min;
             result.sockets = BakeSockets(def, inner, t, min, max, result, who).ToArray();
             result.volumes = BakeVolumes(def, min).ToArray();
 

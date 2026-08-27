@@ -63,10 +63,14 @@ namespace BackroomsSurvival.WorldGen3
         /// <summary>La chuleta: cajas en coordenadas locales con la esquina mínima en (0,0).</summary>
         public Wg3Volume[] volumes = Array.Empty<Wg3Volume>();
 
-        /// <summary>Malla visual horneada. Vacío mientras el cliente siga dibujando las cajas de
-        /// <see cref="volumes"/>; lo consume la rebanada 2. Que se pueda quedar vacío es
-        /// deliberado: la pieza ya es jugable —y colisiona— antes de tener una sola moldura.</summary>
+        /// <summary>Malla visual horneada. Nula = el cliente dibuja las cajas de
+        /// <see cref="volumes"/>. Que se pueda quedar vacía es deliberado: la pieza ya es jugable
+        /// —y colisiona— antes de tener una sola moldura.</summary>
         public GameObject visualPrefab;
+
+        /// <summary>Dónde cae el pivote del prefab en coordenadas de la pieza. Lo escribe el horno;
+        /// tocarlo a mano descoloca la malla respecto a su colisión.</summary>
+        public Vector2 visualPivot;
 
         /// <summary>
         /// EL MODELO del que salió esta pieza, para poder volver a abrirla y seguir tocándola.
@@ -97,7 +101,9 @@ namespace BackroomsSurvival.WorldGen3
             minDepth = minDepth,
             isDeadEnd = isDeadEnd,
             sockets = sockets ?? Array.Empty<Wg3Socket>(),
-            bakedVolumes = volumes ?? Array.Empty<Wg3Volume>()
+            bakedVolumes = volumes ?? Array.Empty<Wg3Volume>(),
+            visualPrefab = visualPrefab,
+            visualPivot = visualPivot
         };
     }
 }

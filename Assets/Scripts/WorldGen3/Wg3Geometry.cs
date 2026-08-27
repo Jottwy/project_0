@@ -310,8 +310,13 @@ namespace BackroomsSurvival.WorldGen3
 
         /// <summary>El mismo giro horario que <see cref="Wg3Placement.WorldPoint"/>. Duplicado a
         /// propósito en vez de compartido: son dos usos con vidas distintas —uno es el contrato de
-        /// composición, el otro el de geometría— y hay un test que los ata.</summary>
-        private static Vector2 RotateLocal(Vector2 p, int r, float w, float d)
+        /// composición, el otro el de geometría— y hay un test que los ata.
+        ///
+        /// PÚBLICO desde la rebanada 2 del catálogo autorado: el ensamblador coloca la malla
+        /// autorada con ESTA función y no con una copia suya. Una segunda implementación del mismo
+        /// giro es una que puede desviarse, y el síntoma sería la malla en un sitio y su colisión en
+        /// otro — que es el peor fallo posible del cliente y además no se ve en una captura.</summary>
+        public static Vector2 RotateLocal(Vector2 p, int r, float w, float d)
         {
             switch (r & 3)
             {

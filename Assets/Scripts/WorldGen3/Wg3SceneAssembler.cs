@@ -58,18 +58,63 @@ namespace BackroomsSurvival.WorldGen3
                 go.transform.SetParent(parent, false);
                 go.transform.position = origin;
 
-                Mesh mesh = Wg3MeshBuilder.Build(volumes, origin);
-                mesh.name = $"wg3_{placement.piece.id}_{i}";
-                mesh.hideFlags = HideFlags.DontSave;
-                createdMeshes?.Add(mesh);
+                if (placement.piece.visualPrefab != null)
+                {
+                    SpawnAuthoredVisual(go, placement);
+                }
+                else
+                {
+                    Mesh mesh = Wg3MeshBuilder.Build(volumes, origin);
+                    mesh.name = $"wg3_{placement.piece.id}_{i}";
+                    mesh.hideFlags = HideFlags.DontSave;
+                    createdMeshes?.Add(mesh);
 
-                go.AddComponent<MeshFilter>().sharedMesh = mesh;
-                var renderer = go.AddComponent<MeshRenderer>();
-                if (mats != null) renderer.sharedMaterials = mats;
+                    go.AddComponent<MeshFilter>().sharedMesh = mesh;
+                    var renderer = go.AddComponent<MeshRenderer>();
+                    if (mats != null) renderer.sharedMaterials = mats;
+                }
 
+                // LOS COLLIDERS SALEN DE LOS VOLÚMENES SIEMPRE, tenga la pieza malla autorada o no.
+                // Es lo que mantiene al cliente chocando contra lo mismo que el servidor: la chuleta
+                // es el único dato que cruzó la frontera de autoridad.
                 AddColliders(go, volumes, origin);
 
                 if (addLights) AddCeilingLight(go, placement);
+            }
+        }
+
+        /// <summary>
+        /// Mete la malla autorada de la pieza dentro de su GameObject, colocada como su colisión.
+        ///
+        /// USA <see cref="Wg3Geometry.RotateLocal"/>, la misma función con la que se colocan los
+        /// volúmenes, en vez de recomponer el giro aquí. Dos implementaciones del mismo mapeo son
+        /// dos que pueden desviarse, y el síntoma —la malla en un sitio y la colisión en otro— no se
+        /// ve en una captura: se descubre atravesando una pared que se dibuja un metro más allá.
+        ///
+        /// El pivote entra en esa cuenta como un punto local más: el editor de salas centra el
+        /// prefab en su footprint y WG3 mide desde la esquina mínima, así que sin él la malla sale
+        /// corrida media pieza.
+        /// </summary>
+        private static void SpawnAuthoredVisual(GameObject root, Wg3Placement placement)
+        {
+            Wg3Piece piece = placement.piece;
+            int r = placement.rotation & 3;
+            Vector2 p = Wg3Geometry.RotateLocal(piece.visualPivot, r, piece.sizeX, piece.sizeZ);
+
+            GameObject visual = Object.Instantiate(piece.visualPrefab, root.transform, false);
+            visual.name = "visual";
+            visual.hideFlags = HideFlags.DontSave;
+            visual.transform.localPosition = new Vector3(p.x, 0f, p.y);
+            visual.transform.localRotation = Quaternion.Euler(0f, r * 90f, 0f);
+
+            // FUERA LOS COLLIDERS QUE TRAIGA EL PREFAB. Un prefab autorado con el editor de salas
+            // viene con los suyos, y dejarlos vivos daría al cliente una colisión que el servidor no
+            // tiene: se bloquea donde el servidor deja pasar, y el jugador se ve empujado de vuelta
+            // por una corrección que desde dentro parece un tirón sin causa.
+            foreach (Collider stray in visual.GetComponentsInChildren<Collider>(true))
+            {
+                if (Application.isPlaying) Object.Destroy(stray);
+                else Object.DestroyImmediate(stray);
             }
         }
 

@@ -171,6 +171,27 @@ namespace BackroomsSurvival.WorldGen3
         /// </summary>
         public Wg3Volume[] bakedVolumes = Array.Empty<Wg3Volume>();
 
+        /// <summary>
+        /// La malla autorada que dibuja esta pieza. SOLO CLIENTE: no viaja en el manifiesto, no
+        /// entra en el digest y el servidor no sabe que existe. Nula = la pieza se dibuja con las
+        /// cajas de <see cref="bakedVolumes"/>, que es lo que pasa con todo el catálogo de código.
+        ///
+        /// Es la línea de R25 llevada a su conclusión: lo que no bloquea, no cruza la frontera de
+        /// autoridad. El detalle visual de una pieza —molduras, rodapiés, props— vive aquí y el
+        /// servidor sigue colisionando contra las mismas cajas de siempre.
+        /// </summary>
+        public GameObject visualPrefab;
+
+        /// <summary>
+        /// Dónde cae el pivote del prefab en coordenadas locales de la pieza, en metros.
+        ///
+        /// Hace falta porque los dos contratos de pivote NO coinciden: el editor de salas centra el
+        /// prefab en su footprint y WG3 pone el origen en la esquina mínima. Sin este desplazamiento
+        /// la malla sale corrida media pieza respecto a su colisión, y en una captura se ve
+        /// perfectamente normal — hasta que atraviesas una pared que se dibuja un metro más allá.
+        /// </summary>
+        public Vector2 visualPivot;
+
         /// <summary>Longitud del lado <paramref name="side"/> de una pieza de <paramref name="w"/>
         /// por <paramref name="d"/>. N y S corren en X; E y O corren en Z.</summary>
         public static float SideLength(int side, float w, float d) =>
