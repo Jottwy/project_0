@@ -39,5 +39,10 @@ namespace BackroomsSurvival.Net
         /// Efímero: se dibuja como previa y se tira al llegar el <c>spray_placed</c> con el
         /// mismo <c>place_id</c>, o a los tres segundos sin noticias.</summary>
         public const string SprayDraft = "spray_draft";
+
+        /// <summary>ADR-095, wire v46 — el chunk de WorldGen3: la lista de piezas colocadas, no
+        /// geometría. Once bytes por pieza, porque el catálogo horneado ya está en el build de
+        /// las dos partes. Respuesta a <c>request_wg3_chunk</c>.</summary>
+        public const string Wg3Chunk = "wg3_chunk";
     }
 }

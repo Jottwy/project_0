@@ -41,6 +41,26 @@ namespace BackroomsSurvival.Net
     {
         public uint schemaVersion;
 
+        /// <summary>
+        /// ADR-095 D3 — si el backend sirve mundo de WorldGen3.
+        ///
+        /// Ausente por completo en el saludo mientras WG3 esté apagado (el backend lo omite del
+        /// mapa), y `false` es exactamente la lectura correcta de esa ausencia. El cliente tiene
+        /// que saberlo ANTES de pedir un chunk, o pediría por el camino equivocado y se quedaría
+        /// esperando una respuesta que nadie va a mandar.
+        /// </summary>
+        public bool wg3Enabled;
+
+        /// <summary>
+        /// ADR-095 — digest del catálogo que cargó el backend, o vacío.
+        ///
+        /// **Es el único aviso posible del fallo silencioso más caro de WG3.** Cliente y servidor
+        /// hornean el catálogo por separado; si no coinciden, la geometría que se dibuja y la que
+        /// bloquea son de mundos distintos, nada da error, y el síntoma es atravesar paredes que
+        /// se ven.
+        /// </summary>
+        public string wg3ManifestDigest = "";
+
         public static HelloMsg Parse(MsgPackReader r, int remainingPairs)
         {
             var m = new HelloMsg();
@@ -48,6 +68,8 @@ namespace BackroomsSurvival.Net
             {
                 var k = r.ReadKey();
                 if (MsgPackReader.Is(k, "schema_version")) m.schemaVersion = (uint)r.ReadInt();
+                else if (MsgPackReader.Is(k, "wg3_enabled")) m.wg3Enabled = r.ReadBool();
+                else if (MsgPackReader.Is(k, "wg3_manifest_digest")) m.wg3ManifestDigest = r.ReadString();
                 else r.Skip();
             }
             return m;

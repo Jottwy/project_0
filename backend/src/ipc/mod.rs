@@ -1175,6 +1175,64 @@ mod tests {
         assert_eq!(body, expected.as_slice());
     }
 
+    /// ADR-095 — las claves que escribe Rust son EXACTAMENTE las que busca el parser de C#.
+    ///
+    /// Es el único fallo realista de este mensaje y es silencioso: el contrato de decodificación
+    /// del cliente obliga a `else r.Skip()`, así que una clave renombrada aquí no da error al otro
+    /// lado — **se salta y el campo queda a su valor por defecto**. Una pieza renombrada saldría
+    /// como `piece = 0` en todo el mundo; un `origin_x_cm` renombrado, como todas las piezas
+    /// apiladas en el origen del chunk. Nada peta y todo está mal.
+    ///
+    /// Se comprueba sobre los BYTES y no sobre el struct porque lo que viaja son los bytes: un
+    /// `#[serde(rename)]` mal puesto no cambia el struct.
+    #[test]
+    fn the_wg3_chunk_encodes_the_keys_the_client_parser_looks_for() {
+        let frame = encode(&ServerMessage::Wg3Chunk(Wg3ChunkView {
+            cx: -3,
+            cz: 7,
+            placements: vec![Wg3PlacementWire {
+                piece: 5,
+                rotation: 2,
+                origin_x_cm: -12_345,
+                origin_z_cm: 6_789,
+            }],
+        }))
+        .unwrap();
+
+        let body = String::from_utf8_lossy(&frame).to_string();
+        for key in [
+            "type",
+            "wg3_chunk",
+            "cx",
+            "cz",
+            "placements",
+            "piece",
+            "rotation",
+            "origin_x_cm",
+            "origin_z_cm",
+        ] {
+            assert!(
+                body.contains(key),
+                "falta la clave {key:?} en el frame: el parser de C# la busca por nombre y, si no \
+                 está, la SALTA en silencio"
+            );
+        }
+
+        // Y el ida y vuelta conserva el signo. Un `u32` por descuido en cualquiera de los dos lados
+        // mandaría todo el hemisferio negativo del mundo a coordenadas absurdas.
+        let decoded: ServerMessage = decode(&frame[4..]).unwrap();
+        match decoded {
+            ServerMessage::Wg3Chunk(v) => {
+                assert_eq!(-3, v.cx);
+                assert_eq!(1, v.placements.len());
+                assert_eq!(-12_345, v.placements[0].origin_x_cm);
+                assert_eq!(6_789, v.placements[0].origin_z_cm);
+                assert_eq!(2, v.placements[0].rotation);
+            }
+            other => panic!("esperaba wg3_chunk, llegó {other:?}"),
+        }
+    }
+
     /// ADR-095 — con WG3 apagado el saludo tiene que salir BYTE A BYTE como antes de que existiera.
     ///
     /// No es cosmética: el saludo es lo ÚNICO que informa de un desajuste de versión (ADR-061), así
