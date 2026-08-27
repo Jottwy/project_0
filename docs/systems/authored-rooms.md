@@ -194,3 +194,29 @@ Sea cual sea, hace falta una **guarda de versión del pool**: si el cliente pint
 - Catálogo: `RoomPool.cs` → `Assets/Resources/Rooms/RoomPool.asset`.
 - Herramienta: `Assets/Editor/RoomAuthoringWindow.cs` (+ `.Props.cs`).
 - Tests: `Assets/Tests/EditMode/RoomMeshTests.cs` y el arnés `RoomGeometry.cs`. La invariante fuerte es `AssertRoom`: cascarón cerrado, sin aristas repetidas y con las normales bien.
+
+---
+
+## 8. Amueblar una sala autorada, hoy: hijos en el prefab
+
+`RoomMarker` sigue sin consumidor (seccion 7), asi que un marcador de prop NO pone nada en juego.
+Y los props procedurales estan EXCLUIDOS de los tiles de una sala autorada
+(`IsAuthoredRoomTile`), porque spawnearian dentro de su geometria. Sumadas, las dos cosas dejan un
+efecto que sorprende la primera vez: **en una zona amueblada, la sala autorada es lo unico vacio**.
+
+La via que si funciona hoy, sin ADR y sin tocar wire: **anadir el mobiliario como hijos en el
+prefab de la sala**, despues de hornearla. El cliente instancia el prefab entero, asi que los hijos
+viajan con el, con sus mallas y sus colliders.
+
+Dos cosas que hay que saber antes de usarla:
+
+1. **El horneado REHACE el prefab.** `SaveAsPrefabAsset` borra cualquier hijo anadido a mano, asi
+   que el mobiliario tiene que venir de un script y no de arrastrarlo en la jerarquia. Es el mismo
+   modo de fallo que se llevo por medio los `m_IsKinematic` en el avatar remoto: se arregla en el
+   BUILDER, nunca solo en el asset.
+2. **La colision de esos hijos es de cliente**, como la de cualquier prop. `collisionBoxes` sigue
+   sin consumidor y el robapieles atraviesa el mobiliario igual que atraviesa todo lo que no sea
+   celda de `grid_gen`.
+
+Ejemplo vivo: `room_3`, la sala de dos plantas. Se hornea con
+`Backrooms > Claude > Packs > 17` y se amuebla con el 18, en ese orden y siempre los dos.

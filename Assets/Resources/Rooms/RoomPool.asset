@@ -14,601 +14,117 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   rooms:
   - id: room_0
-    prefab: {fileID: 7612808007308491595, guid: 889e84648ba5375449769e7154da1203, type: 3}
-    tilesX: 5
-    tilesZ: 5
-    heightMeters: 12
-    doorLocalPosition: {x: 12.424825, y: 0, z: 1.2237384}
-    doorLocalForward: {x: 0.99518466, y: 0, z: 0.098017566}
+    prefab: {fileID: 1890879883292618507, guid: 889e84648ba5375449769e7154da1203, type: 3}
+    tilesX: 12
+    tilesZ: 12
+    heightMeters: 6
+    doorLocalPosition: {x: 2.4999995, y: 0, z: 30}
+    doorLocalForward: {x: 0, y: 0, z: 1}
     collisionBoxes:
-    - center: {x: 0, y: -0.1, z: 0}
-      size: {x: 25.369886, y: 0.2, z: 25.369886}
+    - center: {x: -16.1, y: -0.1, z: -9.58}
+      size: {x: 28.2, y: 0.2, z: 41.24}
       yawDegrees: 0
-    - center: {x: 0, y: 14.266491, z: -11.709179}
-      size: {x: 25.369886, y: 0.2, z: 1.9515297}
+    - center: {x: -16.1, y: -0.1, z: 13.04}
+      size: {x: 28.2, y: 0.2, z: 4}
       yawDegrees: 0
-    - center: {x: 0, y: 13.872583, z: -9.757648}
-      size: {x: 25.369886, y: 0.2, z: 1.9515297}
+    - center: {x: -16.1, y: -0.1, z: 22.62}
+      size: {x: 28.2, y: 0.2, z: 15.160001}
       yawDegrees: 0
-    - center: {x: 0, y: 13.478676, z: -7.8061185}
-      size: {x: 25.369886, y: 0.2, z: 1.9515297}
+    - center: {x: 0, y: -0.1, z: -9.58}
+      size: {x: 4, y: 0.2, z: 41.24}
       yawDegrees: 0
-    - center: {x: 0, y: 13.084768, z: -5.854589}
-      size: {x: 25.369886, y: 0.2, z: 1.9515297}
+    - center: {x: 0, y: -0.1, z: 22.62}
+      size: {x: 4, y: 0.2, z: 15.160001}
       yawDegrees: 0
-    - center: {x: 0, y: 12.690862, z: -3.9030595}
-      size: {x: 25.369886, y: 0.2, z: 1.9515297}
+    - center: {x: 16.1, y: -0.1, z: -9.58}
+      size: {x: 28.2, y: 0.2, z: 41.24}
       yawDegrees: 0
-    - center: {x: 0, y: 12.296954, z: -1.9515296}
-      size: {x: 25.369886, y: 0.2, z: 1.9515297}
+    - center: {x: 16.1, y: -0.1, z: 13.04}
+      size: {x: 28.2, y: 0.2, z: 4}
       yawDegrees: 0
-    - center: {x: 0, y: 11.903047, z: 0.00000011920929}
-      size: {x: 25.369886, y: 0.2, z: 1.9515297}
+    - center: {x: 16.1, y: -0.1, z: 22.62}
+      size: {x: 28.2, y: 0.2, z: 15.160001}
       yawDegrees: 0
-    - center: {x: 0, y: 11.509139, z: 1.9515299}
-      size: {x: 25.369886, y: 0.2, z: 1.9515297}
+    - center: {x: 0, y: 6.1, z: 0}
+      size: {x: 60.4, y: 0.2, z: 60.4}
       yawDegrees: 0
-    - center: {x: 0, y: 11.115232, z: 3.9030595}
-      size: {x: 25.369886, y: 0.2, z: 1.9515297}
+    - center: {x: 0, y: -1.6, z: 13.04}
+      size: {x: 4, y: 0.2, z: 4}
       yawDegrees: 0
-    - center: {x: 0, y: 10.721325, z: 5.854589}
-      size: {x: 25.369886, y: 0.2, z: 1.9515297}
-      yawDegrees: 0
-    - center: {x: 0, y: 10.327417, z: 7.806119}
-      size: {x: 25.369886, y: 0.2, z: 1.9515297}
-      yawDegrees: 0
-    - center: {x: 0, y: 9.93351, z: 9.757648}
-      size: {x: 25.369886, y: 0.2, z: 1.9515297}
-      yawDegrees: 0
-    - center: {x: 0, y: 9.539602, z: 11.709179}
-      size: {x: 25.369886, y: 0.2, z: 1.9515297}
-      yawDegrees: 0
-    - center: {x: -8.842472, y: 7.840385, z: -8.970068}
-      size: {x: 7.684943, y: 0.2, z: 7.4297514}
-      yawDegrees: 0
-    - center: {x: -8.842472, y: 7.840385, z: -0.6036868}
-      size: {x: 7.684943, y: 0.2, z: 9.30301}
-      yawDegrees: 0
-    - center: {x: -8.842472, y: 7.840385, z: 4.773909}
-      size: {x: 7.684943, y: 0.2, z: 1.4521818}
-      yawDegrees: 0
-    - center: {x: -8.842472, y: 7.840385, z: 6}
-      size: {x: 7.684943, y: 0.2, z: 1}
-      yawDegrees: 0
-    - center: {x: -8.842472, y: 7.840385, z: 9.592472}
-      size: {x: 7.684943, y: 0.2, z: 6.184943}
-      yawDegrees: 0
-    - center: {x: -4.5, y: 7.840385, z: -8.970068}
-      size: {x: 1, y: 0.2, z: 7.4297514}
-      yawDegrees: 0
-    - center: {x: -4.5, y: 7.840385, z: -0.6036868}
-      size: {x: 1, y: 0.2, z: 9.30301}
-      yawDegrees: 0
-    - center: {x: -4.5, y: 7.840385, z: 4.773909}
-      size: {x: 1, y: 0.2, z: 1.4521818}
-      yawDegrees: 0
-    - center: {x: -4.5, y: 7.840385, z: 9.592472}
-      size: {x: 1, y: 0.2, z: 6.184943}
-      yawDegrees: 0
-    - center: {x: -3.855, y: 7.840385, z: -8.970068}
-      size: {x: 0.28999996, y: 0.2, z: 7.4297514}
-      yawDegrees: 0
-    - center: {x: -3.855, y: 7.840385, z: -0.6036868}
-      size: {x: 0.28999996, y: 0.2, z: 9.30301}
-      yawDegrees: 0
-    - center: {x: -3.855, y: 7.840385, z: 4.773909}
-      size: {x: 0.28999996, y: 0.2, z: 1.4521818}
-      yawDegrees: 0
-    - center: {x: -3.855, y: 7.840385, z: 6}
-      size: {x: 0.28999996, y: 0.2, z: 1}
-      yawDegrees: 0
-    - center: {x: -3.855, y: 7.840385, z: 9.592472}
-      size: {x: 0.28999996, y: 0.2, z: 6.184943}
-      yawDegrees: 0
-    - center: {x: -3.21, y: 7.840385, z: -8.970068}
-      size: {x: 1, y: 0.2, z: 7.4297514}
-      yawDegrees: 0
-    - center: {x: -3.21, y: 7.840385, z: -0.6036868}
-      size: {x: 1, y: 0.2, z: 9.30301}
-      yawDegrees: 0
-    - center: {x: -3.21, y: 7.840385, z: 4.773909}
-      size: {x: 1, y: 0.2, z: 1.4521818}
-      yawDegrees: 0
-    - center: {x: -3.21, y: 7.840385, z: 9.592472}
-      size: {x: 1, y: 0.2, z: 6.184943}
-      yawDegrees: 0
-    - center: {x: -2.386386, y: 7.840385, z: -8.970068}
-      size: {x: 0.647228, y: 0.2, z: 7.4297514}
-      yawDegrees: 0
-    - center: {x: -2.386386, y: 7.840385, z: -0.6036868}
-      size: {x: 0.647228, y: 0.2, z: 9.30301}
-      yawDegrees: 0
-    - center: {x: -2.386386, y: 7.840385, z: 4.773909}
-      size: {x: 0.647228, y: 0.2, z: 1.4521818}
-      yawDegrees: 0
-    - center: {x: -2.386386, y: 7.840385, z: 6}
-      size: {x: 0.647228, y: 0.2, z: 1}
-      yawDegrees: 0
-    - center: {x: -2.386386, y: 7.840385, z: 9.592472}
-      size: {x: 0.647228, y: 0.2, z: 6.184943}
-      yawDegrees: 0
-    - center: {x: 2.651538, y: 7.840385, z: -8.970068}
-      size: {x: 9.428619, y: 0.2, z: 7.4297514}
-      yawDegrees: 0
-    - center: {x: 2.651538, y: 7.840385, z: 4.773909}
-      size: {x: 9.428619, y: 0.2, z: 1.4521818}
-      yawDegrees: 0
-    - center: {x: 2.651538, y: 7.840385, z: 6}
-      size: {x: 9.428619, y: 0.2, z: 1}
-      yawDegrees: 0
-    - center: {x: 2.651538, y: 7.840385, z: 9.592472}
-      size: {x: 9.428619, y: 0.2, z: 6.184943}
-      yawDegrees: 0
-    - center: {x: 10.025395, y: 7.840385, z: -8.970068}
-      size: {x: 5.3190956, y: 0.2, z: 7.4297514}
-      yawDegrees: 0
-    - center: {x: 10.025395, y: 7.840385, z: -0.6036868}
-      size: {x: 5.3190956, y: 0.2, z: 9.30301}
-      yawDegrees: 0
-    - center: {x: 10.025395, y: 7.840385, z: 4.773909}
-      size: {x: 5.3190956, y: 0.2, z: 1.4521818}
-      yawDegrees: 0
-    - center: {x: 10.025395, y: 7.840385, z: 6}
-      size: {x: 5.3190956, y: 0.2, z: 1}
-      yawDegrees: 0
-    - center: {x: 10.025395, y: 7.840385, z: 9.592472}
-      size: {x: 5.3190956, y: 0.2, z: 6.184943}
-      yawDegrees: 0
-    - center: {x: -6.8424716, y: 3.9, z: -11.382471}
-      size: {x: 11.684943, y: 0.2, z: 2.6049433}
-      yawDegrees: 0
-    - center: {x: -6.8424716, y: 3.9, z: -6.8599997}
-      size: {x: 11.684943, y: 0.2, z: 6.4400005}
-      yawDegrees: 0
-    - center: {x: -6.8424716, y: 3.9, z: 4.522472}
-      size: {x: 11.684943, y: 0.2, z: 16.324944}
-      yawDegrees: 0
-    - center: {x: 0, y: 3.9, z: -11.382471}
-      size: {x: 2, y: 0.2, z: 2.6049433}
-      yawDegrees: 0
-    - center: {x: 0, y: 3.9, z: 4.522472}
-      size: {x: 2, y: 0.2, z: 16.324944}
-      yawDegrees: 0
-    - center: {x: 6.8424716, y: 3.9, z: -11.382471}
-      size: {x: 11.684943, y: 0.2, z: 2.6049433}
-      yawDegrees: 0
-    - center: {x: 6.8424716, y: 3.9, z: -6.8599997}
-      size: {x: 11.684943, y: 0.2, z: 6.4400005}
-      yawDegrees: 0
-    - center: {x: 6.8424716, y: 3.9, z: 4.522472}
-      size: {x: 11.684943, y: 0.2, z: 16.324944}
-      yawDegrees: 0
-    - center: {x: 12.57466, y: 1.3, z: 0.7226662}
-      size: {x: 0.2, y: 2.6, z: 0.2}
-      yawDegrees: -95.62502
-    - center: {x: 12.474027, y: 1.3, z: 1.7444141}
-      size: {x: 0.20000003, y: 2.6, z: 0.2}
-      yawDegrees: -95.62502
-    - center: {x: 12.5243435, y: 7.3, z: 1.2335402}
-      size: {x: 1.2266918, y: 9.4, z: 0.2}
-      yawDegrees: -95.62502
-    - center: {x: 12.343127, y: 6, z: 2.4552007}
-      size: {x: 1.226692, y: 12, z: 0.2}
-      yawDegrees: -101.24997
-    - center: {x: 12.043039, y: 6, z: 3.6532164}
-      size: {x: 1.2266922, y: 12, z: 0.2}
-      yawDegrees: -106.87503
-    - center: {x: 11.626972, y: 6, z: 4.816049}
-      size: {x: 1.2266911, y: 12, z: 0.2}
-      yawDegrees: -112.49997
-    - center: {x: 11.098928, y: 6, z: 5.9325013}
-      size: {x: 1.2266924, y: 12, z: 0.2}
-      yawDegrees: -118.12504
-    - center: {x: 10.463998, y: 6, z: 6.99182}
-      size: {x: 1.2266916, y: 12, z: 0.2}
-      yawDegrees: -123.74997
-    - center: {x: 9.728292, y: 6, z: 7.9838037}
-      size: {x: 1.2266921, y: 12, z: 0.2}
-      yawDegrees: -129.37498
-    - center: {x: 8.898898, y: 6, z: 8.898899}
-      size: {x: 1.2266924, y: 12, z: 0.2}
-      yawDegrees: -135.00003
-    - center: {x: 7.9838033, y: 6, z: 9.728292}
-      size: {x: 1.2266914, y: 12, z: 0.2}
-      yawDegrees: -140.62498
-    - center: {x: 6.99182, y: 6, z: 10.463999}
-      size: {x: 1.2266924, y: 12, z: 0.2}
-      yawDegrees: -146.25
-    - center: {x: 5.9325013, y: 6, z: 11.098929}
-      size: {x: 1.2266911, y: 12, z: 0.2}
-      yawDegrees: -151.87498
-    - center: {x: 4.816049, y: 6, z: 11.626972}
-      size: {x: 1.2266921, y: 12, z: 0.2}
-      yawDegrees: -157.50005
-    - center: {x: 3.6532156, y: 6, z: 12.043039}
-      size: {x: 1.2266927, y: 12, z: 0.2}
-      yawDegrees: -163.12497
-    - center: {x: 2.4552004, y: 6, z: 12.343127}
-      size: {x: 1.2266906, y: 12, z: 0.2}
-      yawDegrees: -168.75003
-    - center: {x: 1.2335402, y: 6, z: 12.5243435}
-      size: {x: 1.2266926, y: 12, z: 0.2}
-      yawDegrees: -174.37498
-    - center: {x: -0.0000005662441, y: 6, z: 12.584944}
-      size: {x: 1.2266924, y: 12, z: 0.2}
-      yawDegrees: -180
-    - center: {x: -1.2335413, y: 6, z: 12.5243435}
-      size: {x: 1.2266923, y: 12, z: 0.2}
-      yawDegrees: 174.37498
-    - center: {x: -2.4552014, y: 6, z: 12.343127}
-      size: {x: 1.2266906, y: 12, z: 0.2}
-      yawDegrees: 168.75003
-    - center: {x: -3.6532166, y: 6, z: 12.043039}
-      size: {x: 1.2266927, y: 12, z: 0.2}
-      yawDegrees: 163.12497
-    - center: {x: -4.8160496, y: 6, z: 11.626972}
-      size: {x: 1.2266906, y: 12, z: 0.2}
-      yawDegrees: 157.50003
-    - center: {x: -5.9325013, y: 6, z: 11.098928}
-      size: {x: 1.2266924, y: 12, z: 0.2}
-      yawDegrees: 151.87497
-    - center: {x: -6.99182, y: 6, z: 10.463998}
-      size: {x: 1.2266923, y: 12, z: 0.2}
-      yawDegrees: 146.25006
-    - center: {x: -7.9838047, y: 6, z: 9.728292}
-      size: {x: 1.2266927, y: 12, z: 0.2}
-      yawDegrees: 140.62498
-    - center: {x: -8.898901, y: 6, z: 8.898897}
-      size: {x: 1.2266924, y: 12, z: 0.2}
-      yawDegrees: 134.99997
-    - center: {x: -9.728294, y: 6, z: 7.983802}
-      size: {x: 1.2266924, y: 12, z: 0.2}
-      yawDegrees: 129.37497
-    - center: {x: -10.463999, y: 6, z: 6.991819}
-      size: {x: 1.226689, y: 12, z: 0.2}
-      yawDegrees: 123.75
-    - center: {x: -11.098928, y: 6, z: 5.932501}
-      size: {x: 1.2266928, y: 12, z: 0.2}
-      yawDegrees: 118.12502
-    - center: {x: -11.626972, y: 6, z: 4.816049}
-      size: {x: 1.226692, y: 12, z: 0.2}
-      yawDegrees: 112.50001
-    - center: {x: -12.043039, y: 6, z: 3.6532152}
-      size: {x: 1.2266923, y: 12, z: 0.2}
-      yawDegrees: 106.874985
-    - center: {x: -12.343127, y: 6, z: 2.4551992}
-      size: {x: 1.2266922, y: 12, z: 0.2}
-      yawDegrees: 101.24997
-    - center: {x: -12.5243435, y: 6, z: 1.2335382}
-      size: {x: 1.2266926, y: 12, z: 0.2}
-      yawDegrees: 95.62502
-    - center: {x: -12.584944, y: 6, z: -0.0000010728836}
-      size: {x: 1.2266893, y: 12, z: 0.2}
-      yawDegrees: 90
-    - center: {x: -12.5243435, y: 6, z: -1.2335402}
-      size: {x: 1.2266924, y: 12, z: 0.2}
-      yawDegrees: 84.37498
-    - center: {x: -12.343127, y: 6, z: -2.4552011}
-      size: {x: 1.2266921, y: 12, z: 0.2}
-      yawDegrees: 78.75003
-    - center: {x: -12.043039, y: 6, z: -3.653217}
-      size: {x: 1.2266927, y: 12, z: 0.2}
-      yawDegrees: 73.12498
-    - center: {x: -11.626971, y: 6, z: -4.816051}
-      size: {x: 1.2266924, y: 12, z: 0.2}
-      yawDegrees: 67.50001
-    - center: {x: -11.098928, y: 6, z: -5.9325027}
-      size: {x: 1.2266915, y: 12, z: 0.2}
-      yawDegrees: 61.874992
-    - center: {x: -10.463998, y: 6, z: -6.991821}
-      size: {x: 1.2266904, y: 12, z: 0.2}
-      yawDegrees: 56.24999
-    - center: {x: -9.728292, y: 6, z: -7.9838037}
-      size: {x: 1.2266921, y: 12, z: 0.2}
-      yawDegrees: 50.62502
-    - center: {x: -8.898898, y: 6, z: -8.898899}
-      size: {x: 1.2266924, y: 12, z: 0.2}
-      yawDegrees: 44.99997
-    - center: {x: -7.983803, y: 6, z: -9.728292}
-      size: {x: 1.2266924, y: 12, z: 0.2}
-      yawDegrees: 39.37497
-    - center: {x: -6.99182, y: 6, z: -10.463998}
-      size: {x: 1.2266896, y: 12, z: 0.2}
-      yawDegrees: 33.750034
-    - center: {x: -5.9325004, y: 6, z: -11.098929}
-      size: {x: 1.2266954, y: 12, z: 0.2}
-      yawDegrees: 28.125011
-    - center: {x: -4.816048, y: 6, z: -11.626972}
-      size: {x: 1.226689, y: 12, z: 0.2}
-      yawDegrees: 22.499964
-    - center: {x: -3.6532145, y: 6, z: -12.043039}
-      size: {x: 1.2266959, y: 12, z: 0.2}
-      yawDegrees: 16.875027
-    - center: {x: -2.4551983, y: 6, z: -12.343127}
-      size: {x: 1.2266891, y: 12, z: 0.2}
-      yawDegrees: 11.2499485
-    - center: {x: -1.2335376, y: 0.15, z: -12.5243435}
-      size: {x: 1.2266954, y: 0.3, z: 0.2}
-      yawDegrees: 5.6250086
-    - center: {x: -1.415558, y: 2.15, z: -12.506416}
-      size: {x: 0.86089325, y: 3.7, z: 0.2}
-      yawDegrees: 5.6250086
-    - center: {x: -1.2335376, y: 8, z: -12.5243435}
-      size: {x: 1.2266954, y: 8, z: 0.2}
-      yawDegrees: 5.6250086
-    - center: {x: 0.0000026539874, y: 0.15, z: -12.584944}
-      size: {x: 1.2266884, y: 0.3, z: 0.2}
+    - center: {x: 0, y: -0.75, z: 11.04}
+      size: {x: 4, y: 1.5, z: 0.2}
       yawDegrees: -0
-    - center: {x: 0.0000026539874, y: 8, z: -12.584944}
-      size: {x: 1.2266884, y: 8, z: 0.2}
-      yawDegrees: -0
-    - center: {x: 1.2335408, y: 0.15, z: -12.5243435}
-      size: {x: 1.2266895, y: 0.3, z: 0.2}
-      yawDegrees: -5.625036
-    - center: {x: 1.4363141, y: 2.15, z: -12.504372}
-      size: {x: 0.8191806, y: 3.7, z: 0.2}
-      yawDegrees: -5.625036
-    - center: {x: 1.2335408, y: 8, z: -12.5243435}
-      size: {x: 1.2266895, y: 8, z: 0.2}
-      yawDegrees: -5.625036
-    - center: {x: 2.4552019, y: 6, z: -12.343127}
-      size: {x: 1.2266953, y: 12, z: 0.2}
-      yawDegrees: -11.249982
-    - center: {x: 3.6532178, y: 6, z: -12.043039}
-      size: {x: 1.2266893, y: 12, z: 0.2}
-      yawDegrees: -16.875023
-    - center: {x: 4.8160515, y: 6, z: -11.62697}
-      size: {x: 1.2266958, y: 12, z: 0.2}
-      yawDegrees: -22.500027
-    - center: {x: 5.932503, y: 6, z: -11.0989275}
-      size: {x: 1.2266885, y: 12, z: 0.2}
-      yawDegrees: -28.124979
-    - center: {x: 6.9918203, y: 6, z: -10.463998}
-      size: {x: 1.2266899, y: 12, z: 0.2}
-      yawDegrees: -33.750023
-    - center: {x: 7.9838037, y: 6, z: -9.728292}
-      size: {x: 1.2266947, y: 12, z: 0.2}
-      yawDegrees: -39.374996
-    - center: {x: 8.898899, y: 6, z: -8.898899}
-      size: {x: 1.2266898, y: 12, z: 0.2}
-      yawDegrees: -44.99997
-    - center: {x: 9.728294, y: 6, z: -7.9838023}
-      size: {x: 1.2266954, y: 12, z: 0.2}
-      yawDegrees: -50.625034
-    - center: {x: 10.463999, y: 6, z: -6.9918184}
-      size: {x: 1.226689, y: 12, z: 0.2}
-      yawDegrees: -56.250004
-    - center: {x: 11.09893, y: 6, z: -5.932499}
-      size: {x: 1.2266953, y: 12, z: 0.2}
-      yawDegrees: -61.87504
-    - center: {x: 11.626972, y: 6, z: -4.8160467}
-      size: {x: 1.2266893, y: 12, z: 0.2}
-      yawDegrees: -67.49999
-    - center: {x: 12.043039, y: 6, z: -3.6532156}
-      size: {x: 1.2266896, y: 12, z: 0.2}
-      yawDegrees: -73.124985
-    - center: {x: 12.343127, y: 6, z: -2.4551995}
-      size: {x: 1.2266954, y: 12, z: 0.2}
-      yawDegrees: -78.75002
-    - center: {x: 12.524344, y: 6, z: -1.2335385}
-      size: {x: 1.2266893, y: 12, z: 0.2}
-      yawDegrees: -84.37501
-    - center: {x: 12.584944, y: 6, z: 0.00000023841858}
-      size: {x: 1.2266915, y: 12, z: 0.2}
+    - center: {x: 2, y: -0.75, z: 13.04}
+      size: {x: 4, y: 1.5, z: 0.2}
       yawDegrees: -90
-    - center: {x: -2.5, y: 1.9, z: 0}
-      size: {x: 0.7, y: 3.8, z: 0.7}
-      yawDegrees: 0
-    - center: {x: 2.5, y: 1.9, z: 0}
-      size: {x: 0.7, y: 3.8, z: 0.7}
-      yawDegrees: 0
-    - center: {x: -11.817747, y: 9.970192, z: -4.395611}
-      size: {x: 0.85, y: 4.059615, z: 0.85}
-      yawDegrees: 33.3
-    - center: {x: -10.527543, y: 9.970192, z: -2.4314632}
-      size: {x: 0.85, y: 4.059615, z: 0.85}
-      yawDegrees: 33.3
-    - center: {x: -9.23734, y: 9.970192, z: -0.46731603}
-      size: {x: 0.85, y: 4.059615, z: 0.85}
-      yawDegrees: 33.3
-    - center: {x: -7.9471364, y: 9.970192, z: 1.4968312}
-      size: {x: 0.85, y: 4.059615, z: 0.85}
-      yawDegrees: 33.3
-    - center: {x: -7.8894525, y: 9.970192, z: -6.9760175}
-      size: {x: 0.85, y: 4.059615, z: 0.85}
-      yawDegrees: 33.3
-    - center: {x: -6.599249, y: 9.970192, z: -5.0118704}
-      size: {x: 0.85, y: 4.059615, z: 0.85}
-      yawDegrees: 33.3
-    - center: {x: -5.309046, y: 9.970192, z: -3.0477228}
-      size: {x: 0.85, y: 4.059615, z: 0.85}
-      yawDegrees: 33.3
-    - center: {x: -4.018842, y: 9.970192, z: -1.0835757}
-      size: {x: 0.85, y: 4.059615, z: 0.85}
-      yawDegrees: 33.3
-    - center: {x: -3.9611578, y: 9.970192, z: -9.556425}
-      size: {x: 0.85, y: 4.059615, z: 0.85}
-      yawDegrees: 33.3
-    - center: {x: -2.6709545, y: 9.970192, z: -7.5922775}
-      size: {x: 0.85, y: 4.059615, z: 0.85}
-      yawDegrees: 33.3
-    - center: {x: -1.3807509, y: 9.970192, z: -5.62813}
-      size: {x: 0.85, y: 4.059615, z: 0.85}
-      yawDegrees: 33.3
-    - center: {x: -0.09054744, y: 9.970192, z: -3.6639829}
-      size: {x: 0.85, y: 4.059615, z: 0.85}
-      yawDegrees: 33.3
-    - center: {x: -0.032863498, y: 9.970192, z: -12.136831}
-      size: {x: 0.85, y: 4.059615, z: 0.85}
-      yawDegrees: 33.3
-    - center: {x: 1.25734, y: 9.970192, z: -10.172685}
-      size: {x: 0.85, y: 4.059615, z: 0.85}
-      yawDegrees: 33.3
-    - center: {x: 2.5475435, y: 9.970192, z: -8.208537}
-      size: {x: 0.85, y: 4.059615, z: 0.85}
-      yawDegrees: 33.3
-    - center: {x: 3.837747, y: 9.970192, z: -6.24439}
-      size: {x: 0.85, y: 4.059615, z: 0.85}
-      yawDegrees: 33.3
-    - center: {x: 0, y: 0.09, z: -9.94}
-      size: {x: 2, y: 0.18, z: 0.28}
-      yawDegrees: 0
-    - center: {x: 0, y: 0.18, z: -9.66}
-      size: {x: 2, y: 0.36, z: 0.28}
-      yawDegrees: 0
-    - center: {x: 0, y: 0.27, z: -9.38}
-      size: {x: 2, y: 0.54, z: 0.28}
-      yawDegrees: 0
-    - center: {x: 0, y: 0.36, z: -9.1}
-      size: {x: 2, y: 0.72, z: 0.28}
-      yawDegrees: 0
-    - center: {x: 0, y: 0.45000002, z: -8.82}
-      size: {x: 2, y: 0.90000004, z: 0.28}
-      yawDegrees: 0
-    - center: {x: 0, y: 0.54, z: -8.54}
-      size: {x: 2, y: 1.08, z: 0.28}
-      yawDegrees: 0
-    - center: {x: 0, y: 0.63, z: -8.26}
-      size: {x: 2, y: 1.26, z: 0.28}
-      yawDegrees: 0
-    - center: {x: 0, y: 0.72, z: -7.98}
-      size: {x: 2, y: 1.44, z: 0.28}
-      yawDegrees: 0
-    - center: {x: 0, y: 0.81000006, z: -7.7}
-      size: {x: 2, y: 1.6200001, z: 0.28}
-      yawDegrees: 0
-    - center: {x: 0, y: 0.90000004, z: -7.42}
-      size: {x: 2, y: 1.8000001, z: 0.28}
-      yawDegrees: 0
-    - center: {x: 0, y: 0.99, z: -7.14}
-      size: {x: 2, y: 1.98, z: 0.28}
-      yawDegrees: 0
-    - center: {x: 0, y: 1.08, z: -6.8599997}
-      size: {x: 2, y: 2.16, z: 0.28}
-      yawDegrees: 0
-    - center: {x: 0, y: 1.1700001, z: -6.58}
-      size: {x: 2, y: 2.3400002, z: 0.28}
-      yawDegrees: 0
-    - center: {x: 0, y: 1.26, z: -6.3}
-      size: {x: 2, y: 2.52, z: 0.28}
-      yawDegrees: 0
-    - center: {x: 0, y: 1.35, z: -6.02}
-      size: {x: 2, y: 2.7, z: 0.28}
-      yawDegrees: 0
-    - center: {x: 0, y: 1.44, z: -5.74}
-      size: {x: 2, y: 2.88, z: 0.28}
-      yawDegrees: 0
-    - center: {x: 0, y: 1.5300001, z: -5.46}
-      size: {x: 2, y: 3.0600002, z: 0.28}
-      yawDegrees: 0
-    - center: {x: 0, y: 1.6200001, z: -5.18}
-      size: {x: 2, y: 3.2400002, z: 0.28}
-      yawDegrees: 0
-    - center: {x: 0, y: 1.71, z: -4.9}
-      size: {x: 2, y: 3.42, z: 0.28}
-      yawDegrees: 0
-    - center: {x: 0, y: 1.8000001, z: -4.62}
-      size: {x: 2, y: 3.6000001, z: 0.28}
-      yawDegrees: 0
-    - center: {x: 0, y: 1.8900001, z: -4.3399997}
-      size: {x: 2, y: 3.7800002, z: 0.28}
-      yawDegrees: 0
-    - center: {x: 0, y: 1.98, z: -4.06}
-      size: {x: 2, y: 3.96, z: 0.28}
-      yawDegrees: 0
-    - center: {x: 0, y: 2.0700002, z: -3.7799997}
-      size: {x: 2, y: 4.1400003, z: 0.28}
-      yawDegrees: 0
-    - center: {x: 0.76961535, y: 4.09, z: -2.8624403}
-      size: {x: 7.14, y: 0.18, z: 0.28}
-      yawDegrees: 39.8
-    - center: {x: 0.9488461, y: 4.18, z: -2.647321}
-      size: {x: 7.14, y: 0.36, z: 0.28}
-      yawDegrees: 39.8
-    - center: {x: 1.1280768, y: 4.27, z: -2.4322016}
-      size: {x: 7.14, y: 0.54, z: 0.28}
-      yawDegrees: 39.8
-    - center: {x: 1.3073075, y: 4.36, z: -2.217082}
-      size: {x: 7.14, y: 0.72, z: 0.28}
-      yawDegrees: 39.8
-    - center: {x: 1.4865382, y: 4.45, z: -2.0019627}
-      size: {x: 7.14, y: 0.90000004, z: 0.28}
-      yawDegrees: 39.8
-    - center: {x: 1.6657689, y: 4.54, z: -1.7868434}
-      size: {x: 7.14, y: 1.08, z: 0.28}
-      yawDegrees: 39.8
-    - center: {x: 1.8449996, y: 4.63, z: -1.5717239}
-      size: {x: 7.14, y: 1.26, z: 0.28}
-      yawDegrees: 39.8
-    - center: {x: 2.0242302, y: 4.7200003, z: -1.3566047}
-      size: {x: 7.14, y: 1.44, z: 0.28}
-      yawDegrees: 39.8
-    - center: {x: 2.2034612, y: 4.81, z: -1.1414851}
-      size: {x: 7.14, y: 1.6200001, z: 0.28}
-      yawDegrees: 39.8
-    - center: {x: 2.3826919, y: 4.9, z: -0.9263656}
-      size: {x: 7.14, y: 1.8000001, z: 0.28}
-      yawDegrees: 39.8
-    - center: {x: 2.5619226, y: 4.99, z: -0.71124625}
-      size: {x: 7.14, y: 1.98, z: 0.28}
-      yawDegrees: 39.8
-    - center: {x: 2.7411532, y: 5.08, z: -0.4961269}
-      size: {x: 7.14, y: 2.16, z: 0.28}
-      yawDegrees: 39.8
-    - center: {x: 2.920384, y: 5.17, z: -0.28100753}
-      size: {x: 7.14, y: 2.3400002, z: 0.28}
-      yawDegrees: 39.8
-    - center: {x: 3.0996146, y: 5.26, z: -0.06588817}
-      size: {x: 7.14, y: 2.52, z: 0.28}
-      yawDegrees: 39.8
-    - center: {x: 3.2788453, y: 5.35, z: 0.1492312}
-      size: {x: 7.14, y: 2.7, z: 0.28}
-      yawDegrees: 39.8
-    - center: {x: 3.458076, y: 5.44, z: 0.3643508}
-      size: {x: 7.14, y: 2.88, z: 0.28}
-      yawDegrees: 39.8
-    - center: {x: 3.6373067, y: 5.53, z: 0.5794699}
-      size: {x: 7.14, y: 3.0600002, z: 0.28}
-      yawDegrees: 39.8
-    - center: {x: 3.8165374, y: 5.62, z: 0.7945895}
-      size: {x: 7.14, y: 3.2400002, z: 0.28}
-      yawDegrees: 39.8
-    - center: {x: 3.995768, y: 5.71, z: 1.0097086}
-      size: {x: 7.14, y: 3.42, z: 0.28}
-      yawDegrees: 39.8
-    - center: {x: 4.1749988, y: 5.8, z: 1.224828}
-      size: {x: 7.14, y: 3.6000001, z: 0.28}
-      yawDegrees: 39.8
-    - center: {x: 4.3542295, y: 5.8900003, z: 1.4399478}
-      size: {x: 7.14, y: 3.7800002, z: 0.28}
-      yawDegrees: 39.8
-    - center: {x: 4.53346, y: 5.98, z: 1.6550667}
-      size: {x: 7.14, y: 3.96, z: 0.28}
-      yawDegrees: 39.8
+    - center: {x: 0, y: -0.75, z: 15.04}
+      size: {x: 4, y: 1.5, z: 0.2}
+      yawDegrees: -180
+    - center: {x: -2, y: -0.75, z: 13.04}
+      size: {x: 4, y: 1.5, z: 0.2}
+      yawDegrees: 90
+    - center: {x: 17.25, y: 0.1, z: 30.1}
+      size: {x: 25.5, y: 0.2, z: 0.2}
+      yawDegrees: -180
+    - center: {x: -14.75, y: 0.1, z: 30.1}
+      size: {x: 30.5, y: 0.2, z: 0.2}
+      yawDegrees: -180
+    - center: {x: 17.25, y: 1.4, z: 30.1}
+      size: {x: 25.5, y: 2.3999999, z: 0.2}
+      yawDegrees: -180
+    - center: {x: -11.725001, y: 1.4, z: 30.1}
+      size: {x: 24.45, y: 2.3999999, z: 0.2}
+      yawDegrees: -180
+    - center: {x: -28.225, y: 1.4, z: 30.1}
+      size: {x: 3.5500002, y: 2.3999999, z: 0.2}
+      yawDegrees: -180
+    - center: {x: 3.024999, y: 2.65, z: 30.1}
+      size: {x: 53.95, y: 0.10000014, z: 0.2}
+      yawDegrees: -180
+    - center: {x: -28.225, y: 2.65, z: 30.1}
+      size: {x: 3.5500002, y: 0.10000014, z: 0.2}
+      yawDegrees: -180
+    - center: {x: 0, y: 4.35, z: 30.1}
+      size: {x: 60, y: 3.3, z: 0.2}
+      yawDegrees: -180
+    - center: {x: -30.099995, y: 3, z: -0.000000019073488}
+      size: {x: 60, y: 6, z: 0.2}
+      yawDegrees: 89.99999
+    - center: {x: 0.000005753835, y: 3, z: -30.09999}
+      size: {x: 59.99999, y: 6, z: 0.2}
+      yawDegrees: -0.000018213841
+    - center: {x: 30.1, y: 3, z: 0.000009536743}
+      size: {x: 59.99998, y: 6, z: 0.2}
+      yawDegrees: -90
     definition:
-      tilesX: 5
-      tilesZ: 5
-      heightMeters: 12
-      ceilingTilt: 12.9
-      ceilingTiltYaw: -28.2
-      sides: 64
-      squareness: 0
+      tilesX: 12
+      tilesZ: 12
+      heightMeters: 6
+      ceilingTilt: 0
+      ceilingTiltYaw: 0
+      sides: 4
+      squareness: 1
       wallThickness: 0.2
       trimEnabled: 0
-      planMode: 0
-      manualContour: []
+      planMode: 2
+      manualContour:
+      - {x: 30, y: 30}
+      - {x: -30, y: 30}
+      - {x: -29.999989, y: -30}
+      - {x: 30, y: -29.99998}
       notches: []
+      platforms: []
       holes:
-      - side: 47
-        along: 0.517
-        baseY: 0.3
+      - side: 0
+        along: 0.92
+        baseY: 0.2
         level: 0
-        width: 2
-        height: 3.7
+        width: 2.5
+        height: 2.5
         grateBars: 0
         spanCorners: 1
       - side: 0
-        along: 0.5
+        along: 0.45833334
         baseY: 0
         level: 0
         width: 4
@@ -616,547 +132,2215 @@ MonoBehaviour:
         grateBars: 0
         spanCorners: 0
       pillars: []
-      pillarGrids:
-      - center: {x: 0, y: 0}
-        countX: 2
-        countZ: 1
-        spacingX: 5
-        spacingZ: 5
-        size: 0.7
-        sides: 4
-        yawDegrees: 0
-        level: 0
-      - center: {x: -3.99, y: -5.32}
-        countX: 4
-        countZ: 4
-        spacingX: 4.7
-        spacingZ: 2.35
-        size: 0.85
-        sides: 32
-        yawDegrees: 33.3
-        level: 2
+      pillarGrids: []
       blocks: []
-      stairs:
-      - position: {x: 0, y: -10.08}
-        yawDegrees: 0
-        width: 2
-        steps: 23
-        rise: 0.18
-        run: 0.28
-        level: 0
-      - position: {x: 0.68, y: -2.97}
-        yawDegrees: 39.8
-        width: 7.14
-        steps: 22
-        rise: 0.18
-        run: 0.28
-        level: 1
+      stairs: []
       floorHoles:
-      - position: {x: -3.21, y: 6}
-        sizeX: 1
-        sizeZ: 1
-        depth: 2.5
+      - position: {x: 0, y: 13.04}
+        sizeX: 4
+        sizeZ: 4
+        sides: 0
+        squareness: 1
+        depth: 1.5
         yawDegrees: 0
         bottomless: 0
-        level: 2
-      - position: {x: -4.5, y: 6}
-        sizeX: 1
-        sizeZ: 1
-        depth: 2.5
-        yawDegrees: 0
-        bottomless: 0
-        level: 2
-      levels:
-      - height: 8
-      - height: 4
+        level: 0
+        mode: 2
+      levels: []
       markers: []
+      lights:
+      - position: {x: -2.5, y: -39.45242}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 2.5, y: -39.45242}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 1
+        flickerHz: 2
+      - position: {x: -2.5, y: -34.45242}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 7.5, y: -34.45242}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: -27.5, y: -29.45242}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 2
+        flickerHz: 2
+      - position: {x: -7.5, y: -29.45242}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: -2.5, y: -29.45242}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 2.5, y: -29.45242}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 7.5, y: -29.45242}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 1
+        flickerHz: 2
+      - position: {x: 12.5, y: -29.45242}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 1
+        flickerHz: 2
+      - position: {x: 17.5, y: -29.45242}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 22.5, y: -29.45242}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 1
+        flickerHz: 2
+      - position: {x: -27.5, y: -24.45242}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 1
+        flickerHz: 2
+      - position: {x: -22.5, y: -24.45242}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 1
+        flickerHz: 2
+      - position: {x: -17.5, y: -24.45242}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 2.5, y: -24.45242}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 1
+        flickerHz: 2
+      - position: {x: 7.5, y: -24.45242}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 22.5, y: -24.45242}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 27.5, y: -24.45242}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: -27.5, y: -19.45242}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 1
+        flickerHz: 2
+      - position: {x: -22.5, y: -19.45242}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: -12.5, y: -19.45242}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 2
+        flickerHz: 2
+      - position: {x: -2.5, y: -19.45242}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 2.5, y: -19.45242}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 1
+        flickerHz: 2
+      - position: {x: 7.5, y: -19.45242}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 12.5, y: -19.45242}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 1
+        flickerHz: 2
+      - position: {x: 17.5, y: -19.45242}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 27.5, y: -19.45242}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: -22.5, y: -14.452419}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: -12.5, y: -14.452419}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: -7.5, y: -14.452419}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 1
+        flickerHz: 2
+      - position: {x: -2.5, y: -14.452419}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 1
+        flickerHz: 2
+      - position: {x: 2.5, y: -14.452419}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 1
+        flickerHz: 2
+      - position: {x: 12.5, y: -14.452419}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 17.5, y: -14.452419}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 27.5, y: -14.452419}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 1
+        flickerHz: 2
+      - position: {x: -22.5, y: -9.452419}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 2
+        flickerHz: 2
+      - position: {x: -17.5, y: -9.452419}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 1
+        flickerHz: 2
+      - position: {x: -12.5, y: -9.452419}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 1
+        flickerHz: 2
+      - position: {x: -7.5, y: -9.452419}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: -2.5, y: -9.452419}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 2.5, y: -9.452419}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 7.5, y: -9.452419}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 12.5, y: -9.452419}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 22.5, y: -9.452419}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 27.5, y: -9.452419}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: -22.5, y: -4.4524193}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: -17.5, y: -4.4524193}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 2
+        flickerHz: 2
+      - position: {x: -12.5, y: -4.4524193}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: -7.5, y: -4.4524193}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 2.5, y: -4.4524193}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 7.5, y: -4.4524193}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 12.5, y: -4.4524193}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 17.5, y: -4.4524193}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 27.5, y: -4.4524193}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: -27.5, y: 0.5475807}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 1
+        flickerHz: 2
+      - position: {x: -17.5, y: 0.5475807}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 1
+        flickerHz: 2
+      - position: {x: -12.5, y: 0.5475807}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 1
+        flickerHz: 2
+      - position: {x: -7.5, y: 0.5475807}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 2
+        flickerHz: 2
+      - position: {x: -2.5, y: 0.5475807}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 2.5, y: 0.5475807}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 2
+        flickerHz: 2
+      - position: {x: 7.5, y: 0.5475807}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 12.5, y: 0.5475807}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 27.5, y: 0.5475807}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 1
+        flickerHz: 2
+      - position: {x: -27.5, y: 5.5475807}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: -17.5, y: 5.5475807}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 2
+        flickerHz: 2
+      - position: {x: -12.5, y: 5.5475807}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: -7.5, y: 5.5475807}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: -2.5, y: 5.5475807}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 2.5, y: 5.5475807}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 7.5, y: 5.5475807}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 12.5, y: 5.5475807}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 22.5, y: 5.5475807}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: -27.5, y: 10.547581}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 2
+        flickerHz: 2
+      - position: {x: -22.5, y: 10.547581}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 1
+        flickerHz: 2
+      - position: {x: -17.5, y: 10.547581}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: -12.5, y: 10.547581}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 1
+        flickerHz: 2
+      - position: {x: -2.5, y: 10.547581}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 1
+        flickerHz: 2
+      - position: {x: 2.5, y: 10.547581}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 2
+        flickerHz: 2
+      - position: {x: 7.5, y: 10.547581}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 12.5, y: 10.547581}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 17.5, y: 10.547581}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 22.5, y: 10.547581}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 27.5, y: 10.547581}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: -27.5, y: 15.547581}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: -22.5, y: 15.547581}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: -17.5, y: 15.547581}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: -2.5, y: 15.547581}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 2.5, y: 15.547581}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 7.5, y: 15.547581}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 12.5, y: 15.547581}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 17.5, y: 15.547581}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 22.5, y: 15.547581}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 27.5, y: 15.547581}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: -27.5, y: 20.54758}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 1
+        flickerHz: 2
+      - position: {x: -17.5, y: 20.54758}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 2
+        flickerHz: 2
+      - position: {x: -7.5, y: 20.54758}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 1
+        flickerHz: 2
+      - position: {x: 2.5, y: 20.54758}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 12.5, y: 20.54758}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 17.5, y: 20.54758}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 22.5, y: 20.54758}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 27.5, y: 20.54758}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: -27.5, y: 25.54758}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 2
+        flickerHz: 2
+      - position: {x: -22.5, y: 25.54758}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: -17.5, y: 25.54758}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 1
+        flickerHz: 2
+      - position: {x: -12.5, y: 25.54758}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: -7.5, y: 25.54758}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: -2.5, y: 25.54758}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 2.5, y: 25.54758}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 7.5, y: 25.54758}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 1
+        flickerHz: 2
+      - position: {x: 12.5, y: 25.54758}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 1
+        flickerHz: 2
+      - position: {x: 27.5, y: 25.54758}
+        y: 5.7
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+        lightIntensity: 2.8
+        lightRange: 5
+        behavior: 0
+        flickerHz: 2
       irregularity: 0
       irregularitySeed: 1
   - id: room_1
-    prefab: {fileID: 4217950122844387238, guid: bb46e9ff9f3ddeb47b3d7b01f7dd7061, type: 3}
-    tilesX: 32
-    tilesZ: 32
-    heightMeters: 12
-    doorLocalPosition: {x: -81.09095, y: 0, z: -5.7207913}
-    doorLocalForward: {x: -0.998107, y: 0, z: -0.061500568}
+    prefab: {fileID: 7258204844317559329, guid: 6f8492644add268408f25a9af2d8edf8, type: 3}
+    tilesX: 4
+    tilesZ: 6
+    heightMeters: 4
+    doorLocalPosition: {x: -9.724372, y: 0, z: -8.05971}
+    doorLocalForward: {x: -0.99988353, y: 0, z: -0.015260263}
     collisionBoxes:
-    - center: {x: 0.12446976, y: -0.1, z: 0.052265167}
-      size: {x: 162.98407, y: 0.2, z: 163.2463}
+    - center: {x: -5.8510666, y: -0.1, z: -5.8334174}
+      size: {x: 8.702133, y: 0.2, z: 8.666835}
       yawDegrees: 0
-    - center: {x: 0.12446976, y: 12.1, z: 0.052265167}
-      size: {x: 162.98407, y: 0.2, z: 163.2463}
+    - center: {x: -5.8510666, y: -0.1, z: 0}
+      size: {x: 8.702133, y: 0.2, z: 3}
       yawDegrees: 0
-    - center: {x: 0.12446976, y: 7.9, z: 0.052265167}
-      size: {x: 162.98407, y: 0.2, z: 163.2463}
+    - center: {x: -5.8510666, y: -0.1, z: 7.872438}
+      size: {x: 8.702133, y: 0.2, z: 12.744876}
       yawDegrees: 0
-    - center: {x: 79.467514, y: 6, z: 9.030307}
-      size: {x: 9.169686, y: 12, z: 0.2}
-      yawDegrees: -82.92389
-    - center: {x: 80.45851, y: 6, z: 18.311102}
-      size: {x: 9.493336, y: 12, z: 0.2}
-      yawDegrees: -84.852806
-    - center: {x: 80.45064, y: 6, z: 28.100912}
-      size: {x: 10.126715, y: 12, z: 0.2}
-      yawDegrees: -94.914375
-    - center: {x: 80.0833, y: 6, z: 38.674572}
-      size: {x: 11.078138, y: 12, z: 0.2}
-      yawDegrees: -89.316635
-    - center: {x: 79.91612, y: 6, z: 50.49245}
-      size: {x: 12.557255, y: 12, z: 0.2}
-      yawDegrees: -92.128395
-    - center: {x: 79.87089, y: 6, z: 64.116615}
-      size: {x: 14.717088, y: 12, z: 0.2}
-      yawDegrees: -88.536705
-    - center: {x: 75.8605, y: 6, z: 75.95659}
-      size: {x: 12.143816, y: 12, z: 0.2}
-      yawDegrees: -133.38791
-    - center: {x: 64.184875, y: 6, z: 80.02474}
-      size: {x: 14.872788, y: 12, z: 0.2}
-      yawDegrees: 177.10489
-    - center: {x: 50.491432, y: 6, z: 79.81894}
-      size: {x: 12.553181, y: 12, z: 0.2}
-      yawDegrees: -178.45067
-    - center: {x: 38.68991, y: 6, z: 80.77941}
-      size: {x: 11.189949, y: 12, z: 0.2}
-      yawDegrees: -171.86494
-    - center: {x: 28.069775, y: 6, z: 80.40095}
-      size: {x: 10.356657, y: 12, z: 0.2}
-      yawDegrees: 166.95749
-    - center: {x: 18.326666, y: 6, z: 79.54728}
-      size: {x: 9.475705, y: 12, z: 0.2}
-      yawDegrees: -176.21725
-    - center: {x: 9.038172, y: 6, z: 79.65736}
-      size: {x: 9.108854, y: 12, z: 0.2}
-      yawDegrees: 177.45032
-    - center: {x: 0.0052273544, y: 6, z: 79.69004}
-      size: {x: 8.997729, y: 12, z: 0.2}
-      yawDegrees: -177.00153
-    - center: {x: -9.032122, y: 6, z: 80.405624}
-      size: {x: 9.150474, y: 12, z: 0.2}
-      yawDegrees: -173.96956
-    - center: {x: -18.337599, y: 6, z: 80.04383}
-      size: {x: 9.603663, y: 12, z: 0.2}
-      yawDegrees: 169.90761
-    - center: {x: -28.083069, y: 6, z: 79.67375}
-      size: {x: 10.133225, y: 12, z: 0.2}
-      yawDegrees: -174.67448
-    - center: {x: -38.684875, y: 6, z: 79.63748}
-      size: {x: 11.123583, y: 12, z: 0.2}
-      yawDegrees: 174.77457
-    - center: {x: -50.492943, y: 6, z: 78.86775}
-      size: {x: 12.559662, y: 12, z: 0.2}
-      yawDegrees: 177.595
-    - center: {x: -64.03571, y: 6, z: 79.147766}
-      size: {x: 14.600779, y: 12, z: 0.2}
-      yawDegrees: -175.72871
-    - center: {x: -75.281296, y: 6, z: 75.421555}
-      size: {x: 11.497231, y: 12, z: 0.2}
-      yawDegrees: 132.50812
-    - center: {x: -79.15844, y: 6, z: 63.93915}
-      size: {x: 14.353358, y: 12, z: 0.2}
-      yawDegrees: 89.73297
-    - center: {x: -79.74535, y: 6, z: 50.498566}
-      size: {x: 12.609877, y: 12, z: 0.2}
-      yawDegrees: 95.65113
-    - center: {x: -79.90492, y: 6, z: 38.667446}
-      size: {x: 11.115731, y: 12, z: 0.2}
-      yawDegrees: 85.23759
-    - center: {x: -80.26546, y: 6, z: 28.108437}
-      size: {x: 10.222828, y: 12, z: 0.2}
-      yawDegrees: 99.26489
-    - center: {x: -80.08165, y: 6, z: 18.299263}
-      size: {x: 9.6667, y: 12, z: 0.2}
-      yawDegrees: 77.98859
-    - center: {x: -79.482544, y: 6, z: 9.051487}
-      size: {x: 9.135815, y: 12, z: 0.2}
-      yawDegrees: 95.08595
-    - center: {x: -80.56093, y: 2, z: 0.11400284}
-      size: {x: 8.8905735, y: 4, z: 0.2}
-      yawDegrees: 98.72353
-    - center: {x: -80.576096, y: 8, z: 0.015159768}
-      size: {x: 9.090573, y: 8, z: 0.2}
-      yawDegrees: 98.72353
-    - center: {x: -80.91026, y: 2, z: -10.279149}
-      size: {x: 6.6517115, y: 4, z: 0.2}
-      yawDegrees: 86.47405
-    - center: {x: -80.98607, y: 8, z: -9.048786}
-      size: {x: 9.117105, y: 8, z: 0.2}
-      yawDegrees: 86.47405
-    - center: {x: -80.125626, y: 6, z: -18.332256}
-      size: {x: 9.525844, y: 12, z: 0.2}
-      yawDegrees: 83.01099
-    - center: {x: -80.04017, y: 6, z: -28.082611}
-      size: {x: 10.137689, y: 12, z: 0.2}
-      yawDegrees: 95.59082
-    - center: {x: -79.99073, y: 6, z: -38.685528}
-      size: {x: 11.130517, y: 12, z: 0.2}
-      yawDegrees: 84.398056
-    - center: {x: -80.04839, y: 6, z: -50.479206}
-      size: {x: 12.606015, y: 12, z: 0.2}
-      yawDegrees: 95.47072
-    - center: {x: -80.83245, y: 6, z: -64.31484}
-      size: {x: 15.112871, y: 12, z: 0.2}
-      yawDegrees: 91.38565
-    - center: {x: -76.271065, y: 6, z: -76.01602}
-      size: {x: 12.4475355, y: 12, z: 0.2}
-      yawDegrees: 40.825798
-    - center: {x: -64.13126, y: 6, z: -80.233406}
-      size: {x: 14.735249, y: 12, z: 0.2}
-      yawDegrees: 0.9660514
-    - center: {x: -50.49753, y: 6, z: -80.91348}
-      size: {x: 12.597809, y: 12, z: 0.2}
-      yawDegrees: 5.066103
-    - center: {x: -38.66678, y: 6, z: -80.972084}
-      size: {x: 11.121972, y: 12, z: 0.2}
-      yawDegrees: -5.133887
-    - center: {x: -28.09146, y: 6, z: -80.430885}
-      size: {x: 10.089823, y: 12, z: 0.2}
-      yawDegrees: -0.4994028
-    - center: {x: -18.315186, y: 6, z: -80.15518}
-      size: {x: 9.466401, y: 12, z: 0.2}
-      yawDegrees: -2.8048162
-    - center: {x: -9.040493, y: 6, z: -79.826515}
-      size: {x: 9.10192, y: 12, z: 0.2}
-      yawDegrees: -1.2232282
-    - center: {x: -0.018574208, y: 6, z: -80.57696}
-      size: {x: 9.144556, y: 12, z: 0.2}
-      yawDegrees: 10.704957
-    - center: {x: 9.056506, y: 6, z: -80.78946}
-      size: {x: 9.188756, y: 12, z: 0.2}
-      yawDegrees: -7.9768696
-    - center: {x: 18.324276, y: 6, z: -79.95433}
-      size: {x: 9.463384, y: 12, z: 0.2}
-      yawDegrees: -2.4035637
-    - center: {x: 28.081009, y: 6, z: -80.33146}
-      size: {x: 10.155072, y: 12, z: 0.2}
-      yawDegrees: 6.515179
-    - center: {x: 38.695858, y: 6, z: -79.77101}
-      size: {x: 11.30763, y: 12, z: 0.2}
-      yawDegrees: -11.582742
-    - center: {x: 50.47608, y: 6, z: -79.43908}
-      size: {x: 12.650711, y: 12, z: 0.2}
-      yawDegrees: 7.2845445
-    - center: {x: 63.967674, y: 6, z: -79.768486}
-      size: {x: 14.427182, y: 12, z: 0.2}
-      yawDegrees: -3.761469
-    - center: {x: 76.25118, y: 6, z: -75.67935}
-      size: {x: 12.374442, y: 12, z: 0.2}
-      yawDegrees: -35.55161
-    - center: {x: 79.96896, y: 6, z: -64.36425}
-      size: {x: 15.477086, y: 12, z: 0.2}
-      yawDegrees: -100.09486
-    - center: {x: 79.607735, y: 6, z: -50.5044}
-      size: {x: 12.705361, y: 12, z: 0.2}
-      yawDegrees: -80.99014
-    - center: {x: 80.901474, y: 6, z: -38.68113}
-      size: {x: 11.093353, y: 12, z: 0.2}
-      yawDegrees: -86.922455
-    - center: {x: 81.340614, y: 6, z: -28.09514}
-      size: {x: 10.093441, y: 12, z: 0.2}
-      yawDegrees: -88.396164
-    - center: {x: 81.49915, y: 6, z: -18.320433}
-      size: {x: 9.455123, y: 12, z: 0.2}
-      yawDegrees: -89.790985
-    - center: {x: 80.233215, y: 6, z: -9.015545}
-      size: {x: 9.452784, y: 12, z: 0.2}
-      yawDegrees: -105.70607
-    - center: {x: 78.93049, y: 6, z: 0.0006071891}
-      size: {x: 8.985558, y: 12, z: 0.2}
-      yawDegrees: -90.34448
+    - center: {x: 0, y: -0.1, z: -5.8334174}
+      size: {x: 3, y: 0.2, z: 8.666835}
+      yawDegrees: 0
+    - center: {x: 0, y: -0.1, z: 7.872438}
+      size: {x: 3, y: 0.2, z: 12.744876}
+      yawDegrees: 0
+    - center: {x: 5.8512764, y: -0.1, z: -5.8334174}
+      size: {x: 8.702553, y: 0.2, z: 8.666835}
+      yawDegrees: 0
+    - center: {x: 5.8512764, y: -0.1, z: 0}
+      size: {x: 8.702553, y: 0.2, z: 3}
+      yawDegrees: 0
+    - center: {x: 5.8512764, y: -0.1, z: 7.872438}
+      size: {x: 8.702553, y: 0.2, z: 12.744876}
+      yawDegrees: 0
+    - center: {x: 0.00021028519, y: 4.1, z: 2.0390205}
+      size: {x: 20.404686, y: 0.2, z: 24.41171}
+      yawDegrees: 0
+    - center: {x: 0, y: -1.3000001, z: 0}
+      size: {x: 3, y: 0.2, z: 3}
+      yawDegrees: 0
+    - center: {x: 0, y: -0.6, z: -1.5}
+      size: {x: 3, y: 1.2, z: 0.2}
+      yawDegrees: -0
+    - center: {x: 1.5, y: -0.6, z: 0}
+      size: {x: 3, y: 1.2, z: 0.2}
+      yawDegrees: -90
+    - center: {x: 0, y: -0.6, z: 1.5}
+      size: {x: 3, y: 1.2, z: 0.2}
+      yawDegrees: -180
+    - center: {x: -1.5, y: -0.6, z: 0}
+      size: {x: 3, y: 1.2, z: 0.2}
+      yawDegrees: 90
+    - center: {x: 6.425812, y: 2, z: 12.074234}
+      size: {x: 8.26251, y: 4, z: 0.2}
+      yawDegrees: -151.25844
+    - center: {x: 1.8121655, y: 0.75, z: 14.108251}
+      size: {x: 1.8953117, y: 1.5, z: 0.2}
+      yawDegrees: -177.87057
+    - center: {x: 2.659236, y: 2.25, z: 14.076755}
+      size: {x: 0.2, y: 1.5, z: 0.2}
+      yawDegrees: -177.87057
+    - center: {x: 0.965095, y: 2.25, z: 14.139748}
+      size: {x: 0.19999997, y: 1.5, z: 0.2}
+      yawDegrees: -177.87057
+    - center: {x: 1.8121655, y: 3.5, z: 14.108251}
+      size: {x: 1.8953117, y: 1, z: 0.2}
+      yawDegrees: -177.87057
+    - center: {x: -4.604165, y: 2, z: 12.115483}
+      size: {x: 11.589703, y: 4, z: 0.2}
+      yawDegrees: 159.58055
+    - center: {x: -9.968278, y: 1.6, z: 1.3685728}
+      size: {x: 17.261812, y: 3.2, z: 0.2}
+      yawDegrees: 89.12562
+    - center: {x: -9.8046255, y: 1.6, z: -9.354251}
+      size: {x: 0.98633254, y: 3.2, z: 0.2}
+      yawDegrees: 89.12562
+    - center: {x: -9.9485445, y: 3.6, z: 0.07555708}
+      size: {x: 19.848145, y: 0.79999995, z: 0.2}
+      yawDegrees: 89.12562
+    - center: {x: -0.06306772, y: 2, z: -10.005722}
+      size: {x: 19.269705, y: 4, z: 0.2}
+      yawDegrees: 0.35615304
+    - center: {x: 9.886087, y: 2, z: 0.015050747}
+      size: {x: 19.970196, y: 4, z: 0.2}
+      yawDegrees: -88.772575
+    - center: {x: -8.755537, y: 0.09376893, z: 10.260455}
+      size: {x: 0.8319226, y: 0.18753786, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: -7.9236145, y: 0.093733944, z: 10.260455}
+      size: {x: 0.8319226, y: 0.18746789, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: -7.9236145, y: 0.18753217, z: 10.7646}
+      size: {x: 0.8319226, y: 0.37506434, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: -7.091692, y: 0.09368261, z: 10.260455}
+      size: {x: 0.8319226, y: 0.18736522, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: -7.091692, y: 0.18750758, z: 10.7646}
+      size: {x: 0.8319226, y: 0.37501517, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: -6.2597694, y: 0.09362801, z: 10.260455}
+      size: {x: 0.8319226, y: 0.18725602, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: -6.2597694, y: 0.18747286, z: 10.7646}
+      size: {x: 0.8319226, y: 0.37494573, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: -6.2597694, y: 0.2812715, z: 11.2687435}
+      size: {x: 0.8319226, y: 0.562543, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: -5.4278464, y: 0.09357438, z: 10.260455}
+      size: {x: 0.8319226, y: 0.18714876, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: -5.4278464, y: 0.18743502, z: 10.7646}
+      size: {x: 0.8319226, y: 0.37487003, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: -5.4278464, y: 0.28124893, z: 11.2687435}
+      size: {x: 0.8319226, y: 0.56249785, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: -4.595924, y: 0.09352409, z: 10.260455}
+      size: {x: 0.8319226, y: 0.18704818, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: -4.595924, y: 0.18739936, z: 10.7646}
+      size: {x: 0.8319226, y: 0.37479872, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: -4.595924, y: 0.28122342, z: 11.2687435}
+      size: {x: 0.8319226, y: 0.56244683, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: -4.595924, y: 0.37500754, z: 11.772887}
+      size: {x: 0.8319226, y: 0.7500151, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: -3.7640014, y: 0.093475945, z: 10.260455}
+      size: {x: 0.8319226, y: 0.18695189, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: -3.7640014, y: 0.18737052, z: 10.7646}
+      size: {x: 0.8319226, y: 0.37474105, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: -3.7640014, y: 0.28120628, z: 11.2687435}
+      size: {x: 0.8319226, y: 0.56241256, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: -3.7640014, y: 0.37499645, z: 11.772887}
+      size: {x: 0.8319226, y: 0.7499929, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: -3.7640014, y: 0.46875224, z: 12.277032}
+      size: {x: 0.8319226, y: 0.9375045, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: -2.9320788, y: 0.09343749, z: 10.260455}
+      size: {x: 0.8319226, y: 0.18687499, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: -2.9320788, y: 0.18735811, z: 10.7646}
+      size: {x: 0.8319226, y: 0.37471622, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: -2.9320788, y: 0.28122783, z: 11.2687435}
+      size: {x: 0.8319226, y: 0.56245565, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: -2.9320788, y: 0.37502575, z: 11.772887}
+      size: {x: 0.8319226, y: 0.7500515, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: -2.9320788, y: 0.46876737, z: 12.277032}
+      size: {x: 0.8319226, y: 0.93753475, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: -2.1001563, y: 0.09340886, z: 10.260455}
+      size: {x: 0.8319226, y: 0.18681772, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: -2.1001563, y: 0.18739407, z: 10.7646}
+      size: {x: 0.8319226, y: 0.37478814, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: -2.1001563, y: 0.2812971, z: 11.2687435}
+      size: {x: 0.8319226, y: 0.5625942, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: -2.1001563, y: 0.375106, z: 11.772887}
+      size: {x: 0.8319226, y: 0.750212, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: -2.1001563, y: 0.4688333, z: 12.277032}
+      size: {x: 0.8319226, y: 0.9376666, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: -2.1001563, y: 0.5625102, z: 12.781177}
+      size: {x: 0.8319226, y: 1.1250204, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: -1.2682337, y: 0.09340592, z: 10.260455}
+      size: {x: 0.8319226, y: 0.18681183, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: -1.2682337, y: 0.18748079, z: 10.7646}
+      size: {x: 0.8319226, y: 0.37496158, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: -1.2682337, y: 0.2814447, z: 11.2687435}
+      size: {x: 0.8319226, y: 0.5628894, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: -1.2682337, y: 0.37528545, z: 11.772887}
+      size: {x: 0.8319226, y: 0.7505709, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: -1.2682337, y: 0.46900058, z: 12.277032}
+      size: {x: 0.8319226, y: 0.93800116, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: -1.2682337, y: 0.5626175, z: 12.781177}
+      size: {x: 0.8319226, y: 1.125235, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: -0.43631104, y: 0.093447566, z: 10.260455}
+      size: {x: 0.8319226, y: 0.18689513, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: -0.43631104, y: 0.18764023, z: 10.7646}
+      size: {x: 0.8319226, y: 0.37528047, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: -0.43631104, y: 0.28172043, z: 11.2687435}
+      size: {x: 0.8319226, y: 0.56344086, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: -0.43631104, y: 0.37565428, z: 11.772887}
+      size: {x: 0.8319226, y: 0.75130856, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: -0.43631104, y: 0.46940258, z: 12.277032}
+      size: {x: 0.8319226, y: 0.93880516, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: -0.43631104, y: 0.5629454, z: 12.781177}
+      size: {x: 0.8319226, y: 1.1258909, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: -0.43631104, y: 0.65635353, z: 13.28532}
+      size: {x: 0.8319226, y: 1.3127071, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 0.39561155, y: 0.093520544, z: 10.260455}
+      size: {x: 0.8319226, y: 0.18704109, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 0.39561155, y: 0.18788685, z: 10.7646}
+      size: {x: 0.8319226, y: 0.3757737, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 0.39561155, y: 0.28217298, z: 11.2687435}
+      size: {x: 0.8319226, y: 0.56434596, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 0.39561155, y: 0.37633583, z: 11.772887}
+      size: {x: 0.8319226, y: 0.75267166, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 0.39561155, y: 0.47030807, z: 12.277032}
+      size: {x: 0.8319226, y: 0.94061613, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 0.39561155, y: 0.5639847, z: 12.781177}
+      size: {x: 0.8319226, y: 1.1279694, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 0.39561155, y: 0.65721995, z: 13.28532}
+      size: {x: 0.8319226, y: 1.3144399, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 0.39561155, y: 0.749992, z: 13.789464}
+      size: {x: 0.8319226, y: 1.499984, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 1.2275342, y: 0.09361844, z: 10.260455}
+      size: {x: 0.8319226, y: 0.18723688, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 1.2275342, y: 0.18820667, z: 10.7646}
+      size: {x: 0.8319226, y: 0.37641335, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 1.2275342, y: 0.2827863, z: 11.2687435}
+      size: {x: 0.8319226, y: 0.5655726, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 1.2275342, y: 0.3773455, z: 11.772887}
+      size: {x: 0.8319226, y: 0.754691, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 1.2275342, y: 0.471862, z: 12.277032}
+      size: {x: 0.8319226, y: 0.943724, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 1.2275342, y: 0.5662971, z: 12.781177}
+      size: {x: 0.8319226, y: 1.1325942, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 1.2275342, y: 0.66060895, z: 13.28532}
+      size: {x: 0.8319226, y: 1.3212179, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 1.2275342, y: 0.7548812, z: 13.789464}
+      size: {x: 0.8319226, y: 1.5097624, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 2.0594568, y: 0.09372231, z: 10.260455}
+      size: {x: 0.8319226, y: 0.18744463, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 2.0594568, y: 0.18854102, z: 10.7646}
+      size: {x: 0.8319226, y: 0.37708205, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 2.0594568, y: 0.2834334, z: 11.2687435}
+      size: {x: 0.8319226, y: 0.5668668, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 2.0594568, y: 0.3784285, z: 11.772887}
+      size: {x: 0.8319226, y: 0.756857, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 2.0594568, y: 0.47357294, z: 12.277032}
+      size: {x: 0.8319226, y: 0.9471459, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 2.0594568, y: 0.568943, z: 12.781177}
+      size: {x: 0.8319226, y: 1.137886, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 2.0594568, y: 0.6646209, z: 13.28532}
+      size: {x: 0.8319226, y: 1.3292418, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 2.0594568, y: 0.7601471, z: 13.789464}
+      size: {x: 0.8319226, y: 1.5202942, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 2.8913794, y: 0.093807265, z: 10.260455}
+      size: {x: 0.8319226, y: 0.18761453, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 2.8913794, y: 0.18882246, z: 10.7646}
+      size: {x: 0.8319226, y: 0.37764493, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 2.8913794, y: 0.2839585, z: 11.2687435}
+      size: {x: 0.8319226, y: 0.567917, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 2.8913794, y: 0.37925094, z: 11.772887}
+      size: {x: 0.8319226, y: 0.7585019, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 2.8913794, y: 0.47474217, z: 12.277032}
+      size: {x: 0.8319226, y: 0.94948435, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 2.8913794, y: 0.5704685, z: 12.781177}
+      size: {x: 0.8319226, y: 1.140937, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 2.8913794, y: 0.6663732, z: 13.28532}
+      size: {x: 0.8319226, y: 1.3327464, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 2.8913794, y: 0.76196074, z: 13.789464}
+      size: {x: 0.8319226, y: 1.5239215, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 3.723302, y: 0.09386123, z: 10.260455}
+      size: {x: 0.8319226, y: 0.18772246, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 3.723302, y: 0.18901648, z: 10.7646}
+      size: {x: 0.8319226, y: 0.37803295, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 3.723302, y: 0.28429967, z: 11.2687435}
+      size: {x: 0.8319226, y: 0.56859934, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 3.723302, y: 0.37972406, z: 11.772887}
+      size: {x: 0.8319226, y: 0.7594481, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 3.723302, y: 0.47528723, z: 12.277032}
+      size: {x: 0.8319226, y: 0.95057446, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 3.723302, y: 0.57094866, z: 12.781177}
+      size: {x: 0.8319226, y: 1.1418973, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 3.723302, y: 0.66659003, z: 13.28532}
+      size: {x: 0.8319226, y: 1.3331801, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 4.5552244, y: 0.0938831, z: 10.260455}
+      size: {x: 0.8319226, y: 0.1877662, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 4.5552244, y: 0.18913037, z: 10.7646}
+      size: {x: 0.8319226, y: 0.37826073, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 4.5552244, y: 0.2844928, z: 11.2687435}
+      size: {x: 0.8319226, y: 0.5689856, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 4.5552244, y: 0.37996316, z: 11.772887}
+      size: {x: 0.8319226, y: 0.7599263, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 4.5552244, y: 0.47551647, z: 12.277032}
+      size: {x: 0.8319226, y: 0.95103294, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 4.5552244, y: 0.5711018, z: 12.781177}
+      size: {x: 0.8319226, y: 1.1422036, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 5.387147, y: 0.0938831, z: 10.260455}
+      size: {x: 0.8319226, y: 0.1877662, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 5.387147, y: 0.18918745, z: 10.7646}
+      size: {x: 0.8319226, y: 0.3783749, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 5.387147, y: 0.28459504, z: 11.2687435}
+      size: {x: 0.8319226, y: 0.5691901, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 5.387147, y: 0.38008285, z: 11.772887}
+      size: {x: 0.8319226, y: 0.7601657, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 5.387147, y: 0.47562066, z: 12.277032}
+      size: {x: 0.8319226, y: 0.9512413, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 6.2190695, y: 0.09387915, z: 10.260455}
+      size: {x: 0.8319226, y: 0.1877583, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 6.2190695, y: 0.18921088, z: 10.7646}
+      size: {x: 0.8319226, y: 0.37842175, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 6.2190695, y: 0.28464955, z: 11.2687435}
+      size: {x: 0.8319226, y: 0.5692991, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 6.2190695, y: 0.38015008, z: 11.772887}
+      size: {x: 0.8319226, y: 0.76030016, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 7.050992, y: 0.09385755, z: 10.260455}
+      size: {x: 0.8319226, y: 0.1877151, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 7.050992, y: 0.18921827, z: 10.7646}
+      size: {x: 0.8319226, y: 0.37843654, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 7.050992, y: 0.28468728, z: 11.2687435}
+      size: {x: 0.8319226, y: 0.56937456, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 7.8829155, y: 0.093826294, z: 10.260455}
+      size: {x: 0.8319226, y: 0.18765259, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 7.8829155, y: 0.1892293, z: 10.7646}
+      size: {x: 0.8319226, y: 0.3784586, z: 0.5041442}
+      yawDegrees: 0
+    - center: {x: 8.714837, y: 0.09379262, z: 10.260455}
+      size: {x: 0.8319226, y: 0.18758523, z: 0.5041442}
+      yawDegrees: 0
     definition:
-      tilesX: 32
-      tilesZ: 32
-      heightMeters: 12
+      tilesX: 4
+      tilesZ: 6
+      heightMeters: 4
       ceilingTilt: 0
       ceilingTiltYaw: 0
-      sides: 56
+      sides: 4
       squareness: 1
       wallThickness: 0.2
       trimEnabled: 0
-      planMode: 0
-      manualContour: []
+      planMode: 2
+      manualContour:
+      - {x: 10, y: 10}
+      - {x: 2.7554512, y: 13.973108}
+      - {x: 0.8614483, y: 14.043532}
+      - {x: -10, y: 10}
+      - {x: -9.697112, y: -9.845834}
+      - {x: 9.57222, y: -9.965614}
       notches: []
-      holes:
-      - side: 28
-        along: 0.13495597
-        baseY: 0
+      platforms:
+      - points:
+        - position: {x: 9.962721, y: 10.017233}
+          height: 0
+        - position: {x: 2.7458508, y: 13.978528}
+          height: 1.5
+        - position: {x: 0.864702, y: 14.041536}
+          height: 1.5
+        - position: {x: -10.003421, y: 10.008383}
+          height: 0
         level: 0
-        width: 2.47
-        height: 4
+      holes:
+      - side: 1
+        along: 0.5
+        baseY: 1.5
+        level: 0
+        width: 1.5
+        height: 1.5
         grateBars: 0
         spanCorners: 1
+      - side: 3
+        along: 0.91
+        baseY: 0
+        level: 0
+        width: 1.6
+        height: 3.2
+        grateBars: 0
+        spanCorners: 0
       pillars: []
       pillarGrids: []
       blocks: []
       stairs: []
-      floorHoles: []
-      levels:
-      - height: 8
+      floorHoles:
+      - position: {x: 0, y: 0}
+        sizeX: 3
+        sizeZ: 3
+        sides: 0
+        squareness: 1
+        depth: 1.2
+        yawDegrees: 0
+        bottomless: 0
+        level: 0
+        mode: 2
+      levels: []
       markers: []
-      irregularity: 1
-      irregularitySeed: 228905
+      lights:
+      - position: {x: 0, y: 0}
+        y: 3.94
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 1, b: 1, a: 1}
+        lightIntensity: 10
+        lightRange: 13.94
+        behavior: 0
+        flickerHz: 2
+      irregularity: 0
+      irregularitySeed: 1
   - id: room_2
-    prefab: {fileID: 6552879169785262594, guid: c52b370c06f3b8e4b8b5b1edfccdd8f1, type: 3}
-    tilesX: 12
-    tilesZ: 12
-    heightMeters: 12
-    doorLocalPosition: {x: 24.09468, y: 0, z: 29.936224}
-    doorLocalForward: {x: -0.10261225, y: 0, z: 0.9947214}
+    prefab: {fileID: 6725057632724012515, guid: 3b7561cc70fcbe745a7b3c449d3352fa, type: 3}
+    tilesX: 2
+    tilesZ: 2
+    heightMeters: 40
+    doorLocalPosition: {x: 0, y: 0, z: 5}
+    doorLocalForward: {x: 0, y: 0, z: 1}
     collisionBoxes:
-    - center: {x: 0.13856888, y: -0.1, z: -0.006986618}
-      size: {x: 62.062508, y: 0.2, z: 62.288555}
+    - center: {x: 0, y: -0.1, z: -0.00000023841858}
+      size: {x: 10.4, y: 0.2, z: 10.4}
       yawDegrees: 0
-    - center: {x: 0.13856888, y: 12.1, z: -0.006986618}
-      size: {x: 62.062508, y: 0.2, z: 62.288555}
+    - center: {x: 0, y: 40.1, z: -0.00000023841858}
+      size: {x: 10.4, y: 0.2, z: 10.4}
       yawDegrees: 0
-    - center: {x: 0.13856888, y: 7.9, z: -0.006986618}
-      size: {x: 62.062508, y: 0.2, z: 62.288555}
+    - center: {x: -4.826482, y: 10.7, z: -5.0981436}
+      size: {x: 0.747036, y: 0.2, z: 0.20371199}
       yawDegrees: 0
-    - center: {x: 29.74331, y: 6, z: 3.3727212}
-      size: {x: 3.4708166, y: 12, z: 0.2}
-      yawDegrees: -79.47683
-    - center: {x: 30.311857, y: 6, z: 6.8560147}
-      size: {x: 3.580981, y: 12, z: 0.2}
-      yawDegrees: -81.94439
-    - center: {x: 30.304867, y: 6, z: 10.5481415}
-      size: {x: 3.818572, y: 12, z: 0.2}
-      yawDegrees: -97.76511
-    - center: {x: 30.090977, y: 6, z: 14.501331}
-      size: {x: 4.154904, y: 12, z: 0.2}
-      yawDegrees: -88.80895
-    - center: {x: 29.953276, y: 6, z: 18.94093}
-      size: {x: 4.719567, y: 12, z: 0.2}
-      yawDegrees: -94.389565
-    - center: {x: 29.920855, y: 6, z: 24.03611}
-      size: {x: 5.5186257, y: 12, z: 0.2}
-      yawDegrees: -86.924515
-    - center: {x: 28.510683, y: 6, z: 28.57803}
-      size: {x: 4.5997996, y: 12, z: 0.2}
-      yawDegrees: -131.79831
-    - center: {x: 26.102934, y: 2, z: 30.24392}
-      size: {x: 1.5884476, y: 4, z: 0.2}
-      yawDegrees: 174.11038
-    - center: {x: 22.065907, y: 2, z: 29.827473}
-      size: {x: 1.588451, y: 4, z: 0.2}
-      yawDegrees: 174.11038
-    - center: {x: 24.08442, y: 8, z: 30.035696}
-      size: {x: 5.6468997, y: 8, z: 0.2}
-      yawDegrees: 174.11038
-    - center: {x: 18.939138, y: 6, z: 29.884546}
-      size: {x: 4.7138352, y: 12, z: 0.2}
-      yawDegrees: -176.63812
-    - center: {x: 14.526933, y: 6, z: 30.522823}
-      size: {x: 4.2739406, y: 12, z: 0.2}
-      yawDegrees: -166.3944
-    - center: {x: 10.499067, y: 6, z: 30.302021}
-      size: {x: 4.048156, y: 12, z: 0.2}
-      yawDegrees: 159.16962
-    - center: {x: 6.880537, y: 6, z: 29.775608}
-      size: {x: 3.5653965, y: 12, z: 0.2}
-      yawDegrees: -173.96667
-    - center: {x: 3.3843787, y: 6, z: 29.850395}
-      size: {x: 3.4199045, y: 12, z: 0.2}
-      yawDegrees: 176.21352
-    - center: {x: 0.007818979, y: 6, z: 29.869545}
-      size: {x: 3.3798804, y: 12, z: 0.2}
-      yawDegrees: -175.5147
-    - center: {x: -3.3752, y: 6, z: 30.273504}
-      size: {x: 3.455764, y: 12, z: 0.2}
-      yawDegrees: -170.91782
-    - center: {x: -6.896594, y: 6, z: 30.055395}
-      size: {x: 3.6778004, y: 12, z: 0.2}
-      yawDegrees: 164.59401
-    - center: {x: -10.520053, y: 6, z: 29.848177}
-      size: {x: 3.8244162, y: 12, z: 0.2}
-      yawDegrees: -171.61723
-    - center: {x: -14.5199995, y: 6, z: 29.777311}
-      size: {x: 4.212349, y: 12, z: 0.2}
-      yawDegrees: 170.45305
-    - center: {x: -18.943897, y: 6, z: 29.1776}
-      size: {x: 4.7324696, y: 12, z: 0.2}
-      yawDegrees: 173.90576
-    - center: {x: -23.968464, y: 6, z: 29.358723}
-      size: {x: 5.465393, y: 12, z: 0.2}
-      yawDegrees: -170.88234
-    - center: {x: -28.07667, y: 6, z: 28.17386}
-      size: {x: 4.119028, y: 12, z: 0.2}
-      yawDegrees: 129.76402
-    - center: {x: -29.406294, y: 2, z: 25.832481}
-      size: {x: 1.385643, y: 4, z: 0.2}
-      yawDegrees: 89.105675
-    - center: {x: -29.346115, y: 2, z: 21.977308}
-      size: {x: 1.3856425, y: 4, z: 0.2}
-      yawDegrees: 89.105675
-    - center: {x: -29.376205, y: 8, z: 23.904896}
-      size: {x: 5.2412868, y: 8, z: 0.2}
-      yawDegrees: 89.105675
-    - center: {x: -29.808004, y: 6, z: 18.953045}
-      size: {x: 4.800525, y: 12, z: 0.2}
-      yawDegrees: 101.40578
-    - center: {x: -29.984413, y: 6, z: 14.489147}
-      size: {x: 4.196892, y: 12, z: 0.2}
-      yawDegrees: 81.802414
-    - center: {x: -30.182226, y: 6, z: 10.560146}
-      size: {x: 3.913119, y: 12, z: 0.2}
-      yawDegrees: 104.785416
-    - center: {x: -30.09679, y: 6, z: 6.8387856}
-      size: {x: 3.7324822, y: 12, z: 0.2}
-      yawDegrees: 71.79479
-    - center: {x: -29.748907, y: 6, z: 3.4044032}
-      size: {x: 3.4435925, y: 12, z: 0.2}
-      yawDegrees: 97.71242
-    - center: {x: -30.365479, y: 6, z: 0.022392714}
-      size: {x: 3.4573464, y: 12, z: 0.2}
-      yawDegrees: 102.94134
-    - center: {x: -30.599472, y: 6, z: -3.4000516}
-      size: {x: 3.4265444, y: 12, z: 0.2}
-      yawDegrees: 84.80003
-    - center: {x: -30.107107, y: 6, z: -6.8886414}
-      size: {x: 3.608676, y: 12, z: 0.2}
-      yawDegrees: 79.27582
-    - center: {x: -30.072296, y: 6, z: -10.518948}
-      size: {x: 3.8309643, y: 12, z: 0.2}
-      yawDegrees: 99.02383
-    - center: {x: -30.009771, y: 6, z: -14.520614}
-      size: {x: 4.216872, y: 12, z: 0.2}
-      yawDegrees: 80.09436
-    - center: {x: -30.088146, y: 6, z: -18.914843}
-      size: {x: 4.7877812, y: 12, z: 0.2}
-      yawDegrees: 100.623055
-    - center: {x: -30.659595, y: 6, z: -24.186008}
-      size: {x: 5.8142614, y: 12, z: 0.2}
-      yawDegrees: 92.53388
-    - center: {x: -28.81043, y: 6, z: -28.630766}
-      size: {x: 4.8479013, y: 12, z: 0.2}
-      yawDegrees: 36.92112
-    - center: {x: -26.05155, y: 2, z: -30.133856}
-      size: {x: 1.5299072, y: 4, z: 0.2}
-      yawDegrees: 2.0223413
-    - center: {x: -22.054132, y: 2, z: -30.27501}
-      size: {x: 1.5299087, y: 4, z: 0.2}
-      yawDegrees: 2.0223413
-    - center: {x: -24.052841, y: 8, z: -30.204433}
-      size: {x: 5.529817, y: 8, z: 0.2}
-      yawDegrees: 2.0223413
-    - center: {x: -18.94893, y: 6, z: -30.674078}
-      size: {x: 4.7645655, y: 12, z: 0.2}
-      yawDegrees: 9.0140505
-    - center: {x: -14.486501, y: 6, z: -30.691036}
-      size: {x: 4.214615, y: 12, z: 0.2}
-      yawDegrees: -9.728405
-    - center: {x: -10.532858, y: 6, z: -30.302954}
-      size: {x: 3.78413, y: 12, z: 0.2}
-      yawDegrees: -1.0120121
-    - center: {x: -6.8624425, y: 6, z: -30.13435}
-      size: {x: 3.5559, y: 12, z: 0.2}
-      yawDegrees: -4.3518395
-    - center: {x: -3.3878264, y: 6, z: -29.94575}
-      size: {x: 3.4141462, y: 12, z: 0.2}
-      yawDegrees: -1.810308
-    - center: {x: -0.027239302, y: 6, z: -30.365047}
-      size: {x: 3.5019548, y: 12, z: 0.2}
-      yawDegrees: 15.806891
-    - center: {x: 3.4115138, y: 6, z: -30.485794}
-      size: {x: 3.486694, y: 12, z: 0.2}
-      yawDegrees: -11.845591
-    - center: {x: 6.876599, y: 6, z: -30.013165}
-      size: {x: 3.553318, y: 12, z: 0.2}
-      yawDegrees: -3.765517
-    - center: {x: 10.516116, y: 6, z: -30.251453}
-      size: {x: 3.850148, y: 12, z: 0.2}
-      yawDegrees: 10.671574
-    - center: {x: 14.53782, y: 6, z: -29.842583}
-      size: {x: 4.424042, y: 12, z: 0.2}
-      yawDegrees: -20.122015
-    - center: {x: 18.91006, y: 6, z: -29.646776}
-      size: {x: 4.838012, y: 12, z: 0.2}
-      yawDegrees: 13.429346
-    - center: {x: 23.936064, y: 6, z: -29.852253}
-      size: {x: 5.3213425, y: 12, z: 0.2}
-      yawDegrees: -7.736057
-    - center: {x: 28.785906, y: 6, z: -28.382658}
-      size: {x: 4.8882327, y: 12, z: 0.2}
-      yawDegrees: -26.790037
-    - center: {x: 30.700731, y: 2, z: -26.264215}
-      size: {x: 1.8969423, y: 4, z: 0.2}
-      yawDegrees: -109.47131
-    - center: {x: 29.245077, y: 2, z: -22.147028}
-      size: {x: 1.8969333, y: 4, z: 0.2}
-      yawDegrees: -109.47131
-    - center: {x: 29.972904, y: 8, z: -24.205624}
-      size: {x: 6.2638764, y: 8, z: 0.2}
-      yawDegrees: -109.47131
-    - center: {x: 29.686924, y: 6, z: -18.963907}
-      size: {x: 4.9433374, y: 12, z: 0.2}
-      yawDegrees: -72.163185
-    - center: {x: 30.620703, y: 6, z: -14.511674}
-      size: {x: 4.168265, y: 12, z: 0.2}
-      yawDegrees: -85.259834
-    - center: {x: 30.854895, y: 6, z: -10.537887}
-      size: {x: 3.785567, y: 12, z: 0.2}
-      yawDegrees: -88.13275
-    - center: {x: 30.911093, y: 6, z: -6.869714}
-      size: {x: 3.5456643, y: 12, z: 0.2}
-      yawDegrees: -90.1787
-    - center: {x: 30.17404, y: 6, z: -3.3519375}
-      size: {x: 3.7066262, y: 12, z: 0.2}
-      yawDegrees: -112.98119
-    - center: {x: 29.443216, y: 6, z: 0.00090271805}
-      size: {x: 3.3696597, y: 12, z: 0.2}
-      yawDegrees: -90.51589
+    - center: {x: -4.826482, y: 10.7, z: -0.12808084}
+      size: {x: 0.747036, y: 0.2, z: 9.736414}
+      yawDegrees: 0
+    - center: {x: -4.826482, y: 10.7, z: 4.970063}
+      size: {x: 0.747036, y: 0.2, z: 0.45987368}
+      yawDegrees: 0
+    - center: {x: -0.39385843, y: 10.7, z: -5.0981436}
+      size: {x: 8.118211, y: 0.2, z: 0.20371199}
+      yawDegrees: 0
+    - center: {x: -0.39385843, y: 10.7, z: 4.970063}
+      size: {x: 8.118211, y: 0.2, z: 0.45987368}
+      yawDegrees: 0
+    - center: {x: 4.4326234, y: 10.7, z: -5.0981436}
+      size: {x: 1.5347528, y: 0.2, z: 0.20371199}
+      yawDegrees: 0
+    - center: {x: 4.4326234, y: 10.7, z: -0.12808084}
+      size: {x: 1.5347528, y: 0.2, z: 9.736414}
+      yawDegrees: 0
+    - center: {x: 4.4326234, y: 10.7, z: 4.970063}
+      size: {x: 1.5347528, y: 0.2, z: 0.45987368}
+      yawDegrees: 0
+    - center: {x: -4.426773, y: 15.7699995, z: -4.208578}
+      size: {x: 1.5464532, y: 0.2, z: 1.9828436}
+      yawDegrees: 0
+    - center: {x: -4.426773, y: 15.7699995, z: -0.07269025}
+      size: {x: 1.5464532, y: 0.2, z: 6.288932}
+      yawDegrees: 0
+    - center: {x: -4.426773, y: 15.7699995, z: 4.1358876}
+      size: {x: 1.5464532, y: 0.2, z: 2.1282241}
+      yawDegrees: 0
+    - center: {x: 0.08703923, y: 15.7699995, z: -4.208578}
+      size: {x: 7.4811716, y: 0.2, z: 1.9828436}
+      yawDegrees: 0
+    - center: {x: 0.08703923, y: 15.7699995, z: 4.1358876}
+      size: {x: 7.4811716, y: 0.2, z: 2.1282241}
+      yawDegrees: 0
+    - center: {x: 4.5138125, y: 15.7699995, z: -4.208578}
+      size: {x: 1.3723748, y: 0.2, z: 1.9828436}
+      yawDegrees: 0
+    - center: {x: 4.5138125, y: 15.7699995, z: -0.07269025}
+      size: {x: 1.3723748, y: 0.2, z: 6.288932}
+      yawDegrees: 0
+    - center: {x: 4.5138125, y: 15.7699995, z: 4.1358876}
+      size: {x: 1.3723748, y: 0.2, z: 2.1282241}
+      yawDegrees: 0
+    - center: {x: -1.47, y: 3.9, z: -4.015}
+      size: {x: 7.4599996, y: 0.2, z: 2.37}
+      yawDegrees: 0
+    - center: {x: -1.47, y: 3.9, z: -0.029999971}
+      size: {x: 7.4599996, y: 0.2, z: 5.6}
+      yawDegrees: 0
+    - center: {x: -1.47, y: 3.9, z: 3.985}
+      size: {x: 7.4599996, y: 0.2, z: 2.4299998}
+      yawDegrees: 0
+    - center: {x: 3.2600002, y: 3.9, z: -4.015}
+      size: {x: 2.000001, y: 0.2, z: 2.37}
+      yawDegrees: 0
+    - center: {x: 3.2600002, y: 3.9, z: 3.985}
+      size: {x: 2.000001, y: 0.2, z: 2.4299998}
+      yawDegrees: 0
+    - center: {x: 4.7300005, y: 3.9, z: -4.015}
+      size: {x: 0.9399991, y: 0.2, z: 2.37}
+      yawDegrees: 0
+    - center: {x: 4.7300005, y: 3.9, z: -0.029999971}
+      size: {x: 0.9399991, y: 0.2, z: 5.6}
+      yawDegrees: 0
+    - center: {x: 4.7300005, y: 3.9, z: 3.985}
+      size: {x: 0.9399991, y: 0.2, z: 2.4299998}
+      yawDegrees: 0
+    - center: {x: 3.5, y: 1.5, z: 5.1}
+      size: {x: 3, y: 3, z: 0.2}
+      yawDegrees: -180
+    - center: {x: -3.5000002, y: 1.5, z: 5.1}
+      size: {x: 3, y: 3, z: 0.2}
+      yawDegrees: -180
+    - center: {x: 0, y: 21.5, z: 5.1}
+      size: {x: 10, y: 37, z: 0.2}
+      yawDegrees: -180
+    - center: {x: -5.099999, y: 20, z: -0.000000019073488}
+      size: {x: 10, y: 40, z: 0.2}
+      yawDegrees: 89.99999
+    - center: {x: 0.0000009870529, y: 20, z: -5.099998}
+      size: {x: 9.999998, y: 40, z: 0.2}
+      yawDegrees: -0.000019124533
+    - center: {x: 5.1, y: 20, z: 0.00000166893}
+      size: {x: 9.999996, y: 40, z: 0.2}
+      yawDegrees: -90
+    - center: {x: 2.7451615, y: 4.09, z: -4.248634}
+      size: {x: 2.1, y: 0.18, z: 0.28}
+      yawDegrees: -37.3
+    - center: {x: 2.5754848, y: 4.18, z: -4.0259013}
+      size: {x: 2.1, y: 0.36, z: 0.28}
+      yawDegrees: -37.3
+    - center: {x: 2.405808, y: 4.27, z: -3.8031688}
+      size: {x: 2.1, y: 0.54, z: 0.28}
+      yawDegrees: -37.3
+    - center: {x: 2.2361312, y: 4.36, z: -3.580436}
+      size: {x: 2.1, y: 0.72, z: 0.28}
+      yawDegrees: -37.3
+    - center: {x: 2.0664546, y: 4.45, z: -3.3577037}
+      size: {x: 2.1, y: 0.90000004, z: 0.28}
+      yawDegrees: -37.3
+    - center: {x: 1.8967779, y: 4.54, z: -3.134971}
+      size: {x: 2.1, y: 1.08, z: 0.28}
+      yawDegrees: -37.3
+    - center: {x: 1.7271011, y: 4.63, z: -2.9122381}
+      size: {x: 2.1, y: 1.26, z: 0.28}
+      yawDegrees: -37.3
+    - center: {x: 1.5574244, y: 4.7200003, z: -2.6895058}
+      size: {x: 2.1, y: 1.44, z: 0.28}
+      yawDegrees: -37.3
+    - center: {x: 1.3877475, y: 4.81, z: -2.466773}
+      size: {x: 2.1, y: 1.6200001, z: 0.28}
+      yawDegrees: -37.3
+    - center: {x: 1.2180707, y: 4.9, z: -2.2440405}
+      size: {x: 2.1, y: 1.8000001, z: 0.28}
+      yawDegrees: -37.3
+    - center: {x: 1.0483941, y: 4.99, z: -2.021308}
+      size: {x: 2.1, y: 1.98, z: 0.28}
+      yawDegrees: -37.3
+    - center: {x: 0.8787173, y: 5.08, z: -1.7985754}
+      size: {x: 2.1, y: 2.16, z: 0.28}
+      yawDegrees: -37.3
+    - center: {x: 0.70904064, y: 5.17, z: -1.5758429}
+      size: {x: 2.1, y: 2.3400002, z: 0.28}
+      yawDegrees: -37.3
+    - center: {x: 0.53936386, y: 5.26, z: -1.3531103}
+      size: {x: 2.1, y: 2.52, z: 0.28}
+      yawDegrees: -37.3
+    - center: {x: 0.36968708, y: 5.35, z: -1.1303778}
+      size: {x: 2.1, y: 2.7, z: 0.28}
+      yawDegrees: -37.3
+    - center: {x: 0.2000103, y: 5.44, z: -0.907645}
+      size: {x: 2.1, y: 2.88, z: 0.28}
+      yawDegrees: -37.3
+    - center: {x: 0.030333757, y: 5.53, z: -0.6849127}
+      size: {x: 2.1, y: 3.0600002, z: 0.28}
+      yawDegrees: -37.3
+    - center: {x: -0.13934326, y: 5.62, z: -0.4621799}
+      size: {x: 2.1, y: 3.2400002, z: 0.28}
+      yawDegrees: -37.3
+    - center: {x: -0.3090198, y: 5.71, z: -0.2394476}
+      size: {x: 2.1, y: 3.42, z: 0.28}
+      yawDegrees: -37.3
+    - center: {x: -0.47869658, y: 5.8, z: -0.016714573}
+      size: {x: 2.1, y: 3.6000001, z: 0.28}
+      yawDegrees: -37.3
+    - center: {x: -0.6483736, y: 5.8900003, z: 0.20601797}
+      size: {x: 2.1, y: 3.7800002, z: 0.28}
+      yawDegrees: -37.3
+    - center: {x: -0.81805015, y: 5.98, z: 0.42875051}
+      size: {x: 2.1, y: 3.96, z: 0.28}
+      yawDegrees: -37.3
+    - center: {x: -0.9877269, y: 6.07, z: 0.65148306}
+      size: {x: 2.1, y: 4.1400003, z: 0.28}
+      yawDegrees: -37.3
+    - center: {x: -1.1574037, y: 6.16, z: 0.8742156}
+      size: {x: 2.1, y: 4.32, z: 0.28}
+      yawDegrees: -37.3
+    - center: {x: -1.3270802, y: 6.25, z: 1.0969481}
+      size: {x: 2.1, y: 4.5, z: 0.28}
+      yawDegrees: -37.3
+    - center: {x: -1.496757, y: 6.34, z: 1.3196807}
+      size: {x: 2.1, y: 4.6800003, z: 0.28}
+      yawDegrees: -37.3
+    - center: {x: -1.6664338, y: 6.4300003, z: 1.5424132}
+      size: {x: 2.1, y: 4.86, z: 0.28}
+      yawDegrees: -37.3
+    - center: {x: -1.8361106, y: 6.52, z: 1.7651458}
+      size: {x: 2.1, y: 5.04, z: 0.28}
+      yawDegrees: -37.3
+    - center: {x: -2.0057874, y: 6.61, z: 1.9878783}
+      size: {x: 2.1, y: 5.2200003, z: 0.28}
+      yawDegrees: -37.3
+    - center: {x: -2.1754642, y: 6.7, z: 2.2106113}
+      size: {x: 2.1, y: 5.4, z: 0.28}
+      yawDegrees: -37.3
+    - center: {x: -2.345141, y: 6.79, z: 2.433344}
+      size: {x: 2.1, y: 5.5800004, z: 0.28}
+      yawDegrees: -37.3
+    - center: {x: -2.5148172, y: 6.88, z: 2.656076}
+      size: {x: 2.1, y: 5.76, z: 0.28}
+      yawDegrees: -37.3
+    - center: {x: -2.6844945, y: 6.9700003, z: 2.878809}
+      size: {x: 2.1, y: 5.94, z: 0.28}
+      yawDegrees: -37.3
+    - center: {x: -2.8541713, y: 7.0600004, z: 3.1015415}
+      size: {x: 2.1, y: 6.1200004, z: 0.28}
+      yawDegrees: -37.3
+    - center: {x: -3.0238476, y: 7.15, z: 3.324274}
+      size: {x: 2.1, y: 6.3, z: 0.28}
+      yawDegrees: -37.3
+    - center: {x: -3.1935244, y: 7.2400002, z: 3.5470061}
+      size: {x: 2.1, y: 6.4800005, z: 0.28}
+      yawDegrees: -37.3
+    - center: {x: -3.3632016, y: 7.33, z: 3.7697396}
+      size: {x: 2.1, y: 6.6600003, z: 0.28}
+      yawDegrees: -37.3
+    - center: {x: -3.532878, y: 7.42, z: 3.9924722}
+      size: {x: 2.1, y: 6.84, z: 0.28}
+      yawDegrees: -37.3
+    - center: {x: 3.26, y: 0.1, z: 2.6299999}
+      size: {x: 2, y: 0.2, z: 0.28}
+      yawDegrees: -180
+    - center: {x: 3.26, y: 0.2, z: 2.35}
+      size: {x: 2, y: 0.4, z: 0.28}
+      yawDegrees: -180
+    - center: {x: 3.26, y: 0.3, z: 2.07}
+      size: {x: 2, y: 0.6, z: 0.28}
+      yawDegrees: -180
+    - center: {x: 3.26, y: 0.4, z: 1.79}
+      size: {x: 2, y: 0.8, z: 0.28}
+      yawDegrees: -180
+    - center: {x: 3.26, y: 0.5, z: 1.51}
+      size: {x: 2, y: 1, z: 0.28}
+      yawDegrees: -180
+    - center: {x: 3.2600002, y: 0.6, z: 1.23}
+      size: {x: 2, y: 1.2, z: 0.28}
+      yawDegrees: -180
+    - center: {x: 3.2600002, y: 0.7, z: 0.9499999}
+      size: {x: 2, y: 1.4, z: 0.28}
+      yawDegrees: -180
+    - center: {x: 3.2600002, y: 0.8, z: 0.6700001}
+      size: {x: 2, y: 1.6, z: 0.28}
+      yawDegrees: -180
+    - center: {x: 3.2600002, y: 0.90000004, z: 0.38999987}
+      size: {x: 2, y: 1.8000001, z: 0.28}
+      yawDegrees: -180
+    - center: {x: 3.2600002, y: 1, z: 0.109999895}
+      size: {x: 2, y: 2, z: 0.28}
+      yawDegrees: -180
+    - center: {x: 3.2600002, y: 1.1, z: -0.17000008}
+      size: {x: 2, y: 2.2, z: 0.28}
+      yawDegrees: -180
+    - center: {x: 3.2600002, y: 1.2, z: -0.45000005}
+      size: {x: 2, y: 2.4, z: 0.28}
+      yawDegrees: -180
+    - center: {x: 3.2600002, y: 1.3000001, z: -0.73}
+      size: {x: 2, y: 2.6000001, z: 0.28}
+      yawDegrees: -180
+    - center: {x: 3.2600002, y: 1.4, z: -1.01}
+      size: {x: 2, y: 2.8, z: 0.28}
+      yawDegrees: -180
+    - center: {x: 3.2600002, y: 1.5, z: -1.29}
+      size: {x: 2, y: 3, z: 0.28}
+      yawDegrees: -180
+    - center: {x: 3.2600005, y: 1.6, z: -1.5700002}
+      size: {x: 2, y: 3.2, z: 0.28}
+      yawDegrees: -180
+    - center: {x: 3.2600005, y: 1.7, z: -1.8499999}
+      size: {x: 2, y: 3.4, z: 0.28}
+      yawDegrees: -180
+    - center: {x: 3.2600005, y: 1.8000001, z: -2.13}
+      size: {x: 2, y: 3.6000001, z: 0.28}
+      yawDegrees: -180
+    - center: {x: 3.2600005, y: 1.9, z: -2.4099998}
+      size: {x: 2, y: 3.8, z: 0.28}
+      yawDegrees: -180
+    - center: {x: 3.2600005, y: 2, z: -2.69}
+      size: {x: 2, y: 4, z: 0.28}
+      yawDegrees: -180
+    - center: {x: 3.1177514, y: 10.89, z: 2.1863325}
+      size: {x: 2, y: 0.18, z: 0.28}
+      yawDegrees: -126.7
+    - center: {x: 2.8932543, y: 10.9800005, z: 2.0189974}
+      size: {x: 2, y: 0.36, z: 0.28}
+      yawDegrees: -126.7
+    - center: {x: 2.668757, y: 11.070001, z: 1.8516624}
+      size: {x: 2, y: 0.54, z: 0.28}
+      yawDegrees: -126.7
+    - center: {x: 2.44426, y: 11.16, z: 1.6843274}
+      size: {x: 2, y: 0.72, z: 0.28}
+      yawDegrees: -126.7
+    - center: {x: 2.2197628, y: 11.25, z: 1.5169923}
+      size: {x: 2, y: 0.90000004, z: 0.28}
+      yawDegrees: -126.7
+    - center: {x: 1.9952655, y: 11.34, z: 1.3496573}
+      size: {x: 2, y: 1.08, z: 0.28}
+      yawDegrees: -126.7
+    - center: {x: 1.7707682, y: 11.43, z: 1.1823223}
+      size: {x: 2, y: 1.26, z: 0.28}
+      yawDegrees: -126.7
+    - center: {x: 1.5462711, y: 11.52, z: 1.0149873}
+      size: {x: 2, y: 1.44, z: 0.28}
+      yawDegrees: -126.7
+    - center: {x: 1.3217738, y: 11.610001, z: 0.8476522}
+      size: {x: 2, y: 1.6200001, z: 0.28}
+      yawDegrees: -126.7
+    - center: {x: 1.0972767, y: 11.7, z: 0.6803173}
+      size: {x: 2, y: 1.8000001, z: 0.28}
+      yawDegrees: -126.7
+    - center: {x: 0.87277937, y: 11.79, z: 0.51298225}
+      size: {x: 2, y: 1.98, z: 0.28}
+      yawDegrees: -126.7
+    - center: {x: 0.6482823, y: 11.88, z: 0.34564722}
+      size: {x: 2, y: 2.16, z: 0.28}
+      yawDegrees: -126.7
+    - center: {x: 0.4237852, y: 11.97, z: 0.1783123}
+      size: {x: 2, y: 2.3400002, z: 0.28}
+      yawDegrees: -126.7
+    - center: {x: 0.19928789, y: 12.06, z: 0.010977268}
+      size: {x: 2, y: 2.52, z: 0.28}
+      yawDegrees: -126.7
+    - center: {x: -0.025209188, y: 12.150001, z: -0.15635777}
+      size: {x: 2, y: 2.7, z: 0.28}
+      yawDegrees: -126.7
+    - center: {x: -0.2497065, y: 12.24, z: -0.32369304}
+      size: {x: 2, y: 2.88, z: 0.28}
+      yawDegrees: -126.7
+    - center: {x: -0.4742036, y: 12.33, z: -0.49102783}
+      size: {x: 2, y: 3.0600002, z: 0.28}
+      yawDegrees: -126.7
+    - center: {x: -0.6987009, y: 12.42, z: -0.65836287}
+      size: {x: 2, y: 3.2400002, z: 0.28}
+      yawDegrees: -126.7
+    - center: {x: -0.92319775, y: 12.51, z: -0.8256979}
+      size: {x: 2, y: 3.42, z: 0.28}
+      yawDegrees: -126.7
+    - center: {x: -1.1476951, y: 12.6, z: -0.99303293}
+      size: {x: 2, y: 3.6000001, z: 0.28}
+      yawDegrees: -126.7
+    - center: {x: -1.3721929, y: 12.690001, z: -1.1603682}
+      size: {x: 2, y: 3.7800002, z: 0.28}
+      yawDegrees: -126.7
+    - center: {x: -1.5966897, y: 12.780001, z: -1.327703}
+      size: {x: 2, y: 3.96, z: 0.28}
+      yawDegrees: -126.7
+    - center: {x: -1.821187, y: 12.870001, z: -1.495038}
+      size: {x: 2, y: 4.1400003, z: 0.28}
+      yawDegrees: -126.7
+    - center: {x: -2.0456839, y: 12.96, z: -1.6623731}
+      size: {x: 2, y: 4.32, z: 0.28}
+      yawDegrees: -126.7
+    - center: {x: -2.2701812, y: 13.05, z: -1.8297081}
+      size: {x: 2, y: 4.5, z: 0.28}
+      yawDegrees: -126.7
+    - center: {x: -2.4946785, y: 13.14, z: -1.9970431}
+      size: {x: 2, y: 4.6800003, z: 0.28}
+      yawDegrees: -126.7
+    - center: {x: -2.7191758, y: 13.2300005, z: -2.1643782}
+      size: {x: 2, y: 4.86, z: 0.28}
+      yawDegrees: -126.7
+    - center: {x: -2.9436727, y: 13.32, z: -2.3317132}
+      size: {x: 2, y: 5.04, z: 0.28}
+      yawDegrees: -126.7
     definition:
-      tilesX: 12
-      tilesZ: 12
-      heightMeters: 12
+      tilesX: 2
+      tilesZ: 2
+      heightMeters: 40
       ceilingTilt: 0
       ceilingTiltYaw: 0
-      sides: 56
+      sides: 4
       squareness: 1
       wallThickness: 0.2
       trimEnabled: 0
       planMode: 0
       manualContour: []
       notches: []
+      platforms: []
       holes:
-      - side: 7
+      - side: 0
         along: 0.5
         baseY: 0
         level: 0
-        width: 2.47
-        height: 4
+        width: 4
+        height: 3
         grateBars: 0
-        spanCorners: 1
-      - side: 21
-        along: 0.5
-        baseY: 0
-        level: 0
-        width: 2.47
-        height: 4
-        grateBars: 0
-        spanCorners: 1
-      - side: 35
-        along: 0.5
-        baseY: 0
-        level: 0
-        width: 2.47
-        height: 4
-        grateBars: 0
-        spanCorners: 1
-      - side: 49
-        along: 0.5
-        baseY: 0
-        level: 0
-        width: 2.47
-        height: 4
-        grateBars: 0
-        spanCorners: 1
+        spanCorners: 0
       pillars: []
       pillarGrids: []
       blocks: []
-      stairs: []
+      stairs:
+      - position: {x: 2.83, y: -4.36}
+        yawDegrees: -37.3
+        width: 2.1
+        steps: 38
+        rise: 0.18
+        run: 0.28
+        level: 1
+        smooth: 0
+      - position: {x: 3.26, y: 2.77}
+        yawDegrees: -180
+        width: 2
+        steps: 20
+        rise: 0.2
+        run: 0.28
+        level: 0
+        smooth: 0
+      - position: {x: 3.23, y: 2.27}
+        yawDegrees: -126.7
+        width: 2
+        steps: 28
+        rise: 0.18
+        run: 0.28
+        level: 2
+        smooth: 0
+      floorHoles:
+      - position: {x: -3.67, y: 3.46}
+        sizeX: 2.43
+        sizeZ: 3
+        sides: 0
+        squareness: 1
+        depth: 2.5
+        yawDegrees: 0
+        bottomless: 0
+        level: 2
+        mode: 1
+      levels:
+      - height: 10.8
+      - height: 15.87
+      - height: 4
+      markers: []
+      lights: []
+      irregularity: 0
+      irregularitySeed: 1
+  - id: room_3
+    prefab: {fileID: 7336804373765158013, guid: 807d0e49c0584894a9cee5701102f1e5, type: 3}
+    tilesX: 6
+    tilesZ: 6
+    heightMeters: 8
+    doorLocalPosition: {x: 2.5000002, y: 0, z: 15}
+    doorLocalForward: {x: 0, y: 0, z: 1}
+    collisionBoxes:
+    - center: {x: 0, y: -0.1, z: 0}
+      size: {x: 30.4, y: 0.2, z: 30.4}
+      yawDegrees: 0
+    - center: {x: 0, y: 8.1, z: 0}
+      size: {x: 30.4, y: 0.2, z: 30.4}
+      yawDegrees: 0
+    - center: {x: -12.7, y: 3.9, z: -12.1}
+      size: {x: 5, y: 0.2, z: 6.2}
+      yawDegrees: 0
+    - center: {x: -12.7, y: 3.9, z: -6}
+      size: {x: 5, y: 0.2, z: 6}
+      yawDegrees: 0
+    - center: {x: -12.7, y: 3.9, z: 6.1}
+      size: {x: 5, y: 0.2, z: 18.2}
+      yawDegrees: 0
+    - center: {x: -9, y: 3.9, z: -12.1}
+      size: {x: 2.3999996, y: 0.2, z: 6.2}
+      yawDegrees: 0
+    - center: {x: -9, y: 3.9, z: 6.1}
+      size: {x: 2.3999996, y: 0.2, z: 18.2}
+      yawDegrees: 0
+    - center: {x: 3.6999998, y: 3.9, z: -12.1}
+      size: {x: 23, y: 0.2, z: 6.2}
+      yawDegrees: 0
+    - center: {x: 3.6999998, y: 3.9, z: -6}
+      size: {x: 23, y: 0.2, z: 6}
+      yawDegrees: 0
+    - center: {x: 3.6999998, y: 3.9, z: 6.1}
+      size: {x: 23, y: 0.2, z: 18.2}
+      yawDegrees: 0
+    - center: {x: 9.75, y: 1.3, z: 15.1}
+      size: {x: 10.5, y: 2.6, z: 0.2}
+      yawDegrees: -180
+    - center: {x: -7.25, y: 1.3, z: 15.1}
+      size: {x: 15.5, y: 2.6, z: 0.2}
+      yawDegrees: -180
+    - center: {x: 0, y: 5.3, z: 15.1}
+      size: {x: 30, y: 5.4, z: 0.2}
+      yawDegrees: -180
+    - center: {x: -15.0999975, y: 2.5, z: -0.000000019073488}
+      size: {x: 30, y: 5, z: 0.2}
+      yawDegrees: 89.99999
+    - center: {x: -15.099999, y: 6, z: 9.5}
+      size: {x: 11, y: 2, z: 0.2}
+      yawDegrees: 89.99999
+    - center: {x: -15.099996, y: 6, z: -9.5}
+      size: {x: 11, y: 2, z: 0.2}
+      yawDegrees: 89.99999
+    - center: {x: -15.0999975, y: 7.5, z: -0.000000019073488}
+      size: {x: 30, y: 1, z: 0.2}
+      yawDegrees: 89.99999
+    - center: {x: 0.000002892812, y: 4, z: -15.099996}
+      size: {x: 29.999994, y: 8, z: 0.2}
+      yawDegrees: -0.000018213841
+    - center: {x: 15.1, y: 2.5, z: 0.0000047683716}
+      size: {x: 29.99999, y: 5, z: 0.2}
+      yawDegrees: -90
+    - center: {x: 15.1, y: 6, z: -9.499993}
+      size: {x: 10.999995, y: 2, z: 0.2}
+      yawDegrees: -90
+    - center: {x: 15.1, y: 6, z: 9.500004}
+      size: {x: 10.999995, y: 2, z: 0.2}
+      yawDegrees: -90
+    - center: {x: 15.1, y: 7.5, z: 0.0000047683716}
+      size: {x: 29.99999, y: 1, z: 0.2}
+      yawDegrees: -90
+    - center: {x: -9, y: 0.1, z: -8.85}
+      size: {x: 2.4, y: 0.2, z: 0.3}
+      yawDegrees: 0
+    - center: {x: -9, y: 0.2, z: -8.55}
+      size: {x: 2.4, y: 0.4, z: 0.3}
+      yawDegrees: 0
+    - center: {x: -9, y: 0.3, z: -8.25}
+      size: {x: 2.4, y: 0.6, z: 0.3}
+      yawDegrees: 0
+    - center: {x: -9, y: 0.4, z: -7.95}
+      size: {x: 2.4, y: 0.8, z: 0.3}
+      yawDegrees: 0
+    - center: {x: -9, y: 0.5, z: -7.65}
+      size: {x: 2.4, y: 1, z: 0.3}
+      yawDegrees: 0
+    - center: {x: -9, y: 0.6, z: -7.35}
+      size: {x: 2.4, y: 1.2, z: 0.3}
+      yawDegrees: 0
+    - center: {x: -9, y: 0.7, z: -7.05}
+      size: {x: 2.4, y: 1.4, z: 0.3}
+      yawDegrees: 0
+    - center: {x: -9, y: 0.8, z: -6.75}
+      size: {x: 2.4, y: 1.6, z: 0.3}
+      yawDegrees: 0
+    - center: {x: -9, y: 0.90000004, z: -6.45}
+      size: {x: 2.4, y: 1.8000001, z: 0.3}
+      yawDegrees: 0
+    - center: {x: -9, y: 1, z: -6.1499996}
+      size: {x: 2.4, y: 2, z: 0.3}
+      yawDegrees: 0
+    - center: {x: -9, y: 1.1, z: -5.85}
+      size: {x: 2.4, y: 2.2, z: 0.3}
+      yawDegrees: 0
+    - center: {x: -9, y: 1.2, z: -5.55}
+      size: {x: 2.4, y: 2.4, z: 0.3}
+      yawDegrees: 0
+    - center: {x: -9, y: 1.3000001, z: -5.25}
+      size: {x: 2.4, y: 2.6000001, z: 0.3}
+      yawDegrees: 0
+    - center: {x: -9, y: 1.4, z: -4.95}
+      size: {x: 2.4, y: 2.8, z: 0.3}
+      yawDegrees: 0
+    - center: {x: -9, y: 1.5, z: -4.6499996}
+      size: {x: 2.4, y: 3, z: 0.3}
+      yawDegrees: 0
+    - center: {x: -9, y: 1.6, z: -4.35}
+      size: {x: 2.4, y: 3.2, z: 0.3}
+      yawDegrees: 0
+    - center: {x: -9, y: 1.7, z: -4.0499997}
+      size: {x: 2.4, y: 3.4, z: 0.3}
+      yawDegrees: 0
+    - center: {x: -9, y: 1.8000001, z: -3.75}
+      size: {x: 2.4, y: 3.6000001, z: 0.3}
+      yawDegrees: 0
+    - center: {x: -9, y: 1.9, z: -3.4499998}
+      size: {x: 2.4, y: 3.8, z: 0.3}
+      yawDegrees: 0
+    - center: {x: -9, y: 2, z: -3.1499996}
+      size: {x: 2.4, y: 4, z: 0.3}
+      yawDegrees: 0
+    definition:
+      tilesX: 6
+      tilesZ: 6
+      heightMeters: 8
+      ceilingTilt: 0
+      ceilingTiltYaw: 0
+      sides: 4
+      squareness: 1
+      wallThickness: 0.2
+      trimEnabled: 0
+      planMode: 0
+      manualContour: []
+      notches: []
+      platforms: []
+      holes:
+      - side: 1
+        along: 0.5
+        baseY: 1
+        level: 1
+        width: 8
+        height: 2
+        grateBars: 0
+        spanCorners: 0
+      - side: 3
+        along: 0.5
+        baseY: 1
+        level: 1
+        width: 8
+        height: 2
+        grateBars: 0
+        spanCorners: 0
+      - side: 0
+        along: 0.41666666
+        baseY: 0
+        level: 0
+        width: 4
+        height: 2.6
+        grateBars: 0
+        spanCorners: 0
+      pillars: []
+      pillarGrids: []
+      blocks: []
+      stairs:
+      - position: {x: -9, y: -9}
+        yawDegrees: 0
+        width: 2.4
+        steps: 20
+        rise: 0.2
+        run: 0.3
+        level: 0
+        smooth: 0
       floorHoles: []
       levels:
-      - height: 8
+      - height: 4
       markers: []
-      irregularity: 1
-      irregularitySeed: 228905
+      lights:
+      - position: {x: -7, y: -7}
+        y: 3.6
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.95, b: 0.8, a: 1}
+        lightIntensity: 1.15
+        lightRange: 15
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 7, y: -7}
+        y: 3.6
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.95, b: 0.8, a: 1}
+        lightIntensity: 1.15
+        lightRange: 15
+        behavior: 0
+        flickerHz: 2
+      - position: {x: -7, y: 7}
+        y: 3.6
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.95, b: 0.8, a: 1}
+        lightIntensity: 1.15
+        lightRange: 15
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 7, y: 7}
+        y: 3.6
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.95, b: 0.8, a: 1}
+        lightIntensity: 1.15
+        lightRange: 15
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 0, y: 0}
+        y: 3.6
+        yawDegrees: 0
+        level: 0
+        lightColor: {r: 1, g: 0.95, b: 0.8, a: 1}
+        lightIntensity: 1.15
+        lightRange: 15
+        behavior: 0
+        flickerHz: 2
+      - position: {x: -7, y: -7}
+        y: 3.6
+        yawDegrees: 0
+        level: 1
+        lightColor: {r: 1, g: 0.95, b: 0.8, a: 1}
+        lightIntensity: 1.15
+        lightRange: 15
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 7, y: -7}
+        y: 3.6
+        yawDegrees: 0
+        level: 1
+        lightColor: {r: 1, g: 0.95, b: 0.8, a: 1}
+        lightIntensity: 1.15
+        lightRange: 15
+        behavior: 0
+        flickerHz: 2
+      - position: {x: -7, y: 7}
+        y: 3.6
+        yawDegrees: 0
+        level: 1
+        lightColor: {r: 1, g: 0.95, b: 0.8, a: 1}
+        lightIntensity: 1.15
+        lightRange: 15
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 7, y: 7}
+        y: 3.6
+        yawDegrees: 0
+        level: 1
+        lightColor: {r: 1, g: 0.95, b: 0.8, a: 1}
+        lightIntensity: 1.15
+        lightRange: 15
+        behavior: 0
+        flickerHz: 2
+      - position: {x: 0, y: 0}
+        y: 3.6
+        yawDegrees: 0
+        level: 1
+        lightColor: {r: 1, g: 0.95, b: 0.8, a: 1}
+        lightIntensity: 1.15
+        lightRange: 15
+        behavior: 0
+        flickerHz: 2
+      irregularity: 0
+      irregularitySeed: 1
