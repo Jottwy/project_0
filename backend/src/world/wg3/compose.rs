@@ -111,6 +111,31 @@ pub struct Wg3ComposerSettings {
     /// Con `bounds` puesto se centra en la caja: sembrar en el origen y acotar a una región lejana
     /// daría una región vacía, porque la primera pieza ya caería fuera.
     pub seed_at: Option<(f32, f32)>,
+
+    /// ADR-096 — piezas que van puestas ANTES del recorrido, con una boca ya conectada al otro lado
+    /// de una junta.
+    ///
+    /// Es el contrato de junta hecho geometría: la vecina pondrá la suya en el mismo punto porque el
+    /// sorteo de puertas es función pura del borde. Van primero para que nada pueda estar ya en su
+    /// sitio — el cumplimiento de una puerta no puede depender de si queda hueco.
+    pub anchors: Vec<Wg3Anchor>,
+}
+
+/// ADR-096 — una pieza plantada de antemano, con una boca que NO se toca.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Wg3Anchor {
+    pub piece: u16,
+    pub rotation: u8,
+    pub origin_x: f32,
+    pub origin_z: f32,
+    /// La boca que da al otro lado de la junta. Se marca CONECTADA de salida: no entra en la
+    /// frontera y la pasada final no la tapona.
+    ///
+    /// Marcarla conectada NO es optimismo: el tramo de puerta es siempre la misma pieza estrecha,
+    /// va antes que nada y las puertas guardan distancia entre sí, así que la vecina la pone sí o
+    /// sí. Dejarla abierta sería peor de lo que parece — las dos regiones la sellarían y la puerta
+    /// quedaría tapiada por las dos caras.
+    pub connected_socket: usize,
 }
 
 impl Default for Wg3ComposerSettings {
@@ -127,6 +152,7 @@ impl Default for Wg3ComposerSettings {
             close_loops: false,
             bounds: None,
             seed_at: None,
+            anchors: Vec::new(),
         }
     }
 }
@@ -274,17 +300,52 @@ impl<'a> Composer<'a> {
             }
             (None, None) => (0.0, 0.0),
         };
-        self.place(
-            seed_piece.index,
-            0,
-            seed_x - seed_piece.size_x * 0.5,
-            seed_z - seed_piece.size_z * 0.5,
-            0,
-            None,
-        );
+        // ADR-096 — las anclas de junta van LAS PRIMERAS, antes que la semilla del centro. Es lo
+        // que garantiza que una puerta acordada se cumpla: si fueran después, la semilla podría
+        // estar en su sitio y el tramo no cabría, que es justo el caso que no puede existir.
+        for anchor in &self.settings.anchors {
+            let node = self.place(
+                anchor.piece,
+                anchor.rotation,
+                anchor.origin_x,
+                anchor.origin_z,
+                0,
+                None,
+            );
+            if anchor.connected_socket < self.nodes[node].socket_state.len() {
+                self.nodes[node].socket_state[anchor.connected_socket] = SOCKET_CONNECTED;
+            }
+        }
+
+        // La semilla del centro solo si cabe: con anclas puestas puede que su sitio esté ocupado, y
+        // pisarlas sería meter el solape que todo lo demás evita. Una región sin semilla central
+        // sigue creciendo desde sus puertas, que es de donde tiene que crecer.
+        let seed_ox = seed_x - seed_piece.size_x * 0.5;
+        let seed_oz = seed_z - seed_piece.size_z * 0.5;
+        let seed_fits = !overlaps_any(
+            &self.nodes,
+            self.manifest,
+            seed_ox,
+            seed_oz,
+            seed_piece.size_x,
+            seed_piece.size_z,
+        ) && match self.settings.bounds {
+            Some((bmin_x, bmin_z, bmax_x, bmax_z)) => {
+                seed_ox >= bmin_x
+                    && seed_oz >= bmin_z
+                    && seed_ox + seed_piece.size_x <= bmax_x
+                    && seed_oz + seed_piece.size_z <= bmax_z
+            }
+            None => true,
+        };
+        if seed_fits {
+            self.place(seed_piece.index, 0, seed_ox, seed_oz, 0, None);
+        }
 
         let mut frontier: Vec<(usize, usize)> = Vec::new();
-        push_sockets(&mut frontier, &self.nodes, 0);
+        for node in 0..self.nodes.len() {
+            push_sockets(&mut frontier, &self.nodes, node);
+        }
 
         let mut cursor = 0usize;
         while cursor < frontier.len() && self.nodes.len() < self.settings.budget {

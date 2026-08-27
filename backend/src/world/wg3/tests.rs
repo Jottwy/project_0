@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 use super::chunk;
 use super::compose;
+use super::junction;
 use super::manifest::{self, Wg3Manifest, Wg3Piece};
 use super::placement::{self, PlacedBox, Wg3Placement};
 use super::raster::{Span, Wg3Raster, Wg3RasterBuilder, CM_PER_M, WG3_CELL_M};
@@ -816,10 +817,11 @@ fn settings_from(oracle: &CompositionOracle, budget: usize) -> compose::Wg3Compo
         // encenderlo aquí no probaría una deriva: probaría que hemos cambiado el algoritmo. La
         // paridad se vigila sobre el algoritmo base; los bucles llevan sus propios tests.
         close_loops: false,
-        // Y SIN ACOTAR, por lo mismo: el oráculo es el mundo A3 que compone C#, que no conoce
-        // regiones. Acotarlo aquí no mediría paridad, mediría otra cosa.
+        // Y SIN ACOTAR ni anclar, por lo mismo: el oráculo es el mundo A3 que compone C#, que no
+        // conoce ni regiones ni juntas. Acotarlo aquí no mediría paridad, mediría otra cosa.
         bounds: None,
         seed_at: None,
+        anchors: Vec::new(),
     }
 }
 
@@ -1270,6 +1272,130 @@ fn region_size_sweep() {
              (min {min:.0}, max {max:.0}), piezas {counts:?}"
         );
     }
+}
+
+// ── contrato de junta (ADR-096) ─────────────────────────────────────────────────────────────
+
+/// EL TEST DEL CONTRATO. Dos regiones vecinas ven la MISMA puerta, con lados opuestos, sin haberse
+/// consultado.
+///
+/// Es toda la tesis de A2 en una aserción: si las dos listas no coinciden, cada región abre por
+/// donde quiere y el mundo queda con vanos que dan a un muro y muros donde debería haber paso — y
+/// ninguna de las dos cosas da error en ninguna parte.
+#[test]
+fn two_neighbouring_regions_agree_on_the_same_gate() {
+    let seed = composer_seed(SERVED_SEED);
+
+    for (rx, rz) in [(0, 0), (4, -3), (-6, 9)] {
+        let here = Wg3RegionCoord { x: rx, z: rz };
+        let east = Wg3RegionCoord { x: rx + 1, z: rz };
+        let north = Wg3RegionCoord { x: rx, z: rz + 1 };
+
+        let mine = junction::gates_of_region(seed, here.x, here.z, here.bounds());
+
+        // Borde E de ésta ↔ borde O de la de la derecha.
+        let theirs = junction::gates_of_region(seed, east.x, east.z, east.bounds());
+        for gate in mine.iter().filter(|g| g.outward_side == 1) {
+            let matched = theirs.iter().any(|o| {
+                o.outward_side == 3 && (o.x - gate.x).abs() < 1e-3 && (o.z - gate.z).abs() < 1e-3
+            });
+            assert!(
+                matched,
+                "región ({rx},{rz}): su puerta E en ({:.2},{:.2}) no existe para la vecina",
+                gate.x, gate.z
+            );
+        }
+
+        // Borde N de ésta ↔ borde S de la de arriba.
+        let above = junction::gates_of_region(seed, north.x, north.z, north.bounds());
+        for gate in mine.iter().filter(|g| g.outward_side == 0) {
+            let matched = above.iter().any(|o| {
+                o.outward_side == 2 && (o.x - gate.x).abs() < 1e-3 && (o.z - gate.z).abs() < 1e-3
+            });
+            assert!(
+                matched,
+                "región ({rx},{rz}): su puerta N en ({:.2},{:.2}) no existe para la vecina",
+                gate.x, gate.z
+            );
+        }
+    }
+}
+
+/// Y la geometría lo cumple: en cada puerta hay un tramo A LOS DOS LADOS, con sus bocas enfrentadas
+/// en el mismo punto.
+///
+/// El test anterior prueba que las dos regiones ACUERDAN la puerta; éste, que las dos la CONSTRUYEN.
+/// Sin él, un acuerdo perfecto podría convivir con un vano que da al vacío — que es el fallo que
+/// este diseño no puede permitirse.
+#[test]
+fn both_sides_of_a_gate_build_their_stub() {
+    let m = real_manifest();
+    let seed = composer_seed(SERVED_SEED);
+    let stub = junction::gate_stub_piece(&m).expect("el catálogo no tiene tramo de puerta");
+
+    let here = Wg3RegionCoord { x: 0, z: 0 };
+    let east = Wg3RegionCoord { x: 1, z: 0 };
+
+    let world_here = Wg3ServedWorld::compose_region(&m, SERVED_SEED, here);
+    let world_east = Wg3ServedWorld::compose_region(&m, SERVED_SEED, east);
+
+    let gates_e: Vec<_> = junction::gates_of_region(seed, here.x, here.z, here.bounds())
+        .into_iter()
+        .filter(|g| g.outward_side == 1)
+        .collect();
+    assert!(!gates_e.is_empty(), "el borde E no sorteó ninguna puerta");
+
+    for gate in gates_e {
+        let mine = junction::stub_anchor(&m, stub, gate).expect("sin ancla para la puerta");
+        let theirs = junction::stub_anchor(
+            &m,
+            stub,
+            junction::Wg3Gate {
+                outward_side: 3,
+                ..gate
+            },
+        )
+        .expect("sin ancla para el otro lado");
+
+        let present = |w: &Wg3ServedWorld, a: &compose::Wg3Anchor| {
+            w.placements().iter().any(|p| {
+                p.piece == a.piece
+                    && p.rotation == a.rotation
+                    && (p.origin_x() - a.origin_x).abs() < 0.02
+                    && (p.origin_z() - a.origin_z).abs() < 0.02
+            })
+        };
+
+        assert!(
+            present(&world_here, &mine),
+            "la región (0,0) no construyó su tramo en la puerta ({:.2},{:.2})",
+            gate.x,
+            gate.z
+        );
+        assert!(
+            present(&world_east, &theirs),
+            "la región (1,0) no construyó su tramo en la puerta ({:.2},{:.2})",
+            gate.x,
+            gate.z
+        );
+    }
+}
+
+/// El margen de puerta tiene que ser mayor que el fondo del tramo, o dos tramos de bordes que se
+/// encuentran en una esquina se pisarían. Es una relación entre dos constantes, y sin este test se
+/// rompe el día que alguien alargue el tramo sin mirar la otra.
+#[test]
+fn the_gate_margin_clears_the_stub_depth() {
+    // La relación entre las dos constantes la comprueba el compilador (`const _: () = assert!` en
+    // junction.rs). Aquí solo queda lo que depende del CATÁLOGO, que el compilador no puede ver.
+    let m = real_manifest();
+    let stub = junction::gate_stub_piece(&m).expect("sin tramo de puerta");
+    let piece = m.piece(stub).expect("índice de tramo inválido");
+    assert!(
+        piece.size_x.max(piece.size_z) <= junction::GATE_STUB_MAX_DEPTH_M,
+        "el tramo elegido ({}) es más largo que su propia cota",
+        piece.id
+    );
 }
 
 /// ADR-096 — ninguna pieza asoma fuera de su región.

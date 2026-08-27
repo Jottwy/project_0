@@ -42,6 +42,7 @@
 use super::chunk::{Wg3ChunkCoord, WG3_CHUNK_M};
 use super::compose::{self, Wg3ComposerSettings};
 use super::hash;
+use super::junction;
 use super::manifest::Wg3Manifest;
 use super::placement::Wg3Placement;
 
@@ -163,10 +164,37 @@ impl Wg3ServedWorld {
     /// Mientras tanto la costura entre regiones se ve, y verla es lo que dirá si el contrato tiene
     /// que ser fino o basta con poco.
     pub fn compose_region(manifest: &Wg3Manifest, world_seed: u64, region: Wg3RegionCoord) -> Self {
+        let bounds = region.bounds();
+
+        // ADR-096 — el contrato de junta. Las puertas salen del BORDE, no de la región, así que la
+        // vecina calcula las mismas sin que nadie pregunte a nadie. La semilla que las sortea es la
+        // del MUNDO y no la de la región: la de la región es distinta a cada lado del borde y daría
+        // dos listas de puertas que no casan.
+        let stub = junction::gate_stub_piece(manifest);
+        let anchors: Vec<compose::Wg3Anchor> = match stub {
+            Some(stub) => {
+                junction::gates_of_region(composer_seed(world_seed), region.x, region.z, bounds)
+                    .into_iter()
+                    .filter_map(|gate| junction::stub_anchor(manifest, stub, gate))
+                    .collect()
+            }
+            None => {
+                // Sin pieza que sirva de tramo no hay puertas, y el mundo vuelve a ser un tablero de
+                // regiones selladas. Se avisa fuerte: es una propiedad del CATÁLOGO que se rompe sin
+                // que nada falle.
+                log::error!(
+                    "[wg3] el catálogo no tiene ninguna pieza que sirva de tramo de puerta — las \
+                     regiones quedarán selladas"
+                );
+                Vec::new()
+            }
+        };
+
         let settings = Wg3ComposerSettings {
             budget: INTERIM_BUDGET,
             close_loops: true,
-            bounds: Some(region.bounds()),
+            bounds: Some(bounds),
+            anchors,
             ..Wg3ComposerSettings::default()
         };
         let composed = compose::compose(region.composer_seed(world_seed), manifest, &settings);

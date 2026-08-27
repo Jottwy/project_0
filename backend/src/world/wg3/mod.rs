@@ -11,6 +11,7 @@ pub mod chunk;
 pub mod compose;
 pub mod config;
 pub mod hash;
+pub mod junction;
 pub mod manifest;
 pub mod placement;
 pub mod raster;
