@@ -19,25 +19,31 @@ MonoBehaviour:
   ceilingTexture: {fileID: 2800000, guid: dd05e192d84308546afe376cd571b166, type: 3}
   ceilingTint: {r: 1, g: 1, b: 1, a: 1}
   showCeiling: 1
+  ceilingPanelVariety: 0
+  ceilingPipeChance: 0.8
+  ceilingPipes: 1
+  zoneCeilingSets: []
   lightDensity: 0.55
   brokenLampChance: 0.2
   lampColor: {r: 0.95, g: 0.92, b: 0.75, a: 1}
   lampIntensity: 1.6
   lampRange: 5.5
+  lampEmission: 1.3
+  humVolume: 0.038
+  zoneLightSets: []
   fogDensity: 0.05
   fogColor: {r: 0.6, g: 0.58, b: 0.52, a: 1}
+  ambientLight: {r: 0.28, g: 0.24, b: 0.16, a: 1}
   reverbRoom: -1000
   reverbDecay: 2.2
   reverbRoomHF: -600
   reverbLevel: 100
   reverbReflect: -1200
-  reverbWallMetres: 6.0
+  reverbWallMetres: 6
   reverbDry: 0
-  ceilingPanelVariety: 0
-  ceilingPipeChance: 0.8
-  ceilingPipes: 1
-  propDensity: 0.18
-  propClusterBias: 0.3
+  zoneAmbienceSets: []
+  floorSurfaceName: FPS_Dirt
+  wallSurfaceName: FPS_Concrete
   props:
   - prefab: {fileID: 0}
     placeholderType: cabinet
@@ -64,7 +70,28 @@ MonoBehaviour:
     spawnWeight: 2
     canBeRotated: 1
     floorOnly: 1
+  propDensity: 0.18
+  propClusterBias: 0.3
+  zonePropSets: []
+  floorTintVariants: []
+  wallTintVariants: []
+  ceilingTintVariants: []
   wallPanelVariety: 0
   kneeWallHeight: 1.35
   lintelChance: 0
   lintelClearance: 2.2
+  wallVariantSets: []
+  zoneTints:
+  - {r: 1, g: 1, b: 1, a: 1}
+  - {r: 1, g: 0.85, b: 0.6, a: 1}
+  - {r: 0.75, g: 1, b: 0.8, a: 1}
+  - {r: 1, g: 0.55, b: 0.55, a: 1}
+  - {r: 0.85, g: 0.9, b: 1, a: 1}
+  - {r: 1, g: 0.9, b: 0.7, a: 1}
+  - {r: 0.6, g: 0.95, b: 0.95, a: 1}
+  - {r: 0.35, g: 0.35, b: 0.4, a: 1}
+  - {r: 1, g: 0.92, b: 0.65, a: 1}
+  - {r: 0.9, g: 1, b: 1, a: 1}
+  - {r: 1, g: 0.35, b: 0.35, a: 1}
+  - {r: 0.35, g: 0.25, b: 0.35, a: 1}
+  - {r: 0.82, g: 0.86, b: 0.8, a: 1}
