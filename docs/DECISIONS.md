@@ -7566,3 +7566,60 @@ enmienda 1 dejó "aparte" y sin dimensionar.
 
 La sonda queda en el árbol e ignorada por defecto —imprime, no afirma—, con el comando para lanzarla
 sola en su propio comentario. Un número de un ADR que nadie puede volver a medir envejece a mentira.
+
+---
+
+## ADR-096 — Enmienda 3: el contrato de junta, implementado (2026-08-27)
+
+Lo último que le faltaba a ADR-096: **las regiones dejan de nacer selladas**. Dos vecinas abren
+puertas la una a la otra sin hablarse, y con eso el ADR queda cumplido salvo su verificación (e), que
+es andarlo.
+
+**Cómo.** El borde entre dos regiones se identifica igual desde los dos lados —por la región de
+coordenada MENOR más el eje que cruza— y de ese identificador salen por hash las puertas. Cada región
+calcula la misma lista sin saber nada de la otra. Es A1 aplicado al borde de región, que es lo que
+esta decisión prometía.
+
+**Dos detalles que parecen menores y no lo son.** La semilla que sortea las puertas es la del MUNDO y
+no la de la región: la de la región es distinta a cada lado del borde y daría dos listas que no
+casan. Y los offsets se cuantizan al centímetro, porque las dos tienen que llegar al MISMO número y
+dos cadenas de operaciones en coma flotante no lo garantizan aunque la fórmula sea idéntica.
+
+### La trampa que manda en todo el diseño
+
+Una puerta solo sirve si las DOS regiones ponen geometría. Si A pone su tramo y B no, **A abre un
+vano al vacío** y el jugador se cae por él.
+
+Y la salida evidente no vale: dejar la boca abierta y que la selle la pasada final hace que las dos
+regiones sellen su lado, así que la puerta queda **tapiada por ambas caras** — construida y cerrada,
+lo peor de los dos mundos.
+
+Así que el cumplimiento no puede depender de si hay sitio: tiene que ser **imposible que falle**. Tres
+restricciones que juntas lo garantizan sin comprobar nada:
+
+1. el tramo de puerta es SIEMPRE la misma pieza estrecha, no se sortea entre el catálogo;
+2. los tramos van LOS PRIMEROS, antes que la semilla del centro, así que nada puede estar ya en su
+   sitio;
+3. las puertas guardan distancia entre sí y a las esquinas, lo bastante para que dos tramos —ni de la
+   misma junta ni de dos juntas que se encuentran en una esquina— puedan tocarse.
+
+Con eso, la boca exterior se marca CONECTADA de salida. No es optimismo: la vecina la pone sí o sí.
+
+La restricción 3 es una relación entre dos constantes, así que **se comprueba en compilación**. Si
+alguien alarga el tramo sin mirar el margen, lo correcto es que no compile, no que se entere un test
+media hora después.
+
+### Efecto lateral medido
+
+Las puertas son puntos de crecimiento extra, así que la región se llena más: **llenado mínimo 11 % →
+13 %**, y de 17–30 piezas por región a 26–39. No era el objetivo, pero va en la dirección buena del
+problema que la enmienda 2 deja abierto.
+
+### Verificaciones
+
+- (a) Dos regiones vecinas acuerdan la misma puerta, con lados opuestos. **Hecho.**
+- (b) Y las dos la CONSTRUYEN. **Hecho** — y va aparte de (a) a propósito: un acuerdo perfecto podría
+  convivir con un vano al vacío, que es justo el fallo que este diseño no se puede permitir.
+- (c) El margen despeja el fondo del tramo. **Hecho, en compilación.**
+- (e) **PENDIENTE**: cruzar una junta andando, sin costura visible ni tirón. Con región de 150 m toca
+  una junta cada 150 m, así que es fácil de encontrar y difícil de ignorar.
