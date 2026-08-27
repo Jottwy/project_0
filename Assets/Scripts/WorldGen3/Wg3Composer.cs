@@ -103,7 +103,8 @@ namespace BackroomsSurvival.WorldGen3
                     var capStream = Wg3Hash.StreamAt(worldSeed, point.x, point.y, SaltCap);
                     if (capStream.Next01() < settings.deliberateCapChance)
                     {
-                        Cap(world, parent, si, point, parentWorldSide, parentSocket, forced: false);
+                        if (!SealMouth(world, catalog, parent, pi, si, point, parentWorldSide, parentSocket))
+                            Cap(world, parent, si, point, parentWorldSide, parentSocket, forced: false);
                         continue;
                     }
                 }
@@ -112,8 +113,11 @@ namespace BackroomsSurvival.WorldGen3
 
                 if (candidates.Count == 0)
                 {
-                    Cap(world, parent, si, point, parentWorldSide, parentSocket, forced: true);
-                    world.forcedCaps++;
+                    if (!SealMouth(world, catalog, parent, pi, si, point, parentWorldSide, parentSocket))
+                    {
+                        Cap(world, parent, si, point, parentWorldSide, parentSocket, forced: true);
+                        world.forcedCaps++;
+                    }
                     continue;
                 }
 
@@ -135,11 +139,75 @@ namespace BackroomsSurvival.WorldGen3
                 for (int s = 0; s < p.socketState.Length; s++)
                 {
                     if (p.socketState[s] != Wg3World.SocketOpen) continue;
-                    Cap(world, p, s, p.WorldPoint(s), p.WorldSide(s), p.piece.sockets[s], forced: true);
-                    world.forcedCaps++;
+                    if (!SealMouth(world, catalog, p, i, s, p.WorldPoint(s), p.WorldSide(s),
+                            p.piece.sockets[s]))
+                    {
+                        Cap(world, p, s, p.WorldPoint(s), p.WorldSide(s), p.piece.sockets[s],
+                            forced: true);
+                        world.forcedCaps++;
+                    }
                 }
             }
             return world;
+        }
+
+        /// <summary>
+        /// Sella una boca CON GEOMETRÍA, y solo apunta una ficha si no hay con qué.
+        ///
+        /// EL FALLO QUE ARREGLA: <see cref="Cap"/> marcaba el socket y añadía un registro que no
+        /// consumía NADIE — ni el ráster de colisión, ni el wire, ni el cliente. La boca quedaba
+        /// abierta con el vacío detrás, y el jugador se caía del mundo. Medido antes de arreglarlo:
+        /// una de cada seis bocas del mundo servido no tenía suelo al otro lado.
+        ///
+        /// LA REGLA DE ELECCIÓN, y tiene que ser idéntica en Rust o el oráculo se pone rojo: entre
+        /// las piezas de UNA SOLA boca que casan con ésta y CABEN, la de menor huella; a igualdad,
+        /// la de menor índice. Menor huella porque un tapón grande choca contra lo ya colocado y
+        /// deja el agujero justo donde hacía falta cerrarlo.
+        ///
+        /// Devuelve false si no cupo ninguna. Eso sigue dejando un agujero, y por eso la sonda
+        /// `probe_open_mouths_in_the_served_world` los cuenta en vez de dar el problema por cerrado.
+        /// </summary>
+        private static bool SealMouth(Wg3World world, IReadOnlyList<Wg3Piece> catalog,
+            Wg3Placement parent, int parentIndex, int socketIndex, Vector2 point,
+            int parentWorldSide, in Wg3Socket parentSocket)
+        {
+            int neededSide = Wg3Piece.OppositeSide(parentWorldSide);
+
+            Wg3Piece best = null;
+            int bestSocket = -1, bestRotation = 0;
+            float bestOx = 0f, bestOz = 0f, bestArea = float.MaxValue;
+
+            for (int c = 0; c < catalog.Count; c++)
+            {
+                Wg3Piece piece = catalog[c];
+                if (piece?.sockets == null || piece.sockets.Length != 1) continue;
+
+                Wg3Socket socket = piece.sockets[0];
+                if (socket.type != parentSocket.type) continue;
+                if (!Wg3Validator.ValidateConnection(parentSocket, socket, out _)) continue;
+
+                int rotation = ((neededSide - socket.side) % 4 + 4) % 4;
+                float w = (rotation % 2 == 0) ? piece.sizeX : piece.sizeZ;
+                float d = (rotation % 2 == 0) ? piece.sizeZ : piece.sizeX;
+                Vector2 local = Wg3Piece.LocalPoint(neededSide, socket.offset, w, d);
+                float ox = point.x - local.x;
+                float oz = point.y - local.y;
+
+                if (OverlapsAny(world, ox, oz, w, d)) continue;
+
+                float area = w * d;
+                if (area >= bestArea) continue;
+                best = piece; bestSocket = 0; bestRotation = rotation;
+                bestOx = ox; bestOz = oz; bestArea = area;
+            }
+
+            if (best == null) return false;
+
+            int childIndex = Place(world, best, bestRotation, bestOx, bestOz,
+                parent.depth + 1, parentIndex);
+            parent.socketState[socketIndex] = Wg3World.SocketConnected;
+            world.placements[childIndex].socketState[bestSocket] = Wg3World.SocketConnected;
+            return true;
         }
 
         private static void CollectCandidates(Wg3World world, IReadOnlyList<Wg3Piece> catalog,

@@ -7701,3 +7701,26 @@ conmutación pendiente.
 **Verificado con mutaciones, no declarado:** con el manifiesto servido alterado el oráculo sigue
 verde (ya no lo lee); con el congelado alterado falla con «el oráculo es de otro catálogo». Commit
 `37d0e309`, suite 1065/0/34.
+
+### Cuándo se vuelve a congelar (2026-08-28)
+
+Faltaba decirlo y a las pocas horas ya hizo falta. La regla NO es «cuando se decida» —eso es criterio
+y cada uno lo interpreta a su favor—, sino:
+
+> **Se reexporta el oráculo cuando cambia el ALGORITMO de composición. NO cuando cambia el catálogo.**
+
+Las dos mitades son obligación, no preferencia:
+
+- **Cambia el algoritmo** (el sellado de bocas de hoy: `SealMouth` en C# y `seal_mouth` en Rust): el
+  oráculo congelado guarda la salida del compositor VIEJO, así que sin reexportar el test se pone
+  rojo comparando el Rust nuevo contra el C# viejo. Ese rojo no es una deriva entre idiomas: es el
+  oráculo caducado. **Reexportar es obligatorio**, y los cuatro digests vuelven a alinearse.
+- **Cambia solo el catálogo** (los pesos reequilibrados de hoy): el oráculo prueba lo mismo sobre las
+  mismas piezas. Reexportar tiraría la foto sin ganar nada. **Prohibido.**
+
+**Reexportar NO le quita los dientes al oráculo, y conviene entender por qué**: el oráculo es la
+salida de C# y el test comprueba que Rust la reproduce, así que si las dos implementaciones del mismo
+cambio no coinciden, falla igual — de hecho hoy ha sido la única prueba de que el sellado portado a
+Rust hace lo mismo que el de C#. Lo que SÍ se pierde al reexportar es el otro cazador, «toqué el
+catálogo y olvidé reexportar», que solo sirve contra el olvido. Por eso la regla se escribe: para que
+el siguiente no reexporte por costumbre y nadie note que ese cazador se apagó.

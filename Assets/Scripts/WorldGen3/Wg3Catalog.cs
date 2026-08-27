@@ -301,6 +301,44 @@ namespace BackroomsSurvival.WorldGen3
                 sockets = new[] { Sock(3, WideWidth * 0.5f, Wg3SocketType.Wide) }
             });
 
+            // ── TAPONES DE GEOMETRÍA ──────────────────────────────────────────────────────
+            //
+            // Existen porque taponar una boca tiene que CONSTRUIR algo. Antes, sellar era marcar el
+            // socket y apuntar una ficha que no leía nadie —ni el ráster, ni el wire, ni el
+            // cliente—, así que la boca quedaba abierta al vacío y el jugador se caía del mundo.
+            //
+            // VAN AL FINAL Y SON DIMINUTAS, las dos cosas a propósito. Al final porque el índice es
+            // lo que viaja por el wire y entra en el hash: añadir aquí no mueve ninguna pieza ya
+            // existente. Diminutas porque el sellado elige la de MENOR huella que quepa, y los
+            // tapones que ya había —`dead_corridor` de 9 × 7 y `alcove_wide` de 8 × 5— chocan contra
+            // lo ya colocado justo donde hacía falta cerrar.
+            //
+            // EL FONDO ES 0,9 m Y NO MENOS: a 0,5 m el interior queda en 0,35 m tras las
+            // paredes, y el rasterizado CONSERVADOR se come el propio vano del tapón — un
+            // tapón con la boca tapiada, que además rompe
+            // `the_doorway_survives_the_conservative_rasterisation`. Medido: a 0,5 m los
+            // agujeros del mundo servido subían de 5 a 38.
+            //
+            // Llevan peso bajo pero NO cero: el validador rechaza el peso cero («nunca saldría
+            // sorteada») y tiene razón. Que salgan de vez en cuando por sorteo normal no molesta —
+            // es un nicho poco profundo, que es dead space de L12.
+
+            c.Add(new Wg3Piece
+            {
+                id = "cap_corridor", geometryId = "cap_corridor",
+                sizeX = 0.9f, sizeZ = CorridorWidth + 0.3f, heightMeters = DefaultCeiling,
+                scale = Wg3Scale.Narrow, weight = 0.12f, isDeadEnd = true,
+                sockets = new[] { Sock(3, (CorridorWidth + 0.3f) * 0.5f, Wg3SocketType.Corridor) }
+            });
+
+            c.Add(new Wg3Piece
+            {
+                id = "cap_wide", geometryId = "cap_wide",
+                sizeX = 0.9f, sizeZ = WideWidth + 0.3f, heightMeters = DefaultCeiling,
+                scale = Wg3Scale.Medium, weight = 0.12f, isDeadEnd = true,
+                sockets = new[] { Sock(3, (WideWidth + 0.3f) * 0.5f, Wg3SocketType.Wide) }
+            });
+
             return c;
         }
     }

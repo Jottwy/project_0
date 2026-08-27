@@ -1857,7 +1857,11 @@ fn probe_ring_geometry() {
 fn probe_open_mouths_in_the_served_world() {
     let m = real_manifest();
 
-    const OUT_M: f32 = 1.0;
+    // 0,35 m: donde estaría el CUERPO del jugador al asomarse por el vano (su radio es 0,30).
+    // La primera versión medía a 1,0 m y los tapones tienen 0,9 m de fondo, así que la sonda caía
+    // JUSTO DETRÁS de su pared trasera y contaba como agujero una boca perfectamente sellada.
+    // Medir más lejos de lo que el jugador puede llegar no mide el mundo, mide el vacío de al lado.
+    const OUT_M: f32 = 0.35;
     const HEAD_M: f32 = 1.0;
 
     for (rx, rz) in [(0, 0), (1, 0), (0, 1), (-1, 2)] {

@@ -378,7 +378,9 @@ impl<'a> Composer<'a> {
             {
                 let mut cap_stream = hash::stream_at(self.world_seed, px, pz, SALT_CAP);
                 if cap_stream.next01() < self.settings.deliberate_cap_chance {
-                    self.cap(pi, si, px, pz, parent_world_side, &parent_socket, false);
+                    if !self.seal_mouth(pi, si, px, pz, parent_world_side, &parent_socket) {
+                        self.cap(pi, si, px, pz, parent_world_side, &parent_socket, false);
+                    }
                     continue;
                 }
             }
@@ -386,8 +388,10 @@ impl<'a> Composer<'a> {
             self.collect_candidates(pi, &parent_socket, px, pz, needed_side, child_depth);
 
             if self.candidates.is_empty() {
-                self.cap(pi, si, px, pz, parent_world_side, &parent_socket, true);
-                self.forced_caps += 1;
+                if !self.seal_mouth(pi, si, px, pz, parent_world_side, &parent_socket) {
+                    self.cap(pi, si, px, pz, parent_world_side, &parent_socket, true);
+                    self.forced_caps += 1;
+                }
                 continue;
             }
 
@@ -422,10 +426,83 @@ impl<'a> Composer<'a> {
                 let socket = piece.sockets[s].clone();
                 let (x, z) = world_socket_point(&self.nodes[i], piece, s);
                 let side = (socket.side + self.nodes[i].rotation) % 4;
-                self.cap(i, s, x, z, side, &socket, true);
-                self.forced_caps += 1;
+                if !self.seal_mouth(i, s, x, z, side, &socket) {
+                    self.cap(i, s, x, z, side, &socket, true);
+                    self.forced_caps += 1;
+                }
             }
         }
+    }
+
+    /// Sella una boca CON GEOMETRÍA, y solo apunta una ficha si no hay con qué.
+    ///
+    /// EL FALLO QUE ARREGLA: `cap` marcaba el socket y añadía un registro que no consumía NADIE —ni
+    /// el ráster de colisión, ni el wire, ni el cliente—. La boca quedaba abierta con el vacío
+    /// detrás y el jugador se caía del mundo. Medido antes de arreglarlo: una de cada seis bocas del
+    /// mundo SERVIDO no tenía suelo al otro lado.
+    ///
+    /// LA REGLA DE ELECCIÓN es idéntica a la de `Wg3Composer.SealMouth` en C#, y tiene que serlo o
+    /// el oráculo se pone rojo: entre las piezas de UNA SOLA boca que casan con ésta y CABEN, la de
+    /// menor huella; a igualdad, la de menor índice. Menor huella porque un tapón grande choca
+    /// contra lo ya colocado justo donde hacía falta cerrar.
+    ///
+    /// Respeta `bounds` como todo lo demás: un tapón que asome fuera de su región pisaría lo que
+    /// compone la vecina, que no sabe de él. Eso deja sin sellar algunas bocas del BORDE, y es una
+    /// deuda declarada — la cuenta `probe_open_mouths_in_the_served_world`.
+    fn seal_mouth(
+        &mut self,
+        parent_index: usize,
+        socket_index: usize,
+        px: f32,
+        pz: f32,
+        parent_world_side: u8,
+        parent_socket: &Wg3Socket,
+    ) -> bool {
+        let needed_side = (parent_world_side + 2) % 4;
+        let manifest = self.manifest;
+
+        let mut best: Option<(u16, u8, f32, f32, f32)> = None;
+        for piece in &manifest.pieces {
+            if piece.sockets.len() != 1 {
+                continue;
+            }
+            let socket = &piece.sockets[0];
+            if socket.kind != parent_socket.kind || !connection_ok(parent_socket, socket) {
+                continue;
+            }
+
+            let rotation = (needed_side + 4 - socket.side % 4) % 4;
+            let (w, d) = if rotation.is_multiple_of(2) {
+                (piece.size_x, piece.size_z)
+            } else {
+                (piece.size_z, piece.size_x)
+            };
+            let (lx, lz) = local_point(needed_side, socket.offset, w, d);
+            let (ox, oz) = (px - lx, pz - lz);
+
+            if let Some((bmin_x, bmin_z, bmax_x, bmax_z)) = self.settings.bounds {
+                if ox < bmin_x || oz < bmin_z || ox + w > bmax_x || oz + d > bmax_z {
+                    continue;
+                }
+            }
+            if overlaps_any(&self.nodes, manifest, ox, oz, w, d) {
+                continue;
+            }
+
+            let area = w * d;
+            if best.is_none_or(|b| area < b.4) {
+                best = Some((piece.index, rotation, ox, oz, area));
+            }
+        }
+
+        let Some((piece, rotation, ox, oz, _)) = best else {
+            return false;
+        };
+        let depth = self.nodes[parent_index].depth + 1;
+        let child = self.place(piece, rotation, ox, oz, depth, Some(parent_index));
+        self.nodes[parent_index].socket_state[socket_index] = SOCKET_CONNECTED;
+        self.nodes[child].socket_state[0] = SOCKET_CONNECTED;
+        true
     }
 
     /// Las candidatas que casan con una boca, ya situadas y pesadas.
