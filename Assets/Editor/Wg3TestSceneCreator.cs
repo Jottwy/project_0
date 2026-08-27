@@ -89,6 +89,22 @@ namespace BackroomsSurvival.EditorTools
                       $"interior y NO chocar con el rodapié.");
         }
 
+        /// <summary>Abre la escena de prueba sin volver a crearla. Separado de
+        /// <see cref="CreateScene"/> a propósito: crear machaca el fichero, y perder de vista la
+        /// escena no es motivo para regenerarla desde cero.</summary>
+        [MenuItem("Backrooms/WorldGen3/Abrir escena de prueba")]
+        public static void OpenScene()
+        {
+            if (!System.IO.File.Exists(ScenePath))
+            {
+                Debug.LogWarning($"[WG3] no existe {ScenePath}; usa «Crear escena de prueba».");
+                return;
+            }
+            if (!EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo()) return;
+            EditorSceneManager.OpenScene(ScenePath, OpenSceneMode.Single);
+            Debug.Log($"[WG3] escena abierta: {ScenePath}");
+        }
+
         [MenuItem("Backrooms/WorldGen3/Regenerar mundo de la escena")]
         public static void RegenerateOpenScene()
         {

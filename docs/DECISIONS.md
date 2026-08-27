@@ -6976,3 +6976,207 @@ dos clientes con la misma seed ponen la misma senal en la misma pared sin que vi
   descuelgue autorado), nunca a ras de suelo.
 - (e) En juego: que un pasillo de oficinas tenga salida senalizada y que el techo deje de ser una
   superficie muerta.
+
+---
+
+## ADR-095 — WorldGen3: el mundo se compone de piezas con sockets, y la colisión se hornea en Unity (2026-08-27) — PROPUESTA
+
+### Contexto
+
+El mundo se ve cuadriculado y no tiene relieve. La causa **no es el algoritmo de laberinto**: es la
+representación. Medido en el código, no supuesto:
+
+- `grid_gen/cell.rs:4` — el mundo es una pila de rejillas 2D de celdas de 2,5 m. Una `Cell` guarda
+  tipo y altura de techo. No hay Z dentro de la celda.
+- `grid_gen/cell.rs:16` — `LAYER_HEIGHT_M = 4.0`, y `collision.rs:127` resuelve `floor_player_y`
+  por índice de capa. **La altura del suelo es constante en todo un piso.**
+- Consecuencia: rampa, media planta, altillo, balcón sobre una zona abierta y sala hundida son
+  **inexpresables**. No es que falte implementarlas: no hay dónde escribirlas.
+- `layer_rules.rs:56` lo admite para la verticalidad ya declarada: `num_stairs`, `num_pits`,
+  `inter_layer_up/down` están en el perfil con el comentario *"values are inert"*.
+- Y `ceiling_height` SÍ viaja por celda en el wire desde siempre: el cliente la tira
+  (`ChunkRenderer.ceilingHeight` es un float único de 3,3 m).
+
+**Comprar un generador queda descartado y es la única vía que se descarta de plano.** Dungeon
+Architect y equivalentes producen GameObjects en el cliente. La autoridad del mundo es Rust,
+determinista por seed, con su colisión y su nav. Un generador de Unity produce geometría que el
+servidor no sabe que existe: o se reimplementa su salida en Rust (que es escribirlo entero) o se
+pierde la autoridad, que es perder el MMO. Pagar sí compensa, pero en **piezas 3D modulares**: eso
+es contenido, y contenido es lo que falta.
+
+### Decisión
+
+**La unidad de construcción deja de ser la celda y pasa a ser la PIEZA**: geometría autorada,
+conectada a otras por *sockets* tipados, colocada de forma determinista por hash.
+
+Lo que hace la migración viable, y es el núcleo de este ADR: **el servidor nunca lee mallas.**
+Unity, que ya tiene la malla delante al hornear, deriva del MODELO una lista de cajas de colisión
+—la "chuleta"— y la exporta en un manifiesto firmado. Rust lee esa chuleta y la estampa. Coloca
+identificadores de pieza y transformaciones; no sabe qué es un triángulo.
+
+Ese camino **ya existe a medias en producción y por eso el coste es menor de lo que parece**:
+`RoomColliderBuilder.cs:12` deriva la colisión del modelo y no de la malla, es puro y comparte
+fuente con el constructor de malla. El hueco es que `RoomManifestExporter` exporta tamaño, altura y
+puertas y **se deja las cajas dentro de Unity**, así que `carve_authored_into_layout` marca el
+interior entero como caminable: el servidor cree que toda sala autorada es una caja hueca. Funciona
+hoy solo porque hay dos piezas y salen una cada ~520 m.
+
+**Las once reglas duras** de WG3 (R1 Rust nunca lee mallas; R2 una sola fuente por pieza; R3
+determinismo sin RNG compartido ni estado global; R4 duplicar y no referenciar; R5 conectores
+tipados sin comodines; R6 pieza sin chuleta firmada = pieza que no existe; R7 conectividad por
+construcción y nunca por reparación; R8 altura de suelo por celda; R9 escena aislada antes de tocar
+el servidor; R10 presupuesto medido por fase; R11 wire propio) y las 32 reglas de composición
+(L1–L24 + R25–R32, clasificadas en autorado / código / criterio) viven en
+[`docs/WORLDGEN3-BRIEF.md`](WORLDGEN3-BRIEF.md). **No se copian aquí a propósito**: son numerosas y
+se afinarán con lo que salga de las fases, y un registro inmutable no es sitio para algo que va a
+moverse. Lo que este ADR fija es el paradigma y las tres decisiones de abajo.
+
+### Lo que ya está construido y verificado (F0 y F1)
+
+Cuatro commits, `50c09c76` → `3df9aef4`, **34 tests EditMode en verde**, `CompileCheckClient` limpio
+en las cuatro asambleas, **cero ficheros de WG2 tocados**.
+
+- **Compositor** (`Wg3Composer`): colocación determinista, encaje por socket con giro, rechazo por
+  solape, campo de escala, penalización de repetición, gating por profundidad y tapones.
+- **Geometría** (`Wg3Geometry`): de pieza a volúmenes; la colisión es filtrarlos por `IsSolid` y la
+  malla es triangularlos. **No hay un `Wg3ColliderBuilder`**, y esa ausencia es la decisión: un
+  segundo recorrido a la misma verdad es lo que permite que malla y colisión diverjan, que es lo
+  que la cabecera de `RoomColliderBuilder` ya advierte que pasaría.
+- **Manifiesto** (`Wg3Manifest`, `Assets/StreamingAssets/wg3_manifest.json`): 14 piezas, 30 bocas,
+  133 cajas, digest SHA-256 opaco. **Cero decoración exportada.**
+- **Escena aislada** `Assets/Scenes/WorldGen3Test.unity`, menú `Backrooms ▸ WorldGen3`, andada y
+  aprobada.
+
+**Dos hallazgos que costaron tiempo y quedan escritos para que no se repitan.** (1) `RoomDefinition`
+NO sirve para WG3: se mide en tiles de 5 m, así que un pasillo de 11 × 2,4 m no cabe en él, y
+colgarse de ese modelo sería devolver WG3 a la retícula de la que viene huyendo. (2) `Camera.Render()`
+a mano dentro de URP cae al camino de render heredado y **todo sale magenta**, porque un shader de
+URP no tiene subshader ahí; el volcado de planta se rasteriza a mano por eso.
+
+### Las tres decisiones que este ADR cierra
+
+**D1 — La chuleta se RASTERIZA a una rejilla fina, no viaja como lista de cajas.**
+
+Alternativa rechazada: que `resolve_move` pruebe contra la lista de AABB con giro de cada pieza
+cercana. Es exacta al milímetro, pero reescribe la colisión del jugador entera y **deja dos
+representaciones del mundo conviviendo** —rejilla para lo que quede de WG2, cajas para WG3—, que es
+justo la clase de duplicación que ya se paga cara aquí (`LayerGrid` a 2,5 m contra `ChunkLayoutV1` a
+5 m, con dos rutas de tallado que hay que mantener de acuerdo a mano).
+
+Rasterizar a **0,5 m**: 100 × 100 = 10 000 celdas por chunk y capa; dos bytes por celda (altura de
+suelo más banderas) = **20 KB por chunk y capa**, un par de megas con 25 chunks cargados. Es **diez
+veces más fino que la colisión actual**, que usa celdas de 5 m.
+
+Y el número trae un regalo que lo convierte en la decisión correcta y no solo en la barata: a 0,5 m
+una columna de medio metro colisiona bien y **una moldura de 15 cm no colisiona en absoluto**. Eso
+es la regla R25 —primaria y secundaria cuestan colisión, la decoración no— escrita como un número en
+vez de como una intención. La resolución del ráster **es** la línea entre estructura y decoración.
+
+Lo que se pierde: exactitud en geometría fina o diagonal. Una columna redonda colisiona como un
+octógono; una pared a 30° escalona medio metro. En primera persona y con arquitectura ortogonal no
+se nota, y **es reversible sin rediseñar**: la chuleta se hornea, así que pasar a cajas exactas es
+rehornear.
+
+**Consecuencia de segundo orden, y es la que más pesa:** con una sola representación rasterizada, el
+laberinto de WG2 puede seguir vivo como *emisor de piezas* en las zonas de trama, alimentando el
+mismo ráster. Eso convierte la migración en incremental de verdad —se sube el porcentaje de mundo en
+modo composición conforme crece el catálogo— y permite parar a mitad sin haber roto nada.
+
+**D2 — El formato de altura nace con COLUMNAS DE TRAMOS, aunque F2 solo lea el primero.**
+
+Un mapa de alturas (un suelo y un techo por celda) da rampas, escalones, salas hundidas y
+plataformas, pero **nada encima de nada**: sin balcones, sin pasarelas, sin entreplanta, sin una
+escalera que gire alrededor de un hueco. Una columna de tramos —lista de pares (suelo, techo) por
+celda— sí, y es el formato estándar del problema: es lo que produce Recast para navegación, así que
+el mismo dato sirve a la colisión y a la IA.
+
+Se elige el formato capaz desde el principio porque **el lector puede crecer hacia él y el formato
+no puede migrar hacia atrás**: nacer con mapa de alturas y pasar a tramos después es cambiar
+formato, wire y colisión con el mundo en marcha. El precedente está en este mismo repositorio:
+`ceiling_height` lleva meses viajando por el wire sin que nadie la lea, y arreglar eso es escribir
+un lector; el caso contrario habría sido una migración.
+
+Lo caro de los tramos es `resolve_move`: con un solo suelo la Y del jugador es función de su
+posición; con tramos deja de serlo y hay que saber **en qué tramo está**, que se deriva de dónde
+estaba antes. La colisión pasa a tener memoria, y esa memoria vive en el servidor porque el backend
+ya conserva su propia Y e ignora la del cliente. **Ese trabajo es F5, no F2.**
+
+**Consecuencia de diseño que se acepta explícitamente:** con tramos, `LAYER_HEIGHT_M` deja de tener
+sentido y **la capa desaparece como restricción de geometría**. La progresión del juego es hoy la
+profundidad medida en índice de capa; pasa a ser una coordenada Y. Funciona igual o mejor, pero
+"el nivel 3" deja de existir como escalón y la señal de nivel hay que replantearla sobre un eje
+continuo.
+
+**D3 — WG3 estrena wire propio; no se bumpea el actual.**
+
+Los dos mundos coexisten tras bandera hasta el borrado de WG2 (R4 y R11). Con su espejo en C#
+bumpeado en el MISMO commit: desde ADR-061, subir `WIRE_SCHEMA_VERSION` sin subir
+`WireSchema.Expected` no deja un warning, deja el juego inarrancable.
+
+**Y una decisión que no es técnica: las partidas guardadas NO migran.** Territorio, marcadores de
+claim, cofres, pintadas y camas de respawn están anclados a coordenadas de un mundo generado por
+WG2. Cambiar de generador las invalida. Se dice ahora y no en F7.
+
+### Lo que este ADR NO decide
+
+- **El modelo de troceado.** A1 contrato de frontera (el borde de cada chunk es función pura del
+  hash, así que dos vecinos coinciden sin hablarse), A2 regiones sembradas, A3 mundo finito. El
+  compositor actual es A3 y está anotado como tal en su cabecera; **F0–F3 no lo necesitan y F4
+  sí**. Va en ADR propio porque condiciona si el ritmo por historial (L19/L20) y la profundidad de
+  rama (R29) son implementables tal como están escritos, y porque de él cuelga la parte algorítmica
+  más difícil del proyecto: decidir si taponar una boca deja una región inalcanzable **sin poder
+  consultar el mundo entero**.
+- **El cierre de bucles.** La primera planta generada lo dejó a la vista: el compositor produce un
+  **árbol**. Se ramifica, termina en tapones y jamás vuelve a conectar con una pieza ya colocada. Un
+  edificio real tiene anillos, y sin ellos no existe el "esto ya lo he visto" que sostiene media
+  liminalidad. No estaba en el diseño ni en el brief. Es trabajo de F4.
+- **Dónde vive la navegación.** La propuesta es hornearla con la pieza —nodos y portales en los
+  sockets, del mismo modelo que la malla—, lo que mataría F6 dentro de F1 y daría culling por
+  portales de propina. Necesita su ADR porque toca la IA del robapieles entera.
+- **Los espacios visibles pero inaccesibles** (L15). La IA percibe por línea de visión: verá al
+  jugador a través de un hueco por el que no puede pasar, que es el patrón que produce una criatura
+  pegada a una pared. Y con STP el jugador apila cajas y llega igual.
+
+### Lo que NO hace
+
+- **No borra WG2 ni toca uno solo de sus ficheros.** WG3 vive en `Assets/Scripts/WorldGen3/` y en su
+  propio módulo de Rust. Borrar WG2 será borrar ficheros, no desenredar dependencias.
+- **No cambia el mundo existente.** Hasta F7, `wg3_manifest.json` es un fichero que nadie lee en
+  producción.
+- **No mete verticalidad entre piezas todavía.** Todas las bocas del catálogo nacen a cota 0 y el
+  validador exige que casen. La verticalidad DENTRO de una pieza (la escalera de `room_stair`) ya
+  funciona y ya colisiona.
+- **No decide la densidad final ni los pesos del catálogo.** Son números para afinar mirando
+  plantas, no ley.
+
+### Riesgos aceptados
+
+1. **El coste real son 40–60 piezas autoradas, y es tiempo de modelado, no de Rust.** Toda la
+   variedad viene del catálogo (L18). El editor de piezas pasa a ser el cuello de botella y comprar
+   un pack modular es palanca de calendario, no capricho. Hoy este coste no está en ninguna fase.
+2. **Draw calls.** WG2 dibuja rejillas baratas; WG3 dibuja mallas con detalle, y L2 pide salas
+   enormes con líneas de visión largas. Las zonas de trama tienen que seguir fundiéndose en una
+   malla por chunk: la pieza es la fuente, no el objeto en escena.
+3. **Acomodarse en el modo trama.** Es cómodo, barato e infinito. Si el porcentaje de mundo en modo
+   composición no sube, dentro de seis meses hay WG2 con paredes bonitas y ninguna de las salas que
+   se querían. La defensa es ponerle número desde F4.
+4. **El timebox cuelga de F3, no de la migración.** F0→F3 son 3–4 semanas reales. Ponerle dos a todo
+   garantiza decidir en la tercera con sensación de ir tarde, que es la peor forma de decidir.
+
+### Verificaciones
+
+- (a) `Wg3Manifest` exportado dos veces da los mismos bytes y el mismo digest. **Hecho.**
+- (b) Un mundo compuesto con el catálogo de código y otro con el catálogo reconstruido SOLO desde el
+  JSON salen idénticos. **Hecho** — es lo que convierte "el manifiesto basta para colocar" en
+  afirmación comprobada en vez de suposición que fallaría a mitad de F2.
+- (c) Las cajas de la chuleta, colocadas y giradas desde el manifiesto, caen donde el cliente dibuja
+  su geometría, en los cuatro giros. **Hecho.**
+- (d) La decoración no aparece en el manifiesto, y el rodapié no frena al jugador en la escena.
+  **Hecho** (lo primero por test, lo segundo andado).
+- (e) F2: el backend lee `wg3_manifest.json`, rasteriza la chuleta de UNA pieza a la rejilla de
+  0,5 m, la sirve, y el jugador choca EN JUEGO contra una columna interior donde la ve.
+- (f) F2: el ráster de una pieza rotada 90° coincide celda a celda con el de la misma pieza autorada
+  ya girada. Es el mismo par de rotaciones escritas por separado que ya se ató en el cliente, ahora
+  cruzando el idioma.
+- (g) Medido y anotado en `perf-baseline.md` antes de cerrar F2: bytes por chunk del ráster,
+  µs de rasterizado por pieza y µs de `generate_chunk_layer` con WG3 activo contra el actual.
