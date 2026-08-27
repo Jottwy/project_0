@@ -41,14 +41,16 @@ Material:
   m_LightmapFlags: 0
   m_EnableInstancingVariants: 0
   m_DoubleSidedGI: 0
-  m_CustomRenderQueue: -1
+  m_CustomRenderQueue: 3000
   stringTagMap:
-    RenderType: Opaque
+    RenderType: Transparent
   disabledShaderPasses:
   - GRABPASS
   - TransparentDepthPostpass
   - TransparentBackface
   - RayTracingPrepass
+  - DepthOnly
+  - SHADOWCASTER
   m_LockedProperties: 
   m_SavedProperties:
     serializedVersion: 3
@@ -239,8 +241,8 @@ Material:
     - _DoubleSidedEnable: 0
     - _DoubleSidedGIMode: 0
     - _DoubleSidedNormalMode: 1
-    - _DstBlend: 0
-    - _DstBlendAlpha: 0
+    - _DstBlend: 10
+    - _DstBlendAlpha: 10
     - _EmissionEnabled: 1
     - _EmissiveColorMode: 1
     - _EmissiveExposureWeight: 0
@@ -304,7 +306,7 @@ Material:
     - _SpecularAAThreshold: 0.2
     - _SpecularHighlights: 1
     - _SpecularOcclusionMode: 1
-    - _SrcBlend: 1
+    - _SrcBlend: 5
     - _SrcBlendAlpha: 1
     - _StencilRef: 0
     - _StencilRefDepth: 0
@@ -339,7 +341,7 @@ Material:
     - _ZTestDepthEqualForOpaque: 4
     - _ZTestGBuffer: 4
     - _ZTestTransparent: 4
-    - _ZWrite: 1
+    - _ZWrite: 0
     m_Colors:
     - _BaseColor: {r: 1, g: 1, b: 1, a: 1}
     - _BaseColorAddSubDiff: {r: 1, g: 0, b: 0, a: 0}

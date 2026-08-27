@@ -86,7 +86,11 @@ PrefabInstance:
       objectReference: {fileID: 0}
     - target: {fileID: 7255687511067837314, guid: 68e95bb250ca81849a7f00d8991dd002, type: 3}
       propertyPath: m_Name
-      value: BuildingPIece_StorageCrate_Constructed
+      value: STP_BuildingPIece_StorageCrate_Constructed
+      objectReference: {fileID: 0}
+    - target: {fileID: 7255687511067837314, guid: 68e95bb250ca81849a7f00d8991dd002, type: 3}
+      propertyPath: m_TagString
+      value: crate
       objectReference: {fileID: 0}
     - target: {fileID: 7271666304170967708, guid: 68e95bb250ca81849a7f00d8991dd002, type: 3}
       propertyPath: _initialItems.Array.size

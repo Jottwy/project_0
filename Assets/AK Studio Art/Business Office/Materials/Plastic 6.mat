@@ -19,7 +19,7 @@ Material:
   m_LightmapFlags: 4
   m_EnableInstancingVariants: 0
   m_DoubleSidedGI: 0
-  m_CustomRenderQueue: 2000
+  m_CustomRenderQueue: -1
   stringTagMap:
     RenderType: Opaque
   disabledShaderPasses:
@@ -104,7 +104,7 @@ Material:
     - _GlossMapScale: 1
     - _Glossiness: 0.5
     - _GlossyReflections: 1
-    - _Metallic: 0.12799996
+    - _Metallic: 0.128
     - _Mode: 0
     - _OcclusionStrength: 1
     - _Parallax: 0.02
@@ -126,7 +126,7 @@ Material:
     - _SpecColor: {r: 0.19999996, g: 0.19999996, b: 0.19999996, a: 1}
   m_BuildTextureStacks: []
   m_AllowLocking: 1
---- !u!114 &9136056356857791536
+--- !u!114 &6467735766851355491
 MonoBehaviour:
   m_ObjectHideFlags: 11
   m_CorrespondingSourceObject: {fileID: 0}
