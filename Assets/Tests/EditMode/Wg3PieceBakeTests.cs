@@ -20,6 +20,22 @@ namespace BackroomsSurvival.Tests
         private const float Thickness = 0.15f;
 
         /// <summary>
+        /// Extensión de una caja en XZ CONTANDO SU GIRO — el mismo criterio que
+        /// <c>Wg3GeometryTests</c>, y por el mismo motivo.
+        ///
+        /// Las cajas de una pieza autorada vienen ORIENTADAS: una pared que corre en Z se guarda
+        /// como una caja larga en su X local con 90° de giro. Comparar <c>size.x</c> contra el eje X
+        /// del mundo da una caja fantasma que sobresale metros por un lado — que es exactamente el
+        /// falso rojo que dio la primera versión de este fichero.
+        /// </summary>
+        private static Vector2 FootprintExtent(in Wg3Volume v)
+        {
+            float rad = v.yawDegrees * Mathf.Deg2Rad;
+            float c = Mathf.Abs(Mathf.Cos(rad)), s = Mathf.Abs(Mathf.Sin(rad));
+            return new Vector2(v.size.x * c + v.size.z * s, v.size.x * s + v.size.z * c);
+        }
+
+        /// <summary>
         /// Un pasillo de 2,4 × 11 m dibujado a mano sobre un lienzo de 4 × 4 tiles, o sea de
         /// 20 × 20 m. La desproporción es el punto: si el horno mirara los tiles, la huella saldría
         /// ocho veces más ancha de lo que mide el pasillo.
@@ -83,12 +99,15 @@ namespace BackroomsSurvival.Tests
             // desplazado media huella por pieza — un fallo que se ve como "las piezas no encajan".
             foreach (Wg3Volume v in baked.volumes)
             {
-                Assert.GreaterOrEqual(v.center.x - v.size.x * 0.5f, -0.001f,
+                Vector2 ext = FootprintExtent(v);
+                Assert.GreaterOrEqual(v.center.x - ext.x * 0.5f, -0.001f,
                     "hay una caja a la izquierda del origen: falta trasladar a esquina mínima");
-                Assert.GreaterOrEqual(v.center.z - v.size.z * 0.5f, -0.001f,
+                Assert.GreaterOrEqual(v.center.z - ext.y * 0.5f, -0.001f,
                     "hay una caja detrás del origen: falta trasladar a esquina mínima");
-                Assert.LessOrEqual(v.center.x + v.size.x * 0.5f, baked.sizeX + 0.001f);
-                Assert.LessOrEqual(v.center.z + v.size.z * 0.5f, baked.sizeZ + 0.001f);
+                Assert.LessOrEqual(v.center.x + ext.x * 0.5f, baked.sizeX + 0.001f,
+                    "hay una caja que se sale de la huella por +X");
+                Assert.LessOrEqual(v.center.z + ext.y * 0.5f, baked.sizeZ + 0.001f,
+                    "hay una caja que se sale de la huella por +Z");
             }
         }
 
@@ -161,9 +180,17 @@ namespace BackroomsSurvival.Tests
             foreach (Wg3Volume v in baked.volumes)
             {
                 if (v.kind == Wg3VolumeKind.Decoration) continue;
-                bool inside = Mathf.Abs(probe.x - v.center.x) < v.size.x * 0.5f - 0.01f
+
+                // Al marco de la caja, deshaciendo su giro. Comparar contra los ejes del mundo daría
+                // por libre cualquier pared orientada, que aquí son casi todas.
+                float rad = -v.yawDegrees * Mathf.Deg2Rad;
+                float cos = Mathf.Cos(rad), sin = Mathf.Sin(rad);
+                var d = new Vector2(probe.x - v.center.x, probe.z - v.center.z);
+                var local = new Vector2(d.x * cos - d.y * sin, d.x * sin + d.y * cos);
+
+                bool inside = Mathf.Abs(local.x) < v.size.x * 0.5f - 0.01f
                            && Mathf.Abs(probe.y - v.center.y) < v.size.y * 0.5f - 0.01f
-                           && Mathf.Abs(probe.z - v.center.z) < v.size.z * 0.5f - 0.01f;
+                           && Mathf.Abs(local.y) < v.size.z * 0.5f - 0.01f;
                 Assert.IsFalse(inside,
                     $"la boca está tapiada por una caja {v.kind} en {v.center} de {v.size}");
             }
