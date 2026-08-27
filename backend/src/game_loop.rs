@@ -417,6 +417,12 @@ pub async fn run(
     let mut player = Player::new(net.local_id, &net.local_name);
     let mut world = World::new(net.world_seed);
 
+    // ADR-095 F4 — la composición de WG3, cacheada aquí y no en un global (R3). Perezosa a
+    // propósito: un joiner no conoce `net.world_seed` hasta el HandshakeAck, así que componer ahora
+    // sería componer el mundo de la semilla equivocada. Se compone al primer chunk que se pida y se
+    // rehace sola si la semilla cambia debajo.
+    let mut wg3_world = crate::world::wg3::world::Wg3WorldCache::default();
+
     // ADR-032: host-only world persistence. Load BEFORE generating/spawning so a persisted seed
     // (and player position) win. Non-host backends never load/save — world state isn't
     // authoritative there (joiners adopt the host's world via WorldSync).
@@ -772,11 +778,16 @@ pub async fn run(
                     // backend no me ha contestado todavía", y esperaría para siempre por un chunk
                     // que nunca va a llegar. El saludo ya le dijo que WG3 está apagado; esto es la
                     // red de seguridad para el cliente que preguntó igualmente.
+                    //
+                    // ADR-095 F4 — las piezas salen del COMPOSITOR, no del andamio: las bocas casan
+                    // por construcción y el mundo se puede andar. A cambio el mundo es finito (A3,
+                    // el troceado sigue abierto en su propio ADR), así que lejos del origen la lista
+                    // vacía deja de ser rara y pasa a ser el borde del mundo.
                     let placements = match wg3.manifest() {
-                        Some(manifest) if wg3.is_enabled() => {
-                            crate::world::wg3::demo::placements_for_chunk(
+                        Some(manifest) if wg3.is_enabled() => wg3_world
+                            .world_for(manifest, net.world_seed)
+                            .placements_for_chunk(
                                 manifest,
-                                net.world_seed,
                                 crate::world::wg3::chunk::Wg3ChunkCoord { x: cx, z: cz },
                             )
                             .into_iter()
@@ -786,8 +797,7 @@ pub async fn run(
                                 origin_x_cm: p.origin_x_cm,
                                 origin_z_cm: p.origin_z_cm,
                             })
-                            .collect()
-                        }
+                            .collect(),
                         _ => Vec::new(),
                     };
 

@@ -969,3 +969,202 @@ fn a_composed_world_has_no_overlaps_and_no_sockets_left_open() {
         );
     }
 }
+
+// ── el mundo servido: componer una vez, repartir por chunk ──────────────────────────────────
+
+use super::world::{Wg3ServedWorld, Wg3WorldCache};
+
+/// Semilla de las pruebas del mundo servido. Es la del oráculo con los 32 bits altos puestos: así
+/// el test también ejercita `composer_seed`, que se queda con los bajos.
+const SERVED_SEED: u64 = 0xDEAD_BEEF_0000_002A;
+
+/// LO QUE EL ANDAMIO NO PODÍA ROMPER Y ESTO SÍ.
+///
+/// `demo` encajaba cada pieza entera dentro de su chunk, así que ninguna se repetía. El compositor
+/// las hace conectar, y conectar significa cruzar fronteras. El cliente monta un `GameObject` por
+/// chunk y NO deduplica: si una pieza saliera en dos chunks, se dibujaría dos veces —con su colisión
+/// duplicada y peleando en el z-buffer— y el síntoma sería una pared que parpadea, no un error.
+#[test]
+fn every_piece_of_the_served_world_is_drawn_by_exactly_one_chunk() {
+    let m = real_manifest();
+    let world = Wg3ServedWorld::compose(&m, SERVED_SEED);
+    assert!(world.placements().len() > 1);
+
+    let mut seen = vec![0usize; world.placements().len()];
+    let mut chunks: Vec<chunk::Wg3ChunkCoord> = Vec::new();
+    for p in world.placements() {
+        for c in chunk::chunks_touched(&m, p) {
+            if !chunks.contains(&c) {
+                chunks.push(c);
+            }
+        }
+    }
+
+    for coord in &chunks {
+        for drawn in world.placements_for_chunk(&m, *coord) {
+            let i = world
+                .placements()
+                .iter()
+                .position(|p| *p == drawn)
+                .expect("la colocación repartida no está en el mundo");
+            seen[i] += 1;
+        }
+    }
+
+    for (i, count) in seen.iter().enumerate() {
+        assert_eq!(
+            1, *count,
+            "la colocación {i} sale en {count} chunks; tiene que salir en exactamente uno"
+        );
+    }
+}
+
+/// La propiedad que hace que el radio 1 del cliente baste: una pieza nunca asoma más allá de los
+/// vecinos inmediatos del chunk que la dibuja.
+///
+/// Se cumple porque el dueño es el chunk del CENTRO y ninguna pieza del catálogo llega a los 50 m.
+/// Autorar una nave de 60 m rompería esto y el síntoma sería geometría que aparece tarde o no
+/// aparece — por eso el test mira el catálogo real y no un caso inventado.
+#[test]
+fn no_piece_reaches_beyond_the_neighbours_of_its_owner_chunk() {
+    let m = real_manifest();
+    let world = Wg3ServedWorld::compose(&m, SERVED_SEED);
+
+    for p in world.placements() {
+        let owner = Wg3ServedWorld::owner_chunk(&m, p).expect("pieza fuera del catálogo");
+        for touched in chunk::chunks_touched(&m, p) {
+            let (dx, dz) = ((touched.x - owner.x).abs(), (touched.z - owner.z).abs());
+            let piece = m.piece(p.piece).expect("pieza fuera del catálogo");
+            assert!(
+                dx <= 1 && dz <= 1,
+                "{} vuela hasta el chunk ({dx},{dz}) desde el suyo: no cabe en el radio 1",
+                piece.id
+            );
+        }
+    }
+}
+
+/// El mundo es FINITO (A3) y eso es la decisión, no un fallo. Lejos del origen la respuesta correcta
+/// es la lista vacía — que el cliente ya sabe distinguir de "todavía no ha llegado".
+#[test]
+fn a_chunk_past_the_edge_of_the_finite_world_comes_out_empty() {
+    let m = real_manifest();
+    let world = Wg3ServedWorld::compose(&m, SERVED_SEED);
+
+    let far = chunk::Wg3ChunkCoord { x: 400, z: -400 };
+    assert!(world.placements_for_chunk(&m, far).is_empty());
+    assert!(world.placements_touching_chunk(&m, far).is_empty());
+}
+
+/// El reparto es cosa de lo que se DIBUJA. El ráster de colisión sigue viendo toda pieza que toque
+/// el chunk, porque una pared que cruza la frontera tiene que bloquear a los dos lados.
+#[test]
+fn collision_still_sees_the_pieces_that_only_touch_the_chunk() {
+    let m = real_manifest();
+    let world = Wg3ServedWorld::compose(&m, SERVED_SEED);
+
+    let mut straddlers = 0;
+    for p in world.placements() {
+        let touched = chunk::chunks_touched(&m, p);
+        if touched.len() < 2 {
+            continue;
+        }
+        straddlers += 1;
+        for coord in touched {
+            assert!(
+                world
+                    .placements_touching_chunk(&m, coord)
+                    .iter()
+                    .any(|q| q == p),
+                "la pieza a caballo no llega al ráster del chunk ({},{})",
+                coord.x,
+                coord.z
+            );
+        }
+    }
+    assert!(
+        straddlers > 0,
+        "ninguna pieza cruza una frontera: el test no está probando nada"
+    );
+}
+
+/// R3: la caché no es un global escondido. Cambiar de semilla da otro mundo, y volver a la primera
+/// da el primero otra vez — sin rastro de la segunda.
+#[test]
+fn the_cache_recomposes_when_the_seed_changes() {
+    let m = real_manifest();
+    let mut cache = Wg3WorldCache::default();
+
+    let first: Vec<_> = cache.world_for(&m, SERVED_SEED).placements().to_vec();
+    let second: Vec<_> = cache.world_for(&m, SERVED_SEED + 1).placements().to_vec();
+    assert_ne!(first, second, "dos semillas dan el mismo mundo");
+
+    let again: Vec<_> = cache.world_for(&m, SERVED_SEED).placements().to_vec();
+    assert_eq!(first, again);
+}
+
+/// Lo que el mundo interino da de sí, MEDIDO y no supuesto: cuántas piezas, cuánto terreno y cuánto
+/// cuesta componerlo, en varias semillas porque una sola puede salir con suerte.
+///
+/// EL PRESUPUESTO ES UN TECHO, NO UN OBJETIVO, y esto lo enseña: con 300 de tope, seis semillas dan
+/// entre 20 y 268 piezas — de 134 m a 921 m de lado. El límite real no es el presupuesto sino que la
+/// frontera se seca: cada boca puede sellarse a propósito y las candidatas que pisan algo ya puesto
+/// se descartan, así que el árbol termina solo y a veces pronto. Subir el tope no da más mundo; lo
+/// dará cerrar bucles, que ADR-095 deja abierto. Los mínimos de abajo son flojos a propósito: miden
+/// que el mundo EXISTE, no que sea grande, porque grande no depende de este código.
+#[test]
+fn the_interim_world_is_worth_walking() {
+    let m = real_manifest();
+
+    for seed in [SERVED_SEED, 7, 42, 1337, 900_001, 0] {
+        let started = std::time::Instant::now();
+        let world = Wg3ServedWorld::compose(&m, seed);
+        let elapsed = started.elapsed();
+
+        let (mut min_x, mut min_z) = (f32::MAX, f32::MAX);
+        let (mut max_x, mut max_z) = (f32::MIN, f32::MIN);
+        for p in world.placements() {
+            let piece = m.piece(p.piece).expect("pieza fuera del catálogo");
+            let (x0, z0, x1, z1) = p.bounds(piece);
+            min_x = min_x.min(x0);
+            min_z = min_z.min(z0);
+            max_x = max_x.max(x1);
+            max_z = max_z.max(z1);
+        }
+        let (span_x, span_z) = (max_x - min_x, max_z - min_z);
+        println!(
+            "[wg3] semilla {seed}: {} piezas, {span_x:.0} × {span_z:.0} m, compuesto en {:.0} ms",
+            world.placements().len(),
+            elapsed.as_secs_f32() * 1000.0
+        );
+
+        assert!(
+            world.placements().len() >= 15,
+            "semilla {seed}: solo {} piezas, el mundo se ahoga antes de ser andable",
+            world.placements().len()
+        );
+        assert!(
+            span_x >= 90.0 && span_z >= 90.0,
+            "semilla {seed}: el mundo mide {span_x:.0} × {span_z:.0} m, menos de dos chunks de lado"
+        );
+        assert!(
+            elapsed.as_millis() < 250,
+            "semilla {seed}: componer costó {} ms y lo hace el primer chunk que se pide",
+            elapsed.as_millis()
+        );
+    }
+}
+
+/// La semilla del mundo es `u64` y la del compositor `i32`: se cogen los 32 bits bajos. Dos semillas
+/// que solo se diferencien arriba dan EL MISMO mundo de WG3, y eso se prueba en vez de dejarlo para
+/// que alguien lo encuentre de madrugada.
+#[test]
+fn the_world_seed_is_truncated_to_the_composers_thirty_two_bits() {
+    let m = real_manifest();
+    assert_eq!(42, super::world::composer_seed(0xDEAD_BEEF_0000_002A));
+    assert_eq!(-1, super::world::composer_seed(u64::MAX));
+
+    let disguised = Wg3ServedWorld::compose(&m, 0xDEAD_BEEF_0000_002A);
+    let plain = Wg3ServedWorld::compose(&m, 42);
+    assert_eq!(plain.placements(), disguised.placements());
+}

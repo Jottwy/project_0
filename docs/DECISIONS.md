@@ -7312,3 +7312,48 @@ procesos derivando lo mismo de la misma chuleta, que es la tesis del ADR.
 oráculo de composición de las cinco semillas al centímetro. Sigue **sin wirear** — `wg3::demo` es lo
 que responde el `game_loop` — porque enchufarlo exige la decisión de troceado, que sigue abierta y
 es lo que bloquea F4.
+
+---
+
+### Enmienda 4 a ADR-095 (2026-08-27) — el compositor sirve el mundo, y A3 queda como INTERINO declarado
+
+Decisión de Joel, tomada al preguntársele en vez de deducirla del código: **se conecta el compositor
+al `game_loop` ya, aceptando A3 (mundo finito) como interino**, y se anota aquí para que la decisión
+de facto no viva solo en un comentario de cabecera. `wg3::demo` se borra entero, como este ADR
+anunciaba.
+
+**Lo que NO decide esta enmienda:** el modelo de troceado sigue abierto y sigue necesitando su propio
+ADR. A1 (contrato de frontera) y A2 (regiones) siguen sobre la mesa; lo que cambia es que mientras
+tanto **el mundo que se sirve es uno compuesto y conectado**, no un andamio de piezas sueltas. Cuando
+llegue ese ADR, lo que se sustituye es de dónde salen las colocaciones — el reparto por chunk sigue
+valiendo.
+
+**Una pieza, un chunk.** Una colocación se manda en UN solo chunk, el que contiene su CENTRO. El
+cliente monta un `GameObject` por chunk y no deduplica: mandarla en los dos chunks que toca la
+dibujaría dos veces, con la colisión duplicada y peleando en el z-buffer. El andamio no tenía este
+problema porque encajaba cada pieza entera dentro de su chunk — perder esa propiedad es el precio de
+que ahora las piezas conecten. El centro y no la esquina porque acota el vuelo: ninguna pieza del
+catálogo llega a 50 m, así que centrada nunca asoma más allá de los vecinos inmediatos de su dueño y
+el radio 1 del cliente sigue bastando. Hay test sobre el catálogo real que lo vigila. **El ráster de
+colisión NO usa este reparto**: sigue recibiendo toda pieza que TOQUE el chunk, porque una pared que
+cruza la frontera bloquea a los dos lados.
+
+**Sin globales (R3).** La composición se cachea en el propio `game_loop`, perezosa y rehecha si la
+semilla cambia. Perezosa no por optimizar: **un joiner no conoce `world_seed` hasta el HandshakeAck**,
+así que componer al arrancar sería componer el mundo equivocado.
+
+**La semilla se trunca a 32 bits** (`world_seed as u32 as i32`): la del mundo es `u64` y la del
+compositor nació de un `int` de C# que el oráculo fija. Dos semillas que solo difieran en los 32 bits
+altos dan el mismo mundo de WG3. Se acepta y se prueba, en vez de dejarlo para que se descubra de
+madrugada.
+
+**LO QUE LA MEDICIÓN DESTAPÓ, y es lo único de aquí que puede cambiar un plan: el presupuesto de
+piezas es un techo, no un objetivo.** Con tope 300, seis semillas dan entre **20 y 268 piezas — de
+134 m a 921 m de lado**. El límite no es el tope: es que la frontera se seca sola, porque hay tapones
+voluntarios y las candidatas que pisan algo ya colocado se descartan. **Subir el número no agranda el
+mundo.** Lo agrandará cerrar bucles, que este ADR ya dejaba abierto y que acaba de dejar de ser una
+mejora estética para pasar a ser lo que separa "un mundo de dos chunks" de "un mundo". Y hay semillas
+malas: elegir `WORLD_SEED` deja de ser indiferente mientras esto siga así.
+
+Verde al cerrar: **1055 tests**, clippy `--all-targets -D warnings`, `cargo fmt`. Siete tests nuevos,
+y el que mide el tamaño del mundo imprime las cifras en vez de suponerlas.
