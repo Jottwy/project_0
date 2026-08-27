@@ -94,7 +94,9 @@ pub const REGION_CHUNKS: i32 = 3;
 /// Lado de región en metros.
 pub const REGION_M: f32 = REGION_CHUNKS as f32 * WG3_CHUNK_M;
 
-/// Coordenada de región. La región `(0,0)` va de `(0,0)` a `(400,400)`.
+/// Coordenada de región. La región `(0,0)` va de `(0,0)` a `(150,150)` — `REGION_CHUNKS` chunks de
+/// `WG3_CHUNK_M`, y NO un número fijo: este comentario decía 400 desde cuando la región eran 8
+/// chunks, y un comentario que miente sobre los límites de la región es peor que no tenerlo.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Wg3RegionCoord {
     pub x: i32,
