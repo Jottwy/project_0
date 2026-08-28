@@ -121,6 +121,30 @@ const STP_PICKUP_MAX_DISTANCE: f32 = 8.0;
 /// `None` (no sabemos dónde está el solicitante, su primera pose aún no llegó) devuelve `true`:
 /// negar por falta de dato convertiría un hueco de información en un rechazo injusto, y las demás
 /// validaciones —que el item exista y no esté reservado— siguen en pie.
+/// Dónde está el solicitante SEGÚN EL HOST, nunca según su paquete.
+///
+/// Es la respuesta a la pregunta que toda validación de alcance tiene que hacerse antes de medir
+/// nada: un paquete puede declarar la posición que le convenga, y medir 5 m contra un dato que
+/// elige el cliente no valida nada. La posición buena está en el roster, que el host mantiene con
+/// el relay de poses; para el jugador local, la que el propio backend simula.
+///
+/// `None` = ese peer no existe o su primera pose aún no ha llegado. Quien llame decide qué hacer
+/// con el hueco, y las dos respuestas están en este fichero: la puerta de Level 4 rechaza, y
+/// `pickup_within_reach` deja pasar. La diferencia no es un descuido: rechazar cuesta un reintento,
+/// aceptar deja el alcance sin comprobar durante esa ventana.
+fn authoritative_requester_pos(
+    net: &NetworkManager,
+    local_position: Vec3,
+    requester_id: u16,
+) -> Option<Vec3> {
+    if requester_id == net.local_id {
+        return Some(local_position);
+    }
+    net.peers
+        .get(&requester_id)
+        .map(|p| Vec3::from_array(p.position))
+}
+
 fn pickup_within_reach(requester_pos: Option<Vec3>, item_pos: [f32; 3]) -> bool {
     let Some(pos) = requester_pos else {
         return true;
@@ -2610,11 +2634,33 @@ async fn handle_network_event(
             target_id,
             target_kind,
             interaction_type,
-            player_position,
+            // DELIBERADAMENTE IGNORADA. El paquete declara dónde dice estar el jugador, y el host
+            // tiene su posición de verdad en el roster. Ver abajo.
+            player_position: _declared_position,
         } => {
             if !net.is_host {
                 return;
             }
+
+            // F0.7 llevado a esta ruta, que se quedó fuera cuando se arregló `StpPickupRequest`.
+            // `interact_with_item` comprueba 5 m de alcance contra la posición que se le pase; con
+            // la del PAYLOAD, esa comprobación no comprobaba nada — bastaba declarar estar encima
+            // del objeto para recogerlo desde cualquier punto del mapa. La del roster es la que el
+            // host ya conoce por el relay de poses, y el cliente no tiene voz en ella.
+            //
+            // Sin pose conocida se RECHAZA, igual que la puerta de Level 4 unas líneas más arriba.
+            // Diverge a propósito de `pickup_within_reach`, que ante un hueco de información deja
+            // pasar: allí el hueco es una ventana de milisegundos al entrar; aquí, aceptar sin pose
+            // sería dejar abierto exactamente el agujero que este cambio cierra.
+            let Some(requester_pos) =
+                authoritative_requester_pos(net, player.position, requester_id)
+            else {
+                info!(
+                    "MPTRACE step=AF event=host_validate_interaction result=rejected reason=unknown_pose target_id={} requester_id={} request_id={}",
+                    target_id, requester_id, request_id
+                );
+                return;
+            };
 
             process_authoritative_interaction(
                 requester_id,
@@ -2622,7 +2668,7 @@ async fn handle_network_event(
                 target_id,
                 &target_kind,
                 &interaction_type,
-                Vec3::from_array(player_position),
+                requester_pos,
                 world,
                 net,
                 processed_interactions,

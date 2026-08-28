@@ -11122,3 +11122,38 @@ fn the_entry_door_puts_you_inside_the_reserve_and_never_where_you_stood() {
         "sales por el punto equivalente al otro lado, con tu mismo offset al umbral"
     );
 }
+
+/// F0.7 EN LA RUTA QUE SE QUEDÓ FUERA.
+///
+/// `WorldInteractRequest` traía la posición del jugador EN EL PAYLOAD y el host medía sus 5 m de
+/// alcance contra ella, así que la comprobación no comprobaba nada: bastaba declarar estar encima
+/// del objeto para recogerlo desde el otro extremo del mapa. `StpPickupRequest` se arregló en su
+/// día y a ésta se le olvidó. La posición buena es la del roster, que el host mantiene con el relay
+/// de poses y en la que el cliente no tiene voz.
+#[tokio::test]
+async fn the_requester_pose_comes_from_the_roster_and_never_from_the_packet() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let addr: std::net::SocketAddr = "127.0.0.1:9002".parse().unwrap();
+    let mut peer = crate::network::peer::PeerConnection::new(2, "Joel".into(), addr);
+    peer.position = [300.0, 1.8, -120.0];
+    net.peers.insert(2, peer);
+
+    let from_roster = authoritative_requester_pos(&net, Vec3::ZERO, 2)
+        .expect("el peer está en el roster con su pose");
+    assert_eq!(
+        Vec3::new(300.0, 1.8, -120.0),
+        from_roster,
+        "la pose tiene que salir del roster, que es lo único que el cliente no elige"
+    );
+
+    // El jugador local no está en `peers`: su pose la simula el propio backend.
+    let local = authoritative_requester_pos(&net, Vec3::new(4.0, 1.8, 5.0), net.local_id)
+        .expect("el jugador local siempre tiene pose");
+    assert_eq!(Vec3::new(4.0, 1.8, 5.0), local);
+
+    // Un peer que no existe —o cuya primera pose no ha llegado— no tiene pose que valga.
+    assert!(
+        authoritative_requester_pos(&net, Vec3::ZERO, 99).is_none(),
+        "sin pose conocida no se inventa una: quien llama decide, y en la interacción rechaza"
+    );
+}
