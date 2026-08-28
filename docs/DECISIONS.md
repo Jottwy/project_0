@@ -8231,3 +8231,43 @@ Queda además una guardia permanente contra el fallo de la enmienda 2:
 `no_mouth_in_the_served_world_is_walled_shut` recorre las bocas de piezas y tramos de las cuatro
 regiones y exige que ninguna caiga sobre una columna maciza. Con dientes verificados mutando la
 constante a 120, no declarados. `narrowest_doorway_clearance` protege el NÚMERO; ésta, el MUNDO.
+
+## ADR-097 — Enmienda 1: la verticalidad que ADR-097 hizo posible NO SE SUBE, y la causa es la misma que la de ADR-098 enmienda 2 (2026-08-28)
+
+ADR-097 dio `origin_y` a la colocación y el catálogo ganó su primera pieza que cambia de nivel. La
+propagación funciona y hay test que lo dice. Lo que nadie midió es si esa pieza **se puede subir**
+con la colisión que el servidor tiene de ella. No se puede:
+
+| | escalón que exige |
+|---|---|
+| `room_stair` | **0,38 m** |
+| `cor_ramp` | **0,36 m** |
+| lo que sube el jugador (`m_StepOffset` de `FPS_Player.prefab`) | **0,275 m** |
+
+**Las dos piezas verticales del catálogo son infranqueables en el ráster.** Salieron solas: los
+únicos nodos del mundo servido cuyas bocas caen en manchas andables distintas son `cor_ramp`, en las
+tres regiones donde aparece.
+
+### La causa, y es hermana de la de la enmienda 2 de ADR-098
+
+La rampa está bien autorada: cuatro peldaños de 18 cm, por debajo de los 0,275 del jugador. Pero su
+**huella son 0,29 m** (`Wg3StairRun`, `run = 0.29f` por defecto) y **la celda del ráster mide 0,50**.
+El rasterizado conservador se queda con el peldaño más alto de los que toca cada celda, así que
+**funde dos peldaños en uno de 36 cm**. Igual que un vano de 1,20 m desaparecía por inflado de
+paredes, una escalera de huella corta se convierte en un bordillo.
+
+**La regla general, que es lo que hay que llevarse de aquí:** *toda* geometría de WG3 que dependa de
+un detalle más fino que la celda del ráster **cambia de significado, no de precisión**, al pasar al
+servidor. Para una escalera: la huella tiene que ser **al menos la celda del ráster**, o la
+contrahuella efectiva se multiplica por cuántos peldaños quepan en una celda.
+
+### Estado
+
+Medido y con instrumento permanente (`probe_what_step_each_piece_demands`, que coloca cada pieza
+sola, la rasteriza y busca el escalón más pequeño que la deja de una pieza — no sabe lo que es una
+escalera, así que caza cualquier geometría interior infranqueable).
+
+**El arreglo NO está hecho**: subir `run` de `Wg3StairRun` a ≥ 0,50 m y estirar el tramo es un cambio
+en `Wg3Catalog.cs`, y exige **reexportar `wg3_manifest.json` desde Unity** para que el servidor vea
+la geometría nueva. Cambiar el C# sin reexportar deja los dos lados diciendo cosas distintas, que es
+la avería que este proyecto ya paga cara. Queda para una sesión con el editor disponible.

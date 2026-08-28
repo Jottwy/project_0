@@ -2,10 +2,10 @@
 > Actualizado por /checkpoint al cierre de cada sesión. Leído al inicio de cada sesión.
 
 ## SESIÓN AUTÓNOMA — ARRANQUE (leer primero; borrar este bloque al terminar el carril)
-- **MILESTONE ACTUAL:** M6 — sin abrir. M4 cerró con «no se arregla en código» (ver punto 6 de la
-  sesión); M5 dejó la guardia puesta.
-- **ESTADO:** M1–M5 cerrados y commiteados. HEAD `ebd82639` + el append de la enmienda 3.
-- **ÚLTIMO VERDE:** `cargo test --release` 1090/0/34 · clippy `--all-targets -D warnings` limpio ·
+- **MILESTONE ACTUAL:** M7 — sin abrir. M6 encontró y midió el fallo de la verticalidad; **su
+  arreglo pide Unity y está deliberadamente sin hacer**.
+- **ESTADO:** M1–M6 cerrados y commiteados. HEAD `8606a2cc` + los appends de las enmiendas.
+- **ÚLTIMO VERDE:** `cargo test --release` 1091/0/34 · clippy `--all-targets -D warnings` limpio ·
   `cargo fmt --check` limpio · `CompileCheckClient.sh` 0 errores en las cuatro asambleas.
 - **COMPLETADO, y cómo se verificó:**
   - `c4580553` sonda que anda el mundo servido por el RÁSTER. Verificada porque midió algo que el
@@ -20,11 +20,18 @@
   - `ebd82639` guardia `no_mouth_in_the_served_world_is_walled_shut`, con dientes verificados
     mutando la constante a 120 (rojo, nombra las bocas) y restaurando (verde).
   - Enmienda 3 de ADR-098, que **corrige a la enmienda 2**: lo que queda NO es enrutado.
+  - `8606a2cc` la sonda que mide qué escalón pide cada pieza. Verificada porque cazó sola las dos
+    piezas verticales del catálogo sin saber lo que es una escalera.
 - **DECISIONES TOMADAS SIN JOEL:** (1) el mínimo de anchura generada sale de la medida
   (`narrowest_doorway_clearance`) y no de una opinión; (2) va en `problems()`, así que una ruta
   estrecha se DESCARTA en vez de emitirse impasable — prefiere menos conectores a conectores falsos.
-- **PRÓXIMO PASO CONCRETO:** ya NO es tocar `route.rs`, y esto es lo que hay que leer antes de
-  abrirlo. La única palanca medida son **piezas con más de dos bocas**: hoy 1,96 por pieza y un
+- **LO PRIMERO DE LA PRÓXIMA SESIÓN CON UNITY DELANTE:** subir `run` de `Wg3StairRun`
+  (`Wg3Geometry.cs:62`, hoy `0.29f`) a **≥ 0,50 m** y estirar los dos tramos del catálogo
+  (`Wg3Catalog.cs:262` `room_stair` y `:335` `cor_ramp`), y **reexportar `wg3_manifest.json`**.
+  Sin el reexporte, C# y el servidor dicen cosas distintas. Comprobación:
+  `probe_what_step_each_piece_demands` tiene que decir «ninguna».
+- **PRÓXIMO PASO CONCRETO (sin Unity):** ya NO es tocar `route.rs`, y esto es lo que hay que leer
+  antes de abrirlo. La única palanca medida son **piezas con más de dos bocas**: hoy 1,96 por pieza y un
   árbol gasta 2 por pieza, así que el enrutador se queda sin material. Para dejarle K bocas libres
   en una región de N piezas hace falta una media de 2 + K/N — con N ≈ 28 y K ≈ 10, **2,36**. Eso es
   autorado, y necesita a Joel. Lo que SÍ se puede hacer sin él: (a) la verificación (g) cuando haya
@@ -59,7 +66,9 @@
 
 6. 🔑 **Y TAMPOCO ES ENRUTADO — ENMIENDA 3, que corrige al punto anterior.** El enrutador no rinde poco: **está hambriento**. El catálogo coloca **1,96 bocas por pieza** (55/28, 45/23, 48/25, 54/28) y un árbol de N piezas gasta 2(N−1), así que el excedente al terminar es de **0 o 1 boca en toda la región**. Las 5–7 que llega a ver son las de los tramos de junta. **Ninguna mejora de `route.rs` mueve esto**: la palanca es **piezas con más de dos bocas** —la misma que el checkpoint anterior ya había señalado por el camino de los anchos de boca—, y la cuenta para dimensionarla es una media de **2 + K/N** para dejar K bocas libres; con N ≈ 28 y K ≈ 10, **2,36**. Antes de abrir el enrutador por este motivo, leer esto.
 
-7. **Guardia permanente puesta.** `no_mouth_in_the_served_world_is_walled_shut` recorre las bocas de piezas y de tramos de las cuatro regiones y exige que ninguna caiga sobre una columna maciza. `narrowest_doorway_clearance` protege el NÚMERO; ésta, el MUNDO — son cosas distintas, y hacía falta la segunda porque la constante puede seguir bien mientras otra vía emite un vano estrecho. Dientes verificados mutando, no declarados.
+7. 🚨 **LA VERTICALIDAD DE ADR-097 NO SE SUBE — enmienda 1 de ADR-097.** Los únicos nodos del mundo servido cuyas bocas caen en manchas andables distintas son `cor_ramp`, siempre. La pieza está bien autorada —cuatro peldaños de 18 cm, por debajo de los 0,275 del `m_StepOffset` de `FPS_Player.prefab`— pero su **huella son 0,29 m** y la celda del ráster mide **0,50**: el rasterizado conservador se queda con el peldaño más alto de los que toca cada celda y **funde dos en uno de 36 cm**. Medido pieza a pieza: `room_stair` pide **0,38 m** y `cor_ramp` **0,36 m** contra los 0,275 que sube el jugador. **Las dos piezas verticales del catálogo son infranqueables en la colisión del servidor.** La regla general, que es lo que hay que llevarse: *toda* geometría de WG3 más fina que la celda del ráster **cambia de significado, no de precisión**, al pasar al servidor. El arreglo es C# + reexporte del manifiesto, y está **sin hacer a propósito**: cambiar uno sin el otro deja los dos lados diciendo cosas distintas.
+
+8. **Guardia permanente puesta.** `no_mouth_in_the_served_world_is_walled_shut` recorre las bocas de piezas y de tramos de las cuatro regiones y exige que ninguna caiga sobre una columna maciza. `narrowest_doorway_clearance` protege el NÚMERO; ésta, el MUNDO — son cosas distintas, y hacía falta la segunda porque la constante puede seguir bien mientras otra vía emite un vano estrecho. Dientes verificados mutando, no declarados.
 
 ---
 - Fecha: 2026-08-27/28 (**WorldGen3 F4: el compositor pasa a Rust, el mundo pasa a REGIONES, ADR-096 cierra el troceado y la primera pieza DIBUJADA se anda** — dos sesiones en paralelo toda la noche, una por carril) — **26 commits, `ee4c47ad` → `7e0b4087`. `cargo test` 1065/0/34 ignorados, 48 EditMode en verde, clippy `--all-targets -D warnings` y fmt limpios. Cero wire: v46 ya traía el carril.**
