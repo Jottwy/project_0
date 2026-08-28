@@ -145,6 +145,8 @@ namespace BackroomsSurvival.WorldGen3
             if (chunk.placements.Count == 0)
             {
                 _built[coord] = null;
+                _emptyChunks++;
+                ReportOnce();
                 return;
             }
 
@@ -154,6 +156,7 @@ namespace BackroomsSurvival.WorldGen3
 
             var mine = new List<Mesh>();
             _meshes[coord] = mine;
+            _builtChunks++;
 
             foreach (Wg3PlacementMsg wire in chunk.placements)
             {
@@ -180,6 +183,8 @@ namespace BackroomsSurvival.WorldGen3
                 single.placements.Add(placement);
                 Wg3SceneAssembler.Assemble(single, root.transform, materials, mine, spawnLights);
 
+                _builtPieces++;
+
                 if (!_hasSpawn)
                 {
                     // Centro de la PRIMERA pieza que llega, a la altura de los ojos. Es adonde hay
@@ -192,10 +197,38 @@ namespace BackroomsSurvival.WorldGen3
                     _hasSpawn = true;
                 }
             }
+
+            ReportOnce();
         }
 
         private Vector3 _spawn;
         private bool _hasSpawn;
+
+        private int _emptyChunks;
+        private int _builtChunks;
+        private int _builtPieces;
+        private bool _reported;
+
+        /// <summary>
+        /// UN SOLO INFORME, unos segundos después de empezar a recibir. Existe porque «no veo que se
+        /// genere nada» no se puede diagnosticar desde fuera: el arnés dice que el jugador se apoya
+        /// en geometría servida y a la vez la pantalla parece vacía, y sin un recuento no hay forma
+        /// de saber si el problema es que no llega, que no se monta o que no se ve.
+        ///
+        /// Una sola vez y no por chunk: a medio segundo por refresco, un log por chunk convierte la
+        /// consola en ruido y esconde justo lo que se busca.
+        /// </summary>
+        private void ReportOnce()
+        {
+            if (_reported) return;
+            if (_builtChunks + _emptyChunks < 9) return;
+            _reported = true;
+
+            Debug.Log($"[WG3] streamer: {_builtChunks} chunks con geometría y {_emptyChunks} vacíos; " +
+                      $"{_builtPieces} piezas montadas. materiales " +
+                      $"{(materials?.floor != null ? "asignados" : "SIN ASIGNAR — se dibujaría en rosa o invisible")}; " +
+                      $"radio {radius}.", this);
+        }
 
         /// <summary>Centro de la primera pieza recibida, si ya ha llegado alguna.</summary>
         public bool TryGetSpawnPoint(out Vector3 point)

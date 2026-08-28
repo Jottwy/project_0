@@ -73,7 +73,23 @@ namespace BackroomsSurvival.WorldGen3
             ScreenCapture.CaptureScreenshot(shot);
             Debug.Log($"[WG3] captura de la vista de juego en {shot}");
 
-            if (autoCrossJunction && grounded)
+            // EL ARNÉS EXIGE ADEMÁS UNA VARIABLE DE ENTORNO, y no es cinturón y tirantes.
+            //
+            // Apagarlo en el fichero de escena no sirvió: con «Enter Play Mode Options / Reload
+            // Scene disabled», Unity NO recarga la escena del disco al entrar en Play, y la copia en
+            // memoria traía el campo serializado a `true` de antes del cambio. Poner el defecto de
+            // la clase en `false` tampoco sirvió, por lo mismo: un valor serializado gana al
+            // defecto. Dos intentos y dos veces el jugador acabó teletransportado al borde de la
+            // región a los tres segundos de aparecer — que desde dentro se lee como «esto no genera
+            // nada» y costó dos sesiones de juego.
+            //
+            // Una variable de entorno no la puede serializar ninguna escena, así que este camino
+            // solo se enciende queriendo. La verificación (e) de ADR-096 ya está cumplida y
+            // registrada; esto es solo para volver a lanzarla si hiciera falta.
+            bool harnessRequested =
+                System.Environment.GetEnvironmentVariable("BACKROOMS_WG3_AUTOCROSS") == "1";
+
+            if (autoCrossJunction && harnessRequested && grounded)
             {
                 _cross = Cross.Searching;
                 // Un radio más para que la región de enfrente esté montada ANTES de pisar la junta:
