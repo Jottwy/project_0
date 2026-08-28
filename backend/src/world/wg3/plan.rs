@@ -52,7 +52,6 @@ use super::hash;
 use super::junction::Wg3Gate;
 use super::raster::CM_PER_M;
 use super::scale;
-use super::segment::MIN_GENERATED_WIDTH_CM;
 
 /// Sal del sorteo de corte: eje y posición.
 const SALT_SPLIT: u32 = 0x9A17_0000;
@@ -636,7 +635,7 @@ pub fn plan_region(seed: i32, bounds: (f32, f32, f32, f32), gates: &[Wg3Gate]) -
     planner.link_all();
     planner.ensure_connected();
     planner.retag_dead_ends();
-    planner.sink_dead_ends();
+    planner.sink_dead_ends(&gates);
 
     RegionPlan {
         spaces: planner.spaces,
@@ -749,7 +748,7 @@ impl Planner {
     /// Va DESPUÉS de `retag_dead_ends` porque necesita el grado del grafo: sólo se hunde un espacio
     /// con UNA sola puerta, y eso no se sabe hasta que el grafo está hecho. Ver [`SpaceRole::Stair`]
     /// para por qué esa condición no es una comodidad sino lo único que hace el desnivel seguro.
-    fn sink_dead_ends(&mut self) {
+    fn sink_dead_ends(&mut self, gates: &[PlannedGate]) {
         let mut degree = vec![0usize; self.spaces.len()];
         let mut only_link = vec![None; self.spaces.len()];
         for l in &self.links {
@@ -757,6 +756,15 @@ impl Planner {
             degree[l.b] += 1;
             only_link[l.a] = Some((l.at_x_cm, l.at_z_cm));
             only_link[l.b] = Some((l.at_x_cm, l.at_z_cm));
+        }
+        // **LAS PUERTAS DE JUNTA CUENTAN COMO HUECO, y olvidarlo costó una sala sellada.**
+        //
+        // Un espacio con una puerta de junta tiene DOS huecos aunque el grafo le vea un enlace: los
+        // peldaños parten la pared lateral en franjas, y una franja no da los 240 cm que mide un
+        // vano. El síntoma fue `región (-1,0): 1 huecos perdidos` en una partida real — la sala nace
+        // tapiada y la región vecina abre su puerta contra el muro.
+        for g in gates {
+            degree[g.space] += 1;
         }
 
         for i in 0..self.spaces.len() {
@@ -783,7 +791,9 @@ impl Planner {
             // **Cada peldaño tiene que ser una tira ancha de verdad.** Por debajo de la anchura de
             // vano mínima, la pared que se abre entre dos tiras cae por debajo de lo que el ráster
             // conservador deja pasar y la escalera nace tapiada. Es el mismo suelo de siempre.
-            let max_steps = depth_cm / MIN_GENERATED_WIDTH_CM;
+            // Con la anchura de VANO y no con el mínimo generable: una franja tiene que poder alojar
+            // una puerta entera, no sólo dejar pasar al jugador.
+            let max_steps = depth_cm / DOORWAY_CM;
             let steps = TERRACE_STEPS.min(max_steps);
             if steps < 2 {
                 continue;

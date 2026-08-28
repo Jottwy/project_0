@@ -109,6 +109,12 @@ pub struct FilledRegion {
     /// siguen cuadrando, `links_failed` sigue vacío, y la sala nace sellada con su puerta dibujada en
     /// el plano. Se cuenta aparte para que un cero sea una afirmación y no una suposición.
     pub openings_dropped: u32,
+    /// Dónde se perdió cada uno, en centímetros de mundo, y de qué espacio era.
+    ///
+    /// **Un contador sin sitio no se puede depurar.** El primero que apareció en una partida real
+    /// —`región (-1,0): 1 huecos perdidos`— costó una vuelta entera de adivinar qué espacio era,
+    /// porque el número no decía nada más que su propio valor.
+    pub openings_dropped_at: Vec<(usize, i32, i32)>,
     /// Enlaces `Route`: los que el plan quiere y sólo el enrutador puede tender. No son un fallo, son
     /// el encargo del paso 3.
     pub links_to_route: Vec<(usize, usize)>,
@@ -278,7 +284,7 @@ pub fn fill_full(
             continue;
         }
         let before = out.segments.len();
-        emit_space(space, &wanted[i], &mut out);
+        emit_space(i, space, &wanted[i], &mut out);
         if out.segments.len() > before {
             out.spaces_by_segment += 1;
         } else {
@@ -458,9 +464,9 @@ fn footprint_cm(piece: &Wg3Piece, rotation: u8) -> (i32, i32) {
 /// **La rejilla se calcula en centímetros enteros y el último tramo se lleva el resto**, no se
 /// reparte a partes iguales en coma flotante: dos tramos hermanas tienen que tocarse exactamente o
 /// queda una junta de un milímetro que el ráster conservador convierte en pared.
-fn emit_space(space: &PlannedSpace, wanted: &[Wanted], out: &mut FilledRegion) {
+fn emit_space(index: usize, space: &PlannedSpace, wanted: &[Wanted], out: &mut FilledRegion) {
     if space.role == SpaceRole::Stair && space.rise_cm != 0 {
-        emit_stair(space, wanted, out);
+        emit_stair(index, space, wanted, out);
         return;
     }
     let max_cm = (MAX_SEGMENT_M * CM_PER_M) as i32;
@@ -588,6 +594,7 @@ fn emit_space(space: &PlannedSpace, wanted: &[Wanted], out: &mut FilledRegion) {
         }
         if !rescued {
             out.openings_dropped += 1;
+            out.openings_dropped_at.push((index, w.at_x_cm, w.at_z_cm));
         }
     }
 }
@@ -708,7 +715,7 @@ fn shift_cuts(cuts: &mut [i32], wanted: &[Wanted], along_x: bool) {
 /// La tira PRIMERA está a la cota de entrada y la ÚLTIMA a `floor + rise`, así que las salas de cada
 /// lado enganchan cada una con la suya. Eso no es casualidad: el plan pone la cota del bloque A en la
 /// banda y la del bloque B en `+ rise`, y aquí se respeta el orden.
-fn emit_stair(space: &PlannedSpace, wanted: &[Wanted], out: &mut FilledRegion) {
+fn emit_stair(index: usize, space: &PlannedSpace, wanted: &[Wanted], out: &mut FilledRegion) {
     let r = space.rect;
     let rise = space.rise_cm;
     let steps = (rise.abs() / STEP_RISE_CM).max(1);
@@ -834,6 +841,7 @@ fn emit_stair(space: &PlannedSpace, wanted: &[Wanted], out: &mut FilledRegion) {
         }
         if !rescued {
             out.openings_dropped += 1;
+            out.openings_dropped_at.push((index, w.at_x_cm, w.at_z_cm));
         }
     }
 }

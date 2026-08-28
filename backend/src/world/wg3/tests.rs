@@ -6044,10 +6044,22 @@ fn every_filled_segment_is_valid() {
 /// Un `Route` es un encargo legítimo al enrutador y no cuenta. Lo que no puede haber es un enlace que
 /// el plan declaró como vano y que el relleno no supo abrir: eso es una puerta que existe en el plano
 /// y no en el mundo, que es la clase de divergencia que ADR-095 vino a evitar.
+/// **BARRIDO ANCHO, y no las cuatro de siempre.**
+///
+/// Un hueco se pierde por una coincidencia de geometría —cae a caballo de dos tramos hermanas, o en
+/// una esquina— y eso depende de la semilla de cada región. Con las cuatro de referencia salía cero;
+/// el log del backend de una partida real cantó **`región (-1,0): 1 huecos perdidos`**, que no estaba
+/// en el barrido. El agujero no era del código: era del test.
 #[test]
 fn the_fill_honours_every_planned_doorway() {
     let m = real_manifest();
-    for (rx, rz) in AUDIT_REGIONS {
+    let mut regions: Vec<(i32, i32)> = Vec::new();
+    for rz in -3..=3 {
+        for rx in -3..=3 {
+            regions.push((rx, rz));
+        }
+    }
+    for (rx, rz) in regions {
         let p = plan_of(&m, rx, rz);
         let f = fill::fill(&p, &m);
         assert!(
@@ -6065,10 +6077,21 @@ fn the_fill_honours_every_planned_doorway() {
         // **Y ninguna puerta puede perderse en la tesela.** Es el fallo silencioso de este módulo:
         // los contadores cuadran, ningún enlace sale fallido, y la sala nace sellada.
         assert_eq!(
-            f.openings_dropped, 0,
+            f.openings_dropped,
+            0,
             "({rx},{rz}) perdió {} huecos entre tramos hermanas — salas selladas con la puerta \
-             dibujada en el plano",
-            f.openings_dropped
+             dibujada en el plano. En {:?}, papeles {:?}",
+            f.openings_dropped,
+            f.openings_dropped_at,
+            f.openings_dropped_at
+                .iter()
+                .map(|(i, ..)| (
+                    p.spaces[*i].role.name(),
+                    p.spaces[*i].rect.width_cm(),
+                    p.spaces[*i].rect.depth_cm(),
+                    p.spaces[*i].rise_cm
+                ))
+                .collect::<Vec<_>>()
         );
     }
 }
