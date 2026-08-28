@@ -718,7 +718,7 @@ struct Node {
 /// como restricción y no como sugerencia: son el único punto del plan que NO se decide aquí, porque
 /// ya está acordado con alguien que no puede consultarse.
 pub fn plan_region(seed: i32, bounds: (f32, f32, f32, f32), gates: &[Wg3Gate]) -> RegionPlan {
-    plan_storey(seed, bounds, gates, 0)
+    plan_storey(seed, bounds, gates, 0, true)
 }
 
 /// **UNA PLANTA.** Lo mismo que [`plan_region`], pero a la cota que se le diga.
@@ -729,11 +729,18 @@ pub fn plan_region(seed: i32, bounds: (f32, f32, f32, f32), gates: &[Wg3Gate]) -
 /// que meter la planta como campo obligaría a dar Y a todas esas comprobaciones para una propiedad
 /// que sólo importa ENTRE plantas y nunca dentro de una. Aquí dentro no cambia nada: se planifica en
 /// el propio cero y la cota entra al crear cada espacio.
+///
+/// `may_sink` apaga los espacios hundidos de ADR-100 enmienda 2, y **una planta que tiene otra debajo
+/// tiene que apagarlos**: una terraza baja 60 cm desde su cota, y desde 332 eso son 272 — por debajo
+/// del techo de la planta de abajo, que está en 320. Los peldaños atraviesan el forjado y quedan
+/// colgando dentro de las salas de abajo. Se vio como caras peleando por el mismo plano a cota 3,14 m,
+/// que es donde no tenía por qué haber nada de la planta alta.
 pub fn plan_storey(
     seed: i32,
     bounds: (f32, f32, f32, f32),
     gates: &[Wg3Gate],
     base_y_cm: i32,
+    may_sink: bool,
 ) -> RegionPlan {
     let root = PlanRect {
         min_x_cm: (bounds.0 * CM_PER_M).round() as i32,
@@ -771,7 +778,9 @@ pub fn plan_storey(
     planner.link_all();
     planner.ensure_connected();
     planner.retag_dead_ends();
-    planner.sink_dead_ends(&gates);
+    if may_sink {
+        planner.sink_dead_ends(&gates);
+    }
 
     RegionPlan {
         spaces: planner.spaces,
@@ -898,7 +907,8 @@ pub fn plan_building(
     gates: &[Wg3Gate],
     storeys: usize,
 ) -> RegionBuilding {
-    let mut out = vec![plan_storey(seed, bounds, gates, 0)];
+    // La planta baja SÍ se hunde: debajo de ella no hay nada que perforar.
+    let mut out = vec![plan_storey(seed, bounds, gates, 0, true)];
     let mut wells = Vec::new();
 
     for n in 1..storeys.max(1) {
@@ -911,7 +921,14 @@ pub fn plan_building(
         // acuerda entre regiones vecinas en 2D y a ras de suelo; una puerta de junta en la primera
         // planta exigiría que la región de al lado tuviera planta ahí y a la misma cota, que es un
         // acuerdo que hoy nadie negocia. Cruzar de región se hace por abajo.
-        let plan = plan_storey(storey_seed(seed, n), up, &[], n as i32 * STOREY_HEIGHT_CM);
+        // Sin hundir: encima de la planta baja, el suelo de una terraza sería el techo de abajo.
+        let plan = plan_storey(
+            storey_seed(seed, n),
+            up,
+            &[],
+            n as i32 * STOREY_HEIGHT_CM,
+            false,
+        );
         // **EL EDIFICIO SUBE SÓLO HASTA DONDE SE PUEDE SUBIR.** El hueco pide que COINCIDAN dos
         // geometrías planificadas por separado —un espacio de abajo que quepa entero dentro de uno
         // construido de arriba, y con tiro para catorce peldaños—, y eso es coincidencia de semilla:
@@ -921,11 +938,12 @@ pub fn plan_building(
         // contador se queja.
         //
         // El hueco se abre en la planta de ABAJO, así que hay que tenerla a mano y mutable.
-        let Some(w) = dig_well(&mut out[n - 1], &plan, n - 1, seed) else {
+        let dug = dig_wells(&mut out[n - 1], &plan, n - 1, seed);
+        if dug.is_empty() {
             break;
-        };
+        }
         cap_headroom_under(&mut out[n - 1], &plan);
-        wells.push(w);
+        wells.extend(dug);
         out.push(plan);
     }
 
@@ -998,19 +1016,24 @@ fn upper_bounds(below: &RegionPlan, seed: i32) -> Option<(f32, f32, f32, f32)> {
     ))
 }
 
-/// Convierte un espacio de la planta de abajo en el hueco de escalera, si hay uno que valga.
+/// Convierte espacios de la planta de abajo en huecos de escalera. Vacío = no se puede subir.
 ///
-/// El candidato tiene que cumplir cuatro cosas a la vez, y las cuatro por una razón distinta:
+/// Cada candidato tiene que cumplir cinco cosas a la vez, y las cinco por una razón distinta:
 /// **caber** la escalera entera con huellas andables, **no ser circulación** —comerse el espinazo
-/// para meter una escalera parte la planta en dos—, **tener puerta** por la que entrar, y **caer
-/// dentro de un espacio construido de la planta de arriba**, porque el último peldaño tiene que dar a
-/// un sitio y no al aire.
-fn dig_well(
+/// para meter una escalera parte la planta en dos—, **tener puerta** por la que entrar, **caer dentro
+/// de un espacio construido y PLANO de la planta de arriba**, porque el último peldaño tiene que dar a
+/// un sitio y no al aire, y **estar lejos de las otras**.
+///
+/// **Varias y no una, y esto salió de jugarlo.** Con una sola por región, un hueco de 3,6 × 9 m en
+/// 150 × 150 es el 0,14 % de la superficie y no hay nada que lo anuncie: la sonda decía que el 100 %
+/// de la planta alta era ALCANZABLE y era verdad, pero alcanzable no es encontrable. La primera
+/// partida con dos plantas se resumió en «no sé dónde ir a subir».
+fn dig_wells(
     below: &mut RegionPlan,
     above: &RegionPlan,
     storey_below: usize,
     seed: i32,
-) -> Option<StairWell> {
+) -> Vec<StairWell> {
     let steps = storey_steps();
     let run_cm = steps * STAIR_TREAD_CM;
 
@@ -1025,71 +1048,109 @@ fn dig_well(
         doors[g.space].push((g.x_cm, g.z_cm));
     }
 
-    let mut best: Option<(u64, usize, usize, u8)> = None;
+    let mut candidates: Vec<(u64, usize, usize, u8)> = Vec::new();
     for (i, s) in below.spaces.iter().enumerate() {
         if !s.role.is_built() || s.role.is_circulation() || s.rise_cm != 0 {
             continue;
         }
-        let Some(&(dx, dz)) = doors[i].first() else {
-            continue;
-        };
-        let Some(side) = side_of_point_in(&s.rect, dx, dz) else {
-            continue;
-        };
-        // Los peldaños se alejan de la puerta, así que el tiro corre perpendicular a su pared.
-        let (run, across) = if side.is_multiple_of(2) {
-            (s.rect.depth_cm(), s.rect.width_cm())
-        } else {
-            (s.rect.width_cm(), s.rect.depth_cm())
-        };
-        // **TIENE QUE SOBRAR ESPACIO, y no es un lujo.** El hueco se recorta contra la pared de
-        // ENFRENTE de la puerta, así que lo que queda entre la puerta y el pie de la escalera es lo
-        // que sigue siendo sala — y es también lo que sostiene todos los enlaces que ya tenía este
-        // espacio. Sin sobrante no hay dónde repartirlos.
-        // Lo que sobra tiene que dar para un vestíbulo con su puerta, no para una sala entera:
-        // exigirle [`MIN_SIDE_CM`] descartaba la mitad de los sitios donde cabe una escalera.
-        if run < run_cm + GOOD_WALL_CM || across < STAIR_WIDTH_CM {
-            continue;
-        }
-        // Y ningún hueco puede caer DENTRO de la franja que se va a volver escalera: ahí la cota sube
-        // hasta 332, y una puerta a media escalera es un vano que se dibuja y no se pasa.
-        if doors[i]
+        // **POR CADA PUERTA, no sólo por la primera.** El lado por el que se entra fija el eje del
+        // tiro —los peldaños se alejan de la puerta—, así que una sala de 20 × 6 m con una puerta en
+        // la pared larga da un tiro de 6 m y se descarta, cuando la misma sala con otra puerta daría
+        // 20. Mirando sólo la primera, el catálogo de candidatas se quedaba en una o dos por región y
+        // no había con qué repartir.
+        for side in doors[i]
             .iter()
-            .any(|&(x, z)| band_of(&s.rect, side, run_cm).contains_point(x, z))
+            .filter_map(|&(dx, dz)| side_of_point_in(&s.rect, dx, dz))
+            .collect::<Vec<_>>()
         {
-            continue;
-        }
-        // El sitio al que se sale, y contra la franja RECORTADA: lo que tiene que caber dentro de un
-        // espacio de arriba es el hueco, no la sala entera de la que se recorta.
-        let (stair, _) = stair_and_flank(&s.rect, side, run_cm, seed);
-        // Y el sitio al que se sale tiene que ser PLANO. Un espacio hundido de la planta de arriba
-        // baja sus peldaños de 12 en 12 justo dentro del pozo: la escalera sube sus trece perfectos y
-        // los ocho de arriba se quedan con menos de un metro de techo, colgando de la terraza de
-        // encima. Salió en `(1,0)` como una escalera que se andaba hasta la mitad.
-        let Some(j) = above.spaces.iter().position(|t| {
-            t.role.is_built()
-                && t.rise_cm == 0
-                && t.role != SpaceRole::Stair
-                && t.rect.shrunk(STAIR_MARGIN_CM).contains_rect(&stair)
-        }) else {
-            continue;
-        };
-        // Sorteo por posición, que es lo que hace que la elección no dependa del orden del vector.
-        let (cx, cz) = s.rect.centre_m();
-        let key = hash::at_position(seed, cx, cz, SALT_WELL);
-        if best.is_none_or(|(k, ..)| key < k) {
-            best = Some((key, i, j, side));
+            // Los peldaños se alejan de la puerta, así que el tiro corre perpendicular a su pared.
+            let (run, across) = if side.is_multiple_of(2) {
+                (s.rect.depth_cm(), s.rect.width_cm())
+            } else {
+                (s.rect.width_cm(), s.rect.depth_cm())
+            };
+            // **TIENE QUE SOBRAR ESPACIO, y no es un lujo.** El hueco se recorta contra la pared de
+            // ENFRENTE de la puerta, así que lo que queda entre la puerta y el pie de la escalera es lo
+            // que sigue siendo sala — y es también lo que sostiene todos los enlaces que ya tenía este
+            // espacio. Sin sobrante no hay dónde repartirlos.
+            // Lo que sobra tiene que dar para un vestíbulo con su puerta, no para una sala entera:
+            // exigirle [`MIN_SIDE_CM`] descartaba la mitad de los sitios donde cabe una escalera.
+            if run < run_cm + GOOD_WALL_CM || across < STAIR_WIDTH_CM {
+                continue;
+            }
+            // Y ningún hueco puede caer DENTRO de la franja que se va a volver escalera: ahí la cota sube
+            // hasta 332, y una puerta a media escalera es un vano que se dibuja y no se pasa.
+            if doors[i]
+                .iter()
+                .any(|&(x, z)| band_of(&s.rect, side, run_cm).contains_point(x, z))
+            {
+                continue;
+            }
+            // El sitio al que se sale, y contra la franja RECORTADA: lo que tiene que caber dentro de un
+            // espacio de arriba es el hueco, no la sala entera de la que se recorta.
+            let (stair, _) = stair_and_flank(&s.rect, side, run_cm, seed);
+            // Y el sitio al que se sale tiene que ser PLANO. Un espacio hundido de la planta de arriba
+            // baja sus peldaños de 12 en 12 justo dentro del pozo: la escalera sube sus trece perfectos y
+            // los ocho de arriba se quedan con menos de un metro de techo, colgando de la terraza de
+            // encima. Salió en `(1,0)` como una escalera que se andaba hasta la mitad.
+            let Some(j) = above.spaces.iter().position(|t| {
+                t.role.is_built()
+                    && t.rise_cm == 0
+                    && t.role != SpaceRole::Stair
+                    && t.rect.shrunk(STAIR_MARGIN_CM).contains_rect(&stair)
+            }) else {
+                continue;
+            };
+            // Sorteo por posición, que es lo que hace que el orden no dependa del orden del vector.
+            let (cx, cz) = s.rect.centre_m();
+            candidates.push((hash::at_position(seed, cx, cz, SALT_WELL), i, j, side));
+            // Una orientación por espacio: la sala se parte una sola vez.
+            break;
         }
     }
 
-    let (_, i, j, side) = best?;
-    let space_below = split_for_stair(below, i, side, run_cm, seed);
-    Some(StairWell {
-        rect: below.spaces[space_below].rect,
-        storey_below,
-        space_below,
-        space_above: j,
-    })
+    if std::env::var("WG3_WELL_DEBUG").is_ok() {
+        eprintln!(
+            "[well] {} espacios, {} candidatas",
+            below.spaces.len(),
+            candidates.len()
+        );
+    }
+    // **REPARTIDAS, no las primeras que salgan.** Una escalera sirve si se tropieza con ella, y con
+    // todas juntas en una esquina la mitad de la región sigue sin salida aunque el contador diga seis.
+    // Se toman por orden de sorteo y se descarta la que caiga cerca de una ya tomada.
+    candidates.sort_unstable_by_key(|&(k, i, ..)| (k, i));
+    let mut taken: Vec<(usize, usize, u8)> = Vec::new();
+    for &(_, i, j, side) in &candidates {
+        if taken.len() >= WELLS_PER_REGION {
+            break;
+        }
+        let (cx, cz) = below.spaces[i].rect.centre_m();
+        let far = taken.iter().all(|&(ti, ..)| {
+            let (tx, tz) = below.spaces[ti].rect.centre_m();
+            let (dx, dz) = ((cx - tx) * CM_PER_M, (cz - tz) * CM_PER_M);
+            dx * dx + dz * dz >= (WELL_SPACING_CM * WELL_SPACING_CM) as f32
+        });
+        if far {
+            taken.push((i, j, side));
+        }
+    }
+
+    // El corte se hace DESPUÉS de elegirlas todas, y no sobre la marcha: partir un espacio le cambia
+    // el rectángulo, y un candidato medido antes del corte dejaría de ser el que se midió. Cada
+    // espacio se parte una sola vez, así que los índices de los demás siguen valiendo.
+    taken
+        .into_iter()
+        .map(|(i, j, side)| {
+            let space_below = split_for_stair(below, i, side, run_cm, seed);
+            StairWell {
+                rect: below.spaces[space_below].rect,
+                storey_below,
+                space_below,
+                space_above: j,
+            }
+        })
+        .collect()
 }
 
 /// Le pone techo a los espacios de `below` que tengan algo CONSTRUIDO encima (ADR-102 D2).
@@ -1103,7 +1164,17 @@ fn dig_well(
 /// hay tope, y la nave se queda con sus 4,50 m: eso es una sala a doble altura, y existe porque el
 /// plan puso vacío ahí, no porque se le olvidara a nadie.
 fn cap_headroom_under(below: &mut RegionPlan, above: &RegionPlan) {
-    let cap = STOREY_HEIGHT_CM - SLAB_THICKNESS_CM;
+    // **DOS LOSAS, NO UNA, y contarlas mal produjo el peor artefacto visual del sistema.**
+    //
+    // Entre dos plantas hay el TECHO de la de abajo y el SUELO de la de arriba: `segment_boxes` emite
+    // las dos, el techo en `[floor + h, floor + h + SLAB]` y el suelo colgando en
+    // `[floor - SLAB, floor]`. Con el tope a `STOREY_HEIGHT_CM - SLAB` las dos caían en `[320, 332]`:
+    // **la misma caja dibujada dos veces**, en toda la huella donde una planta se apoya en la otra.
+    // Dos caras coplanares y visibles es z-fighting garantizado, y sale por metros cuadrados.
+    //
+    // Restando las dos, el techo de abajo queda en `[308, 320]` y el suelo de arriba en `[320, 332]`:
+    // espalda contra espalda, con la junta dentro del macizo y ninguna cara repetida.
+    let cap = STOREY_HEIGHT_CM - 2 * SLAB_THICKNESS_CM;
     for s in &mut below.spaces {
         if above
             .spaces
@@ -1141,6 +1212,25 @@ pub fn storey_steps() -> i32 {
 /// caía de 49 regiones a 23, porque lo que este número recorta no es la escalera sino la lista de
 /// sitios donde puede haberla.
 const STAIR_MARGIN_CM: i32 = 70;
+
+/// Huecos de escalera por región, como mucho.
+///
+/// **Un tope y no un objetivo**: se ponen los que haya sitio para poner. El número sale de la
+/// geometría, no del gusto — una región mide 150 m, así que con seis repartidas la distancia típica a
+/// la más cercana baja al orden de los 30 m, que es lo que se recorre sin preguntarse dónde está la
+/// salida. Con una sola, que es como salió la primera versión, hay 150 m de región y un hueco de 3,6 ×
+/// 9: el 0,14 % de la superficie.
+const WELLS_PER_REGION: usize = 6;
+
+/// Distancia mínima entre dos huecos de escalera de la misma región, en centímetros.
+///
+/// Sin ella, «seis escaleras» puede querer decir seis en la misma esquina: el sorteo no sabe de
+/// reparto, y las salas grandes que cumplen los requisitos tienden a estar juntas.
+///
+/// 25 m y no 35: con 35 se descartaban candidatas de las poquísimas que hay. Medido, el catálogo de
+/// sitios donde cabe una escalera recta es de 2 a 5 por región sobre ~170 espacios, así que el reparto
+/// no puede permitirse tirar ninguna. El número correcto lo dirá el día que haya más candidatas.
+const WELL_SPACING_CM: i32 = 2500;
 
 /// La franja de `rect` que se vuelve escalera: contra la pared de ENFRENTE de la puerta, `run_cm` de
 /// fondo.

@@ -1394,8 +1394,15 @@ fn a_region_is_worth_its_size() {
         // región** (antes del enrutador, 0–9), y se paga una vez por región porque la composición se
         // cachea. Lo que sigue vigilando esta aserción es lo de siempre: que a nadie se le vaya la
         // mano y cruzar una frontera pase a costar un tirón.
+        //
+        // ADR-102 — sube de 600 a 1000, y conviene saber que **no es que componer se haya hecho más
+        // lento**: `compose_region` no sabe de plantas. Lo que cambió es la SUITE. Desde que el mundo
+        // servido tiene dos plantas, cada test que lo construye hace el doble de trabajo, y esto es un
+        // reloj de pared medido mientras otros dieciséis tests se pelean por la CPU: a 729 ms medidos
+        // aquí y 20-63 en release, lo que la aserción vigilaba ya lo vigila mal. Queda como red contra
+        // un tirón de un orden de magnitud, que es lo único que a esta altura sigue midiendo.
         assert!(
-            elapsed.as_millis() < 600,
+            elapsed.as_millis() < 1000,
             "región ({rx},{rz}): componer costó {} ms y ocurre al cruzar la frontera",
             elapsed.as_millis()
         );
@@ -5993,6 +6000,81 @@ fn probe_the_well_column() {
     }
 }
 
+/// **Dos superficies horizontales no pueden mirar hacia el mismo lado desde la misma cota.**
+///
+/// Salió de una partida: con dos plantas había artefactos por todas partes. La causa era aritmética
+/// —contar UNA losa entre plantas cuando el generador emite dos, el techo de abajo y el suelo de
+/// arriba— y las dos caían en `[320, 332]`.
+///
+/// **No son la MISMA caja, y por eso el primer test que escribí para esto pasó en verde.** Buscaba
+/// cajas idénticas; lo que hay son cajas distintas —los rectángulos de las dos plantas no coinciden—
+/// con las CARAS superpuestas, que es justamente lo que z-fightea. Un test que mide lo que no es el
+/// fallo da la misma tranquilidad que uno que mide bien y no vale nada.
+///
+/// Espalda contra espalda sí vale, y es el caso normal: el techo de abajo acaba donde empieza el suelo
+/// de arriba, una cara mira arriba y la otra abajo, y las dos quedan tapadas. Lo que no vale es dos
+/// caras a la misma cota mirando a la misma parte, porque se ven las dos.
+#[test]
+fn no_two_horizontal_faces_fight_for_the_same_plane() {
+    let m = real_manifest();
+    for (rx, rz) in AUDIT_REGIONS {
+        let region = Wg3RegionCoord { x: rx, z: rz };
+        let served = Wg3ServedWorld::plan_region(&m, SERVED_SEED, region);
+        let boxes: Vec<PlacedBox> = served
+            .segments()
+            .iter()
+            .flat_map(segment::segment_boxes)
+            .collect();
+
+        // Cada caja aporta dos caras horizontales. Se agrupan por (cota al centímetro, hacia dónde
+        // miran) y sólo se comparan las del mismo grupo: todas contra todas serían millones.
+        let mut planes: std::collections::HashMap<(i64, bool), Vec<usize>> = Default::default();
+        for (i, b) in boxes.iter().enumerate() {
+            let (lo, hi) = (b.center[1] - b.size[1] * 0.5, b.center[1] + b.size[1] * 0.5);
+            planes
+                .entry(((lo * 100.0).round() as i64, false))
+                .or_default()
+                .push(i);
+            planes
+                .entry(((hi * 100.0).round() as i64, true))
+                .or_default()
+                .push(i);
+        }
+
+        let mut dupes = 0usize;
+        let mut worst = 0.0f32;
+        let mut first: Option<(f32, f32, f32)> = None;
+        for ((y_cm, _), group) in &planes {
+            for (n, &i) in group.iter().enumerate() {
+                for &j in &group[n + 1..] {
+                    let (a, b) = (&boxes[i], &boxes[j]);
+                    let ox = (a.center[0] + a.size[0] * 0.5).min(b.center[0] + b.size[0] * 0.5)
+                        - (a.center[0] - a.size[0] * 0.5).max(b.center[0] - b.size[0] * 0.5);
+                    let oz = (a.center[2] + a.size[2] * 0.5).min(b.center[2] + b.size[2] * 0.5)
+                        - (a.center[2] - a.size[2] * 0.5).max(b.center[2] - b.size[2] * 0.5);
+                    // Tocarse no cuenta: los espacios teselan, así que dos rectángulos vecinos
+                    // comparten borde y ahí el solape es cero.
+                    if ox * oz <= 0.5 || ox <= 0.01 || oz <= 0.01 {
+                        continue;
+                    }
+                    dupes += 1;
+                    if ox * oz > worst {
+                        worst = ox * oz;
+                        first = Some((a.center[0], *y_cm as f32 / 100.0, a.center[2]));
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            0,
+            dupes,
+            "({rx},{rz}): {dupes} pares de caras peleando por el mismo plano de {} cajas — la mayor \
+             de {worst:.1} m² en {first:?}",
+            boxes.len()
+        );
+    }
+}
+
 /// **ADR-102 verificación (b): SE SUBE.**
 ///
 /// Se inunda el ráster del mundo SERVIDO desde un suelo de la planta baja, con clave `(celda, nivel)`
@@ -6162,10 +6244,17 @@ fn the_storey_stair_reaches_the_floor_above() {
                 })
                 .map(|s| s.floor_y_cm)
                 .max();
-            assert_eq!(
-                Some(stair.floor_y_cm + plan::STOREY_HEIGHT_CM),
-                top,
-                "({rx},{rz}): la escalera no remata a la cota de la planta de arriba"
+            // A UNA CONTRAHUELLA del suelo de arriba, no A la cota: el rellano no se construye —es el
+            // suelo de la planta a la que se llega— así que el último peldaño que sí existe queda un
+            // escalón por debajo. Lo que hay que exigir es que ese escalón se suba.
+            let want = stair.floor_y_cm + plan::STOREY_HEIGHT_CM;
+            let top = top.expect("la escalera no emitió un solo tramo");
+            assert!(
+                top < want && want - top <= plan::MAX_WALK_STEP_CM,
+                "({rx},{rz}): último peldaño en {top} y suelo de arriba en {want} — {} cm, y el \
+                 jugador sube {}",
+                want - top,
+                plan::MAX_WALK_STEP_CM
             );
         }
     }

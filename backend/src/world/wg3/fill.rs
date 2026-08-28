@@ -908,30 +908,21 @@ fn emit_stair(index: usize, space: &PlannedSpace, wanted: &[Wanted], out: &mut F
                 openings.push(full_side(run_hi, along_len));
             }
 
-            // **EL RELLANO NO TIENE PAREDES** (ADR-102 D5).
+            // **EL RELLANO NO SE CONSTRUYE: es el suelo de la planta de arriba** (ADR-102 D5).
             //
-            // Es lo que le faltaba a la escalera para servir de algo. Subiendo una planta, la última
-            // tira queda a la cota del suelo de arriba y ENMEDIO de una sala de esa planta: si
-            // conserva sus paredes, se sube hasta arriba del todo y se da uno con ellas. El plan no
-            // podía poner ahí una puerta —sus enlaces son de una sola planta, que es justo lo que
-            // ADR-102 D1 decide—, así que la salida la abre quien conoce las dos cotas: esto.
+            // Las dos últimas tiras reservan su sitio en el reparto del tiro y no emiten nada. El
+            // suelo que hay ahí ya está —es el de la planta a la que se llega, y el vano del forjado
+            // no lo toca a propósito—, así que construirlo otra vez ponía una losa encima de otra:
+            // dos caras a la misma cota mirando a la misma parte, o sea z-fighting justo donde el
+            // jugador sale de la escalera. Y de paso desaparecen las paredes del rellano, que era lo
+            // que hacía que se subiera hasta arriba del todo para darse con ellas.
             //
-            // Sólo los lados que no se hayan abierto ya, que abrir dos veces el mismo es una boca
-            // duplicada.
+            // El último peldaño que sí se construye queda a una contrahuella del suelo de arriba, que
+            // es exactamente lo que es: el último peldaño.
             if rise > 0 && step >= risers {
-                if slot == 0 {
-                    openings.push(full_side(lo_side, across_len));
-                }
-                if slot + 1 == steps {
-                    openings.push(full_side(hi_side, across_len));
-                }
-                if run == 0 {
-                    openings.push(full_side(run_lo, along_len));
-                }
-                if run + 1 == runs {
-                    openings.push(full_side(run_hi, along_len));
-                }
-            } else if rise > 0 {
+                continue;
+            }
+            if rise > 0 {
                 // Y por debajo del rellano hay que QUITAR el suelo de la planta de encima, o la
                 // escalera sube hasta darse con él en la cabeza. El rellano no: ése es el suelo por
                 // el que se sale, y perforarlo deja un agujero donde debería haber salida.
