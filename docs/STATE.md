@@ -2,9 +2,10 @@
 > Actualizado por /checkpoint al cierre de cada sesión. Leído al inicio de cada sesión.
 
 ## SESIÓN AUTÓNOMA — ARRANQUE (leer primero; borrar este bloque al terminar el carril)
-- **MILESTONE ACTUAL:** M4 — las regiones (0,0) y (−1,2) no pisan un solo tramo, y ya no es geometría.
-- **ESTADO:** M1, M2 y M3 cerrados y commiteados. HEAD `1fdb4e18`.
-- **ÚLTIMO VERDE:** `cargo test --release` 1089/0/34 · clippy `--all-targets -D warnings` limpio ·
+- **MILESTONE ACTUAL:** M6 — sin abrir. M4 cerró con «no se arregla en código» (ver punto 6 de la
+  sesión); M5 dejó la guardia puesta.
+- **ESTADO:** M1–M5 cerrados y commiteados. HEAD `ebd82639` + el append de la enmienda 3.
+- **ÚLTIMO VERDE:** `cargo test --release` 1090/0/34 · clippy `--all-targets -D warnings` limpio ·
   `cargo fmt --check` limpio · `CompileCheckClient.sh` 0 errores en las cuatro asambleas.
 - **COMPLETADO, y cómo se verificó:**
   - `c4580553` sonda que anda el mundo servido por el RÁSTER. Verificada porque midió algo que el
@@ -14,13 +15,21 @@
   - `02b2b70f` sonda de diagnóstico que aisló la causa, con el volcado de cajas que la prueba.
   - `1fdb4e18` el arreglo: `MIN_GENERATED_WIDTH_CM = 200`. Verificado con antes/después sobre el
     mundo servido: bocas macizas 46 → 0; tramos pisados 9/37 → 17/26 y 4/31 → 11/24.
+  - `915abfd1` ADR-098 enmienda 2 + este checkpoint.
+  - `9773237e` la cuenta que cierra M4: **1,96 bocas por pieza**, excedente 0–1 sobre el árbol.
+  - `ebd82639` guardia `no_mouth_in_the_served_world_is_walled_shut`, con dientes verificados
+    mutando la constante a 120 (rojo, nombra las bocas) y restaurando (verde).
+  - Enmienda 3 de ADR-098, que **corrige a la enmienda 2**: lo que queda NO es enrutado.
 - **DECISIONES TOMADAS SIN JOEL:** (1) el mínimo de anchura generada sale de la medida
   (`narrowest_doorway_clearance`) y no de una opinión; (2) va en `problems()`, así que una ruta
   estrecha se DESCARTA en vez de emitirse impasable — prefiere menos conectores a conectores falsos.
-- **PRÓXIMO PASO CONCRETO:** re-correr `probe_what_each_walkable_blob_is_made_of` y averiguar a qué
-  componente se pega el enrutador en (0,0) y (−1,2): tienen 0 bocas macizas y aun así 0/25 y 0/11
-  tramos pisados, así que sus conectores forman una red andable que no engancha con la mancha del
-  jugador. Empezar por `route.rs:742 main_component` y por `best_link` / `best_bridge`.
+- **PRÓXIMO PASO CONCRETO:** ya NO es tocar `route.rs`, y esto es lo que hay que leer antes de
+  abrirlo. La única palanca medida son **piezas con más de dos bocas**: hoy 1,96 por pieza y un
+  árbol gasta 2 por pieza, así que el enrutador se queda sin material. Para dejarle K bocas libres
+  en una región de N piezas hace falta una media de 2 + K/N — con N ≈ 28 y K ≈ 10, **2,36**. Eso es
+  autorado, y necesita a Joel. Lo que SÍ se puede hacer sin él: (a) la verificación (g) cuando haya
+  sesión de juego; (b) los 2 nodos por región con las bocas en manchas distintas —una pieza que no
+  se puede cruzar— que la sonda ya cuenta y nadie ha mirado.
 - **PROHIBIDO / BLOQUEADO sin Joel:** la verificación (g) andando en juego (pide sesión de ~90 s con
   el editor); llenar la biblioteca de piezas (criterio visual); cualquier bump de wire.
 - **SCOPE:** escribir solo en `backend/src/world/wg3/**`, `backend/tests/fixtures/wg3_*.json`,
@@ -46,7 +55,11 @@
 
 4. ⚠️ **AVISO DE MÉTODO, y costó una hora: medir una pieza por el CENTRO de su caja MIENTE.** La primera sonda decía que una componente de 60 nodos se partía en 7 manchas andables. Falso: el centro de la caja de una pieza en L cae dentro de su propia pared o en un armario de cuarenta celdas. Un transecto denso entre dos piezas «desconectadas» no encontró ni un centímetro cerrado. **Se mide por BOCAS**, que son por definición sitios por donde se pasa.
 
-5. **LO QUE QUEDA ABIERTO, y ya no es geometría.** Las regiones (0,0) y (−1,2) siguen sin que se pise un solo tramo y no les queda ni una boca maciza: sus conectores forman una red andable propia que no engancha con la mancha del jugador. Eso es **enrutado** —a qué componente se pega el enrutador— y es la tanda siguiente. La verificación (a) de ADR-098 sigue sin cumplirse, ahora por un motivo distinto y medido. Y la (g) —andarlo en juego— sigue **pendiente**: el arnés está escrito y compila, sin correr.
+5. **LO QUE QUEDA ABIERTO, y ya no es geometría.** Las regiones (0,0) y (−1,2) siguen sin que se pise un solo tramo y no les queda ni una boca maciza: sus conectores forman una red andable propia que no engancha con la mancha del jugador. La verificación (a) de ADR-098 sigue sin cumplirse, ahora por un motivo distinto y medido. Y la (g) —andarlo en juego— sigue **pendiente**: el arnés está escrito y compila, sin correr.
+
+6. 🔑 **Y TAMPOCO ES ENRUTADO — ENMIENDA 3, que corrige al punto anterior.** El enrutador no rinde poco: **está hambriento**. El catálogo coloca **1,96 bocas por pieza** (55/28, 45/23, 48/25, 54/28) y un árbol de N piezas gasta 2(N−1), así que el excedente al terminar es de **0 o 1 boca en toda la región**. Las 5–7 que llega a ver son las de los tramos de junta. **Ninguna mejora de `route.rs` mueve esto**: la palanca es **piezas con más de dos bocas** —la misma que el checkpoint anterior ya había señalado por el camino de los anchos de boca—, y la cuenta para dimensionarla es una media de **2 + K/N** para dejar K bocas libres; con N ≈ 28 y K ≈ 10, **2,36**. Antes de abrir el enrutador por este motivo, leer esto.
+
+7. **Guardia permanente puesta.** `no_mouth_in_the_served_world_is_walled_shut` recorre las bocas de piezas y de tramos de las cuatro regiones y exige que ninguna caiga sobre una columna maciza. `narrowest_doorway_clearance` protege el NÚMERO; ésta, el MUNDO — son cosas distintas, y hacía falta la segunda porque la constante puede seguir bien mientras otra vía emite un vano estrecho. Dientes verificados mutando, no declarados.
 
 ---
 - Fecha: 2026-08-27/28 (**WorldGen3 F4: el compositor pasa a Rust, el mundo pasa a REGIONES, ADR-096 cierra el troceado y la primera pieza DIBUJADA se anda** — dos sesiones en paralelo toda la noche, una por carril) — **26 commits, `ee4c47ad` → `7e0b4087`. `cargo test` 1065/0/34 ignorados, 48 EditMode en verde, clippy `--all-targets -D warnings` y fmt limpios. Cero wire: v46 ya traía el carril.**

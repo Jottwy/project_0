@@ -8202,3 +8202,32 @@ Las regiones (0,0) y (−1,2) siguen sin que se pise **un solo** tramo, y ya no 
 maciza: sus conectores forman una red andable propia que no engancha con la mancha del jugador. Eso
 es enrutado —a qué componente se pega el enrutador— y es otra tanda. La verificación (a) sigue sin
 cumplirse, ahora por un motivo distinto y medido.
+
+## ADR-098 — Enmienda 3: el enrutador no rinde poco, está HAMBRIENTO. Y eso corrige lo que dice la enmienda 2 (2026-08-28)
+
+La enmienda 2 cierra diciendo que lo que queda «es enrutado, y es otra tanda». **Es falso, y se
+corrige aquí antes de que nadie abra `route.rs` por ese motivo.** Medido:
+
+| región | bocas del catálogo colocadas | por pieza | excedente sobre el árbol |
+|---|---|---|---|
+| (0,0) | 55 en 28 piezas | 1,96 | 1 |
+| (1,0) | 45 en 23 | 1,96 | 1 |
+| (0,1) | 48 en 25 | 1,92 | 0 |
+| (−1,2) | 54 en 28 | 1,93 | 0 |
+
+Un árbol de N piezas gasta 2(N−1) bocas. Con una oferta de **1,96 por pieza**, al terminar el
+recorrido no queda **nada**: las 5–7 bocas abiertas que llega a ver el enrutador son las de los
+tramos de junta, no las del árbol. Por eso los conectores viven todos en la periferia y la mancha
+del jugador se queda sin uno solo — no es que el enrutador no quiera pegarse al árbol principal, es
+que ahí no hay dónde.
+
+**Ninguna mejora de `route.rs` mueve esto**, y la enmienda 1 ya lo había rozado sin ponerle número
+(«las bocas libres son el recurso escaso»). La palanca es **piezas con más de dos bocas**, que es
+exactamente una de las dos que el checkpoint del 08-27/28 había señalado por otro camino. La
+cuenta para dimensionarlo: para dejarle K bocas libres al enrutador en una región de N piezas hace
+falta una media de **2 + K/N** bocas por pieza; con N ≈ 28 y K ≈ 10, **2,36**.
+
+Queda además una guardia permanente contra el fallo de la enmienda 2:
+`no_mouth_in_the_served_world_is_walled_shut` recorre las bocas de piezas y tramos de las cuatro
+regiones y exige que ninguna caiga sobre una columna maciza. Con dientes verificados mutando la
+constante a 120, no declarados. `narrowest_doorway_clearance` protege el NÚMERO; ésta, el MUNDO.
