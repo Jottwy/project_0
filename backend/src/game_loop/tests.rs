@@ -11199,3 +11199,41 @@ async fn a_harvest_hit_needs_a_real_number_and_someone_standing_close() {
         remaining(&net)
     );
 }
+
+/// LA REGLA DE DISEÑO, EN FORMA DE TOPE: nada cae en menos de cuatro golpes.
+///
+/// El tope recorta en vez de rechazar porque el backend no puede saber cuánto vale un hachazo — no
+/// tiene ni la definición del recurso ni su vida máxima, solo la fracción que le queda. Recortar
+/// aplica la regla sin castigar al que tiene el hacha buena por un número que este lado no valida.
+#[tokio::test]
+async fn no_resource_falls_in_fewer_than_four_hits() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    net.stp_harvestables
+        .push(crate::network::protocol::StpHarvestableInfo {
+            id: 7,
+            position: [0.0, 0.0, 0.0],
+            remaining: 1.0,
+        });
+    let close = Some(Vec3::new(1.0, 1.8, 0.0));
+    let remaining = |net: &NetworkManager| net.stp_harvestables[0].remaining;
+
+    // Un golpe que se lo pide TODO se queda en un cuarto.
+    process_stp_harvest_hit(1, 7, 1.0, 2, close, &mut net);
+    assert!(
+        (remaining(&net) - 0.75).abs() < 1e-6,
+        "un golpe no puede llevarse más de un cuarto: quedó {}",
+        remaining(&net)
+    );
+
+    // Y hacen falta los otros tres para tumbarlo, ni uno menos.
+    for hit in 2..=3u64 {
+        process_stp_harvest_hit(hit, 7, 1.0, 2, close, &mut net);
+        assert!(
+            remaining(&net) > 0.0,
+            "sigue en pie tras {hit} golpes: quedó {}",
+            remaining(&net)
+        );
+    }
+    process_stp_harvest_hit(4, 7, 1.0, 2, close, &mut net);
+    assert_eq!(0.0, remaining(&net), "al cuarto golpe cae");
+}

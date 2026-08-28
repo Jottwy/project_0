@@ -114,6 +114,17 @@ const PICKUP_REMOVE_DELAY: Duration = Duration::from_millis(600);
 /// precedente en vez de repetir el error.
 const STP_PICKUP_MAX_DISTANCE: f32 = 8.0;
 
+/// Cuánto puede llevarse UN golpe de un recurso, en fracción de su total.
+///
+/// **Un cuarto, porque la regla de diseño es que nada cae en menos de cuatro golpes** (decisión de
+/// Joel, 2026-08-28). `StpHarvestableInfo.remaining` va de 1 a 0, así que la regla y el número son
+/// lo mismo y cambiarla es cambiar el divisor.
+///
+/// No sale de ninguna definición porque no hay ninguna: el backend no sabe qué recurso es ni cuánta
+/// vida tenía, solo cuánto le queda. Por eso esto es un TOPE declarado y no una validación — dice
+/// cuánto es demasiado, no cuánto es correcto.
+const MAX_HARVEST_FRACTION_PER_HIT: f32 = 0.25;
+
 /// F0.7: la decisión de proximidad del pickup, pura y sin red, para poder probarla sin levantar
 /// un `NetworkManager` ni un socket — el mismo motivo por el que `RosterGate::should_send` recibe
 /// `now` en vez de leer el reloj.
@@ -6147,10 +6158,28 @@ fn process_stp_harvest_hit(
         return;
     }
 
-    harvestable.remaining = (harvestable.remaining - amount).max(0.0);
+    // TOPE POR GOLPE. Decisión de Joel: **un recurso aguanta como mínimo cuatro golpes**, así que
+    // ningún golpe se lleva más de un cuarto. `remaining` es una fracción de 0 a 1, de modo que la
+    // regla de diseño y la constante son literalmente el mismo número.
+    //
+    // Se RECORTA en vez de rechazar, y no es indulgencia: el backend no tiene de dónde saber cuánto
+    // vale un hachazo —`StpHarvestableInfo` es id, posición y `remaining`, sin definición ni vida
+    // máxima—, así que rechazar por pasarse castigaría al jugador con el hacha buena por un número
+    // que este lado no puede validar. Recortar aplica la regla sin inventarse cuál era el golpe
+    // legítimo: al que va de más se le queda en el tope, y el mínimo de cuatro golpes se cumple
+    // pase lo que pase.
+    let applied = amount.min(MAX_HARVEST_FRACTION_PER_HIT);
+    if applied < amount {
+        info!(
+            "MPTRACE step=HV event=stp_harvest_hit_clamped harvestable_id={} hit_id={} requester_id={} asked={:.3} applied={:.3}",
+            harvestable_id, hit_id, requester_id, amount, applied
+        );
+    }
+
+    harvestable.remaining = (harvestable.remaining - applied).max(0.0);
     info!(
         "MPTRACE step=HV event=stp_harvest_hit harvestable_id={} amount={:.3} remaining={:.3} hit_id={} requester_id={}",
-        harvestable_id, amount, harvestable.remaining, hit_id, requester_id
+        harvestable_id, applied, harvestable.remaining, hit_id, requester_id
     );
 }
 
