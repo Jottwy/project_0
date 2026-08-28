@@ -129,6 +129,20 @@ struct Wanted {
 
 /// **RELLENA UN PLAN.** Función pura: mismo plan y mismo catálogo ⇒ misma geometría.
 pub fn fill(plan: &RegionPlan, manifest: &Wg3Manifest) -> FilledRegion {
+    fill_with(plan, manifest, true)
+}
+
+/// Igual, pudiendo APAGAR el catálogo.
+///
+/// **Y hoy el mundo que se sirve lo apaga, por una razón de contrato y no de calidad.** Una pieza
+/// colocada necesita que se le EXCAVEN las puertas del plan (ver [`FilledRegion::carves`]), y los
+/// vanos excavados **no cruzan el wire**: `Wg3ChunkView` lleva colocaciones y tramos, y nada más. Con
+/// el catálogo encendido el servidor abriría puertas que el cliente dibuja tapiadas — el fallo que
+/// ADR-095 R6 existe para impedir, y que no se ve en una captura.
+///
+/// Meter los vanos en el cable es un cambio de esquema, y eso pide su propio ADR. Hasta entonces el
+/// mundo servido se construye sólo con tramos, que el wire ya lleva y que el cliente ya dibuja.
+pub fn fill_with(plan: &RegionPlan, manifest: &Wg3Manifest, use_catalogue: bool) -> FilledRegion {
     let mut out = FilledRegion::default();
 
     // Lo primero, repartir las puertas: cada espacio tiene que saber TODOS sus huecos antes de
@@ -191,7 +205,7 @@ pub fn fill(plan: &RegionPlan, manifest: &Wg3Manifest) -> FilledRegion {
         if !space.role.is_built() {
             continue;
         }
-        if let Some(p) = fitting_piece(space, manifest) {
+        if let Some(p) = fitting_piece(space, manifest).filter(|_| use_catalogue) {
             out.placements.push(p);
             out.spaces_by_piece += 1;
             // Y se le abren las puertas del plan, porque las suyas están donde las puso quien la

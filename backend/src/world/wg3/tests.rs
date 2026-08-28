@@ -1191,21 +1191,23 @@ fn the_cache_recomposes_when_the_seed_changes() {
 
     let origin = chunk::Wg3ChunkCoord { x: 0, z: 0 };
 
-    let first: Vec<_> = cache
-        .region_for(&m, SERVED_SEED, origin)
-        .placements()
-        .to_vec();
-    let second: Vec<_> = cache
-        .region_for(&m, SERVED_SEED + 1, origin)
-        .placements()
-        .to_vec();
+    let first = served_content(cache.region_for(&m, SERVED_SEED, origin));
+    let second = served_content(cache.region_for(&m, SERVED_SEED + 1, origin));
     assert_ne!(first, second, "dos semillas dan el mismo mundo");
 
-    let again: Vec<_> = cache
-        .region_for(&m, SERVED_SEED, origin)
-        .placements()
-        .to_vec();
+    let again = served_content(cache.region_for(&m, SERVED_SEED, origin));
     assert_eq!(first, again);
+}
+
+/// Lo que una región SIRVE, para compararla con otra.
+///
+/// **Colocaciones Y tramos, y desde ADR-100 casi todo es lo segundo.** Comparar sólo las colocaciones
+/// era suficiente mientras el mundo se componía de piezas; con el plan construyendo con tramos, dos
+/// mundos distintos tienen los dos la lista de piezas vacía y el test pasaba a comparar nada con nada
+/// —`[] != []` es falso— y fallaba diciendo que dos semillas dan el mismo mundo. Mentía en la
+/// dirección peligrosa: el mismo test habría dado verde con un generador roto que no emitiera nada.
+fn served_content(world: &Wg3ServedWorld) -> (Vec<Wg3Placement>, Vec<super::segment::Wg3Segment>) {
+    (world.placements().to_vec(), world.segments().to_vec())
 }
 
 /// ADR-096 — dos chunks de la MISMA región comparten composición, y dos regiones distintas no.
@@ -1237,20 +1239,15 @@ fn regions_are_independent_and_reproducible() {
         Wg3RegionCoord::of_chunk(other)
     );
 
-    let a: Vec<_> = cache
-        .region_for(&m, SERVED_SEED, inside_a)
-        .placements()
-        .to_vec();
-    let b: Vec<_> = cache
-        .region_for(&m, SERVED_SEED, inside_b)
-        .placements()
-        .to_vec();
+    let a = served_content(cache.region_for(&m, SERVED_SEED, inside_a));
+    let b = served_content(cache.region_for(&m, SERVED_SEED, inside_b));
     assert_eq!(a, b, "el mismo chunk-región compuso dos cosas distintas");
+    assert!(
+        !a.1.is_empty(),
+        "la región no sirve NADA — un `assert_ne` entre dos mundos vacíos daría verde"
+    );
 
-    let c: Vec<_> = cache
-        .region_for(&m, SERVED_SEED, other)
-        .placements()
-        .to_vec();
+    let c = served_content(cache.region_for(&m, SERVED_SEED, other));
     assert_ne!(a, c, "dos regiones vecinas compusieron lo mismo");
 }
 
@@ -6060,6 +6057,11 @@ fn probe_filled_plan() {
         let region = Wg3RegionCoord { x: rx, z: rz };
         let (min_x, min_z, _, _) = region.bounds();
 
+        // **Lo que se rasteriza es el mundo SERVIDO, no el relleno con catálogo.** Son distintos: el
+        // servido lleva el catálogo apagado hasta que los vanos excavados crucen el wire, y medir uno
+        // para hablar del otro es el error de método que ya costó tres conclusiones falsas aquí.
+        let served = Wg3ServedWorld::plan_region(&m, SERVED_SEED, region);
+
         let side = REGION_CHUNKS as usize;
         let base = chunk::Wg3ChunkCoord::containing(min_x + 1.0, min_z + 1.0);
         let mut rasters = Vec::with_capacity(side * side);
@@ -6069,21 +6071,11 @@ fn probe_filled_plan() {
                     x: base.x + cx as i32,
                     z: base.z + cz as i32,
                 };
-                let (cmin_x, cmin_z, cmax_x, cmax_z) = coord.bounds();
-                let segments: Vec<_> = f
-                    .segments
-                    .iter()
-                    .filter(|s| {
-                        let (a, b, c, d) = s.bounds();
-                        c > cmin_x && a < cmax_x && d > cmin_z && b < cmax_z
-                    })
-                    .cloned()
-                    .collect();
                 rasters.push(chunk::build_chunk_raster_with_carves(
                     &m,
-                    &f.placements,
-                    &segments,
-                    &f.carves,
+                    &served.placements_touching_chunk(&m, coord),
+                    &served.segments_touching_chunk(coord),
+                    &served.carves_touching_chunk(coord),
                     coord,
                 ));
             }
@@ -6162,13 +6154,13 @@ fn probe_filled_plan() {
         let walkable_m2 = biggest as f32 * CELL * CELL;
 
         println!(
-            "[fill] región ({rx},{rz}): {} espacios ⇒ {} por pieza, {} por tramos | {} tramos, {} \
-             piezas, {} vanos",
+            "[fill] región ({rx},{rz}): {} espacios ⇒ con catálogo {} por pieza y {} por tramos; \
+             SERVIDO {} tramos, {} piezas, {} vanos",
             p.spaces.len(),
             f.spaces_by_piece,
             f.spaces_by_segment,
-            f.segments.len(),
-            f.placements.len(),
+            served.segments().len(),
+            served.placements().len(),
             f.openings_built,
         );
         println!(

@@ -1,17 +1,23 @@
 //! ADR-095 F4 — el mundo que se sirve: componer una vez, repartir por chunk.
 //!
-//! Sustituye al andamio `demo`, que ponía una pieza suelta por chunk sorteada por hash y no
-//! prometía que dos vecinas conectaran. Aquí el mundo lo compone `wg3::compose`, así que las bocas
-//! casan por construcción (R7) y lo que llega al cliente es un mundo que se puede andar.
+//! # ADR-100 — EL MUNDO SERVIDO SALE DEL PLAN, no del compositor
+//!
+//! [`Wg3ServedWorld::plan_region`] es lo que responde a un chunk desde ADR-100: la región se reparte
+//! en espacios con papel y en las conexiones que deben existir (`wg3::plan`), y sólo después se
+//! construye (`wg3::fill`). Medido, superficie andable: **21 → 83 %, 26 → 78 %, 3,5 → 80 %,
+//! 24 → 75 %**, con la mancha mayor al 100 % de lo pisable en las cuatro.
+//!
+//! [`Wg3ServedWorld::compose_region`] sigue aquí y sigue siendo correcta, pero **ya no sirve el
+//! mundo**: es el compositor por bocas, que el oráculo de composición fija y que las sondas que lo
+//! miden a él siguen usando. Leer una cifra suya y hablar del mundo servido es comparar dos cosas
+//! distintas.
 //!
 //! # A3 INTERINO, Y ESTÁ DECIDIDO ASÍ A PROPÓSITO
 //!
-//! El compositor es un recorrido finito desde una semilla. Eso significa que **el mundo se acaba**:
-//! a unos cientos de metros del origen no hay más piezas y los chunks salen vacíos. No es un fallo
-//! que se le haya escapado a nadie — ADR-095 deja el modelo de troceado fuera (A1 contrato de
-//! frontera, A2 regiones, A3 mundo finito) y este fichero es A3 mientras ese ADR no exista.
-//! Cuando llegue, lo que cambia es de dónde salen las colocaciones; el reparto por chunk de aquí
-//! abajo sigue valiendo igual.
+//! El compositor por bocas es un recorrido finito desde una semilla: sin acotar, **el mundo se
+//! acaba**. ADR-095 dejó el modelo de troceado fuera (A1 contrato de frontera, A2 regiones, A3 mundo
+//! finito) y ADR-096 cerró A2, así que hoy hay infinitas regiones y ninguna se acaba. El párrafo se
+//! conserva porque `compose`/`compose_with` —sin caja— siguen siendo A3.
 //!
 //! # NO HAY GLOBAL (R3)
 //!
@@ -41,10 +47,12 @@
 
 use super::chunk::{Wg3ChunkCoord, WG3_CHUNK_M};
 use super::compose::{self, Wg3ComposerSettings};
+use super::fill;
 use super::hash;
 use super::junction;
 use super::manifest::Wg3Manifest;
 use super::placement::Wg3Placement;
+use super::plan;
 use super::route;
 use super::segment::{Wg3Carve, Wg3Segment};
 
@@ -258,6 +266,59 @@ pub fn region_settings(
 pub const ROUTED_CAP_CHANCE: f32 = 0.18;
 
 impl Wg3ServedWorld {
+    /// **ADR-100 — LA REGIÓN QUE SE SIRVE: primero el plan, después la geometría.**
+    ///
+    /// Sustituye a [`Wg3ServedWorld::compose_region`] como fuente del mundo servido. La diferencia no
+    /// es de calidad sino de QUIÉN DECIDE: allí la posición de cada pieza salía de la boca de la
+    /// anterior y la topología emergía del orden de recorrido; aquí el reparto de espacios y las
+    /// conexiones que deben existir se deciden mirando la región entera, y esto sólo los construye.
+    ///
+    /// Medido sobre las cuatro regiones de la auditoría, superficie andable: **21 → 82 %, 26 → 77 %,
+    /// 3,5 → 80 %, 24 → 75 %**, con la mancha mayor entre el 98 y el 100 % de lo pisable.
+    ///
+    /// **El catálogo va APAGADO aquí, y es una deuda de contrato, no una decisión de diseño.** Una
+    /// pieza colocada necesita que se le excaven las puertas del plan, y los vanos excavados no cruzan
+    /// el wire (`Wg3ChunkView` lleva colocaciones y tramos). Encenderlo abriría en el servidor puertas
+    /// que el cliente dibuja tapiadas — exactamente el modo de fallo que R6 existe para impedir. Ver
+    /// [`super::fill::fill_with`].
+    pub fn plan_region(manifest: &Wg3Manifest, world_seed: u64, region: Wg3RegionCoord) -> Self {
+        let bounds = region.bounds();
+        // Las puertas de junta se sortean con la semilla del MUNDO y no con la de la región: la de la
+        // región es distinta a cada lado del borde y daría dos listas que no casan. El PLAN sí usa la
+        // de la región, porque dos vecinas tienen que planificar edificios distintos.
+        let gates =
+            junction::gates_of_region(composer_seed(world_seed), region.x, region.z, bounds);
+        let plan = plan::plan_region(region.composer_seed(world_seed), bounds, &gates);
+        let filled = fill::fill_with(&plan, manifest, false);
+
+        // **Un enlace que el plan pidió y que nadie pudo construir se dice EN VOZ ALTA.** El sistema
+        // viejo tapaba ese hueco inventando un conector; aquí no hay nada que inventar, así que lo
+        // único correcto es que aparezca con los dos espacios delante y se pueda ir a mirarlo.
+        if !filled.links_failed.is_empty() || filled.openings_dropped > 0 {
+            log::warn!(
+                "[wg3] región ({},{}): {} enlaces del plan sin construir y {} huecos perdidos",
+                region.x,
+                region.z,
+                filled.links_failed.len(),
+                filled.openings_dropped
+            );
+        }
+        for (a, b) in &filled.links_to_route {
+            log::debug!(
+                "[wg3] región ({},{}): PlannedLink {a} → {b} pendiente de enrutador",
+                region.x,
+                region.z
+            );
+        }
+
+        Self {
+            world_seed,
+            placements: filled.placements,
+            segments: filled.segments,
+            carves: filled.carves,
+        }
+    }
+
     /// ADR-096 — compone UNA REGIÓN: acotada a su caja y sembrada en su centro.
     ///
     /// Es lo que hace el mundo infinito sin tocar el compositor: una región es exactamente lo que
@@ -490,12 +551,15 @@ impl Wg3WorldCache {
             if self.regions.len() >= MAX_CACHED_REGIONS {
                 self.regions.clear();
             }
-            let world = Wg3ServedWorld::compose_region(manifest, world_seed, region);
+            // ADR-100 — el mundo servido sale del PLAN. `compose_region` queda como el compositor por
+            // bocas, que sigue vivo para el oráculo y para las sondas que lo miden a él.
+            let world = Wg3ServedWorld::plan_region(manifest, world_seed, region);
             log::info!(
-                "[wg3] región ({},{}) compuesta para la semilla {world_seed}: {} piezas",
+                "[wg3] región ({},{}) planificada para la semilla {world_seed}: {} piezas, {} tramos",
                 region.x,
                 region.z,
-                world.placements().len()
+                world.placements().len(),
+                world.segments().len()
             );
             self.regions.insert(region, world);
         }
