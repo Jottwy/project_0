@@ -24,12 +24,31 @@
 use super::hash;
 use super::manifest::{Wg3Manifest, Wg3Piece, Wg3Socket};
 use super::placement::{local_point, Wg3Placement};
+use super::route::{self, Mouth, Rect, RouteSettings};
 use super::scale;
+use super::segment::Wg3Segment;
 
 /// Estado de una boca. Espejo de las constantes de `Wg3World`.
 pub const SOCKET_OPEN: u8 = 0;
 pub const SOCKET_CONNECTED: u8 = 1;
 pub const SOCKET_CAPPED: u8 = 2;
+
+/// ADR-098 — boca que el recorrido decidió cerrar pero cuya geometría todavía no se ha puesto.
+///
+/// **Existe porque el orden importaba más de lo que parecía.** Sellar en el momento —que es lo que
+/// hace C# y lo que fija el oráculo— deja al enrutador sin nada que unir: cuando termina el
+/// recorrido, todas las bocas del árbol están ya CONECTADAS o TAPADAS, y las únicas abiertas son las
+/// de los tramos de junta. Medido: con el sellado inmediato, tres de cuatro regiones daban CERO
+/// conectores, y no por falta de sitio sino por falta de candidatas.
+///
+/// Así que con el enrutador encendido la decisión se toma igual pero la geometría se aplaza a la
+/// pasada final. **Solo con el enrutador encendido**: sin él, el compositor se comporta exactamente
+/// como antes y el oráculo sigue valiendo.
+///
+/// Efecto lateral declarado: aplazar deja libre el hueco donde iría el tapón durante el recorrido,
+/// así que otra rama puede crecer ahí. El mundo enrutado no es el mundo de hoy más conectores; es
+/// otro mundo, y las sondas lo miden como tal.
+pub const SOCKET_PENDING_CAP: u8 = 3;
 
 /// Sal del sorteo de tapón voluntario.
 const SALT_CAP: u32 = 0xC0DE_C0DE;
@@ -112,6 +131,19 @@ pub struct Wg3ComposerSettings {
     /// daría una región vacía, porque la primera pieza ya caería fuera.
     pub seed_at: Option<(f32, f32)>,
 
+    /// ADR-098 — el enrutador de conectores generados. `None` lo deja APAGADO.
+    ///
+    /// **Apagado por defecto por lo mismo que `close_loops`:** el oráculo de composición fija el
+    /// mundo que produce C#, y C# no enruta. Encenderlo por defecto pondría rojo lo único que caza
+    /// una deriva silenciosa entre los dos idiomas. Lo enciende quien sirve el mundo
+    /// (`wg3::world`).
+    ///
+    /// Lo que hace, en una línea: donde el catálogo no puede encajar una pieza —porque dos bocas
+    /// nunca coinciden clavadas—, **genera** la geometría que las une. Arregla de una vez las islas
+    /// (cruzar una junta lleva a un armario), los anillos (el mundo es un árbol) y las juntas que no
+    /// llevan a ninguna parte, que son el mismo problema visto por tres sitios.
+    pub route: Option<RouteSettings>,
+
     /// ADR-096 — piezas que van puestas ANTES del recorrido, con una boca ya conectada al otro lado
     /// de una junta.
     ///
@@ -152,6 +184,7 @@ impl Default for Wg3ComposerSettings {
             close_loops: false,
             bounds: None,
             seed_at: None,
+            route: None,
             anchors: Vec::new(),
         }
     }
@@ -212,6 +245,34 @@ pub struct Wg3ComposedWorld {
     /// rama nueva. Cero con `close_loops` apagado; con él encendido es la medida de cuánto deja de
     /// ser un árbol el mundo, y de dónde sale el tamaño de región.
     pub loops_closed: u32,
+
+    /// ADR-098 — la geometría generada: los conectores, tramo a tramo, en el orden en que se
+    /// tendieron. Vacío con el enrutador apagado.
+    pub segments: Vec<Wg3Segment>,
+
+    /// Conectores tendidos, y de ellos cuántos unieron dos islas. La diferencia son anillos.
+    pub connectors: u32,
+    pub connectors_joining_islands: u32,
+    /// De ellos, cuantos se engancharon a MITAD de otro conector en vez de a una boca.
+    pub taps: u32,
+
+    /// Parejas de bocas que el enrutador tuvo que descartar. **Es la mitad útil del resultado**: no
+    /// son errores, son la lista de lo que falta —transiciones de cota, de anchura— y de cuánto
+    /// aprieta el mundo ya colocado.
+    pub rejected_by_cota: u32,
+    pub rejected_by_width: u32,
+    pub rejected_by_kind: u32,
+    pub rejected_by_route_geometry: u32,
+
+    /// Bocas y parejas que llegó a mirar el enrutador. Un cero de conectores con cero parejas es un
+    /// problema distinto de un cero con doscientas.
+    pub route_mouths: u32,
+    pub route_pairs: u32,
+    pub route_unused_mouths: u32,
+    pub route_components_left: u32,
+    /// Bocas que el enrutador no pudo enganchar, con su sitio. Es lo que se mira cuando una region
+    /// se queda en islas.
+    pub route_leftover: Vec<(i32, i32, u8, i32)>,
 }
 
 /// Compone el mundo de una semilla. Función pura: mismo manifiesto y mismos ajustes ⇒ mismo mundo,
@@ -266,6 +327,26 @@ struct Composer<'a> {
     forced_caps: u32,
     loops_closed: u32,
     rejected_by_bounds: u32,
+
+    /// ADR-098 — la geometría generada y el grafo que hace falta para decidir dónde tenderla.
+    ///
+    /// `edges` se lleva aparte de `parent` porque el mundo deja de ser un árbol en cuanto hay un
+    /// bucle o un conector: con solo el padre no se puede saber si dos piezas ya están unidas, que
+    /// es justo la pregunta que separa «unir una isla» de «cerrar un anillo».
+    segments: Vec<Wg3Segment>,
+    edges: Vec<(usize, usize)>,
+    connectors: u32,
+    connectors_joining_islands: u32,
+    taps: u32,
+    rejected_by_cota: u32,
+    rejected_by_width: u32,
+    rejected_by_kind: u32,
+    rejected_by_route_geometry: u32,
+    route_mouths: u32,
+    route_pairs: u32,
+    route_unused_mouths: u32,
+    route_components_left: u32,
+    route_leftover: Vec<(i32, i32, u8, i32)>,
 }
 
 impl<'a> Composer<'a> {
@@ -282,6 +363,20 @@ impl<'a> Composer<'a> {
             rejected_by_overlap: 0,
             rejected_by_validator: 0,
             forced_caps: 0,
+            segments: Vec::new(),
+            edges: Vec::new(),
+            connectors: 0,
+            connectors_joining_islands: 0,
+            taps: 0,
+            rejected_by_cota: 0,
+            rejected_by_width: 0,
+            rejected_by_kind: 0,
+            rejected_by_route_geometry: 0,
+            route_mouths: 0,
+            route_pairs: 0,
+            route_unused_mouths: 0,
+            route_components_left: 0,
+            route_leftover: Vec::new(),
         }
     }
 
@@ -408,7 +503,11 @@ impl<'a> Composer<'a> {
             {
                 let mut cap_stream = hash::stream_at(self.world_seed, px, pz, SALT_CAP);
                 if cap_stream.next01() < self.settings.deliberate_cap_chance {
-                    if !self.seal_mouth(pi, si, px, pz, parent_world_side, &parent_socket) {
+                    if self.settings.route.is_some() {
+                        // ADR-098 — decidido cerrar, pero la geometría espera: hasta que el
+                        // enrutador mire, esta boca todavía puede ser la que una una isla.
+                        self.nodes[pi].socket_state[si] = SOCKET_PENDING_CAP;
+                    } else if !self.seal_mouth(pi, si, px, pz, parent_world_side, &parent_socket) {
                         self.cap(pi, si, px, pz, parent_world_side, &parent_socket, false);
                     }
                     continue;
@@ -418,7 +517,11 @@ impl<'a> Composer<'a> {
             self.collect_candidates(pi, &parent_socket, px, pz, needed_side, child_depth);
 
             if self.candidates.is_empty() {
-                if !self.seal_mouth(pi, si, px, pz, parent_world_side, &parent_socket) {
+                if self.settings.route.is_some() {
+                    // Sin candidata de catálogo es cuando MÁS falta hace mirar si un conector la
+                    // salva: ésta es la boca contra la que se choca andando.
+                    self.nodes[pi].socket_state[si] = SOCKET_PENDING_CAP;
+                } else if !self.seal_mouth(pi, si, px, pz, parent_world_side, &parent_socket) {
                     self.cap(pi, si, px, pz, parent_world_side, &parent_socket, true);
                     self.forced_caps += 1;
                 }
@@ -446,10 +549,148 @@ impl<'a> Composer<'a> {
             );
             self.nodes[pi].socket_state[si] = SOCKET_CONNECTED;
             self.nodes[child].socket_state[chosen.socket_index] = SOCKET_CONNECTED;
+            self.edges.push((pi, child));
             push_sockets(&mut frontier, &self.nodes, child);
         }
 
+        // ADR-098 — el enrutador va AQUÍ: después del árbol, para saber qué quedó suelto, y antes de
+        // la pasada de tapones, porque sellar una boca que podía unir una isla es perder la isla.
+        self.run_router();
+
         self.cap_everything_still_open();
+    }
+
+    /// ADR-098 — tiende conectores generados entre lo que quedó abierto.
+    ///
+    /// Aquí no hay geometría ni decisiones: se traduce el estado del compositor al vocabulario del
+    /// enrutador —bocas, rectángulos ocupados, grafo—, se le deja decidir, y se aplica lo que
+    /// devuelve. Que la traducción sea todo lo que hay es lo que permite probar el enrutador solo,
+    /// sin componer un mundo entero.
+    fn run_router(&mut self) {
+        let Some(settings) = self.settings.route.clone() else {
+            return;
+        };
+
+        let mut mouths: Vec<Mouth> = Vec::new();
+        for i in 0..self.nodes.len() {
+            let piece = self.piece_of(i);
+            for s in 0..self.nodes[i].socket_state.len() {
+                // Las pendientes de tapón entran: son la mayoría, y son justamente las bocas contra
+                // las que se choca al andar. Las de los tramos de junta llegan como OPEN, porque las
+                // anclas no ramifican.
+                let state = self.nodes[i].socket_state[s];
+                if state != SOCKET_OPEN && state != SOCKET_PENDING_CAP {
+                    continue;
+                }
+                let socket = &piece.sockets[s];
+                let (x, z) = world_socket_point(&self.nodes[i], piece, s);
+                mouths.push(Mouth {
+                    node: i,
+                    socket: s,
+                    x,
+                    z,
+                    side: (socket.side + self.nodes[i].rotation) % 4,
+                    width: socket.width,
+                    // La cota de MUNDO, que es la que tiene que casar: la local no dice nada desde
+                    // que ADR-097 propaga la altura por el árbol.
+                    floor_y: self.nodes[i].origin_y + socket.floor_y,
+                    clear_height: socket.ceiling_y - socket.floor_y,
+                    kind: socket.kind,
+                });
+            }
+        }
+
+        let mut occupancy: Vec<Rect> = self
+            .nodes
+            .iter()
+            .map(|n| {
+                let piece = &self.manifest.pieces[n.piece as usize];
+                let (w, d) = if n.rotation.is_multiple_of(2) {
+                    (piece.size_x, piece.size_z)
+                } else {
+                    (piece.size_z, piece.size_x)
+                };
+                Rect {
+                    min_x: n.origin_x,
+                    min_z: n.origin_z,
+                    max_x: n.origin_x + w,
+                    max_z: n.origin_z + d,
+                }
+            })
+            .collect();
+        occupancy.extend(self.segments.iter().map(|c| {
+            let (min_x, min_z, max_x, max_z) = c.bounds();
+            Rect {
+                min_x,
+                min_z,
+                max_x,
+                max_z,
+            }
+        }));
+
+        let mut adjacency: Vec<Vec<usize>> = vec![Vec::new(); self.nodes.len()];
+        for &(a, b) in &self.edges {
+            adjacency[a].push(b);
+            adjacency[b].push(a);
+        }
+
+        let outcome = route::route(
+            &mouths,
+            &occupancy,
+            self.settings.bounds,
+            self.nodes.len(),
+            &adjacency,
+            &settings,
+        );
+
+        // Las bocas que el enrutador usó quedan CONECTADAS: tienen geometría al otro lado, y la
+        // pasada de tapones no debe volver a mirarlas.
+        for &m in &outcome.used_mouths {
+            let mouth = &mouths[m];
+            self.nodes[mouth.node].socket_state[mouth.socket] = SOCKET_CONNECTED;
+        }
+        self.edges.extend(outcome.edges.iter().copied());
+        self.segments.extend(outcome.segments.iter().cloned());
+        self.connectors += outcome.connectors;
+        self.connectors_joining_islands += outcome.connectors_joining_islands;
+        self.taps += outcome.taps;
+
+        self.rejected_by_cota += outcome.rejected_by_cota;
+        self.rejected_by_width += outcome.rejected_by_width;
+        self.rejected_by_kind += outcome.rejected_by_kind;
+        self.rejected_by_route_geometry += outcome.rejected_by_geometry;
+        self.route_mouths = outcome.mouths;
+        self.route_pairs = outcome.pairs;
+        self.route_unused_mouths = outcome.unused_mouths;
+        self.route_components_left = outcome.components_left;
+        self.route_leftover = outcome.leftover.clone();
+
+        self.absorb_mouths_behind_connector_walls();
+    }
+
+    /// Una boca que da contra la PARED de un conector ya está cerrada, y hay que decirlo.
+    ///
+    /// Si no, la pasada de tapones intenta plantarle una pieza, choca contra la tramo y la anota como
+    /// tapón forzado — que es la cuenta con la que se vigila que no haya bocas al vacío. El agujero
+    /// no existe: detrás de esa pared hay suelo de conector. Callarlo dejaría la sonda mintiendo en
+    /// la dirección peligrosa, que es la que hace ignorar un aviso de verdad.
+    fn absorb_mouths_behind_connector_walls(&mut self) {
+        if self.segments.is_empty() {
+            return;
+        }
+        for i in 0..self.nodes.len() {
+            for s in 0..self.nodes[i].socket_state.len() {
+                let state = self.nodes[i].socket_state[s];
+                if state != SOCKET_OPEN && state != SOCKET_PENDING_CAP {
+                    continue;
+                }
+                let piece = self.piece_of(i);
+                let (x, z) = world_socket_point(&self.nodes[i], piece, s);
+                if self.segments.iter().any(|c| on_segment_wall(c, x, z)) {
+                    self.nodes[i].socket_state[s] = SOCKET_CAPPED;
+                }
+            }
+        }
     }
 
     /// Presupuesto agotado o frontera sin recorrer: todo lo que quede abierto se sella. Sin esta
@@ -457,7 +698,10 @@ impl<'a> Composer<'a> {
     fn cap_everything_still_open(&mut self) {
         for i in 0..self.nodes.len() {
             for s in 0..self.nodes[i].socket_state.len() {
-                if self.nodes[i].socket_state[s] != SOCKET_OPEN {
+                // ADR-098 — aquí caen las dos: las que nadie tocó y las que el recorrido dejó
+                // pendientes de tapón para que el enrutador pudiera mirarlas primero.
+                let state = self.nodes[i].socket_state[s];
+                if state != SOCKET_OPEN && state != SOCKET_PENDING_CAP {
                     continue;
                 }
                 let piece = self.piece_of(i);
@@ -526,6 +770,12 @@ impl<'a> Composer<'a> {
             if overlaps_any(&self.nodes, manifest, ox, oz, w, d) {
                 continue;
             }
+            // ADR-098 — y tampoco encima de un conector. La pasada final de tapones corre DESPUÉS
+            // del enrutador, así que sin esto el tapón se plantaría dentro de un pasillo generado:
+            // una pared en mitad de la ruta que acaba de abrirse.
+            if overlaps_segments(&self.segments, ox, oz, w, d) {
+                continue;
+            }
 
             let area = w * d;
             if best.is_none_or(|b| area < b.4) {
@@ -542,6 +792,7 @@ impl<'a> Composer<'a> {
         let child = self.place(piece, rotation, ox, oz, cap_y, depth, Some(parent_index));
         self.nodes[parent_index].socket_state[socket_index] = SOCKET_CONNECTED;
         self.nodes[child].socket_state[0] = SOCKET_CONNECTED;
+        self.edges.push((parent_index, child));
         true
     }
 
@@ -684,6 +935,7 @@ impl<'a> Composer<'a> {
 
                 self.nodes[node].socket_state[socket] = SOCKET_CONNECTED;
                 self.nodes[other].socket_state[os] = SOCKET_CONNECTED;
+                self.edges.push((node, other));
                 self.loops_closed += 1;
                 return true;
             }
@@ -764,8 +1016,71 @@ impl<'a> Composer<'a> {
             forced_caps: self.forced_caps,
             loops_closed: self.loops_closed,
             rejected_by_bounds: self.rejected_by_bounds,
+            segments: self.segments,
+            connectors: self.connectors,
+            connectors_joining_islands: self.connectors_joining_islands,
+            taps: self.taps,
+            rejected_by_cota: self.rejected_by_cota,
+            rejected_by_width: self.rejected_by_width,
+            rejected_by_kind: self.rejected_by_kind,
+            rejected_by_route_geometry: self.rejected_by_route_geometry,
+            route_mouths: self.route_mouths,
+            route_pairs: self.route_pairs,
+            route_unused_mouths: self.route_unused_mouths,
+            route_components_left: self.route_components_left,
+            route_leftover: self.route_leftover,
         }
     }
+}
+
+/// ¿Pisa este rectángulo alguna tramo generada? Mismo epsilon que el solape entre piezas: tocarse es
+/// correcto, penetrar no.
+fn overlaps_segments(segments: &[Wg3Segment], x: f32, z: f32, w: f32, d: f32) -> bool {
+    segments.iter().any(|c| {
+        let (min_x, min_z, max_x, max_z) = c.bounds();
+        min_x < x + w - OVERLAP_EPS
+            && max_x - OVERLAP_EPS > x
+            && min_z < z + d - OVERLAP_EPS
+            && max_z - OVERLAP_EPS > z
+    })
+}
+
+/// ¿Cae este punto sobre una PARED de esta tramo, y no sobre una de sus bocas?
+///
+/// Se usa para dar por cerrada una boca que da contra un conector. La distinción importa: contra la
+/// pared, la boca está sellada y detrás hay suelo; contra una boca del conector, estaría abierta a
+/// él, y decir que está tapiada sería mentir en la dirección contraria.
+fn on_segment_wall(cell: &Wg3Segment, x: f32, z: f32) -> bool {
+    const EPS: f32 = 0.02;
+    let (min_x, min_z, max_x, max_z) = cell.bounds();
+    if x < min_x - EPS || x > max_x + EPS || z < min_z - EPS || z > max_z + EPS {
+        return false;
+    }
+    let on_edge = (x - min_x).abs() < EPS
+        || (x - max_x).abs() < EPS
+        || (z - min_z).abs() < EPS
+        || (z - max_z).abs() < EPS;
+    if !on_edge {
+        return false;
+    }
+
+    for o in &cell.openings {
+        let (w, d) = (cell.size_x(), cell.size_z());
+        let half = o.width_cm as f32 / 200.0;
+        let offset = o.offset_cm as f32 / 100.0;
+        let (lo, hi) = (offset - half, offset + half);
+        let (lx, lz) = (x - min_x, z - min_z);
+        let inside = match o.side % 4 {
+            0 => (d - lz).abs() < EPS && lx >= lo - EPS && lx <= hi + EPS,
+            1 => (w - lx).abs() < EPS && (d - lz) >= lo - EPS && (d - lz) <= hi + EPS,
+            2 => lz.abs() < EPS && (w - lx) >= lo - EPS && (w - lx) <= hi + EPS,
+            _ => lx.abs() < EPS && lz >= lo - EPS && lz <= hi + EPS,
+        };
+        if inside {
+            return false;
+        }
+    }
+    true
 }
 
 /// ¿Casan estas dos bocas? Espejo de `Wg3Validator.ValidateConnection`, sin el motivo: aquí nadie lo

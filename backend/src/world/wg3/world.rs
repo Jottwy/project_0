@@ -45,6 +45,8 @@ use super::hash;
 use super::junction;
 use super::manifest::Wg3Manifest;
 use super::placement::Wg3Placement;
+use super::route;
+use super::segment::Wg3Segment;
 
 /// Tope de piezas del mundo interino.
 ///
@@ -153,6 +155,62 @@ pub fn composer_seed(world_seed: u64) -> i32 {
 pub struct Wg3ServedWorld {
     world_seed: u64,
     placements: Vec<Wg3Placement>,
+    /// ADR-098 — la geometría GENERADA: los conectores que unen lo que el catálogo no puede
+    /// encajar. Van aparte de las colocaciones y no dentro porque no son piezas: no tienen índice
+    /// de catálogo, y ésa es toda la novedad del ADR.
+    segments: Vec<Wg3Segment>,
+}
+
+/// Los ajustes con los que se compone una región del mundo SERVIDO.
+///
+/// Público y aparte de [`Wg3ServedWorld::compose_region`] para que una sonda pueda medir la misma
+/// composición que se juega sin copiar su montaje: la sonda de islas ya lo copió una vez y una copia
+/// que envejece mide un mundo que no existe.
+pub fn region_settings(
+    manifest: &Wg3Manifest,
+    world_seed: u64,
+    region: Wg3RegionCoord,
+) -> Wg3ComposerSettings {
+    let bounds = region.bounds();
+
+    // ADR-096 — el contrato de junta. Las puertas salen del BORDE, no de la región, así que la
+    // vecina calcula las mismas sin que nadie pregunte a nadie. La semilla que las sortea es la del
+    // MUNDO y no la de la región: la de la región es distinta a cada lado del borde y daría dos
+    // listas de puertas que no casan.
+    let stub = junction::gate_stub_piece(manifest);
+    let anchors: Vec<compose::Wg3Anchor> = match stub {
+        Some(stub) => {
+            junction::gates_of_region(composer_seed(world_seed), region.x, region.z, bounds)
+                .into_iter()
+                .filter_map(|gate| junction::stub_anchor(manifest, stub, gate))
+                .collect()
+        }
+        None => {
+            // Sin pieza que sirva de tramo no hay puertas, y el mundo vuelve a ser un tablero de
+            // regiones selladas. Se avisa fuerte: es una propiedad del CATÁLOGO que se rompe sin que
+            // nada falle.
+            log::error!(
+                "[wg3] el catálogo no tiene ninguna pieza que sirva de tramo de puerta — las \
+                 regiones quedarán selladas"
+            );
+            Vec::new()
+        }
+    };
+
+    Wg3ComposerSettings {
+        budget: INTERIM_BUDGET,
+        close_loops: true,
+        bounds: Some(bounds),
+        // ADR-098 — el enrutador SE ENCIENDE aquí, en el mundo que se sirve, y no en el compositor
+        // por defecto: el oráculo fija el mundo de C#, y C# no enruta.
+        //
+        // Sin esto una región es un árbol más N bolsillos de dos piezas —uno por puerta de junta—,
+        // que es exactamente lo que se siente andando como «llega un punto que se cierra y no hay
+        // manera de moverte».
+        route: Some(route::RouteSettings::default()),
+        anchors,
+        ..Wg3ComposerSettings::default()
+    }
 }
 
 impl Wg3ServedWorld {
@@ -166,43 +224,22 @@ impl Wg3ServedWorld {
     /// Mientras tanto la costura entre regiones se ve, y verla es lo que dirá si el contrato tiene
     /// que ser fino o basta con poco.
     pub fn compose_region(manifest: &Wg3Manifest, world_seed: u64, region: Wg3RegionCoord) -> Self {
-        let bounds = region.bounds();
-
-        // ADR-096 — el contrato de junta. Las puertas salen del BORDE, no de la región, así que la
-        // vecina calcula las mismas sin que nadie pregunte a nadie. La semilla que las sortea es la
-        // del MUNDO y no la de la región: la de la región es distinta a cada lado del borde y daría
-        // dos listas de puertas que no casan.
-        let stub = junction::gate_stub_piece(manifest);
-        let anchors: Vec<compose::Wg3Anchor> = match stub {
-            Some(stub) => {
-                junction::gates_of_region(composer_seed(world_seed), region.x, region.z, bounds)
-                    .into_iter()
-                    .filter_map(|gate| junction::stub_anchor(manifest, stub, gate))
-                    .collect()
-            }
-            None => {
-                // Sin pieza que sirva de tramo no hay puertas, y el mundo vuelve a ser un tablero de
-                // regiones selladas. Se avisa fuerte: es una propiedad del CATÁLOGO que se rompe sin
-                // que nada falle.
-                log::error!(
-                    "[wg3] el catálogo no tiene ninguna pieza que sirva de tramo de puerta — las \
-                     regiones quedarán selladas"
-                );
-                Vec::new()
-            }
-        };
-
-        let settings = Wg3ComposerSettings {
-            budget: INTERIM_BUDGET,
-            close_loops: true,
-            bounds: Some(bounds),
-            anchors,
-            ..Wg3ComposerSettings::default()
-        };
+        let settings = region_settings(manifest, world_seed, region);
         let composed = compose::compose(region.composer_seed(world_seed), manifest, &settings);
+        if composed.connectors > 0 {
+            log::debug!(
+                "[wg3] región ({},{}): {} conectores ({} unieron islas), {} tramos",
+                region.x,
+                region.z,
+                composed.connectors,
+                composed.connectors_joining_islands,
+                composed.segments.len()
+            );
+        }
         Self {
             world_seed,
             placements: composed.placements.iter().map(|c| c.placement).collect(),
+            segments: composed.segments,
         }
     }
 
@@ -229,6 +266,7 @@ impl Wg3ServedWorld {
         Self {
             world_seed,
             placements: composed.placements.iter().map(|c| c.placement).collect(),
+            segments: composed.segments,
         }
     }
 
@@ -264,6 +302,45 @@ impl Wg3ServedWorld {
             .iter()
             .filter(|p| Self::owner_chunk(manifest, p) == Some(coord))
             .copied()
+            .collect()
+    }
+
+    /// ADR-098 — todas las tramos generadas del mundo.
+    pub fn segments(&self) -> &[Wg3Segment] {
+        &self.segments
+    }
+
+    /// El chunk que dibuja una tramo: el que contiene su CENTRO, igual que una pieza.
+    ///
+    /// Y por la misma razón puede usarse la misma regla: el tope de 25 m de lado de tramo
+    /// (`segment::MAX_SEGMENT_M`) mantiene el invariante en el que se apoya —nada llega a los 50 m del
+    /// chunk, así que centrado nunca asoma más allá de los vecinos inmediatos de su dueño—. Ese tope
+    /// es la razón de que una ruta larga se parta en más tramos en vez de recortarse en la frontera.
+    pub fn segment_owner_chunk(cell: &Wg3Segment) -> Wg3ChunkCoord {
+        let (cx, cz) = cell.centre();
+        Wg3ChunkCoord::containing(cx, cz)
+    }
+
+    /// Lo que se manda por el cable: las tramos de las que ESE chunk es dueño.
+    pub fn segments_for_chunk(&self, coord: Wg3ChunkCoord) -> Vec<Wg3Segment> {
+        self.segments
+            .iter()
+            .filter(|c| Self::segment_owner_chunk(c) == coord)
+            .cloned()
+            .collect()
+    }
+
+    /// Las tramos que TOCAN el chunk, dueñas o no. Es lo que necesita el ráster, por lo mismo que
+    /// las piezas: una pared que cruza la frontera bloquea a los dos lados.
+    pub fn segments_touching_chunk(&self, coord: Wg3ChunkCoord) -> Vec<Wg3Segment> {
+        let (cmin_x, cmin_z, cmax_x, cmax_z) = coord.bounds();
+        self.segments
+            .iter()
+            .filter(|c| {
+                let (min_x, min_z, max_x, max_z) = c.bounds();
+                max_x > cmin_x && min_x < cmax_x && max_z > cmin_z && min_z < cmax_z
+            })
+            .cloned()
             .collect()
     }
 

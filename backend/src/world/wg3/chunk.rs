@@ -22,6 +22,7 @@
 use super::manifest::Wg3Manifest;
 use super::placement::{self, Wg3Placement};
 use super::raster::{Wg3Raster, Wg3RasterBuilder, CM_PER_M, WG3_CELL_M};
+use super::segment::{self, Wg3Segment};
 
 /// Lado del chunk en metros. Mismo tamaño que el chunk de WG2 a propósito: mientras los dos mundos
 /// convivan (D3), el streaming, la caché de simulación y los logs hablan de la misma cuadrícula, y
@@ -73,9 +74,14 @@ impl Wg3ChunkCoord {
 /// grande son más de treinta cajas, y `add_box` acaba visitando celdas incluso cuando el recorte las
 /// tira todas. Es la única optimización de esta función y va aquí porque el filtro por huella es
 /// exacto — no descarta nada que pudiera haber entrado.
+///
+/// ADR-098 — los TRAMOS generados entran por el mismo sitio y con las mismas reglas: se descartan
+/// por caja envolvente y se estampan caja a caja. No hay código de rasterizado nuevo, y eso no es
+/// suerte: un tramo se expande a la misma lista de cajas que una chuleta.
 pub fn build_chunk_raster(
     manifest: &Wg3Manifest,
     placements: &[Wg3Placement],
+    segments: &[Wg3Segment],
     coord: Wg3ChunkCoord,
 ) -> Wg3Raster {
     let (ox, oz) = coord.origin_cm();
@@ -100,6 +106,16 @@ pub fn build_chunk_raster(
         }
 
         for b in placement::placed_collision(piece, placement) {
+            builder.add_box(&b);
+        }
+    }
+
+    for c in segments {
+        let (pmin_x, pmin_z, pmax_x, pmax_z) = c.bounds();
+        if pmax_x <= cmin_x || pmin_x >= cmax_x || pmax_z <= cmin_z || pmin_z >= cmax_z {
+            continue;
+        }
+        for b in segment::segment_boxes(c) {
             builder.add_box(&b);
         }
     }

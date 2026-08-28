@@ -15,7 +15,9 @@ pub mod junction;
 pub mod manifest;
 pub mod placement;
 pub mod raster;
+pub mod route;
 pub mod scale;
+pub mod segment;
 pub mod world;
 
 #[cfg(test)]

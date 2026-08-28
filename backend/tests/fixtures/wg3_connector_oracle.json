@@ -1,0 +1,530 @@
+{
+    "slab_thickness_mm": 120,
+    "wall_thickness_mm": 150,
+    "segments": [
+        {
+            "name": "recto_2m4",
+            "x_cm": 0,
+            "z_cm": 0,
+            "size_x_cm": 1000,
+            "size_z_cm": 240,
+            "floor_y_cm": 0,
+            "height_cm": 320,
+            "style": 0,
+            "openings": [
+                {
+                    "side": 3,
+                    "offset_cm": 120,
+                    "width_cm": 240
+                },
+                {
+                    "side": 1,
+                    "offset_cm": 120,
+                    "width_cm": 240
+                }
+            ],
+            "boxes": [
+                {
+                    "cx_cm": 500,
+                    "cy_cm": -6,
+                    "cz_cm": 120,
+                    "sx_cm": 1000,
+                    "sy_cm": 12,
+                    "sz_cm": 240,
+                    "kind": 0
+                },
+                {
+                    "cx_cm": 500,
+                    "cy_cm": 326,
+                    "cz_cm": 120,
+                    "sx_cm": 1000,
+                    "sy_cm": 12,
+                    "sz_cm": 240,
+                    "kind": 1
+                },
+                {
+                    "cx_cm": 500,
+                    "cy_cm": 160,
+                    "cz_cm": 232,
+                    "sx_cm": 1000,
+                    "sy_cm": 320,
+                    "sz_cm": 15,
+                    "kind": 2
+                },
+                {
+                    "cx_cm": 500,
+                    "cy_cm": 160,
+                    "cz_cm": 8,
+                    "sx_cm": 1000,
+                    "sy_cm": 320,
+                    "sz_cm": 15,
+                    "kind": 2
+                }
+            ]
+        },
+        {
+            "name": "quiebro",
+            "x_cm": -350,
+            "z_cm": 725,
+            "size_x_cm": 240,
+            "size_z_cm": 240,
+            "floor_y_cm": 0,
+            "height_cm": 320,
+            "style": 0,
+            "openings": [
+                {
+                    "side": 3,
+                    "offset_cm": 120,
+                    "width_cm": 240
+                },
+                {
+                    "side": 0,
+                    "offset_cm": 120,
+                    "width_cm": 240
+                }
+            ],
+            "boxes": [
+                {
+                    "cx_cm": -230,
+                    "cy_cm": -6,
+                    "cz_cm": 845,
+                    "sx_cm": 240,
+                    "sy_cm": 12,
+                    "sz_cm": 240,
+                    "kind": 0
+                },
+                {
+                    "cx_cm": -230,
+                    "cy_cm": 326,
+                    "cz_cm": 845,
+                    "sx_cm": 240,
+                    "sy_cm": 12,
+                    "sz_cm": 240,
+                    "kind": 1
+                },
+                {
+                    "cx_cm": -118,
+                    "cy_cm": 160,
+                    "cz_cm": 845,
+                    "sx_cm": 15,
+                    "sy_cm": 320,
+                    "sz_cm": 240,
+                    "kind": 2
+                },
+                {
+                    "cx_cm": -230,
+                    "cy_cm": 160,
+                    "cz_cm": 732,
+                    "sx_cm": 240,
+                    "sy_cm": 320,
+                    "sz_cm": 15,
+                    "kind": 2
+                }
+            ]
+        },
+        {
+            "name": "transicion_2m4_a_5m",
+            "x_cm": 1200,
+            "z_cm": -80,
+            "size_x_cm": 600,
+            "size_z_cm": 500,
+            "floor_y_cm": 0,
+            "height_cm": 320,
+            "style": 0,
+            "openings": [
+                {
+                    "side": 3,
+                    "offset_cm": 250,
+                    "width_cm": 240
+                },
+                {
+                    "side": 1,
+                    "offset_cm": 250,
+                    "width_cm": 500
+                }
+            ],
+            "boxes": [
+                {
+                    "cx_cm": 1500,
+                    "cy_cm": -6,
+                    "cz_cm": 170,
+                    "sx_cm": 600,
+                    "sy_cm": 12,
+                    "sz_cm": 500,
+                    "kind": 0
+                },
+                {
+                    "cx_cm": 1500,
+                    "cy_cm": 326,
+                    "cz_cm": 170,
+                    "sx_cm": 600,
+                    "sy_cm": 12,
+                    "sz_cm": 500,
+                    "kind": 1
+                },
+                {
+                    "cx_cm": 1500,
+                    "cy_cm": 160,
+                    "cz_cm": 412,
+                    "sx_cm": 600,
+                    "sy_cm": 320,
+                    "sz_cm": 15,
+                    "kind": 2
+                },
+                {
+                    "cx_cm": 1500,
+                    "cy_cm": 160,
+                    "cz_cm": -72,
+                    "sx_cm": 600,
+                    "sy_cm": 320,
+                    "sz_cm": 15,
+                    "kind": 2
+                },
+                {
+                    "cx_cm": 1208,
+                    "cy_cm": 160,
+                    "cz_cm": -15,
+                    "sx_cm": 15,
+                    "sy_cm": 320,
+                    "sz_cm": 130,
+                    "kind": 2
+                },
+                {
+                    "cx_cm": 1208,
+                    "cy_cm": 160,
+                    "cz_cm": 355,
+                    "sx_cm": 15,
+                    "sy_cm": 320,
+                    "sz_cm": 130,
+                    "kind": 2
+                }
+            ]
+        },
+        {
+            "name": "tres_bocas",
+            "x_cm": 4000,
+            "z_cm": 4000,
+            "size_x_cm": 500,
+            "size_z_cm": 500,
+            "floor_y_cm": 0,
+            "height_cm": 360,
+            "style": 0,
+            "openings": [
+                {
+                    "side": 3,
+                    "offset_cm": 250,
+                    "width_cm": 240
+                },
+                {
+                    "side": 1,
+                    "offset_cm": 250,
+                    "width_cm": 240
+                },
+                {
+                    "side": 0,
+                    "offset_cm": 250,
+                    "width_cm": 500
+                }
+            ],
+            "boxes": [
+                {
+                    "cx_cm": 4250,
+                    "cy_cm": -6,
+                    "cz_cm": 4250,
+                    "sx_cm": 500,
+                    "sy_cm": 12,
+                    "sz_cm": 500,
+                    "kind": 0
+                },
+                {
+                    "cx_cm": 4250,
+                    "cy_cm": 366,
+                    "cz_cm": 4250,
+                    "sx_cm": 500,
+                    "sy_cm": 12,
+                    "sz_cm": 500,
+                    "kind": 1
+                },
+                {
+                    "cx_cm": 4492,
+                    "cy_cm": 180,
+                    "cz_cm": 4435,
+                    "sx_cm": 15,
+                    "sy_cm": 360,
+                    "sz_cm": 130,
+                    "kind": 2
+                },
+                {
+                    "cx_cm": 4492,
+                    "cy_cm": 180,
+                    "cz_cm": 4065,
+                    "sx_cm": 15,
+                    "sy_cm": 360,
+                    "sz_cm": 130,
+                    "kind": 2
+                },
+                {
+                    "cx_cm": 4250,
+                    "cy_cm": 180,
+                    "cz_cm": 4008,
+                    "sx_cm": 500,
+                    "sy_cm": 360,
+                    "sz_cm": 15,
+                    "kind": 2
+                },
+                {
+                    "cx_cm": 4008,
+                    "cy_cm": 180,
+                    "cz_cm": 4065,
+                    "sx_cm": 15,
+                    "sy_cm": 360,
+                    "sz_cm": 130,
+                    "kind": 2
+                },
+                {
+                    "cx_cm": 4008,
+                    "cy_cm": 180,
+                    "cz_cm": 4435,
+                    "sx_cm": 15,
+                    "sy_cm": 360,
+                    "sz_cm": 130,
+                    "kind": 2
+                }
+            ]
+        },
+        {
+            "name": "escalon_a_72cm",
+            "x_cm": -1000,
+            "z_cm": 300,
+            "size_x_cm": 400,
+            "size_z_cm": 240,
+            "floor_y_cm": 72,
+            "height_cm": 320,
+            "style": 0,
+            "openings": [
+                {
+                    "side": 3,
+                    "offset_cm": 120,
+                    "width_cm": 240
+                },
+                {
+                    "side": 1,
+                    "offset_cm": 120,
+                    "width_cm": 240
+                }
+            ],
+            "boxes": [
+                {
+                    "cx_cm": -800,
+                    "cy_cm": 66,
+                    "cz_cm": 420,
+                    "sx_cm": 400,
+                    "sy_cm": 12,
+                    "sz_cm": 240,
+                    "kind": 0
+                },
+                {
+                    "cx_cm": -800,
+                    "cy_cm": 398,
+                    "cz_cm": 420,
+                    "sx_cm": 400,
+                    "sy_cm": 12,
+                    "sz_cm": 240,
+                    "kind": 1
+                },
+                {
+                    "cx_cm": -800,
+                    "cy_cm": 232,
+                    "cz_cm": 532,
+                    "sx_cm": 400,
+                    "sy_cm": 320,
+                    "sz_cm": 15,
+                    "kind": 2
+                },
+                {
+                    "cx_cm": -800,
+                    "cy_cm": 232,
+                    "cz_cm": 308,
+                    "sx_cm": 400,
+                    "sy_cm": 320,
+                    "sz_cm": 15,
+                    "kind": 2
+                }
+            ]
+        },
+        {
+            "name": "tope_25m",
+            "x_cm": 10000,
+            "z_cm": -20000,
+            "size_x_cm": 2500,
+            "size_z_cm": 500,
+            "floor_y_cm": -150,
+            "height_cm": 400,
+            "style": 0,
+            "openings": [
+                {
+                    "side": 2,
+                    "offset_cm": 250,
+                    "width_cm": 500
+                },
+                {
+                    "side": 0,
+                    "offset_cm": 250,
+                    "width_cm": 500
+                }
+            ],
+            "boxes": [
+                {
+                    "cx_cm": 11250,
+                    "cy_cm": -156,
+                    "cz_cm": -19750,
+                    "sx_cm": 2500,
+                    "sy_cm": 12,
+                    "sz_cm": 500,
+                    "kind": 0
+                },
+                {
+                    "cx_cm": 11250,
+                    "cy_cm": 256,
+                    "cz_cm": -19750,
+                    "sx_cm": 2500,
+                    "sy_cm": 12,
+                    "sz_cm": 500,
+                    "kind": 1
+                },
+                {
+                    "cx_cm": 11500,
+                    "cy_cm": 50,
+                    "cz_cm": -19508,
+                    "sx_cm": 2000,
+                    "sy_cm": 400,
+                    "sz_cm": 15,
+                    "kind": 2
+                },
+                {
+                    "cx_cm": 12492,
+                    "cy_cm": 50,
+                    "cz_cm": -19750,
+                    "sx_cm": 15,
+                    "sy_cm": 400,
+                    "sz_cm": 500,
+                    "kind": 2
+                },
+                {
+                    "cx_cm": 11000,
+                    "cy_cm": 50,
+                    "cz_cm": -19992,
+                    "sx_cm": 2000,
+                    "sy_cm": 400,
+                    "sz_cm": 15,
+                    "kind": 2
+                },
+                {
+                    "cx_cm": 10008,
+                    "cy_cm": 50,
+                    "cz_cm": -19750,
+                    "sx_cm": 15,
+                    "sy_cm": 400,
+                    "sz_cm": 500,
+                    "kind": 2
+                }
+            ]
+        },
+        {
+            "name": "boca_descentrada",
+            "x_cm": 700,
+            "z_cm": 700,
+            "size_x_cm": 800,
+            "size_z_cm": 300,
+            "floor_y_cm": 0,
+            "height_cm": 320,
+            "style": 0,
+            "openings": [
+                {
+                    "side": 2,
+                    "offset_cm": 150,
+                    "width_cm": 240
+                },
+                {
+                    "side": 1,
+                    "offset_cm": 150,
+                    "width_cm": 240
+                }
+            ],
+            "boxes": [
+                {
+                    "cx_cm": 1100,
+                    "cy_cm": -6,
+                    "cz_cm": 850,
+                    "sx_cm": 800,
+                    "sy_cm": 12,
+                    "sz_cm": 300,
+                    "kind": 0
+                },
+                {
+                    "cx_cm": 1100,
+                    "cy_cm": 326,
+                    "cz_cm": 850,
+                    "sx_cm": 800,
+                    "sy_cm": 12,
+                    "sz_cm": 300,
+                    "kind": 1
+                },
+                {
+                    "cx_cm": 1100,
+                    "cy_cm": 160,
+                    "cz_cm": 992,
+                    "sx_cm": 800,
+                    "sy_cm": 320,
+                    "sz_cm": 15,
+                    "kind": 2
+                },
+                {
+                    "cx_cm": 1492,
+                    "cy_cm": 160,
+                    "cz_cm": 985,
+                    "sx_cm": 15,
+                    "sy_cm": 320,
+                    "sz_cm": 30,
+                    "kind": 2
+                },
+                {
+                    "cx_cm": 1492,
+                    "cy_cm": 160,
+                    "cz_cm": 715,
+                    "sx_cm": 15,
+                    "sy_cm": 320,
+                    "sz_cm": 30,
+                    "kind": 2
+                },
+                {
+                    "cx_cm": 1485,
+                    "cy_cm": 160,
+                    "cz_cm": 708,
+                    "sx_cm": 30,
+                    "sy_cm": 320,
+                    "sz_cm": 15,
+                    "kind": 2
+                },
+                {
+                    "cx_cm": 965,
+                    "cy_cm": 160,
+                    "cz_cm": 708,
+                    "sx_cm": 530,
+                    "sy_cm": 320,
+                    "sz_cm": 15,
+                    "kind": 2
+                },
+                {
+                    "cx_cm": 708,
+                    "cy_cm": 160,
+                    "cz_cm": 850,
+                    "sx_cm": 15,
+                    "sy_cm": 320,
+                    "sz_cm": 300,
+                    "kind": 2
+                }
+            ]
+        }
+    ]
+}

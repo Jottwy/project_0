@@ -224,7 +224,7 @@ fn placed_boxes_stay_inside_the_placement_footprint() {
 
 #[test]
 fn a_wall_is_never_lost_between_two_cell_centres() {
-    // El motivo entero de que el rasterizado sea conservador. Una pared mide 0,15 m y una celda
+    // El motivo entero de que el rasterizado sea conservador. Una pared mide 0,15 m y un tramo
     // 0,5 m: muestreando el centro, una pared entre dos centros DESAPARECE y se atraviesa andando,
     // mientras el cliente la sigue dibujando. Se comprueba pared por pared, no de muestra.
     let m = real_manifest();
@@ -245,8 +245,8 @@ fn a_wall_is_never_lost_between_two_cell_centres() {
 
 #[test]
 fn the_doorway_survives_the_conservative_rasterisation() {
-    // LA MEDIDA QUE VALIDA D1. El rasterizado conservador infla cada pared hasta media celda, y eso
-    // COME VANO. Si el hueco libre baja del diámetro del jugador, el tamaño de celda elegido en el
+    // LA MEDIDA QUE VALIDA D1. El rasterizado conservador infla cada pared hasta media tramo, y eso
+    // COME VANO. Si el hueco libre baja del diámetro del jugador, el tamaño de tramo elegido en el
     // ADR está mal y hay que bajarlo — no es una opinión, es este número.
     let m = real_manifest();
     let needed = PLAYER_RADIUS * 2.0;
@@ -464,7 +464,7 @@ fn the_raster_budget_is_measured_not_estimated() {
         let per_m2 = raster.bytes() as f32 / area;
         worst_bytes_per_m2 = worst_bytes_per_m2.max(per_m2);
         report.push(format!(
-            "{}: {} celdas, {} tramos, {} B ({:.0} B/m²)",
+            "{}: {} tramos, {} tramos, {} B ({:.0} B/m²)",
             piece.id,
             raster.cells_x() * raster.cells_z(),
             raster.span_count(),
@@ -637,7 +637,7 @@ fn close(expected: f32, got: f32, tag: &str, what: &str) {
 // ── chunk ───────────────────────────────────────────────────────────────────────────────────
 
 /// Una colocación que cae a caballo de los chunks (0,0) y (1,0), y que además NO empieza en un
-/// múltiplo de la celda: si empezara, el recorte del borde coincidiría con el de la rejilla por
+/// múltiplo de el tramo: si empezara, el recorte del borde coincidiría con el de la rejilla por
 /// suerte y la prueba de costura no probaría nada.
 fn straddling(m: &Wg3Manifest) -> (u16, Wg3Placement) {
     let piece = piece_by_id(m, "hall_void");
@@ -684,12 +684,12 @@ fn a_piece_straddling_two_chunks_rasterises_the_same_on_both_sides() {
 
     let mut compared = 0;
     for coord in &touched {
-        let chunk_raster = chunk::build_chunk_raster(&m, std::slice::from_ref(&p), *coord);
+        let chunk_raster = chunk::build_chunk_raster(&m, std::slice::from_ref(&p), &[], *coord);
         let (cx0, cz0, _, _) = coord.bounds();
 
         for iz in 0..chunk_raster.cells_z() {
             for ix in 0..chunk_raster.cells_x() {
-                // Centro de celda en coordenadas de mundo: es lo único que las dos rejillas
+                // Centro de tramo en coordenadas de mundo: es lo único que las dos rejillas
                 // comparten, porque tienen orígenes distintos.
                 let x = cx0 + (ix as f32 + 0.5) * WG3_CELL_M;
                 let z = cz0 + (iz as f32 + 0.5) * WG3_CELL_M;
@@ -699,15 +699,15 @@ fn a_piece_straddling_two_chunks_rasterises_the_same_on_both_sides() {
                 assert_eq!(
                     whole.column_at(x, z),
                     chunk_raster.column(ix, iz),
-                    "la celda de mundo ({x:.2}, {z:.2}) sale distinta al recortarla por el chunk \
+                    "el tramo de mundo ({x:.2}, {z:.2}) sale distinta al recortarla por el chunk \
                      {coord:?}"
                 );
                 compared += 1;
             }
         }
     }
-    assert!(compared > 2_000, "solo {compared} celdas comparadas");
-    println!("[wg3] costura: {compared} celdas idénticas a los dos lados de la frontera");
+    assert!(compared > 2_000, "solo {compared} tramos comparadas");
+    println!("[wg3] costura: {compared} tramos idénticas a los dos lados de la frontera");
 }
 
 #[test]
@@ -715,7 +715,7 @@ fn a_chunk_that_no_piece_touches_comes_out_empty() {
     let m = real_manifest();
     let (_, p) = straddling(&m);
     let far = chunk::Wg3ChunkCoord { x: 40, z: -17 };
-    let raster = chunk::build_chunk_raster(&m, std::slice::from_ref(&p), far);
+    let raster = chunk::build_chunk_raster(&m, std::slice::from_ref(&p), &[], far);
     assert_eq!(0, raster.span_count());
 }
 
@@ -733,7 +733,7 @@ fn chunk_coords_do_not_mirror_at_the_origin() {
 
 #[test]
 fn a_piece_ending_exactly_on_the_border_does_not_claim_the_next_chunk() {
-    // El máximo es EXCLUSIVO. Reclamar un chunk en el que no se pone ni una celda haría
+    // El máximo es EXCLUSIVO. Reclamar un chunk en el que no se pone ni un tramo haría
     // re-rasterizar de más en cada colocación, y peor: un chunk vacío que se cree ocupado.
     let m = real_manifest();
     let piece = piece_by_id(&m, "cor_straight");
@@ -779,7 +779,7 @@ fn the_chunk_budget_is_measured_on_a_real_chunk() {
 
     let coord = chunk::Wg3ChunkCoord { x: 0, z: 0 };
     let start = std::time::Instant::now();
-    let raster = chunk::build_chunk_raster(&m, &placements, coord);
+    let raster = chunk::build_chunk_raster(&m, &placements, &[], coord);
     let elapsed = start.elapsed();
 
     let kb = raster.bytes() as f32 / 1024.0;
@@ -792,7 +792,7 @@ fn the_chunk_budget_is_measured_on_a_real_chunk() {
         "release"
     };
     println!(
-        "[wg3] chunk lleno: {} colocaciones, {} celdas, {} tramos, {kb:.0} KB, \
+        "[wg3] chunk lleno: {} colocaciones, {} tramos, {} tramos, {kb:.0} KB, \
          rasterizado en {:.1} ms ({profile})",
         placements.len(),
         raster.cells_x() * raster.cells_z(),
@@ -878,6 +878,9 @@ fn settings_from(oracle: &CompositionOracle, budget: usize) -> compose::Wg3Compo
         // conoce ni regiones ni juntas. Acotarlo aquí no mediría paridad, mediría otra cosa.
         bounds: None,
         seed_at: None,
+        // ADR-098 — sin enrutador, por lo mismo que sin bucles: C# no genera conectores, así que
+        // encenderlo aquí no mediría una deriva, mediría que hemos cambiado el algoritmo.
+        route: None,
         anchors: Vec::new(),
     }
 }
@@ -1001,7 +1004,7 @@ fn composing_twice_gives_the_same_world() {
 ///
 /// Se comprueba sobre las coordenadas EMITIDAS —en centímetros— y no sobre las internas: son las que
 /// va a rasterizar el servidor, así que es donde un solape se convierte en dos suelos en la misma
-/// celda.
+/// tramo.
 #[test]
 fn a_composed_world_has_no_overlaps_and_no_sockets_left_open() {
     let m = real_manifest();
@@ -1048,7 +1051,8 @@ fn a_composed_world_has_no_overlaps_and_no_sockets_left_open() {
 // ── el mundo servido: componer una vez, repartir por chunk ──────────────────────────────────
 
 use super::world::{
-    composer_seed, Wg3RegionCoord, Wg3ServedWorld, Wg3WorldCache, INTERIM_BUDGET, REGION_CHUNKS,
+    composer_seed, region_settings, Wg3RegionCoord, Wg3ServedWorld, Wg3WorldCache, INTERIM_BUDGET,
+    REGION_CHUNKS,
 };
 
 /// Semilla de las pruebas del mundo servido. Es la del oráculo con los 32 bits altos puestos: así
@@ -1483,8 +1487,12 @@ fn a_gate_can_actually_be_walked_through() {
             let chunk = chunk::Wg3ChunkCoord::containing(x, z);
             let region = Wg3RegionCoord::of_chunk(chunk);
             let world = Wg3ServedWorld::compose_region(&m, SERVED_SEED, region);
-            let raster =
-                chunk::build_chunk_raster(&m, &world.placements_touching_chunk(&m, chunk), chunk);
+            let raster = chunk::build_chunk_raster(
+                &m,
+                &world.placements_touching_chunk(&m, chunk),
+                &[],
+                chunk,
+            );
 
             assert!(
                 !raster.blocked_standing_at(x, 0.0, z, HEAD_M),
@@ -1756,7 +1764,7 @@ fn the_world_has_floor_where_the_player_appears() {
 
     let coord = chunk::Wg3ChunkCoord::containing(0.0, 0.0);
     let placements = world.placements_touching_chunk(&m, coord);
-    let raster = chunk::build_chunk_raster(&m, &placements, coord);
+    let raster = chunk::build_chunk_raster(&m, &placements, &[], coord);
 
     let floor = raster
         .floor_below(0.0, 1.0, 0.0)
@@ -1929,6 +1937,7 @@ fn the_ramp_actually_raises_what_hangs_from_it() {
                 let raster = chunk::build_chunk_raster(
                     &m,
                     &world.placements_touching_chunk(&m, chunk),
+                    &[],
                     chunk,
                 );
 
@@ -2040,6 +2049,44 @@ fn probe_is_the_served_world_one_piece_or_islands() {
             }
         }
 
+        // ADR-098 — y las CELDAS generadas unen tanto como una boca coincidente, que es justamente
+        // su razón de existir. Se meten en el mismo union-find por GEOMETRÍA —la boca de un tramo
+        // cae en el mismo punto que la de la pieza a la que se pegó— y no preguntándole al
+        // enrutador qué unió: un mundo transitable es una propiedad del resultado, no de la
+        // contabilidad de quien lo hizo.
+        let segments = world.segments();
+        parent.resize(n + segments.len(), 0);
+        for (k, node) in parent.iter_mut().enumerate().skip(n) {
+            *node = k;
+        }
+        let segment_mouths: Vec<Vec<(f32, f32)>> =
+            segments.iter().map(segment_mouth_points).collect();
+
+        let touches = |a: &[(f32, f32)], b: &[(f32, f32)]| {
+            a.iter().any(|p| {
+                b.iter()
+                    .any(|q| (p.0 - q.0).abs() < 0.02 && (p.1 - q.1).abs() < 0.02)
+            })
+        };
+        for k in 0..segments.len() {
+            for (i, piece_mouths) in mouths.iter().enumerate().take(n) {
+                if touches(&segment_mouths[k], piece_mouths) {
+                    let (ri, rk) = (find(&mut parent, i), find(&mut parent, n + k));
+                    if ri != rk {
+                        parent[ri] = rk;
+                    }
+                }
+            }
+            for l in (k + 1)..segments.len() {
+                if touches(&segment_mouths[k], &segment_mouths[l]) {
+                    let (rk, rl) = (find(&mut parent, n + k), find(&mut parent, n + l));
+                    if rk != rl {
+                        parent[rk] = rl;
+                    }
+                }
+            }
+        }
+
         let mut sizes = std::collections::HashMap::<usize, usize>::new();
         for i in 0..n {
             let r = find(&mut parent, i);
@@ -2064,7 +2111,8 @@ fn probe_is_the_served_world_one_piece_or_islands() {
             .count();
 
         println!(
-            "[wg3] región ({rx},{rz}): {n} piezas en **{} islas** ({gates} puertas + semilla = {}) — la mayor tiene {biggest} ({:.0} %), {raised} a distinta cota, tamaños {:?}",
+            "[wg3] región ({rx},{rz}): {n} piezas y {} tramos en **{} islas** ({gates} puertas + semilla = {}) — la mayor tiene {biggest} ({:.0} %), {raised} a distinta cota, tamaños {:?}",
+            segments.len(),
             counts.len(),
             gates + 1,
             biggest as f32 * 100.0 / n.max(1) as f32,
@@ -2170,8 +2218,12 @@ fn probe_open_mouths_in_the_served_world() {
                 let chunk = chunk::Wg3ChunkCoord::containing(x, z);
                 let its_region = Wg3RegionCoord::of_chunk(chunk);
                 let w = Wg3ServedWorld::compose_region(&m, SERVED_SEED, its_region);
-                let raster =
-                    chunk::build_chunk_raster(&m, &w.placements_touching_chunk(&m, chunk), chunk);
+                let raster = chunk::build_chunk_raster(
+                    &m,
+                    &w.placements_touching_chunk(&m, chunk),
+                    &[],
+                    chunk,
+                );
 
                 if raster.floor_below(x, HEAD_M, z).is_none() {
                     holes += 1;
@@ -2270,5 +2322,419 @@ fn how_soon_the_same_piece_comes_round_again() {
             "[wg3]   {id:<16} {n:>4}  ({:.1} %)",
             *n as f32 * 100.0 / total as f32
         );
+    }
+}
+
+// ───────────────────────────── ADR-098 T1 — el tramo generada ─────────────────────────────
+
+use super::segment::{self, Wg3Opening, Wg3Segment, KIND_CEILING, KIND_FLOOR, KIND_WALL};
+
+/// Un tramo recto: 10 m de largo por 2,4 de ancho, abierto de punta a punta.
+fn straight_segment() -> Wg3Segment {
+    Wg3Segment {
+        x_cm: 0,
+        z_cm: 0,
+        size_x_cm: 1000,
+        size_z_cm: 240,
+        floor_y_cm: 0,
+        height_cm: 320,
+        openings: vec![
+            Wg3Opening {
+                side: 3,
+                offset_cm: 120,
+                width_cm: 240,
+            },
+            Wg3Opening {
+                side: 1,
+                offset_cm: 120,
+                width_cm: 240,
+            },
+        ],
+        style: 0,
+    }
+}
+
+/// LA PROPIEDAD QUE HACE ÚTIL A UNA CELDA: una boca a todo el ancho no deja pared en ese lado.
+///
+/// Si dejara aunque fuese un tramo de medio centímetro, dos tramos encadenadas tendrían un tabique
+/// entre ellas y el conector sería una fila de armarios. Y el fallo no se vería en una planta: se
+/// vería andando, al chocar contra aire.
+#[test]
+fn a_full_width_opening_leaves_no_wall_on_that_side() {
+    let boxes = segment::segment_boxes(&straight_segment());
+
+    assert_eq!(
+        4,
+        boxes.len(),
+        "suelo, techo y las dos paredes largas — nada más: {boxes:#?}"
+    );
+    assert_eq!(KIND_FLOOR, boxes[0].kind);
+    assert_eq!(KIND_CEILING, boxes[1].kind);
+    assert!(boxes[2..].iter().all(|b| b.kind == KIND_WALL));
+
+    // Las dos que quedan son las largas (N y S), no las de los extremos.
+    for b in &boxes[2..] {
+        assert!(
+            (b.size[0] - 10.0).abs() < 1e-3,
+            "pared corta donde no debía: {b:?}"
+        );
+    }
+}
+
+/// Una boca más estrecha que su lado deja las DOS jambas, y en su sitio.
+#[test]
+fn a_narrow_opening_leaves_a_jamb_on_each_side() {
+    let mut c = straight_segment();
+    // El lado O (x = 0) corre en +Z y mide 2,4: una boca de 1,2 centrada deja 0,6 a cada lado.
+    c.openings[0] = Wg3Opening {
+        side: 3,
+        offset_cm: 120,
+        width_cm: 120,
+    };
+
+    let boxes = segment::segment_boxes(&c);
+    let west: Vec<_> = boxes
+        .iter()
+        .filter(|b| b.kind == KIND_WALL && b.center[0] < 0.2)
+        .collect();
+
+    assert_eq!(2, west.len(), "faltan jambas: {west:#?}");
+    for b in &west {
+        assert!(
+            (b.size[2] - 0.6).abs() < 1e-3,
+            "jamba de {} m, se esperaba 0,6",
+            b.size[2]
+        );
+    }
+}
+
+/// LA TRANSICIÓN DE ANCHO SALE SOLA (ADR-098 D6). Un tramo de 5 m de ancho con una boca de 2,4 en
+/// un extremo y otra de 5 en el otro es la pieza de transición que hoy hay que autorar — y no
+/// necesita ni un caso especial en el emisor.
+#[test]
+fn a_width_change_is_just_two_openings_of_different_width() {
+    let c = Wg3Segment {
+        x_cm: 0,
+        z_cm: 0,
+        size_x_cm: 600,
+        size_z_cm: 500,
+        floor_y_cm: 0,
+        height_cm: 320,
+        openings: vec![
+            Wg3Opening {
+                side: 3,
+                offset_cm: 250,
+                width_cm: 240,
+            },
+            Wg3Opening {
+                side: 1,
+                offset_cm: 250,
+                width_cm: 500,
+            },
+        ],
+        style: 0,
+    };
+
+    let boxes = segment::segment_boxes(&c);
+    let west = boxes
+        .iter()
+        .filter(|b| b.kind == KIND_WALL && b.center[0] < 0.2)
+        .count();
+    let east = boxes
+        .iter()
+        .filter(|b| b.kind == KIND_WALL && b.center[0] > 5.8)
+        .count();
+
+    assert_eq!(2, west, "el lado estrecho tiene que conservar sus jambas");
+    assert_eq!(0, east, "el lado ancho está abierto de par en par");
+}
+
+/// La cota de el tramo es la cara PISABLE, no la de la losa: dos tramos contiguas a cotas distintas
+/// dejan exactamente su diferencia como contrahuella, que es de lo que se hace una escalera (D7).
+#[test]
+fn the_floor_slab_hangs_below_the_cell_cota() {
+    let mut c = straight_segment();
+    c.floor_y_cm = 72;
+
+    let boxes = segment::segment_boxes(&c);
+    let floor = boxes.iter().find(|b| b.kind == KIND_FLOOR).expect("suelo");
+    let top = floor.center[1] + floor.size[1] * 0.5;
+
+    assert!(
+        (top - 0.72).abs() < 1e-4,
+        "la cara pisable quedó en {top}, no en la cota de el tramo"
+    );
+}
+
+/// El tope de tramo no es estético: es lo que sostiene el reparto por chunk. Se comprueba que la
+/// tramo lo DENUNCIA, porque emitirla sin más dejaría una pieza de la que un cliente con radio 1
+/// solo vería la mitad.
+#[test]
+fn a_cell_over_the_size_cap_reports_it() {
+    let mut c = straight_segment();
+    c.size_x_cm = 3000;
+
+    let problems = c.problems();
+    assert!(
+        problems.iter().any(|p| p.contains("tope")),
+        "el tope de {} m no se denunció: {problems:?}",
+        segment::MAX_SEGMENT_M
+    );
+}
+
+/// Un tramo sin bocas es una caja maciza, y una boca que se sale de su lado es una pared con un
+/// agujero por el que se ve el vacío. Las dos se cazan antes de emitir.
+#[test]
+fn a_cell_without_openings_or_with_one_that_overflows_is_rejected() {
+    let mut sealed = straight_segment();
+    sealed.openings.clear();
+    assert!(sealed.problems().iter().any(|p| p.contains("sin bocas")));
+
+    let mut spill = straight_segment();
+    spill.openings[0].width_cm = 400; // 4 m en un lado de 2,4
+    assert!(spill.problems().iter().any(|p| p.contains("se sale")));
+}
+
+/// El ráster ve lo que el tramo dice: pasillo libre por dentro, macizo donde hay pared. Va contra el
+/// MISMO ráster que colisiona y no contra la lista de cajas, que es lo que distingue este test de
+/// una tautología.
+#[test]
+fn the_raster_of_a_cell_is_hollow_inside_and_solid_at_its_walls() {
+    let c = straight_segment();
+    let mut builder = Wg3RasterBuilder::covering(-1.0, -1.0, 11.0, 3.4);
+    for b in segment::segment_boxes(&c) {
+        builder.add_box(&b);
+    }
+    let raster = builder.finish();
+
+    // Centro del pasillo, a la altura de la cabeza: libre.
+    assert!(
+        !raster.is_solid_at(5.0, 1.7, 1.2),
+        "el pasillo está tapiado por dentro"
+    );
+    // Contra la pared larga: macizo.
+    assert!(
+        raster.is_solid_at(5.0, 1.7, 2.35),
+        "la pared larga no bloquea"
+    );
+    // Y hay suelo bajo los pies.
+    assert!(
+        raster.is_solid_at(5.0, -0.06, 1.2),
+        "no hay suelo dentro de el tramo"
+    );
+}
+
+/// **QUÉ TIENDE EL ENRUTADOR, Y QUÉ DESCARTA** (ADR-098 T6).
+///
+/// Los descartes son la mitad útil: dicen si lo que frena a los conectores es el mundo apretado —y
+/// entonces la palanca es la geometría— o una regla nuestra —cota, anchura, tipo—, que es una
+/// decisión y no un límite. Sin este número, subir una perilla es adivinar.
+#[test]
+fn probe_generated_connectors() {
+    let m = real_manifest();
+
+    for (rx, rz) in [(0, 0), (1, 0), (0, 1), (-1, 2)] {
+        let region = Wg3RegionCoord { x: rx, z: rz };
+        let settings = region_settings(&m, SERVED_SEED, region);
+        let start = std::time::Instant::now();
+        let composed = compose::compose(region.composer_seed(SERVED_SEED), &m, &settings);
+        let elapsed = start.elapsed();
+
+        println!(
+            "[wg3] región ({rx},{rz}): {} piezas, {} bocas abiertas ({} sin usar), \
+             {} componentes al final | {} conectores ({} unen islas, {} anillos), {} tramos | \
+             descartes: cota {}, ancho {}, tipo {}, geometría {} | {:?}",
+            composed.placements.len(),
+            composed.route_mouths,
+            composed.route_unused_mouths,
+            composed.route_components_left,
+            composed.connectors,
+            composed.connectors_joining_islands,
+            composed.connectors - composed.connectors_joining_islands,
+            composed.segments.len(),
+            composed.rejected_by_cota,
+            composed.rejected_by_width,
+            composed.rejected_by_kind,
+            composed.rejected_by_route_geometry,
+            elapsed
+        );
+        for (x, z, side, width) in &composed.route_leftover {
+            println!(
+                "[wg3]   sin enganchar: ({:.2}, {:.2}) lado {side} ancho {:.2}",
+                *x as f32 / 100.0,
+                *z as f32 / 100.0,
+                *width as f32 / 100.0
+            );
+        }
+    }
+}
+
+/// Los puntos de mundo de las bocas de un tramo. Es lo que permite preguntarle a la GEOMETRÍA si
+/// un tramo une dos cosas, en vez de fiarse de lo que el enrutador dice que unió.
+fn segment_mouth_points(c: &Wg3Segment) -> Vec<(f32, f32)> {
+    let (w, d) = (c.size_x(), c.size_z());
+    c.openings
+        .iter()
+        .map(|o| {
+            let (lx, lz) = placement::local_point(o.side, o.offset_cm as f32 / 100.0, w, d);
+            (c.min_x() + lx, c.min_z() + lz)
+        })
+        .collect()
+}
+
+// ─────────────────── ADR-098 T2 — el oráculo de conectores (paridad C# ↔ Rust) ───────────────────
+
+#[derive(serde::Deserialize)]
+struct ConnOpening {
+    side: u8,
+    offset_cm: i32,
+    width_cm: i32,
+}
+
+#[derive(serde::Deserialize)]
+struct ConnBox {
+    cx_cm: i32,
+    cy_cm: i32,
+    cz_cm: i32,
+    sx_cm: i32,
+    sy_cm: i32,
+    sz_cm: i32,
+    kind: u8,
+}
+
+#[derive(serde::Deserialize)]
+struct ConnSegment {
+    name: String,
+    x_cm: i32,
+    z_cm: i32,
+    size_x_cm: i32,
+    size_z_cm: i32,
+    floor_y_cm: i32,
+    height_cm: i32,
+    style: u8,
+    openings: Vec<ConnOpening>,
+    boxes: Vec<ConnBox>,
+}
+
+#[derive(serde::Deserialize)]
+struct ConnectorOracle {
+    slab_thickness_mm: i32,
+    wall_thickness_mm: i32,
+    segments: Vec<ConnSegment>,
+}
+
+fn connector_oracle() -> ConnectorOracle {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("wg3_connector_oracle.json");
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!(
+            "sin oráculo de conectores en {}: {e}. Reexpórtalo desde Unity con «Backrooms ▸ \
+             WorldGen3 ▸ Exportar oráculo de conectores».",
+            path.display()
+        )
+    });
+    serde_json::from_str(&text).expect("oráculo de conectores ilegible")
+}
+
+/// Metros a centimetros con el MISMO redondeo que `Mathf.RoundToInt`: a la par en los empates.
+///
+/// Redondear al mas cercano en vez de a la par mete un centimetro de diferencia justo en las cotas
+/// que caen en medio —el centro de una pared de 15 mm cae en 232,5— y el oraculo lo lee como una
+/// deriva entre idiomas cuando solo es otra regla de redondeo.
+fn cm(v: f32) -> i32 {
+    ((v * 100.0) as f64).round_ties_even() as i32
+}
+
+/// EL CRITERIO DE CIERRE DE LA CELDA GENERADA (ADR-098 D2).
+///
+/// La expansión está escrita dos veces: C# la usa para dibujar —construyendo una pieza sintética y
+/// llamando a `Wg3Geometry.Build`, que es la fuente única del aspecto— y este lado la usa para
+/// rasterizar la colisión sin ver una malla (R1). Dos implementaciones consistentes cada una por su
+/// cuenta pueden diferir entre ellas, y el síntoma sería el peor del sistema: una pared que se ve y
+/// no frena, o al revés.
+///
+/// Así que uno escribe las cajas («Backrooms ▸ WorldGen3 ▸ Exportar oráculo de conectores») y el otro
+/// las reproduce, caja a caja y EN ORDEN. El orden importa: es parte del contrato de `segment_boxes`.
+///
+/// SOLO LO SÓLIDO: la decoración no cruza la frontera de autoridad (R25). Que el fixture no traiga
+/// rodapiés es la afirmación de que Rust no tiene por qué generarlos.
+#[test]
+fn the_generated_cell_expands_the_same_in_both_languages() {
+    let oracle = connector_oracle();
+
+    assert_eq!(
+        oracle.slab_thickness_mm,
+        cm(segment::SLAB_THICKNESS_M) * 10,
+        "grosor de losa distinto entre C# y Rust"
+    );
+    assert_eq!(
+        oracle.wall_thickness_mm,
+        cm(segment::WALL_THICKNESS_M) * 10,
+        "grosor de pared distinto entre C# y Rust"
+    );
+
+    for oc in &oracle.segments {
+        let c = Wg3Segment {
+            x_cm: oc.x_cm,
+            z_cm: oc.z_cm,
+            size_x_cm: oc.size_x_cm,
+            size_z_cm: oc.size_z_cm,
+            floor_y_cm: oc.floor_y_cm,
+            height_cm: oc.height_cm,
+            openings: oc
+                .openings
+                .iter()
+                .map(|o| Wg3Opening {
+                    side: o.side,
+                    offset_cm: o.offset_cm,
+                    width_cm: o.width_cm,
+                })
+                .collect(),
+            style: oc.style,
+        };
+        assert!(
+            c.problems().is_empty(),
+            "el tramo «{}» del oráculo no es válida: {:?}",
+            oc.name,
+            c.problems()
+        );
+
+        let mine = segment::segment_boxes(&c);
+        assert_eq!(
+            oc.boxes.len(),
+            mine.len(),
+            "«{}»: C# da {} cajas sólidas y Rust {}",
+            oc.name,
+            oc.boxes.len(),
+            mine.len()
+        );
+
+        for (i, (want, got)) in oc.boxes.iter().zip(mine.iter()).enumerate() {
+            let got = [
+                cm(got.center[0]),
+                cm(got.center[1]),
+                cm(got.center[2]),
+                cm(got.size[0]),
+                cm(got.size[1]),
+                cm(got.size[2]),
+                got.kind as i32,
+            ];
+            let want = [
+                want.cx_cm,
+                want.cy_cm,
+                want.cz_cm,
+                want.sx_cm,
+                want.sy_cm,
+                want.sz_cm,
+                want.kind as i32,
+            ];
+            assert_eq!(
+                want, got,
+                "«{}», caja {i}: C# {want:?} contra Rust {got:?} (centro xyz, tamaño xyz, tipo)",
+                oc.name
+            );
+        }
     }
 }
