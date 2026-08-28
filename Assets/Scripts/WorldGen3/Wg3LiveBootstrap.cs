@@ -187,8 +187,20 @@ namespace BackroomsSurvival.WorldGen3
         }
 
         [Header("Cruce de junta (ADR-096 verificación (e))")]
-        [Tooltip("Tras aterrizar, busca una junta de región y la cruza andando, solo.")]
-        public bool autoCrossJunction = true;
+        /// <summary>
+        /// APAGADO POR DEFECTO desde 2026-08-28. Era el arnés de la verificación (e) de ADR-096
+        /// —buscar una junta y cruzarla solo—, ya cumplida y registrada.
+        ///
+        /// El defecto importa más de lo que parece: con «Enter Play Mode Options / Reload Scene
+        /// disabled», Unity NO recarga la escena del disco al entrar en Play, así que una escena que
+        /// siga en memoria de antes de que este campo existiera usa el DEFECTO DE LA CLASE. Con el
+        /// defecto en `true`, apagarlo en el fichero de escena no servía de nada y el arnés seguía
+        /// secuestrando al jugador a los tres segundos de aparecer: se lo llevaba al borde de la
+        /// región y lo empujaba 12 m, que desde dentro se lee como «esto no genera nada».
+        /// </summary>
+        [Tooltip("Tras aterrizar, busca una junta de región y la cruza andando, solo. Es un arnés " +
+                 "de verificación: déjalo apagado para jugar.")]
+        public bool autoCrossJunction;
 
         /// <summary>
         /// Lado de región en metros. **Espejo de `REGION_M` en Rust**, y duplicado a sabiendas: el
