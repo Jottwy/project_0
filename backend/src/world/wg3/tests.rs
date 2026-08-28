@@ -3081,6 +3081,112 @@ fn probe_how_much_of_the_region_can_be_walked_from_the_spawn() {
     }
 }
 
+/// **EL NÚMERO QUE ADR-095 PROMETIÓ Y NADIE ESCRIBIÓ.**
+///
+/// `raster.rs:22-29` dice, desde el primer día: «cada pared se infla hasta media celda y eso COME
+/// VANO. Cuánto exactamente es un número, no una opinión, y lo mide `narrowest_doorway_clearance`
+/// en los tests: si baja del diámetro del jugador, el tamaño de celda de D1 está mal elegido». Ese
+/// test **no existía**. Aquí está.
+///
+/// Mide el hueco LIBRE que sobrevive al rasterizado dentro de un pasillo de anchura W, barriendo la
+/// alineación sub-celda: dos paredes de 15 cm en un mundo de celdas de 50 cm no caen donde uno
+/// quiere, y el peor caso es el que manda porque el mundo se coloca en centímetros arbitrarios.
+///
+/// Se salvó por los pelos y por accidente: el catálogo autorado tiene bocas de 2,4 y 5,0 m. Lo que
+/// ADR-098 empezó a generar baja de eso.
+#[test]
+fn narrowest_doorway_clearance() {
+    // Alto de referencia del cuerpo, para preguntar por el hueco a la altura a la que se anda.
+    const BODY_M: f32 = 1.7;
+
+    // El hueco libre de un pasillo de `width_cm` de ancho, con la esquina en `offset_cm`, medido a
+    // mitad de su largo. Devuelve metros.
+    let clearance = |width_cm: i32, offset_cm: i32| -> f32 {
+        let cell = Wg3Segment {
+            x_cm: offset_cm,
+            z_cm: offset_cm,
+            size_x_cm: width_cm,
+            size_z_cm: 600,
+            floor_y_cm: 0,
+            height_cm: 320,
+            openings: vec![
+                Wg3Opening {
+                    side: 0,
+                    offset_cm: width_cm / 2,
+                    width_cm,
+                },
+                Wg3Opening {
+                    side: 2,
+                    offset_cm: width_cm / 2,
+                    width_cm,
+                },
+            ],
+            style: 0,
+        };
+        // A propósito NO se exige `problems().is_empty()`: la regla de anchura mínima que este test
+        // justifica vive ahí, así que el pasillo de 120 cm —el que hay que poder medir para saber
+        // que está mal— es inválido por construcción. Medirlo es el objeto del test.
+        let (x0, z0, x1, z1) = cell.bounds();
+        let mut builder = Wg3RasterBuilder::covering(x0 - 1.0, z0 - 1.0, x1 + 1.0, z1 + 1.0);
+        for b in segment::segment_boxes(&cell) {
+            builder.add_box(&b);
+        }
+        let raster = builder.finish();
+
+        // Se barre a lo ancho en pasos de un centímetro y se mide la RACHA más larga sin materia a
+        // la altura del cuerpo. La racha, y no el total: dos medios huecos separados por una pared
+        // no dejan pasar a nadie.
+        let z = (z0 + z1) * 0.5;
+        let (mut best, mut run) = (0, 0);
+        for step in 0..=((x1 - x0) * CM_PER_M) as i32 {
+            let x = x0 + step as f32 / CM_PER_M;
+            if raster.blocked_standing_at(x, 0.0, z, BODY_M) {
+                run = 0;
+            } else {
+                run += 1;
+                best = best.max(run);
+            }
+        }
+        (best - 1).max(0) as f32 / CM_PER_M
+    };
+
+    // El peor caso de cada anchura sobre todas las alineaciones sub-celda posibles.
+    let worst_of = |width_cm: i32| -> f32 {
+        let mut worst = f32::MAX;
+        for offset in (0..50).step_by(5) {
+            worst = worst.min(clearance(width_cm, offset));
+        }
+        println!("[wg3] pasillo de {width_cm} cm → hueco libre peor caso {worst:.2} m");
+        worst
+    };
+
+    let narrow = worst_of(120);
+    let medium = worst_of(200);
+    let corridor = worst_of(240);
+    let wide = worst_of(500);
+
+    // **LO QUE ESTE TEST FIJA.** El catálogo pasa; lo que el enrutador generaba, no.
+    assert!(
+        corridor >= PLAYER_RADIUS * 2.0,
+        "el pasillo de 2,4 m del catálogo deja {corridor:.2} m y el jugador mide {:.2} m de \
+         diámetro: la celda de 0,5 m de ADR-095 D1 estaría mal elegida",
+        PLAYER_RADIUS * 2.0
+    );
+    assert!(
+        wide >= PLAYER_RADIUS * 2.0,
+        "el pasillo de 5,0 m deja {wide:.2} m"
+    );
+    assert!(
+        narrow < PLAYER_RADIUS * 2.0,
+        "un pasillo de 1,20 m deja {narrow:.2} m y el jugador cabe: si esto deja de ser cierto es \
+         que el rasterizado cambió, y el mínimo del enrutador (MIN_GENERATED_WIDTH_CM) sobra",
+    );
+    println!(
+        "[wg3] el jugador mide {:.2} m de diámetro; 200 cm dejan {medium:.2} m",
+        PLAYER_RADIUS * 2.0
+    );
+}
+
 /// **DE QUÉ ESTÁ HECHA CADA MANCHA ANDABLE** (diagnóstico de por qué no se llega a los tramos).
 ///
 /// La sonda de arriba dice que la región (0,0) tiene una mancha de 10890 celdas y otra de 4112, y

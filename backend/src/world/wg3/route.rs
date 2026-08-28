@@ -31,7 +31,7 @@
 
 use super::placement::outward_normal;
 use super::raster::CM_PER_M;
-use super::segment::{metres, Wg3Opening, Wg3Segment, MAX_SEGMENT_M};
+use super::segment::{metres, Wg3Opening, Wg3Segment, MAX_SEGMENT_M, MIN_GENERATED_WIDTH_CM};
 
 /// Longitudes de arranque que se prueban desde cada boca, en centímetros y EN ESTE ORDEN.
 ///
@@ -73,7 +73,12 @@ const MOUTH_TARGET_COST_CM: i32 = 2000;
 
 /// Anchuras a las que se intenta estrechar un conector por el medio, en centimetros y EN ESTE ORDEN.
 /// El `0` es «a su anchura natural», que es lo que se prueba primero.
-const NARROW_STEPS_CM: [i32; 3] = [0, 180, 140];
+///
+/// **AQUI HABIA 180 Y 140, Y LOS DOS NACIAN TAPIADOS.** El raster es conservador y una boca por
+/// debajo de `MIN_GENERATED_WIDTH_CM` no deja hueco para el jugador (medido en
+/// `narrowest_doorway_clearance`: 120 cm dan 0,00 m). Estrechar por debajo del minimo no era una
+/// ruta mas apretada, era una ruta que no existe con un pasillo dibujado encima.
+const NARROW_STEPS_CM: [i32; 2] = [0, MIN_GENERATED_WIDTH_CM];
 
 /// Solape estricto. Mismo epsilon que el compositor: dos rectángulos que se TOCAN son correctos —una
 /// tramo arranca pegada a la cara de su pieza—, dos que se penetran no.
@@ -221,7 +226,10 @@ const KIND_SERVICE: u8 = 2;
 const TAP_MARGIN_CM: i32 = 60;
 
 /// Anchura minima de una toma. Mas estrecho no es un pasillo, es una gatera.
-const MIN_TAP_WIDTH_CM: i32 = 120;
+///
+/// Era 120, que ademas de gatera era PARED: el raster conservador la tapiaba entera. El suelo lo
+/// pone ahora la medida, no la intuicion — ver `MIN_GENERATED_WIDTH_CM`.
+const MIN_TAP_WIDTH_CM: i32 = MIN_GENERATED_WIDTH_CM;
 
 /// Cuantas RUTAS se llegan a construir al buscar un puente.
 ///

@@ -62,6 +62,28 @@ pub const KIND_FLOOR: u8 = 0;
 pub const KIND_CEILING: u8 = 1;
 pub const KIND_WALL: u8 = 2;
 
+/// **ANCHURA MÍNIMA DE UNA BOCA GENERADA, Y ES UN NÚMERO MEDIDO, NO ELEGIDO.**
+///
+/// El ráster es CONSERVADOR: toda celda que una caja toque queda maciza (`raster.rs`), así que cada
+/// pared de 15 cm se infla hasta ocupar su celda de 50 cm entera y **come vano por los dos lados**.
+/// `narrowest_doorway_clearance` lo mide barriendo la alineación sub-celda, que es la que manda
+/// porque el mundo se coloca en centímetros arbitrarios:
+///
+/// | boca | hueco libre en el peor caso |
+/// |---|---|
+/// | 120 cm | **0,00 m** — tapiada |
+/// | 200 cm | 0,99 m |
+/// | 240 cm | 1,49 m |
+/// | 500 cm | 3,99 m |
+///
+/// El jugador mide 0,70 m de diámetro, así que 200 es el primer escalón de 50 cm que pasa. Por
+/// debajo, el cliente dibuja un pasillo abierto y el servidor no deja entrar — el peor fallo
+/// posible, porque no se ve en una captura.
+///
+/// El catálogo autorado se libró por accidente: sus bocas son de 2,4 y 5,0 m. Lo que ADR-098 empezó
+/// a GENERAR bajaba de ahí.
+pub const MIN_GENERATED_WIDTH_CM: i32 = 200;
+
 /// Lado máximo de un tramo, en metros.
 ///
 /// **Es lo que deja intacto el reparto por chunk.** «Una pieza, un chunk» se sostiene sobre que
@@ -162,6 +184,13 @@ impl Wg3Segment {
         for o in &self.openings {
             if o.width_cm <= 0 {
                 out.push(format!("boca de anchura {} cm", o.width_cm));
+            } else if o.width_cm < MIN_GENERATED_WIDTH_CM {
+                // No es estética: por debajo de aquí el ráster tapia el vano y el conector nace
+                // impasable mientras el cliente lo dibuja abierto. Ver `MIN_GENERATED_WIDTH_CM`.
+                out.push(format!(
+                    "boca de {} cm por debajo del mínimo de {} cm: el ráster la tapiaría",
+                    o.width_cm, MIN_GENERATED_WIDTH_CM
+                ));
             }
             let side_cm = if o.side.is_multiple_of(2) {
                 self.size_x_cm
