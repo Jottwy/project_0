@@ -126,6 +126,23 @@ namespace BackroomsSurvival.WorldGen3
                 }
             });
 
+            // Cruce de 4 vías — sin esta pieza no hay bifurcación real: todo lo demás es paso o
+            // codo. Centrada porque un cruce descentrado no se lee como cruce.
+            c.Add(new Wg3Piece
+            {
+                id = "cor_cross", geometryId = "cor_cross",
+                sizeX = 9f, sizeZ = 9f, heightMeters = DefaultCeiling,
+                scale = Wg3Scale.Narrow, weight = 0.50f,
+                sockets = new[]
+                {
+                    Sock(0, 4.5f, Wg3SocketType.Corridor),
+                    Sock(1, 4.5f, Wg3SocketType.Corridor),
+                    Sock(2, 4.5f, Wg3SocketType.Corridor),
+                    Sock(3, 4.5f, Wg3SocketType.Corridor)
+                },
+                pillars = new[] { new Wg3Pillar(4.5f, 4.5f, 0.4f) }
+            });
+
             // L6 — sin esta pieza, pasillo y vano ancho viven en mundos separados y el catálogo
             // se parte en dos grafos que no se tocan.
             c.Add(new Wg3Piece
@@ -170,6 +187,23 @@ namespace BackroomsSurvival.WorldGen3
                     Sock(1, 2.4f, Wg3SocketType.Corridor)
                 },
                 pillars = new[] { new Wg3Pillar(9.5f, 3.0f, 0.5f) }
+            });
+
+            // Junta las dos anchuras EN UNA PIEZA (a diferencia de `cor_transition`, aquí las tres
+            // bocas quedan sueltas para el enrutador, no encadenadas una tras otra): dos Corridor
+            // y una Wide a la vez, para que un mismo componente deje material de los dos tipos.
+            c.Add(new Wg3Piece
+            {
+                id = "room_junction", geometryId = "room_junction",
+                sizeX = 14f, sizeZ = 10f, heightMeters = DefaultCeiling,
+                scale = Wg3Scale.Medium, weight = 0.60f, minDepth = 1,
+                sockets = new[]
+                {
+                    Sock(3, 3.0f, Wg3SocketType.Corridor),
+                    Sock(1, 6.5f, Wg3SocketType.Corridor),
+                    Sock(0, 9.0f, Wg3SocketType.Wide)
+                },
+                pillars = new[] { new Wg3Pillar(5.5f, 5.0f, 0.5f) }
             });
 
             c.Add(new Wg3Piece
