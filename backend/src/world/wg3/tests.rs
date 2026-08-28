@@ -3652,6 +3652,28 @@ fn probe_generated_connectors() {
             composed.rejected_by_route_geometry,
             elapsed
         );
+        // **¿EL ENRUTADOR RINDE POCO, O ESTÁ HAMBRIENTO?** Son diagnósticos opuestos: uno se
+        // arregla en `route.rs` y el otro solo con catálogo. Un árbol de N piezas gasta 2(N−1)
+        // bocas; si el catálogo tiene ~2 bocas por pieza, al terminar no queda NADA que enganchar,
+        // y ninguna mejora del enrutado lo cambia.
+        let sockets: usize = composed
+            .placements
+            .iter()
+            .map(|p| {
+                m.piece(p.placement.piece)
+                    .expect("pieza fuera del catálogo")
+                    .sockets
+                    .len()
+            })
+            .sum();
+        let pieces = composed.placements.len();
+        println!(
+            "[wg3]   bocas del catálogo colocadas: {sockets} en {pieces} piezas ({:.2} por pieza); \
+             un árbol las gasta de dos en dos y deja {} libres en el mejor caso",
+            sockets as f32 / pieces.max(1) as f32,
+            sockets as i64 - 2 * (pieces as i64 - 1)
+        );
+
         for (x, z, side, width) in &composed.route_leftover {
             println!(
                 "[wg3]   sin enganchar: ({:.2}, {:.2}) lado {side} ancho {:.2}",
