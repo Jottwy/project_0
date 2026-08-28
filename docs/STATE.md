@@ -2,10 +2,9 @@
 > Actualizado por /checkpoint al cierre de cada sesión. Leído al inicio de cada sesión.
 
 ## SESIÓN AUTÓNOMA — ARRANQUE (leer primero; borrar este bloque al terminar el carril)
-- **MILESTONE ACTUAL:** M7 — sin abrir. M6 encontró y midió el fallo de la verticalidad; **su
-  arreglo pide Unity y está deliberadamente sin hacer**.
-- **ESTADO:** M1–M6 cerrados y commiteados. HEAD `8606a2cc` + los appends de las enmiendas.
-- **ÚLTIMO VERDE:** `cargo test --release` 1091/0/34 · clippy `--all-targets -D warnings` limpio ·
+- **MILESTONE ACTUAL:** M8 — sin abrir.
+- **ESTADO:** M1–M7 cerrados y commiteados. HEAD `2ee95005` + los appends de las enmiendas.
+- **ÚLTIMO VERDE:** `cargo test --release` 1091/0/36 · clippy `--all-targets -D warnings` limpio ·
   `cargo fmt --check` limpio · `CompileCheckClient.sh` 0 errores en las cuatro asambleas.
 - **COMPLETADO, y cómo se verificó:**
   - `c4580553` sonda que anda el mundo servido por el RÁSTER. Verificada porque midió algo que el
@@ -22,6 +21,9 @@
   - Enmienda 3 de ADR-098, que **corrige a la enmienda 2**: lo que queda NO es enrutado.
   - `8606a2cc` la sonda que mide qué escalón pide cada pieza. Verificada porque cazó sola las dos
     piezas verticales del catálogo sin saber lo que es una escalera.
+  - `869ca1d3` **`ROUTED_CAP_CHANCE = 0.18`** — el compositor deja bocas al enrutador. Verificado con
+    barrido de 16 regiones y con antes/después sobre las cuatro de siempre.
+  - `2ee95005` `dump_region_maps`: un SVG por región para mirar la topología sin sesión de juego.
 - **DECISIONES TOMADAS SIN JOEL:** (1) el mínimo de anchura generada sale de la medida
   (`narrowest_doorway_clearance`) y no de una opinión; (2) va en `problems()`, así que una ruta
   estrecha se DESCARTA en vez de emitirse impasable — prefiere menos conectores a conectores falsos.
@@ -68,7 +70,11 @@
 
 7. 🚨 **LA VERTICALIDAD DE ADR-097 NO SE SUBE — enmienda 1 de ADR-097.** Los únicos nodos del mundo servido cuyas bocas caen en manchas andables distintas son `cor_ramp`, siempre. La pieza está bien autorada —cuatro peldaños de 18 cm, por debajo de los 0,275 del `m_StepOffset` de `FPS_Player.prefab`— pero su **huella son 0,29 m** y la celda del ráster mide **0,50**: el rasterizado conservador se queda con el peldaño más alto de los que toca cada celda y **funde dos en uno de 36 cm**. Medido pieza a pieza: `room_stair` pide **0,38 m** y `cor_ramp` **0,36 m** contra los 0,275 que sube el jugador. **Las dos piezas verticales del catálogo son infranqueables en la colisión del servidor.** La regla general, que es lo que hay que llevarse: *toda* geometría de WG3 más fina que la celda del ráster **cambia de significado, no de precisión**, al pasar al servidor. El arreglo es C# + reexporte del manifiesto, y está **sin hacer a propósito**: cambiar uno sin el otro deja los dos lados diciendo cosas distintas.
 
-8. **Guardia permanente puesta.** `no_mouth_in_the_served_world_is_walled_shut` recorre las bocas de piezas y de tramos de las cuatro regiones y exige que ninguna caiga sobre una columna maciza. `narrowest_doorway_clearance` protege el NÚMERO; ésta, el MUNDO — son cosas distintas, y hacía falta la segunda porque la constante puede seguir bien mientras otra vía emite un vano estrecho. Dientes verificados mutando, no declarados.
+8. ✅ **Y SÍ HABÍA PALANCA DE CÓDIGO — enmienda 4, que matiza a la 3.** El catálogo sigue siendo la palanca de fondo, pero había una perilla ya existente: una boca que el compositor decide tapar **a propósito** queda en `SOCKET_PENDING_CAP` y **sí** llega al enrutador; si no la usa, la pasada final la sella igual. `ROUTED_CAP_CHANCE = 0.18`, solo con el enrutador encendido (el compositor por defecto sigue en 0,05 y el oráculo no se mueve). Barrido de **16 regiones**, y lo primero que dice es que el punto de partida era peor de lo que decían cuatro: **solo 4 de 16 se recorrían enteras y el 65 % de las puertas de junta era inalcanzable**. Antes → después sobre las cuatro de siempre: andable 63/85/89/79 % → **75/99/100/99 %**, tramos pisados 0/25 · 17/26 · 11/24 · 0/11 → **23/23 · 39/39 · 29/29 · 18/18**, puertas 0/5 · 3/5 · 2/6 · 0/4 → **4/5 · 5/5 · 6/6 · 4/4**, componentes 2/2/3/3 → **2/1/1/1**. **El precio, dicho y no escondido:** piezas autoradas a cambio de conectores generados (29,5 → 19,7 por región) y un **8 % menos de área alcanzable**. Es un número: 0,14 cuesta la mitad, 0,30 da un mundo perfecto y un 41 % más pequeño.
+
+9. ⚠️ **LA TRAMPA DE MEDICIÓN DE ESTA TANDA, y es la tercera vez que el proyecto la pisa.** El barrido midió primero el **porcentaje** de lo pisable que se alcanza, y con esa columna 0,30 salía perfecto — en metros cuadrados es un mundo un 41 % más pequeño; una región que pasa de 3298 m² al 89 % a **789 m² al 100 %** ha perdido dos tercios de sitio donde estar. **La unidad es el metro cuadrado alcanzable.** Y una segunda del mismo barrido: componer con `compose_with` toma `composer_seed(world_seed)` y NO la de la región — cuatro veces el mismo mundo con bordes distintos. Usar `compose_region_with`.
+
+10. **Guardia permanente puesta.** `no_mouth_in_the_served_world_is_walled_shut` recorre las bocas de piezas y de tramos de las cuatro regiones y exige que ninguna caiga sobre una columna maciza. `narrowest_doorway_clearance` protege el NÚMERO; ésta, el MUNDO — son cosas distintas, y hacía falta la segunda porque la constante puede seguir bien mientras otra vía emite un vano estrecho. Dientes verificados mutando, no declarados.
 
 ---
 - Fecha: 2026-08-27/28 (**WorldGen3 F4: el compositor pasa a Rust, el mundo pasa a REGIONES, ADR-096 cierra el troceado y la primera pieza DIBUJADA se anda** — dos sesiones en paralelo toda la noche, una por carril) — **26 commits, `ee4c47ad` → `7e0b4087`. `cargo test` 1065/0/34 ignorados, 48 EditMode en verde, clippy `--all-targets -D warnings` y fmt limpios. Cero wire: v46 ya traía el carril.**

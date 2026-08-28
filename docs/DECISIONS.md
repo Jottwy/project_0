@@ -8271,3 +8271,58 @@ escalera, así que caza cualquier geometría interior infranqueable).
 en `Wg3Catalog.cs`, y exige **reexportar `wg3_manifest.json` desde Unity** para que el servidor vea
 la geometría nueva. Cambiar el C# sin reexportar deja los dos lados diciendo cosas distintas, que es
 la avería que este proyecto ya paga cara. Queda para una sesión con el editor disponible.
+
+## ADR-098 — Enmienda 4: al enrutador se le da de comer desde el COMPOSITOR, y el mundo pasa a recorrerse (2026-08-28)
+
+La enmienda 3 dejó dicho que la palanca era el catálogo —piezas con más de dos bocas— y que eso es
+autorado. Hay una segunda palanca, y es una perilla que ya existía: **una boca que el compositor
+decide tapar a propósito queda en `SOCKET_PENDING_CAP` y SÍ llega al enrutador**; si éste no la usa,
+la pasada final la sella igual que antes. Subirla no añade geometría, reparte la que hay.
+
+`ROUTED_CAP_CHANCE = 0.18`, y **solo con el enrutador encendido**: el compositor por defecto sigue en
+0,05 y el oráculo, que fija el mundo de C#, no se mueve.
+
+### El barrido, sobre 16 regiones
+
+Y lo primero que dice es que el punto de partida era mucho peor de lo que decían cuatro regiones:
+**solo 4 de 16 se recorrían enteras y el 65 % de las puertas de junta era inalcanzable**, o sea que
+la mayoría de los cruces entre regiones no existían andando.
+
+| cap | m² ALCANZABLES | regiones enteras | tramos pisados | puertas | piezas/región |
+|---|---|---|---|---|---|
+| 0,05 | **3216** | 4/16 | 54 % | 35 % | 29,5 |
+| 0,08 | 3155 | 10/16 | 83 % | 66 % | 25,8 |
+| 0,11 | 3119 | 10/16 | 82 % | 68 % | 24,0 |
+| 0,14 | 3072 | 12/16 | 89 % | 79 % | 21,6 |
+| **0,18** | **2943** | **14/16** | **95 %** | **87 %** | **19,7** |
+| 0,22 | 2562 | 15/16 | 97 % | 93 % | 15,9 |
+| 0,30 | 1909 | 16/16 | 100 % | 100 % | 12,9 |
+
+Sobre las cuatro regiones de siempre, antes → después: andable 63/85/89/79 % → **75/99/100/99 %**;
+tramos pisados 0/25 · 17/26 · 11/24 · 0/11 → **23/23 · 39/39 · 29/29 · 18/18**; puertas 0/5 · 3/5 ·
+2/6 · 0/4 → **4/5 · 5/5 · 6/6 · 4/4**; componentes al final 2/2/3/3 → **2/1/1/1**.
+
+**El precio está dicho en el código, no escondido:** piezas autoradas a cambio de conectores
+generados, y un conector hoy no tiene aspecto —el byte `style` no lo lee nadie—. 0,18 cuesta un 8 %
+del área alcanzable. Es un número: 0,14 cuesta la mitad y da algo menos; 0,30 da un mundo perfecto y
+un 41 % más pequeño.
+
+### La trampa de medición, que es la mitad del valor de esta enmienda
+
+La primera versión del barrido midió el **porcentaje** de lo pisable que se alcanza. Con esa columna,
+0,30 salía perfecto. En metros cuadrados es un mundo un 41 % más pequeño: una región que pasa de
+3298 m² al 89 % a **789 m² al 100 %** ha perdido dos tercios de sitio donde estar. Es el mismo error
+que ya costó tres conclusiones falsas el 08-27 —contar bien una cosa que no es la que importa— y por
+eso el instrumento (`sweep_cap_chance`) se queda escrito con la unidad correcta y la trampa anotada.
+
+Y una segunda, del mismo barrido: la primera versión componía con `compose_with`, que toma
+`composer_seed(world_seed)` y **no** la semilla de la REGIÓN — cuatro veces el mismo mundo con bordes
+distintos. De ahí sale `compose_region_with`, que es lo que el doc-comment de `region_settings` ya
+decía que tenía que existir.
+
+### Instrumento nuevo
+
+`dump_region_maps` escribe un SVG por región: lo andable desde el spawn en verde, lo incomunicado en
+gris, las piezas en trazo claro y los conectores generados en ámbar. **No sustituye a jugarlo** —no
+dice nada del aspecto— pero contesta lo único que se le pregunta a la topología sin montar una sesión
+de noventa segundos.
