@@ -2054,8 +2054,17 @@ fn probe_is_the_served_world_one_piece_or_islands() {
         let seed = composer_seed(SERVED_SEED);
         let gates = junction::gates_of_region(seed, region.x, region.z, region.bounds()).len();
 
+        // ADR-097 — cuántas piezas quedan fuera de la cota 0. En el mundo sin acotar hay cientos,
+        // pero lo que se juega son regiones: si aquí sale cero, el desnivel existe en el compositor
+        // y no en la partida.
+        let raised = world
+            .placements()
+            .iter()
+            .filter(|p| p.origin_y_cm != 0)
+            .count();
+
         println!(
-            "[wg3] región ({rx},{rz}): {n} piezas en **{} islas** ({gates} puertas + semilla = {}) — la mayor tiene {biggest} ({:.0} %), tamaños {:?}",
+            "[wg3] región ({rx},{rz}): {n} piezas en **{} islas** ({gates} puertas + semilla = {}) — la mayor tiene {biggest} ({:.0} %), {raised} a distinta cota, tamaños {:?}",
             counts.len(),
             gates + 1,
             biggest as f32 * 100.0 / n.max(1) as f32,
