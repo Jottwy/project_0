@@ -3081,6 +3081,437 @@ fn probe_how_much_of_the_region_can_be_walked_from_the_spawn() {
     }
 }
 
+/// **DE QUÉ ESTÁ HECHA CADA MANCHA ANDABLE** (diagnóstico de por qué no se llega a los tramos).
+///
+/// La sonda de arriba dice que la región (0,0) tiene una mancha de 10890 celdas y otra de 4112, y
+/// que a los 25 tramos generados no se llega desde ninguna de las dos. Eso admite dos causas
+/// opuestas, y piden arreglos opuestos: o los conectores están sueltos —cada uno su propia isla— o
+/// forman una RED entre ellos que no engancha con las piezas por ningún sitio.
+///
+/// Aquí se etiqueta cada mancha con lo que contiene: cuántos centros de pieza y cuántos de tramo.
+/// Y para cada tramo, si es pisable por dentro, para separar «no conecta» de «ni siquiera se puede
+/// estar de pie ahí», que también son dos arreglos distintos.
+#[test]
+fn probe_what_each_walkable_blob_is_made_of() {
+    const CELL: f32 = 0.5;
+    const HEAD_M: f32 = 1.0;
+    const MAX_STEP: f32 = 0.20;
+
+    let m = real_manifest();
+
+    for (rx, rz) in [(0, 0), (1, 0), (0, 1), (-1, 2)] {
+        let region = Wg3RegionCoord { x: rx, z: rz };
+        let world = Wg3ServedWorld::compose_region(&m, SERVED_SEED, region);
+        let (min_x, min_z, _, _) = region.bounds();
+
+        let side = REGION_CHUNKS as usize;
+        let base = chunk::Wg3ChunkCoord::containing(min_x + 1.0, min_z + 1.0);
+        let mut rasters = Vec::with_capacity(side * side);
+        for cz in 0..side {
+            for cx in 0..side {
+                let coord = chunk::Wg3ChunkCoord {
+                    x: base.x + cx as i32,
+                    z: base.z + cz as i32,
+                };
+                rasters.push(chunk::build_chunk_raster(
+                    &m,
+                    &world.placements_touching_chunk(&m, coord),
+                    &world.segments_touching_chunk(coord),
+                    coord,
+                ));
+            }
+        }
+        let raster_at = |x: f32, z: f32| -> Option<&Wg3Raster> {
+            let coord = chunk::Wg3ChunkCoord::containing(x, z);
+            let (dx, dz) = (coord.x - base.x, coord.z - base.z);
+            if dx < 0 || dz < 0 || dx as usize >= side || dz as usize >= side {
+                return None;
+            }
+            rasters.get(dz as usize * side + dx as usize)
+        };
+
+        let cells = (REGION_M / CELL) as usize;
+        let levels_of = |ix: usize, iz: usize| -> Vec<f32> {
+            let x = min_x + ix as f32 * CELL + CELL * 0.5;
+            let z = min_z + iz as f32 * CELL + CELL * 0.5;
+            let Some(r) = raster_at(x, z) else {
+                return Vec::new();
+            };
+            let column = r.column_at(x, z);
+            let mut out = Vec::new();
+            for (i, span) in column.iter().enumerate() {
+                let top = span.top_cm as f32 / 100.0;
+                let head = match column.get(i + 1) {
+                    Some(next) => (next.bottom_cm - span.top_cm) as f32 / 100.0,
+                    None => f32::MAX,
+                };
+                if (HEAD_M..=6.0).contains(&head) {
+                    out.push(top);
+                }
+            }
+            out
+        };
+
+        let mut floors: Vec<Vec<f32>> = vec![Vec::new(); cells * cells];
+        for iz in 0..cells {
+            for ix in 0..cells {
+                floors[iz * cells + ix] = levels_of(ix, iz);
+            }
+        }
+
+        // Se numeran TODAS las manchas y se guarda a cuál pertenece cada celda, para poder preguntar
+        // luego «¿en qué mancha cae este tramo?».
+        let mut blob_of: Vec<Vec<i32>> = floors.iter().map(|l| vec![-1; l.len()]).collect();
+        let mut sizes: Vec<usize> = Vec::new();
+        for iz0 in 0..cells {
+            for ix0 in 0..cells {
+                for l0 in 0..floors[iz0 * cells + ix0].len() {
+                    if blob_of[iz0 * cells + ix0][l0] >= 0 {
+                        continue;
+                    }
+                    let id = sizes.len() as i32;
+                    blob_of[iz0 * cells + ix0][l0] = id;
+                    let mut queue = std::collections::VecDeque::new();
+                    queue.push_back((ix0, iz0, l0));
+                    let mut size = 0usize;
+                    while let Some((ix, iz, li)) = queue.pop_front() {
+                        size += 1;
+                        let here = floors[iz * cells + ix][li];
+                        for (dx, dz) in [(1i32, 0i32), (-1, 0), (0, 1), (0, -1)] {
+                            let (nx, nz) = (ix as i32 + dx, iz as i32 + dz);
+                            if nx < 0 || nz < 0 || nx as usize >= cells || nz as usize >= cells {
+                                continue;
+                            }
+                            let (nx, nz) = (nx as usize, nz as usize);
+                            for (nl, there) in floors[nz * cells + nx].iter().enumerate() {
+                                if blob_of[nz * cells + nx][nl] >= 0
+                                    || (there - here).abs() > MAX_STEP
+                                {
+                                    continue;
+                                }
+                                blob_of[nz * cells + nx][nl] = id;
+                                queue.push_back((nx, nz, nl));
+                            }
+                        }
+                    }
+                    sizes.push(size);
+                }
+            }
+        }
+
+        // La mancha de una posición del mundo: la de la cota más baja pisable de su celda.
+        let blob_at = |x: f32, z: f32| -> i32 {
+            let ix = ((x - min_x) / CELL) as i32;
+            let iz = ((z - min_z) / CELL) as i32;
+            if ix < 0 || iz < 0 || ix as usize >= cells || iz as usize >= cells {
+                return -1;
+            }
+            *blob_of[iz as usize * cells + ix as usize]
+                .first()
+                .unwrap_or(&-1)
+        };
+
+        let mut pieces_in: Vec<usize> = vec![0; sizes.len()];
+        let mut loose_pieces = 0usize;
+        for p in world.placements() {
+            let piece = m.piece(p.piece).expect("pieza fuera del catálogo");
+            if piece.sockets.len() < 2 {
+                continue;
+            }
+            let (px0, pz0, px1, pz1) = p.bounds(piece);
+            let id = blob_at((px0 + px1) * 0.5, (pz0 + pz1) * 0.5);
+            if id < 0 {
+                loose_pieces += 1;
+            } else {
+                pieces_in[id as usize] += 1;
+            }
+        }
+
+        let mut segments_in: Vec<usize> = vec![0; sizes.len()];
+        let mut unstandable = 0usize;
+        for s in world.segments() {
+            let (cx, cz) = s.centre();
+            let id = blob_at(cx, cz);
+            if id < 0 {
+                unstandable += 1;
+            } else {
+                segments_in[id as usize] += 1;
+            }
+        }
+
+        // **LA PREGUNTA QUE DECIDE QUÉ HAY QUE ARREGLAR.** El grafo de bocas coincidentes —el que
+        // ADR-098 usó para decir «86 % de árbol mayor»— contra las manchas andables. Si dos piezas
+        // del MISMO nodo del grafo caen en manchas distintas, lo roto no es el enrutado: es que una
+        // boca que el grafo da por unida no se puede cruzar.
+        let n = world.placements().len();
+        let segs = world.segments();
+        let mouths: Vec<Vec<(f32, f32)>> = world
+            .placements()
+            .iter()
+            .map(|p| {
+                let piece = m.piece(p.piece).expect("pieza fuera del catálogo");
+                (0..piece.sockets.len())
+                    .map(|i| p.world_socket_point(piece, i))
+                    .collect()
+            })
+            .chain(segs.iter().map(segment_mouth_points))
+            .collect();
+        let mut parent: Vec<usize> = (0..mouths.len()).collect();
+        fn find(parent: &mut [usize], mut a: usize) -> usize {
+            while parent[a] != a {
+                parent[a] = parent[parent[a]];
+                a = parent[a];
+            }
+            a
+        }
+        for i in 0..mouths.len() {
+            for j in (i + 1)..mouths.len() {
+                let touch = mouths[i].iter().any(|a| {
+                    mouths[j]
+                        .iter()
+                        .any(|b| (a.0 - b.0).abs() < 0.02 && (a.1 - b.1).abs() < 0.02)
+                });
+                if touch {
+                    let (ri, rj) = (find(&mut parent, i), find(&mut parent, j));
+                    if ri != rj {
+                        parent[ri] = rj;
+                    }
+                }
+            }
+        }
+        // Por cada componente del grafo, en cuántas manchas andables se rompe.
+        let mut split = std::collections::BTreeMap::<usize, Vec<i32>>::new();
+        for k in 0..mouths.len() {
+            let root = find(&mut parent, k);
+            let (x, z) = if k < n {
+                let p = &world.placements()[k];
+                let piece = m.piece(p.piece).expect("pieza fuera del catálogo");
+                let (x0, z0, x1, z1) = p.bounds(piece);
+                ((x0 + x1) * 0.5, (z0 + z1) * 0.5)
+            } else {
+                segs[k - n].centre()
+            };
+            split.entry(root).or_default().push(blob_at(x, z));
+        }
+        let mut worst: Vec<(usize, usize, usize)> = split
+            .values()
+            .map(|blobs| {
+                let distinct: std::collections::BTreeSet<i32> =
+                    blobs.iter().copied().filter(|b| *b >= 0).collect();
+                (
+                    blobs.len(),
+                    distinct.len(),
+                    blobs.iter().filter(|b| **b < 0).count(),
+                )
+            })
+            .collect();
+        worst.sort_unstable_by_key(|(nodes, _, _)| std::cmp::Reverse(*nodes));
+
+        let mut order: Vec<usize> = (0..sizes.len()).collect();
+        order.sort_unstable_by_key(|&i| std::cmp::Reverse(sizes[i]));
+        println!(
+            "[wg3] región ({rx},{rz}): {} manchas | {} tramos con el centro NO pisable | {} piezas \
+             con el centro NO pisable",
+            sizes.len(),
+            unstandable,
+            loose_pieces
+        );
+        println!(
+            "[wg3]   componentes del grafo (nodos, manchas en que se parte, nodos no pisables): \
+             {:?}",
+            &worst[..worst.len().min(5)]
+        );
+
+        // **LA MEDIDA POR BOCAS, Y POR QUÉ NO POR CENTROS.** El centro de la caja de una pieza en L
+        // cae dentro de su propia pared o en un armario de cuarenta celdas, así que preguntar «¿en
+        // qué mancha está esta pieza?» por su centro inventa cortes que no existen —comprobado con
+        // un transecto: la pieza 13 y la 17 de (0,0) tenían «manchas distintas» y entre sus dos
+        // interiores no hay ni un centímetro cerrado—. Una boca, en cambio, es por definición un
+        // sitio por donde se pasa.
+        //
+        // Y de ahí sale la pregunta afilada: **un nodo cuyas DOS bocas caen en manchas distintas es
+        // geometría que parece conectada y no se puede cruzar.** Eso ya no es un artefacto de
+        // muestreo: es un pasillo tapiado por dentro.
+        let blobs_of_node = |k: usize| -> std::collections::BTreeSet<i32> {
+            mouths[k]
+                .iter()
+                .map(|&(x, z)| blob_at(x, z))
+                .filter(|b| *b >= 0)
+                .collect()
+        };
+        let spawn_blob = {
+            let (cx, cz) = (min_x + REGION_M * 0.5, min_z + REGION_M * 0.5);
+            let mut found = -1;
+            'ring: for radius in 0..(cells / 2) as i32 {
+                for dz in -radius..=radius {
+                    for dx in -radius..=radius {
+                        let b = blob_at(cx + dx as f32 * CELL, cz + dz as f32 * CELL);
+                        if b >= 0 {
+                            found = b;
+                            break 'ring;
+                        }
+                    }
+                }
+            }
+            found
+        };
+        let (mut pieces_ok, mut segs_ok, mut uncrossable) = (0usize, 0usize, 0usize);
+        for k in 0..mouths.len() {
+            let set = blobs_of_node(k);
+            if set.len() > 1 {
+                uncrossable += 1;
+            }
+            if set.contains(&spawn_blob) {
+                if k < n {
+                    pieces_ok += 1;
+                } else {
+                    segs_ok += 1;
+                }
+            }
+        }
+        println!(
+            "[wg3]   por BOCAS: {pieces_ok}/{n} piezas y {segs_ok}/{} tramos tocan la mancha del \
+             jugador (#{spawn_blob}) | {uncrossable} nodos con las bocas en manchas DISTINTAS",
+            segs.len()
+        );
+
+        // **LA BOCA QUE NO SE PISA.** Si dos nodos comparten el punto de boca, comparten mancha por
+        // definición — salvo que ese punto no sea pisable, y entonces el enlace que el grafo cuenta
+        // como bueno es exactamente el que corta el mundo. Es el único sitio donde puede estar la
+        // diferencia entre «una componente de 60 nodos» y «24 nodos alcanzables».
+        let mut dead = 0usize;
+        let mut dead_dump = 0usize;
+        // Tres causas, y cada una se arregla en un sitio distinto: la boca cae fuera de lo medido
+        // (las de junta, que dan a la región vecina y no son un fallo), la boca está MACIZA de
+        // suelo a techo, o simplemente no hay hueco para la cabeza.
+        let (mut dead_outside, mut dead_solid, mut dead_other) = (0usize, 0usize, 0usize);
+        let mut solid_by_segment = 0usize;
+        for k in 0..mouths.len() {
+            for &(mx, mz) in &mouths[k] {
+                if blob_at(mx, mz) >= 0 {
+                    continue;
+                }
+                dead += 1;
+                match raster_at(mx, mz) {
+                    None => dead_outside += 1,
+                    Some(r) => {
+                        let col = r.column_at(mx, mz);
+                        let solid = col.len() == 1 && col[0].top_cm - col[0].bottom_cm > 200;
+                        if solid {
+                            dead_solid += 1;
+                            // ¿Y quién es el macizo? Si hay OTRO tramo cuya huella cubre el punto y
+                            // que no declara boca ahí, el vano da contra su pared.
+                            let walled = segs.iter().enumerate().any(|(idx, s)| {
+                                if n + idx == k {
+                                    return false;
+                                }
+                                let (x0, z0, x1, z1) = s.bounds();
+                                mx >= x0 - 0.05
+                                    && mx <= x1 + 0.05
+                                    && mz >= z0 - 0.05
+                                    && mz <= z1 + 0.05
+                                    && !mouths[n + idx]
+                                        .iter()
+                                        .any(|q| (q.0 - mx).abs() < 0.02 && (q.1 - mz).abs() < 0.02)
+                            });
+                            if walled {
+                                solid_by_segment += 1;
+                            }
+                        } else {
+                            dead_other += 1;
+                        }
+                    }
+                }
+                if dead_dump < 4 {
+                    dead_dump += 1;
+                    let col = match raster_at(mx, mz) {
+                        None => "fuera del ráster".to_string(),
+                        Some(r) => r
+                            .column_at(mx, mz)
+                            .iter()
+                            .map(|s| format!("[{}..{}]", s.bottom_cm, s.top_cm))
+                            .collect::<Vec<_>>()
+                            .join(" "),
+                    };
+                    // Quién tiene geometría encima de ese punto. Un tapón de pieza y un tapón de
+                    // otro tramo se arreglan en sitios distintos, así que hay que saber cuál es.
+                    let mut over = Vec::new();
+                    for (idx, p) in world.placements().iter().enumerate() {
+                        let piece = m.piece(p.piece).expect("pieza fuera del catálogo");
+                        let (x0, z0, x1, z1) = p.bounds(piece);
+                        if mx >= x0 - 0.05 && mx <= x1 + 0.05 && mz >= z0 - 0.05 && mz <= z1 + 0.05
+                        {
+                            over.push(format!("pieza {idx}"));
+                        }
+                    }
+                    for (idx, s) in segs.iter().enumerate() {
+                        let (x0, z0, x1, z1) = s.bounds();
+                        if mx >= x0 - 0.05 && mx <= x1 + 0.05 && mz >= z0 - 0.05 && mz <= z1 + 0.05
+                        {
+                            over.push(format!("tramo {}", n + idx));
+                        }
+                    }
+                    println!(
+                        "[wg3]     boca muerta en ({mx:.2},{mz:.2}) del {} {k}: {col} — encima: \
+                         {over:?}",
+                        if k < n { "pieza" } else { "tramo" }
+                    );
+                    for (idx, s) in segs.iter().enumerate() {
+                        let (x0, z0, x1, z1) = s.bounds();
+                        if mx < x0 - 0.05 || mx > x1 + 0.05 || mz < z0 - 0.05 || mz > z1 + 0.05 {
+                            continue;
+                        }
+                        println!(
+                            "[wg3]       tramo {}: ({},{}) {}×{} cm cota {} alto {} bocas {:?}",
+                            n + idx,
+                            s.x_cm,
+                            s.z_cm,
+                            s.size_x_cm,
+                            s.size_z_cm,
+                            s.floor_y_cm,
+                            s.height_cm,
+                            s.openings
+                                .iter()
+                                .map(|o| (o.side, o.offset_cm, o.width_cm))
+                                .collect::<Vec<_>>()
+                        );
+                        for b in segment::segment_boxes(s) {
+                            let (hx, hz) = (b.size[0] * 0.5, b.size[2] * 0.5);
+                            if (mx - b.center[0]).abs() <= hx + 0.01
+                                && (mz - b.center[2]).abs() <= hz + 0.01
+                            {
+                                println!(
+                                    "[wg3]         caja kind {} centro ({:.2},{:.2},{:.2}) tam \
+                                     ({:.2},{:.2},{:.2})",
+                                    b.kind,
+                                    b.center[0],
+                                    b.center[1],
+                                    b.center[2],
+                                    b.size[0],
+                                    b.size[1],
+                                    b.size[2]
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let total_mouths: usize = mouths.iter().map(|v| v.len()).sum();
+        println!(
+            "[wg3]   bocas que no se pisan: {dead} de {total_mouths} — {dead_outside} fuera de lo \
+             medido (junta), {dead_solid} MACIZAS ({solid_by_segment} de ellas contra la pared de \
+             otro tramo), {dead_other} sin hueco para la cabeza"
+        );
+        for &i in order.iter().take(6) {
+            println!(
+                "[wg3]   mancha #{i}: {} celdas, {} piezas, {} tramos",
+                sizes[i], pieces_in[i], segments_in[i]
+            );
+        }
+    }
+}
+
 /// **QUÉ TIENDE EL ENRUTADOR, Y QUÉ DESCARTA** (ADR-098 T6).
 ///
 /// Los descartes son la mitad útil: dicen si lo que frena a los conectores es el mundo apretado —y
