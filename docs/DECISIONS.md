@@ -8874,3 +8874,227 @@ diseño y es otro ADR.
 
 Y el catálogo sigue sin tener piezas con desnivel propio: `cor_ramp` y `room_stair` existen y el plan
 no las elige, porque el encaje por huella no las distingue de una sala plana.
+
+---
+
+## ADR-102 — Plantas apiladas: el plan gana un eje, y ese eje NO es un campo (2026-08-28) — PROPUESTA
+
+**Contexto.** ADR-100 enmienda 2 cerró la verticalidad que se podía sacar de una sola planta: espacios
+hundidos de 60 cm, y la constatación de que con bandas sobre un árbol de subdivisión no hay desnivel
+por subárbol que sobreviva. Lo que queda es la otra verticalidad, la de verdad: una planta encima de
+otra. Antes de escribir código verifiqué siete premisas contra el código, con un pase adversario
+encima. Dos volvieron refutadas y las dos refutaciones cambian el diseño, así que van primero.
+
+### Lo que YA está, comprobado
+
+- **El ráster apila desde el primer día, y a propósito.** `columns: Vec<Vec<Span>>` (`raster.rs:77`),
+  `add_box` siempre empuja y nunca pisa (`raster.rs:161`), y `finish()` funde sólo lo CONTIGUO
+  (`raster.rs:272`): la rama `else` es literalmente la que conserva el segundo piso. `floor_below`
+  coge el macizo más alto por debajo y `headroom_above_floor` el primer techo sobre ESE suelo
+  (`raster.rs:376-401`) — ninguna presupone una planta. Verificado compilando el módulo aparte: dos
+  losas dan dos tramos, cuarenta plantas dan cuarenta. El comentario de cabecera ya lo decía
+  (`raster.rs:12-20`): "un suelo y un techo por celda da nada encima de nada. Una columna de tramos
+  sí". La decisión D2 de ADR-095 se cobra aquí.
+- **El wire ya lleva la cota, en los tres datos.** `origin_y_cm` (`ipc/mod.rs:276`), `floor_y_cm`
+  (`ipc/mod.rs:307`), `bottom_y_cm`/`top_y_cm` del vano (`ipc/mod.rs:334`). Sin campo `layer`, y no
+  es un olvido: `mod.rs:340` dice que un chunk cubre toda la altura.
+- **El cliente ya apila.** Un `GameObject` y una malla por pieza (`Wg3SceneAssembler.cs:69`), la Y se
+  suma en un único sitio (`Wg3Geometry.cs:320-322`) y de esa misma lista salen malla Y colisión, así
+  que no hay forma de que se dibuje arriba y bloquee abajo. Los colliders llevan la Y
+  (`Wg3SceneAssembler.cs:223`), y la resta de vanos es 3D de verdad (`Wg3Carving.cs:116-118`).
+- **El reparto por chunk es XZ puro y eso está BIEN.** `owner_chunk` (`world.rs:406`),
+  `segment_owner_chunk` (`world.rs:442`), los tres `*_touching_chunk`, `build_chunk_raster_with_carves`
+  (`chunk.rs:98`): dos plantas de la misma columna caen en el mismo chunk y viajan en el mismo
+  mensaje. Nada de esto se toca.
+
+### Refutación 1 — el reparto vale, pero la conclusión que induce es falsa
+
+"Se reparte por XZ, luego apilar no requiere trabajo" es un salto. **Todas las pruebas de solape del
+generador son también XZ puras, y ahí la ceguera a la Y no es inocua: es RECHAZO.** `first_overlap`
+(`compose.rs:1752-1777`) compara `origin_x`/`origin_z` y no lee `origin_y` en ninguna línea;
+`overlaps_segments` (`compose.rs:1611-1619`) igual; `Rect::overlaps` del enrutador (`route.rs:116-121`)
+ni siquiera tiene campos de altura. Y lo peor: **`RegionPlan::problems()` declararía inválido su propio
+plan** — `plan.rs:513-524` marca como fallo cualquier par de rectángulos que se pisen en XZ, sin mirar
+`floor_y_cm`, porque `plan.rs:1503-1506` dice que los rectángulos TESELAN la región y dos que se pisan
+son un fallo del reparto, no una pared común.
+
+Una pieza colocada encima de otra no es que se dibuje mal: es que nunca llega a existir.
+
+### Refutación 2 — no hay constante de altura de jugador, y el hueco mínimo no mide lo que parece
+
+`grep PLAYER_HEIGHT|PlayerHeight` en producción: cero. El 1,8 sólo existe como `PLAYER_BASE_Y`
+(`collision.rs:23-28`), documentado como convenio de PIVOTE, no como alto de cápsula, y WG3 no lo
+importa a propósito (`tests.rs:17-20`, regla R4). El único `PlayerHeight = 1.8f` de C# vive en un test
+(`OfficeStairsTests.cs:37`). La fuente real es `m_Height` del prefab, YAML sin espejo en código.
+
+Y `MIN_HEADROOM = 2.0` (`compose.rs:97` ↔ `Wg3Validator.cs:26`) es un valor ELEGIDO, sin un solo test,
+que además sólo gobierna dos cosas: la compatibilidad de bocas al absorber (`compose.rs:1672-1673`) y
+las piezas AUTORADAS vía el validador C#. **Las alturas GENERADAS de `clear_height_cm`
+(`fill.rs:58-70`) no se comparan contra él en ninguna de sus cuatro rutas de consumo.** Pasan de sobra
+—280 el mínimo— pero por coincidencia, no por regla. Y no hay cota superior en ningún sitio.
+
+Lo que sí está medido es el radio (`collision.rs:22` = 0,35) y el escalón (0,275, `tests.rs:4341`
+contra el `m_StepOffset` del prefab). Este ADR se apoya en esos dos y no finge que el resto esté medido.
+
+---
+
+### D1 — Una planta es un `RegionPlan` entero, no un campo dentro de uno
+
+Por la refutación 1: si la planta fuese un `u8` en `PlannedSpace`, dos espacios apilados se leerían
+como solapados y el plan se declararía incoherente él solo. Y arreglarlo metiendo Y en `problems()`,
+en `rects_share_wall`, en `adjacencies()` y en el enrutador infecta todo `plan.rs` con una dimensión
+que sólo importa ENTRE plantas y jamás dentro de una.
+
+```
+RegionBuilding { storeys: Vec<RegionPlan>, wells: Vec<StairWell> }
+```
+
+`plan_region` pasa a ser `plan_storey(seed, bounds, gates, floor_y_cm)` y **no cambia por dentro**:
+sigue siendo estrictamente 2D. `plan_building` la llama N veces. Lo vertical vive una capa por encima
+y sólo ahí. El enrutador también se llama **por planta**, con una ocupación construida sólo con la
+geometría de esa planta — mismo truco, `Rect` no se toca.
+
+Coste declarado: `problems()` sigue sin ver entre plantas. Lo cubre un `RegionBuilding::problems()`
+nuevo, que comprueba lo que es genuinamente vertical y nada más — ver verificación (a).
+
+### D2 — La planta canónica mide 3,32 m, cara pisable a cara pisable
+
+320 cm de altura libre (el `_ => 320` de `fill.rs:68`) más 12 cm de losa (`SLAB_THICKNESS_M`,
+`segment.rs:53` ↔ `Wg3Geometry.cs:141`). Diez de las diecinueve piezas del catálogo miden 3,2 m, así
+que una retícula a 3,32 encaja lo generado y casi todo lo autorado sin tocar nada. Y ojo con la
+aritmética: la losa CUELGA por debajo de su cota (`plan.rs:83-84`), así que 3,32 es cara pisable a
+cara pisable, no cota a cota mal medida.
+
+Esto obliga a decidir qué pasa con los espacios que piden más: `Hall` pide 450 y `Stair` 380
+(`fill.rs:58-70`). **La altura libre deja de ser libre en cuanto hay planta encima.** Un espacio que
+pide más de lo que cabe se recorta a 320 — salvo que el espacio directamente encima sea `Void`, en cuyo
+caso conserva su altura y se convierte en una sala a doble altura de verdad. Como el `Void` es
+semántico desde ADR-100, la doble altura pasa a ser una decisión del plan y no un accidente.
+
+Para que eso sea decidible, **las plantas se planifican de abajo arriba**: la planta N+1 recibe las
+huellas de doble altura de la N como zonas forzadas a `Void`. Una sola dirección, determinista.
+
+### D3 — Cada planta tiene su propia huella, o no hay edificio sino una tarta
+
+Si todas las plantas llenan la región, el resultado son losas de 150 × 150 apiladas y ninguna
+silueta. La planta N+1 se planifica dentro de un **subrectángulo de la N, tomado de uno de sus cortes
+de primer nivel**, para que lo de arriba se alinee con la estructura de abajo en vez de cortarla por
+donde caiga. El subrectángulo abre su propio flujo de hash desde la posición de región más una sal de
+planta (regla R3: nunca desde un índice ni desde el orden de proceso).
+
+**Primer corte: dos plantas.** No porque dos sea el número correcto, sino porque el salto de una a dos
+es donde están todos los fallos y el de dos a tres no aporta ninguno nuevo.
+
+### D4 — La escalera se construye con tramos, y con una contrahuella propia
+
+Tres mecanismos posibles, y descarto dos:
+
+- **Tipo nuevo en el wire para un tramo de escalera** — descartado. `Wg3StairRun` es geometría
+  horneada del catálogo y no cruza el cable; añadir un tipo cuesta un bump para expresar algo que los
+  tramos ya expresan.
+- **Pieza autorada del catálogo** — descartado por ahora. `room_stair` existe (21 × 17 m,
+  `Wg3StairRun(7, 5.5, 0, 3, 12)` = 2,16 m de subida) y el plan no la elige, porque el encaje por
+  huella no la distingue de una sala plana; es la misma deuda que cierra ADR-100 enmienda 2.
+- **Tramos, con `emit_stair`** — ELEGIDO. `fill.rs:749-757` ya parte el espacio en `steps` franjas a lo
+  ancho y abre pared entera hacia la franja vecina, "sin esto la escalera son cinco armarios
+  apilados". Sirve tal cual.
+
+Lo que cambia es la contrahuella. `STEP_RISE_CM = 12` se queda **sólo para las terrazas**: vale 12
+porque es exactamente el grosor de la losa y así el peldaño cierra. Una escalera de planta con esa
+contrahuella pide 28 escalones y, como la huella sale de `ancho / escalones`, hacen falta unos 8 m de
+tiro para que cada peldaño tenga 28 cm. Eso no es un hueco de escalera, es un salón inclinado.
+
+Se añade `rise_step_cm` a `PlannedSpace` (campo interno, no viaja) y la escalera de planta usa
+**`STOREY_RISE_CM = 24`**: 3,32 / 0,24 = 13,8 → **14 escalones de 23,7 cm**, por debajo de
+`MAX_WALK_STEP_CM = 27`, que es el límite que el propio plan ya se comprueba y que sale del
+`m_StepOffset` real de 0,275 medido en `probe_what_step_each_piece_demands`. Con 4 m de tiro la huella
+sale a 28,6 cm. Escalera empinada, compacta y andable — y muy Backrooms.
+
+Y una guarda que falta: `MIN_TREAD_CM = 26`. Hoy nada impide que `emit_stair` produzca peldaños de
+17 cm si el espacio es corto; con desniveles de 60 cm no se notaba, con 332 sí.
+
+### D5 — El hueco del forjado es un productor NUEVO, y la guarda no se toca
+
+Hoy ningún vano puede perforar la losa, y no por falta de maquinaria: `carve_box` (`raster.rs:207-228`)
+parte el tramo en zócalo y dintel sin mirar de qué es, y `Wg3Carving.cs:129` corta por debajo igual.
+El bloqueo está al 100 % en los dos productores, que suman la guarda al construir el vano
+(`fill.rs:625` y `compose.rs:1453`, `CARVE_FLOOR_GUARD_CM = 5`).
+
+**Bajar esa constante globalmente convertiría toda puerta en un agujero.** El hueco de escalera lo
+emite un productor propio, y su `bottom_y_cm` baja a `floor_y_cm - SLAB_THICKNESS_CM`: hay que restar
+el grosor, no igualar la cota, porque la losa cuelga por debajo (`segment.rs:268-279`). **Cero bytes
+de wire**: `bottom_y_cm` ya es un `i32` que viaja sin validación de signo (`ipc/mod.rs:334`,
+`IPCMessages.Wg3.cs:198`).
+
+De paso se corrige una mentira de documentación que va a morder al siguiente: `raster.rs:180-182`
+documenta la guarda como si `carve_box` la garantizara, y `carve_box` ni siquiera importa la
+constante. Es un invariante de los llamantes disfrazado de invariante del primitivo.
+
+### D6 — Cuatro cosas que hay que apagar ANTES, porque si no el fallo es silencioso
+
+1. **El test guardián de claves no cubre `origin_y_cm`, y es el peor sitio donde puede faltar.**
+   `the_wg3_chunk_encodes_the_keys_the_client_parser_looks_for` (`ipc/mod.rs:1268-1360`) lista las
+   claves y ésa no está; encima el fixture la pone a 0 y ninguna aserción la mira. El doc del propio
+   test describe el fallo que existe para impedir: "nada peta y todo está mal". Aplicado a la Y, eso
+   es *la segunda planta se monta pegada a la primera, en silencio*. Se añade la clave y un valor no
+   nulo. Es cambio de test, no de wire.
+2. **El punto de aparición ignora la Y.** `Wg3ChunkStreamer.cs:195-197` fija el spawn con un `1.0f`
+   literal, ignorando el `placement.originY` que la línea 178 acaba de leer. Con dos plantas, si el
+   primer chunk que contesta es uno de arriba, el jugador aparece dentro del forjado.
+3. **La luz se filtra entre plantas.** `Wg3SceneAssembler.cs:257` pone `LightShadows.None` con un
+   alcance de `max(SizeX, SizeZ) * 0.75 + 6` metros, contra una losa de 0,12 m. Un plafón de arriba
+   ilumina abajo a través del suelo. Es lo primero que se ve en una captura de dos plantas.
+4. **Las sondas inundan por columna XZ.** `tests.rs:1919-1941` marca `seen[nz*cells+nx]`, una vez por
+   celda. Dos plantas apiladas se cuentan como una sola superficie y quedan unidas en la misma
+   componente conexa. **Todos los porcentajes de superficie andable que citan los ADRs —83 / 78 / 80 /
+   75 %— dejan de significar lo mismo el día que haya dos plantas.** La inundación tiene que ir por
+   `(celda, tramo)`, no por celda, y hasta que lo haga cualquier cifra que dé es propaganda.
+
+### D7 — Qué NO se toca
+
+- **El wire.** Cero bump, primera vez en toda esta migración. Los campos ya están y el cliente ya los
+  aplica.
+- El reparto por chunk y el rasterizado: `owner_chunk`, `segment_owner_chunk`, los tres
+  `*_touching_chunk` y `build_chunk_raster_with_carves` valen tal cual.
+- `first_overlap` y `overlaps_segments` de `compose.rs`. Siguen siendo planos, y siguen sirviendo al
+  compositor, que desde ADR-100 ya no sirve el mundo. Si algún día vuelve, hereda el problema; queda
+  escrito aquí para que no se descubra por sorpresa.
+
+### Límites, dichos antes de medir
+
+- **WG3 sigue sin ser autoridad de nada** (deuda de ADR-100 #3). Y en una segunda planta el servidor
+  no te empuja contra una pared de WG2: **te congela**. La capa sale de la Y
+  (`layer_from_player_y`, `collision.rs:401`, `LAYER_HEIGHT_M = 4.0`), `update_ownership` sólo genera
+  la capa 0 (`world/mod.rs:824-827`), un chunk ausente es sólido (`collision.rs:622`) y el resultado es
+  `Blocked` → `position = from` (`collision.rs:285`).
+- **Pero se puede probar hoy.** En la escena de WG3 el jugador de prueba usa un `CharacterController`
+  contra los colliders que monta `Wg3SceneAssembler` (`:98`) y **nunca transmite pose** — el único
+  emisor es `PlayerPoseTransmitter.cs:279`, que no está en esa escena. Así que la segunda planta se
+  anda en el arnés antes de existir la autoridad. Lo que no se puede es andarla en el juego de verdad.
+- **El coste por chunk se multiplica por el número de plantas.** No hay `layer` en el mensaje ni
+  descarte vertical (`Wg3ChunkStreamer.cs:40, 311`): toda la columna se monta y se destruye junta.
+- **El ráster clampa a i16 y descarta en silencio.** `raster.rs:121-126` recorta a ±327 m y tira el
+  tramo degenerado sin un `log::warn!`. A 3,32 m por planta el techo son 98 plantas, así que no toca;
+  pero el modo de fallo es un agujero por el que se cae y sin rastro en el log, que es justo lo que
+  `chunk.rs:112-113` dice querer poder buscar.
+- **`finish()` funde lo que sólo se toca** (`raster.rs:272`). La losa de techo de abajo y la de suelo
+  de arriba se fusionan en un tramo macizo: correcto para colisión, pero después del `finish()` la
+  columna ya no dice dónde acaba una planta y empieza otra.
+- El radio no casa entre lados: 0,35 en el backend (`collision.rs:22`) contra `m_Radius: 0.45` más
+  `m_SkinWidth: 0.06` del prefab. Los números medidos aguantan por entre 0 y 9 cm, no por diseño.
+
+### Verificaciones
+
+- (a) `the_building_is_coherent`: por planta, el `problems()` de siempre; y a nivel de edificio, que
+  cada hueco de escalera aterrice en un espacio real por sus dos extremos y que dos plantas no se
+  interpenetren en Y.
+- (b) `a_second_storey_is_actually_reachable`: inundar desde un punto de la planta 0 en el ráster del
+  mundo SERVIDO, con clave `(celda, tramo)`, y exigir suelo pisable a la cota de la planta 1. Es el
+  test que cazaría el hueco excavado con la escalera sin construir.
+- (c) `the_flood_distinguishes_storeys`: sobre dos plantas, la inundación NO puede fundirlas en una
+  superficie. Protege la métrica, que es lo que este ADR más arriesga.
+- (d) `the_wire_carries_a_non_zero_origin_y`: la clave en la lista del guardián y el fixture fuera de
+  cero.
+- (e) `the_building_is_deterministic`: mismo seed, mismo edificio, plantas incluidas.
+- (f) Andarlo. Subir la escalera en `WorldGen3Live` y mirar hacia abajo por el hueco. Un forjado que se
+  perfora en el ráster y no en la malla no sale en ningún contador.

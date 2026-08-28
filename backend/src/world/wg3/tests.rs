@@ -329,6 +329,104 @@ fn a_wall_standing_on_the_floor_slab_becomes_one_span() {
     assert_eq!(1, column.len(), "esperaba un solo tramo macizo: {column:?}");
 }
 
+/// ADR-102 D6 — **el arnés de medida tiene que distinguir una planta de dos.**
+///
+/// Las sondas cuentan de dos formas y sólo una sobrevive a apilar: por COLUMNA (`seen[iz*c+ix]`) y
+/// por (celda, nivel) (`seen_level[iz*c+ix][l]`). Con una planta las dos dan lo mismo, así que la
+/// diferencia no se nota mirando ninguna cifra de hoy — y el día que haya dos plantas, la que cuenta
+/// columnas sigue dando el MISMO porcentaje que antes de añadirla. No falla: miente y sale en verde.
+///
+/// Este test es un mundo de dos plantas hecho a mano, sin generador de por medio, para que la
+/// propiedad se pueda exigir ANTES de que el generador sepa apilar. Si alguien colapsa los niveles a
+/// un escalar, aquí se entera.
+#[test]
+fn the_flood_distinguishes_storeys() {
+    const HEAD_M: f32 = 1.8;
+    // La planta canónica de ADR-102 D2: 3,20 m libres más 12 cm de losa. La losa CUELGA por debajo de
+    // su cota, así que el suelo de la planta 1 está en 3,32 y ocupa [3,20 – 3,32].
+    const STOREY_M: f32 = 3.32;
+    const SLAB_M: f32 = 0.12;
+
+    let slab = |floor_y: f32| PlacedBox {
+        center: [5.0, floor_y - SLAB_M * 0.5, 5.0],
+        size: [10.0, SLAB_M, 10.0],
+        yaw_degrees: 0.0,
+        kind: segment::KIND_FLOOR,
+    };
+
+    let mut b = Wg3RasterBuilder::covering(0.0, 0.0, 10.0, 10.0);
+    b.add_box(&slab(0.0)); // suelo de la planta baja
+    b.add_box(&slab(STOREY_M)); // suelo de la primera, que es el techo de la baja
+    b.add_box(&slab(STOREY_M * 2.0)); // el tejado: hay suelo, pero encima no hay techo
+    let raster = b.finish();
+
+    // Tres macizos disjuntos: si `finish()` fundiera lo que no se toca, no habría dos plantas que
+    // contar y el resto del test no significaría nada.
+    let column = raster.column_at(5.0, 5.0);
+    assert_eq!(3, column.len(), "esperaba tres losas sueltas: {column:?}");
+
+    // La misma regla que usan las sondas: hay suelo, y encima hay hueco para la cabeza CON techo.
+    let levels: Vec<f32> = column
+        .iter()
+        .enumerate()
+        .filter_map(|(i, span)| {
+            let head = match column.get(i + 1) {
+                Some(next) => (next.bottom_cm - span.top_cm) as f32 / 100.0,
+                None => f32::MAX,
+            };
+            (HEAD_M..=6.0)
+                .contains(&head)
+                .then_some(span.top_cm as f32 / 100.0)
+        })
+        .collect();
+
+    assert_eq!(
+        2,
+        levels.len(),
+        "dos plantas tienen que dar dos niveles pisables, no {levels:?} — el tejado no cuenta \
+         porque no tiene techo encima"
+    );
+    assert!(
+        (levels[1] - levels[0] - STOREY_M).abs() < 0.02,
+        "las dos plantas tienen que estar separadas una altura de planta: {levels:?}"
+    );
+
+    // Y AQUÍ está el fallo silencioso que este test existe para impedir. Se recorre un trozo del
+    // mundo con los DOS recuentos, como hace `probe_walkable_surface`: el de columnas da lo mismo que
+    // daría con una sola planta, el de niveles es el doble. Si algún día vuelven a coincidir, o es
+    // que se perdió una planta o es que se perdió el recuento.
+    const CELL: f32 = 0.5;
+    let (mut columns, mut pairs) = (0usize, 0usize);
+    for iz in 0..12 {
+        for ix in 0..12 {
+            let (x, z) = (2.0 + ix as f32 * CELL, 2.0 + iz as f32 * CELL);
+            let col = raster.column_at(x, z);
+            let here = col
+                .iter()
+                .enumerate()
+                .filter(|(i, span)| {
+                    let head = match col.get(i + 1) {
+                        Some(next) => (next.bottom_cm - span.top_cm) as f32 / 100.0,
+                        None => f32::MAX,
+                    };
+                    (HEAD_M..=6.0).contains(&head)
+                })
+                .count();
+            if here > 0 {
+                columns += 1;
+            }
+            pairs += here;
+        }
+    }
+
+    assert_eq!(144, columns, "las 144 celdas del trozo tienen suelo");
+    assert_eq!(
+        2 * columns,
+        pairs,
+        "por nivel tiene que salir el DOBLE que por columna: {pairs} contra {columns}"
+    );
+}
+
 #[test]
 fn inside_a_corridor_there_is_floor_below_and_ceiling_above() {
     let m = real_manifest();
@@ -3955,12 +4053,19 @@ fn probe_how_much_of_the_region_can_be_walked_from_the_spawn() {
 
         let mut floors: Vec<Vec<f32>> = vec![Vec::new(); cells * cells];
         let mut standable = 0usize;
+        // ADR-102 D6 — y el mismo recuento por NIVEL. La travesía siempre fue consciente de la cota
+        // (`seen_level`), pero la cifra que se publica contaba COLUMNAS: una celda con suelo en dos
+        // plantas sumaba uno. Con lo que había eso daba igual porque sólo hay una planta; el día que
+        // haya dos, la superficie de arriba no movería el porcentaje ni un punto y el número diría
+        // que añadir una planta no añadió mundo.
+        let mut standable_levels = 0usize;
         for iz in 0..cells {
             for ix in 0..cells {
                 let levels = levels_of(ix, iz);
                 if !levels.is_empty() {
                     standable += 1;
                 }
+                standable_levels += levels.len();
                 floors[iz * cells + ix] = levels;
             }
         }
@@ -4197,12 +4302,19 @@ fn probe_how_much_of_the_region_can_be_walked_from_the_spawn() {
             })
             .count();
 
+        // ADR-102 D6 — cuántos (celda, nivel) se pisan de los que hay. Con una planta es idéntico al
+        // recuento por columnas; con dos es el único de los dos que se mueve.
+        let reached_levels: usize = seen_level.iter().flatten().filter(|v| **v).count();
+
         println!(
             "[wg3] región ({rx},{rz}): {reached} celdas a pie de {standable} pisables ({:.0} %), \
-             {:.0} m² andables | piezas pisadas {pieces_reached} de {pieces_counted} | tramos \
+             {:.0} m² andables | por nivel {reached_levels} de {standable_levels} ({:.0} %), \
+             {:.0} m² | piezas pisadas {pieces_reached} de {pieces_counted} | tramos \
              pisados {segments_reached} de {} | puertas alcanzadas {gates_reached} de {}",
             reached as f32 * 100.0 / standable.max(1) as f32,
             reached as f32 * CELL * CELL,
+            reached_levels as f32 * 100.0 / standable_levels.max(1) as f32,
+            reached_levels as f32 * CELL * CELL,
             world.segments().len(),
             gates.len()
         );

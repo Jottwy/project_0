@@ -1275,7 +1275,12 @@ mod tests {
                 rotation: 2,
                 origin_x_cm: -12_345,
                 origin_z_cm: 6_789,
-                origin_y_cm: 0,
+                // ADR-102 D6 — NO cero. Con la cota a cero este test pasaba igual con la clave
+                // renombrada y con el campo perdido, porque cero es también el valor por defecto al
+                // que cae el parser de C# cuando se salta una clave. El día que haya dos plantas ese
+                // falso verde se lee como "la de arriba se monta pegada a la de abajo", en silencio.
+                // 332 es la planta canónica: 320 de altura libre más 12 de losa.
+                origin_y_cm: 332,
             }],
             // ADR-098 — el tramo generado va en el mismo mensaje y con sus bocas dentro. Es el único
             // dato de WG3 que no es un índice de catálogo, así que si una de estas claves se
@@ -1318,6 +1323,7 @@ mod tests {
             "rotation",
             "origin_x_cm",
             "origin_z_cm",
+            "origin_y_cm",
             "segments",
             "size_x_cm",
             "size_z_cm",
@@ -1348,6 +1354,7 @@ mod tests {
                 assert_eq!(1, v.placements.len());
                 assert_eq!(-12_345, v.placements[0].origin_x_cm);
                 assert_eq!(6_789, v.placements[0].origin_z_cm);
+                assert_eq!(332, v.placements[0].origin_y_cm);
                 assert_eq!(2, v.placements[0].rotation);
                 assert_eq!(1, v.segments.len());
                 assert_eq!(-400, v.segments[0].x_cm);

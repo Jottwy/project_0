@@ -186,14 +186,21 @@ namespace BackroomsSurvival.WorldGen3
 
                 _builtPieces++;
 
-                if (!_hasSpawn)
+                // Centro de una pieza recibida, a la altura de los ojos SOBRE SU PROPIO SUELO. Es
+                // adonde hay que llevar al jugador: el andamio deja un chunk de cada tres vacío, así
+                // que el origen del mundo cae en el aire con bastante probabilidad y aparecer ahí se
+                // lee como "el mundo no cargó" cuando lo que pasa es que ahí no hay nada.
+                //
+                // ADR-102 D6 — la cota era un `1.0f` cableado, ignorando el `originY` que se acaba de
+                // leer tres líneas más arriba. Con una sola planta daba igual porque todo estaba a
+                // cero; con dos, si la primera pieza en contestar es de arriba, el jugador aparece
+                // dentro del forjado o debajo del mundo. Y por eso tampoco vale quedarse con la
+                // PRIMERA: se elige la de cota más baja, que es la planta que se pisa.
+                if (!_hasSpawn || placement.originY < _spawnFloorY)
                 {
-                    // Centro de la PRIMERA pieza que llega, a la altura de los ojos. Es adonde hay
-                    // que llevar al jugador: el andamio deja un chunk de cada tres vacío, así que
-                    // el origen del mundo cae en el aire con bastante probabilidad y aparecer ahí
-                    // se lee como "el mundo no cargó" cuando lo que pasa es que ahí no hay nada.
+                    _spawnFloorY = placement.originY;
                     _spawn = new Vector3(
-                        placement.originX + placement.SizeX * 0.5f, 1.0f,
+                        placement.originX + placement.SizeX * 0.5f, placement.originY + 1.0f,
                         placement.originZ + placement.SizeZ * 0.5f);
                     _hasSpawn = true;
                 }
@@ -230,6 +237,10 @@ namespace BackroomsSurvival.WorldGen3
 
         private Vector3 _spawn;
         private bool _hasSpawn;
+        /// <summary>Cota del suelo de la pieza que hoy gana el spawn (ADR-102 D6). Sin esto no hay
+        /// forma de comparar contra la siguiente y el criterio vuelve a ser "la primera que llegue",
+        /// que con dos plantas es una moneda al aire.</summary>
+        private float _spawnFloorY;
 
         private int _emptyChunks;
         private int _builtChunks;
@@ -258,7 +269,7 @@ namespace BackroomsSurvival.WorldGen3
                       $"radio {radius}.", this);
         }
 
-        /// <summary>Centro de la primera pieza recibida, si ya ha llegado alguna.</summary>
+        /// <summary>Centro de la pieza recibida de cota más baja, si ya ha llegado alguna.</summary>
         public bool TryGetSpawnPoint(out Vector3 point)
         {
             point = _spawn;
