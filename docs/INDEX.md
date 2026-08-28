@@ -27,6 +27,12 @@
   para ejecutarse tal cual: qué está hecho y verificado, qué se puede tocar sin ADR y qué no, el
   techo del sistema, y las trampas que ya costaron tiempo. Empieza aquí antes de tocar salas.
 
+## WorldGen3 (el mundo procedural)
+- [WG3-ROADMAP.md](WG3-ROADMAP.md) — plan de trabajo de WorldGen3 (2026-08-28), escrito al cerrar
+  ADR-102. Dónde estamos medido, lo que NO hay que volver a tocar, y los cuatro frentes que quedan
+  —identidad visual, WG3 como autoridad, variedad de catálogo y la rareza Backrooms— ordenados con su
+  porqué. Las decisiones vinculantes siguen siendo ADR-095 a ADR-102 en DECISIONS.md.
+
 ## Level 4 (incursiones)
 - [LEVEL4-ROADMAP.md](LEVEL4-ROADMAP.md) — plan troceado de ADR-093 (2026-08-24): región de
   incursión acotada, generador de grafo rasterizado, puertas con enlace inestable y epochs.
