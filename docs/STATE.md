@@ -1,7 +1,54 @@
 # STATE.md — Estado vivo del proyecto
 > Actualizado por /checkpoint al cierre de cada sesión. Leído al inicio de cada sesión.
 
+## SESIÓN AUTÓNOMA — ARRANQUE (leer primero; borrar este bloque al terminar el carril)
+- **MILESTONE ACTUAL:** M4 — las regiones (0,0) y (−1,2) no pisan un solo tramo, y ya no es geometría.
+- **ESTADO:** M1, M2 y M3 cerrados y commiteados. HEAD `1fdb4e18`.
+- **ÚLTIMO VERDE:** `cargo test --release` 1089/0/34 · clippy `--all-targets -D warnings` limpio ·
+  `cargo fmt --check` limpio · `CompileCheckClient.sh` 0 errores en las cuatro asambleas.
+- **COMPLETADO, y cómo se verificó:**
+  - `c4580553` sonda que anda el mundo servido por el RÁSTER. Verificada porque midió algo que el
+    grafo no decía (0/25 tramos pisados con 86 % de árbol mayor).
+  - `ac41cf19` la escena de prueba se regeneraba en noria y no dejaba compilar a Unity.
+  - `ecc1a8fa` arnés (g) de ADR-098 — compila, **no se ha corrido**.
+  - `02b2b70f` sonda de diagnóstico que aisló la causa, con el volcado de cajas que la prueba.
+  - `1fdb4e18` el arreglo: `MIN_GENERATED_WIDTH_CM = 200`. Verificado con antes/después sobre el
+    mundo servido: bocas macizas 46 → 0; tramos pisados 9/37 → 17/26 y 4/31 → 11/24.
+- **DECISIONES TOMADAS SIN JOEL:** (1) el mínimo de anchura generada sale de la medida
+  (`narrowest_doorway_clearance`) y no de una opinión; (2) va en `problems()`, así que una ruta
+  estrecha se DESCARTA en vez de emitirse impasable — prefiere menos conectores a conectores falsos.
+- **PRÓXIMO PASO CONCRETO:** re-correr `probe_what_each_walkable_blob_is_made_of` y averiguar a qué
+  componente se pega el enrutador en (0,0) y (−1,2): tienen 0 bocas macizas y aun así 0/25 y 0/11
+  tramos pisados, así que sus conectores forman una red andable que no engancha con la mancha del
+  jugador. Empezar por `route.rs:742 main_component` y por `best_link` / `best_bridge`.
+- **PROHIBIDO / BLOQUEADO sin Joel:** la verificación (g) andando en juego (pide sesión de ~90 s con
+  el editor); llenar la biblioteca de piezas (criterio visual); cualquier bump de wire.
+- **SCOPE:** escribir solo en `backend/src/world/wg3/**`, `backend/tests/fixtures/wg3_*.json`,
+  `Assets/Scripts/WorldGen3/**`, `Assets/Editor/Wg3*`, `docs/STATE.md` y `docs/DECISIONS.md` (solo
+  Edit anclado al final, con `@(Get-Content).Count` antes y después). Dependencia dura, mínima y
+  dicha en el commit: `WIRE_SCHEMA_VERSION` + su espejo `WireSchema.Expected` (los dos o ninguno) y
+  el carril `BACKROOMS_WG3` de `game_loop.rs`. Prohibido: WG2 (`world/grid_gen`, `world/graph`,
+  `ChunkStreamer`), IA, UI, red, persistencia, `Assets/PolymindGames/**`, y cualquier `.unity` o
+  prefab que no sea escena de prueba de WG3. Nunca `git add -A / -a / . / :/`.
+
+---
+
 ## Última sesión
+- Fecha: 2026-08-28 (**WorldGen3 — el conector generado nacía TAPIADO: ADR-098 enmienda 2**, sesión autónoma) — **5 commits, `d8323f75` → `1fdb4e18`. `cargo test --release` 1089/0/34, clippy y fmt limpios, `CompileCheckClient` 0 errores en las cuatro asambleas. Cero wire.**
+
+0. **LO QUE HAY QUE SABER ANTES DE LEER NINGÚN NÚMERO DE CONECTIVIDAD DE WG3.** ADR-096 y la enmienda 1 de ADR-098 miden sobre el **grafo de bocas coincidentes**: dos bocas a menos de 2 cm cuentan como unidas. El **ráster** —que es lo que resuelve el movimiento— puede tener materia justo ahí. Los dos mundos no coinciden, y solo uno se anda. Todo «86 % de árbol mayor» lleva ese asterisco.
+
+1. **LA CAUSA, y estaba escrita desde ADR-095.** El ráster es conservador (toda celda que una caja toque queda maciza) con celda de 50 cm, así que una pared de 15 cm se infla hasta ocupar su celda entera y **come vano por los dos lados**. `raster.rs` lo dijo el primer día y prometió el test que lo mediría, `narrowest_doorway_clearance` — **ese test no existía**. Escrito ahora: boca de 120 cm → **0,00 m libres**; 200 → 0,99; 240 → 1,49; 500 → 3,99. El jugador mide 0,70 m de diámetro. El catálogo autorado se libró por accidente (bocas de 2,4 y 5,0 m); los conectores GENERADOS bajaban de ahí por `NARROW_STEPS_CM = [0, 180, 140]` y `MIN_TAP_WIDTH_CM = 120`.
+
+2. **EL ARREGLO Y POR QUÉ NO PUEDE VOLVER.** `MIN_GENERATED_WIDTH_CM = 200` en `segment.rs` con la tabla medida al lado; las dos constantes del enrutador salen de él; y `Wg3Segment::problems()` rechaza toda boca por debajo — como `viable()` ya exige `problems()` vacío, una ruta estrecha se **descarta** en vez de emitirse impasable. **Era el peor fallo de su clase:** el cliente dibujaba el pasillo abierto y el servidor no dejaba entrar, así que no sale en una captura. Es la forma exacta del «llega un punto que se cierra y no hay manera de moverte».
+
+3. **MEDIDO, antes → después.** Bocas macizas 4/24/18/0 → **0/0/0/0**. Tramos que se pisan 0/25 · 9/37 · 4/31 · 0/11 → **0/25 · 17/26 · 11/24 · 0/11**. Puertas de junta alcanzadas 0/5 · 2/5 · 0/6 · 0/4 → **0/5 · 3/5 · 2/6 · 0/4**. Andable desde el spawn 64/80/90/80 % → 63/85/89/79 %.
+
+4. ⚠️ **AVISO DE MÉTODO, y costó una hora: medir una pieza por el CENTRO de su caja MIENTE.** La primera sonda decía que una componente de 60 nodos se partía en 7 manchas andables. Falso: el centro de la caja de una pieza en L cae dentro de su propia pared o en un armario de cuarenta celdas. Un transecto denso entre dos piezas «desconectadas» no encontró ni un centímetro cerrado. **Se mide por BOCAS**, que son por definición sitios por donde se pasa.
+
+5. **LO QUE QUEDA ABIERTO, y ya no es geometría.** Las regiones (0,0) y (−1,2) siguen sin que se pise un solo tramo y no les queda ni una boca maciza: sus conectores forman una red andable propia que no engancha con la mancha del jugador. Eso es **enrutado** —a qué componente se pega el enrutador— y es la tanda siguiente. La verificación (a) de ADR-098 sigue sin cumplirse, ahora por un motivo distinto y medido. Y la (g) —andarlo en juego— sigue **pendiente**: el arnés está escrito y compila, sin correr.
+
+---
 - Fecha: 2026-08-27/28 (**WorldGen3 F4: el compositor pasa a Rust, el mundo pasa a REGIONES, ADR-096 cierra el troceado y la primera pieza DIBUJADA se anda** — dos sesiones en paralelo toda la noche, una por carril) — **26 commits, `ee4c47ad` → `7e0b4087`. `cargo test` 1065/0/34 ignorados, 48 EditMode en verde, clippy `--all-targets -D warnings` y fmt limpios. Cero wire: v46 ya traía el carril.**
 
 0. **DÓNDE ESTÁ WG3 HOY:** F0–F3 hechas y andadas. **F4 con el troceado ya decidido y cumplido**: el mundo es infinito por regiones, las regiones no nacen selladas y la junta se cruza andando. Lo único abierto de WG3 es **el cierre de bucles**, que hoy es un mecanismo puesto y medido INERTE. WG2 sigue sirviendo el mundo mientras `BACKROOMS_WG3` no valga `1` (D3 de ADR-095).

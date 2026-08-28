@@ -8145,3 +8145,60 @@ misma operación y el test compara con redondeo a la par, como `Mathf.RoundToInt
   suma huellas de PIEZAS y los tramos generados no cuentan todavía. Con 11–37 tramos por región, lo
   andable ha subido bastante más de lo que dice esa cifra.
 - (g) Wire 48 a los dos lados — **hecho**. **Andarlo en juego: PENDIENTE.**
+
+## ADR-098 — Enmienda 2: el conector estrecho nacía tapiado, y la conectividad se medía sobre un grafo que no se anda (2026-08-28)
+
+La enmienda 1 dio 2/1/3/3 islas contra 6/6/7/5, con el árbol mayor al 86 / 100 / 84 / 82 %, y esos
+números son ciertos **sobre el grafo de bocas coincidentes**. Se midió lo otro —recorrer el RÁSTER a
+pie desde donde aparece el jugador, que es lo que decide si se puede andar— y no se parecen:
+
+| | a pie, antes | a pie, después |
+|---|---|---|
+| Andable desde el spawn | 64 / 80 / 90 / 80 % | 63 / 85 / 89 / 79 % |
+| Tramos generados que se pisan | 0/25 · 9/37 · 4/31 · 0/11 | **0/25 · 17/26 · 11/24 · 0/11** |
+| Puertas de junta alcanzadas | 0/5 · 2/5 · 0/6 · 0/4 | **0/5 · 3/5 · 2/6 · 0/4** |
+| Bocas MACIZAS | 4 · 24 · 18 · 0 | **0 · 0 · 0 · 0** |
+
+### La causa, y estaba escrita desde ADR-095
+
+El ráster es conservador —toda celda que una caja toque queda maciza— con celda de 50 cm, así que
+una pared de 15 cm se infla hasta ocupar su celda entera y come vano por los dos lados. `raster.rs`
+lo dijo el primer día y prometió el test que lo mediría, `narrowest_doorway_clearance`. **Ese test
+no existía.** Escrito ahora, da la tabla que decide:
+
+| boca | hueco libre, peor alineación |
+|---|---|
+| 120 cm | **0,00 m — tapiada** |
+| 200 cm | 0,99 m |
+| 240 cm | 1,49 m |
+| 500 cm | 3,99 m |
+
+El jugador mide 0,70 m de diámetro: **200 cm es el primer escalón que pasa**. El catálogo autorado
+se libró por accidente —sus bocas son de 2,4 y 5,0 m—; los conectores que esta ADR empezó a generar
+bajaban de ahí por dos constantes del enrutador, `NARROW_STEPS_CM = [0, 180, 140]` y
+`MIN_TAP_WIDTH_CM = 120`. Ambas salen ahora de `MIN_GENERATED_WIDTH_CM = 200`, y
+`Wg3Segment::problems()` rechaza toda boca por debajo: como `viable()` ya exige `problems()` vacío,
+una ruta estrecha se **descarta** en vez de emitirse impasable.
+
+**Era el peor fallo de su clase**: el cliente dibujaba el pasillo abierto y el servidor no dejaba
+entrar. No sale en una captura, y es exactamente la forma del «llega un punto que se cierra y no hay
+manera de moverte» que Joel reportó andando.
+
+### Dos avisos de método que costaron una hora cada uno
+
+**1. Medir una pieza por el CENTRO de su caja miente.** La primera versión de la sonda decía que una
+componente de 60 nodos se partía en 7 manchas andables; era falso. El centro de la caja de una pieza
+en L cae dentro de su propia pared o en un armario de cuarenta celdas. Un transecto denso entre dos
+piezas «desconectadas» no encontró ni un centímetro cerrado. **Se mide por BOCAS**, que son por
+definición sitios por donde se pasa.
+
+**2. El grafo y el ráster son dos mundos distintos, y solo uno se anda.** Dos bocas a menos de 2 cm
+cuentan como unidas en el grafo aunque el ráster tenga materia justo ahí. Todo número de
+conectividad de ADR-096 y de la enmienda 1 de ésta lleva ese asterisco.
+
+### Lo que queda abierto, y ya no es geometría
+
+Las regiones (0,0) y (−1,2) siguen sin que se pise **un solo** tramo, y ya no les queda ni una boca
+maciza: sus conectores forman una red andable propia que no engancha con la mancha del jugador. Eso
+es enrutado —a qué componente se pega el enrutador— y es otra tanda. La verificación (a) sigue sin
+cumplirse, ahora por un motivo distinto y medido.
