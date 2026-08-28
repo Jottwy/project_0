@@ -5816,6 +5816,166 @@ fn the_plan_is_coherent_in_every_audited_region() {
     }
 }
 
+// ── ADR-102 D1: el edificio de varias plantas ───────────────────────────────────────────────
+
+/// Las plantas del primer corte (ADR-102 D3). Dos, y no porque dos sea el número correcto: el salto
+/// de una a dos es donde están todos los fallos, y el de dos a tres no aporta ninguno nuevo.
+const STOREYS: usize = 2;
+
+fn building_of(rx: i32, rz: i32) -> plan::RegionBuilding {
+    let region = Wg3RegionCoord { x: rx, z: rz };
+    let bounds = region.bounds();
+    let gates = junction::gates_of_region(composer_seed(SERVED_SEED), rx, rz, bounds);
+    plan::plan_building(region.composer_seed(SERVED_SEED), bounds, &gates, STOREYS)
+}
+
+/// **Un barrido, no las cuatro de referencia, y esa lección ya costó una vez.**
+///
+/// El hueco de escalera depende de que COINCIDAN dos geometrías planificadas por separado: que un
+/// espacio de abajo quepa entero dentro de uno construido de arriba. Eso es coincidencia de semilla,
+/// igual que lo era el vano perdido de `región (-1,0)` — y aquél no salió mirando cuatro regiones,
+/// salió en una partida. Cuarenta y nueve es barato y sí muerde.
+#[test]
+fn the_building_is_coherent_in_every_region() {
+    let mut with_two = 0usize;
+    for rz in -3..4 {
+        for rx in -3..4 {
+            let b = building_of(rx, rz);
+            let problems = b.problems();
+            assert!(
+                problems.is_empty(),
+                "el edificio de ({rx},{rz}) no es coherente: {}",
+                problems.join("; ")
+            );
+            if b.storeys.len() > 1 {
+                with_two += 1;
+            }
+        }
+    }
+    // Y que no esté pasando por no construir nada: un edificio de una sola planta cumple TODO lo de
+    // arriba sin esfuerzo, así que sin este suelo el test verde no diría nada. No se exigen las 49
+    // —el edificio sube sólo hasta donde se puede subir, y hay regiones donde el hueco no encaja—
+    // pero sí que la segunda planta sea la norma y no la excepción.
+    println!("[wg3] segunda planta en {with_two} de 49 regiones");
+    assert!(
+        with_two * 2 >= 49,
+        "sólo {with_two} de 49 regiones levantaron una segunda planta"
+    );
+}
+
+/// La planta alta no puede ser decorado: tiene que subir una escalera a ella, y esa escalera tiene
+/// que salir DENTRO de un espacio construido. `problems()` ya lo exige; esto comprueba que lo exige
+/// de verdad y no por casualidad de que no haya plantas altas.
+#[test]
+fn every_upper_storey_has_a_stair_that_lands_somewhere() {
+    for (rx, rz) in AUDIT_REGIONS {
+        let b = building_of(rx, rz);
+        assert_eq!(
+            STOREYS,
+            b.storeys.len(),
+            "({rx},{rz}) no levantó las plantas"
+        );
+        assert!(
+            !b.wells.is_empty(),
+            "({rx},{rz}) no tiene hueco de escalera"
+        );
+        for w in &b.wells {
+            let below = &b.storeys[w.storey_below].spaces[w.space_below];
+            let above = &b.storeys[w.storey_below + 1].spaces[w.space_above];
+            assert_eq!(SpaceRole::Stair, below.role);
+            assert_eq!(plan::STOREY_HEIGHT_CM, below.rise_cm);
+            assert_eq!(plan::STOREY_RISE_CM, below.rise_step_cm);
+            assert!(above.role.is_built());
+            assert!(
+                above.rect.contains_rect(&w.rect),
+                "({rx},{rz}): el hueco asoma fuera del espacio de arriba"
+            );
+            // Y que la escalera QUEPA: los peldaños se alejan de la puerta, así que el tiro corre
+            // perpendicular a su pared. Sin esto el plan puede pedir catorce escalones en tres
+            // metros y el relleno los construye de 21 cm de huella.
+            let steps = plan::STOREY_HEIGHT_CM.div_euclid(plan::STOREY_RISE_CM)
+                + i32::from(plan::STOREY_HEIGHT_CM % plan::STOREY_RISE_CM != 0);
+            let run = if below.rise_from_side.is_multiple_of(2) {
+                below.rect.depth_cm()
+            } else {
+                below.rect.width_cm()
+            };
+            assert!(
+                run / steps >= plan::MIN_TREAD_CM,
+                "({rx},{rz}): {steps} peldaños en {run} cm dan huellas de {} cm",
+                run / steps
+            );
+        }
+    }
+}
+
+/// Las plantas altas tienen que ser DISTINTAS de la baja. Un edificio cuyas plantas son fotocopias
+/// no se lee como un edificio, y es exactamente lo que sale si la semilla no cambia con la planta.
+#[test]
+fn an_upper_storey_is_not_a_photocopy_of_the_one_below() {
+    for (rx, rz) in AUDIT_REGIONS {
+        let b = building_of(rx, rz);
+        let (lo, hi) = (&b.storeys[0], &b.storeys[1]);
+        // Comparadas por huella y papel, ignorando la cota: si el único cambio fuera la Y, esto sería
+        // la misma planta a otra altura.
+        let same = hi.spaces.iter().filter(|h| {
+            lo.spaces
+                .iter()
+                .any(|l| l.rect == h.rect && l.role == h.role)
+        });
+        assert!(
+            same.count() * 2 < hi.spaces.len(),
+            "({rx},{rz}): más de la mitad de la planta alta es calcada de la baja"
+        );
+    }
+}
+
+#[test]
+fn the_building_is_deterministic() {
+    for (rx, rz) in AUDIT_REGIONS {
+        assert_eq!(
+            building_of(rx, rz),
+            building_of(rx, rz),
+            "el edificio de ({rx},{rz}) cambia entre dos llamadas iguales"
+        );
+    }
+}
+
+#[test]
+#[ignore = "sonda: imprime, no exige"]
+fn probe_region_buildings() {
+    for (rx, rz) in AUDIT_REGIONS {
+        let b = building_of(rx, rz);
+        for (n, plan) in b.storeys.iter().enumerate() {
+            let r = plan.bounds_cm.expect("la planta tiene caja");
+            println!(
+                "[wg3] ({rx},{rz}) planta {n}: {} espacios, {:.0} m² construidos de {:.0} de huella \
+                 ({:.0} %), {} componentes, cota {} cm",
+                plan.spaces.len(),
+                plan.built_area_m2(),
+                r.area_m2(),
+                plan.built_area_m2() * 100.0 / r.area_m2(),
+                plan.components(),
+                n as i32 * plan::STOREY_HEIGHT_CM,
+            );
+        }
+        for w in &b.wells {
+            let s = &b.storeys[w.storey_below].spaces[w.space_below];
+            println!(
+                "[wg3]   hueco: planta {} espacio {} ({:.1}×{:.1} m, entra por el lado {}) sale al \
+                 espacio {} de la planta {}",
+                w.storey_below,
+                w.space_below,
+                s.rect.width_cm() as f32 / 100.0,
+                s.rect.depth_cm() as f32 / 100.0,
+                s.rise_from_side,
+                w.space_above,
+                w.storey_below + 1,
+            );
+        }
+    }
+}
+
 /// **El invariante que sustituye a «cuántas islas quedaron».**
 ///
 /// Antes la conectividad era un resultado que se medía después de construir; ahora es una propiedad
@@ -6242,6 +6402,7 @@ fn plan_with_a_gap(blocked: bool) -> plan::RegionPlan {
         depth: 3,
         rise_cm: 0,
         rise_from_side: 0,
+        rise_step_cm: plan::STEP_RISE_CM,
     };
 
     let mut spaces = vec![room(0, 1200), room(3000, 4200)];

@@ -65,6 +65,12 @@ const SALT_VOID: u32 = 0x9A17_0003;
 const SALT_RING: u32 = 0x9A17_0004;
 /// Sal del sorteo de desnivel.
 const SALT_TERRACE: u32 = 0x9A17_0005;
+/// Sal de la huella de una planta alta (ADR-102 D3). Se le suma el número de planta para que cada
+/// una abra su propio flujo: la posición del sorteo sigue siendo la del mundo, que es lo que pide R3
+/// — lo que el número de planta cambia es el flujo, no el origen.
+const SALT_STOREY: u32 = 0x9A17_0006;
+/// Sal de la elección de hueco de escalera.
+const SALT_WELL: u32 = 0x9A17_0007;
 
 /// Cuánto tiene que apartarse un corte del centro de una puerta de junta, en centímetros.
 ///
@@ -103,6 +109,29 @@ const TERRACE_STEPS: i32 = 5;
 /// Es el tope de cualquier salto de cota entre dos espacios unidos por un vano. Por encima, la puerta
 /// se dibuja abierta y no se pasa — el peor fallo posible, porque no sale en una captura.
 pub const MAX_WALK_STEP_CM: i32 = 27;
+
+/// **La planta canónica (ADR-102 D2): 320 cm de altura libre más 12 de losa.**
+///
+/// 320 es el `_ => 320` de `fill::clear_height_cm` y la altura de diez de las diecinueve piezas del
+/// catálogo, así que una retícula a 332 encaja lo generado y casi todo lo autorado sin tocar nada. Y
+/// es cara pisable a cara pisable: la losa cuelga por DEBAJO de su cota, no por encima.
+pub const STOREY_HEIGHT_CM: i32 = 332;
+
+/// Contrahuella de una escalera que sube una planta entera (ADR-102 D4).
+///
+/// No son los [`STEP_RISE_CM`] de una terraza, y la diferencia no es un gusto. Con 12 cm, subir 332
+/// pide 28 escalones; como la huella sale de repartir el ancho del espacio entre los escalones, harían
+/// falta unos 8 m de tiro para que cada peldaño midiera 28 cm. Eso no es un hueco de escalera, es un
+/// salón inclinado. Con 24 son **14 escalones de 23,7 cm** —por debajo de [`MAX_WALK_STEP_CM`], que es
+/// lo que de verdad manda— y 4 m de tiro dan huellas de 28,6.
+pub const STOREY_RISE_CM: i32 = 24;
+
+/// Huella mínima de un peldaño, en centímetros.
+///
+/// Al `CharacterController` le basta con que la contrahuella quepa en su `m_StepOffset`; la huella no
+/// le importa. Importa aquí porque nada impedía que un espacio corto produjera peldaños de 17 cm: con
+/// desniveles de 60 cm no se notaba, con 332 sí. 26 cm es aproximadamente un pie.
+pub const MIN_TREAD_CM: i32 = 26;
 
 /// Probabilidad de que un corte interior se lleve un desnivel.
 const TERRACE_CHANCE: f32 = 0.34;
@@ -255,6 +284,16 @@ impl PlanRect {
     pub fn area_m2(&self) -> f32 {
         (self.width_cm() as f32 / CM_PER_M) * (self.depth_cm() as f32 / CM_PER_M)
     }
+    /// ¿Cabe `other` dentro de éste, bordes incluidos? (ADR-102 D1)
+    ///
+    /// Contener y no solapar: un hueco de escalera a caballo de dos salas de la planta de arriba
+    /// perfora la pared que las separa por debajo, y eso no se ve hasta que se anda por ahí.
+    pub fn contains_rect(&self, other: &PlanRect) -> bool {
+        other.min_x_cm >= self.min_x_cm
+            && other.max_x_cm <= self.max_x_cm
+            && other.min_z_cm >= self.min_z_cm
+            && other.max_z_cm <= self.max_z_cm
+    }
     /// Centro en metros. Es lo que siembra los sorteos: la POSICIÓN, nunca el índice.
     pub fn centre_m(&self) -> (f32, f32) {
         (
@@ -392,6 +431,14 @@ pub struct PlannedSpace {
     /// Se guarda el lado y no un eje porque un eje no dice hacia dónde: con «eje X» habría que
     /// adivinar si se baja hacia +X o hacia −X, y adivinar mal pone la puerta en el fondo del pozo.
     pub rise_from_side: u8,
+
+    /// ADR-102 D4 — cuánto mide UNA contrahuella de este espacio, en centímetros.
+    ///
+    /// Va en el espacio y no es una constante global porque una terraza y un hueco de escalera piden
+    /// números distintos por razones distintas: la terraza usa [`STEP_RISE_CM`] para que el peldaño
+    /// cierre contra la losa, y la escalera de planta usa [`STOREY_RISE_CM`] para caber en un hueco y
+    /// no en un salón. Con un solo número, el que se elija arruina el otro caso.
+    pub rise_step_cm: i32,
 }
 
 /// Cómo se conectan dos espacios.
@@ -600,6 +647,23 @@ struct Node {
 /// como restricción y no como sugerencia: son el único punto del plan que NO se decide aquí, porque
 /// ya está acordado con alguien que no puede consultarse.
 pub fn plan_region(seed: i32, bounds: (f32, f32, f32, f32), gates: &[Wg3Gate]) -> RegionPlan {
+    plan_storey(seed, bounds, gates, 0)
+}
+
+/// **UNA PLANTA.** Lo mismo que [`plan_region`], pero a la cota que se le diga.
+///
+/// Existe por ADR-102 D1: una planta es un [`RegionPlan`] entero y no un campo dentro de uno. La
+/// razón es que este módulo es 2D hasta el fondo —[`RegionPlan::problems`] declara un fallo cualquier
+/// par de rectángulos que se pisen en XZ, y `rects_share_wall` decide vecindad sin mirar la cota—, así
+/// que meter la planta como campo obligaría a dar Y a todas esas comprobaciones para una propiedad
+/// que sólo importa ENTRE plantas y nunca dentro de una. Aquí dentro no cambia nada: se planifica en
+/// el propio cero y la cota entra al crear cada espacio.
+pub fn plan_storey(
+    seed: i32,
+    bounds: (f32, f32, f32, f32),
+    gates: &[Wg3Gate],
+    base_y_cm: i32,
+) -> RegionPlan {
     let root = PlanRect {
         min_x_cm: (bounds.0 * CM_PER_M).round() as i32,
         min_z_cm: (bounds.1 * CM_PER_M).round() as i32,
@@ -609,6 +673,7 @@ pub fn plan_region(seed: i32, bounds: (f32, f32, f32, f32), gates: &[Wg3Gate]) -
 
     let mut planner = Planner {
         seed,
+        base_y_cm,
         nodes: vec![Node {
             rect: root,
             depth: 0,
@@ -645,8 +710,318 @@ pub fn plan_region(seed: i32, bounds: (f32, f32, f32, f32), gates: &[Wg3Gate]) -
     }
 }
 
+/// El hueco por el que se sube de una planta a la siguiente (ADR-102 D1 y D4).
+///
+/// No es un espacio nuevo: es un espacio de la planta de abajo al que se le cambia el papel por
+/// `Stair` y se le pone a subir una planta entera. Lo que este registro guarda es la RELACIÓN, que es
+/// justamente lo que ningún [`RegionPlan`] puede guardar por ser 2D.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StairWell {
+    /// Huella del hueco: el rectángulo del espacio de abajo que se ha vuelto escalera. Es también el
+    /// trozo de forjado que hay que perforar, que es para lo que lo necesita el relleno.
+    pub rect: PlanRect,
+    /// Planta de la que se sube. La de llegada es siempre `storey_below + 1`.
+    pub storey_below: usize,
+    /// El espacio de la planta de abajo, ya con papel `Stair`.
+    pub space_below: usize,
+    /// El espacio de la planta de arriba al que se sale. Tiene que estar construido: salir a un
+    /// vacío intencionado es una caída, no una escalera.
+    pub space_above: usize,
+}
+
+/// **EL EDIFICIO DE UNA REGIÓN, CON SUS PLANTAS.**
+///
+/// Una planta por [`RegionPlan`], y los huecos de escalera aparte. Lo vertical vive aquí y sólo aquí:
+/// ninguna planta sabe que hay otra, y por eso ninguna comprobación 2D de [`RegionPlan`] tiene que
+/// aprender una tercera coordenada.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RegionBuilding {
+    pub storeys: Vec<RegionPlan>,
+    pub wells: Vec<StairWell>,
+}
+
+impl RegionBuilding {
+    /// Lo que tiene que ser cierto ENTRE plantas, más lo de cada una por su cuenta.
+    ///
+    /// La parte de cada planta la sigue midiendo [`RegionPlan::problems`], que no cambia. Lo que se
+    /// añade aquí es exactamente lo que aquélla no puede ver por construcción — y hay una que importa
+    /// más que las otras: **una planta a la que no sube ninguna escalera es decorado.** Se dibuja, se
+    /// ilumina, cuesta geometría y no se pisa; y como todo lo demás sale bien, no hay contador que se
+    /// queje.
+    pub fn problems(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for (n, plan) in self.storeys.iter().enumerate() {
+            for p in plan.problems() {
+                out.push(format!("planta {n}: {p}"));
+            }
+            // La cota es de la planta entera y no de cada espacio: si dos plantas comparten cota, lo
+            // que hay no son dos plantas sino dos edificios cruzados en el mismo aire.
+            let want = n as i32 * STOREY_HEIGHT_CM;
+            if let Some(s) = plan.spaces.iter().find(|s| s.floor_y_cm != want) {
+                out.push(format!(
+                    "planta {n}: un espacio a cota {} cuando la planta está a {want}",
+                    s.floor_y_cm
+                ));
+            }
+        }
+
+        for (i, w) in self.wells.iter().enumerate() {
+            let (Some(below), Some(above)) = (
+                self.storeys.get(w.storey_below),
+                self.storeys.get(w.storey_below + 1),
+            ) else {
+                out.push(format!("hueco {i}: apunta a una planta que no existe"));
+                continue;
+            };
+            let (Some(sb), Some(sa)) = (
+                below.spaces.get(w.space_below),
+                above.spaces.get(w.space_above),
+            ) else {
+                out.push(format!("hueco {i}: apunta a un espacio que no existe"));
+                continue;
+            };
+            if sb.role != SpaceRole::Stair {
+                out.push(format!(
+                    "hueco {i}: el espacio de abajo es {} y no una escalera",
+                    sb.role.name()
+                ));
+            }
+            if sb.rise_cm != STOREY_HEIGHT_CM {
+                out.push(format!(
+                    "hueco {i}: sube {} cm y una planta mide {STOREY_HEIGHT_CM}",
+                    sb.rise_cm
+                ));
+            }
+            if !sa.role.is_built() {
+                out.push(format!("hueco {i}: se sale a un VACÍO, que es una caída"));
+            }
+            // Se sale DENTRO del espacio de arriba, no al lado. Si el hueco asoma fuera, lo que se
+            // perfora es forjado de nadie y el último peldaño da a la nada.
+            if !sa.rect.contains_rect(&w.rect) {
+                out.push(format!(
+                    "hueco {i}: la huella se sale del espacio de arriba al que dice llegar"
+                ));
+            }
+        }
+
+        // Y el remate: toda planta por encima de la baja necesita al menos un hueco que llegue a ella.
+        for n in 1..self.storeys.len() {
+            if !self.wells.iter().any(|w| w.storey_below + 1 == n) {
+                out.push(format!(
+                    "planta {n}: no sube ninguna escalera — es decorado"
+                ));
+            }
+        }
+        out
+    }
+}
+
+/// **EL EDIFICIO.** Planta baja completa, y encima las que quepan (ADR-102 D1, D3 y D4).
+///
+/// Las plantas se planifican de ABAJO ARRIBA y en una sola dirección, porque la de arriba necesita
+/// saber de la de abajo —dónde cae el hueco de escalera— y la de abajo no necesita saber nada de la
+/// de arriba. Al revés obligaría a rehacer una de las dos.
+pub fn plan_building(
+    seed: i32,
+    bounds: (f32, f32, f32, f32),
+    gates: &[Wg3Gate],
+    storeys: usize,
+) -> RegionBuilding {
+    let mut out = vec![plan_storey(seed, bounds, gates, 0)];
+    let mut wells = Vec::new();
+
+    for n in 1..storeys.max(1) {
+        // La huella se estrecha (D3): si cada planta llenara la región, esto no sería un edificio
+        // sino losas de 150 × 150 apiladas, sin una silueta que mirar.
+        let Some(up) = upper_bounds(&out[n - 1], seed) else {
+            break;
+        };
+        // **SIN PUERTAS DE JUNTA ARRIBA, y es una decisión.** El contrato de junta de ADR-096 se
+        // acuerda entre regiones vecinas en 2D y a ras de suelo; una puerta de junta en la primera
+        // planta exigiría que la región de al lado tuviera planta ahí y a la misma cota, que es un
+        // acuerdo que hoy nadie negocia. Cruzar de región se hace por abajo.
+        let plan = plan_storey(storey_seed(seed, n), up, &[], n as i32 * STOREY_HEIGHT_CM);
+        // **EL EDIFICIO SUBE SÓLO HASTA DONDE SE PUEDE SUBIR.** El hueco pide que COINCIDAN dos
+        // geometrías planificadas por separado —un espacio de abajo que quepa entero dentro de uno
+        // construido de arriba, y con tiro para catorce peldaños—, y eso es coincidencia de semilla:
+        // en el barrido de 49 regiones hay unas cuantas donde no la hay. Si no se puede subir, la
+        // planta no se levanta. Una planta a la que no se llega no es media victoria: es geometría
+        // que se dibuja, se ilumina, cuesta y no se pisa, y como todo lo demás sale bien, ningún
+        // contador se queja.
+        //
+        // El hueco se abre en la planta de ABAJO, así que hay que tenerla a mano y mutable.
+        let Some(w) = dig_well(&mut out[n - 1], &plan, n - 1, seed) else {
+            break;
+        };
+        wells.push(w);
+        out.push(plan);
+    }
+
+    RegionBuilding {
+        storeys: out,
+        wells,
+    }
+}
+
+/// Semilla propia de una planta alta. Sin esto todas las plantas salen calcadas, y un edificio cuyas
+/// plantas son fotocopias no se lee como un edificio: se lee como un fallo.
+fn storey_seed(seed: i32, storey: usize) -> i32 {
+    seed ^ (SALT_STOREY.wrapping_mul(storey as u32 + 1) as i32)
+}
+
+/// La huella de la planta de encima, tomada del corte PRINCIPAL de la de abajo (ADR-102 D3).
+///
+/// Del corte principal y no de un margen sorteado: la banda de profundidad 0 —el `Spine`— es la
+/// única línea que ya organiza toda la planta, así que alinear el borde de arriba con ella hace que
+/// lo alto se apoye en la estructura de abajo en vez de cortarla por donde caiga. Se queda un lado
+/// del espinazo, más el espinazo entero, para que la planta alta herede una circulación.
+///
+/// `None` cuando lo que quedaría es demasiado pequeño para ser una planta.
+fn upper_bounds(below: &RegionPlan, seed: i32) -> Option<(f32, f32, f32, f32)> {
+    let region = below.bounds_cm?;
+    let spine = below
+        .spaces
+        .iter()
+        .find(|s| s.role == SpaceRole::Spine && s.depth == 0)?
+        .rect;
+
+    // Un espinazo estrecho en X corre a lo largo de Z, y entonces reparte en X.
+    let along_z = spine.width_cm() < spine.depth_cm();
+    let (cx, cz) = region.centre_m();
+    let keep_high = hash::stream_at(seed, cx, cz, SALT_STOREY).next01() < 0.5;
+
+    let kept = if along_z {
+        if keep_high {
+            PlanRect {
+                min_x_cm: spine.min_x_cm,
+                ..region
+            }
+        } else {
+            PlanRect {
+                max_x_cm: spine.max_x_cm,
+                ..region
+            }
+        }
+    } else if keep_high {
+        PlanRect {
+            min_z_cm: spine.min_z_cm,
+            ..region
+        }
+    } else {
+        PlanRect {
+            max_z_cm: spine.max_z_cm,
+            ..region
+        }
+    };
+
+    // Que quepa un edificio, no un pasillo: dos veces el lado mínimo por banda.
+    if kept.width_cm() < MIN_SIDE_CM * 2 || kept.depth_cm() < MIN_SIDE_CM * 2 {
+        return None;
+    }
+    Some((
+        kept.min_x_cm as f32 / CM_PER_M,
+        kept.min_z_cm as f32 / CM_PER_M,
+        kept.max_x_cm as f32 / CM_PER_M,
+        kept.max_z_cm as f32 / CM_PER_M,
+    ))
+}
+
+/// Convierte un espacio de la planta de abajo en el hueco de escalera, si hay uno que valga.
+///
+/// El candidato tiene que cumplir cuatro cosas a la vez, y las cuatro por una razón distinta:
+/// **caber** la escalera entera con huellas andables, **no ser circulación** —comerse el espinazo
+/// para meter una escalera parte la planta en dos—, **tener puerta** por la que entrar, y **caer
+/// dentro de un espacio construido de la planta de arriba**, porque el último peldaño tiene que dar a
+/// un sitio y no al aire.
+fn dig_well(
+    below: &mut RegionPlan,
+    above: &RegionPlan,
+    storey_below: usize,
+    seed: i32,
+) -> Option<StairWell> {
+    let steps = STOREY_HEIGHT_CM.div_euclid(STOREY_RISE_CM)
+        + i32::from(STOREY_HEIGHT_CM % STOREY_RISE_CM != 0);
+    let run_cm = steps * MIN_TREAD_CM;
+
+    // La puerta de cada espacio, para saber por qué lado se entra. El primer enlace basta: lo que
+    // hace falta es UNA entrada, no todas.
+    let mut door = vec![None; below.spaces.len()];
+    for l in &below.links {
+        door[l.a].get_or_insert((l.at_x_cm, l.at_z_cm));
+        door[l.b].get_or_insert((l.at_x_cm, l.at_z_cm));
+    }
+
+    let mut best: Option<(u64, usize, usize, u8)> = None;
+    for (i, s) in below.spaces.iter().enumerate() {
+        if !s.role.is_built() || s.role.is_circulation() || s.rise_cm != 0 {
+            continue;
+        }
+        let Some((dx, dz)) = door[i] else { continue };
+        let Some(side) = side_of_point_in(&s.rect, dx, dz) else {
+            continue;
+        };
+        // Los peldaños se alejan de la puerta, así que el tiro corre perpendicular a su pared.
+        let (run, across) = if side.is_multiple_of(2) {
+            (s.rect.depth_cm(), s.rect.width_cm())
+        } else {
+            (s.rect.width_cm(), s.rect.depth_cm())
+        };
+        if run < run_cm || across < DOORWAY_CM {
+            continue;
+        }
+        // Y el sitio al que se sale. Que el rectángulo entero quepa dentro de UN espacio de arriba,
+        // no que lo toque: un hueco a caballo de dos salas perfora una pared por debajo.
+        let Some(j) = above
+            .spaces
+            .iter()
+            .position(|t| t.role.is_built() && t.rect.contains_rect(&s.rect))
+        else {
+            continue;
+        };
+        // Sorteo por posición, que es lo que hace que la elección no dependa del orden del vector.
+        let (cx, cz) = s.rect.centre_m();
+        let key = hash::at_position(seed, cx, cz, SALT_WELL);
+        if best.is_none_or(|(k, ..)| key < k) {
+            best = Some((key, i, j, side));
+        }
+    }
+
+    let (_, i, j, side) = best?;
+    let s = &mut below.spaces[i];
+    s.role = SpaceRole::Stair;
+    s.rise_cm = STOREY_HEIGHT_CM;
+    s.rise_step_cm = STOREY_RISE_CM;
+    s.rise_from_side = side;
+    Some(StairWell {
+        rect: s.rect,
+        storey_below,
+        space_below: i,
+        space_above: j,
+    })
+}
+
+/// Por qué lado de un rectángulo cae un punto de su borde. `None` si no cae en ninguno.
+fn side_of_point_in(r: &PlanRect, x_cm: i32, z_cm: i32) -> Option<u8> {
+    const EPS: i32 = 2;
+    if (r.max_z_cm - z_cm).abs() <= EPS {
+        return Some(0);
+    }
+    if (r.max_x_cm - x_cm).abs() <= EPS {
+        return Some(1);
+    }
+    if (r.min_z_cm - z_cm).abs() <= EPS {
+        return Some(2);
+    }
+    if (r.min_x_cm - x_cm).abs() <= EPS {
+        return Some(3);
+    }
+    None
+}
+
 struct Planner {
     seed: i32,
+    /// Cota del suelo de la planta que se está planificando (ADR-102 D1). Cero en la baja.
+    base_y_cm: i32,
     /// La caja de la región. Hace falta para saber si un bloque toca el borde, que es lo que decide
     /// si puede llevarse un desnivel (ver [`Planner::may_terrace`]).
     bounds: PlanRect,
@@ -815,21 +1190,7 @@ impl Planner {
 
     /// ¿En qué lado de este espacio cae el punto? `None` si no está sobre ninguna de sus paredes.
     fn side_of_point(&self, space: usize, x_cm: i32, z_cm: i32) -> Option<u8> {
-        const EPS: i32 = 2;
-        let r = self.spaces[space].rect;
-        if (r.max_z_cm - z_cm).abs() <= EPS {
-            return Some(0);
-        }
-        if (r.max_x_cm - x_cm).abs() <= EPS {
-            return Some(1);
-        }
-        if (r.min_z_cm - z_cm).abs() <= EPS {
-            return Some(2);
-        }
-        if (r.min_x_cm - x_cm).abs() <= EPS {
-            return Some(3);
-        }
-        None
+        side_of_point_in(&self.spaces[space].rect, x_cm, z_cm)
     }
 
     /// ¿Se parte este rectángulo, por dónde, y con cuánta banda? `None` = es una hoja.
@@ -1483,7 +1844,9 @@ impl Planner {
         let (cx, cz) = rect.centre_m();
         self.spaces.push(PlannedSpace {
             rect,
-            floor_y_cm,
+            // ADR-102 D1 — la cota de la planta se suma AQUÍ y en ningún otro sitio, así que el resto
+            // del planificador sigue trabajando en su propio cero y no se entera de a qué altura está.
+            floor_y_cm: self.base_y_cm + floor_y_cm,
             role,
             scale: scale::scale_at(self.seed, cx, cz),
             depth,
@@ -1491,6 +1854,7 @@ impl Planner {
             // El lado de entrada lo pone `sink_dead_ends` cuando hunde el espacio; aquí no se sabe
             // todavía, porque depende del grafo.
             rise_from_side: 0,
+            rise_step_cm: STEP_RISE_CM,
         });
         self.spaces.len() - 1
     }
