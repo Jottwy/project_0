@@ -4856,11 +4856,22 @@ fn dump_region_maps() {
     const PX: f32 = 4.0;
 
     let dir = std::env::var("WG3_MAP_DIR").expect("WG3_MAP_DIR: carpeta donde escribir los planos");
+    // ADR-099 — `WG3_ABSORB=0.1` dibuja el mundo CON absorción. Por variable y no por constante
+    // para poder poner los dos planos uno al lado del otro sin recompilar entre medias, que es lo
+    // único que deja ver qué cambia de forma.
+    let absorb: f32 = std::env::var("WG3_ABSORB")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0.0);
     let m = real_manifest();
 
     for (rx, rz) in [(0, 0), (1, 0), (0, 1), (-1, 2)] {
         let region = Wg3RegionCoord { x: rx, z: rz };
-        let world = Wg3ServedWorld::compose_region(&m, SERVED_SEED, region);
+        let settings = compose::Wg3ComposerSettings {
+            absorb_chance: absorb,
+            ..region_settings(&m, SERVED_SEED, region)
+        };
+        let world = Wg3ServedWorld::compose_region_with(&m, SERVED_SEED, region, &settings);
         let (min_x, min_z, _, _) = region.bounds();
 
         let side = REGION_CHUNKS as usize;
@@ -4872,10 +4883,11 @@ fn dump_region_maps() {
                     x: base.x + cx as i32,
                     z: base.z + cz as i32,
                 };
-                rasters.push(chunk::build_chunk_raster(
+                rasters.push(chunk::build_chunk_raster_with_carves(
                     &m,
                     &world.placements_touching_chunk(&m, coord),
                     &world.segments_touching_chunk(coord),
+                    &world.carves_touching_chunk(coord),
                     coord,
                 ));
             }
