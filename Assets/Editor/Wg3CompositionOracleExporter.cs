@@ -45,6 +45,7 @@ namespace BackroomsSurvival.EditorTools
             public int rotation;
             public int origin_x_cm;
             public int origin_z_cm;
+            public int origin_y_cm;
             public int depth;
         }
 
@@ -107,6 +108,7 @@ namespace BackroomsSurvival.EditorTools
                         // prometer coincidir.
                         origin_x_cm = Mathf.RoundToInt(p.originX * 100f),
                         origin_z_cm = Mathf.RoundToInt(p.originZ * 100f),
+                        origin_y_cm = Mathf.RoundToInt(p.originY * 100f),
                         depth = p.depth
                     };
                 }

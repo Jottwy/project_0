@@ -38,8 +38,13 @@ namespace BackroomsSurvival.Net
         public int originXCm;
         public int originZCm;
 
+        /// <summary>ADR-097 — cota del SUELO de la pieza, en centímetros. La resuelve el compositor
+        /// del servidor propagándola por el árbol; el cliente la recibe hecha porque no compone.</summary>
+        public int originYCm;
+
         public float OriginX => originXCm * 0.01f;
         public float OriginZ => originZCm * 0.01f;
+        public float OriginY => originYCm * 0.01f;
 
         public static Wg3PlacementMsg Parse(MsgPackReader r)
         {
@@ -52,6 +57,7 @@ namespace BackroomsSurvival.Net
                 else if (MsgPackReader.Is(k, "rotation")) p.rotation = (int)r.ReadInt();
                 else if (MsgPackReader.Is(k, "origin_x_cm")) p.originXCm = (int)r.ReadInt();
                 else if (MsgPackReader.Is(k, "origin_z_cm")) p.originZCm = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "origin_y_cm")) p.originYCm = (int)r.ReadInt();
                 else r.Skip();
             }
             return p;

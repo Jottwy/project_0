@@ -124,10 +124,16 @@ namespace BackroomsSurvival.WorldGen3
             if (a.type != b.type) { reason = $"tipo {a.type} contra {b.type}"; return false; }
             if (Mathf.Abs(a.width - b.width) > WidthMatchTolerance)
             { reason = $"anchura {a.width:0.###} contra {b.width:0.###}"; return false; }
-            if (Mathf.Abs(a.floorY - b.floorY) > FloorMatchTolerance)
-            { reason = $"cota de suelo {a.floorY:0.###} contra {b.floorY:0.###}"; return false; }
-            if (Mathf.Min(a.ceilingY, b.ceilingY) - Mathf.Max(a.floorY, b.floorY) < MinHeadroom)
-            { reason = "el hueco común no llega al mínimo caminable"; return false; }
+            // ADR-097 D3 — LA COTA YA NO SE COMPARA AQUÍ, y quitarla es lo que permite una rampa.
+            // Antes se exigía que las dos bocas estuvieran a la misma altura LOCAL, o sea que una
+            // pieza con la salida más alta que la entrada no podía engancharse a nada. Ahora la
+            // altura la resuelve el compositor colocando a la hija donde su boca coincida con la del
+            // padre (`Wg3Placement.originY`), así que casan en cota de MUNDO por construcción y
+            // compararlas en local prohibiría justo lo que se quiere.
+            // El hueco caminable se mide POR BOCA, no en común: desde ADR-097 las dos pueden estar
+            // a cotas distintas, así que restar la una de la otra ya no significa nada.
+            if (a.ceilingY - a.floorY < MinHeadroom || b.ceilingY - b.floorY < MinHeadroom)
+            { reason = "el hueco de una de las bocas no llega al mínimo caminable"; return false; }
             reason = null;
             return true;
         }

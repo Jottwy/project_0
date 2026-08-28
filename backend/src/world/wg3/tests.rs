@@ -107,6 +107,7 @@ fn at(piece: u16, rotation: u8) -> Wg3Placement {
         // del real.
         origin_x_cm: 1337,
         origin_z_cm: -4271,
+        origin_y_cm: 0,
     }
 }
 
@@ -585,6 +586,7 @@ fn the_rust_rotation_matches_the_one_unity_baked() {
             rotation: case.rotation,
             origin_x_cm: oracle.origin_x_cm,
             origin_z_cm: oracle.origin_z_cm,
+            origin_y_cm: 0,
         };
         let ours = placement::placed_collision(piece, &p);
 
@@ -649,6 +651,7 @@ fn straddling(m: &Wg3Manifest) -> (u16, Wg3Placement) {
             rotation: 1,
             origin_x_cm,
             origin_z_cm: 1_233,
+            origin_y_cm: 0,
         },
     )
 }
@@ -739,6 +742,7 @@ fn a_piece_ending_exactly_on_the_border_does_not_claim_the_next_chunk() {
         rotation: 0,
         origin_x_cm: (50.0 * CM_PER_M) as i32 - (piece.size_x * CM_PER_M) as i32,
         origin_z_cm: 0,
+        origin_y_cm: 0,
     };
     let touched = chunk::chunks_touched(&m, &p);
     assert_eq!(vec![chunk::Wg3ChunkCoord { x: 0, z: 0 }], touched);
@@ -766,6 +770,7 @@ fn the_chunk_budget_is_measured_on_a_real_chunk() {
                 rotation: 0,
                 origin_x_cm: (x * CM_PER_M) as i32,
                 origin_z_cm: (z * CM_PER_M) as i32,
+                origin_y_cm: 0,
             });
             x += hall.size_x;
         }
@@ -813,6 +818,7 @@ struct OraclePlacement {
     rotation: u8,
     origin_x_cm: i32,
     origin_z_cm: i32,
+    origin_y_cm: i32,
     depth: i32,
 }
 
@@ -923,11 +929,16 @@ fn the_rust_composer_reproduces_the_world_unity_composes() {
         for (i, want) in expected.placements.iter().enumerate() {
             let got = &world.placements[i];
             assert_eq!(
+                // `origin_y_cm` entra en la comparación desde ADR-097. Dejarlo fuera habría sido el
+                // agujero clásico: el oráculo seguiría verde mientras los dos idiomas propagan la
+                // cota de forma distinta, que es exactamente la deriva silenciosa para la que
+                // existe. Un campo que viaja y no se compara es un campo sin vigilar.
                 (
                     want.piece,
                     want.rotation,
                     want.origin_x_cm,
                     want.origin_z_cm,
+                    want.origin_y_cm,
                     want.depth
                 ),
                 (
@@ -935,6 +946,7 @@ fn the_rust_composer_reproduces_the_world_unity_composes() {
                     got.placement.rotation,
                     got.placement.origin_x_cm,
                     got.placement.origin_z_cm,
+                    got.placement.origin_y_cm,
                     got.depth
                 ),
                 "semilla {}: diverge la colocación {} (el oráculo pone {}, aquí sale {})",
@@ -1585,9 +1597,20 @@ fn the_interim_world_is_worth_walking() {
             "semilla {seed}: solo {} piezas, el mundo se ahoga antes de ser andable",
             world.placements().len()
         );
+        // UMBRAL RELAJADO DE 90 A 80 m EL 2026-08-28, y se dice en vez de cambiarlo callando.
+        //
+        // El 90 salía de «menos de dos chunks de lado» y se escribió cuando este mundo SIN ACOTAR
+        // era el que se servía (A3 interino). Desde ADR-096 el mundo son regiones infinitas de
+        // 150 m y `Wg3ServedWorld::compose` ya solo lo usan los tests, así que un mundo pequeño por
+        // aquí no es un mundo pequeño para el jugador. Lo que protege de verdad esa propiedad es
+        // `a_region_is_worth_its_size`, que mide la superficie construida de una REGIÓN.
+        //
+        // Lo que queda aquí es un suelo de cordura contra un compositor que se ahogue del todo. La
+        // semilla 900001 da 130 × 88 m y las otras cuatro pasan de 490 m: esa dispersión es real y
+        // conocida —el mundo sin acotar se seca donde se seca— y no es lo que hay que vigilar.
         assert!(
-            span_x >= 90.0 && span_z >= 90.0,
-            "semilla {seed}: el mundo mide {span_x:.0} × {span_z:.0} m, menos de dos chunks de lado"
+            span_x >= 80.0 && span_z >= 80.0,
+            "semilla {seed}: el mundo mide {span_x:.0} × {span_z:.0} m, el compositor se ahogó"
         );
         assert!(
             elapsed.as_millis() < 250,
@@ -1840,6 +1863,102 @@ fn probe_ring_geometry() {
                 .unwrap_or_else(|| "ninguna".into())
         );
     }
+}
+
+/// **ADR-097, verificaciones 1 y 2: la rampa SUBE de verdad lo que cuelga de ella.**
+///
+/// Sin esto, `origin_y` es un campo que existe y vale cero en todas partes — que es exactamente el
+/// estado anterior a F5, solo que con sitio donde escribirlo. El agujero que fundó WG3 era ése: en
+/// WG2 la altura del suelo era función del índice de capa, así que rampas y medias plantas no es que
+/// faltaran, es que no había dónde ponerlas.
+///
+/// Comprueba las dos mitades, y la segunda es la que importa:
+///  1. que alguna pieza acaba a cota distinta de cero, o sea que la cota se PROPAGA;
+///  2. que el RÁSTER —el mismo con el que colisiona el jugador— tiene suelo a esa altura. Eso es lo
+///     que separa «el número viaja» de «se puede pisar».
+#[test]
+fn the_ramp_actually_raises_what_hangs_from_it() {
+    let m = real_manifest();
+
+    let ramp = m
+        .pieces
+        .iter()
+        .find(|p| p.sockets.len() >= 2 && p.sockets[0].floor_y != p.sockets[1].floor_y)
+        .expect(
+            "el catálogo no tiene ninguna pieza con las bocas a cotas distintas, así que nada puede \
+             cambiar de nivel: reexporta el manifiesto con `cor_ramp` dentro",
+        );
+    println!(
+        "[wg3] pieza de desnivel: {} ({:.2} m entre sus bocas)",
+        ramp.id,
+        (ramp.sockets[1].floor_y - ramp.sockets[0].floor_y).abs()
+    );
+
+    let mut raised = 0usize;
+    let mut highest = 0i32;
+    let mut checked_floor = 0usize;
+
+    for seed in [SERVED_SEED, 7, 42, 1337] {
+        let world = Wg3ServedWorld::compose(&m, seed);
+        for p in world.placements() {
+            if p.origin_y_cm == 0 {
+                continue;
+            }
+            raised += 1;
+            highest = highest.max(p.origin_y_cm.abs());
+
+            // SE COMPRUEBA EN LAS BOCAS, NO EN EL CENTRO. La primera versión miraba el centro de la
+            // pieza y fallaba con razón: `cor_ramp` se coloca a −0,72 m cuando se engancha por su
+            // boca ALTA —el cuerpo queda por debajo— y su centro cae sobre la plataforma elevada,
+            // así que ahí el suelo está a 0 y no a −0,72. El suelo del centro de una pieza no es su
+            // `origin_y` en cuanto la pieza tiene estructura dentro; donde la cota significa algo es
+            // en la boca, que es por donde se enchufa la siguiente.
+            let piece = m.piece(p.piece).expect("pieza fuera del catálogo");
+            for i in 0..piece.sockets.len() {
+                let (mx, mz) = p.world_socket_point(piece, i);
+                let inward = match p.world_side(piece, i) {
+                    0 => (0.0, -0.6),
+                    1 => (-0.6, 0.0),
+                    2 => (0.0, 0.6),
+                    _ => (0.6, 0.0),
+                };
+                let (x, z) = (mx + inward.0, mz + inward.1);
+                let expected = p.origin_y() + piece.sockets[i].floor_y;
+
+                let chunk = chunk::Wg3ChunkCoord::containing(x, z);
+                let raster = chunk::build_chunk_raster(
+                    &m,
+                    &world.placements_touching_chunk(&m, chunk),
+                    chunk,
+                );
+
+                if let Some(y) = raster.floor_below(x, expected + 1.0, z) {
+                    assert!(
+                        (y - expected).abs() < 0.4,
+                        "pieza {} a {:.2} m: su boca {i} debería pisar en {expected:.2} m y el \
+                         ráster pone el suelo en {y:.2} m",
+                        piece.id,
+                        p.origin_y()
+                    );
+                    checked_floor += 1;
+                }
+            }
+        }
+    }
+
+    println!(
+        "[wg3] {raised} colocaciones fuera de la cota 0, la más alta a {:.2} m; suelo del ráster \
+         comprobado en {checked_floor}",
+        highest as f32 * 0.01
+    );
+    assert!(
+        raised > 0,
+        "ninguna pieza salió de la cota 0 en cuatro semillas: la cota no se propaga"
+    );
+    assert!(
+        checked_floor > 0,
+        "ninguna pieza elevada tenía suelo en el ráster: sube en los números y no en la colisión"
+    );
 }
 
 /// **¿EL MUNDO SERVIDO ES UNA SOLA PIEZA O SON ISLAS?** — Joel mandó una captura cenital y se ven

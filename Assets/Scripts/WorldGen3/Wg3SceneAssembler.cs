@@ -46,7 +46,7 @@ namespace BackroomsSurvival.WorldGen3
             {
                 Wg3Placement placement = world.placements[i];
                 List<Wg3Volume> volumes = Wg3Geometry.BuildPlaced(placement);
-                var origin = new Vector3(placement.originX, 0f, placement.originZ);
+                var origin = new Vector3(placement.originX, placement.originY, placement.originZ);
 
                 var go = new GameObject($"{i:D3}_{placement.piece.id}_r{placement.rotation}");
 

@@ -7725,10 +7725,10 @@ Rust hace lo mismo que el de C#. Lo que SÍ se pierde al reexportar es el otro c
 catálogo y olvidé reexportar», que solo sirve contra el olvido. Por eso la regla se escribe: para que
 el siguiente no reexporte por costumbre y nadie note que ese cazador se apagó.
 
-## ADR-097 — F5: la colocación gana Y (2026-08-28) — PROPUESTO, sin aprobar
+## ADR-097 — F5: la colocación gana Y (2026-08-28)
 
-**Estado: PROPUESTO.** No se toca código hasta que Joel lo apruebe. Se redacta ahora porque el
-cambio toca el formato de chunk y la regla 7 del proyecto exige ADR antes que código.
+**Estado: APROBADO por Joel el 2026-08-28.** Se redactó antes de tocar código porque el cambio toca
+el formato de chunk y la regla 7 del proyecto lo exige.
 
 ### El problema, que es el que fundó WG3
 

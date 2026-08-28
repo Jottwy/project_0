@@ -297,7 +297,13 @@ namespace BackroomsSurvival.WorldGen3
             {
                 Wg3Volume v = local[i];
                 Vector2 p = RotateLocal(new Vector2(v.center.x, v.center.z), r, w, d);
-                v.center = new Vector3(placement.originX + p.x, v.center.y, placement.originZ + p.y);
+
+                // ADR-097 — la Y de la colocación se suma aquí y en ningún otro sitio. Como malla y
+                // colisión salen las dos de esta lista, una pieza elevada sube entera: no hay forma
+                // de que se dibuje arriba y bloquee abajo.
+                v.center = new Vector3(placement.originX + p.x,
+                                       placement.originY + v.center.y,
+                                       placement.originZ + p.y);
 
                 // El giro va SOLO al yaw. Intercambiar además X y Z aplicaría la rotación dos
                 // veces: una caja de 4 × 1 girada 90° sigue midiendo 4 × 1 en su propio eje, y es

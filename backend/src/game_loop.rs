@@ -827,6 +827,7 @@ pub async fn run(
                                 rotation: p.rotation,
                                 origin_x_cm: p.origin_x_cm,
                                 origin_z_cm: p.origin_z_cm,
+                                origin_y_cm: p.origin_y_cm,
                             })
                             .collect(),
                         _ => Vec::new(),

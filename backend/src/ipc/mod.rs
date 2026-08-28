@@ -270,6 +270,10 @@ pub struct Wg3PlacementWire {
     /// solo cliente.
     pub origin_x_cm: i32,
     pub origin_z_cm: i32,
+
+    /// ADR-097 — cota del SUELO de la pieza, en centímetros. Sin esto toda pieza va a cero y la
+    /// verticalidad solo existe DENTRO de una: es el agujero que fundó WG3, heredado en otra forma.
+    pub origin_y_cm: i32,
 }
 
 /// ADR-095 — lo que WG3 entrega por chunk.
@@ -1195,6 +1199,7 @@ mod tests {
                 rotation: 2,
                 origin_x_cm: -12_345,
                 origin_z_cm: 6_789,
+                origin_y_cm: 0,
             }],
         }))
         .unwrap();

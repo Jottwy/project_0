@@ -87,7 +87,7 @@ namespace BackroomsSurvival.WorldGen3
             // Semilla: la primera pieza del catálogo, centrada en el origen del mundo. Elegirla
             // por sorteo haría que cambiar el catálogo moviera mundos ya generados.
             Wg3Piece seedPiece = catalog[0];
-            Place(world, seedPiece, 0, -seedPiece.sizeX * 0.5f, -seedPiece.sizeZ * 0.5f, 0, -1);
+            Place(world, seedPiece, 0, -seedPiece.sizeX * 0.5f, -seedPiece.sizeZ * 0.5f, 0f, 0, -1);
 
             var frontier = new List<(int placement, int socket)>();
             PushSockets(frontier, world, 0);
@@ -133,8 +133,15 @@ namespace BackroomsSurvival.WorldGen3
                 var pickStream = Wg3Hash.StreamAt(worldSeed, point.x, point.y, SaltPick);
                 Candidate chosen = WeightedPick(candidates, ref pickStream);
 
+                // ADR-097 D2 — LA COTA SE PROPAGA. La boca del padre está a `originY + floorY` en
+                // el mundo; la hija se coloca a la altura que hace coincidir la suya. Con todas las
+                // bocas a 0 esto es un no-op y el mundo sale plano, que es como estaba; una pieza
+                // con bocas a cotas distintas —una rampa— sube o baja todo lo que cuelgue de ella.
+                float childY = parent.originY + parentSocket.floorY
+                             - chosen.piece.sockets[chosen.socketIndex].floorY;
+
                 int childIndex = Place(world, chosen.piece, chosen.rotation,
-                    chosen.originX, chosen.originZ, parent.depth + 1, pi);
+                    chosen.originX, chosen.originZ, childY, parent.depth + 1, pi);
                 parent.socketState[si] = Wg3World.SocketConnected;
                 world.placements[childIndex].socketState[chosen.socketIndex] = Wg3World.SocketConnected;
                 PushSockets(frontier, world, childIndex);
@@ -212,7 +219,8 @@ namespace BackroomsSurvival.WorldGen3
 
             if (best == null) return false;
 
-            int childIndex = Place(world, best, bestRotation, bestOx, bestOz,
+            float capY = parent.originY + parentSocket.floorY - best.sockets[bestSocket].floorY;
+            int childIndex = Place(world, best, bestRotation, bestOx, bestOz, capY,
                 parent.depth + 1, parentIndex);
             parent.socketState[socketIndex] = Wg3World.SocketConnected;
             world.placements[childIndex].socketState[bestSocket] = Wg3World.SocketConnected;
@@ -320,7 +328,7 @@ namespace BackroomsSurvival.WorldGen3
         }
 
         private static int Place(Wg3World world, Wg3Piece piece, int rotation,
-            float originX, float originZ, int depth, int parentIndex)
+            float originX, float originZ, float originY, int depth, int parentIndex)
         {
             world.placements.Add(new Wg3Placement
             {
@@ -328,6 +336,7 @@ namespace BackroomsSurvival.WorldGen3
                 rotation = rotation,
                 originX = originX,
                 originZ = originZ,
+                originY = originY,
                 depth = depth,
                 parentIndex = parentIndex,
                 socketState = new byte[piece.sockets.Length]

@@ -28,6 +28,16 @@ pub struct Wg3Placement {
     /// grano de colisión es medio metro.
     pub origin_x_cm: i32,
     pub origin_z_cm: i32,
+
+    /// Cota del SUELO de la pieza, en centímetros de mundo. ADR-097.
+    ///
+    /// Hasta F5 toda pieza estaba a cero y la verticalidad solo existía DENTRO de una. Es el mismo
+    /// agujero que fundó WG3 —en WG2 la altura del suelo era función del índice de capa, así que no
+    /// había dónde escribir una rampa— heredado en otra forma.
+    ///
+    /// En centímetros y entero por lo mismo que X y Z: viaja, se compara, y una cadena de sumas en
+    /// `f32` no garantiza que dos backends coincidan bit a bit.
+    pub origin_y_cm: i32,
 }
 
 impl Wg3Placement {
@@ -36,6 +46,9 @@ impl Wg3Placement {
     }
     pub fn origin_z(&self) -> f32 {
         self.origin_z_cm as f32 * 0.01
+    }
+    pub fn origin_y(&self) -> f32 {
+        self.origin_y_cm as f32 * 0.01
     }
 
     /// Huella ya girada. Un cuarto impar intercambia los ejes.
@@ -151,7 +164,10 @@ pub fn placed_collision(piece: &Wg3Piece, placement: &Wg3Placement) -> Vec<Place
         .map(|b| {
             let (rx, rz) = rotate_local(b.cx, b.cz, r, w, d);
             PlacedBox {
-                center: [ox + rx, b.cy, oz + rz],
+                // ADR-097 — la Y de la colocación se suma AQUÍ, que es por donde la chuleta entra al
+                // ráster. El ráster ya resolvía en altura (`Span { bottom_cm, top_cm }`), así que
+                // una pieza elevada colisiona a su cota sin tocar una línea del rasterizado.
+                center: [ox + rx, placement.origin_y() + b.cy, oz + rz],
                 size: [b.sx, b.sy, b.sz],
                 yaw_degrees: b.yaw + r as f32 * 90.0,
                 kind: b.kind,

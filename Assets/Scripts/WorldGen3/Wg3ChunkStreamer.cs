@@ -172,6 +172,7 @@ namespace BackroomsSurvival.WorldGen3
                     rotation = wire.rotation & 3,
                     originX = wire.OriginX,
                     originZ = wire.OriginZ,
+                    originY = wire.OriginY,
                     socketState = new byte[_catalog[wire.piece].sockets.Length]
                 };
 

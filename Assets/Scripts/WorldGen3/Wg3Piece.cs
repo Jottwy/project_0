@@ -248,6 +248,21 @@ namespace BackroomsSurvival.WorldGen3
         public float originX;
         public float originZ;
 
+        /// <summary>
+        /// Cota del SUELO de la pieza, en metros de mundo. ADR-097.
+        ///
+        /// Hasta F5 toda pieza estaba a 0 y la verticalidad solo existía DENTRO de una —una escalera
+        /// que sube a una plataforma que no lleva a ningún sitio—. Es el mismo agujero que fundó
+        /// WG3: en WG2 la altura del suelo era función del índice de capa, así que rampas y medias
+        /// plantas no es que faltaran, es que no había dónde escribirlas.
+        ///
+        /// La decide el compositor por propagación: la semilla va a 0, y cada hija se coloca a la
+        /// altura que haga coincidir su boca con la del padre. **Cambiar de nivel solo puede hacerlo
+        /// una pieza cuyas dos bocas estén a cotas distintas** — o sea, el desnivel se AUTORA, no se
+        /// genera (L18).
+        /// </summary>
+        public float originY;
+
         /// <summary>Profundidad de rama desde la pieza semilla.</summary>
         public int depth;
 

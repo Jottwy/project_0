@@ -236,6 +236,9 @@ struct Node {
     rotation: u8,
     origin_x: f32,
     origin_z: f32,
+    /// ADR-097 — cota del suelo de la pieza. La propaga el compositor: la semilla va a 0 y cada
+    /// hija se coloca a la altura que hace coincidir su boca con la del padre.
+    origin_y: f32,
     depth: i32,
     parent: Option<usize>,
     socket_state: Vec<u8>,
@@ -304,11 +307,15 @@ impl<'a> Composer<'a> {
         // que garantiza que una puerta acordada se cumpla: si fueran después, la semilla podría
         // estar en su sitio y el tramo no cabría, que es justo el caso que no puede existir.
         for anchor in &self.settings.anchors {
+            // Las anclas van a cota 0: la junta es un acuerdo entre dos regiones que se compone
+            // cada una por su lado, y una cota propagada no llegaría igual a los dos. Cuando el
+            // desnivel cruce juntas habrá que meter la cota en el contrato, no deducirla.
             let node = self.place(
                 anchor.piece,
                 anchor.rotation,
                 anchor.origin_x,
                 anchor.origin_z,
+                0.0,
                 0,
                 None,
             );
@@ -339,7 +346,7 @@ impl<'a> Composer<'a> {
             None => true,
         };
         let seed_node = if seed_fits {
-            Some(self.place(seed_piece.index, 0, seed_ox, seed_oz, 0, None))
+            Some(self.place(seed_piece.index, 0, seed_ox, seed_oz, 0.0, 0, None))
         } else {
             None
         };
@@ -421,11 +428,19 @@ impl<'a> Composer<'a> {
             let mut pick_stream = hash::stream_at(self.world_seed, px, pz, SALT_PICK);
             let chosen = weighted_pick(&self.candidates, &mut pick_stream);
 
+            // ADR-097 D2 — LA COTA SE PROPAGA. La boca del padre está a `origin_y + floor_y` en
+            // el mundo; la hija se coloca a la altura que hace coincidir la suya. Con todas las
+            // bocas a 0 esto es un no-op y el mundo sale plano; una pieza con bocas a cotas
+            // distintas —una rampa— sube o baja todo lo que cuelgue de ella.
+            let child_y = self.nodes[pi].origin_y + parent_socket.floor_y
+                - self.manifest.pieces[chosen.piece as usize].sockets[chosen.socket_index].floor_y;
+
             let child = self.place(
                 chosen.piece,
                 chosen.rotation,
                 chosen.origin_x,
                 chosen.origin_z,
+                child_y,
                 child_depth,
                 Some(pi),
             );
@@ -522,7 +537,9 @@ impl<'a> Composer<'a> {
             return false;
         };
         let depth = self.nodes[parent_index].depth + 1;
-        let child = self.place(piece, rotation, ox, oz, depth, Some(parent_index));
+        let cap_y = self.nodes[parent_index].origin_y + parent_socket.floor_y
+            - self.manifest.pieces[piece as usize].sockets[0].floor_y;
+        let child = self.place(piece, rotation, ox, oz, cap_y, depth, Some(parent_index));
         self.nodes[parent_index].socket_state[socket_index] = SOCKET_CONNECTED;
         self.nodes[child].socket_state[0] = SOCKET_CONNECTED;
         true
@@ -674,12 +691,14 @@ impl<'a> Composer<'a> {
         false
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn place(
         &mut self,
         piece: u16,
         rotation: u8,
         origin_x: f32,
         origin_z: f32,
+        origin_y: f32,
         depth: i32,
         parent: Option<usize>,
     ) -> usize {
@@ -689,6 +708,7 @@ impl<'a> Composer<'a> {
             rotation,
             origin_x,
             origin_z,
+            origin_y,
             depth,
             parent,
             socket_state: vec![SOCKET_OPEN; sockets],
@@ -728,6 +748,7 @@ impl<'a> Composer<'a> {
                     rotation: n.rotation,
                     origin_x_cm: to_centimetres(n.origin_x),
                     origin_z_cm: to_centimetres(n.origin_z),
+                    origin_y_cm: to_centimetres(n.origin_y),
                 },
                 depth: n.depth,
                 parent: n.parent,
@@ -751,10 +772,17 @@ impl<'a> Composer<'a> {
 /// lee, y devolverlo obligaría a formatear una cadena por candidata descartada — que son decenas por
 /// boca.
 fn connection_ok(a: &Wg3Socket, b: &Wg3Socket) -> bool {
+    // ADR-097 D3 — LA COTA YA NO SE COMPARA AQUÍ, y quitarla es lo que permite una rampa. Antes se
+    // exigía misma altura LOCAL, o sea que una pieza con la salida más alta que la entrada no podía
+    // engancharse a nada. Ahora la altura la resuelve el compositor colocando a la hija donde su
+    // boca coincida con la del padre, así que casan en cota de MUNDO por construcción.
+    //
+    // El hueco caminable SÍ se sigue midiendo, y es lo que impide una conexión por la que no cabe
+    // nadie. Se mide contra cada boca por separado porque ya no comparten cota.
     a.kind == b.kind
         && (a.width - b.width).abs() <= WIDTH_MATCH_TOLERANCE
-        && (a.floor_y - b.floor_y).abs() <= FLOOR_MATCH_TOLERANCE
-        && a.ceiling_y.min(b.ceiling_y) - a.floor_y.max(b.floor_y) >= MIN_HEADROOM
+        && a.ceiling_y - a.floor_y >= MIN_HEADROOM
+        && b.ceiling_y - b.floor_y >= MIN_HEADROOM
 }
 
 /// Peso de una candidata: base × campo de escala × penalización de repetición.

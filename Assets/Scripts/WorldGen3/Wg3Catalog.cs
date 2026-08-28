@@ -24,9 +24,13 @@ namespace BackroomsSurvival.WorldGen3
     ///  · L14 columnas con colisión exacta, que parten salas y tapan vistas;
     ///  · L21 las dos piezas de una sola boca son, además, los tapones de sus tipos.
     ///
-    /// LO QUE NO EJERCITA: cotas de conexión. Todas las bocas nacen a 0 m. Las rampas son F5, y
-    /// hasta entonces el validador exige que casen, así que un descuido aquí sale como pieza que no
-    /// se coloca, no como agujero por el que caerse.
+    ///  · ADR-097 `cor_ramp` es la primera pieza con las dos bocas a COTAS DISTINTAS, y por tanto
+    ///    la única que cambia de nivel. Todo lo que cuelgue de su boca alta sube con ella.
+    ///
+    /// LO QUE SIGUE SIN EJERCITAR: desnivel a través de una junta de región. Las anclas van a cota
+    /// 0 porque la junta es un acuerdo entre dos regiones compuestas por separado, y una cota
+    /// propagada no llegaría igual a las dos. Cuando el desnivel tenga que cruzar, la cota entra en
+    /// el contrato de junta — no se deduce.
     /// </summary>
     public static class Wg3Catalog
     {
@@ -299,6 +303,40 @@ namespace BackroomsSurvival.WorldGen3
                 sizeX = 8f, sizeZ = WideWidth, heightMeters = 3.6f,
                 scale = Wg3Scale.Medium, weight = 0.60f, minDepth = 1, isDeadEnd = true,
                 sockets = new[] { Sock(3, WideWidth * 0.5f, Wg3SocketType.Wide) }
+            });
+
+            // ADR-097 — LA PIEZA QUE SUBE. Es la primera del catálogo cuyas dos bocas están a
+            // cotas distintas, y por tanto la única que puede cambiar de nivel: todo lo que cuelgue
+            // de su boca alta se coloca 0,72 m más arriba, y lo que cuelgue de eso también.
+            //
+            // El desnivel se AUTORA, no se genera (L18). Sin una pieza así, `origin_y` existe y
+            // vale cero en todo el mundo — que es exactamente lo que pasaba antes de F5, solo que
+            // sin campo donde escribirlo.
+            //
+            // 0,72 m y no dos metros a propósito: cuatro peldaños de 18 cm es un desnivel que se
+            // sube sin pensar y que ya demuestra la propagación. Un salto grande se autora igual
+            // cuando el catálogo crezca; lo que se prueba aquí es el mecanismo.
+            c.Add(new Wg3Piece
+            {
+                id = "cor_ramp", geometryId = "cor_ramp",
+                sizeX = 8f, sizeZ = CorridorWidth, heightMeters = DefaultCeiling + 0.72f,
+                scale = Wg3Scale.Narrow, weight = 0.5f, minDepth = 1,
+                sockets = new[]
+                {
+                    // Entrada abajo, salida arriba. La diferencia entre estos dos `floorY` ES el
+                    // desnivel: el compositor coloca a la hija donde su boca coincida con ésta.
+                    new Wg3Socket(3, CorridorWidth * 0.5f, CorridorWidth, Wg3SocketType.Corridor,
+                        0f, DefaultCeiling),
+                    new Wg3Socket(1, CorridorWidth * 0.5f, CorridorWidth, Wg3SocketType.Corridor,
+                        0.72f, DefaultCeiling + 0.72f)
+                },
+                // Cuatro peldaños que suben hacia +X, y detrás la plataforma maciza que sostiene el
+                // tramo alto hasta la boca. Sin el bloque, la salida alta daría al aire.
+                stairs = new[] { new Wg3StairRun(3.0f, CorridorWidth * 0.5f, 90f, CorridorWidth, 4) },
+                blocks = new[]
+                {
+                    new Wg3Block(6.08f, CorridorWidth * 0.5f, 3.84f, CorridorWidth, 0.72f)
+                }
             });
 
             // ── TAPONES DE GEOMETRÍA ──────────────────────────────────────────────────────
