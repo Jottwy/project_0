@@ -8326,3 +8326,148 @@ decía que tenía que existir.
 gris, las piezas en trazo claro y los conectores generados en ámbar. **No sustituye a jugarlo** —no
 dice nada del aspecto— pero contesta lo único que se le pregunta a la topología sin montar una sesión
 de noventa segundos.
+
+---
+
+## ADR-099 — La absorción: una pieza que topa con otra no se descarta, se recorta y abre un vano (2026-08-28) — PROPUESTA
+
+### El problema, dicho por quien lo juega
+
+Joel, mirando un plano de región: «se ve claramente que hay cosas sin solaparse bien; deberían saber
+juntarse mejor las cosas». Y antes: «todo es pasillos». Las dos frases son el mismo hallazgo visto
+desde fuera — **el mundo se lee como cajas sueltas unidas por tubos, no como un edificio.**
+
+Eso no es un fallo: es lo que el compositor construye. Una pieza se engancha a la boca de otra, así
+que el mundo crece en CADENA. Dos salas nunca acaban lado a lado porque no hay nada que las ponga
+ahí, y cada pieza carga sus cuatro paredes.
+
+### La hipótesis obvia, MEDIDA Y DESCARTADA
+
+La primera propuesta fue permitir que las piezas compartan pared en vez de duplicarla, y excavar el
+muro común. Antes de escribir nada se midió (`probe_fill_with_overlap_allowed`, commit `9d2e51ce`),
+y **el número la mató**:
+
+| holgura de solape | llenado | piezas/región | adyacencias SIN puerta |
+|---|---|---|---|
+| 0,00 m (hoy) | 31,7 % | 52 | **1** |
+| 0,30 m (un muro) | **32,6 %** | 50 | 2 |
+| 1,20 m | 37,5 % | 62 | 10 |
+| 2,50 m | 53,7 % | 128 | 111 |
+
+Compartir pared sube el llenado **nueve décimas de punto**. Y la última columna dice por qué: hoy
+hay **UNA adyacencia sin puerta por región**. La premisa de la propuesta —que el mundo está lleno de
+salas espalda contra espalda sin paso entre ellas— era falsa. **No hay muros comunes que excavar.**
+
+*Aviso de método que vale para cualquier medida futura de llenado: se mide por UNIÓN de huellas, no
+sumándolas. Con solape permitido, sumar cuenta dos veces el terreno compartido y diría que el mundo
+se llena cuando solo se están pisando.*
+
+### La decisión: absorción, y la idea es de Joel
+
+> «si hay una zona que tira un pasillo y ese pasillo topa con una sala, se elimine el resto de
+> pasillo y se haga una unificación en la sala; aunque esa sala esté pensada para que no esté unida,
+> si aparece un pasillo dice: sala, okay, pues me adapto a ti, pero con la condición de que tú dejes
+> de expandirte, ya que mando un poco por encima de ti».
+
+Hoy una candidata que pisa algo ya colocado **se descarta**. La absorción dice que no se descarte:
+se **recorta** contra lo que ha topado, se le **abre un vano** al absorbente, y el absorbido **deja
+de expandirse** por ese lado.
+
+Lo que lo hace viable, y es la diferencia con todo lo anterior: **el material ya existe y se está
+tirando.** Cada rechazo por solape es un sitio donde el mundo quiso crecer y no quedó constancia de
+dónde. Medido (`probe_absorption_ceiling`, mismo commit):
+
+| región | piezas | choques | con fachada ≥ 1,2 m | destinos DISTINTOS |
+|---|---|---|---|---|
+| (0,0) | 37 | 313 | 277 | 17 |
+| (1,0) | 39 | 205 | 169 | 11 |
+| (0,1) | 97 | 1008 | 889 | **45** |
+| (−1,−1) | 52 | 306 | 260 | 19 |
+| (3,−2) | 50 | 348 | 309 | 19 |
+| (7,11) | 28 | 149 | 136 | 8 |
+| (2,5) | 61 | 496 | 434 | 23 |
+
+**~20 conexiones nuevas por región.** Contra 1 de compartir pared y 0–1 de los bucles por
+coincidencia de ADR-096. Y el **88 % de los choques tiene fachada ≥ 1,2 m**, así que son encuentros
+de frente y no roces de esquina.
+
+*Se cuentan **destinos distintos** y no choques: cien candidatas contra la misma sala son una
+puerta, no cien. Sin esa distinción el techo saldría inflado veinte veces.*
+
+### D1 — La jerarquía: quién absorbe a quién
+
+De los choques con fachada aprovechable, **del 31 al 44 % son contra una pieza MAYOR** — el caso que
+Joel describe, pasillo contra sala. El resto son entre iguales, **así que «la mayor manda» no basta
+como regla.**
+
+La jerarquía es, en este orden:
+
+1. **El que ya está colocado manda sobre el que llega.** Es lo que ya hace el compositor y no
+   introduce ningún concepto nuevo.
+2. **La escala rompe el empate cuando la diferencia es de clase**, para que el resultado se lea como
+   arquitectura: un pasillo muere en una sala, una sala no muere en un pasillo.
+
+El absorbido queda recortado y **sin bocas libres del lado del choque**, que es literalmente la
+condición que pedía Joel: «dejas de expandirte».
+
+### D2 — Una pieza recortada NO es una pieza, es geometría generada
+
+Es el punto que decide si esto toca el wire. El índice de catálogo es lo que viaja
+(ADR-095 D3), y una pieza recortada ya no es la pieza del catálogo: dibujarla entera en el cliente y
+recortada en el servidor daría pared donde hay paso, que es el peor fallo de su clase y el que ya se
+pagó en ADR-098 enmienda 2.
+
+**El recorte se emite como conector generado**, no como pieza. ADR-098 ya tiene el formato —cajas
+sin índice de catálogo—, el ráster ya las estampa y el cliente ya las dibuja. **Cero wire.**
+
+### D3 — El vano hay que EXCAVARLO, y eso es lo único de verdad nuevo
+
+El ráster se estampa de una pasada y una pieza colocada es inmutable (ADR-095 D1). Abrir un vano en
+el absorbente pide una lista de huecos que el rasterizado RESTE después de estampar.
+
+Es el `carve` del sistema de salas —`carve_authored_into_layout`, que Joel señaló como lo que sí
+funcionaba— traído a WG3. La geometría se adapta en vez de exigir alineación, que es exactamente la
+tesis de ADR-098 aplicada un escalón más arriba: allí se generaba el conector, aquí se modifica el
+destino.
+
+**El vano se excava en los DOS lados o en ninguno.** Medio vano es un muro con una marca.
+
+### D4 — Determinismo: el orden de absorción sale de la semilla
+
+Dos clientes componen la misma región por separado (ADR-096). Si el orden en que se resuelven los
+choques dependiera del recorrido, dos máquinas darían mundos distintos y el síntoma sería una pared
+que solo existe para uno.
+
+El orden es **función pura de la semilla y de la posición**, como todo sorteo del compositor. El
+oráculo de composición sigue vigilando la paridad con C#, y por eso la absorción **nace apagada**:
+C# no absorbe, igual que no cierra bucles ni enruta.
+
+### Lo que esto NO arregla, dicho aquí para que nadie lea de más
+
+**El llenado sigue en el 32 %.** La absorción arregla la TOPOLOGÍA —el mundo deja de ser un árbol,
+aparecen anillos, un pasillo muere en una sala en vez de en un tapón— pero no rellena el vacío entre
+piezas. Si después de esto el mundo sigue sin leerse como un edificio, la siguiente pregunta es el
+llenado, y es otra decisión.
+
+Y el efecto **no es uniforme**: la región densa da 45 destinos y la flaca 8. Las regiones pobres
+seguirán siendo pobres.
+
+### Verificaciones
+
+- (a) Los destinos distintos medidos se convierten en conexiones reales: `probe_absorption_ceiling`
+  predice ~20 por región y el mundo compuesto tiene que enseñarlas.
+- (b) Ningún vano excavado cae sobre columna maciza, con la guardia que ya existe
+  (`no_mouth_in_the_served_world_is_walled_shut`) extendida a los vanos de absorción.
+- (c) El vano sobrevive al rasterizado conservador: ≥ 2,00 m de anchura generada, que es lo que
+  ADR-098 enmienda 2 midió y por lo que existe `MIN_GENERATED_WIDTH_CM`.
+- (d) Determinismo: componer la misma región dos veces da los mismos bytes, con absorción encendida.
+- (e) Los dos oráculos siguen verdes con la perilla apagada.
+- (f) Andarlo. Ninguna de las anteriores dice si se SIENTE como un edificio, y ése era el problema.
+
+### Troceado
+
+1. La jerarquía y el recorte, sin excavar: la candidata se recorta y se emite como conector. Mide
+   cuántas absorciones ocurren de verdad contra las ~20 predichas.
+2. El vano: la lista de huecos y la resta en el rasterizado, con (b) y (c).
+3. Encenderlo en el mundo servido y medir superficie andable y anillos, con (a) y (d).
+4. (f), que es de Joel.
