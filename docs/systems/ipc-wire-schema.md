@@ -681,3 +681,43 @@ Degradación: un backend con `BACKROOMS_WG3` sin poner responde `RequestWg3Chunk
 en vez de callar — un cliente que pidió y no recibe nada no puede distinguir "aquí no hay nada" de
 "no me han contestado todavía", y esperaría para siempre. `WireSchema.Expected` (C#) a 46 en el
 mismo commit.
+
+## v47 y v48 — SIN ENTRADA, y queda dicho
+
+Los bumps de ADR-097 (`origin_y_cm` en la colocación) y ADR-098 (`Wg3ChunkView.segments` y su
+`Wg3SegmentWire`) se hicieron sin anotarlos aquí. Se registra el hueco en vez de rellenarlo a
+posteriori: reconstruir de memoria una entrada de changelog es exactamente cómo un changelog empieza
+a mentir. Los dos cambios están descritos en sus ADR.
+
+## v49 — ADR-101: los vanos excavados viajan (2026-08-28)
+
+**`Wg3ChunkView.carves: Vec<Wg3CarveWire>`**, aditivo y con `skip_serializing_if`: la inmensa mayoría
+de chunks no lleva ninguno, así que el caso común cuesta cero bytes.
+
+```
+Wg3CarveWire { x_cm, z_cm, size_x_cm, size_z_cm, bottom_y_cm, top_y_cm }
+```
+
+**Por qué existe.** Desde ADR-100 el plan decide dónde va cada puerta, y una pieza del catálogo trae
+sus bocas donde las puso quien la dibujó. Los dos sitios no coinciden casi nunca, así que una pieza
+colocada en un espacio planificado **nace sellada**. La solución ya estaba escrita —excavar el vano,
+ADR-099 D3— y no tenía cómo llegar al cliente; por eso ADR-100 dejó el catálogo apagado y el mundo
+servido salía 100 % de tramos generados.
+
+**Viaja la CAJA y no «qué pared de qué pieza».** Una referencia obligaría al cliente a resolver qué
+pieza es la dueña —que puede estar en otro chunk— y a reconstruir el mapeo de lados por rotación, que
+sería la tercera copia de un mapeo que ya se ha desviado antes. La caja es el mismo dato que el ráster
+del servidor ya consume, así que las dos partes hacen la misma operación sobre el mismo número.
+
+**Es la única lista de este mensaje que NO sigue la regla del centro.** Un vano se abre justo en la
+frontera entre dos piezas, y ésa es la clase de sitio donde cae también una frontera de chunk:
+perderlo por un centímetro dejaría la puerta abierta por un lado y tapiada por el otro. Se filtran por
+TOCAR. Que uno viaje dos veces es correcto y barato — restar dos veces la misma caja da lo mismo que
+restarla una.
+
+El cliente lo aplica como **resta de AABB sobre los volúmenes**, antes de la malla y antes de los
+colliders, a las piezas Y a los tramos: el servidor excava el ráster ya estampado, así que
+restringirlo a las piezas sería una divergencia deliberada entre lo que se ve y lo que frena.
+
+`WireSchema.Expected` (C#) a 49 en el mismo commit — lo vigila
+`the_csharp_mirror_declares_the_same_wire_schema_version`, que ya lo cazó al escribir esto.

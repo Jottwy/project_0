@@ -37,7 +37,8 @@ namespace BackroomsSurvival.WorldGen3
         private const float YawEpsilon = 0.01f;
 
         public static void Assemble(Wg3World world, Transform parent, Wg3Materials materials,
-            List<Mesh> createdMeshes, bool addLights = true)
+            List<Mesh> createdMeshes, bool addLights = true,
+            List<BackroomsSurvival.Net.Wg3CarveMsg> carves = null)
         {
             if (world == null || parent == null) return;
             Material[] mats = materials != null ? materials.AsArray() : null;
@@ -45,8 +46,25 @@ namespace BackroomsSurvival.WorldGen3
             for (int i = 0; i < world.placements.Count; i++)
             {
                 Wg3Placement placement = world.placements[i];
-                List<Wg3Volume> volumes = Wg3Geometry.BuildPlaced(placement);
+                // ADR-101 — los vanos se restan ANTES de que los volúmenes sean malla o colliders.
+                // Es lo que permite que una pieza del catálogo tenga las puertas que el plan decidió
+                // en vez de las que traía horneadas; sin esto se monta sellada mientras el servidor
+                // la deja pasar.
+                List<Wg3Volume> volumes =
+                    Wg3Carving.Apply(Wg3Geometry.BuildPlaced(placement), carves);
                 var origin = new Vector3(placement.originX, placement.originY, placement.originZ);
+
+                if (placement.piece.visualPrefab != null && carves != null && carves.Count > 0)
+                {
+                    // Una malla AUTORADA no se puede partir: la resta sólo alcanza a los volúmenes,
+                    // así que la colisión se abriría y el dibujo no. Se avisa fuerte porque el
+                    // síntoma es una puerta que se atraviesa y se ve como pared — el peor de los dos
+                    // sentidos, y no sale en una captura.
+                    Debug.LogWarning(
+                        $"[WG3] la pieza «{placement.piece.id}» tiene malla autorada y le toca un " +
+                        $"vano excavado: la colisión se abrirá y el dibujo no. Hace falta que la " +
+                        $"pieza declare sus vanos o que el plan no la elija para este espacio.");
+                }
 
                 var go = new GameObject($"{i:D3}_{placement.piece.id}_r{placement.rotation}");
 
@@ -93,11 +111,15 @@ namespace BackroomsSurvival.WorldGen3
         /// oráculo de conectores.
         /// </summary>
         public static GameObject AssembleSegment(Wg3Segment segment, Transform parent,
-            Wg3Materials materials, List<Mesh> createdMeshes, string name, bool addLight = true)
+            Wg3Materials materials, List<Mesh> createdMeshes, string name, bool addLight = true,
+            List<BackroomsSurvival.Net.Wg3CarveMsg> carves = null)
         {
             if (segment == null || parent == null) return null;
 
-            List<Wg3Volume> volumes = Wg3GeneratedSegment.Build(segment);
+            // ADR-101 — los tramos se excavan TAMBIÉN. El servidor resta sobre el ráster ya
+            // estampado, o sea sobre todo lo que haya en esa caja; restringirlo aquí a las piezas
+            // sería una divergencia deliberada entre lo que se ve y lo que frena.
+            List<Wg3Volume> volumes = Wg3Carving.Apply(Wg3GeneratedSegment.Build(segment), carves);
             Vector3 origin = segment.Origin;
 
             var go = new GameObject(name);

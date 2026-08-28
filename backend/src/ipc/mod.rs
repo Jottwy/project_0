@@ -312,6 +312,29 @@ pub struct Wg3SegmentWire {
     pub openings: Vec<Wg3OpeningWire>,
 }
 
+/// ADR-101 — un VANO EXCAVADO: materia que se le quita a la geometría ya construida.
+///
+/// **Viaja la CAJA, no «qué pared de qué pieza».** Describirlo como «la pieza 12, lado norte, offset
+/// 340» obligaría al cliente a resolver quién es la dueña —que puede estar en otro chunk— y a
+/// reconstruir el mapeo de lados por rotación, que sería la tercera copia de un mapeo que ya se ha
+/// desviado antes. La caja es exactamente el dato que el ráster del servidor ya consume
+/// (`Wg3RasterBuilder::carve_box`), así que las dos partes hacen la misma operación sobre el mismo
+/// número y no hay nada que derivar dos veces.
+///
+/// Existe porque el plan decide dónde va cada puerta y una pieza del catálogo trae sus bocas donde
+/// las puso quien la dibujó: sin excavar, una pieza colocada en un espacio planificado nace SELLADA.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Wg3CarveWire {
+    pub x_cm: i32,
+    pub z_cm: i32,
+    pub size_x_cm: i32,
+    pub size_z_cm: i32,
+    /// Banda vertical que se abre. **NO llega al suelo**: sin esa guarda el vano se lleva la losa
+    /// sobre la que se anda y abre un agujero por el que se cae en vez de una puerta.
+    pub bottom_y_cm: i32,
+    pub top_y_cm: i32,
+}
+
 /// ADR-095 — lo que WG3 entrega por chunk.
 ///
 /// Sin `layer`: con columnas de tramos (D2) la capa deja de existir como restricción, así que un
@@ -331,6 +354,18 @@ pub struct Wg3ChunkView {
     /// de la inmensa mayoría de chunks: un conector cruza el mundo de vez en cuando, no siempre.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub segments: Vec<Wg3SegmentWire>,
+
+    /// ADR-101 — los vanos excavados que TOCAN este chunk.
+    ///
+    /// **Tocan, no pertenecen**, y es la única lista de este mensaje que no sigue la regla del
+    /// centro: un vano se abre justo en la frontera entre dos piezas, y ésa es exactamente la clase
+    /// de sitio donde cae también una frontera de chunk. Perderlo por un centímetro dejaría la
+    /// puerta abierta por un lado y tapiada por el otro.
+    ///
+    /// Que uno viaje dos veces es correcto y barato: restar dos veces la misma caja da lo mismo que
+    /// restarla una. La idempotencia es otra razón para que viaje la caja y no una referencia.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub carves: Vec<Wg3CarveWire>,
 }
 
 /// ADR-078 — lo que el backend entrega a Unity por cada trozo de trazo ajeno. Es
@@ -1259,6 +1294,16 @@ mod tests {
                     width_cm: 240,
                 }],
             }],
+            // ADR-101 — y el vano excavado, por la misma razón: si una de sus claves se renombra, el
+            // cliente monta la pieza SELLADA mientras el servidor la deja pasar. No peta nada.
+            carves: vec![Wg3CarveWire {
+                x_cm: -420,
+                z_cm: 180,
+                size_x_cm: 240,
+                size_z_cm: 100,
+                bottom_y_cm: 5,
+                top_y_cm: 320,
+            }],
         }))
         .unwrap();
 
@@ -1283,6 +1328,9 @@ mod tests {
             "side",
             "offset_cm",
             "width_cm",
+            "carves",
+            "bottom_y_cm",
+            "top_y_cm",
         ] {
             assert!(
                 body.contains(key),

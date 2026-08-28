@@ -160,6 +160,49 @@ namespace BackroomsSurvival.Net
         }
     }
 
+    /// <summary>
+    /// ADR-101 — un VANO EXCAVADO. Espejo de <c>ipc::Wg3CarveWire</c>.
+    ///
+    /// **Materia que se le QUITA a la geometría ya construida**, y es lo que permite que una pieza
+    /// del catálogo tenga las puertas que el plan decidió en vez de las que traía horneadas. Sin
+    /// esto, una pieza colocada en un espacio planificado se monta SELLADA mientras el servidor la
+    /// deja pasar — el jugador ve una pared donde no la hay.
+    ///
+    /// Viaja la CAJA y no «qué pared de qué pieza»: una referencia obligaría a este lado a resolver
+    /// quién es la dueña —que puede estar en otro chunk— y a reconstruir el mapeo de lados por
+    /// rotación, que sería la tercera copia de un mapeo que ya se ha desviado antes.
+    /// </summary>
+    public struct Wg3CarveMsg
+    {
+        public int xCm;
+        public int zCm;
+        public int sizeXCm;
+        public int sizeZCm;
+
+        /// <summary>Banda vertical que se abre. NO llega al suelo: sin esa guarda el vano se lleva
+        /// la losa sobre la que se anda y abre un agujero en vez de una puerta.</summary>
+        public int bottomYCm;
+        public int topYCm;
+
+        public static Wg3CarveMsg Parse(MsgPackReader r)
+        {
+            var c = new Wg3CarveMsg();
+            int n = r.ReadMapHeader();
+            for (int i = 0; i < n; i++)
+            {
+                var k = r.ReadKey();
+                if (MsgPackReader.Is(k, "x_cm")) c.xCm = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "z_cm")) c.zCm = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "size_x_cm")) c.sizeXCm = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "size_z_cm")) c.sizeZCm = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "bottom_y_cm")) c.bottomYCm = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "top_y_cm")) c.topYCm = (int)r.ReadInt();
+                else r.Skip();
+            }
+            return c;
+        }
+    }
+
     public class Wg3ChunkMsg
     {
         public int cx;
@@ -169,6 +212,17 @@ namespace BackroomsSurvival.Net
         /// <summary>ADR-098 — los tramos generados de los que este chunk es dueño. Vacío en la
         /// inmensa mayoría: un conector cruza el mundo de vez en cuando, no siempre.</summary>
         public readonly List<Wg3SegmentMsg> segments = new List<Wg3SegmentMsg>();
+
+        /// <summary>
+        /// ADR-101 — los vanos que TOCAN este chunk, no los que le pertenecen.
+        ///
+        /// Es la única lista de este mensaje que no sigue la regla del centro, y no es un descuido:
+        /// un vano se abre justo en la frontera entre dos piezas, que es donde también cae una
+        /// frontera de chunk. Perderlo por un centímetro dejaría la puerta abierta por un lado y
+        /// tapiada por el otro. Que uno llegue dos veces es correcto — restar dos veces la misma
+        /// caja da lo mismo que restarla una.
+        /// </summary>
+        public readonly List<Wg3CarveMsg> carves = new List<Wg3CarveMsg>();
 
         public static Wg3ChunkMsg Parse(MsgPackReader r, int remainingPairs)
         {
@@ -187,6 +241,11 @@ namespace BackroomsSurvival.Net
                 {
                     int c = r.ReadArrayHeader();
                     for (int j = 0; j < c; j++) m.segments.Add(Wg3SegmentMsg.Parse(r));
+                }
+                else if (MsgPackReader.Is(k, "carves"))
+                {
+                    int c = r.ReadArrayHeader();
+                    for (int j = 0; j < c; j++) m.carves.Add(Wg3CarveMsg.Parse(r));
                 }
                 else r.Skip();
             }

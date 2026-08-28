@@ -276,11 +276,11 @@ impl Wg3ServedWorld {
     /// Medido sobre las cuatro regiones de la auditoría, superficie andable: **21 → 82 %, 26 → 77 %,
     /// 3,5 → 80 %, 24 → 75 %**, con la mancha mayor entre el 98 y el 100 % de lo pisable.
     ///
-    /// **El catálogo va APAGADO aquí, y es una deuda de contrato, no una decisión de diseño.** Una
-    /// pieza colocada necesita que se le excaven las puertas del plan, y los vanos excavados no cruzan
-    /// el wire (`Wg3ChunkView` lleva colocaciones y tramos). Encenderlo abriría en el servidor puertas
-    /// que el cliente dibuja tapiadas — exactamente el modo de fallo que R6 existe para impedir. Ver
-    /// [`super::fill::fill_with`].
+    /// **ADR-101 — el catálogo está ENCENDIDO desde que los vanos viajan.** Hasta el wire 49 iba
+    /// apagado: una pieza colocada necesita que se le excaven las puertas del plan —las suyas están
+    /// donde las puso quien la dibujó—, y sin los vanos en el cable el servidor habría abierto puertas
+    /// que el cliente dibuja tapiadas, que es el modo de fallo que R6 existe para impedir. Ahora
+    /// `Wg3ChunkView` los lleva y las dos partes restan la misma caja.
     pub fn plan_region(manifest: &Wg3Manifest, world_seed: u64, region: Wg3RegionCoord) -> Self {
         let bounds = region.bounds();
         // Las puertas de junta se sortean con la semilla del MUNDO y no con la de la región: la de la
@@ -289,7 +289,7 @@ impl Wg3ServedWorld {
         let gates =
             junction::gates_of_region(composer_seed(world_seed), region.x, region.z, bounds);
         let plan = plan::plan_region(region.composer_seed(world_seed), bounds, &gates);
-        let filled = fill::fill_with(&plan, manifest, false);
+        let filled = fill::fill(&plan, manifest);
 
         // **Un enlace que el plan pidió y que nadie pudo construir se dice EN VOZ ALTA.** El sistema
         // viejo tapaba ese hueco inventando un conector; aquí no hay nada que inventar, así que lo

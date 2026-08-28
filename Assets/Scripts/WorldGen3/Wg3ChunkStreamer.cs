@@ -181,7 +181,8 @@ namespace BackroomsSurvival.WorldGen3
 
                 var single = new Wg3World();
                 single.placements.Add(placement);
-                Wg3SceneAssembler.Assemble(single, root.transform, materials, mine, spawnLights);
+                Wg3SceneAssembler.Assemble(
+                    single, root.transform, materials, mine, spawnLights, chunk.carves);
 
                 _builtPieces++;
 
@@ -219,7 +220,8 @@ namespace BackroomsSurvival.WorldGen3
                         wire.openings[o].side, wire.openings[o].offsetCm, wire.openings[o].widthCm);
 
                 Wg3SceneAssembler.AssembleSegment(
-                    segment, root.transform, materials, mine, $"seg_{i:D3}", spawnLights);
+                    segment, root.transform, materials, mine, $"seg_{i:D3}", spawnLights,
+                    chunk.carves);
                 _builtSegments++;
             }
 

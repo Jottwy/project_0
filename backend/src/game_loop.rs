@@ -826,8 +826,13 @@ pub async fn run(
                     // lo que el catálogo no puede encajar. Se reparten con la misma regla —el chunk
                     // que contiene su centro— porque su tope de tamaño mantiene el invariante en el
                     // que esa regla se apoya.
+                    //
+                    // ADR-101 — y con los tramos van los VANOS EXCAVADOS. Es lo que permite que una
+                    // pieza del catálogo tenga las puertas que el plan decidió y no las que traía
+                    // horneadas: sin ellos, una pieza colocada en un espacio planificado nace
+                    // sellada, y el mundo servido no puede usar contenido autorado.
                     let coord = crate::world::wg3::chunk::Wg3ChunkCoord { x: cx, z: cz };
-                    let (placements, segments) = match wg3.manifest() {
+                    let (placements, segments, carves) = match wg3.manifest() {
                         Some(manifest) if wg3.is_enabled() => {
                             let region = wg3_world.region_for(manifest, net.world_seed, coord);
                             let placements = region
@@ -863,9 +868,25 @@ pub async fn run(
                                         .collect(),
                                 })
                                 .collect();
-                            (placements, segments)
+                            // Los vanos se filtran por TOCAR el chunk, no por pertenecer a él: se
+                            // abren en la frontera entre dos piezas, que es donde también cae la
+                            // frontera de un chunk. Que uno viaje dos veces es correcto — restar dos
+                            // veces la misma caja da lo mismo que restarla una.
+                            let carves = region
+                                .carves_touching_chunk(coord)
+                                .into_iter()
+                                .map(|k| crate::ipc::Wg3CarveWire {
+                                    x_cm: k.x_cm,
+                                    z_cm: k.z_cm,
+                                    size_x_cm: k.size_x_cm,
+                                    size_z_cm: k.size_z_cm,
+                                    bottom_y_cm: k.bottom_y_cm,
+                                    top_y_cm: k.top_y_cm,
+                                })
+                                .collect();
+                            (placements, segments, carves)
                         }
-                        _ => (Vec::new(), Vec::new()),
+                        _ => (Vec::new(), Vec::new(), Vec::new()),
                     };
 
                     let _ = to_clients.send(ServerMessage::Wg3Chunk(crate::ipc::Wg3ChunkView {
@@ -873,6 +894,7 @@ pub async fn run(
                         cz,
                         placements,
                         segments,
+                        carves,
                     }));
                 }
                 ClientMessage::RequestChunk { cx, cz, layer } => {

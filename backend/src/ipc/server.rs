@@ -35,7 +35,7 @@ const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 /// Rust↔C# `WireSchema.Expected` mismatch history). If the false-rejection case is ever hit
 /// in practice, promote to a dedicated `P2P_PROTOCOL_VERSION` then — don't patch around it
 /// in the gate.
-pub const WIRE_SCHEMA_VERSION: u32 = 48;
+pub const WIRE_SCHEMA_VERSION: u32 = 49;
 
 /// Run the IPC server until a fatal accept error.
 ///

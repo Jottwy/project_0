@@ -8701,3 +8701,92 @@ problema. El plano ya se lee como una planta; lo que no se sabe es cómo se reco
 criterio para cuando se ande: el resultado es MUY ortogonal y muy ordenado —una planta de oficinas
 correcta—, y la rareza que pide Backrooms hoy sale sólo de las zonas `Weird` del campo de escala y de
 los vacíos. Es una perilla identificada, no un trabajo hecho.
+
+## ADR-101 — Los vanos excavados viajan: wire 48 → 49 (2026-08-28) — PROPUESTA
+
+### Contexto
+
+ADR-100 D4 dejó esto con nombre y con precio. El plan decide dónde va cada puerta; una pieza del
+catálogo trae sus bocas donde las puso quien la dibujó, y los dos sitios no coinciden casi nunca. La
+solución ya existe y está medida —**se le EXCAVA el vano**, la operación que ADR-099 D3 escribió para
+la absorción— pero **los vanos no cruzan el wire**: `Wg3ChunkView` lleva colocaciones y tramos.
+
+Con el catálogo encendido, el servidor abriría puertas que el cliente dibuja tapiadas. Es el modo de
+fallo que la regla R6 existe para impedir y que **no se ve en una captura**: el jugador choca contra
+una pared que no está, o atraviesa una que sí. Por eso ADR-100 dejó el catálogo APAGADO en el camino
+servido, y por eso el mundo de hoy son 100 % tramos generados.
+
+Lo que cuesta no arreglarlo, medido: con el catálogo encendido lo usarían **8, 8, 6 y 2 espacios** por
+región de 178, 174, 155 y 199. Poco en número, pero es **todo el contenido autorado que hay** — sin
+esto, WG3 sirve un mundo del que ninguna pieza dibujada a mano forma parte.
+
+### Decisión
+
+**`Wg3ChunkView` gana `carves`, y el esquema pasa de 48 a 49.**
+
+Cambio ADITIVO: `#[serde(default, skip_serializing_if = "Vec::is_empty")]`, como los tramos. La
+inmensa mayoría de chunks no lleva ninguno, así que el coste por chunk es cero bytes en el caso común.
+
+### D1 — Viaja la CAJA, no «qué pared de qué pieza»
+
+Un vano podría describirse como «la pieza 12, lado norte, offset 340». Se rechaza: obligaría al
+cliente a resolver qué pieza es la dueña —que puede estar en otro chunk— y a reconstruir el mapeo de
+lados por rotación, que es la tercera copia de un mapeo que ya se ha desviado antes.
+
+Viaja la caja en centímetros enteros: `x_cm, z_cm, size_x_cm, size_z_cm, bottom_y_cm, top_y_cm`. Es
+**exactamente el dato que el ráster del servidor ya consume** (`Wg3RasterBuilder::carve_box`), así que
+las dos partes hacen la misma operación sobre la misma caja y no hay nada que derivar dos veces.
+
+### D2 — El cliente lo aplica como RESTA DE CAJAS sobre los volúmenes
+
+Antes de la malla y antes de los colliders, cada volumen sólido que intersecta un vano se parte en
+las hasta seis cajas que quedan. No es CSG: todo lo que WG3 dibuja son cajas alineadas a los ejes, y
+la diferencia de dos AABB son AABB.
+
+**Se aplica a las piezas Y a los tramos**, y esto no es opcional: el servidor excava el ráster YA
+ESTAMPADO, o sea todo lo que haya en esa caja. Restringirlo a las piezas en el cliente sería una
+divergencia deliberada entre lo que se ve y lo que frena.
+
+Un volumen con giro propio que no sea múltiplo de 90° **no se excava** y se deja entero. Hoy no existe
+ninguno en un sitio donde caiga un vano —los vanos se abren en paredes de plan, que son ortogonales— y
+tallar una caja girada exige el CSG que este ADR evita. Queda dicho para que se note el día que exista.
+
+### D3 — Se filtran por TOCAR el chunk, no por pertenecer a él
+
+Una colocación se manda al chunk que contiene su CENTRO; un vano no, porque **un vano se abre justo en
+la frontera entre dos piezas, y ésa es exactamente la clase de sitio donde cae también una frontera de
+chunk**. Perderlo por un centímetro dejaría la puerta abierta por un lado y tapiada por el otro. Es la
+misma regla que ya sigue el ráster del servidor (`carves_touching_chunk`) y por la misma razón.
+
+Consecuencia aceptada: un vano cerca de una frontera viaja dos veces, en los dos chunks. Restar dos
+veces la misma caja da el mismo resultado que restarla una — la operación es idempotente, que es otra
+razón para que viaje la caja y no una referencia.
+
+### El precio, dicho
+
+**La geometría del cliente deja de derivarse sólo del catálogo.** Hasta aquí, «once bytes por pieza»
+significaba que el cliente podía dibujar el mundo sabiendo únicamente qué pieza y dónde. Ahora hay un
+segundo dato por chunk que modifica lo dibujado, y una pieza montada sin sus vanos es una pieza
+sellada. No rompe el principio —la geometría sigue sin viajar—, pero sí añade un sitio donde las dos
+partes pueden desviarse.
+
+Lo cubre el mismo mecanismo de siempre: la resta es la misma operación con la misma caja, y hay test
+que la compara contra el ráster.
+
+### Verificaciones
+
+- (a) Una pieza con un vano excavado tiene, en el ráster del servidor, hueco caminable donde el plan
+  puso la puerta. Ya cubierto por `probe_filled_plan`, ahora con el catálogo encendido.
+- (b) El cliente y el servidor coinciden: la resta de cajas de C# da los mismos volúmenes sólidos que
+  el ráster del servidor deja libres. Test de EditMode contra un caso fijo.
+- (c) `WireSchema.Expected` sube a 49 en el MISMO cambio. Sin esto el juego no arranca —no es un
+  aviso—, y ya ha pasado.
+- (d) El saludo sigue saliendo byte a byte igual con WG3 apagado.
+- (e) Andarlo con el catálogo encendido y comprobar que se cruza una puerta excavada.
+
+### Troceado
+
+1. El wire: `Wg3CarveWire`, el campo, el bump y su espejo en C#.
+2. La resta de cajas en el cliente, con (b).
+3. Encender el catálogo en el camino servido y medir.
+4. (e), que es de Joel.
