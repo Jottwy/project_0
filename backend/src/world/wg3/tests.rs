@@ -3187,6 +3187,87 @@ fn narrowest_doorway_clearance() {
     );
 }
 
+/// **NINGUNA BOCA DEL MUNDO SERVIDO ESTÁ TAPIADA.** La guardia del arreglo de la enmienda 2.
+///
+/// `narrowest_doorway_clearance` protege la CONSTANTE; esto protege el MUNDO. Son cosas distintas:
+/// la constante sigue bien y aun así una vía nueva —otro sitio donde se elija una anchura, un tramo
+/// que se parta, una boca que se recorte contra una esquina— puede volver a emitir un vano que el
+/// ráster tapia. El síntoma sería el peor posible: el cliente dibuja el pasillo abierto y el
+/// servidor no deja entrar, y eso no sale en una captura.
+///
+/// Se mide sobre el mundo que se SIRVE y contra el ráster, no contra la lista de cajas.
+#[test]
+fn no_mouth_in_the_served_world_is_walled_shut() {
+    let m = real_manifest();
+    let mut walled = Vec::new();
+
+    for (rx, rz) in [(0, 0), (1, 0), (0, 1), (-1, 2)] {
+        let region = Wg3RegionCoord { x: rx, z: rz };
+        let world = Wg3ServedWorld::compose_region(&m, SERVED_SEED, region);
+        let (min_x, min_z, _, _) = region.bounds();
+
+        let side = REGION_CHUNKS as usize;
+        let base = chunk::Wg3ChunkCoord::containing(min_x + 1.0, min_z + 1.0);
+        let mut rasters = Vec::with_capacity(side * side);
+        for cz in 0..side {
+            for cx in 0..side {
+                let coord = chunk::Wg3ChunkCoord {
+                    x: base.x + cx as i32,
+                    z: base.z + cz as i32,
+                };
+                rasters.push(chunk::build_chunk_raster(
+                    &m,
+                    &world.placements_touching_chunk(&m, coord),
+                    &world.segments_touching_chunk(coord),
+                    coord,
+                ));
+            }
+        }
+        let raster_at = |x: f32, z: f32| -> Option<&Wg3Raster> {
+            let coord = chunk::Wg3ChunkCoord::containing(x, z);
+            let (dx, dz) = (coord.x - base.x, coord.z - base.z);
+            if dx < 0 || dz < 0 || dx as usize >= side || dz as usize >= side {
+                return None;
+            }
+            rasters.get(dz as usize * side + dx as usize)
+        };
+
+        // Las bocas de junta caen en el borde de la región y dan a la vecina: fuera de lo que este
+        // ráster cubre, y no son un fallo. Solo se juzga lo que está dentro.
+        let mut check = |x: f32, z: f32, who: String| {
+            let Some(r) = raster_at(x, z) else { return };
+            let column = r.column_at(x, z);
+            let solid = column.len() == 1 && column[0].top_cm - column[0].bottom_cm > 200;
+            if solid {
+                walled.push(format!(
+                    "({rx},{rz}) {who} en ({x:.2},{z:.2}): macizo de {} a {} cm",
+                    column[0].bottom_cm, column[0].top_cm
+                ));
+            }
+        };
+
+        for (i, p) in world.placements().iter().enumerate() {
+            let piece = m.piece(p.piece).expect("pieza fuera del catálogo");
+            for s in 0..piece.sockets.len() {
+                let (x, z) = p.world_socket_point(piece, s);
+                check(x, z, format!("boca {s} de la pieza {i}"));
+            }
+        }
+        for (i, s) in world.segments().iter().enumerate() {
+            for (j, (x, z)) in segment_mouth_points(s).into_iter().enumerate() {
+                check(x, z, format!("boca {j} del tramo {i}"));
+            }
+        }
+    }
+
+    assert!(
+        walled.is_empty(),
+        "hay bocas tapiadas en el mundo servido — el cliente las dibuja abiertas y el servidor no \
+         deja pasar:\n{}",
+        walled.join("\n")
+    );
+}
+
 /// **DE QUÉ ESTÁ HECHA CADA MANCHA ANDABLE** (diagnóstico de por qué no se llega a los tramos).
 ///
 /// La sonda de arriba dice que la región (0,0) tiene una mancha de 10890 celdas y otra de 4112, y
