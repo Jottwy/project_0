@@ -389,6 +389,70 @@ pub fn route(
     out
 }
 
+/// Un enlace que EL PLAN pidió: dos bocas que hay que unir, decididas antes de que exista geometría.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlannedRoute {
+    pub from: Mouth,
+    pub to: Mouth,
+    /// Con qué dos espacios del plan se corresponde. El enrutador no lo mira: lo devuelve para que
+    /// quien recibe el resultado pueda nombrar el fallo — «PlannedLink 12 → 47 no enrutable».
+    pub a: usize,
+    pub b: usize,
+}
+
+/// Lo que salió de construir los enlaces que el plan pidió.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PlannedOutcome {
+    pub segments: Vec<Wg3Segment>,
+    /// Los enlaces que sí se tendieron, por sus índices de espacio.
+    pub built: Vec<(usize, usize)>,
+    /// **Los que no.** No se sustituyen por nada: un enlace que no cabe es un sitio que hay que ir a
+    /// mirar, y taparlo inventando otra conexión es exactamente lo que ADR-100 vino a quitar.
+    pub failed: Vec<(usize, usize)>,
+}
+
+/// **ADR-100 D3 — EL ENRUTADOR COMO CONSTRUCTOR.**
+///
+/// Misma maquinaria que [`route`] —las formas fijas, la búsqueda de Hanan, el coste de giro, el
+/// determinismo— y **otra entrada**: en vez de descubrir islas con un union-find y decidir por su
+/// cuenta qué unir, recibe la lista de lo que el plan quiere unido y lo construye en orden.
+///
+/// La diferencia no es de algoritmo, es de autoridad. Allí el objetivo era `Goal::JoinIslands`, o sea
+/// reparar una topología que había salido mal; aquí es cumplir una que ya se decidió. Un fallo deja
+/// de ser «quedó una isla» y pasa a ser «el enlace 12 → 47 no cabe», que es un sitio concreto.
+///
+/// Se aplican en el orden en que llegan y **cada ruta tendida cuenta como ocupada para la siguiente**:
+/// dos enlaces que quieren el mismo hueco no pueden tenderse los dos, y el que llega segundo tiene
+/// que enterarse.
+pub fn route_planned(
+    requests: &[PlannedRoute],
+    occupancy: &[Rect],
+    bounds: Option<(f32, f32, f32, f32)>,
+    settings: &RouteSettings,
+) -> PlannedOutcome {
+    let mut out = PlannedOutcome::default();
+    let mut state = State {
+        occupied: occupancy.to_vec(),
+        segments: Vec::new(),
+        segment_owner: Vec::new(),
+        used: Vec::new(),
+    };
+
+    for r in requests {
+        // Se prueban primero las formas fijas y, si ninguna cabe, la búsqueda que esquiva. Es el
+        // mismo orden y por la misma razón de coste que en `route`.
+        let Some(segments) = try_build(&r.from, &r.to, settings, &state, bounds, true) else {
+            out.failed.push((r.a, r.b));
+            continue;
+        };
+        state.push_segments(segments.clone(), r.a);
+        out.segments.extend(segments);
+        out.built.push((r.a, r.b));
+    }
+
+    out
+}
+
 /// Que se busca en esta vuelta.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Goal {

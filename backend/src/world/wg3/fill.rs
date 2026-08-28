@@ -39,6 +39,7 @@ use super::manifest::{Wg3Manifest, Wg3Piece};
 use super::placement::Wg3Placement;
 use super::plan::{LinkKind, PlannedSpace, RegionPlan, SpaceRole};
 use super::raster::CM_PER_M;
+use super::route::{self, Mouth, PlannedRoute, Rect, RouteSettings};
 use super::segment::{
     Wg3Carve, Wg3Opening, Wg3Segment, CARVE_FLOOR_GUARD_CM, MAX_SEGMENT_M, MIN_GENERATED_WIDTH_CM,
 };
@@ -143,6 +144,16 @@ pub fn fill(plan: &RegionPlan, manifest: &Wg3Manifest) -> FilledRegion {
 /// Meter los vanos en el cable es un cambio de esquema, y eso pide su propio ADR. Hasta entonces el
 /// mundo servido se construye sólo con tramos, que el wire ya lleva y que el cliente ya dibuja.
 pub fn fill_with(plan: &RegionPlan, manifest: &Wg3Manifest, use_catalogue: bool) -> FilledRegion {
+    fill_full(plan, manifest, use_catalogue, &RouteSettings::default())
+}
+
+/// Igual, con las perillas del enrutador puestas desde fuera. Para las sondas que lo barren.
+pub fn fill_full(
+    plan: &RegionPlan,
+    manifest: &Wg3Manifest,
+    use_catalogue: bool,
+    route_settings: &RouteSettings,
+) -> FilledRegion {
     let mut out = FilledRegion::default();
 
     // Lo primero, repartir las puertas: cada espacio tiene que saber TODOS sus huecos antes de
@@ -150,9 +161,16 @@ pub fn fill_with(plan: &RegionPlan, manifest: &Wg3Manifest, use_catalogue: bool)
     // volver sobre un tramo ya emitida.
     let mut wanted: Vec<Vec<Wanted>> = vec![Vec::new(); plan.spaces.len()];
 
+    let mut route_requests: Vec<PlannedRoute> = Vec::new();
+
     for (i, link) in plan.links.iter().enumerate() {
         if link.kind == LinkKind::Route {
             out.links_to_route.push((link.a, link.b));
+            if let Some(r) = route_request(plan, link.a, link.b, link.width_cm) {
+                route_requests.push(r);
+            } else {
+                out.links_failed.push((link.a, link.b));
+            }
             continue;
         }
         let a_side = wall_side(&plan.spaces[link.a], link.at_x_cm, link.at_z_cm);
@@ -201,6 +219,39 @@ pub fn fill_with(plan: &RegionPlan, manifest: &Wg3Manifest, use_catalogue: bool)
         }
     }
 
+    // **ADR-100 D3 — el enrutador construye lo que el plan pidió, y va ANTES de emitir geometría.**
+    //
+    // Antes porque una ruta tendida abre pared en los dos espacios que une, y esa pared la construye
+    // la tesela de más abajo: enrutar después obligaría a volver sobre un tramo ya emitida. La
+    // ocupación son los rectángulos del PLAN, que es todo lo que va a existir.
+    if !route_requests.is_empty() {
+        let occupancy: Vec<Rect> = plan
+            .built()
+            .map(|(_, s)| {
+                let (min_x, min_z, max_x, max_z) = s.rect.bounds_m();
+                Rect {
+                    min_x,
+                    min_z,
+                    max_x,
+                    max_z,
+                }
+            })
+            .collect();
+        let bounds = plan.bounds_cm.map(|b| b.bounds_m());
+        let routed = route::route_planned(&route_requests, &occupancy, bounds, route_settings);
+
+        for r in &route_requests {
+            if !routed.built.contains(&(r.a, r.b)) {
+                continue;
+            }
+            // La ruta llega a la pared de los dos, así que los dos necesitan su hueco.
+            wanted[r.a].push(mouth_opening(&r.from));
+            wanted[r.b].push(mouth_opening(&r.to));
+        }
+        out.segments.extend(routed.segments);
+        out.links_failed.extend(routed.failed);
+    }
+
     for (i, space) in plan.spaces.iter().enumerate() {
         if !space.role.is_built() {
             continue;
@@ -227,6 +278,100 @@ pub fn fill_with(plan: &RegionPlan, manifest: &Wg3Manifest, use_catalogue: bool)
     }
 
     out
+}
+
+/// El hueco que hay que abrir en la pared para que una ruta enganche ahí.
+fn mouth_opening(m: &Mouth) -> Wanted {
+    Wanted {
+        side: m.side,
+        at_x_cm: (m.x * CM_PER_M).round() as i32,
+        at_z_cm: (m.z * CM_PER_M).round() as i32,
+        width_cm: (m.width * CM_PER_M).round() as i32,
+    }
+}
+
+/// El encargo al enrutador para unir dos espacios que NO se tocan.
+///
+/// Las dos bocas se ponen en las caras enfrentadas, alineadas con el otro espacio todo lo que su
+/// propia pared permita. **Alinear importa**: una ruta que sale por la esquina de una sala y entra por
+/// la esquina opuesta de la otra necesita dos quiebros que no hacen falta, y cada quiebro es una
+/// forma más que puede no caber.
+///
+/// `None` cuando la pared enfrentada es más corta que el vano: ahí no hay puerta que poner, y decirlo
+/// aquí es mejor que dejar que el enrutador construya una ruta a una pared que no la admite.
+fn route_request(plan: &RegionPlan, a: usize, b: usize, width_cm: i32) -> Option<PlannedRoute> {
+    let (ra, rb) = (plan.spaces[a].rect, plan.spaces[b].rect);
+    let (acx, acz) = ra.centre_m();
+    let (bcx, bcz) = rb.centre_m();
+    let horizontal = (bcx - acx).abs() >= (bcz - acz).abs();
+
+    let side_a = if horizontal {
+        if bcx > acx {
+            1
+        } else {
+            3
+        }
+    } else if bcz > acz {
+        0
+    } else {
+        2
+    };
+    let side_b = (side_a + 2) % 4;
+
+    let from = mouth_on(plan, a, side_a, (bcx, bcz), width_cm)?;
+    let to = mouth_on(plan, b, side_b, (acx, acz), width_cm)?;
+    Some(PlannedRoute { from, to, a, b })
+}
+
+/// Una boca en el lado `side` del espacio, lo más cerca posible de `towards`.
+fn mouth_on(
+    plan: &RegionPlan,
+    space: usize,
+    side: u8,
+    towards: (f32, f32),
+    width_cm: i32,
+) -> Option<Mouth> {
+    let s = &plan.spaces[space];
+    let r = s.rect;
+    let half = width_cm / 2;
+    let (x_cm, z_cm) = match side % 4 {
+        0 => (
+            clamp_side(towards.0, r.min_x_cm, r.max_x_cm, half)?,
+            r.max_z_cm,
+        ),
+        1 => (
+            r.max_x_cm,
+            clamp_side(towards.1, r.min_z_cm, r.max_z_cm, half)?,
+        ),
+        2 => (
+            clamp_side(towards.0, r.min_x_cm, r.max_x_cm, half)?,
+            r.min_z_cm,
+        ),
+        _ => (
+            r.min_x_cm,
+            clamp_side(towards.1, r.min_z_cm, r.max_z_cm, half)?,
+        ),
+    };
+    Some(Mouth {
+        // El enrutador no mira el nodo ni la boca cuando se le dice qué unir: sólo los usaba para
+        // decidirlo él, y eso es justamente lo que ha dejado de hacer.
+        node: space,
+        socket: 0,
+        x: x_cm as f32 / CM_PER_M,
+        z: z_cm as f32 / CM_PER_M,
+        side,
+        width: width_cm as f32 / CM_PER_M,
+        floor_y: s.floor_y_cm as f32 / CM_PER_M,
+        clear_height: clear_height_cm(s.role) as f32 / CM_PER_M,
+        kind: 0,
+    })
+}
+
+fn clamp_side(target_m: f32, min_cm: i32, max_cm: i32, half_cm: i32) -> Option<i32> {
+    if max_cm - min_cm < half_cm * 2 {
+        return None;
+    }
+    Some(((target_m * CM_PER_M) as i32).clamp(min_cm + half_cm, max_cm - half_cm))
 }
 
 /// ¿En qué lado del espacio cae este punto? `None` si no está sobre ninguna de sus cuatro paredes.

@@ -6036,6 +6036,130 @@ fn the_fill_is_deterministic() {
     }
 }
 
+/// Un plan a mano con dos espacios que NO se tocan y un enlace `Route` entre ellos.
+///
+/// Existe porque las cuatro regiones de la auditoría dan **cero** enlaces por enrutar —el plan las
+/// deja conexas con vanos—, y un camino de código que sólo se ejercita cuando algo va raro es un
+/// camino que se descubre roto el día que hace falta.
+fn plan_with_a_gap(blocked: bool) -> plan::RegionPlan {
+    use plan::{LinkKind, PlanRect, PlannedLink, PlannedSpace, SpaceRole};
+
+    let room = |x0: i32, x1: i32| PlannedSpace {
+        rect: PlanRect {
+            min_x_cm: x0,
+            min_z_cm: 0,
+            max_x_cm: x1,
+            max_z_cm: 1200,
+        },
+        floor_y_cm: 0,
+        role: SpaceRole::Office,
+        scale: 1,
+        depth: 3,
+    };
+
+    let mut spaces = vec![room(0, 1200), room(3000, 4200)];
+    if blocked {
+        // Un tercer espacio tapando el hueco entero: no hay por dónde pasar, y el enrutador tiene
+        // que DECIRLO en vez de inventarse otra conexión.
+        spaces.push(PlannedSpace {
+            rect: PlanRect {
+                min_x_cm: 1300,
+                min_z_cm: -600,
+                max_x_cm: 2900,
+                max_z_cm: 1800,
+            },
+            ..room(1300, 2900)
+        });
+    }
+
+    plan::RegionPlan {
+        spaces,
+        links: vec![PlannedLink {
+            a: 0,
+            b: 1,
+            width_cm: plan::DOORWAY_CM,
+            kind: LinkKind::Route,
+            at_x_cm: 2100,
+            at_z_cm: 600,
+        }],
+        gates: Vec::new(),
+        bounds_cm: Some(PlanRect {
+            min_x_cm: -600,
+            min_z_cm: -800,
+            max_x_cm: 4800,
+            max_z_cm: 2000,
+        }),
+    }
+}
+
+/// ADR-100 D3 — el enrutador CONSTRUYE el enlace que el plan pidió.
+#[test]
+fn the_router_builds_the_link_the_plan_asked_for() {
+    let m = real_manifest();
+    let p = plan_with_a_gap(false);
+    let f = fill::fill(&p, &m);
+
+    assert_eq!(
+        f.links_to_route,
+        vec![(0, 1)],
+        "el enlace no llegó al enrutador"
+    );
+    assert!(
+        f.links_failed.is_empty(),
+        "el enrutador no pudo tender un enlace que tenía 18 m de hueco libre: {:?}",
+        f.links_failed
+    );
+    // Los dos espacios más la ruta: tiene que haber geometría ENTRE ellos, no sólo dentro.
+    let between = f
+        .segments
+        .iter()
+        .filter(|s| {
+            let (x0, _, x1, _) = s.bounds();
+            x0 >= 11.0 && x1 <= 31.0
+        })
+        .count();
+    assert!(between > 0, "no se tendió un solo tramo en el hueco");
+
+    for s in &f.segments {
+        assert!(
+            s.problems().is_empty(),
+            "tramo inválido en la ruta: {}",
+            s.problems().join("; ")
+        );
+    }
+}
+
+/// **Y cuando NO cabe, lo dice con los dos espacios delante.**
+///
+/// Es la mitad que separa este enrutador del anterior. Allí un enlace que no cabía se sustituía por
+/// otro que sí —un puente a la pared de un conector, un empalme a mitad de pasillo— y el mundo salía
+/// conectado por sitios que nadie había decidido. Aquí no hay nada que sustituir: el plan pidió esto,
+/// esto no cabe, y eso es un sitio al que ir a mirar.
+#[test]
+fn a_link_that_cannot_be_routed_is_named_and_not_replaced() {
+    let m = real_manifest();
+    let p = plan_with_a_gap(true);
+    let f = fill::fill(&p, &m);
+
+    assert_eq!(
+        f.links_failed,
+        vec![(0, 1)],
+        "un enlace imposible tiene que salir con nombre, y salió {:?}",
+        f.links_failed
+    );
+    // Y no se ha inventado nada: la geometría es EXACTAMENTE la misma que si el enlace no se hubiera
+    // pedido. Comparar contra el plan sin enlace y no contar tramos en una caja es lo que hace la
+    // afirmación exacta — el espacio que bloquea también emite geometría en ese hueco, y contarla
+    // sería acusar al enrutador de algo que hizo el relleno.
+    let mut without = plan_with_a_gap(true);
+    without.links.clear();
+    let g = fill::fill(&without, &m);
+    assert_eq!(
+        f.segments, g.segments,
+        "el enrutador dejó geometría por un enlace que no pudo cumplir"
+    );
+}
+
 /// **LA MEDIDA QUE COMPARA CON EL MUNDO DE HOY.**
 ///
 /// Rasteriza la región rellenada igual que el servidor y recorre lo andable desde el centro. Es la
