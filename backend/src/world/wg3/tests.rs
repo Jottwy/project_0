@@ -1281,8 +1281,13 @@ fn a_region_is_worth_its_size() {
             !world.placements().is_empty(),
             "región ({rx},{rz}) vacía: la semilla no cabe en su propia caja"
         );
+        // ADR-098 — el techo sube de 250 a 600 ms porque ahora componer INCLUYE enrutar, y este
+        // test corre en depuración. **El número que manda está medido en release: 20–63 ms por
+        // región** (antes del enrutador, 0–9), y se paga una vez por región porque la composición se
+        // cachea. Lo que sigue vigilando esta aserción es lo de siempre: que a nadie se le vaya la
+        // mano y cruzar una frontera pase a costar un tirón.
         assert!(
-            elapsed.as_millis() < 250,
+            elapsed.as_millis() < 600,
             "región ({rx},{rz}): componer costó {} ms y ocurre al cruzar la frontera",
             elapsed.as_millis()
         );
@@ -1490,7 +1495,7 @@ fn a_gate_can_actually_be_walked_through() {
             let raster = chunk::build_chunk_raster(
                 &m,
                 &world.placements_touching_chunk(&m, chunk),
-                &[],
+                &world.segments_touching_chunk(chunk),
                 chunk,
             );
 
@@ -1764,7 +1769,8 @@ fn the_world_has_floor_where_the_player_appears() {
 
     let coord = chunk::Wg3ChunkCoord::containing(0.0, 0.0);
     let placements = world.placements_touching_chunk(&m, coord);
-    let raster = chunk::build_chunk_raster(&m, &placements, &[], coord);
+    let segments = world.segments_touching_chunk(coord);
+    let raster = chunk::build_chunk_raster(&m, &placements, &segments, coord);
 
     let floor = raster
         .floor_below(0.0, 1.0, 0.0)
@@ -1937,7 +1943,7 @@ fn the_ramp_actually_raises_what_hangs_from_it() {
                 let raster = chunk::build_chunk_raster(
                     &m,
                     &world.placements_touching_chunk(&m, chunk),
-                    &[],
+                    &world.segments_touching_chunk(chunk),
                     chunk,
                 );
 
@@ -2218,10 +2224,12 @@ fn probe_open_mouths_in_the_served_world() {
                 let chunk = chunk::Wg3ChunkCoord::containing(x, z);
                 let its_region = Wg3RegionCoord::of_chunk(chunk);
                 let w = Wg3ServedWorld::compose_region(&m, SERVED_SEED, its_region);
+                // ADR-098 — CON los tramos generados. Sin ellos, una boca que ahora da a un
+                // conector se contaria como agujero: la sonda mediria un mundo que no se sirve.
                 let raster = chunk::build_chunk_raster(
                     &m,
                     &w.placements_touching_chunk(&m, chunk),
-                    &[],
+                    &w.segments_touching_chunk(chunk),
                     chunk,
                 );
 
@@ -2521,6 +2529,210 @@ fn the_raster_of_a_cell_is_hollow_inside_and_solid_at_its_walls() {
     assert!(
         raster.is_solid_at(5.0, -0.06, 1.2),
         "no hay suelo dentro de el tramo"
+    );
+}
+
+/// EL ENRUTADOR ESQUIVA (ADR-098 D5).
+///
+/// Dos bocas enfrentadas con una pieza justo en medio. Si la ruta solo supiera ir recta, aquí no
+/// habría conector; y si lo hubiera atravesando la pieza, sería peor que no tenerlo. Es el caso que
+/// separa «probar formas» de «buscar camino», y por eso está escrito con geometría de mentira: sobre
+/// el mundo real no se puede saber si el enrutador esquivó o si es que había hueco de sobra.
+#[test]
+fn a_connector_goes_around_what_is_in_the_way() {
+    use super::route::{self, Mouth, Rect, RouteSettings};
+
+    let mouths = [
+        Mouth {
+            node: 0,
+            socket: 0,
+            x: 0.0,
+            z: 0.0,
+            side: 1, // mira a +X
+            width: 2.4,
+            floor_y: 0.0,
+            clear_height: 3.2,
+            kind: 0,
+        },
+        Mouth {
+            node: 1,
+            socket: 0,
+            x: 24.0,
+            z: 0.0,
+            side: 3, // mira a −X
+            width: 2.4,
+            floor_y: 0.0,
+            clear_height: 3.2,
+            kind: 0,
+        },
+    ];
+
+    // Las dos piezas de las bocas, y un obstáculo tapando el camino recto de lado a lado.
+    let blocker = Rect {
+        min_x: 8.0,
+        min_z: -6.0,
+        max_x: 14.0,
+        max_z: 6.0,
+    };
+    let occupancy = [
+        Rect {
+            min_x: -6.0,
+            min_z: -1.2,
+            max_x: 0.0,
+            max_z: 1.2,
+        },
+        Rect {
+            min_x: 24.0,
+            min_z: -1.2,
+            max_x: 30.0,
+            max_z: 1.2,
+        },
+        blocker,
+    ];
+
+    let outcome = route::route(
+        &mouths,
+        &occupancy,
+        None,
+        2,
+        &[Vec::new(), Vec::new()],
+        &RouteSettings::default(),
+    );
+
+    assert_eq!(
+        1, outcome.connectors,
+        "no tendió conector: {} descartes por geometría",
+        outcome.rejected_by_geometry
+    );
+    assert!(
+        outcome.segments.len() >= 3,
+        "una ruta que rodea necesita al menos tres tramos, salieron {}",
+        outcome.segments.len()
+    );
+
+    // Y no atraviesa lo que tenía que rodear. Es la mitad que de verdad importa: un conector que
+    // pasa por dentro de una pieza se dibuja igual de bien y se anda atravesando una pared.
+    for s in &outcome.segments {
+        let (min_x, min_z, max_x, max_z) = s.bounds();
+        assert!(
+            min_x >= blocker.max_x - 0.02
+                || max_x <= blocker.min_x + 0.02
+                || min_z >= blocker.max_z - 0.02
+                || max_z <= blocker.min_z + 0.02,
+            "un tramo se metió dentro del obstáculo: ({min_x}, {min_z})–({max_x}, {max_z})"
+        );
+    }
+}
+
+/// LO QUE SE GENERA NO PISA NADA (ADR-098, verificación d).
+///
+/// Un conector que se solapa con una pieza se dibuja igual de bien y se anda atravesando una pared,
+/// que es el peor fallo del sistema porque el jugador ve una cosa y el juego hace otra. Se comprueba
+/// sobre el mundo SERVIDO —no sobre un montaje— y contra las dos cosas que puede pisar: las piezas y
+/// los otros tramos.
+#[test]
+fn nothing_generated_overlaps_anything_placed() {
+    const EPS: f32 = 0.02;
+    let m = real_manifest();
+
+    for (rx, rz) in [(0, 0), (1, 0), (0, 1), (-1, 2), (3, -2)] {
+        let region = Wg3RegionCoord { x: rx, z: rz };
+        let world = Wg3ServedWorld::compose_region(&m, SERVED_SEED, region);
+        let segments = world.segments();
+
+        let overlaps = |a: (f32, f32, f32, f32), b: (f32, f32, f32, f32)| {
+            a.0 < b.2 - EPS && a.2 - EPS > b.0 && a.1 < b.3 - EPS && a.3 - EPS > b.1
+        };
+
+        for (i, s) in segments.iter().enumerate() {
+            let sb = s.bounds();
+            for p in world.placements() {
+                let piece = m.piece(p.piece).expect("pieza fuera del catálogo");
+                assert!(
+                    !overlaps(sb, p.bounds(piece)),
+                    "región ({rx},{rz}): el tramo {i} pisa la pieza {} en {:?}",
+                    piece.id,
+                    sb
+                );
+            }
+            for (j, other) in segments.iter().enumerate().skip(i + 1) {
+                assert!(
+                    !overlaps(sb, other.bounds()),
+                    "región ({rx},{rz}): los tramos {i} y {j} se pisan"
+                );
+            }
+        }
+    }
+}
+
+/// EL ANILLO ES UN ANILLO (ADR-098, verificación b).
+///
+/// Contar uniones no vale: un test que solo cuenta no distingue un anillo de una rama más
+/// (ADR-096 lo dice con esas palabras). Aquí se monta una cadena de piezas conectadas en fila y se
+/// comprueba que el enrutador une sus DOS EXTREMOS — que es exactamente lo que convierte un camino
+/// en un ciclo: dos formas distintas de ir de la primera a la última.
+///
+/// Con geometría de mentira a propósito: sobre el mundo real, los anillos dependen de que sobren
+/// bocas después de unir las islas, y eso mide otra cosa.
+#[test]
+fn the_ring_pass_joins_the_two_ends_of_a_chain() {
+    use super::route::{self, Mouth, Rect, RouteSettings};
+
+    // Ocho piezas en fila a lo largo de +X, encadenadas. Los extremos miran hacia −Z, así que la
+    // única forma de unirlos es rodear por debajo.
+    const N: usize = 8;
+    let mut mouths = Vec::new();
+    let mut occupancy = Vec::new();
+    let mut adjacency = vec![Vec::new(); N];
+    for i in 0..N {
+        let x = i as f32 * 8.0;
+        occupancy.push(Rect {
+            min_x: x,
+            min_z: 0.0,
+            max_x: x + 6.0,
+            max_z: 2.4,
+        });
+        if i + 1 < N {
+            adjacency[i].push(i + 1);
+            adjacency[i + 1].push(i);
+        }
+    }
+    for i in [0usize, N - 1] {
+        mouths.push(Mouth {
+            node: i,
+            socket: 0,
+            x: i as f32 * 8.0 + 3.0,
+            z: 0.0,
+            side: 2, // mira a −Z
+            width: 2.4,
+            floor_y: 0.0,
+            clear_height: 3.2,
+            kind: 0,
+        });
+    }
+
+    let outcome = route::route(
+        &mouths,
+        &occupancy,
+        None,
+        N,
+        &adjacency,
+        &RouteSettings::default(),
+    );
+
+    assert_eq!(
+        1, outcome.connectors,
+        "no cerró el anillo: {} descartes por geometría",
+        outcome.rejected_by_geometry
+    );
+    assert_eq!(
+        0, outcome.connectors_joining_islands,
+        "la cadena ya era una sola componente: esto tenía que contar como anillo, no como isla"
+    );
+    assert_eq!(
+        vec![(0usize, N - 1)],
+        outcome.edges,
+        "el anillo tiene que unir los dos EXTREMOS de la cadena"
     );
 }
 

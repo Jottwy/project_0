@@ -159,7 +159,7 @@ impl Default for RouteSettings {
         Self {
             width_change: true,
             climb: true,
-            max_route_m: 130.0,
+            max_route_m: 200.0,
             max_segments_per_route: 12,
             max_connectors: 12,
             max_rings: 4,
@@ -223,6 +223,14 @@ const TAP_MARGIN_CM: i32 = 60;
 /// Anchura minima de una toma. Mas estrecho no es un pasillo, es una gatera.
 const MIN_TAP_WIDTH_CM: i32 = 120;
 
+/// Cuantas RUTAS se llegan a construir al buscar un puente.
+///
+/// El tope cuenta construcciones y no parejas a proposito: descartar una pared por su geometria es
+/// gratis —no tiene hueco, o mira al lado contrario— y gastar el presupuesto en esos descartes
+/// dejaria fuera parejas lejanas que si valen. Medido: contando parejas, una region que se unia
+/// entera se quedaba en dos islas.
+const BRIDGE_ATTEMPTS: usize = 60;
+
 /// A donde va una ruta.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Target {
@@ -275,7 +283,11 @@ pub fn route(
     // busca el enganche mas barato y lo aplica. Iterar en vez de listar de una es lo que permite
     // encadenar, porque el conector que se acaba de tender es sitio nuevo donde engancharse.
     while out.connectors < settings.max_connectors as u32 {
-        let Some(link) = best_link(
+        // Dos pasadas, y el orden es coste puro: las formas fijas son treinta rectangulos que se
+        // prueban en microsegundos y resuelven la mayoria de los enlaces; la busqueda mira todo el
+        // hueco libre de la region y cuesta cien veces mas. Solo se paga cuando lo barato no da
+        // nada, que es exactamente cuando hace falta.
+        let cheap = best_link(
             mouths,
             &state,
             &mut components,
@@ -284,7 +296,31 @@ pub fn route(
             bounds,
             &mut out,
             Goal::JoinIslands,
-        ) else {
+            node_count,
+            false,
+        );
+        let Some(link) = cheap.or_else(|| {
+            best_link(
+                mouths,
+                &state,
+                &mut components,
+                &graph,
+                settings,
+                bounds,
+                &mut out,
+                Goal::JoinIslands,
+                node_count,
+                true,
+            )
+        }) else {
+            // Sin bocas libres que sirvan, queda el ultimo recurso: un puente de conector a
+            // conector. No gasta ninguna boca porque no usa ninguna — se le abre un hueco a cada
+            // lado, y con eso una isla que ya se quedo sin bocas deja de estar varada.
+            if let Some(bridge) = best_bridge(&state, &mut components, bounds, settings, &mut out) {
+                apply_bridge(&mut state, &mut components, &mut graph, &mut out, bridge);
+                out.connectors_joining_islands += 1;
+                continue;
+            }
             break;
         };
         apply(
@@ -312,6 +348,8 @@ pub fn route(
             bounds,
             &mut out,
             Goal::CloseRing,
+            node_count,
+            false,
         ) else {
             break;
         };
@@ -376,9 +414,23 @@ fn best_link(
     bounds: Option<(f32, f32, f32, f32)>,
     out: &mut RouteOutcome,
     goal: Goal,
+    node_count: usize,
+    search: bool,
 ) -> Option<Link> {
+    // CUATRO CUBOS, Y EL ORDEN ES LA REGLA ENTERA.
+    //
+    // Lo escaso son las bocas libres: cada isla aporta una, y gastar la del destino funde dos islas
+    // en una que ya no puede crecer. Empalmar a mitad de un conector no gasta ninguna, y crecer
+    // desde la componente MAYOR es lo que garantiza que cada enlace acerque el mundo a ser uno —
+    // medido: cosiendo bolsillos entre si salian islas de cuatro piezas aisladas para siempre.
+    //
+    // Pero exigir SIEMPRE la mayor tampoco vale: si su unica boca libre no alcanza a nadie, no se
+    // haria nada (medido: una region entera sin un solo conector). Asi que es preferencia, no ley.
+    let mut best_tap_main: Option<(i32, Link)> = None;
+    let mut best_mouth_main: Option<(i32, Link)> = None;
     let mut best_tap: Option<(i32, Link)> = None;
     let mut best_mouth: Option<(i32, Link)> = None;
+    let main = main_component(components, node_count);
 
     for (i, mouth) in mouths.iter().enumerate() {
         if state.used[i] {
@@ -394,8 +446,15 @@ fn best_link(
                 let Some(tap) = tap_mouth(&state.segments[k], side, mouth, settings) else {
                     continue;
                 };
+                let touches_main =
+                    components.find(mouth.node) == main || components.find(owner) == main;
+                let bucket = if touches_main {
+                    &mut best_tap_main
+                } else {
+                    &mut best_tap
+                };
                 consider(
-                    &mut best_tap,
+                    bucket,
                     mouth,
                     &tap,
                     Target::Tap { segment: k, side },
@@ -404,6 +463,7 @@ fn best_link(
                     state,
                     bounds,
                     out,
+                    search,
                 );
             }
         }
@@ -418,8 +478,15 @@ fn best_link(
             if !pair_allowed(mouth, other, settings, out) {
                 continue;
             }
+            let touches_main =
+                components.find(mouth.node) == main || components.find(other.node) == main;
+            let bucket = if touches_main {
+                &mut best_mouth_main
+            } else {
+                &mut best_mouth
+            };
             consider(
-                &mut best_mouth,
+                bucket,
                 mouth,
                 other,
                 Target::Mouth(j),
@@ -428,11 +495,16 @@ fn best_link(
                 state,
                 bounds,
                 out,
+                search,
             );
         }
     }
 
-    best_tap.or(best_mouth).map(|(_, link)| link)
+    best_tap_main
+        .or(best_mouth_main)
+        .or(best_tap)
+        .or(best_mouth)
+        .map(|(_, link)| link)
 }
 
 fn goal_allows(
@@ -452,6 +524,234 @@ fn goal_allows(
             same && hops(graph, a, b, settings.min_ring_hops) >= settings.min_ring_hops
         }
     }
+}
+
+/// Un puente: una ruta que va de la pared de un conector a la de otro, sin gastar una sola boca.
+struct Bridge {
+    from_segment: usize,
+    from_side: u8,
+    to_segment: usize,
+    to_side: u8,
+    segments: Vec<Wg3Segment>,
+}
+
+/// **EL ULTIMO RECURSO, Y EL QUE CIERRA EL AGUJERO DEL DISENO.**
+///
+/// Todo lo demas necesita una boca libre de la que salir, y las bocas se acaban: una isla que ya
+/// gasto la suya no puede engancharse a nada aunque tenga medio mundo de sitio libre al lado. Pero
+/// un conector es geometria GENERADA, y a la geometria generada se le abre una puerta donde haga
+/// falta — a los dos lados. Con eso, dos islas se unen mientras exista hueco por donde pasar,
+/// tengan bocas o no.
+///
+/// Es caro (cada pared contra cada pared), asi que solo se intenta cuando no queda otra.
+fn best_bridge(
+    state: &State,
+    components: &mut UnionFind,
+    bounds: Option<(f32, f32, f32, f32)>,
+    settings: &RouteSettings,
+    out: &mut RouteOutcome,
+) -> Option<Bridge> {
+    // Primero se ORDENAN las parejas de paredes por lo lejos que estan, y solo se construyen las mas
+    // cercanas. Sin esto son las paredes de todos los conectores contra las de todos los demas —diez
+    // mil rutas por vuelta— y el puente, que es el ultimo recurso, acaba costando mas que todo lo
+    // que va antes.
+    let mut candidates: Vec<(i32, usize, u8, usize, u8)> = Vec::new();
+    for from in 0..state.segments.len() {
+        for to in 0..state.segments.len() {
+            if components.find(state.segment_owner[from])
+                == components.find(state.segment_owner[to])
+            {
+                continue;
+            }
+            let (fx, fz) = state.segments[from].centre();
+            let (tx, tz) = state.segments[to].centre();
+            let d = (cm(fx) - cm(tx)).abs() + (cm(fz) - cm(tz)).abs();
+            if d > (settings.max_route_m * CM_PER_M) as i32 {
+                continue;
+            }
+            for from_side in 0..4u8 {
+                for to_side in 0..4u8 {
+                    candidates.push((d, from, from_side, to, to_side));
+                }
+            }
+        }
+    }
+    candidates.sort_unstable();
+
+    let mut best: Option<(i32, Bridge)> = None;
+    let mut attempts = 0usize;
+    for (_, from, from_side, to, to_side) in candidates {
+        if attempts >= BRIDGE_ATTEMPTS {
+            break;
+        }
+        let Some((a, b)) = bridge_ends(state, from, from_side, to, to_side, settings) else {
+            continue;
+        };
+        let manhattan = (cm(a.x) - cm(b.x)).abs() + (cm(a.z) - cm(b.z)).abs();
+        if manhattan > (settings.max_route_m * CM_PER_M) as i32 {
+            continue;
+        }
+        if let Some((cost, _)) = &best {
+            if manhattan >= *cost {
+                continue;
+            }
+        }
+        attempts += 1;
+        let Some(segments) = try_build(&a, &b, settings, state, bounds, true) else {
+            out.rejected_by_geometry += 1;
+            continue;
+        };
+        let cost = route_length_cm(&segments);
+        if best.as_ref().is_none_or(|(c, _)| cost < *c) {
+            best = Some((
+                cost,
+                Bridge {
+                    from_segment: from,
+                    from_side,
+                    to_segment: to,
+                    to_side,
+                    segments,
+                },
+            ));
+        }
+    }
+
+    best.map(|(_, bridge)| bridge)
+}
+
+/// Las dos bocas virtuales de un puente.
+///
+/// La del destino se proyecta desde el CENTRO del conector de origen, y la del origen desde el punto
+/// que sale de eso: dos pasadas, porque cada una necesita saber hacia donde mira la otra. Hacerlo en
+/// una sola —las dos al centro— daria puentes en diagonal que luego hay que enderezar con dos
+/// quiebros de mas.
+fn bridge_ends(
+    state: &State,
+    from: usize,
+    from_side: u8,
+    to: usize,
+    to_side: u8,
+    settings: &RouteSettings,
+) -> Option<(Mouth, Mouth)> {
+    let (fx, fz) = state.segments[from].centre();
+    let seed = Mouth {
+        node: usize::MAX,
+        socket: usize::MAX,
+        x: fx,
+        z: fz,
+        side: from_side,
+        width: metres(
+            state.segments[from]
+                .size_x_cm
+                .min(state.segments[from].size_z_cm),
+        ),
+        floor_y: metres(state.segments[from].floor_y_cm),
+        clear_height: metres(state.segments[from].height_cm),
+        kind: 0,
+    };
+
+    let b = tap_mouth(&state.segments[to], to_side, &seed, settings)?;
+    let a = tap_mouth(&state.segments[from], from_side, &b, settings)?;
+    Some((a, b))
+}
+
+/// Aplica un puente: abre los dos huecos y apunta la union.
+fn apply_bridge(
+    state: &mut State,
+    components: &mut UnionFind,
+    graph: &mut [Vec<usize>],
+    out: &mut RouteOutcome,
+    bridge: Bridge,
+) {
+    let settings_owner_from = state.segment_owner[bridge.from_segment];
+    let settings_owner_to = state.segment_owner[bridge.to_segment];
+
+    let (a, b) = {
+        let (ax, az) = tap_point(
+            &state.segments[bridge.from_segment],
+            bridge.from_side,
+            &bridge,
+        );
+        let (bx, bz) = tap_point_to(&state.segments[bridge.to_segment], bridge.to_side, &bridge);
+        ((ax, az), (bx, bz))
+    };
+
+    let width_a = bridge
+        .segments
+        .first()
+        .map(|s| s.size_x_cm.min(s.size_z_cm))
+        .unwrap_or(0);
+    let width_b = bridge
+        .segments
+        .last()
+        .map(|s| s.size_x_cm.min(s.size_z_cm))
+        .unwrap_or(0);
+
+    open_tap(
+        &mut state.segments[bridge.from_segment],
+        bridge.from_side,
+        a.0,
+        a.1,
+        width_a,
+    );
+    open_tap(
+        &mut state.segments[bridge.to_segment],
+        bridge.to_side,
+        b.0,
+        b.1,
+        width_b,
+    );
+    out.taps += 2;
+
+    state.push_segments(bridge.segments, settings_owner_from);
+    graph[settings_owner_from].push(settings_owner_to);
+    graph[settings_owner_to].push(settings_owner_from);
+    out.edges.push((settings_owner_from, settings_owner_to));
+    components.union(settings_owner_from, settings_owner_to);
+    out.connectors += 1;
+}
+
+/// El punto donde el puente toca su conector de origen: el extremo de su primer tramo.
+fn tap_point(segment: &Wg3Segment, side: u8, bridge: &Bridge) -> (f32, f32) {
+    let first = bridge.segments.first().expect("un puente tiene tramos");
+    face_point(segment, side, first)
+}
+
+/// Lo mismo por el otro lado.
+fn tap_point_to(segment: &Wg3Segment, side: u8, bridge: &Bridge) -> (f32, f32) {
+    let last = bridge.segments.last().expect("un puente tiene tramos");
+    face_point(segment, side, last)
+}
+
+/// El centro del hueco que hay que abrir: la proyeccion del tramo del puente sobre la pared.
+fn face_point(segment: &Wg3Segment, side: u8, touching: &Wg3Segment) -> (f32, f32) {
+    let (tx, tz) = touching.centre();
+    let (min_x, min_z, max_x, max_z) = segment.bounds();
+    match side % 4 {
+        0 => (tx.clamp(min_x, max_x), max_z),
+        1 => (max_x, tz.clamp(min_z, max_z)),
+        2 => (tx.clamp(min_x, max_x), min_z),
+        _ => (min_x, tz.clamp(min_z, max_z)),
+    }
+}
+
+/// La componente con mas piezas, que es la que hay que hacer crecer.
+///
+/// Empates por el representante menor: dos componentes del mismo tamano tienen que dar siempre la
+/// misma, o el mundo cambiaria entre ejecuciones sin que cambie nada mas.
+fn main_component(components: &mut UnionFind, node_count: usize) -> usize {
+    let mut sizes = vec![0usize; node_count];
+    for node in 0..node_count {
+        let root = components.find(node);
+        sizes[root] += 1;
+    }
+    let mut best = (0usize, usize::MAX);
+    for (root, size) in sizes.iter().enumerate() {
+        if *size > best.0 {
+            best = (*size, root);
+        }
+    }
+    best.1
 }
 
 /// Aplica un enganche: marca lo que gasta, abre la toma si la hay y apunta la arista.
@@ -553,6 +853,7 @@ fn consider(
     state: &State,
     bounds: Option<(f32, f32, f32, f32)>,
     out: &mut RouteOutcome,
+    search: bool,
 ) {
     let manhattan = (cm(from.x) - cm(to.x)).abs() + (cm(from.z) - cm(to.z)).abs();
     if manhattan > (settings.max_route_m * CM_PER_M) as i32 {
@@ -565,7 +866,7 @@ fn consider(
             return;
         }
     }
-    let Some(segments) = try_build(from, to, settings, state, bounds) else {
+    let Some(segments) = try_build(from, to, settings, state, bounds, search) else {
         out.rejected_by_geometry += 1;
         return;
     };
@@ -680,6 +981,7 @@ fn try_build(
     settings: &RouteSettings,
     state: &State,
     bounds: Option<(f32, f32, f32, f32)>,
+    search: bool,
 ) -> Option<Vec<Wg3Segment>> {
     let occupied = &state.occupied;
     let mut best: Option<(i32, Vec<Wg3Segment>)> = None;
@@ -697,13 +999,7 @@ fn try_build(
             let Some(segments) = segments_of(a, b, &shape, settings, narrow) else {
                 continue;
             };
-            if segments.len() > settings.max_segments_per_route {
-                continue;
-            }
-            if segments.iter().any(|c| !c.problems().is_empty()) {
-                continue;
-            }
-            if !fits(&segments, occupied, bounds) {
+            if !viable(&segments, settings, occupied, bounds) {
                 continue;
             }
             // Entre las que caben gana la mas barata; a igualdad manda el orden de generacion, que
@@ -716,7 +1012,45 @@ fn try_build(
         }
     }
 
-    best.map(|(_, segments)| segments)
+    if best.is_some() || !search {
+        return best.map(|(_, segments)| segments);
+    }
+
+    // NINGUNA FORMA CABE. Entonces —y solo entonces— se busca una ruta que ESQUIVE.
+    //
+    // El orden importa por coste: las formas son treinta rectangulos que se prueban en microsegundos
+    // y resuelven la mayoria; la busqueda mira todo el hueco libre de la region y es cara. Ponerla
+    // primero seria pagar el caso dificil en todos los casos.
+    for narrow in NARROW_STEPS_CM {
+        if narrow > 0 && narrow >= narrowest {
+            continue;
+        }
+        let narrow_cm = if narrow > 0 { Some(narrow) } else { None };
+        let width = narrow_cm.unwrap_or(narrowest.max(cm(a.width).max(cm(b.width))));
+        let Some(shape) = search_path(a, b, width, state, bounds, settings) else {
+            continue;
+        };
+        let Some(segments) = segments_of(a, b, &shape, settings, narrow_cm) else {
+            continue;
+        };
+        if viable(&segments, settings, occupied, bounds) {
+            return Some(segments);
+        }
+    }
+
+    None
+}
+
+/// Lo que se le exige a una ruta ya construida: tramos legales, dentro del tope y sin pisar nada.
+fn viable(
+    segments: &[Wg3Segment],
+    settings: &RouteSettings,
+    occupied: &[Rect],
+    bounds: Option<(f32, f32, f32, f32)>,
+) -> bool {
+    segments.len() <= settings.max_segments_per_route
+        && segments.iter().all(|c| c.problems().is_empty())
+        && fits(segments, occupied, bounds)
 }
 
 /// Una forma de ruta: la polilínea de su eje, en centímetros.
@@ -986,6 +1320,244 @@ fn segments_of(
     }
 
     Some(segments)
+}
+
+/// Busca una ruta ortogonal que ESQUIVE lo ya colocado.
+///
+/// # Por que una rejilla de coordenadas y no una de celdas
+///
+/// Un pasillo ortogonal optimo entre obstaculos rectangulares solo dobla en las coordenadas de los
+/// propios obstaculos: no hay ninguna razon para girar a mitad de un hueco. Eso es la rejilla de
+/// Hanan —las x y las z interesantes, y nada mas—, y con treinta piezas son unas sesenta lineas por
+/// eje en vez de las trescientas de una rejilla de medio metro. Ademas cae EXACTAMENTE sobre las dos
+/// bocas, que es lo que permite que el pasillo salga centrado en ellas sin un quiebro de ajuste.
+///
+/// # El coste de un giro
+///
+/// Se busca con estado `(nodo, direccion)` y se penaliza cambiar de direccion. Sin eso, entre dos
+/// rutas de la misma longitud gana la que salga antes, y salen escaleras de veinte peldanos donde
+/// cabia una L.
+fn search_path(
+    a: &Mouth,
+    b: &Mouth,
+    width_cm: i32,
+    state: &State,
+    bounds: Option<(f32, f32, f32, f32)>,
+    settings: &RouteSettings,
+) -> Option<Shape> {
+    let start = (cm(a.x), cm(a.z));
+    let goal = (cm(b.x), cm(b.z));
+    let clearance = width_cm / 2;
+    let max_cm = (settings.max_route_m * CM_PER_M) as i32;
+
+    // Solo se mira el entorno de las dos bocas: una ruta que se fuera mucho mas lejos ya no cabria
+    // en el tope de longitud, asi que ampliar la rejilla seria pagar por nodos imposibles.
+    let margin = 2000;
+    let (lo_x, hi_x) = (start.0.min(goal.0) - margin, start.0.max(goal.0) + margin);
+    let (lo_z, hi_z) = (start.1.min(goal.1) - margin, start.1.max(goal.1) + margin);
+
+    let rects: Vec<Rect> = state
+        .occupied
+        .iter()
+        .filter(|r| {
+            cm(r.max_x) >= lo_x && cm(r.min_x) <= hi_x && cm(r.max_z) >= lo_z && cm(r.min_z) <= hi_z
+        })
+        .copied()
+        .collect();
+
+    let mut xs = vec![start.0, goal.0];
+    let mut zs = vec![start.1, goal.1];
+    // Fuera del obstaculo, y no pegado: a la distancia justa el pasillo lo roza, pero un quiebro ahi
+    // no tendria donde meter su cuadrado. **Costo el primer rojo del enrutador**: la busqueda daba
+    // caminos perfectos que luego no se podian construir, porque el ultimo tramo se quedaba en un
+    // centimetro despues de recortar la esquina. El margen es el que hace falta para doblar.
+    let turn_room = clearance + MIN_RUN_CM + 1;
+    for r in &rects {
+        xs.push(cm(r.min_x) - turn_room);
+        xs.push(cm(r.max_x) + turn_room);
+        zs.push(cm(r.min_z) - turn_room);
+        zs.push(cm(r.max_z) + turn_room);
+    }
+    if let Some((bmin_x, bmin_z, bmax_x, bmax_z)) = bounds {
+        xs.retain(|x| *x >= cm(bmin_x) + clearance && *x <= cm(bmax_x) - clearance);
+        zs.retain(|z| *z >= cm(bmin_z) + clearance && *z <= cm(bmax_z) - clearance);
+        // Las bocas se quedan aunque el borde las recorte: son los extremos, no puntos de paso.
+        xs.push(start.0);
+        xs.push(goal.0);
+        zs.push(start.1);
+        zs.push(goal.1);
+    }
+    xs.retain(|x| *x >= lo_x && *x <= hi_x);
+    zs.retain(|z| *z >= lo_z && *z <= hi_z);
+    xs.sort_unstable();
+    xs.dedup();
+    zs.sort_unstable();
+    zs.dedup();
+
+    let (nx, nz) = (xs.len(), zs.len());
+    if nx < 2 || nz < 2 {
+        return None;
+    }
+    let xi = xs.binary_search(&start.0).ok()?;
+    let zi = zs.binary_search(&start.1).ok()?;
+    let gx = xs.binary_search(&goal.0).ok()?;
+    let gz = zs.binary_search(&goal.1).ok()?;
+
+    let na = normal_cm(a.side);
+    let nb = normal_cm(b.side);
+
+    // Dijkstra sobre `(nodo, direccion)`. Cuatro direcciones: 0 = +X, 1 = −X, 2 = +Z, 3 = −Z.
+    let states = nx * nz * 4;
+    let mut dist = vec![i32::MAX; states];
+    let mut from: Vec<u32> = vec![u32::MAX; states];
+    let mut heap = std::collections::BinaryHeap::new();
+
+    let index = |x: usize, z: usize, d: usize| (z * nx + x) * 4 + d;
+    let dir_of = |d: usize| match d {
+        0 => (1, 0),
+        1 => (-1, 0),
+        2 => (0, 1),
+        _ => (0, -1),
+    };
+    let start_dir = (0..4).find(|d| dir_of(*d) == na)?;
+    let goal_dir = (0..4).find(|d| dir_of(*d) == (-nb.0, -nb.1))?;
+
+    let s0 = index(xi, zi, start_dir);
+    dist[s0] = 0;
+    // `Reverse` para que el monticulo saque el mas barato, y el indice desempata: el mundo no puede
+    // depender de en que orden salieron dos estados que valen lo mismo.
+    heap.push(std::cmp::Reverse((0i32, s0)));
+
+    while let Some(std::cmp::Reverse((cost, at))) = heap.pop() {
+        if cost > dist[at] {
+            continue;
+        }
+        let d = at % 4;
+        let node = at / 4;
+        let (x, z) = (node % nx, node / nx);
+        if x == gx && z == gz && d == goal_dir {
+            break;
+        }
+
+        for nd in 0..4usize {
+            let (dx, dz) = dir_of(nd);
+            let (tx, tz) = (x as i32 + dx, z as i32 + dz);
+            if tx < 0 || tz < 0 || tx as usize >= nx || tz as usize >= nz {
+                continue;
+            }
+            let (tx, tz) = (tx as usize, tz as usize);
+            let step = (xs[tx] - xs[x]).abs() + (zs[tz] - zs[z]).abs();
+            if step == 0 {
+                continue;
+            }
+            // Deshacer el paso anterior seria una ruta que se pisa a si misma.
+            if nd == (d ^ 1) {
+                continue;
+            }
+            let turn = if nd == d { 0 } else { BEND_COST_CM };
+            let next_cost = cost + step + turn;
+            if next_cost > max_cm {
+                continue;
+            }
+            if !edge_free(
+                (xs[x], zs[z]),
+                (xs[tx], zs[tz]),
+                clearance,
+                &rects,
+                (x == xi && z == zi, tx == gx && tz == gz),
+            ) {
+                continue;
+            }
+            let to = index(tx, tz, nd);
+            if next_cost < dist[to] {
+                dist[to] = next_cost;
+                from[to] = at as u32;
+                heap.push(std::cmp::Reverse((next_cost, to)));
+            }
+        }
+    }
+
+    let end = index(gx, gz, goal_dir);
+    if dist[end] == i32::MAX {
+        return None;
+    }
+
+    let mut points = Vec::new();
+    let mut at = end;
+    loop {
+        let node = at / 4;
+        points.push((xs[node % nx], zs[node / nx]));
+        if at == s0 {
+            break;
+        }
+        let prev = from[at];
+        if prev == u32::MAX {
+            return None;
+        }
+        at = prev as usize;
+    }
+    points.reverse();
+
+    let points = clean(&points)?;
+    if !directions_ok(&points, na, nb) {
+        return None;
+    }
+    let (len, bends) = measure(&points);
+    Some(Shape {
+        points,
+        cost_cm: len + bends as i32 * BEND_COST_CM,
+    })
+}
+
+/// Cabe el pasillo por este tramo de eje?
+///
+/// Se ensancha `clearance` a los lados SIEMPRE, y tambien a lo largo en los extremos donde puede
+/// haber un quiebro —el cuadrado de una esquina sobresale en los dos ejes—. En las dos bocas NO se
+/// ensancha a lo largo: ahi el pasillo empieza pegado a la cara de su pieza, y ensanchar seria
+/// declarar que la pieza de la que sale le estorba.
+fn edge_free(
+    p: (i32, i32),
+    q: (i32, i32),
+    clearance: i32,
+    rects: &[Rect],
+    endpoints: (bool, bool),
+) -> bool {
+    let (p_is_mouth, q_is_mouth) = endpoints;
+    let along_x = p.1 == q.1;
+    let (mut min_x, mut max_x) = (p.0.min(q.0), p.0.max(q.0));
+    let (mut min_z, mut max_z) = (p.1.min(q.1), p.1.max(q.1));
+
+    if along_x {
+        min_z -= clearance;
+        max_z += clearance;
+        let low_is_mouth = if p.0 <= q.0 { p_is_mouth } else { q_is_mouth };
+        let high_is_mouth = if p.0 <= q.0 { q_is_mouth } else { p_is_mouth };
+        if !low_is_mouth {
+            min_x -= clearance;
+        }
+        if !high_is_mouth {
+            max_x += clearance;
+        }
+    } else {
+        min_x -= clearance;
+        max_x += clearance;
+        let low_is_mouth = if p.1 <= q.1 { p_is_mouth } else { q_is_mouth };
+        let high_is_mouth = if p.1 <= q.1 { q_is_mouth } else { p_is_mouth };
+        if !low_is_mouth {
+            min_z -= clearance;
+        }
+        if !high_is_mouth {
+            max_z += clearance;
+        }
+    }
+
+    let swath = Rect {
+        min_x: metres(min_x),
+        min_z: metres(min_z),
+        max_x: metres(max_x),
+        max_z: metres(max_z),
+    };
+    !rects.iter().any(|r| swath.overlaps(r))
 }
 
 /// Reparte un desnivel entre los tramos de una ruta, partiendo las que hagan falta.

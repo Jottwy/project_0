@@ -460,6 +460,13 @@ impl<'a> Composer<'a> {
         // —la junta se cruza— pero deja de llevar a algún sitio. Se probó antes la vía barata:
         // `close_loops` encendido da EXACTAMENTE las mismas islas, porque para engancharse dos bocas
         // tienen que coincidir clavadas y la desviación es lateral y acumulada.
+        //
+        // **ADR-098 lo probó a levantar, y la medida dijo que no.** Dejar ramificar las anclas —lo
+        // que ahora podría hacerse, porque el enrutador SÍ une dos árboles— llena mucho más la
+        // región: de 28 piezas a 52. Pero las llena tanto que el enrutador se queda sin hueco por
+        // donde pasar, y el resultado medido fue peor: de 2 islas a 6, con el árbol mayor bajando
+        // del 86 % al 27 %. El llenado y la conectividad tiran en direcciones opuestas mientras el
+        // catálogo tenga pocas bocas por pieza, y entre las dos manda poder andar.
         let mut frontier: Vec<(usize, usize)> = Vec::new();
         match seed_node {
             Some(node) => push_sockets(&mut frontier, &self.nodes, node),
