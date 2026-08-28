@@ -96,6 +96,117 @@ namespace BackroomsSurvival.WorldGen3
                 // cruzar hacia geometría que aún no ha llegado mediría el streaming, no la junta.
                 if (streamer != null) streamer.radius = Mathf.Max(streamer.radius, 2);
             }
+            else if (grounded && System.IO.File.Exists(WalkFlagPath))
+            {
+                _walk = Walk.Searching;
+                if (streamer != null) streamer.radius = Mathf.Max(streamer.radius, 2);
+            }
+        }
+
+        /// <summary>
+        /// ADR-098 verificación (g) — busca un TRAMO GENERADO y se pone a andarlo.
+        ///
+        /// Se elige el más largo, y se anda hasta PASARSE de su extremo: lo que hay que probar no es
+        /// que el conector tenga suelo —eso ya lo diría el ráster— sino que **lleva a algún sitio**.
+        /// El final del recorrido cae dentro de lo que haya al otro lado, así que si la junta entre
+        /// lo generado y lo autorado tuviera un escalón, un muro o un vano sin abrir, el jugador se
+        /// queda ahí parado y el arnés lo dice.
+        ///
+        /// Se busca por la ESCENA y no preguntando al streamer: lo que se quiere comprobar es lo que
+        /// de verdad se montó, con sus colliders. Un arnés que lea la lista de tramos recibidos
+        /// probaría que el wire funciona, que es otra cosa y ya está probada.
+        /// </summary>
+        private void BeginConnectorWalk()
+        {
+            MeshRenderer best = null;
+            float bestLength = 0f;
+            foreach (MeshRenderer r in GetComponentsInChildren<MeshRenderer>(true))
+            {
+                if (!r.gameObject.name.StartsWith("seg_")) continue;
+                Bounds b = r.bounds;
+                float length = Mathf.Max(b.size.x, b.size.z);
+                if (length > bestLength)
+                {
+                    bestLength = length;
+                    best = r;
+                }
+            }
+
+            if (best == null)
+            {
+                Debug.LogError(
+                    "[WG3] CONECTOR: no hay un solo tramo generado montado alrededor del jugador. " +
+                    "O el enrutador no tendió ninguno en esta región, o no llegaron por el wire.", this);
+                _walk = Walk.Done;
+                return;
+            }
+
+            Bounds bounds = best.bounds;
+            bool alongX = bounds.size.x >= bounds.size.z;
+            Vector3 axis = alongX ? Vector3.right : Vector3.forward;
+
+            // Se entra por el extremo MÁS LEJANO al centro del tramo, un metro dentro, y se sale por
+            // el otro. La cota sale de la caja del propio tramo: su losa de suelo cuelga por debajo
+            // de la cara pisable, así que el pie va justo encima de ella.
+            float half = (alongX ? bounds.size.x : bounds.size.z) * 0.5f;
+            Vector3 centre = bounds.center;
+            Vector3 start = centre - axis * (half - 1.0f);
+            start.y = bounds.min.y + 1.2f;
+
+            _walkFrom = start;
+            _walkDir = axis;
+            _walkTarget = (alongX ? centre.x : centre.z) + half + 5f;
+            _walkLowestY = start.y;
+            _walkDeadline = Time.time + 25f;
+            _walkName = best.gameObject.name;
+            _walk = Walk.Walking;
+
+            player.Respawn(start);
+            Debug.Log(
+                $"[WG3] CONECTOR: andando el tramo {_walkName}, {bestLength:0.0} m de largo, " +
+                $"desde {start} hacia {(alongX ? "+X" : "+Z")} hasta pasarse 5 m del final.");
+        }
+
+        private void StepConnectorWalk()
+        {
+            var controller = player.GetComponent<CharacterController>();
+            controller.Move((_walkDir * 2.5f + Vector3.down * 4f) * Time.deltaTime);
+            _walkLowestY = Mathf.Min(_walkLowestY, player.transform.position.y);
+
+            Vector3 at = player.transform.position;
+            float along = _walkDir == Vector3.right ? at.x : at.z;
+            float travelled = Vector3.Distance(new Vector3(at.x, 0f, at.z),
+                                               new Vector3(_walkFrom.x, 0f, _walkFrom.z));
+
+            if (along >= _walkTarget)
+            {
+                _walk = Walk.Done;
+                Debug.Log(
+                    $"[WG3] CONECTOR OK — el tramo {_walkName} se anda de punta a punta y SIGUE al " +
+                    $"otro lado. recorrido {travelled:0.0} m, y final {at.y:0.00}, " +
+                    $"y mínima {_walkLowestY:0.00} (caída {_walkFrom.y - _walkLowestY:0.00} m), " +
+                    $"grounded={controller.isGrounded}");
+                Shot("wg3_connector.png");
+                return;
+            }
+
+            if (Time.time > _walkDeadline)
+            {
+                _walk = Walk.Done;
+                Debug.LogError(
+                    $"[WG3] CONECTOR FALLA — 25 s empujando por {_walkName} y solo se avanzaron " +
+                    $"{travelled:0.0} m (faltan {_walkTarget - along:0.0} m). y mínima " +
+                    $"{_walkLowestY:0.00}. O hay algo tapiando el paso, o el conector no llega a " +
+                    $"lo que dice conectar.", this);
+                Shot("wg3_connector.png");
+            }
+        }
+
+        private static void Shot(string file)
+        {
+            string path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), file);
+            ScreenCapture.CaptureScreenshot(path);
+            Debug.Log($"[WG3] captura en {path}");
         }
 
         /// <summary>
@@ -233,6 +344,26 @@ namespace BackroomsSurvival.WorldGen3
         private float _crossLowestY;
         private float _crossDeadline;
 
+        // ─────────────── ADR-098 verificación (g): andar un conector generado ───────────────
+
+        /// <summary>
+        /// **UN FICHERO Y NO UNA VARIABLE DE ENTORNO, y el motivo es práctico.** La lección de
+        /// ADR-096 era que un valor serializado en la escena gana al defecto de la clase, así que el
+        /// interruptor tiene que vivir fuera de la escena; una variable de entorno lo cumple, pero
+        /// solo se puede poner ANTES de arrancar el editor, y este arnés hay que poder encenderlo
+        /// con el editor ya abierto. Un fichero cumple lo mismo y se puede crear en caliente.
+        /// </summary>
+        private const string WalkFlagPath = "Temp/wg3_walk_connector.flag";
+
+        private enum Walk { Idle, Searching, Walking, Done }
+        private Walk _walk = Walk.Idle;
+        private Vector3 _walkFrom;
+        private Vector3 _walkDir;
+        private float _walkTarget;
+        private float _walkLowestY;
+        private float _walkDeadline;
+        private string _walkName = "?";
+
         private void Update()
         {
             if (_placed && !_verdictGiven && _verdictAt > 0f && Time.time >= _verdictAt)
@@ -240,6 +371,9 @@ namespace BackroomsSurvival.WorldGen3
 
             if (_cross == Cross.Searching) BeginCrossing();
             else if (_cross == Cross.Walking) StepCrossing();
+
+            if (_walk == Walk.Searching) BeginConnectorWalk();
+            else if (_walk == Walk.Walking) StepConnectorWalk();
 
             if (_placed) return;
 
