@@ -5723,6 +5723,55 @@ fn the_plan_is_one_building() {
     }
 }
 
+/// **NINGUNA PUERTA DE JUNTA PUEDE PERDERSE EN EL PLAN.**
+///
+/// Una puerta de junta ya está acordada con la región vecina, que se compone por su cuenta y va a
+/// abrir la suya en el mismo punto. Si aquí no hay espacio que la abra, **la región queda sellada por
+/// ese lado** y el jugador se encuentra una pared donde el mapa promete un paso. Es lo que se sintió
+/// andando —«hay sitios que están cerrados»— y el aviso estaba en el log del backend.
+///
+/// **Este test no existía y el que había no valía**: `the_fill_honours_every_planned_doorway` mira
+/// `gates_failed`, que cuenta las que llegan al RELLENO. Una puerta que el plan descarta nunca llega,
+/// así que el contador se quedaba a cero mientras la puerta desaparecía. Un cero que sólo cuenta lo
+/// que sobrevivió no dice nada de lo que se perdió.
+#[test]
+fn every_junction_gate_reaches_the_plan() {
+    // Sin manifiesto a propósito: el plan no mira el catálogo, así que una puerta perdida no puede
+    // achacarse a las piezas. Es el reparto quien la pierde o no.
+    let seed = composer_seed(SERVED_SEED);
+    let mut asked = 0usize;
+    let mut lost: Vec<(i32, i32, f32, f32)> = Vec::new();
+
+    // Un barrido ancho, no las cuatro de siempre: una puerta se pierde cuando cae justo sobre un
+    // corte de la subdivisión, y eso depende de la semilla de cada región.
+    for rz in -3..=3 {
+        for rx in -3..=3 {
+            let region = Wg3RegionCoord { x: rx, z: rz };
+            let bounds = region.bounds();
+            let gates = junction::gates_of_region(seed, rx, rz, bounds);
+            asked += gates.len();
+            let p = plan::plan_region(region.composer_seed(SERVED_SEED), bounds, &gates);
+            for g in &gates {
+                let placed = p.gates.iter().any(|pg| {
+                    (pg.x_cm - (g.x * 100.0).round() as i32).abs() <= 2
+                        && (pg.z_cm - (g.z * 100.0).round() as i32).abs() <= 2
+                });
+                if !placed {
+                    lost.push((rx, rz, g.x, g.z));
+                }
+            }
+        }
+    }
+
+    assert!(
+        lost.is_empty(),
+        "{} de {asked} puertas de junta no encontraron espacio que las abriera. La región queda \
+         SELLADA por ese lado y la vecina abre la suya contra un muro. Primeras: {:?}",
+        lost.len(),
+        &lost[..lost.len().min(8)]
+    );
+}
+
 /// Determinismo (R3): el mismo sitio planifica el mismo edificio, siempre.
 #[test]
 fn the_plan_is_deterministic() {
@@ -6301,6 +6350,154 @@ fn probe_filled_plan() {
             f.links_failed.len(),
         );
     }
+}
+
+/// **¿SE CRUZA DE UNA REGIÓN A OTRA ANDANDO?**
+///
+/// Es la pregunta que ninguna sonda hacía y la que se siente jugando: «hay partes que están
+/// cerradas». Todo lo demás mide DENTRO de una región, y una región perfecta rodeada de muros es
+/// exactamente lo que se describe.
+///
+/// Se rasteriza un bloque de 2 × 2 regiones —300 × 300 m, 36 chunks—, se inunda desde un punto
+/// pisable de la de abajo a la izquierda y se mira a cuántas de las cuatro se llega.
+#[test]
+fn the_regions_can_be_walked_between() {
+    const CELL: f32 = 0.5;
+    const HEAD_M: f32 = 1.0;
+    const MAX_STEP: f32 = 0.20;
+
+    let m = real_manifest();
+    let base_region = Wg3RegionCoord { x: 0, z: 0 };
+    let (min_x, min_z, _, _) = base_region.bounds();
+
+    // Los cuatro mundos, compuestos igual que los sirve el backend.
+    let mut worlds = std::collections::HashMap::new();
+    for dz in 0..2 {
+        for dx in 0..2 {
+            let r = Wg3RegionCoord { x: dx, z: dz };
+            worlds.insert(r, Wg3ServedWorld::plan_region(&m, SERVED_SEED, r));
+        }
+    }
+
+    let side = (REGION_CHUNKS * 2) as usize;
+    let base = chunk::Wg3ChunkCoord::containing(min_x + 1.0, min_z + 1.0);
+    let mut rasters = Vec::with_capacity(side * side);
+    for cz in 0..side {
+        for cx in 0..side {
+            let coord = chunk::Wg3ChunkCoord {
+                x: base.x + cx as i32,
+                z: base.z + cz as i32,
+            };
+            // CADA CHUNK SE PIDE A SU REGIÓN, igual que hace el bucle de juego. Rasterizarlo todo
+            // contra una sola región daría un mundo que nadie sirve.
+            let region = Wg3RegionCoord::of_chunk(coord);
+            let world = &worlds[&region];
+            rasters.push(chunk::build_chunk_raster_with_carves(
+                &m,
+                &world.placements_touching_chunk(&m, coord),
+                &world.segments_touching_chunk(coord),
+                &world.carves_touching_chunk(coord),
+                coord,
+            ));
+        }
+    }
+    let raster_at = |x: f32, z: f32| -> Option<&Wg3Raster> {
+        let coord = chunk::Wg3ChunkCoord::containing(x, z);
+        let (dx, dz) = (coord.x - base.x, coord.z - base.z);
+        if dx < 0 || dz < 0 || dx as usize >= side || dz as usize >= side {
+            return None;
+        }
+        rasters.get(dz as usize * side + dx as usize)
+    };
+
+    let cells = (REGION_M * 2.0 / CELL) as usize;
+    let mut floors: Vec<Vec<f32>> = vec![Vec::new(); cells * cells];
+    for iz in 0..cells {
+        for ix in 0..cells {
+            let x = min_x + ix as f32 * CELL + CELL * 0.5;
+            let z = min_z + iz as f32 * CELL + CELL * 0.5;
+            let Some(r) = raster_at(x, z) else { continue };
+            let column = r.column_at(x, z);
+            let mut out = Vec::new();
+            for (i, span) in column.iter().enumerate() {
+                let head = match column.get(i + 1) {
+                    Some(next) => (next.bottom_cm - span.top_cm) as f32 / 100.0,
+                    None => f32::MAX,
+                };
+                if (HEAD_M..=6.0).contains(&head) {
+                    out.push(span.top_cm as f32 / 100.0);
+                }
+            }
+            floors[iz * cells + ix] = out;
+        }
+    }
+
+    // Se sale de la primera celda pisable de la región (0,0), recorriendo hacia el centro.
+    let mut start = None;
+    'seek: for radius in 0..(cells / 4) {
+        let c = cells / 4;
+        for dz in 0..=radius {
+            for dx in 0..=radius {
+                let (ix, iz) = (c + dx, c + dz);
+                if !floors[iz * cells + ix].is_empty() {
+                    start = Some((ix, iz, 0usize));
+                    break 'seek;
+                }
+            }
+        }
+    }
+    let Some(start) = start else {
+        panic!("no hay ni una celda pisable en la región (0,0)");
+    };
+
+    let mut seen: Vec<Vec<bool>> = floors.iter().map(|l| vec![false; l.len()]).collect();
+    let mut q = std::collections::VecDeque::new();
+    seen[start.1 * cells + start.0][start.2] = true;
+    q.push_back(start);
+    let mut reached = [false; 4];
+    let mut cells_seen = 0usize;
+    while let Some((ix, iz, li)) = q.pop_front() {
+        cells_seen += 1;
+        let quadrant = usize::from(ix >= cells / 2) + 2 * usize::from(iz >= cells / 2);
+        reached[quadrant] = true;
+        let here = floors[iz * cells + ix][li];
+        for (dx, dz) in [(1i32, 0i32), (-1, 0), (0, 1), (0, -1)] {
+            let (nx, nz) = (ix as i32 + dx, iz as i32 + dz);
+            if nx < 0 || nz < 0 || nx as usize >= cells || nz as usize >= cells {
+                continue;
+            }
+            let (nx, nz) = (nx as usize, nz as usize);
+            for (nl, there) in floors[nz * cells + nx].iter().enumerate() {
+                if seen[nz * cells + nx][nl] || (there - here).abs() > MAX_STEP {
+                    continue;
+                }
+                seen[nz * cells + nx][nl] = true;
+                q.push_back((nx, nz, nl));
+            }
+        }
+    }
+
+    let names = ["(0,0)", "(1,0)", "(0,1)", "(1,1)"];
+    let got: Vec<&str> = names
+        .iter()
+        .zip(reached)
+        .filter(|(_, r)| *r)
+        .map(|(n, _)| *n)
+        .collect();
+    println!(
+        "[cruce] desde (0,0) se alcanzan {} de 4 regiones: {} | {} celdas, {:.0} m²",
+        got.len(),
+        got.join(" "),
+        cells_seen,
+        cells_seen as f32 * CELL * CELL
+    );
+
+    assert_eq!(
+        got.len(),
+        4,
+        "sólo se llega a {:?} — las demás están SELLADAS, que es el «hay partes cerradas» de andarlo",
+        got
+    );
 }
 
 /// **EL VOLCADOR DEL MUNDO SERVIDO tras ADR-100: lo que de verdad se anda.**
