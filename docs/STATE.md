@@ -52,6 +52,23 @@
 ---
 
 ## Última sesión
+- Fecha: 2026-08-28 (**WorldGen3 — ADR-102: plantas apiladas, mundo de dos pisos**, sesión autónoma) — **5 commits, `382f9a14` → `dfd78ddd`. `cargo test` verde, clippy y fmt limpios. Cero wire.**
+
+0. **DOS PLANTAS SERVIDAS.** El mundo servido de WorldGen3 pasa de una planta (Y singular, cota base) a dos: `RegionPlan` es una, `plan.rs` delega a `plan_region` vía `plan_storey(seed, bounds, gates, base_y_cm, may_sink)`. Estructura en `plan::RegionBuilding { storeys, wells }`, una capa por encima. Cinco commits resuelven el paso D1 (plan vertical + `plan_building`), D4 (recorte de huecos, escalera recortada adentro), D5 (productor de vano de forjado) y dos fallos de juego (losas coplanares, escalera única).
+
+1. **ESCALERA RECORTADA DENTRO DEL ESPACIO**, sin comerse el rectángulo entero (eran de hasta 12 × 15 m). **Subida recalculada:** distribuida entre contrahuellas, no entre tiras (que son una menos) — la escalera se quedaba 24 cm corta, justo por debajo de los 27 cm que sube el jugador de `m_StepOffset`.
+
+2. **CIFRAS MEDIDAS, mundo servido (4 regiones de referencia).** Superficie andable: **109 / 116 / 116 / 114 %** de la región (más del 100 porque hay más suelo que región). Mancha andable mayor: **99–100 %** de lo pisable (un solo edificio conexo de dos plantas). Planta alta alcanzada desde la baja: **99–100 %**. Segunda planta en **46 de 49 regiones**. Escaleras por región: **2, 2, 3 y 5**. Caras en z-fighting: de **456 pares, máx. 94,8 m²**, a **CERO**.
+
+3. ⚠️ **RIESGOS Y DEUDA NUEVA.** (a) Techo del catálogo: solo **2–5 sitios por región** donde cabe escalera recta; no lo limita el reparto sino que un tiro recto pide 12,6 m de sala. (b) **Nada distingue visualmente un espacio de otro:** `style_of` en `fill.rs` no da número propio a `SpaceRole::Stair` (cae en `_ => 0`, igual que oficina), y peor: el `style` viaja en wire 48/49 pero **nadie lo usa en cliente** — pasillo/almacén/nave idénticos. El jugador no sabe dónde ir. (c) **Fuga de luz entre plantas:** plafones sin sombra alcanzan 21,75 m contra 12 cm de losa. (d) Dos constantes de medida cambiadas: `CEILING_CAP_M` (6,0 → 7,0) y `WALK_STEP_M` (0,20 → 0,27); cambian toda cifra de andable de hoy en adelante, no comparables con ADRs previos. (e) `a_region_is_worth_its_size` sube de 600 a 1000 ms (suite hace el doble de trabajo). (f) `Wg3CarvingTests` (5 tests de ADR-101) compilan pero nunca se ejecutan. (g) WG3 sigue sin ser autoridad: subir planta te CONGELA (`update_ownership` solo genera capa 0, chunk ausente = sólido).
+
+4. **PRÓXIMO PASO ÚNICO.** Darle identidad visual a cada papel: número propio para `SpaceRole::Stair` en `fill::style_of` y que el cliente pinte cada `style` con su material. Convierte «no sé dónde ir» en mundo legible — el dato ya viaja y se tira.
+
+5. **NO TOCAR (validado humano en partida, 2026-08-28).** Las dos plantas, escalera recortada, hueco de forjado: Joel lo jugó y lo dio por bueno. Valores de luz de `Wg3SceneAssembler`: mirados en partida y dados por buenos (fuga se arregla por culling, no bajándolos).
+
+---
+
+## Sesión anterior
 - Fecha: 2026-08-28 (**WorldGen3 — ADR-100: el PLAN decide el edificio antes que la pieza**, sesión autónoma) — **4 commits, `c6f93f09` → `7052c403`. `cargo test` 1107/0/45, clippy y fmt limpios. Cero wire.**
 
 0. **LO PRIMERO: el mundo servido YA NO sale de `compose_region`.** Sale de `Wg3ServedWorld::plan_region` → `wg3::plan` (reparto) → `wg3::fill` (geometría). `compose_region` sigue viva, sigue siendo correcta y sigue midiéndose con sus sondas, pero **leer una cifra suya y hablar del mundo servido es comparar dos cosas distintas**. Las sondas nuevas son `probe_region_plan` y `probe_filled_plan`.
@@ -74,7 +91,9 @@
 
 ---
 
-## Sesión anterior
+---
+
+## Sesión previa
 - Fecha: 2026-08-28 (**WorldGen3 — el conector generado nacía TAPIADO: ADR-098 enmienda 2**, sesión autónoma) — **5 commits, `d8323f75` → `1fdb4e18`. `cargo test --release` 1089/0/34, clippy y fmt limpios, `CompileCheckClient` 0 errores en las cuatro asambleas. Cero wire.**
 
 0. **LO QUE HAY QUE SABER ANTES DE LEER NINGÚN NÚMERO DE CONECTIVIDAD DE WG3.** ADR-096 y la enmienda 1 de ADR-098 miden sobre el **grafo de bocas coincidentes**: dos bocas a menos de 2 cm cuentan como unidas. El **ráster** —que es lo que resuelve el movimiento— puede tener materia justo ahí. Los dos mundos no coinciden, y solo uno se anda. Todo «86 % de árbol mayor» lleva ese asterisco.

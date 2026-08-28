@@ -9098,3 +9098,97 @@ constante. Es un invariante de los llamantes disfrazado de invariante del primit
 - (e) `the_building_is_deterministic`: mismo seed, mismo edificio, plantas incluidas.
 - (f) Andarlo. Subir la escalera en `WorldGen3Live` y mirar hacia abajo por el hueco. Un forjado que se
   perfora en el ráster y no en la malla no sale en ningún contador.
+
+---
+
+## ADR-102 — Enmienda 1: implementado y ANDADO, y seis números que la medida corrigió (2026-08-28)
+
+ADR-102 queda **CUMPLIDO**: el mundo servido tiene dos plantas y se suben. Verificación (f) hecha por
+el humano en partida. Lo que sigue son las seis cosas que la propuesta decía mal, todas encontradas
+midiendo y ninguna prevista.
+
+### Lo medido, en el mundo servido
+
+| | (0,0) | (1,0) | (0,1) | (−1,2) |
+|---|---:|---:|---:|---:|
+| superficie andable | 109 % | 116 % | 116 % | 114 % |
+| mancha mayor | 100 % | 99 % | 100 % | 99 % |
+| planta alta alcanzada | 100 % | 100 % | 100 % | 99 % |
+| escaleras | 2 | 2 | 3 | 5 |
+
+Por encima del 100 % porque ya hay más suelo que región. Segunda planta en **46 de 49** regiones.
+
+### 1. La altura de planta contaba UNA losa y hay DOS
+
+D2 fijó `STOREY_HEIGHT_CM = 332` como «320 de altura libre más 12 de losa». Entre dos plantas hay el
+TECHO de la de abajo y el SUELO de la de arriba: `segment_boxes` emite las dos y las dos caían en
+`[320, 332]`. No son la misma caja —los rectángulos de las dos plantas no coinciden— sino cajas
+distintas con las CARAS superpuestas, que es lo que z-fightea, en toda la huella donde una planta se
+apoya en la otra. **La altura libre pasa a `STOREY_HEIGHT_CM − 2 × SLAB`, o sea 308**, y las dos losas
+quedan espalda contra espalda.
+
+Medido con `no_two_horizontal_faces_fight_for_the_same_plane`: **456 pares y hasta 94,8 m² antes, cero
+después**. El primer test escrito para esto buscaba cajas IDÉNTICAS y pasó en verde; un test que mide
+lo que no es el fallo da la misma tranquilidad que uno que mide bien.
+
+### 2. Una planta con otra debajo NO puede hundir espacios
+
+Ese mismo contador destapó lo que ningún otro veía: una terraza de ADR-100 enmienda 2 en la planta
+ALTA baja 60 cm desde 332, o sea a 272 — por debajo del techo de la de abajo, que está en 320. Los
+peldaños atravesaban el forjado y quedaban colgando dentro de las salas de abajo. `plan_storey` gana
+`may_sink`, y sólo la planta baja lo tiene.
+
+### 3. El rellano no se construye: ES el suelo de arriba
+
+D5 lo construía, y eso ponía una losa encima de otra justo donde el jugador sale de la escalera. Las
+dos últimas tiras reservan su sitio en el reparto del tiro y no emiten nada. De paso desaparecen sus
+paredes, que era lo que hacía que se subiera hasta arriba del todo para darse con ellas.
+
+### 4. La huella de peldaño la manda el RÁSTER, no la comodidad
+
+D4 eligió 30 cm «cómodos». La celda del ráster mide 50 y el ráster es conservador, así que cada celda
+se comía dos peldaños y su cara pisable saltaba a la del más alto: **40 cm de desnivel entre celdas
+vecinas contra los 27 que sube el jugador**. La escalera existía, se dibujaba entera y no se podía
+subir. `STAIR_TREAD_CM = 60`, y `MIN_TREAD_CM` pasa a derivarse de `WG3_CELL_M`. El punto 3 de la
+documentación de `fill::emit_stair` ya lo decía con todas las letras desde antes de este ADR.
+
+### 5. Contrahuellas y tiras no son el mismo número
+
+`emit_stair` repartía la subida entre las TIRAS, que son una más que las contrahuellas, así que la
+última se quedaba en `rise × (N−1) / N`: **308 cm medidos contra los 332 que pide la planta**. Con los
+60 cm de una terraza el error eran 12 y no se veía; con una planta son 24, justo por debajo de los 27
+que sube el jugador — se subía igual y nadie se enteraba. Efecto secundario: una terraza ahora baja los
+60 cm que dice bajar, no 48.
+
+### 6. UNA escalera por región no se encuentra
+
+D4 puso una. Un hueco de 3,6 × 9 m en 150 × 150 es el **0,14 %** de la superficie, y el cliente estrea
+radio 1 — nueve chunks, una región. La sonda decía «el 100 % de la planta alta es alcanzable» y era
+verdad: **alcanzable no es encontrable**, y la primera partida con dos plantas se resumió en «no sé
+dónde ir a subir». Ahora se toman todas las candidatas válidas, repartidas a 25 m, hasta seis; y se
+mira CADA puerta del espacio y no sólo la primera, porque el lado por el que se entra fija el eje del
+tiro.
+
+**Y el techo está medido**: sólo hay **2 a 5 sitios por región** donde cabe una escalera recta, sobre
+unos 170 espacios. No lo limita el reparto sino que un tiro recto pide 12,6 m de sala. Pasar de ahí
+exige escalera de ida y vuelta, y es otro diseño.
+
+### Dos constantes de MEDIDA cambiadas, y eso invalida comparaciones
+
+Las sondas descartaban lo que tuviera más de 6 m de techo —y un pozo de escalera mide 6,4— y aceptaban
+escalones de 20 cm —y la escalera de planta sube 25,5—. Las dos cosas hacían que la planta alta
+apareciera como mancha aparte. Ahora son `CEILING_CAP_M = 7,0` y `WALK_STEP_M = MAX_WALK_STEP_CM`, con
+nombre y motivo escritos. **Toda cifra de superficie andable publicada a partir de aquí deja de ser
+comparable con las de ADRs anteriores.**
+
+### Deuda que este ADR deja escrita
+
+- **Nada distingue visualmente un papel de otro.** `fill::style_of` no le da número propio a `Stair`
+  —cae en el `_ => 0` de una oficina— y `style` viaja por el cable, el cliente lo parsea en
+  `Wg3GeneratedSegment.style` y **no lo usa nadie**. Un pasillo, un almacén y una nave se dibujan
+  idénticos, y eso es la mitad de por qué el jugador no sabe dónde ir.
+- La **fuga de luz entre plantas** sigue: los plafones no proyectan sombra y alcanzan hasta 21,75 m
+  contra una losa de 12 cm. Se arregla por culling por planta, no bajando unos valores que ya están
+  validados en partida.
+- WG3 sigue **sin ser autoridad** de colisión, movimiento, navegación ni spawn. Las dos plantas se
+  andan hoy en `WorldGen3Live` y en el juego real subir una planta te congela.
