@@ -142,7 +142,7 @@ namespace BackroomsSurvival.WorldGen3
             // Una lista vacía es un resultado VÁLIDO: un chunk donde no cae ninguna pieza. Se
             // registra igualmente para no volver a pedirlo — sin esto, todo hueco del mundo se
             // pediría una y otra vez cada medio segundo.
-            if (chunk.placements.Count == 0)
+            if (chunk.placements.Count == 0 && chunk.segments.Count == 0)
             {
                 _built[coord] = null;
                 _emptyChunks++;
@@ -198,6 +198,31 @@ namespace BackroomsSurvival.WorldGen3
                 }
             }
 
+            // ADR-098 — los tramos GENERADOS. No hay índice de catálogo que mirar: sus números vienen
+            // por el cable y la geometría sale de la misma regla que la de una pieza sin dibujar.
+            for (int i = 0; i < chunk.segments.Count; i++)
+            {
+                Wg3SegmentMsg wire = chunk.segments[i];
+                var segment = new Wg3Segment
+                {
+                    xCm = wire.xCm,
+                    zCm = wire.zCm,
+                    sizeXCm = wire.sizeXCm,
+                    sizeZCm = wire.sizeZCm,
+                    floorYCm = wire.floorYCm,
+                    heightCm = wire.heightCm,
+                    style = (byte)wire.style,
+                    openings = new Wg3SegmentOpening[wire.openings.Count]
+                };
+                for (int o = 0; o < wire.openings.Count; o++)
+                    segment.openings[o] = new Wg3SegmentOpening(
+                        wire.openings[o].side, wire.openings[o].offsetCm, wire.openings[o].widthCm);
+
+                Wg3SceneAssembler.AssembleSegment(
+                    segment, root.transform, materials, mine, $"seg_{i:D3}", spawnLights);
+                _builtSegments++;
+            }
+
             ReportOnce();
         }
 
@@ -207,6 +232,7 @@ namespace BackroomsSurvival.WorldGen3
         private int _emptyChunks;
         private int _builtChunks;
         private int _builtPieces;
+        private int _builtSegments;
         private bool _reported;
 
         /// <summary>
@@ -225,7 +251,7 @@ namespace BackroomsSurvival.WorldGen3
             _reported = true;
 
             Debug.Log($"[WG3] streamer: {_builtChunks} chunks con geometría y {_emptyChunks} vacíos; " +
-                      $"{_builtPieces} piezas montadas. materiales " +
+                      $"{_builtPieces} piezas y {_builtSegments} tramos generados montados. materiales " +
                       $"{(materials?.floor != null ? "asignados" : "SIN ASIGNAR — se dibujaría en rosa o invisible")}; " +
                       $"radio {radius}.", this);
         }

@@ -276,6 +276,42 @@ pub struct Wg3PlacementWire {
     pub origin_y_cm: i32,
 }
 
+/// ADR-098 — una boca de un tramo generado. Misma parametrización que la de una pieza: lado más
+/// offset recorriendo el perímetro en horario desde `(0, D)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Wg3OpeningWire {
+    pub side: u8,
+    pub offset_cm: i32,
+    pub width_cm: i32,
+}
+
+/// ADR-098 — un TRAMO generado: geometría que el servidor sintetiza donde el catálogo no puede
+/// encajar una pieza.
+///
+/// **Es lo único que no es un índice de catálogo**, y por eso viaja entero. Un conector no se elige:
+/// se genera con la longitud, los quiebros y el ancho que hagan falta, así que las dos partes no
+/// pueden tenerlo horneado de antemano. Lo que viaja son los NÚMEROS —rectángulo, cota, altura y
+/// bocas—; la geometría la deriva cada lado con la misma regla, y de que no se desvíen responde el
+/// oráculo de conectores.
+///
+/// No confundir con la celda del ráster (`WG3_CELL_M`, 0,5 m) ni con la celda de rejilla de WG2:
+/// esto es una pieza rectangular que nadie dibujó.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Wg3SegmentWire {
+    /// Esquina mínima de la huella, en centímetros de mundo.
+    pub x_cm: i32,
+    pub z_cm: i32,
+    pub size_x_cm: i32,
+    pub size_z_cm: i32,
+    /// Cota del SUELO (ADR-097), en las mismas unidades que la de una colocación.
+    pub floor_y_cm: i32,
+    /// Altura LIBRE, de suelo a techo.
+    pub height_cm: i32,
+    /// Aspecto. El servidor no lo interpreta: es el gancho para que el cliente vista los conectores.
+    pub style: u8,
+    pub openings: Vec<Wg3OpeningWire>,
+}
+
 /// ADR-095 — lo que WG3 entrega por chunk.
 ///
 /// Sin `layer`: con columnas de tramos (D2) la capa deja de existir como restricción, así que un
@@ -290,6 +326,11 @@ pub struct Wg3ChunkView {
     /// con huecos de un mundo a medio cargar.
     #[serde(default)]
     pub placements: Vec<Wg3PlacementWire>,
+
+    /// ADR-098 — los tramos generados de los que este chunk es dueño. Se omite vacío, que es el caso
+    /// de la inmensa mayoría de chunks: un conector cruza el mundo de vez en cuando, no siempre.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub segments: Vec<Wg3SegmentWire>,
 }
 
 /// ADR-078 — lo que el backend entrega a Unity por cada trozo de trazo ajeno. Es
@@ -1201,6 +1242,23 @@ mod tests {
                 origin_z_cm: 6_789,
                 origin_y_cm: 0,
             }],
+            // ADR-098 — el tramo generado va en el mismo mensaje y con sus bocas dentro. Es el único
+            // dato de WG3 que no es un índice de catálogo, así que si una de estas claves se
+            // renombra el cliente dibuja un pasillo macizo o sin paredes, y en silencio.
+            segments: vec![Wg3SegmentWire {
+                x_cm: -400,
+                z_cm: 250,
+                size_x_cm: 1_000,
+                size_z_cm: 240,
+                floor_y_cm: -18,
+                height_cm: 320,
+                style: 0,
+                openings: vec![Wg3OpeningWire {
+                    side: 3,
+                    offset_cm: 120,
+                    width_cm: 240,
+                }],
+            }],
         }))
         .unwrap();
 
@@ -1215,6 +1273,16 @@ mod tests {
             "rotation",
             "origin_x_cm",
             "origin_z_cm",
+            "segments",
+            "size_x_cm",
+            "size_z_cm",
+            "floor_y_cm",
+            "height_cm",
+            "style",
+            "openings",
+            "side",
+            "offset_cm",
+            "width_cm",
         ] {
             assert!(
                 body.contains(key),
@@ -1233,6 +1301,11 @@ mod tests {
                 assert_eq!(-12_345, v.placements[0].origin_x_cm);
                 assert_eq!(6_789, v.placements[0].origin_z_cm);
                 assert_eq!(2, v.placements[0].rotation);
+                assert_eq!(1, v.segments.len());
+                assert_eq!(-400, v.segments[0].x_cm);
+                assert_eq!(-18, v.segments[0].floor_y_cm);
+                assert_eq!(1, v.segments[0].openings.len());
+                assert_eq!(240, v.segments[0].openings[0].width_cm);
             }
             other => panic!("esperaba wg3_chunk, llegó {other:?}"),
         }

@@ -84,6 +84,70 @@ namespace BackroomsSurvival.WorldGen3
         }
 
         /// <summary>
+        /// ADR-098 — monta un TRAMO GENERADO: el conector que el servidor sintetizó donde el
+        /// catálogo no podía encajar una pieza.
+        ///
+        /// Mismo camino que una pieza sin prefab autorado —volúmenes, malla, colliders— porque es
+        /// exactamente eso: una pieza rectangular que nadie dibujó. Lo único distinto es de dónde
+        /// salen sus volúmenes, y de que salgan iguales a los dos lados del cable responde el
+        /// oráculo de conectores.
+        /// </summary>
+        public static GameObject AssembleSegment(Wg3Segment segment, Transform parent,
+            Wg3Materials materials, List<Mesh> createdMeshes, string name, bool addLight = true)
+        {
+            if (segment == null || parent == null) return null;
+
+            List<Wg3Volume> volumes = Wg3GeneratedSegment.Build(segment);
+            Vector3 origin = segment.Origin;
+
+            var go = new GameObject(name);
+            go.hideFlags = HideFlags.DontSave;
+            go.transform.SetParent(parent, false);
+            go.transform.position = origin;
+
+            Mesh mesh = Wg3MeshBuilder.Build(volumes, origin);
+            mesh.name = $"wg3_{name}";
+            mesh.hideFlags = HideFlags.DontSave;
+            createdMeshes?.Add(mesh);
+
+            go.AddComponent<MeshFilter>().sharedMesh = mesh;
+            var renderer = go.AddComponent<MeshRenderer>();
+            Material[] mats = materials != null ? materials.AsArray() : null;
+            if (mats != null) renderer.sharedMaterials = mats;
+
+            AddColliders(go, volumes, origin);
+
+            if (addLight)
+            {
+                // Un plafón cada pocos metros y no uno por tramo: un conector puede medir veinte
+                // metros, y un solo punto de luz en el centro deja los dos extremos a oscuras — que
+                // es justo donde está lo que hay que ver, la puerta a la que lleva.
+                float length = Mathf.Max(segment.SizeX, segment.SizeZ);
+                int lamps = Mathf.Clamp(Mathf.RoundToInt(length / 6f), 1, 6);
+                for (int i = 0; i < lamps; i++)
+                {
+                    float t = (i + 0.5f) / lamps;
+                    var lamp = new GameObject($"light_{i}");
+                    lamp.hideFlags = HideFlags.DontSave;
+                    lamp.transform.SetParent(go.transform, false);
+                    lamp.transform.localPosition = new Vector3(
+                        segment.SizeX > segment.SizeZ ? segment.SizeX * t : segment.SizeX * 0.5f,
+                        segment.Height - 0.2f,
+                        segment.SizeZ >= segment.SizeX ? segment.SizeZ * t : segment.SizeZ * 0.5f);
+
+                    var light = lamp.AddComponent<Light>();
+                    light.type = LightType.Point;
+                    light.range = 9f;
+                    light.intensity = 1.1f;
+                    light.color = new Color(1f, 0.96f, 0.78f);
+                    light.shadows = LightShadows.None;
+                }
+            }
+
+            return go;
+        }
+
+        /// <summary>
         /// Mete la malla autorada de la pieza dentro de su GameObject, colocada como su colisión.
         ///
         /// USA <see cref="Wg3Geometry.RotateLocal"/>, la misma función con la que se colocan los

@@ -821,33 +821,58 @@ pub async fn run(
                     // mundo deja de ser finito: cada región es un recorrido acotado a su caja, y hay
                     // infinitas. Una lista vacía sigue siendo válida —dentro de una región hay
                     // hueco— pero ya no significa "se acabó el mundo".
-                    let placements = match wg3.manifest() {
-                        Some(manifest) if wg3.is_enabled() => wg3_world
-                            .region_for(
-                                manifest,
-                                net.world_seed,
-                                crate::world::wg3::chunk::Wg3ChunkCoord { x: cx, z: cz },
-                            )
-                            .placements_for_chunk(
-                                manifest,
-                                crate::world::wg3::chunk::Wg3ChunkCoord { x: cx, z: cz },
-                            )
-                            .into_iter()
-                            .map(|p| crate::ipc::Wg3PlacementWire {
-                                piece: p.piece,
-                                rotation: p.rotation,
-                                origin_x_cm: p.origin_x_cm,
-                                origin_z_cm: p.origin_z_cm,
-                                origin_y_cm: p.origin_y_cm,
-                            })
-                            .collect(),
-                        _ => Vec::new(),
+                    //
+                    // ADR-098 — y con las piezas van los TRAMOS generados: los conectores que unen
+                    // lo que el catálogo no puede encajar. Se reparten con la misma regla —el chunk
+                    // que contiene su centro— porque su tope de tamaño mantiene el invariante en el
+                    // que esa regla se apoya.
+                    let coord = crate::world::wg3::chunk::Wg3ChunkCoord { x: cx, z: cz };
+                    let (placements, segments) = match wg3.manifest() {
+                        Some(manifest) if wg3.is_enabled() => {
+                            let region = wg3_world.region_for(manifest, net.world_seed, coord);
+                            let placements = region
+                                .placements_for_chunk(manifest, coord)
+                                .into_iter()
+                                .map(|p| crate::ipc::Wg3PlacementWire {
+                                    piece: p.piece,
+                                    rotation: p.rotation,
+                                    origin_x_cm: p.origin_x_cm,
+                                    origin_z_cm: p.origin_z_cm,
+                                    origin_y_cm: p.origin_y_cm,
+                                })
+                                .collect();
+                            let segments = region
+                                .segments_for_chunk(coord)
+                                .into_iter()
+                                .map(|s| crate::ipc::Wg3SegmentWire {
+                                    x_cm: s.x_cm,
+                                    z_cm: s.z_cm,
+                                    size_x_cm: s.size_x_cm,
+                                    size_z_cm: s.size_z_cm,
+                                    floor_y_cm: s.floor_y_cm,
+                                    height_cm: s.height_cm,
+                                    style: s.style,
+                                    openings: s
+                                        .openings
+                                        .iter()
+                                        .map(|o| crate::ipc::Wg3OpeningWire {
+                                            side: o.side,
+                                            offset_cm: o.offset_cm,
+                                            width_cm: o.width_cm,
+                                        })
+                                        .collect(),
+                                })
+                                .collect();
+                            (placements, segments)
+                        }
+                        _ => (Vec::new(), Vec::new()),
                     };
 
                     let _ = to_clients.send(ServerMessage::Wg3Chunk(crate::ipc::Wg3ChunkView {
                         cx,
                         cz,
                         placements,
+                        segments,
                     }));
                 }
                 ClientMessage::RequestChunk { cx, cz, layer } => {
