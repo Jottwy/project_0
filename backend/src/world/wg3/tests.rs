@@ -1854,11 +1854,34 @@ fn probe_ring_geometry() {
 /// es la misma condición con la que el compositor las enganchó.
 #[test]
 fn probe_is_the_served_world_one_piece_or_islands() {
+    const CLOSE_LOOPS: bool = false;
     let m = real_manifest();
 
     for (rx, rz) in [(0, 0), (1, 0), (0, 1), (-1, 2)] {
         let region = Wg3RegionCoord { x: rx, z: rz };
-        let world = Wg3ServedWorld::compose_region(&m, SERVED_SEED, region);
+        let world = if CLOSE_LOOPS {
+            // MISMO montaje que `compose_region` pero con el cierre de bucles encendido. Se mide
+            // aquí porque `close_loops` solo se había medido sobre el mundo SIN acotar, donde no hay
+            // anclas de junta: justo el caso en el que no había nada que unir.
+            let (min_x, min_z, max_x, max_z) = region.bounds();
+            let seed = composer_seed(SERVED_SEED);
+            let settings = compose::Wg3ComposerSettings {
+                budget: INTERIM_BUDGET,
+                close_loops: true,
+                bounds: Some((min_x, min_z, max_x, max_z)),
+                seed_at: Some(((min_x + max_x) * 0.5, (min_z + max_z) * 0.5)),
+                anchors: junction::gates_of_region(seed, region.x, region.z, region.bounds())
+                    .into_iter()
+                    .filter_map(|g| {
+                        junction::gate_stub_piece(&m).and_then(|p| junction::stub_anchor(&m, p, g))
+                    })
+                    .collect(),
+                ..Default::default()
+            };
+            Wg3ServedWorld::compose_with(&m, SERVED_SEED, &settings)
+        } else {
+            Wg3ServedWorld::compose_region(&m, SERVED_SEED, region)
+        };
         let n = world.placements().len();
 
         // Bocas de cada pieza, en mundo.
@@ -1875,7 +1898,7 @@ fn probe_is_the_served_world_one_piece_or_islands() {
 
         // Union-find sobre bocas coincidentes.
         let mut parent: Vec<usize> = (0..n).collect();
-        fn find(parent: &mut Vec<usize>, mut a: usize) -> usize {
+        fn find(parent: &mut [usize], mut a: usize) -> usize {
             while parent[a] != a {
                 parent[a] = parent[parent[a]];
                 a = parent[a];

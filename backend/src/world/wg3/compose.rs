@@ -338,13 +338,36 @@ impl<'a> Composer<'a> {
             }
             None => true,
         };
-        if seed_fits {
-            self.place(seed_piece.index, 0, seed_ox, seed_oz, 0, None);
-        }
+        let seed_node = if seed_fits {
+            Some(self.place(seed_piece.index, 0, seed_ox, seed_oz, 0, None))
+        } else {
+            None
+        };
 
+        // **LAS ANCLAS DE JUNTA NO SE RAMIFICAN, Y ESTA ES LA LÍNEA.**
+        //
+        // Antes la frontera salía de TODOS los nodos, anclas incluidas, así que cada puerta crecía
+        // su propio árbol. Dos árboles no se unen jamás —unirlos ES cerrar un bucle— y el resultado
+        // medido era `islas == puertas + 1` en las cuatro regiones probadas, con el árbol mayor
+        // reuniendo solo el 26-36 % de las piezas. Andando eso se siente como «llega un punto que se
+        // cierra y no hay manera de moverte»: no es que se cierre, es que te tocó una isla.
+        //
+        // Creciendo solo desde la semilla, la región es UN mundo. **El precio, declarado:** el tramo
+        // de cada puerta queda como bolsillo de una pieza hasta que exista un router que lleve el
+        // árbol hasta él, así que cruzar una junta lleva a un armario. ADR-096 sigue siendo cierto
+        // —la junta se cruza— pero deja de llevar a algún sitio. Se probó antes la vía barata:
+        // `close_loops` encendido da EXACTAMENTE las mismas islas, porque para engancharse dos bocas
+        // tienen que coincidir clavadas y la desviación es lateral y acumulada.
         let mut frontier: Vec<(usize, usize)> = Vec::new();
-        for node in 0..self.nodes.len() {
-            push_sockets(&mut frontier, &self.nodes, node);
+        match seed_node {
+            Some(node) => push_sockets(&mut frontier, &self.nodes, node),
+            // Sin semilla —su sitio lo ocupaba un ancla— las puertas son lo único que hay, así que
+            // ahí sí crecen: una región vacía es peor que una región en islas.
+            None => {
+                for node in 0..self.nodes.len() {
+                    push_sockets(&mut frontier, &self.nodes, node);
+                }
+            }
         }
 
         let mut cursor = 0usize;
