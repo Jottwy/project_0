@@ -6303,6 +6303,155 @@ fn probe_filled_plan() {
     }
 }
 
+/// **EL VOLCADOR DEL MUNDO SERVIDO tras ADR-100: lo que de verdad se anda.**
+///
+/// Hermano de `dump_region_maps`, que sigue dibujando el compositor por bocas. Éste rasteriza
+/// [`Wg3ServedWorld::plan_region`] —lo que responde a un chunk— y pinta en verde lo alcanzable desde
+/// el centro de la región. Ponerlos uno al lado del otro es la comparación honesta.
+///
+/// `#[ignore]`: dibuja, no afirma. `WG3_MAP_DIR=... cargo test dump_served_maps -- --ignored`.
+#[test]
+#[ignore]
+fn dump_served_maps() {
+    const CELL: f32 = 0.5;
+    const HEAD_M: f32 = 1.0;
+    const MAX_STEP: f32 = 0.20;
+    const PX: f32 = 4.0;
+
+    let dir = std::env::var("WG3_MAP_DIR").expect("WG3_MAP_DIR: carpeta donde escribir los planos");
+    let m = real_manifest();
+
+    for (rx, rz) in AUDIT_REGIONS {
+        let region = Wg3RegionCoord { x: rx, z: rz };
+        let world = Wg3ServedWorld::plan_region(&m, SERVED_SEED, region);
+        let (min_x, min_z, _, _) = region.bounds();
+
+        let side = REGION_CHUNKS as usize;
+        let base = chunk::Wg3ChunkCoord::containing(min_x + 1.0, min_z + 1.0);
+        let mut rasters = Vec::with_capacity(side * side);
+        for cz in 0..side {
+            for cx in 0..side {
+                let coord = chunk::Wg3ChunkCoord {
+                    x: base.x + cx as i32,
+                    z: base.z + cz as i32,
+                };
+                rasters.push(chunk::build_chunk_raster_with_carves(
+                    &m,
+                    &world.placements_touching_chunk(&m, coord),
+                    &world.segments_touching_chunk(coord),
+                    &world.carves_touching_chunk(coord),
+                    coord,
+                ));
+            }
+        }
+        let raster_at = |x: f32, z: f32| -> Option<&Wg3Raster> {
+            let coord = chunk::Wg3ChunkCoord::containing(x, z);
+            let (dx, dz) = (coord.x - base.x, coord.z - base.z);
+            if dx < 0 || dz < 0 || dx as usize >= side || dz as usize >= side {
+                return None;
+            }
+            rasters.get(dz as usize * side + dx as usize)
+        };
+
+        let cells = (REGION_M / CELL) as usize;
+        let mut floors: Vec<Vec<f32>> = vec![Vec::new(); cells * cells];
+        for iz in 0..cells {
+            for ix in 0..cells {
+                let x = min_x + ix as f32 * CELL + CELL * 0.5;
+                let z = min_z + iz as f32 * CELL + CELL * 0.5;
+                let Some(r) = raster_at(x, z) else { continue };
+                let column = r.column_at(x, z);
+                let mut out = Vec::new();
+                for (i, span) in column.iter().enumerate() {
+                    let head = match column.get(i + 1) {
+                        Some(next) => (next.bottom_cm - span.top_cm) as f32 / 100.0,
+                        None => f32::MAX,
+                    };
+                    if (HEAD_M..=6.0).contains(&head) {
+                        out.push(span.top_cm as f32 / 100.0);
+                    }
+                }
+                floors[iz * cells + ix] = out;
+            }
+        }
+
+        let mut blob_of: Vec<Vec<i32>> = floors.iter().map(|l| vec![-1; l.len()]).collect();
+        let mut sizes: Vec<usize> = Vec::new();
+        for iz0 in 0..cells {
+            for ix0 in 0..cells {
+                for l0 in 0..floors[iz0 * cells + ix0].len() {
+                    if blob_of[iz0 * cells + ix0][l0] >= 0 {
+                        continue;
+                    }
+                    let id = sizes.len() as i32;
+                    sizes.push(0);
+                    blob_of[iz0 * cells + ix0][l0] = id;
+                    let mut q = std::collections::VecDeque::new();
+                    q.push_back((ix0, iz0, l0));
+                    while let Some((ix, iz, li)) = q.pop_front() {
+                        sizes[id as usize] += 1;
+                        let here = floors[iz * cells + ix][li];
+                        for (dx, dz) in [(1i32, 0i32), (-1, 0), (0, 1), (0, -1)] {
+                            let (nx, nz) = (ix as i32 + dx, iz as i32 + dz);
+                            if nx < 0 || nz < 0 || nx as usize >= cells || nz as usize >= cells {
+                                continue;
+                            }
+                            let (nx, nz) = (nx as usize, nz as usize);
+                            for (nl, there) in floors[nz * cells + nx].iter().enumerate() {
+                                if blob_of[nz * cells + nx][nl] >= 0
+                                    || (there - here).abs() > MAX_STEP
+                                {
+                                    continue;
+                                }
+                                blob_of[nz * cells + nx][nl] = id;
+                                q.push_back((nx, nz, nl));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let main = sizes
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, n)| **n)
+            .map(|(i, _)| i as i32)
+            .unwrap_or(-1);
+
+        let w = REGION_M * PX;
+        let mut svg = format!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {w:.0} {w:.0}\" \
+             width=\"{w:.0}\" height=\"{w:.0}\">\n<rect width=\"100%\" height=\"100%\" \
+             fill=\"#14161a\"/>\n"
+        );
+        for iz in 0..cells {
+            for ix in 0..cells {
+                let b = *blob_of[iz * cells + ix].first().unwrap_or(&-1);
+                if b < 0 {
+                    continue;
+                }
+                let fill = if b == main { "#4ade80" } else { "#64748b" };
+                svg += &format!(
+                    "<rect x=\"{:.1}\" y=\"{:.1}\" width=\"{:.1}\" height=\"{:.1}\" \
+                     fill=\"{fill}\" opacity=\"0.9\"/>\n",
+                    ix as f32 * CELL * PX,
+                    (cells - 1 - iz) as f32 * CELL * PX,
+                    CELL * PX,
+                    CELL * PX
+                );
+            }
+        }
+        svg += "</svg>\n";
+        let path = format!("{dir}/wg3_served_{rx}_{rz}.svg");
+        std::fs::write(&path, svg).expect("escribir el plano servido");
+        println!(
+            "[served] {path} — {} manchas, la mayor {} celdas",
+            sizes.len(),
+            sizes.iter().max().copied().unwrap_or(0)
+        );
+    }
+}
+
 /// **EL VOLCADOR DEL PLAN — y es el criterio de aceptación de ADR-100.**
 ///
 /// Dibuja SOLO el plan: ni piezas, ni conectores, ni ráster, ni una sola malla. Si con las mallas

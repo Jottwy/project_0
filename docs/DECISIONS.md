@@ -8612,3 +8612,92 @@ una bandera ADITIVA y con ella encendida el servidor manda piezas para DIBUJAR y
 contra el mundo de WG2 (`Level0Collision::resolve_move`). `build_chunk_raster` no tiene un solo
 llamante en producción. **Un mundo que se ve de una forma y se anda de otra no está terminado**, y
 ese trabajo es de su propio ADR.
+
+## ADR-100 — Enmienda 1: implementado y medido; cuatro pasos hechos y tres deudas con nombre (2026-08-28)
+
+Los pasos 1 a 4 del troceado están hechos, en cuatro commits (`c6f93f09`, `dbc3a736`, `7f3e5c6a`,
+`7052c403`). Suite **1107 pasados, 0 fallidos**; clippy y fmt limpios.
+
+### Lo que mide el mundo SERVIDO
+
+Superficie andable desde el centro de la región, rasterizada igual que la sirve el servidor. La
+columna «antes» es la de la auditoría del 2026-08-28, medida con la misma sonda sobre el compositor
+por bocas:
+
+| región | antes | ahora | islas antes | mancha mayor ahora |
+|--------|------:|------:|------------:|-------------------:|
+| (0,0)  |  21 % |  83 % | 1           | 100 %              |
+| (1,0)  |  26 % |  78 % | 4           | 100 %              |
+| (0,1)  | 3,5 % |  80 % | 1           | 100 %              |
+| (−1,2) |  24 % |  75 % | 1           | 100 %              |
+
+En (1,0) el mundo estaba en cuatro trozos con 10 de 35 piezas inalcanzables y 3 de 5 puertas de junta
+a las que no se llegaba andando. Ahora las cuatro regiones son una sola masa.
+
+### Verificaciones, uno por uno
+
+- **(a) una componente** — es un test, `the_plan_is_one_building`, no una medida.
+- **(b) `problems()` vacío** — `the_plan_is_coherent_in_every_audited_region`.
+- **(c) determinismo** — `the_plan_is_deterministic` y `the_fill_is_deterministic`.
+- **(d) jerarquía** — `the_plan_has_a_hierarchy`: una espina, rango de profundidad ≥ 3, y más salas
+  que circulación.
+- **(e) el plano se lee como un edificio** — CUMPLIDA. Volcadores `dump_region_plans` (el plan solo,
+  sin una malla) y `dump_served_maps` (lo que de verdad se anda).
+- **(f) superficie e islas** — la tabla de arriba.
+- **(g) oráculos** — verdes. No se ha tocado `compose`, `placement`, `segment` ni el catálogo.
+
+### Tres fallos que ningún número vio y encontró el volcado
+
+Se anotan porque son la razón de que los volcadores existan, y porque los tres eran del tipo que no
+da error:
+
+1. **El eje del corte estaba invertido**: se partía siempre el lado corto y la región salía en lonchas
+   de 5 × 30 m — con área correcta, tamaños variados y conectividad perfecta. Ahora la sonda mide
+   también proporción (media 1,55–1,85:1) e histograma de tamaños.
+2. **Un hueco a caballo de dos tramos hermanas no lo alojaba ninguna**: la sala nacía sellada con su
+   puerta dibujada en el plano, y los contadores cuadraban. Los cortes de la tesela se apartan ahora
+   de las puertas, y al que aun así no cabe se le hace sitio corriéndolo. Contador propio,
+   `openings_dropped`, para que un cero sea una afirmación.
+3. **Una pieza de catálogo trae sus bocas donde las puso quien la dibujó, no donde manda el plan**:
+   nacía sellada, y cada pieza colocada añadía unas dos manchas sueltas —(0,0) pasaba de 3 a 20—. Se
+   le EXCAVA el vano con la operación de ADR-099 D3, que estaba escrita y sin consumidor.
+
+### D4 — El catálogo va APAGADO en el camino servido, y es deuda de CONTRATO
+
+Una pieza colocada necesita que se le excaven las puertas del plan, y **los vanos excavados no cruzan
+el wire**: `Wg3ChunkView` lleva colocaciones y tramos. Encenderlo abriría en el servidor puertas que
+el cliente dibuja tapiadas — el modo de fallo que R6 existe para impedir y que no se ve en una
+captura. Hasta que los vanos viajen, el mundo servido se construye sólo con tramos.
+
+Meterlos en el cable es cambio de esquema y **pide su propio ADR**, con su espejo en C# y con el
+cliente sabiendo restar geometría. Medido para dimensionarlo: con el catálogo encendido lo usarían 8,
+8, 6 y 2 espacios por región de 178, 174, 155 y 199. Es poco, y la causa está dicha en la cabecera de
+`wg3::fill`: 19 piezas de huella fija contra rectángulos de la medida que pide la arquitectura. Subir
+ese número tiene dos caminos —que el plan se ajuste a las medidas que existen, o que existan piezas de
+las medidas que el plan pide— y ninguno es forzar el encaje.
+
+### Deuda declarada, con nombre
+
+1. **Los vanos excavados en el wire** (D4). Bloquea usar el catálogo en el mundo servido.
+2. **`Goal::JoinIslands`, `best_bridge` y los empalmes** siguen en pie. Sirven a `compose_region`, que
+   el oráculo fija; se retiran cuando la ruta nueva esté demostrada en juego, no antes.
+3. **WG3 sigue sin ser la autoridad de colisión, movimiento, navegación ni *spawn*.** No ha cambiado
+   nada aquí y no era el alcance de este ADR: `BACKROOMS_WG3=1` sigue siendo aditiva.
+
+### Lo que este ADR deja MOOT, y conviene saberlo antes de tocarlo
+
+`absorb_chance` y `densify_attempts` (ADR-099) apuntan al compositor por bocas, que **ya no sirve el
+mundo**. Encenderlos no cambia lo que se anda; cambiaría lo que miden las sondas del compositor. No
+son un arreglo pendiente: son perillas de un camino que dejó de ser el principal.
+
+Y `MIN_GENERATED_WIDTH_CM = 200` sigue siendo la resolución del ráster vetando la anchura mínima de
+una puerta. Con el plan decidiendo los vanos es más visible que antes, y separarlo —medir el paso sin
+el redondeo conservador— es trabajo propio.
+
+### Lo que falta para que esto se pueda dar por bueno
+
+**Andarlo.** Ninguna de las cifras de arriba dice si se SIENTE como un edificio, y ése era el
+problema. El plano ya se lee como una planta; lo que no se sabe es cómo se recorre. Y una nota de
+criterio para cuando se ande: el resultado es MUY ortogonal y muy ordenado —una planta de oficinas
+correcta—, y la rareza que pide Backrooms hoy sale sólo de las zonas `Weird` del campo de escala y de
+los vacíos. Es una perilla identificada, no un trabajo hecho.

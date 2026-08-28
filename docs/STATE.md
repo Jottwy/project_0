@@ -52,6 +52,25 @@
 ---
 
 ## Última sesión
+- Fecha: 2026-08-28 (**WorldGen3 — ADR-100: el PLAN decide el edificio antes que la pieza**, sesión autónoma) — **4 commits, `c6f93f09` → `7052c403`. `cargo test` 1107/0/45, clippy y fmt limpios. Cero wire.**
+
+0. **LO PRIMERO: el mundo servido YA NO sale de `compose_region`.** Sale de `Wg3ServedWorld::plan_region` → `wg3::plan` (reparto) → `wg3::fill` (geometría). `compose_region` sigue viva, sigue siendo correcta y sigue midiéndose con sus sondas, pero **leer una cifra suya y hablar del mundo servido es comparar dos cosas distintas**. Las sondas nuevas son `probe_region_plan` y `probe_filled_plan`.
+
+1. **LA CAUSA que ataca, y no era la que se buscaba.** La auditoría del 2026-08-28 comprobó que **no queda una celda en el camino de decisión** —mcd de las huellas 10 cm, sólo el 2,6 % de 346 orígenes en múltiplo de 5 m, rejilla de Hanan en el enrutador—. Lo que quedaba de WG2 era el **procedimiento**: crecimiento local sin plan previo. ADR-095 lo dice sin querer, su diagnóstico fue de *representación* y no de algoritmo, así que nunca se introdujo una capa que decidiera el edificio antes de construirlo.
+
+2. **MEDIDO, superficie andable del mundo SERVIDO.** (0,0) 21 → **83 %**; (1,0) 26 → **78 %**; (0,1) 3,5 → **80 %**; (−1,2) 24 → **75 %**. Mancha mayor al **100 %** de lo pisable en las cuatro; (1,0) estaba en 4 islas con 10 de 35 piezas inalcanzables y 3 de 5 puertas de junta inalcanzables.
+
+3. ⚠️ **TRES FALLOS QUE NINGÚN NÚMERO VIO Y CAZÓ EL VOLCADO.** (a) El eje del corte estaba invertido: la región salía en lonchas de 5 × 30 m con área, tamaños y conectividad *perfectos*. (b) Un hueco a caballo de dos tramos hermanas no lo alojaba ninguna: sala sellada con la puerta dibujada en el plano y todos los contadores cuadrando. (c) Una pieza de catálogo trae sus bocas donde las puso quien la dibujó: nacía sellada, +2 manchas por pieza. Las métricas que faltaban —proporción, histograma de tamaños, `openings_dropped`— ya están en las sondas. **`dump_region_plans` y `dump_served_maps` existen por esto.**
+
+4. **EL CATÁLOGO VA APAGADO en el camino servido, y es deuda de CONTRATO.** Una pieza colocada necesita que se le excaven las puertas del plan y **los vanos excavados no cruzan el wire** (`Wg3ChunkView` lleva colocaciones y tramos). Encenderlo abriría en el servidor puertas que el cliente dibuja tapiadas — R6. Meterlos en el cable es cambio de esquema y pide su propio ADR. Ver ADR-100 D4.
+
+5. **LO QUE QUEDA, con nombre.** (a) los vanos en el wire; (b) `Goal::JoinIslands` / `best_bridge` siguen en pie sirviendo a `compose_region` y se retiran cuando la ruta nueva esté demostrada EN JUEGO; (c) WG3 sigue sin ser autoridad de colisión/movimiento/nav/spawn — `BACKROOMS_WG3=1` sigue siendo aditiva y no se tocó. Y **`absorb_chance`/`densify_attempts` quedan MOOT**: apuntan al compositor por bocas, que ya no sirve el mundo. Encenderlos no cambia lo que se anda.
+
+6. **FALTA ANDARLO.** El plano se lee como una planta de edificio; cómo se recorre no se sabe. Nota de criterio para cuando se ande: el resultado es MUY ortogonal y ordenado, y la rareza que pide Backrooms sale hoy sólo de las zonas `Weird` del campo de escala y de los vacíos. Perilla identificada, no trabajo hecho.
+
+---
+
+## Sesión anterior
 - Fecha: 2026-08-28 (**WorldGen3 — el conector generado nacía TAPIADO: ADR-098 enmienda 2**, sesión autónoma) — **5 commits, `d8323f75` → `1fdb4e18`. `cargo test --release` 1089/0/34, clippy y fmt limpios, `CompileCheckClient` 0 errores en las cuatro asambleas. Cero wire.**
 
 0. **LO QUE HAY QUE SABER ANTES DE LEER NINGÚN NÚMERO DE CONECTIVIDAD DE WG3.** ADR-096 y la enmienda 1 de ADR-098 miden sobre el **grafo de bocas coincidentes**: dos bocas a menos de 2 cm cuentan como unidas. El **ráster** —que es lo que resuelve el movimiento— puede tener materia justo ahí. Los dos mundos no coinciden, y solo uno se anda. Todo «86 % de árbol mayor» lleva ese asterisco.
