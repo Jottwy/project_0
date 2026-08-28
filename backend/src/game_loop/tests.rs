@@ -6047,7 +6047,7 @@ async fn stp_demolish_retires_the_piece_and_frees_its_pose_cell() {
         "a group piece must claim its pose cell on placement"
     );
 
-    process_stp_demolish(500, id, &mut net);
+    process_stp_demolish(500, id, 1, &mut net);
 
     assert!(placed_pieces(&net).is_empty(), "the piece must be retired");
     assert!(
@@ -6078,11 +6078,11 @@ async fn stp_demolish_dedupes_under_retransmit() {
     process_stp_place(2, 111, other, 0.0, 0, false, 1, &mut net);
     let first = placed_pieces(&net)[0];
 
-    process_stp_demolish(900, first, &mut net);
+    process_stp_demolish(900, first, 1, &mut net);
     assert_eq!(placed_pieces(&net).len(), 1);
 
     // Same demolish_id again: must be dropped before it can touch the survivor.
-    process_stp_demolish(900, placed_pieces(&net)[0], &mut net);
+    process_stp_demolish(900, placed_pieces(&net)[0], 1, &mut net);
     assert_eq!(
         placed_pieces(&net).len(),
         1,
@@ -6098,13 +6098,75 @@ async fn stp_demolish_of_unknown_building_is_ignored() {
     process_stp_place(1, 111, room, 0.0, 0, false, 1, &mut net);
 
     // Two clients cancelling the same piece in one window: the loser finds it already gone.
-    process_stp_demolish(901, 0xDEAD_BEEF, &mut net);
+    process_stp_demolish(901, 0xDEAD_BEEF, 1, &mut net);
 
     assert_eq!(
         placed_pieces(&net).len(),
         1,
         "an unknown building id must be a no-op, not a panic or a wrong removal"
     );
+}
+
+/// EL TERRITORIO, DEFENDIDO Y NO SOLO DECLARADO.
+///
+/// Hasta hoy cualquier peer conectado retiraba la pieza de cualquier otro, en cualquier punto del
+/// mundo: `process_stp_demolish` recibía el id de la pieza y nada más, así que ADR-081 existía en el
+/// registro y no en el juego. El dueño se compara contra `requester_id`, que sale de la CABECERA del
+/// paquete y no del payload — si saliera del payload, el cliente diría ser quien le conviene.
+#[tokio::test]
+async fn stp_demolish_by_a_stranger_is_denied() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let position = build_room_centre(42);
+    claim_at(&mut net, 1, position);
+    process_stp_place(1, 111, position, 0.0, 0, true, 1, &mut net);
+    let id = placed_pieces(&net)[0];
+
+    // El peer 2 pide demoler lo del peer 1.
+    process_stp_demolish(500, id, 2, &mut net);
+
+    assert_eq!(
+        placed_pieces(&net).len(),
+        1,
+        "un peer que no es el dueño no puede retirar la pieza"
+    );
+    assert!(
+        net.occupied_stp_cells
+            .contains(&stp_pose_cell(position, 0.0)),
+        "y la celda de pose sigue ocupada: rechazar no puede liberar nada a medias"
+    );
+
+    // Y el dueño sí puede, para que el test no pase por estar todo bloqueado.
+    process_stp_demolish(501, id, 1, &mut net);
+    assert!(placed_pieces(&net).is_empty(), "el dueño sí retira la suya");
+}
+
+/// `owner_id == 0` es lo que traen las piezas de un save anterior a ADR-081: no se puede saber de
+/// quién eran. **Decisión de Joel: no las demuele nadie.** Dar por bueno al que pregunte dejaría el
+/// agujero abierto justo para las piezas más viejas, que son las que llevan más tiempo plantadas.
+/// El precio, aceptado y dicho: quedan indestructibles.
+#[tokio::test]
+async fn stp_demolish_of_a_piece_without_owner_is_denied_to_everyone() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let position = build_room_centre(42);
+    claim_at(&mut net, 1, position);
+    process_stp_place(1, 111, position, 0.0, 0, true, 1, &mut net);
+
+    // Una pieza de save viejo: el campo no existía y serde la trae a 0.
+    let id = placed_pieces(&net)[0];
+    net.stp_buildings
+        .iter_mut()
+        .find(|b| b.id == id)
+        .expect("la pieza recién puesta")
+        .owner_id = 0;
+
+    for requester in [0u16, 1, 2] {
+        process_stp_demolish(600 + requester as u64, id, requester, &mut net);
+        assert_eq!(
+            placed_pieces(&net).len(),
+            1,
+            "ni el peer {requester} ni nadie retira una pieza sin dueño"
+        );
+    }
 }
 
 /// A free piece never claimed a cell (`is_group` gates the insert in process_stp_place), so
@@ -6120,7 +6182,7 @@ async fn stp_demolish_of_a_standalone_piece_leaves_pose_cells_alone() {
     process_stp_place(2, 222, position, 0.0, 0, false, 1, &mut net); // free piece: claims nothing
     let free_id = placed_pieces(&net)[1];
 
-    process_stp_demolish(902, free_id, &mut net);
+    process_stp_demolish(902, free_id, 1, &mut net);
 
     assert_eq!(placed_pieces(&net).len(), 1);
     assert!(

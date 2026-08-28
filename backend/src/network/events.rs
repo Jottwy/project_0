@@ -93,9 +93,14 @@ pub enum NetworkEvent {
         material_id: i32,
     },
     /// ADR-037: a joiner asks the host to retire a placed-but-unbuilt piece it just cancelled.
+    ///
+    /// `requester_id` sale de la CABECERA del paquete, nunca del payload — mismo motivo que en
+    /// `StpPlaceRequest` (ADR-081): es contra esa identidad contra la que el host comprueba que
+    /// quien demuele es el dueño, y el cliente no puede tener voz en quién dice ser.
     StpDemolishRequest {
         demolish_id: u64,
         building_id: u32,
+        requester_id: u16,
     },
     /// ADR-068: a joiner asks the host to paint a spray. `requester_id` comes from the packet
     /// HEADER, not the payload — the host validates the reach against THAT peer's known position,

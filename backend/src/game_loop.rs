@@ -2413,9 +2413,10 @@ async fn handle_network_event(
         NetworkEvent::StpDemolishRequest {
             demolish_id,
             building_id,
+            requester_id,
         } => {
             if net.is_host {
-                process_stp_demolish(demolish_id, building_id, net);
+                process_stp_demolish(demolish_id, building_id, requester_id, net);
                 sync::broadcast_stp_buildings(net).await;
             }
         }
@@ -4455,7 +4456,11 @@ async fn handle_action(
             }
 
             if net.is_host {
-                process_stp_demolish(demolish_id, building_id, net);
+                // El host demoliendo desde SU propio cliente: el que pide es el jugador local, y su
+                // identidad la pone el backend, no el mensaje. Es la misma regla que en la ruta de
+                // peer —el dueño se toma de la cabecera— aplicada al único caso en el que no hay
+                // cabecera que leer.
+                process_stp_demolish(demolish_id, building_id, net.local_id, net);
                 sync::broadcast_stp_buildings(net).await;
             } else {
                 let payload = crate::network::protocol::PacketPayload::StpDemolishRequest {
@@ -5856,7 +5861,12 @@ fn process_stp_build_add(
 ///
 /// Deduped by the client-generated `demolish_id`, mirroring `process_stp_place` /
 /// `process_stp_build_add`.
-fn process_stp_demolish(demolish_id: u64, building_id: u32, net: &mut NetworkManager) {
+fn process_stp_demolish(
+    demolish_id: u64,
+    building_id: u32,
+    requester_id: u16,
+    net: &mut NetworkManager,
+) {
     if demolish_id != 0 && !net.processed_stp_demolishes.insert(demolish_id) {
         info!(
             "MPTRACE step=BD event=stp_demolish_duplicate demolish_id={} ignored=true",
@@ -5877,6 +5887,25 @@ fn process_stp_demolish(demolish_id: u64, building_id: u32, net: &mut NetworkMan
             return;
         }
     };
+
+    // ADR-081 llevado hasta el final: **solo el dueño demuele**. Hasta hoy el territorio estaba
+    // declarado y no defendido — cualquier peer conectado retiraba la pieza de cualquier otro, en
+    // cualquier punto del mundo, y el wire ni siquiera transportaba quién lo pedía. `owner_id` se
+    // guarda en TODA pieza desde ADR-081, y `requester_id` sale de la cabecera del paquete, así que
+    // la comprobación no necesita ni un byte nuevo de protocolo.
+    //
+    // **`owner_id == 0` no lo demuele NADIE, y es decisión de Joel, no un efecto del código.** El 0
+    // es lo que traen las piezas de un save anterior a ADR-081: no se puede saber de quién eran, y
+    // dar por bueno al que pregunte convertiría el hueco en permanente para esas piezas. El precio
+    // aceptado es que quedan indestructibles.
+    let owner_id = net.stp_buildings[index].owner_id;
+    if owner_id == 0 || owner_id != requester_id {
+        info!(
+            "MPTRACE step=BD event=stp_demolish_denied building_id={} demolish_id={} owner_id={} requester_id={} ignored=true",
+            building_id, demolish_id, owner_id, requester_id
+        );
+        return;
+    }
 
     let removed = net.stp_buildings.remove(index);
 

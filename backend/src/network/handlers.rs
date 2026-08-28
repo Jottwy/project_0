@@ -268,9 +268,20 @@ impl NetworkManager {
         }
         [
             StpBuildAddRequest { add_id, building_id, material_id },
-            StpDemolishRequest { demolish_id, building_id },
         ]
         {
+            // ADR-081 llevado a la demolición: el dueño se comprueba contra la CABECERA. Por eso
+            // este arm no puede vivir en la lista 1:1 de arriba — necesita `sender_id`, que el
+            // payload no trae ni debe traer.
+            PacketPayload::StpDemolishRequest {
+                demolish_id,
+                building_id,
+            } => Some(NetworkEvent::StpDemolishRequest {
+                demolish_id,
+                building_id,
+                requester_id: sender_id,
+            }),
+
             // ADR-081: igual que los dos de abajo, `requester_id` sale de la CABECERA — es contra
             // esa identidad contra la que el host comprueba la propiedad del claim, y el payload
             // no puede tener voz en quién dice ser el que construye.
