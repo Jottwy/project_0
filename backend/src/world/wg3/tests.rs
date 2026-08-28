@@ -5891,19 +5891,78 @@ fn every_upper_storey_has_a_stair_that_lands_somewhere() {
                 "({rx},{rz}): el hueco asoma fuera del espacio de arriba"
             );
             // Y que la escalera QUEPA: los peldaños se alejan de la puerta, así que el tiro corre
-            // perpendicular a su pared. Sin esto el plan puede pedir catorce escalones en tres
-            // metros y el relleno los construye de 21 cm de huella.
-            let steps = plan::STOREY_HEIGHT_CM.div_euclid(plan::STOREY_RISE_CM)
-                + i32::from(plan::STOREY_HEIGHT_CM % plan::STOREY_RISE_CM != 0);
-            let run = if below.rise_from_side.is_multiple_of(2) {
-                below.rect.depth_cm()
+            // perpendicular a su pared. Sin esto el plan puede pedir quince tiras en tres metros y
+            // el relleno las construye de 21 cm de huella.
+            let steps = plan::storey_steps();
+            let (run, across) = if below.rise_from_side.is_multiple_of(2) {
+                (below.rect.depth_cm(), below.rect.width_cm())
             } else {
-                below.rect.width_cm()
+                (below.rect.width_cm(), below.rect.depth_cm())
             };
             assert!(
                 run / steps >= plan::MIN_TREAD_CM,
-                "({rx},{rz}): {steps} peldaños en {run} cm dan huellas de {} cm",
+                "({rx},{rz}): {steps} tiras en {run} cm dan huellas de {} cm",
                 run / steps
+            );
+            // Y que esté RECORTADA. Sin esta cota, el hueco se come el espacio entero que le tocó:
+            // en las cuatro de referencia eso daba escaleras de hasta 12 × 15 m, o sea quince tiras
+            // repartidas en quince metros — una rampa con escalones, no una escalera.
+            assert!(
+                across <= 900,
+                "({rx},{rz}): escalera de {across} cm de ancho — el recorte no se aplicó"
+            );
+        }
+    }
+}
+
+/// **La escalera tiene que LLEGAR.** La última tira a la cota del suelo de arriba, ni un centímetro
+/// menos, y medido sobre la geometría y no sobre el plan.
+///
+/// Es el fallo que este test existe para impedir y que estuvo puesto desde el principio: repartiendo
+/// la subida entre las tiras en vez de entre las contrahuellas, la última se quedaba corta. Con los
+/// 60 cm de una terraza el error eran 12 y no se notaba; con una planta entera son 26, que es justo
+/// por debajo de lo que el jugador sube sin saltar — o sea que se subía igual y nadie se enteraba
+/// hasta cambiar la altura de planta.
+#[test]
+fn the_storey_stair_reaches_the_floor_above() {
+    let m = real_manifest();
+    for (rx, rz) in AUDIT_REGIONS {
+        let b = building_of(rx, rz);
+        let filled = fill::fill_with(&b.storeys[0], &m, false);
+        for w in &b.wells {
+            let stair = &b.storeys[w.storey_below].spaces[w.space_below];
+            let top = filled
+                .segments
+                .iter()
+                .filter(|s| {
+                    let (cx, cz) = (s.x_cm + s.size_x_cm / 2, s.z_cm + s.size_z_cm / 2);
+                    w.rect.contains_point(cx, cz)
+                })
+                .map(|s| s.floor_y_cm)
+                .max();
+            assert_eq!(
+                Some(stair.floor_y_cm + plan::STOREY_HEIGHT_CM),
+                top,
+                "({rx},{rz}): la escalera no remata a la cota de la planta de arriba"
+            );
+        }
+    }
+}
+
+/// El recorte parte un espacio en tres, y partir mal deja un agujero o un solape. El solape lo caza
+/// `problems()`; el AGUJERO no lo caza nadie, porque un plan con un trozo sin asignar es coherente —
+/// simplemente no se construye ahí, y el síntoma es una sala sin suelo.
+#[test]
+fn cutting_the_stair_out_of_a_room_loses_no_floor() {
+    for (rx, rz) in AUDIT_REGIONS {
+        let b = building_of(rx, rz);
+        for (n, plan) in b.storeys.iter().enumerate() {
+            let region = plan.bounds_cm.expect("la planta tiene caja");
+            let sum: f64 = plan.spaces.iter().map(|s| s.rect.area_m2() as f64).sum();
+            let want = region.area_m2() as f64;
+            assert!(
+                (sum - want).abs() < 1.0,
+                "({rx},{rz}) planta {n}: los espacios suman {sum:.1} m² y la huella mide {want:.1}"
             );
         }
     }

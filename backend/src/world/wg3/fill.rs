@@ -37,7 +37,7 @@
 
 use super::manifest::{Wg3Manifest, Wg3Piece};
 use super::placement::Wg3Placement;
-use super::plan::{LinkKind, PlannedSpace, RegionPlan, SpaceRole, STEP_RISE_CM};
+use super::plan::{LinkKind, PlannedSpace, RegionPlan, SpaceRole};
 use super::raster::CM_PER_M;
 use super::route::{self, Mouth, PlannedRoute, Rect, RouteSettings};
 use super::segment::{
@@ -718,8 +718,28 @@ fn shift_cuts(cuts: &mut [i32], wanted: &[Wanted], along_x: bool) {
 fn emit_stair(index: usize, space: &PlannedSpace, wanted: &[Wanted], out: &mut FilledRegion) {
     let r = space.rect;
     let rise = space.rise_cm;
-    let steps = (rise.abs() / STEP_RISE_CM).max(1);
-    let height = clear_height_cm(space.role);
+    // ADR-102 D4 — la contrahuella la pone el ESPACIO. Una terraza usa los 12 cm que cierran contra la
+    // losa; un hueco de escalera usa 24, porque con 12 subir una planta pide 28 peldaños y ocho metros
+    // de tiro. El número de aquí decidía los dos casos y arruinaba uno.
+    // **CONTRAHUELLAS Y TIRAS NO SON EL MISMO NÚMERO, y confundirlas dejaba la escalera corta.**
+    //
+    // N contrahuellas piden N+1 tiras: la primera a la cota de entrada y la última a `floor + rise`,
+    // que es lo que esta función tiene documentado desde que existe y lo que `RegionPlan::problems`
+    // da por hecho al eximir a las escaleras del tope de escalón. Repartiendo `rise` entre N tiras, la
+    // última se quedaba en `rise * (N-1) / N`: una terraza de 60 cm bajaba 48, y una escalera de
+    // planta se quedaba a 26 cm del suelo de arriba — por debajo de los 27 que sube el jugador, o sea
+    // que se subía igual y nadie se enteraba. Con una planta más alta, o una contrahuella distinta,
+    // el mismo código deja un escalón imposible en el último peldaño.
+    let risers = (rise.abs() / space.rise_step_cm.max(1)).max(1);
+    let steps = risers + 1;
+    // **Y el techo del hueco es UNO, a la cota de arriba del todo.**
+    //
+    // Con altura constante el techo sube con cada peldaño, que es lo correcto en una terraza —se baja
+    // dentro de la misma sala— y es un desastre subiendo una planta: el techo de la primera tira
+    // quedaría a 3,80 m, o sea medio metro DENTRO del suelo de la planta de encima. Un hueco de
+    // escalera es un pozo abierto, y su techo está donde el de la planta a la que llega.
+    let clear = clear_height_cm(space.role);
+    let ceiling_cm = space.floor_y_cm + rise.max(0) + clear;
     let max_cm = (MAX_SEGMENT_M * CM_PER_M) as i32;
     let ceil_div = |v: i32, by: i32| (v + by - 1) / by;
 
@@ -749,7 +769,7 @@ fn emit_stair(index: usize, space: &PlannedSpace, wanted: &[Wanted], out: &mut F
     for step in 0..steps {
         // `step` cuenta desde la PUERTA. La tira 0 se queda a la cota de la puerta —que es lo que
         // hace que ningún vecino se entere del desnivel— y cada siguiente baja una contrahuella.
-        let floor = space.floor_y_cm + (rise * step) / steps;
+        let floor = space.floor_y_cm + (rise * step) / risers;
         // De ahí a la tira geométrica: entrando por el máximo, la tira 0 es la última del eje.
         let slot = if from_max { steps - 1 - step } else { step };
         let (a0, a1) = (
@@ -816,7 +836,8 @@ fn emit_stair(index: usize, space: &PlannedSpace, wanted: &[Wanted], out: &mut F
                 size_x_cm: x1 - x0,
                 size_z_cm: z1 - z0,
                 floor_y_cm: floor,
-                height_cm: height,
+                // Todas las tiras rematan en el mismo techo, así que la de más abajo es la más alta.
+                height_cm: (ceiling_cm - floor).max(clear),
                 openings,
                 style: style_of(space.role),
             });

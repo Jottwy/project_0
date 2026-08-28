@@ -126,6 +126,20 @@ pub const STOREY_HEIGHT_CM: i32 = 332;
 /// lo que de verdad manda— y 4 m de tiro dan huellas de 28,6.
 pub const STOREY_RISE_CM: i32 = 24;
 
+/// Huella de un peldaño de escalera de planta, en centímetros. 14 × 30 = 4,20 m de tiro.
+///
+/// Cómoda a propósito y no la mínima: la mínima es un suelo para que nada salga absurdo, no un
+/// objetivo. Con 30 cm de huella y 23,7 de contrahuella la escalera se sube sin pensar.
+const STAIR_TREAD_CM: i32 = 30;
+
+/// Ancho de un hueco de escalera, en centímetros.
+///
+/// **El recorte importa tanto como el tiro.** Sin él, el hueco es el espacio ENTERO que le tocó, y en
+/// las cuatro regiones de referencia eso daba escaleras de hasta 12 × 15 m: catorce peldaños repartidos
+/// en 15 metros son huellas de 109 cm, que no es una escalera sino una rampa con escalones. 360 cm dan
+/// dos personas de frente y dejan sitio para que el resto del espacio siga siendo suelo.
+const STAIR_WIDTH_CM: i32 = 360;
+
 /// Huella mínima de un peldaño, en centímetros.
 ///
 /// Al `CharacterController` le basta con que la contrahuella quepa en su `m_StepOffset`; la huella no
@@ -283,6 +297,13 @@ impl PlanRect {
     }
     pub fn area_m2(&self) -> f32 {
         (self.width_cm() as f32 / CM_PER_M) * (self.depth_cm() as f32 / CM_PER_M)
+    }
+    /// ¿Cae este punto dentro, bordes EXCLUIDOS? (ADR-102 D4)
+    ///
+    /// Excluidos porque se usa para preguntar si una puerta se la lleva por delante el recorte de la
+    /// escalera, y una puerta en el borde exacto de la franja está en su pared, no dentro.
+    pub fn contains_point(&self, x_cm: i32, z_cm: i32) -> bool {
+        x_cm > self.min_x_cm && x_cm < self.max_x_cm && z_cm > self.min_z_cm && z_cm < self.max_z_cm
     }
     /// ¿Cabe `other` dentro de éste, bordes incluidos? (ADR-102 D1)
     ///
@@ -939,16 +960,18 @@ fn dig_well(
     storey_below: usize,
     seed: i32,
 ) -> Option<StairWell> {
-    let steps = STOREY_HEIGHT_CM.div_euclid(STOREY_RISE_CM)
-        + i32::from(STOREY_HEIGHT_CM % STOREY_RISE_CM != 0);
-    let run_cm = steps * MIN_TREAD_CM;
+    let steps = storey_steps();
+    let run_cm = steps * STAIR_TREAD_CM;
 
-    // La puerta de cada espacio, para saber por qué lado se entra. El primer enlace basta: lo que
-    // hace falta es UNA entrada, no todas.
-    let mut door = vec![None; below.spaces.len()];
+    // Todos los huecos de cada espacio, no sólo el primero. Hacen falta los dos usos: el PRIMERO dice
+    // por dónde se entra, y TODOS dicen si el recorte se lleva alguno por delante.
+    let mut doors: Vec<Vec<(i32, i32)>> = vec![Vec::new(); below.spaces.len()];
     for l in &below.links {
-        door[l.a].get_or_insert((l.at_x_cm, l.at_z_cm));
-        door[l.b].get_or_insert((l.at_x_cm, l.at_z_cm));
+        doors[l.a].push((l.at_x_cm, l.at_z_cm));
+        doors[l.b].push((l.at_x_cm, l.at_z_cm));
+    }
+    for g in &below.gates {
+        doors[g.space].push((g.x_cm, g.z_cm));
     }
 
     let mut best: Option<(u64, usize, usize, u8)> = None;
@@ -956,7 +979,9 @@ fn dig_well(
         if !s.role.is_built() || s.role.is_circulation() || s.rise_cm != 0 {
             continue;
         }
-        let Some((dx, dz)) = door[i] else { continue };
+        let Some(&(dx, dz)) = doors[i].first() else {
+            continue;
+        };
         let Some(side) = side_of_point_in(&s.rect, dx, dz) else {
             continue;
         };
@@ -966,15 +991,28 @@ fn dig_well(
         } else {
             (s.rect.width_cm(), s.rect.depth_cm())
         };
-        if run < run_cm || across < DOORWAY_CM {
+        // **TIENE QUE SOBRAR ESPACIO, y no es un lujo.** El hueco se recorta contra la pared de
+        // ENFRENTE de la puerta, así que lo que queda entre la puerta y el pie de la escalera es lo
+        // que sigue siendo sala — y es también lo que sostiene todos los enlaces que ya tenía este
+        // espacio. Sin sobrante no hay dónde repartirlos.
+        if run < run_cm + MIN_SIDE_CM || across < STAIR_WIDTH_CM {
             continue;
         }
-        // Y el sitio al que se sale. Que el rectángulo entero quepa dentro de UN espacio de arriba,
-        // no que lo toque: un hueco a caballo de dos salas perfora una pared por debajo.
+        // Y ningún hueco puede caer DENTRO de la franja que se va a volver escalera: ahí la cota sube
+        // hasta 332, y una puerta a media escalera es un vano que se dibuja y no se pasa.
+        if doors[i]
+            .iter()
+            .any(|&(x, z)| band_of(&s.rect, side, run_cm).contains_point(x, z))
+        {
+            continue;
+        }
+        // El sitio al que se sale, y contra la franja RECORTADA: lo que tiene que caber dentro de un
+        // espacio de arriba es el hueco, no la sala entera de la que se recorta.
+        let (stair, _) = stair_and_flank(&s.rect, side, run_cm, seed);
         let Some(j) = above
             .spaces
             .iter()
-            .position(|t| t.role.is_built() && t.rect.contains_rect(&s.rect))
+            .position(|t| t.role.is_built() && t.rect.contains_rect(&stair))
         else {
             continue;
         };
@@ -987,17 +1025,211 @@ fn dig_well(
     }
 
     let (_, i, j, side) = best?;
-    let s = &mut below.spaces[i];
-    s.role = SpaceRole::Stair;
-    s.rise_cm = STOREY_HEIGHT_CM;
-    s.rise_step_cm = STOREY_RISE_CM;
-    s.rise_from_side = side;
+    let space_below = split_for_stair(below, i, side, run_cm, seed);
     Some(StairWell {
-        rect: s.rect,
+        rect: below.spaces[space_below].rect,
         storey_below,
-        space_below: i,
+        space_below,
         space_above: j,
     })
+}
+
+/// TIRAS de una escalera que sube una planta entera — no contrahuellas: son una más.
+///
+/// Redondeando las contrahuellas hacia arriba, porque el tope de [`STOREY_RISE_CM`] es un tope: 13
+/// darían 25,5 cm cada una y 14 dan 23,7. Y una más porque la primera tira está a la cota de entrada
+/// y no sube nada.
+pub fn storey_steps() -> i32 {
+    let risers = STOREY_HEIGHT_CM.div_euclid(STOREY_RISE_CM)
+        + i32::from(STOREY_HEIGHT_CM % STOREY_RISE_CM != 0);
+    risers + 1
+}
+
+/// La franja de `rect` que se vuelve escalera: contra la pared de ENFRENTE de la puerta, `run_cm` de
+/// fondo.
+///
+/// De enfrente y no de al lado de la puerta, y ésta es LA decisión geométrica de todo el hueco. Contra
+/// la puerta, se entra y se sube inmediatamente, y lo que quedara detrás de la escalera se queda sin
+/// acceso; contra la de enfrente, se entra a la sala, se cruza y se sube — y la sala sigue siendo una
+/// sala con su puerta.
+fn band_of(rect: &PlanRect, side: u8, run_cm: i32) -> PlanRect {
+    match side % 4 {
+        0 => PlanRect {
+            max_z_cm: rect.min_z_cm + run_cm,
+            ..*rect
+        },
+        1 => PlanRect {
+            max_x_cm: rect.min_x_cm + run_cm,
+            ..*rect
+        },
+        2 => PlanRect {
+            min_z_cm: rect.max_z_cm - run_cm,
+            ..*rect
+        },
+        _ => PlanRect {
+            min_x_cm: rect.max_x_cm - run_cm,
+            ..*rect
+        },
+    }
+}
+
+/// El hueco dentro de su franja y lo que sobra al lado: `(escalera, costado)`.
+///
+/// Arrimado a un extremo y no centrado para que lo que sobra sea UN rectángulo y no dos. Dos sobrantes
+/// son dos espacios más que conectar, y uno acaba siendo una tira que no admite puerta.
+///
+/// **Una sola función, y llamada desde los dos sitios a propósito.** El primer intento calculaba el
+/// recorte al ELEGIR el candidato y otra vez al partirlo, y no siempre daban lo mismo: cuando el
+/// costado no llegaba al mínimo, el que partía se quedaba con la franja entera mientras el que había
+/// elegido creía que el hueco era estrecho. Resultado: `(-3,-3)` con una escalera que asomaba fuera
+/// del espacio de arriba al que decía llegar. Dos cálculos del mismo número son un número de más.
+fn stair_and_flank(
+    rect: &PlanRect,
+    side: u8,
+    run_cm: i32,
+    seed: i32,
+) -> (PlanRect, Option<PlanRect>) {
+    let band = band_of(rect, side, run_cm);
+    let across_x = side.is_multiple_of(2);
+    let (cx, cz) = rect.centre_m();
+    let low = hash::stream_at(seed, cx, cz, SALT_WELL).next01() < 0.5;
+
+    let (stair, flank) = match (across_x, low) {
+        (true, true) => (
+            PlanRect {
+                max_x_cm: band.min_x_cm + STAIR_WIDTH_CM,
+                ..band
+            },
+            PlanRect {
+                min_x_cm: band.min_x_cm + STAIR_WIDTH_CM,
+                ..band
+            },
+        ),
+        (true, false) => (
+            PlanRect {
+                min_x_cm: band.max_x_cm - STAIR_WIDTH_CM,
+                ..band
+            },
+            PlanRect {
+                max_x_cm: band.max_x_cm - STAIR_WIDTH_CM,
+                ..band
+            },
+        ),
+        (false, true) => (
+            PlanRect {
+                max_z_cm: band.min_z_cm + STAIR_WIDTH_CM,
+                ..band
+            },
+            PlanRect {
+                min_z_cm: band.min_z_cm + STAIR_WIDTH_CM,
+                ..band
+            },
+        ),
+        (false, false) => (
+            PlanRect {
+                min_z_cm: band.max_z_cm - STAIR_WIDTH_CM,
+                ..band
+            },
+            PlanRect {
+                max_z_cm: band.max_z_cm - STAIR_WIDTH_CM,
+                ..band
+            },
+        ),
+    };
+
+    // ¿Da el costado para una sala? Lo único que se le exige es la PARED QUE COMPARTE CON LA SALA:
+    // por ahí entra, y es su única puerta posible —contra la escalera no puede abrir, porque ahí
+    // suben los peldaños—. Su fondo no se mira: es el tiro de la escalera, 4,20 m, y siempre vale.
+    //
+    // Pedirle [`MIN_SIDE_CM`] a los dos lados, como pedía el primer intento, lo descartaba SIEMPRE:
+    // 420 nunca llega a 500. El síntoma no era un fallo sino un silencio — las cuatro regiones de
+    // referencia daban escaleras de 4,2 × 8,9 m, con el recorte del tiro puesto y el del ancho no.
+    let shared = if across_x {
+        flank.width_cm()
+    } else {
+        flank.depth_cm()
+    };
+    // Sin costado utilizable, la franja entera es escalera: un rectángulo suelto que no cabe en el
+    // reparto es un solape, y un solape es geometría cruzada que el ráster estampa maciza.
+    if shared >= GOOD_WALL_CM {
+        (stair, Some(flank))
+    } else {
+        (band, None)
+    }
+}
+
+/// Parte el espacio `i` en sala, escalera y —si sobra sitio— un costado. Devuelve el índice de la
+/// escalera.
+///
+/// **El espacio `i` se queda de SALA y la escalera es nueva**, no al revés. Así todos los enlaces que
+/// ya apuntaban a `i` siguen siendo correctos sin tocar uno solo: se comprobó antes de llegar aquí que
+/// ninguno cae dentro de la franja, así que todos están en pared de la sala. Hacerlo al revés
+/// obligaría a repuntar el grafo entero y a acertar con cada uno.
+fn split_for_stair(plan: &mut RegionPlan, i: usize, side: u8, run_cm: i32, seed: i32) -> usize {
+    let original = plan.spaces[i];
+    let band = band_of(&original.rect, side, run_cm);
+    let (stair, flank) = stair_and_flank(&original.rect, side, run_cm, seed);
+
+    // La sala se queda con lo que no es franja.
+    plan.spaces[i].rect = match side % 4 {
+        0 => PlanRect {
+            min_z_cm: band.max_z_cm,
+            ..original.rect
+        },
+        1 => PlanRect {
+            min_x_cm: band.max_x_cm,
+            ..original.rect
+        },
+        2 => PlanRect {
+            max_z_cm: band.min_z_cm,
+            ..original.rect
+        },
+        _ => PlanRect {
+            max_x_cm: band.min_x_cm,
+            ..original.rect
+        },
+    };
+
+    let s = plan.spaces.len();
+    plan.spaces.push(PlannedSpace {
+        rect: stair,
+        role: SpaceRole::Stair,
+        rise_cm: STOREY_HEIGHT_CM,
+        rise_step_cm: STOREY_RISE_CM,
+        // Se entra por el mismo lado por el que se entraba a la sala: se viene de ahí.
+        rise_from_side: side,
+        ..original
+    });
+    link_along(plan, i, s);
+
+    // El costado que sobra al lado de la escalera, si lo hay. Su puerta va contra la SALA y no contra
+    // la escalera: pegado a la escalera compartiría pared con los peldaños, y una puerta a media
+    // escalera es un vano que se dibuja y no se pasa.
+    if let Some(f) = flank {
+        let k = plan.spaces.len();
+        plan.spaces.push(PlannedSpace {
+            rect: f,
+            ..original
+        });
+        link_along(plan, i, k);
+    }
+    s
+}
+
+/// Une la sala con lo que le acaba de nacer al otro lado del corte de la franja.
+fn link_along(plan: &mut RegionPlan, a: usize, b: usize) {
+    let (ra, rb) = (plan.spaces[a].rect, plan.spaces[b].rect);
+    let Some((overlap, x, z)) = rects_share_wall(ra, rb) else {
+        return;
+    };
+    plan.links.push(PlannedLink {
+        a,
+        b,
+        width_cm: overlap.clamp(DOORWAY_CM, WIDE_DOORWAY_CM),
+        kind: LinkKind::Doorway,
+        at_x_cm: x,
+        at_z_cm: z,
+    });
 }
 
 /// Por qué lado de un rectángulo cae un punto de su borde. `None` si no cae en ninguno.
@@ -1168,7 +1400,11 @@ impl Planner {
             // conservador deja pasar y la escalera nace tapiada. Es el mismo suelo de siempre.
             // Con la anchura de VANO y no con el mínimo generable: una franja tiene que poder alojar
             // una puerta entera, no sólo dejar pasar al jugador.
-            let max_steps = depth_cm / DOORWAY_CM;
+            //
+            // Y menos uno, porque N contrahuellas se construyen con N+1 tiras (ver `fill::emit_stair`):
+            // contando tiras como contrahuellas, la última franja salía por debajo del vano y volvía
+            // el fallo de la sala tapiada.
+            let max_steps = depth_cm / DOORWAY_CM - 1;
             let steps = TERRACE_STEPS.min(max_steps);
             if steps < 2 {
                 continue;
