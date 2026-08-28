@@ -7724,3 +7724,84 @@ cambio no coinciden, falla igual — de hecho hoy ha sido la única prueba de qu
 Rust hace lo mismo que el de C#. Lo que SÍ se pierde al reexportar es el otro cazador, «toqué el
 catálogo y olvidé reexportar», que solo sirve contra el olvido. Por eso la regla se escribe: para que
 el siguiente no reexporte por costumbre y nadie note que ese cazador se apagó.
+
+## ADR-097 — F5: la colocación gana Y (2026-08-28) — PROPUESTO, sin aprobar
+
+**Estado: PROPUESTO.** No se toca código hasta que Joel lo apruebe. Se redacta ahora porque el
+cambio toca el formato de chunk y la regla 7 del proyecto exige ADR antes que código.
+
+### El problema, que es el que fundó WG3
+
+El diagnóstico con el que empezó todo decía: «la altura del SUELO es función del índice de capa:
+constante en todo un piso… no hay verticalidad expresable. No es que falte implementarlo — no hay
+dónde escribirlo». WG3 heredó exactamente ese agujero en otra forma:
+
+```
+placement.rs:29    pub origin_x_cm: i32,
+placement.rs:30    pub origin_z_cm: i32,
+```
+
+**No hay `origin_y` en ninguna parte.** Toda pieza se coloca a y = 0. La colisión SÍ es
+tridimensional —el ráster guarda tramos en centímetros y las cajas tienen altura— y la geometría
+también, pero *dónde va una pieza* solo tiene dos coordenadas. Hoy la verticalidad solo existe
+DENTRO de una pieza (`room_stair` sube andando), y dos piezas se enganchan siempre a la misma cota.
+
+Sin esto, WG3 es WG2 con mejores paredes.
+
+### D1 — La Y viaja por el wire, por colocación
+
+`origin_y_cm: i32`, junto a los otros dos. **Esquema 46 → 47**, y su espejo `WireSchema.Expected`
+en C# sube con él — olvidarlo no da un aviso, deja el juego inarrancable.
+
+Se rechaza derivarla en el cliente recorriendo el grafo de conexiones: el cliente **no compone**, y
+esa es la línea que separa WG3 de WG2. Recibir la Y ya resuelta cuesta cuatro bytes por pieza y
+mantiene al servidor como única autoridad de la geometría.
+
+### D2 — Quién decide la cota: el compositor, por propagación
+
+La semilla va a y = 0. Cuando la pieza B se engancha a una boca de A que está a altura de mundo H,
+entonces `B.origin_y = H − (cota de suelo de la boca de B)`. La altura se propaga por el árbol sola.
+
+**Consecuencia que es la clave de todo:** cambiar de nivel solo puede hacerlo una pieza cuyas dos
+bocas estén a cotas distintas —una rampa, una escalera, un desnivel autorado—. El nivel no se genera:
+**se autora** (L18), igual que la irregularidad. Una pieza con bocas a 0 y a 2,5 m sube al mundo
+entero que cuelgue de ella.
+
+### D3 — `ValidateConnection` cambia de significado
+
+Hoy exige `|a.floorY − b.floorY| ≤ tolerancia`, o sea que dos bocas casan solo si están a la misma
+cota LOCAL. Eso es justo lo que impide una rampa. Pasa a exigir que casen en cota de MUNDO, que por
+D2 se cumple por construcción. El hueco caminable mínimo (`MinHeadroom`) se sigue comprobando igual.
+
+### D4 — El solape sigue siendo 2D, y esto es una limitación DECLARADA
+
+Dos piezas no pueden ocupar la misma planta aunque estén a alturas distintas. Con eso se consiguen
+**rampas, escaleras entre piezas, salas hundidas y pasillos que bajan**; NO se consigue un balcón
+sobre una nave ni una entreplanta que cruce por encima de otra pieza.
+
+Se elige así a propósito: el solape en 3D obliga a que la huella lleve rango de alturas, cambia el
+rechazo por solape —que es lo que hoy decide la forma del mundo— y volvería a mover todas las
+medidas de llenado a la vez que se introduce la Y. Dos cambios grandes encima del mismo dato es cómo
+se pierde la capacidad de saber cuál rompió qué. **Queda como enmienda futura, no como olvido.**
+
+### D5 — Lo que NO hay que tocar, y es la mitad del trabajo que no existe
+
+El ráster ya resuelve en Y: `Span { bottom_cm, top_cm }`. Las cajas de la chuleta ya tienen centro y
+tamaño en tres ejes. Añadir Y a la colocación solo desplaza los centros antes de rasterizar. La
+colisión del jugador, el ráster por chunk y el horneado de piezas **no cambian**.
+
+### D6 — Riesgo conocido, anotado antes de que muerda
+
+`resolve_move` en el servidor **conserva su propia Y** e ignora la del cliente. Con un mundo de un
+solo nivel eso nunca se notó; con varios, una Y vieja en `player.position` se propaga a todo destino
+derivado de ella. Ya costó una caída de 1,8 m al cruzar de nivel en WG2. Hay que mirarlo AL
+implementar, no después del primer informe raro.
+
+### Verificación de cierre
+
+1. Una pieza rampa con bocas a 0 y 2,5 m coloca a su hija 2,5 m más arriba — test de composición.
+2. El ráster de esa hija tiene su suelo a 2,5 m — test contra el mismo ráster que colisiona.
+3. **Se sube andando**, medido con el arnés de recorrido que ya cruzó una junta.
+4. Los dos oráculos reexportados: el algoritmo cambia, así que la regla de la enmienda 5 de ADR-095
+   obliga a rehacerlos.
+5. Suite en verde y `WireSchema.Expected` = 47 comprobado en el saludo.
