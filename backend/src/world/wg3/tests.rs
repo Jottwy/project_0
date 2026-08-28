@@ -5899,6 +5899,7 @@ fn probe_region_plan() {
             SpaceRole::Service,
             SpaceRole::Storage,
             SpaceRole::DeadEnd,
+            SpaceRole::Stair,
             SpaceRole::Void,
         ] {
             let sel: Vec<&plan::PlannedSpace> =
@@ -6104,6 +6105,8 @@ fn plan_with_a_gap(blocked: bool) -> plan::RegionPlan {
         role: SpaceRole::Office,
         scale: 1,
         depth: 3,
+        rise_cm: 0,
+        rise_from_side: 0,
     };
 
     let mut spaces = vec![room(0, 1200), room(3000, 4200)];
@@ -6350,6 +6353,88 @@ fn probe_filled_plan() {
             f.links_failed.len(),
         );
     }
+}
+
+/// **ADR-100 enmienda 2 — LAS ESCALERAS SE BAJAN.**
+///
+/// Un espacio hundido que no se pueda bajar es un agujero con una puerta: se dibuja abierto y no se
+/// entra. Se comprueba sobre el ráster del mundo SERVIDO —lo que de verdad frena— buscando, para cada
+/// espacio con desnivel, suelo pisable a la cota del FONDO dentro de su huella.
+#[test]
+fn a_sunken_space_can_actually_be_walked_down() {
+    const HEAD_M: f32 = 1.0;
+
+    let m = real_manifest();
+    let mut sunken = 0usize;
+    let mut unreachable: Vec<(i32, i32, i32)> = Vec::new();
+
+    for (rx, rz) in AUDIT_REGIONS {
+        let p = plan_of(&m, rx, rz);
+        let region = Wg3RegionCoord { x: rx, z: rz };
+        let world = Wg3ServedWorld::plan_region(&m, SERVED_SEED, region);
+
+        for s in p.spaces.iter().filter(|s| s.rise_cm != 0) {
+            sunken += 1;
+            let bottom = s.floor_y_cm + s.rise_cm;
+
+            // El fondo: el CENTRO de la franja más alejada de la puerta.
+            //
+            // **En el centro y no «a 60 cm de la pared», y la diferencia importa**: el ráster es
+            // conservador, así que una pared de 15 cm ocupa su celda de 50 entera y hasta medio metro
+            // de la pared puede salir macizo. Muestrear cerca del muro daba dos falsos negativos —
+            // fallo de la sonda, no del mundo.
+            let (x0, z0, x1, z1) = s.rect.bounds_m();
+            let steps = (s.rise_cm.abs() / plan::STEP_RISE_CM).max(1) as f32;
+            let (px, pz) = match s.rise_from_side % 4 {
+                0 => ((x0 + x1) * 0.5, z0 + (z1 - z0) / steps * 0.5),
+                1 => (x0 + (x1 - x0) / steps * 0.5, (z0 + z1) * 0.5),
+                2 => ((x0 + x1) * 0.5, z1 - (z1 - z0) / steps * 0.5),
+                _ => (x1 - (x1 - x0) / steps * 0.5, (z0 + z1) * 0.5),
+            };
+
+            let coord = chunk::Wg3ChunkCoord::containing(px, pz);
+            let raster = chunk::build_chunk_raster_with_carves(
+                &m,
+                &world.placements_touching_chunk(&m, coord),
+                &world.segments_touching_chunk(coord),
+                &world.carves_touching_chunk(coord),
+                coord,
+            );
+
+            // Suelo pisable a la cota del fondo, con hueco para la cabeza. La tolerancia es un
+            // peldaño: el centro de la franja puede caer en la penúltima si la huella no divide justo.
+            let column = raster.column_at(px, pz);
+            let mut ok = false;
+            for (i, span) in column.iter().enumerate() {
+                let head = match column.get(i + 1) {
+                    Some(next) => (next.bottom_cm - span.top_cm) as f32 / 100.0,
+                    None => f32::MAX,
+                };
+                if head < HEAD_M {
+                    continue;
+                }
+                if (span.top_cm as i32 - bottom).abs() <= plan::STEP_RISE_CM + 2 {
+                    ok = true;
+                    break;
+                }
+            }
+            if !ok {
+                unreachable.push((rx, rz, bottom));
+            }
+        }
+    }
+
+    assert!(
+        sunken > 0,
+        "no se hundió un solo espacio en cuatro regiones"
+    );
+    assert!(
+        unreachable.is_empty(),
+        "{} de {sunken} espacios hundidos no tienen suelo a la cota del fondo: se dibujan abiertos \
+         y no se entra. {:?}",
+        unreachable.len(),
+        &unreachable[..unreachable.len().min(5)]
+    );
 }
 
 /// **¿SE CRUZA DE UNA REGIÓN A OTRA ANDANDO?**
@@ -6690,6 +6775,9 @@ fn dump_region_plans() {
             let (fill, stroke, dash) = match s.role {
                 SpaceRole::Spine => ("#f59e0b", "#fbbf24", ""),
                 SpaceRole::Corridor => ("#b45309", "#fbbf24", ""),
+                // La escalera en verde ácido: es lo único que no es plano, y en un plano de planta
+                // hay que poder localizarlo de un vistazo.
+                SpaceRole::Stair => ("#65a30d", "#a3e635", ""),
                 SpaceRole::Junction => ("#ea580c", "#fb923c", ""),
                 SpaceRole::Hall => ("#0369a1", "#38bdf8", ""),
                 SpaceRole::Office => ("#334155", "#94a3b8", ""),

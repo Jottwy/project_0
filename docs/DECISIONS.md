@@ -8790,3 +8790,87 @@ que la compara contra el ráster.
 2. La resta de cajas en el cliente, con (b).
 3. Encender el catálogo en el camino servido y medir.
 4. (e), que es de Joel.
+
+## ADR-100 — Enmienda 2: la verticalidad. El desnivel por subárbol NO se sostiene, y el sitio donde sí es un espacio con una sola puerta (2026-08-28)
+
+### Contexto
+
+ADR-100 dejó `PlannedSpace::floor_y_cm` a cero en todo y lo declaró: «el plan es el sitio natural donde
+decidir un desnivel». Joel pidió entrar por ahí después de andarlo. **La altura libre por papel ya
+estaba** desde el paso 2 —nave 4,50, espina 3,60, corredor 3,20, servicio 2,80—, así que lo que
+faltaba era el suelo.
+
+### Lo que se intentó primero, y por qué NO vale
+
+Lo obvio: aterrazar subárboles. Un ala 60 cm más alta, y la banda de su corte haciendo de escalera.
+Se implementó entero y **el validador lo tumbó con 17 enlaces ilegales en una sola región**.
+
+La razón es estructural y conviene que quede escrita, porque el error es fácil de repetir: **un bloque
+del árbol no toca sólo la banda de SU corte — toca también las bandas de todos sus ancestros**, que se
+quedan a la cota vieja. El desnivel se escapa por los lados. Y como esas bandas conectan con todo,
+propagar la corrección aplana el mundo entero: con esta topología, **ningún desnivel por subárbol
+puede sobrevivir**. No es un fallo de implementación que se pueda arreglar.
+
+Se probó también acotarlo a bloques que no tocaran el borde de región —por el problema de la junta:
+una puerta acordada entre dos regiones que se planifican por separado se convierte en un muro si un
+lado sube 60 cm—. No basta: la fuga es hacia las bandas, no hacia el borde.
+
+### D5 — El desnivel vive DENTRO de un espacio con UNA sola puerta
+
+Lo que sí se sostiene, y por una razón de una línea: **si la cota de la puerta no cambia, ningún
+vecino se entera.**
+
+Un espacio de grado 1 —un callejón, un trastero al fondo de una rama— pasa a `SpaceRole::Stair`: se
+entra por su única puerta, que se queda a cota 0, y el suelo **baja a peldaños alejándose de ella**.
+El fondo queda 2 a 5 escalones más abajo. Ningún enlace del plan cambia de cota, así que la validación
+de «ningún vano puede ser un escalón que no se sube» pasa por construcción.
+
+Y es lo que se quería: el sitio raro del que no se sale a otro lado.
+
+### D6 — La contrahuella son 12 cm porque es el grosor de la losa
+
+**No es comodidad, es geometría.** El suelo de un tramo cuelga por debajo de su cota
+(`SLAB_THICKNESS_M` = 0,12) para que la cara pisable quede exactamente en ella. Con una contrahuella
+de 12, la losa del escalón de arriba llega justo hasta la cara del de abajo y **el peldaño queda
+cerrado sin una sola caja nueva**. Con los 18 de la escalera del catálogo quedaría una rendija de 6 cm
+en cada escalón, por la que se ve el vacío.
+
+Se anda de sobra: el jugador sube 27,5 cm sin saltar, medido.
+
+Y el número de escalones es un TOPE, no un objetivo: cada peldaño tiene que ser una franja más ancha
+que un vano (`MIN_GENERATED_WIDTH_CM`), o la pared que se abre entre dos franjas cae por debajo de lo
+que el ráster conservador deja pasar y la escalera nace tapiada. Una sala poco profunda baja menos.
+
+### Lo medido
+
+**42 espacios hundidos** en las cuatro regiones de referencia (13, 9, 6 y 14). Superficie andable
+80 / 76 / 81 / 71 %, mancha mayor 99-100 %, y las 4 de 4 regiones se siguen cruzando andando: la
+verticalidad no ha costado conectividad.
+
+### Dos fallos encontrados al medir
+
+1. **Una pieza del catálogo es PLANA por construcción**, y el relleno se la ponía a un espacio con
+   desnivel: el plan decía que ahí se baja y la geometría decía que no. Tres de 42, y el síntoma era
+   un agujero con puerta. Un espacio con `rise_cm` ya no admite pieza.
+2. **La sonda mentía en dos casos**, no el mundo: muestreaba a 60 cm de la pared del fondo, y el
+   ráster conservador infla una pared de 15 cm hasta llenar su celda de 50. Se muestrea en el centro
+   de la franja.
+
+### Verificaciones
+
+- (a) `a_sunken_space_can_actually_be_walked_down`: para cada espacio con desnivel, suelo pisable a la
+  cota del FONDO en el ráster del mundo servido. No es una medida, es un test.
+- (b) `the_plan_is_coherent_in_every_audited_region` incluye ahora que ningún vano sea un escalón por
+  encima de lo que el jugador sube. Es el test que tumbó el primer diseño.
+- (c) `the_regions_can_be_walked_between` sigue en 4 de 4.
+- (d) Andarlo. Un escalón que se ve y no se sube no sale en una captura.
+
+### Deuda, dicha
+
+Sigue sin haber **desniveles entre espacios** —dos alas de un edificio a cotas distintas— y por lo
+visto arriba no los habrá mientras la topología sea bandas sobre un árbol de subdivisión. Si se
+quieren, hace falta que el plan decida las cotas ANTES de repartir la circulación, no después: es otro
+diseño y es otro ADR.
+
+Y el catálogo sigue sin tener piezas con desnivel propio: `cor_ramp` y `room_stair` existen y el plan
+no las elige, porque el encaje por huella no las distingue de una sala plana.

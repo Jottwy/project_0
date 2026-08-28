@@ -37,7 +37,7 @@
 
 use super::manifest::{Wg3Manifest, Wg3Piece};
 use super::placement::Wg3Placement;
-use super::plan::{LinkKind, PlannedSpace, RegionPlan, SpaceRole};
+use super::plan::{LinkKind, PlannedSpace, RegionPlan, SpaceRole, STEP_RISE_CM};
 use super::raster::CM_PER_M;
 use super::route::{self, Mouth, PlannedRoute, Rect, RouteSettings};
 use super::segment::{
@@ -61,6 +61,10 @@ fn clear_height_cm(role: SpaceRole) -> i32 {
         SpaceRole::Spine => 360,
         SpaceRole::Corridor | SpaceRole::Junction => 320,
         SpaceRole::Service | SpaceRole::Storage => 280,
+        // La escalera va HOLGADA de techo: sus peldaños suben, y con la altura de un corredor el
+        // último quedaría a 2,60 del techo mientras el primero está a 3,20. Se ve como que el techo
+        // baja encima de ti justo donde estás subiendo.
+        SpaceRole::Stair => 380,
         _ => 320,
     }
 }
@@ -256,7 +260,12 @@ pub fn fill_full(
         if !space.role.is_built() {
             continue;
         }
-        if let Some(p) = fitting_piece(space, manifest).filter(|_| use_catalogue) {
+        // **Un espacio con desnivel NUNCA se resuelve con una pieza del catálogo.** Una pieza es
+        // plana por construcción: colocarla dejaría el plan diciendo que ahí se baja y la geometría
+        // diciendo que no. Costó tres de 42 hundidos en la primera medida, y el síntoma era un
+        // agujero con puerta — se dibuja abierto y no se entra.
+        let flat = space.rise_cm == 0;
+        if let Some(p) = fitting_piece(space, manifest).filter(|_| use_catalogue && flat) {
             out.placements.push(p);
             out.spaces_by_piece += 1;
             // Y se le abren las puertas del plan, porque las suyas están donde las puso quien la
@@ -450,6 +459,10 @@ fn footprint_cm(piece: &Wg3Piece, rotation: u8) -> (i32, i32) {
 /// reparte a partes iguales en coma flotante: dos tramos hermanas tienen que tocarse exactamente o
 /// queda una junta de un milímetro que el ráster conservador convierte en pared.
 fn emit_space(space: &PlannedSpace, wanted: &[Wanted], out: &mut FilledRegion) {
+    if space.role == SpaceRole::Stair && space.rise_cm != 0 {
+        emit_stair(space, wanted, out);
+        return;
+    }
     let max_cm = (MAX_SEGMENT_M * CM_PER_M) as i32;
     let r = space.rect;
     // División con techo escrita a mano: `i32::div_ceil` sigue siendo inestable en el toolchain del
@@ -672,6 +685,155 @@ fn shift_cuts(cuts: &mut [i32], wanted: &[Wanted], along_x: bool) {
                 after
             };
             cuts[i] = pick.clamp(lo, hi);
+        }
+    }
+}
+
+/// **ADR-100 enmienda 2 — LA ESCALERA: la banda emitida como peldaños.**
+///
+/// La banda se parte en tiras ATRAVESADA —perpendicular a su longitud—, y cada tira sube una
+/// contrahuella sobre la anterior. Cruzarla sube; recorrerla a lo largo es plano.
+///
+/// # Tres cosas que hacen que el peldaño exista de verdad
+///
+/// 1. **La contrahuella es el grosor de la losa** (`STEP_RISE_CM`). El suelo de una tira cuelga por
+///    debajo de su cota, así que la losa de la tira de arriba llega justo hasta la cara de la de
+///    abajo y tapa el peldaño. Con cualquier otro número queda una rendija por la que se ve el vacío.
+/// 2. **Entre tiras se abre la pared entera**, igual que entre dos tramos hermanas: si no, la
+///    escalera son cinco armarios apilados.
+/// 3. **La huella pasa de la celda del ráster.** 320 cm entre 5 peldaños son 64 cm, y la celda mide
+///    50: por debajo de eso el escalón queda bajo la resolución con la que se colisiona y se anda
+///    como una rampa rota.
+///
+/// La tira PRIMERA está a la cota de entrada y la ÚLTIMA a `floor + rise`, así que las salas de cada
+/// lado enganchan cada una con la suya. Eso no es casualidad: el plan pone la cota del bloque A en la
+/// banda y la del bloque B en `+ rise`, y aquí se respeta el orden.
+fn emit_stair(space: &PlannedSpace, wanted: &[Wanted], out: &mut FilledRegion) {
+    let r = space.rect;
+    let rise = space.rise_cm;
+    let steps = (rise.abs() / STEP_RISE_CM).max(1);
+    let height = clear_height_cm(space.role);
+    let max_cm = (MAX_SEGMENT_M * CM_PER_M) as i32;
+    let ceil_div = |v: i32, by: i32| (v + by - 1) / by;
+
+    // Los peldaños se alejan de la puerta, así que el eje del desnivel es el PERPENDICULAR a su
+    // pared: si se entra por el norte o por el sur (lados pares), se baja en Z.
+    let entry = space.rise_from_side % 4;
+    let across_x = !entry.is_multiple_of(2);
+    // Y el sentido: entrando por el norte (0) o por el este (1) se avanza hacia el mínimo, así que la
+    // tira de la puerta es la ÚLTIMA. Equivocarse aquí no da error: pone la puerta en el fondo del
+    // pozo, y desde dentro parece que la sala esté al revés.
+    let from_max = entry == 0 || entry == 1;
+    let across_cm = if across_x { r.width_cm() } else { r.depth_cm() };
+    let along_cm = if across_x { r.depth_cm() } else { r.width_cm() };
+    let runs = ceil_div(along_cm, max_cm - 400).max(1);
+
+    let edge = |i: i32, n: i32, from: i32, size: i32| -> i32 {
+        if i == n {
+            from + size
+        } else {
+            from + (size * i) / n
+        }
+    };
+
+    let mut emitted: Vec<usize> = Vec::new();
+    let mut placed = vec![false; wanted.len()];
+
+    for step in 0..steps {
+        // `step` cuenta desde la PUERTA. La tira 0 se queda a la cota de la puerta —que es lo que
+        // hace que ningún vecino se entere del desnivel— y cada siguiente baja una contrahuella.
+        let floor = space.floor_y_cm + (rise * step) / steps;
+        // De ahí a la tira geométrica: entrando por el máximo, la tira 0 es la última del eje.
+        let slot = if from_max { steps - 1 - step } else { step };
+        let (a0, a1) = (
+            edge(slot, steps, 0, across_cm),
+            edge(slot + 1, steps, 0, across_cm),
+        );
+        for run in 0..runs {
+            let (l0, l1) = (
+                edge(run, runs, 0, along_cm),
+                edge(run + 1, runs, 0, along_cm),
+            );
+
+            let (x0, x1, z0, z1) = if across_x {
+                (
+                    r.min_x_cm + a0,
+                    r.min_x_cm + a1,
+                    r.min_z_cm + l0,
+                    r.min_z_cm + l1,
+                )
+            } else {
+                (
+                    r.min_x_cm + l0,
+                    r.min_x_cm + l1,
+                    r.min_z_cm + a0,
+                    r.min_z_cm + a1,
+                )
+            };
+
+            let mut openings = Vec::new();
+            // Hacia el peldaño de al lado y hacia el trozo siguiente a lo largo: pared entera. Sin
+            // esto la escalera son cinco armarios apilados.
+            let (lo_side, hi_side) = if across_x { (3u8, 1u8) } else { (2u8, 0u8) };
+            let (run_lo, run_hi) = if across_x { (2u8, 0u8) } else { (3u8, 1u8) };
+            let across_len = if across_x { z1 - z0 } else { x1 - x0 };
+            let along_len = if across_x { x1 - x0 } else { z1 - z0 };
+            if slot > 0 {
+                openings.push(full_side(lo_side, across_len));
+            }
+            if slot + 1 < steps {
+                openings.push(full_side(hi_side, across_len));
+            }
+            if run > 0 {
+                openings.push(full_side(run_lo, along_len));
+            }
+            if run + 1 < runs {
+                openings.push(full_side(run_hi, along_len));
+            }
+
+            for (k, w) in wanted.iter().enumerate() {
+                if let Some(o) = opening_in(w, x0, z0, x1, z1) {
+                    openings.push(o);
+                    out.openings_built += 1;
+                    placed[k] = true;
+                }
+            }
+
+            if openings.is_empty() {
+                continue;
+            }
+            emitted.push(out.segments.len());
+            out.segments.push(Wg3Segment {
+                x_cm: x0,
+                z_cm: z0,
+                size_x_cm: x1 - x0,
+                size_z_cm: z1 - z0,
+                floor_y_cm: floor,
+                height_cm: height,
+                openings,
+                style: style_of(space.role),
+            });
+        }
+    }
+
+    for (k, w) in wanted.iter().enumerate() {
+        if placed[k] {
+            continue;
+        }
+        let mut rescued = false;
+        for &si in &emitted {
+            let s = &out.segments[si];
+            let (x0, z0) = (s.x_cm, s.z_cm);
+            let (x1, z1) = (x0 + s.size_x_cm, z0 + s.size_z_cm);
+            if let Some(o) = clamped_opening_in(w, x0, z0, x1, z1) {
+                out.segments[si].openings.push(o);
+                out.openings_built += 1;
+                rescued = true;
+                break;
+            }
+        }
+        if !rescued {
+            out.openings_dropped += 1;
         }
     }
 }
