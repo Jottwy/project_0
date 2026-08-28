@@ -7805,3 +7805,253 @@ implementar, no después del primer informe raro.
 4. Los dos oráculos reexportados: el algoritmo cambia, así que la regla de la enmienda 5 de ADR-095
    obliga a rehacerlos.
 5. Suite en verde y `WireSchema.Expected` = 47 comprobado en el saludo.
+
+---
+
+## ADR-098 — El conector generado: la geometría se adapta en vez de exigir alineación (2026-08-28) — PROPUESTA
+
+Idea de Joel, apuntada en el punto 16 del checkpoint del 08-28. Se redacta antes de tocar código
+porque cambia el formato de chunk y la regla 7 del proyecto lo exige.
+
+### Contexto: tres síntomas y una sola causa
+
+**(1) Islas.** Medido hoy sobre el mundo que se sirve, cuatro regiones de la semilla real
+(`probe_is_the_served_world_one_piece_or_islands`):
+
+| región | piezas | islas | mayor | tamaños |
+|---|---|---|---|---|
+| (0,0) | 34 | 6 (5 puertas + semilla) | 24 (71 %) | 24, 2, 2, 2, 2, 2 |
+| (1,0) | 29 | 6 | 19 (66 %) | 19, 2, 2, 2, 2, 2 |
+| (0,1) | 31 | 7 | 19 (61 %) | 19, 2, 2, 2, 2, 2, 2 |
+| (−1,2) | 31 | 5 | 23 (74 %) | 23, 2, 2, 2, 2 |
+
+**Toda isla que no es el árbol de la semilla mide exactamente 2**: el tramo de puerta más el tapón
+que lo cierra. Cruzar una junta lleva SIEMPRE a un armario de dos piezas, y no por casualidad — es
+la consecuencia declarada de que las anclas de junta no ramifiquen, que a su vez es lo que evitó
+que cada puerta creciera su propio árbol.
+
+**(2) Bucles.** ADR-096 enmienda 1: cero anillos en seis semillas, también con el catálogo deformado
+a módulo de 0,5 m. La causa es el rechazo por solape — dos ramas se descartan a una pieza de
+distancia y nunca llegan a tocarse.
+
+**(3) La junta que no lleva a nada**, que es (1) vista desde el otro lado.
+
+**La causa común, medida en la enmienda 2 de ADR-096:** dos bocas solo se conectan si coinciden
+CLAVADAS, y no coinciden nunca. Par compatible más cercano 6,25 m (peor semilla 71 m), cero pares
+por debajo de 3 m, y de los 23–258 pares que llegan a mirarse de frente **ninguno con desvío lateral
+menor de 2 cm**; el mejor alineado del mundo tiene 0,10 m de lateral tras 52,7 m de avance. Una
+familia de conectores rectos autorados no cierra ni uno solo: el problema no es la longitud, es la
+alineación.
+
+**El sistema de salas ya resolvió el problema espejo.** Una sala autorada no encaja en el laberinto,
+así que no se le pide que encaje: se excava el vano (`carve_authored_into_layout`). La geometría se
+adapta en vez de exigir alineación. Aplicarlo aquí es lo que este ADR decide.
+
+### Decisión
+
+**El conector no se elige del catálogo: se GENERA.** Y no nace como una pieza especial con reglas
+propias, sino como la unidad más pequeña que ya sabe describir el sistema: una **celda**.
+
+#### D1 — Qué es una celda generada
+
+Un rectángulo alineado a los ejes con sus bocas declaradas:
+
+```
+x_cm, z_cm        esquina mínima de la huella (mundo, centímetros enteros)
+size_x_cm, size_z_cm
+floor_y_cm        cota del suelo (ADR-097, mismas unidades que la colocación)
+height_cm         altura libre
+openings[1..4]    (lado, offset_cm, width_cm) — las bocas, con la MISMA parametrización que
+                  `Wg3Socket`: lado más offset recorriendo el perímetro en horario desde (0, D)
+style             byte de aspecto; el servidor no lo interpreta
+```
+
+**La regla de expansión, entera:** losa de suelo bajo la huella, losa de techo sobre ella, y en cada
+uno de los cuatro lados la pared partida por las bocas de ese lado. Es literalmente lo que hace hoy
+`Wg3Geometry.Build` con una pieza sin volúmenes horneados, incluido `BuildSide`. **No hay geometría
+nueva: hay una pieza que nadie dibujó.**
+
+**Un solo tipo cubre los cuatro casos que hacen falta**, y ésa es la razón de elegirlo en vez de
+"tramos y esquinas":
+
+- **tramo recto** — dos bocas en lados opuestos, a todo el ancho;
+- **quiebro** — dos bocas en lados perpendiculares;
+- **transición de ancho** — dos bocas opuestas de anchura distinta: la pared del lado estrecho se
+  parte y quedan sus dos jambas, sin un caso especial (D6);
+- **escalón** — dos celdas contiguas con `floor_y_cm` distinto: la losa de la de arriba ES la
+  contrahuella (D7).
+
+#### D2 — La expansión se escribe dos veces, y la vigila un oráculo
+
+C# la necesita para dibujar; Rust, para rasterizar la colisión. Es la misma partida doble que ya
+tienen la rotación, el compositor y el ráster, y se paga igual: **`wg3_connector_oracle.json`**,
+exportado por C# —que es el lado que fija el aspecto: `SlabThickness`, grosor de pared, rodapié— y
+reproducido por un test de Rust. Solo se compara lo SÓLIDO: la decoración no cruza la frontera de
+autoridad (R25), así que el rodapié de un conector es asunto del cliente y no entra en el fixture.
+
+El digest del catálogo NO cubre esto —una celda no está en el manifiesto—, y queda dicho para que
+nadie lea un verde de más: lo que protege al conector de una deriva es el oráculo, no el saludo.
+
+#### D3 — Wire 47 → 48
+
+`Wg3ChunkView` gana `cells: Vec<Wg3CellWire>`, omitido cuando va vacío. `WireSchema.Expected` sube a
+48 en el MISMO commit: desde ADR-061, subir uno sin el otro no deja un aviso, deja el juego
+inarrancable.
+
+Unos 24 bytes por celda y de 3 a 6 celdas por ruta. Se rechaza mandar las cajas ya expandidas —unos
+500 B por conector y, sobre todo, un cliente que dibuja cajas desnudas sin saber qué son, incapaz de
+ponerles rodapié, luces ni variación—. Queda anotada como salida de emergencia si la paridad de D2
+resultara cara de mantener.
+
+**Tope de 25 m por celda, y con eso el reparto por chunk NO se toca.** Una ruta larga se parte en
+más celdas, que es gratis. El invariante que sostiene «una pieza, un chunk» —ninguna pieza llega a
+los 50 m, así que centrada nunca asoma más allá de los vecinos inmediatos de su dueño— sigue
+valiendo palabra por palabra para las celdas, con su test. La alternativa era recortar la celda en
+la frontera del chunk (exacto, porque está alineada a los ejes) y se descarta por ser código nuevo
+para un problema que un tope resuelve.
+
+#### D4 — Quién enruta, cuándo, y por qué el oráculo sobrevive
+
+Una pasada del compositor **después** del árbol y **antes** de la de tapones, detrás de la perilla
+`route_connectors`. Igual que `close_loops`: apagada por defecto para que el oráculo de composición
+—que fija el mundo que produce C#, y C# no enruta— siga vigilando la paridad del algoritmo base. La
+enciende quien sirve el mundo (`wg3::world`).
+
+Va antes de `cap_everything_still_open` porque sellar una boca que podía cerrar un anillo es perder
+el anillo. Y obliga a una cosa: **la ocupación pasa a incluir las celdas**, así que `seal_mouth` y
+`overlaps_any` las miran igual que a las piezas — si no, el tapón se planta encima del conector.
+
+**Dos fases, mismo mecanismo, perilla propia cada una:**
+
+- **F-A, unir componentes.** Union-find sobre las piezas por bocas coincidentes (el mismo criterio
+  que ya usa la sonda). Solo parejas de bocas abiertas cuyas piezas están en componentes DISTINTAS.
+  Es lo que arregla el armario de la tabla de arriba y lo que Joel notó andando: «llega un punto que
+  se cierra y no hay manera de moverte».
+- **F-B, cerrar anillos.** Las mismas parejas dentro de una misma componente, con tope propio y una
+  condición que evita el anillo inútil: las dos piezas tienen que estar a **≥ 6 saltos por el
+  grafo**. Un anillo entre vecinas no es un anillo, es un bulto.
+
+#### D5 — El enrutado
+
+Manhattan con **≤ 3 quiebros**, que cubre todas las combinaciones de lados (recto, L, Z y U). Para
+cada pareja se generan las formas posibles en un orden fijo, se cuantiza el trazado al centímetro y
+se acepta la primera cuyas celdas no pisen ninguna huella ya colocada —piezas y celdas— ni asomen
+fuera de `bounds`. Coste = longitud + penalización por quiebro; las candidatas se ordenan por
+`(coste cuantizado, nodo, boca)` y **nunca por un float sin cuantizar ni por el recorrido de un
+`HashMap`**: el mundo no puede depender de en qué orden salieron las cosas.
+
+Topes, todos perillas: longitud máxima de ruta, celdas por ruta, conectores por región, y parejas
+candidatas por boca (las K más cercanas) para que el coste no sea cuadrático sobre el mundo entero.
+
+#### D6 — El ancho SÍ cambia, y el tipo entre `Corridor` y `Wide` también
+
+Decisión de Joel, tomada con la alternativa delante. Y hay un dato que la vuelve casi obligatoria:
+en el catálogo actual **anchura y tipo están atados** (`Sock()` da 5,0 m a `Wide` y 2,4 m a
+`Corridor`), así que relajar solo la anchura no juntaría nada. Hoy 2,4 y 5,0 parten el catálogo en
+dos mundos que apenas se mezclan, y eso es lo que el PRÓXIMO PASO del checkpoint señala como una de
+las dos palancas reales.
+
+**Esto NO es un socket comodín, y la diferencia importa** porque L5/L10 prohíben el comodín: ninguna
+pieza del catálogo gana una boca que valga para todo. Lo que cambia es que **la transición deja de
+tener que autorarse**: la pone el generador, como una celda cuyas dos bocas tienen anchuras
+distintas. La regla dura de L5/L10 sigue rigiendo entre piezas.
+
+`Service` queda fuera: solo conecta con `Service`. Es la clase semántica —los pasillos de servicio
+detrás de la escena— y unirla al público por generación sería tirar la ficción. Hoy ninguna pieza la
+usa, así que la regla no cuesta nada y dice la intención.
+
+Perilla `connector_width_change` para poder apagarlo y medir el mundo sin él. Es lo que impide que
+esta decisión quite presión al autorado de piezas de transición sin que nos enteremos.
+
+#### D7 — La cota: el formato ya sube, el enrutador todavía no
+
+Cada celda lleva su `floor_y_cm`, así que una ruta que sube es una cadena de celdas a cotas
+crecientes y **no hace falta ni un campo más**: la losa de cada celda es la contrahuella de la
+anterior. Es la misma elección de ADR-095 D2 —formato capaz, lector conservador— y aquí sale gratis.
+
+El enrutador de esta tanda une bocas a la MISMA cota de mundo (±2 cm), detrás de
+`connector_climb = false`. No es tibieza: el ráster de WG3 **todavía no gobierna el movimiento del
+jugador** (D8), así que una escalera generada se verifica hoy contra la malla del cliente y contra
+las sondas, no contra lo que frena al jugador. La sonda cuenta cuántas parejas descarta por cota
+—dato que hoy no existe y que decide si encenderlo vale la pena—, y encenderlo es un cambio del
+enrutador, no del formato ni del wire.
+
+#### D8 — La colisión no cambia, y hay una cosa que hay que saber
+
+Las cajas de una celda entran por `add_box` igual que las de la chuleta: cero código nuevo en el
+rasterizado, y el ráster de un chunk sigue recibiendo todo lo que lo TOCA.
+
+**Y el dato incómodo, comprobado y no supuesto: `build_chunk_raster` no tiene hoy ningún consumidor
+fuera de su módulo.** `resolve_move` no lee el ráster de WG3. Lo que frena al jugador en una sesión
+de WG3 es la malla que monta el cliente; el ráster es lo que leen las sondas y lo que gobernará el
+movimiento cuando F5/F6 lo enchufen. Esto no cambia ninguna decisión de arriba, pero sí cambia qué
+significa un verde: un conector «que se anda» hoy lo demuestra el cliente, y el ráster demuestra que
+el servidor lo verá igual el día que mire.
+
+#### D9 — Lo que este ADR NO toca
+
+`deliberate_cap_chance` y el resto de perillas del compositor (las fija el oráculo, y con enrutador
+puesto el valor correcto cambia: se mide después, en enmienda propia). Los pesos. El catálogo. WG2.
+La ruta A1. Y el reparto por chunk, que sobrevive por D3.
+
+### Alternativas rechazadas
+
+- **Familia de conectores rectos autorados** — medido en la enmienda 2 de ADR-096: no cierra ni un
+  anillo, porque el desvío es lateral y de metros. Es la frase que este ADR viene a corregir.
+- **Socket comodín** — convierte la composición en ruido (L5/L10), y encima no resuelve la
+  alineación, que es el problema real.
+- **Enrutar en el cliente** — el cliente no compone, y ésa es la línea que separa WG3 de WG2.
+- **Mandar las cajas ya expandidas** — sin duplicación y sin riesgo de deriva, pero deja al cliente
+  dibujando cajas desnudas. Se guarda como salida si D2 muerde.
+
+### Riesgos aceptados
+
+1. **Deriva entre los dos idiomas en la expansión de celdas.** Es la misma clase de fallo que el
+   oráculo de composición vigila, y el síntoma sería el peor del sistema: una pared que se ve y no
+   frena, o al revés. Mitigación: el fixture de D2, y que la regla sea deliberadamente pequeña.
+2. **Coste.** El enrutado es cuadrático en bocas abiertas y cada candidata prueba solape contra todo
+   lo colocado. Hay que medirlo y anotarlo en `perf-baseline.md` antes de cerrar, junto a los 0–9 ms
+   que hoy cuesta componer una región.
+3. **Un mundo que se lee generado.** Si los conectores acaban siendo una fracción grande de la
+   superficie andable, el mundo pierde lo que el catálogo le daba. Defensa: tope de conectores por
+   región y el `style` de la celda, que es el gancho para que el cliente los vista.
+4. **Relajar la anchura quita presión al autorado** de piezas de transición, que es una de las dos
+   palancas que el checkpoint señala. Defensa: `connector_width_change` apagable y una sonda que
+   mida el mundo con y sin él.
+5. **El ráster no gobierna todavía el movimiento** (D8). Un conector puede pasar todas las sondas del
+   servidor y sentirse distinto en juego hasta que F5/F6 cierren ese hueco.
+
+### Verificaciones de cierre
+
+- (a) `probe_is_the_served_world_one_piece_or_islands` da **UNA** componente en las cuatro regiones
+  medidas arriba. Es el número que este ADR existe para mover.
+- (b) Existe un anillo REAL: dos piezas unidas por dos caminos disjuntos. Contar uniones no vale —un
+  test que solo cuenta no distingue un anillo de una rama más (ADR-096, verificación b).
+- (c) Paridad de expansión C# ↔ Rust por fixture, comprobada mutando en las dos direcciones y no
+  declarada.
+- (d) Cero solapes: ninguna celda pisa una pieza, otra celda ni el borde de su región. Y ningún
+  tapón se planta encima de un conector.
+- (e) `probe_open_mouths_in_the_served_world` no empeora: toda boca que usa un conector tiene
+  geometría al otro lado.
+- (f) Llenado por región vuelto a medir con `region_size_sweep`. Si sube mucho, `REGION_CHUNKS = 3`
+  se revisa — se eligió con un compositor que se ahogaba.
+- (g) En juego: cruzar una junta y **llegar a algún sitio**, con `WireSchema.Expected` = 48 en el
+  saludo.
+
+### Plan de implementación
+
+Seis tandas, una preocupación cada una, ninguna por encima de ~300 líneas de diff:
+
+1. **T1 (Rust)** — modelo de celda y expansión a cajas, con sus tests.
+2. **T2 (C# + Rust)** — expansión en C#, exportador del oráculo, fixture y test de paridad.
+3. **T3 (Rust)** — el enrutador: union-find, candidatas, formas de ruta, ocupación con celdas,
+   perillas. Entra INERTE (`route_connectors = false`).
+4. **T4 (Rust)** — el mundo servido: celdas por región, reparto por chunk con el tope de 25 m,
+   ráster. Se enciende la perilla en `wg3::world`.
+5. **T5 (wire)** — `Wg3CellWire`, `cells` en el chunk, 47 → 48 y su espejo en C#, parser y dibujado
+   en el streamer.
+6. **T6 (medición)** — sondas: islas, anillo real, llenado, coste en ms, parejas descartadas por
+   cota y por anchura.
+
+`docs/WORLDGEN3-BRIEF.md` gana en T1 la nota de que la transición de anchura pasa a poder generarse:
+las reglas L5/L6 viven ahí y un brief que no lo diga envejece a mentira.
