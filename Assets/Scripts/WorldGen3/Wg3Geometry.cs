@@ -58,8 +58,24 @@ namespace BackroomsSurvival.WorldGen3
         public float rise;
         public float run;
 
+        /// <summary>
+        /// ADR-097 enmienda 1 — `run` NO BAJA DE LA CELDA DEL RÁSTER (0,50 m), y por eso el
+        /// defecto es 0,60 y no 0,29.
+        ///
+        /// El rasterizado del servidor es conservador: cada celda se queda con el peldaño MÁS ALTO
+        /// de los que toca. Con huella de 0,29 m una celda de 0,50 abarca hasta tres peldaños y los
+        /// funde en un escalón de 36 cm — por encima de los 0,275 del `m_StepOffset` del jugador,
+        /// así que las dos piezas verticales del catálogo eran INFRANQUEABLES en la colisión aunque
+        /// el cliente las dibujara subibles. Medido pieza a pieza: `room_stair` pedía 0,38 m y
+        /// `cor_ramp` 0,36.
+        ///
+        /// Con 0,60 cada celda toca dos peldaños consecutivos como mucho, así que el salto entre
+        /// celdas vecinas es exactamente un `rise`. La regla general, que vale para todo WG3: la
+        /// geometría más fina que la celda del ráster CAMBIA DE SIGNIFICADO al pasar al servidor,
+        /// no de precisión.
+        /// </summary>
         public Wg3StairRun(float x, float z, float yawDegrees, float width,
-            int steps, float rise = 0.18f, float run = 0.29f)
+            int steps, float rise = 0.18f, float run = 0.60f)
         {
             position = new Vector2(x, z);
             this.yawDegrees = yawDegrees;

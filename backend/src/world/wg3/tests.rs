@@ -390,10 +390,15 @@ fn the_stair_climbs_step_by_step_in_the_raster() {
     let (min_x, min_z, _, _) = p.bounds(piece);
     let x = min_x + 7.0; // centro del tramo autorado
 
+    // La ventana ES la longitud del tramo, y cambió con él: ADR-097 enmienda 1 subió la huella del
+    // peldaño de 0,29 a 0,60 m —por debajo de la celda de 0,50 el ráster funde peldaños y la
+    // escalera se vuelve infranqueable—, así que 12 peldaños miden 7,20 m y no 3,48. Los umbrales
+    // NO se tocan: siguen pidiendo 8 escalones distintos y llegar por encima de 1,9 m, que es lo
+    // que el test prueba. Con la huella vieja este recorrido da 6 y falla, que es lo que debe.
     let mut previous = -1.0f32;
     let mut climbed = 0;
     let mut z = min_z + 5.6;
-    while z < min_z + 8.9 {
+    while z < min_z + 12.8 {
         let floor = raster
             .floor_below(x, 4.0, z)
             .unwrap_or_else(|| panic!("sin suelo en z={z}"));

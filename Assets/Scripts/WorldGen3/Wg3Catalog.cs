@@ -293,8 +293,12 @@ namespace BackroomsSurvival.WorldGen3
                     Sock(3, 4.2f, Wg3SocketType.Corridor),
                     Sock(1, 4.5f, Wg3SocketType.Corridor)
                 },
+                // 12 peldaños × 0,60 m de huella = 7,20 m, de z = 5,5 a z = 12,7. La plataforma
+                // empieza EXACTAMENTE donde acaban los peldaños (12,7) y muere a 0,5 m del borde:
+                // con la huella vieja de 0,29 arrancaba en z = 9, y al estirar el tramo se habría
+                // quedado enterrada bajo la propia escalera.
                 stairs = new[] { new Wg3StairRun(7f, 5.5f, 0f, 3f, 12) },
-                blocks = new[] { new Wg3Block(8.5f, 11.5f, 6f, 5f, 0.22f, 2.16f) }
+                blocks = new[] { new Wg3Block(8.5f, 14.6f, 6f, 3.8f, 0.22f, 2.16f) }
             });
 
             // R30 — la rareza se raciona. Si todo es raro, lo raro es la norma y el mundo vuelve
@@ -366,10 +370,12 @@ namespace BackroomsSurvival.WorldGen3
                 },
                 // Cuatro peldaños que suben hacia +X, y detrás la plataforma maciza que sostiene el
                 // tramo alto hasta la boca. Sin el bloque, la salida alta daría al aire.
+                // 4 peldaños × 0,60 m = 2,40 m, de x = 3,0 a x = 5,4. La plataforma que sostiene el
+                // tramo alto arranca ahí y llega a la boca de salida (x = 8).
                 stairs = new[] { new Wg3StairRun(3.0f, CorridorWidth * 0.5f, 90f, CorridorWidth, 4) },
                 blocks = new[]
                 {
-                    new Wg3Block(6.08f, CorridorWidth * 0.5f, 3.84f, CorridorWidth, 0.72f)
+                    new Wg3Block(6.70f, CorridorWidth * 0.5f, 2.60f, CorridorWidth, 0.72f)
                 }
             });
 
