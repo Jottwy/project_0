@@ -245,12 +245,33 @@ namespace BackroomsSurvival.WorldGen3
 
             if (streamer != null && player != null && streamer.TryGetSpawnPoint(out Vector3 point))
             {
-                player.transform.position = point;
-                player.Respawn(point);
+                // NO EN LA PRIMERA PIEZA QUE LLEGA, SINO EN EL CENTRO DE LA REGIÓN.
+                //
+                // La primera que llega es la del primer chunk que conteste, y desde que las anclas
+                // de junta dejaron de ramificarse cada puerta es un BOLSILLO AISLADO de dos piezas
+                // —tramo más tapón—. Aparecer en uno de ésos deja al jugador encerrado en un armario
+                // mientras el 74 % del mundo está en otro sitio, y desde dentro eso se lee como
+                // «entro en un pasillo y no conecta con nada». Le pasó a Joel dos veces.
+                //
+                // El centro de la región es donde el compositor SIEMBRA (`seed_at`), o sea la raíz
+                // del árbol grande. No es una heurística: es el único punto del que se sabe por
+                // construcción que cuelga la componente mayor.
+                float rx = Mathf.Floor(point.x / RegionMeters) * RegionMeters + RegionMeters * 0.5f;
+                float rz = Mathf.Floor(point.z / RegionMeters) * RegionMeters + RegionMeters * 0.5f;
+
+                // Se cae desde arriba y se deja que la colisión resuelva: la semilla puede no caber
+                // en el centro exacto —si un ancla ocupaba el sitio— y ahí la pieza más cercana es
+                // mejor que el punto teórico. Si no hay suelo, el veredicto lo dirá.
+                var centre = new Vector3(rx, 2.0f, rz);
+                bool hasFloor = Physics.Raycast(centre + Vector3.up * 3f, Vector3.down, 12f);
+                Vector3 chosen = hasFloor ? centre : point;
+
+                player.transform.position = chosen;
+                player.Respawn(chosen);
                 _placed = true;
-                _landedAt = point;
+                _landedAt = chosen;
                 _verdictAt = Time.time + 3f;
-                Debug.Log($"[WG3] jugador colocado dentro de la primera pieza en {point}");
+                Debug.Log($"[WG3] jugador colocado en {(hasFloor ? "el centro de su región" : "la primera pieza (el centro no tenía suelo)")}: {chosen}");
                 return;
             }
 
