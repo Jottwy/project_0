@@ -3187,6 +3187,141 @@ fn narrowest_doorway_clearance() {
     );
 }
 
+/// **QUÉ ESCALÓN PIDE CADA PIEZA PARA PODER CRUZARLA**, medido sobre su propia colisión.
+///
+/// Sale de un hallazgo: los ÚNICOS nodos del mundo servido cuyas bocas caen en manchas andables
+/// distintas son `cor_ramp`, siempre. La rampa está bien autorada —cuatro peldaños de 18 cm, por
+/// debajo del `m_StepOffset` 0,275 de `FPS_Player.prefab`— pero su HUELLA es de 0,29 m y la celda
+/// del ráster mide 0,50 m: el rasterizado conservador se queda con el peldaño más alto de los que
+/// toca cada celda, y **funde dos peldaños en uno de 36 cm**. El cliente dibuja una escalera que se
+/// sube y el servidor pone un bordillo que no.
+///
+/// La regla que sale de aquí, y vale para toda escalera que se autore: **la huella tiene que ser al
+/// menos la celda del ráster**, o la contrahuella efectiva se multiplica por cuántos peldaños quepan
+/// en una celda.
+///
+/// Esta sonda no supone nada de eso: coloca cada pieza sola, la rasteriza y busca el escalón MÁS
+/// PEQUEÑO que la deja de una pieza. Cualquier geometría interior que pida más que el jugador
+/// aparece aquí, sea una escalera o no.
+#[test]
+fn probe_what_step_each_piece_demands() {
+    /// `m_StepOffset` de `FPS_Player.prefab`. Lo que el jugador sube sin saltar.
+    const PLAYER_STEP_M: f32 = 0.275;
+    const CELL: f32 = 0.5;
+    const HEAD_M: f32 = 1.0;
+
+    let m = real_manifest();
+    let mut demanding = Vec::new();
+
+    for piece in &m.pieces {
+        let placement = Wg3Placement {
+            piece: piece.index,
+            rotation: 0,
+            origin_x_cm: 0,
+            origin_z_cm: 0,
+            origin_y_cm: 0,
+        };
+        let boxes = placement::placed_collision(piece, &placement);
+        if boxes.is_empty() {
+            continue;
+        }
+        let (x0, z0, x1, z1) = placement.bounds(piece);
+        let mut builder = Wg3RasterBuilder::covering(x0 - 1.0, z0 - 1.0, x1 + 1.0, z1 + 1.0);
+        for b in &boxes {
+            builder.add_box(b);
+        }
+        let raster = builder.finish();
+
+        let cells_x = ((x1 - x0) / CELL).ceil() as usize;
+        let cells_z = ((z1 - z0) / CELL).ceil() as usize;
+        let levels_of = |ix: usize, iz: usize| -> Vec<f32> {
+            let x = x0 + ix as f32 * CELL + CELL * 0.5;
+            let z = z0 + iz as f32 * CELL + CELL * 0.5;
+            let column = raster.column_at(x, z);
+            let mut out = Vec::new();
+            for (i, span) in column.iter().enumerate() {
+                let head = match column.get(i + 1) {
+                    Some(next) => (next.bottom_cm - span.top_cm) as f32 / 100.0,
+                    None => f32::MAX,
+                };
+                if (HEAD_M..=6.0).contains(&head) {
+                    out.push(span.top_cm as f32 / 100.0);
+                }
+            }
+            out
+        };
+        let floors: Vec<Vec<f32>> = (0..cells_z)
+            .flat_map(|iz| (0..cells_x).map(move |ix| (ix, iz)))
+            .map(|(ix, iz)| levels_of(ix, iz))
+            .collect();
+
+        // Cuántas manchas quedan si el jugador sube como mucho `step`.
+        let blobs_with = |step: f32| -> usize {
+            let mut seen: Vec<Vec<bool>> = floors.iter().map(|l| vec![false; l.len()]).collect();
+            let mut count = 0usize;
+            for iz0 in 0..cells_z {
+                for ix0 in 0..cells_x {
+                    for l0 in 0..floors[iz0 * cells_x + ix0].len() {
+                        if seen[iz0 * cells_x + ix0][l0] {
+                            continue;
+                        }
+                        count += 1;
+                        seen[iz0 * cells_x + ix0][l0] = true;
+                        let mut queue = std::collections::VecDeque::new();
+                        queue.push_back((ix0, iz0, l0));
+                        while let Some((ix, iz, li)) = queue.pop_front() {
+                            let here = floors[iz * cells_x + ix][li];
+                            for (dx, dz) in [(1i32, 0i32), (-1, 0), (0, 1), (0, -1)] {
+                                let (nx, nz) = (ix as i32 + dx, iz as i32 + dz);
+                                if nx < 0
+                                    || nz < 0
+                                    || nx as usize >= cells_x
+                                    || nz as usize >= cells_z
+                                {
+                                    continue;
+                                }
+                                let (nx, nz) = (nx as usize, nz as usize);
+                                for (nl, there) in floors[nz * cells_x + nx].iter().enumerate() {
+                                    if seen[nz * cells_x + nx][nl] || (there - here).abs() > step {
+                                        continue;
+                                    }
+                                    seen[nz * cells_x + nx][nl] = true;
+                                    queue.push_back((nx, nz, nl));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            count
+        };
+
+        // El escalón que pide la pieza es el menor que no mejora nada por encima de él. Se busca
+        // por barrido grueso: lo que importa es el orden de magnitud contra los 0,275 del jugador.
+        let target = blobs_with(10.0);
+        let mut needed = f32::MAX;
+        for step_cm in (2..=60).step_by(2) {
+            let step = step_cm as f32 / 100.0;
+            if blobs_with(step) == target {
+                needed = step;
+                break;
+            }
+        }
+        if needed > PLAYER_STEP_M {
+            demanding.push(format!("{} pide {:.2} m", piece.id, needed));
+        }
+    }
+
+    println!(
+        "[wg3] el jugador sube {PLAYER_STEP_M:.3} m sin saltar. Piezas que piden más: {}",
+        if demanding.is_empty() {
+            "ninguna".to_string()
+        } else {
+            demanding.join(", ")
+        }
+    );
+}
+
 /// **NINGUNA BOCA DEL MUNDO SERVIDO ESTÁ TAPIADA.** La guardia del arreglo de la enmienda 2.
 ///
 /// `narrowest_doorway_clearance` protege la CONSTANTE; esto protege el MUNDO. Son cosas distintas:
@@ -3547,6 +3682,48 @@ fn probe_what_each_walkable_blob_is_made_of() {
             let set = blobs_of_node(k);
             if set.len() > 1 {
                 uncrossable += 1;
+                // Un nodo con las bocas en manchas distintas es geometría que el grafo da por
+                // unida y que no se puede cruzar por dentro. Se nombra: son pocos y cada uno es
+                // un sitio concreto del mundo.
+                if k < n {
+                    let p = &world.placements()[k];
+                    let piece = m.piece(p.piece).expect("pieza fuera del catálogo");
+                    println!(
+                        "[wg3]     NO SE CRUZA: pieza {k} ({}) en ({},{}) giro {} — bocas en las \
+                         manchas {set:?}",
+                        piece.id, p.origin_x_cm, p.origin_z_cm, p.rotation
+                    );
+                    // De boca a boca, paso a paso: lo que separa un escalón demasiado alto de una
+                    // columna maciza son estos volcados y nada más.
+                    if mouths[k].len() >= 2 {
+                        let (ax, az) = mouths[k][0];
+                        let (bx, bz) = mouths[k][1];
+                        for step in 0..=40 {
+                            let t = step as f32 / 40.0;
+                            let (x, z) = (ax + (bx - ax) * t, az + (bz - az) * t);
+                            let col = match raster_at(x, z) {
+                                None => "fuera".to_string(),
+                                Some(r) => r
+                                    .column_at(x, z)
+                                    .iter()
+                                    .map(|s| format!("[{}..{}]", s.bottom_cm, s.top_cm))
+                                    .collect::<Vec<_>>()
+                                    .join(" "),
+                            };
+                            println!(
+                                "[wg3]       t={t:.2} ({x:.2},{z:.2}) mancha {:>3}  {col}",
+                                blob_at(x, z)
+                            );
+                        }
+                    }
+                } else {
+                    let s = &segs[k - n];
+                    println!(
+                        "[wg3]     NO SE CRUZA: tramo {k} en ({},{}) {}×{} cm cota {} — bocas en \
+                         las manchas {set:?}",
+                        s.x_cm, s.z_cm, s.size_x_cm, s.size_z_cm, s.floor_y_cm
+                    );
+                }
             }
             if set.contains(&spawn_blob) {
                 if k < n {
