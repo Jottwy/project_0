@@ -66,7 +66,11 @@
 
 5. **LO QUE QUEDA, con nombre.** (a) los vanos en el wire; (b) `Goal::JoinIslands` / `best_bridge` siguen en pie sirviendo a `compose_region` y se retiran cuando la ruta nueva esté demostrada EN JUEGO; (c) WG3 sigue sin ser autoridad de colisión/movimiento/nav/spawn — `BACKROOMS_WG3=1` sigue siendo aditiva y no se tocó. Y **`absorb_chance`/`densify_attempts` quedan MOOT**: apuntan al compositor por bocas, que ya no sirve el mundo. Encenderlos no cambia lo que se anda.
 
-6. **FALTA ANDARLO.** El plano se lee como una planta de edificio; cómo se recorre no se sabe. Nota de criterio para cuando se ande: el resultado es MUY ortogonal y ordenado, y la rareza que pide Backrooms sale hoy sólo de las zonas `Weird` del campo de escala y de los vacíos. Perilla identificada, no trabajo hecho.
+6. **ANDADO POR JOEL, Y SALIÓ UN BUG GORDO (`39bc4242`).** «Hay partes que están cerradas»: **una de cada cuatro puertas de junta se perdía** —64 de 256 en 49 regiones— porque un corte de la subdivisión caía encima y la partía entre dos espacios. Con eso, **sólo 2 de 4 regiones eran alcanzables: 36 632 m² contra 71 393**. El aviso llevaba todo el rato en el log del backend (`[wg3] puerta de junta en (x,z) sin espacio del plan que la abra`) y ningún test lo miraba: `the_fill_honours_every_planned_doorway` cuenta `gates_failed`, o sea las que llegan al RELLENO, y una puerta que el PLAN descarta nunca llega. **Un cero que sólo cuenta lo que sobrevivió no dice nada de lo que se perdió.** Ahora hay dos tests que muerden, verificado con la holgura a cero.
+
+7. **ADR-101 HECHO (`11965a31`): los vanos excavados viajan, wire 48 → 49.** Con eso el catálogo se ENCIENDE en el camino servido: 8/8/6/2 piezas autoradas por región, el primer contenido dibujado a mano que forma parte del mundo. `Wg3Carving.Apply` resta AABB en el cliente antes de malla y colliders, a piezas Y tramos. **Los 5 tests de `Wg3CarvingTests` compilan verdes pero NO se han ejecutado**: el disparador en editor sigue roto.
+
+8. **FALTA SEGUIR ANDÁNDOLO.** El plano se lee como una planta de edificio; cómo se recorre, sólo a medias. Nota de criterio para cuando se ande: el resultado es MUY ortogonal y ordenado, y la rareza que pide Backrooms sale hoy sólo de las zonas `Weird` del campo de escala y de los vacíos. Perilla identificada, no trabajo hecho.
 
 ---
 
