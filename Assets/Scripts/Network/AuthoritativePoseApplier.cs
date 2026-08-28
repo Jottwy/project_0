@@ -164,6 +164,15 @@ namespace BackroomsSurvival.Net
                     Debug.LogWarning("[AuthPoseApplier] snap window EXPIRED without snapping — a reposition event arrived but no reposition was applied");
             }
 
+            // AUDIT-2026-08-28 A28-02: the event arm's immediate SnapTo (OnGameEvent) is a
+            // one-shot attempt — if the motor is null right then (mid rig-rebuild, e.g. a heavy
+            // respawn/Level 4 scene load), it silently misses and nothing retried it unless a
+            // movement delta ALSO happened to land inside the window. Retry every frame the
+            // window stays armed for a KNOWN target — only the state-derived arm (no target,
+            // waits on a differing delta by design) is left alone.
+            if (_snapWindowRemaining > 0f && _hasExpectedPos && !_snappedThisWindow)
+                SnapTo(_expectedPos);
+
             // Subscribe once the IPC client exists (mirrors PhantomAttackHandler). Known limit of
             // this pattern (shared with PhantomAttackHandler): if the IPCClient is destroyed and
             // recreated on reconnect, we keep the stale `_ipc` and don't re-subscribe. The client
