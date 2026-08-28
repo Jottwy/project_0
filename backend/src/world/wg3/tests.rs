@@ -889,6 +889,8 @@ fn settings_from(oracle: &CompositionOracle, budget: usize) -> compose::Wg3Compo
         // Y sin holgura de solape, por lo mismo que lo de arriba: C# rechaza toda candidata que
         // pise algo colocado. Cualquier valor distinto de cero aquí mediría otro algoritmo.
         overlap_slack_m: 0.0,
+        // ADR-099 — apagada por lo mismo: C# no absorbe.
+        absorb_chance: 0.0,
         collect_absorption_hits: false,
         anchors: Vec::new(),
     }
@@ -1560,6 +1562,82 @@ fn probe_absorption_ceiling() {
     println!(
         "[wg3] conexiones nuevas que daría la absorción: {} por región de media",
         total_new / regions.max(1)
+    );
+}
+
+/// SONDA — ADR-099 paso 1: ¿cuántas absorciones ocurren DE VERDAD?
+///
+/// `#[ignore]` porque no afirma nada: busca un número. Lánzala con
+/// `cargo test --manifest-path backend/Cargo.toml probe_absorption_applied -- --ignored --nocapture`.
+///
+/// `probe_absorption_ceiling` predijo ~20 conexiones por región contando los choques que hoy se
+/// tiran. Ese número es un TECHO y no una promesa: se midió sobre TODOS los rechazos por solape,
+/// mientras que la absorción sólo se intenta donde el catálogo ya no tiene con qué seguir. La
+/// distancia entre los dos números es lo que esta sonda mide, y sin ella el techo se leería como
+/// resultado.
+///
+/// Se mira además `forced_caps`, porque una absorción es una boca que ANTES se sellaba: si absorbe
+/// mucho y los tapones no bajan, es que está absorbiendo bocas que se iban a resolver solas.
+#[test]
+#[ignore]
+fn probe_absorption_applied() {
+    // Alto a propósito: esta sonda busca el TECHO de lo que la absorción puede llegar a hacer, no
+    // el valor que se servirá. La perilla de producción se elige después, con estos números.
+    const ABSORB_CHANCE: f32 = 1.0;
+
+    let m = real_manifest();
+    let side = REGION_CHUNKS as f32 * 50.0;
+
+    println!(
+        "[wg3] ADR-099 paso 1 — absorciones aplicadas con chance {ABSORB_CHANCE}, sin absorber \
+         contra con absorber."
+    );
+
+    let mut total = 0u32;
+    let mut regions = 0usize;
+    for (rx, rz) in [(0, 0), (1, 0), (0, 1), (-1, -1), (3, -2), (7, 11), (2, 5)] {
+        let (min_x, min_z) = (rx as f32 * side, rz as f32 * side);
+        let seed = Wg3RegionCoord { x: rx, z: rz }.composer_seed(SERVED_SEED);
+        let base = compose::Wg3ComposerSettings {
+            budget: INTERIM_BUDGET,
+            close_loops: true,
+            bounds: Some((min_x, min_z, min_x + side, min_z + side)),
+            ..compose::Wg3ComposerSettings::default()
+        };
+
+        let off = compose::compose(seed, &m, &base);
+        let on = compose::compose(
+            seed,
+            &m,
+            &compose::Wg3ComposerSettings {
+                absorb_chance: ABSORB_CHANCE,
+                ..base.clone()
+            },
+        );
+
+        println!(
+            "[wg3] región ({rx:>2},{rz:>2}): piezas {:>3} → {:>3} | tapones forzados {:>3} → {:>3} \
+             | tramos {:>3} → {:>3} | ABSORCIONES {:>3} \
+             | intentos {:>3} (estrecha {:>3}, sin destino {:>3}, bloqueada {:>3})",
+            off.placements.len(),
+            on.placements.len(),
+            off.forced_caps,
+            on.forced_caps,
+            off.segments.len(),
+            on.segments.len(),
+            on.absorbed,
+            on.absorb_tries,
+            on.absorb_narrow,
+            on.absorb_no_target,
+            on.absorb_blocked,
+        );
+        total += on.absorbed;
+        regions += 1;
+    }
+
+    println!(
+        "[wg3] absorciones aplicadas: {} por región de media (el TECHO decía ~20)",
+        total / regions.max(1) as u32
     );
 }
 

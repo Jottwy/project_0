@@ -23,10 +23,10 @@
 
 use super::hash;
 use super::manifest::{Wg3Manifest, Wg3Piece, Wg3Socket};
-use super::placement::{local_point, Wg3Placement};
+use super::placement::{local_point, outward_normal, Wg3Placement};
 use super::route::{self, Mouth, Rect, RouteSettings};
 use super::scale;
-use super::segment::Wg3Segment;
+use super::segment::{Wg3Opening, Wg3Segment, MAX_SEGMENT_M, MIN_GENERATED_WIDTH_CM};
 
 /// Estado de una boca. Espejo de las constantes de `Wg3World`.
 pub const SOCKET_OPEN: u8 = 0;
@@ -50,8 +50,26 @@ pub const SOCKET_CAPPED: u8 = 2;
 /// otro mundo, y las sondas lo miden como tal.
 pub const SOCKET_PENDING_CAP: u8 = 3;
 
+/// ADR-099 — fachada mínima para absorber, en metros.
+///
+/// Es el ancho de vano que habrá que excavar en D3. Se exige AL ABSORBER y no al excavar porque un
+/// tramo tendido contra una esquina ya no se puede arreglar después: o hay sitio para el paso desde
+/// el principio, o no se tiende. Sale de `MIN_GENERATED_WIDTH_CM`, que es la medida y no una
+/// opinión.
+const ABSORB_MIN_FRONTAGE_M: f32 = MIN_GENERATED_WIDTH_CM as f32 / 100.0;
+
+/// ADR-099 — recorrido mínimo para que absorber valga la pena, en metros.
+///
+/// Por debajo de esto el tramo es una junta y no un pasillo: no se anda, no se ve y sólo añade una
+/// caja al mundo. Las dos piezas ya se tocan ahí, así que lo que hace falta en ese caso es el vano
+/// (D3) y no un conector.
+const ABSORB_MIN_M: f32 = 1.0;
+
 /// Sal del sorteo de tapón voluntario.
 const SALT_CAP: u32 = 0xC0DE_C0DE;
+/// ADR-099 D4 — sal del sorteo de absorción. Propia, para que encenderla no mueva ninguna otra
+/// decisión del compositor: dos sorteos que comparten sal se arrastran el uno al otro.
+const SALT_ABSORB: u32 = 0xAB50_4B10;
 /// Sal de la elección de pieza. Distinta de la anterior para que las dos decisiones que ocurren en el
 /// MISMO punto no queden correlacionadas.
 const SALT_PICK: u32 = 0x0F1C_E5ED;
@@ -160,6 +178,27 @@ pub struct Wg3ComposerSettings {
     /// llenado; no para servir un mundo. El excavado es el trabajo de verdad y necesita ADR.
     pub overlap_slack_m: f32,
 
+    /// ADR-099 — LA ABSORCIÓN. Una boca sin candidata de catálogo, en vez de sellarse, tiende un
+    /// tramo hasta la pieza que tiene delante y muere contra ella.
+    ///
+    /// La idea, de Joel: «si un pasillo topa con una sala, que se elimine el resto de pasillo y se
+    /// unifique con la sala; la sala manda por encima de él». La jerarquía de D1 sale sola de
+    /// hacerlo así — el que ya está colocado no se toca, el que llega se recorta.
+    ///
+    /// **Lo que este paso NO hace todavía, y hay que saberlo antes de leer un número:** el tramo
+    /// muere CONTRA la pared, sin vano. Geométricamente el mundo deja de tener hueco entre las dos
+    /// piezas, pero no hay paso — eso es D3 y va en el paso siguiente.
+    ///
+    /// **ES UNA PROBABILIDAD Y NO UN INTERRUPTOR, y eso lo decidió una medida.** La primera versión
+    /// absorbía sólo cuando el catálogo ya no tenía con qué seguir, que era lo conservador; dio
+    /// **CERO absorciones en siete regiones**, con 1 a 7 intentos por región y casi todos sin nada
+    /// delante. El techo de ~20 que predijo `probe_absorption_ceiling` sale de choques que ocurren
+    /// mientras el mundo CRECE —con otras candidatas todavía viables—, no de los callejones. Así que
+    /// la absorción tiene que competir con colocar una pieza, y cuánto compite es una perilla.
+    ///
+    /// `0.0` por defecto, como `close_loops` y `route`: C# no absorbe, y el oráculo fija su mundo.
+    pub absorb_chance: f32,
+
     /// SONDA — apuntar CONTRA QUÉ se choca cada candidata rechazada por solape, no solo cuántas.
     ///
     /// Mide el techo de la absorción: la idea de que un pasillo que topa con una sala no se
@@ -210,6 +249,7 @@ impl Default for Wg3ComposerSettings {
             seed_at: None,
             route: None,
             overlap_slack_m: 0.0,
+            absorb_chance: 0.0,
             collect_absorption_hits: false,
             anchors: Vec::new(),
         }
@@ -272,6 +312,17 @@ pub struct Wg3ComposedWorld {
 
     /// SONDA — vacío salvo con `collect_absorption_hits`. Ver [`Wg3AbsorptionHit`].
     pub absorption_hits: Vec<Wg3AbsorptionHit>,
+
+    /// ADR-099 — bocas que en vez de sellarse tendieron un tramo hasta lo que tenían delante. Es el
+    /// número que contrasta con las ~20 por región que predijo `probe_absorption_ceiling`: si sale
+    /// muy por debajo, la predicción contaba choques que en el mundo real nunca llegan a intentarse.
+    pub absorbed: u32,
+    /// ADR-099 — diagnóstico del paso 1: intentos y en qué se cae cada uno. Sin esto, un cero de
+    /// `absorbed` no distingue «no se intenta» de «se intenta y no hay nada delante».
+    pub absorb_tries: u32,
+    pub absorb_narrow: u32,
+    pub absorb_no_target: u32,
+    pub absorb_blocked: u32,
 
     /// Candidatas descartadas porque la huella pisaba algo ya colocado. No es un error: es la medida
     /// de cuánto aprieta el mundo. Un cero sostenido significa que el catálogo es demasiado pequeño
@@ -376,6 +427,13 @@ struct Composer<'a> {
     rejected_by_bounds: u32,
     /// SONDA — ver [`Wg3AbsorptionHit`]. Vacío salvo con `collect_absorption_hits`.
     absorption_hits: Vec<Wg3AbsorptionHit>,
+    /// ADR-099 — absorciones aplicadas.
+    absorbed: u32,
+    /// ADR-099 — diagnóstico: intentos, y en qué se cae cada uno.
+    absorb_tries: u32,
+    absorb_narrow: u32,
+    absorb_no_target: u32,
+    absorb_blocked: u32,
 
     /// ADR-098 — la geometría generada y el grafo que hace falta para decidir dónde tenderla.
     ///
@@ -413,6 +471,11 @@ impl<'a> Composer<'a> {
             rejected_by_validator: 0,
             forced_caps: 0,
             absorption_hits: Vec::new(),
+            absorbed: 0,
+            absorb_tries: 0,
+            absorb_narrow: 0,
+            absorb_no_target: 0,
+            absorb_blocked: 0,
             segments: Vec::new(),
             edges: Vec::new(),
             connectors: 0,
@@ -568,6 +631,22 @@ impl<'a> Composer<'a> {
                     } else if !self.seal_mouth(pi, si, px, pz, parent_world_side, &parent_socket) {
                         self.cap(pi, si, px, pz, parent_world_side, &parent_socket, false);
                     }
+                    continue;
+                }
+            }
+
+            // ADR-099 — LA ABSORCIÓN COMPITE CON COLOCAR UNA PIEZA, y por eso va antes de sortear.
+            //
+            // `try_absorb` sólo prospera si hay pared enfrente a tiro, así que el sorteo no decide
+            // «absorber o no» sino «si se puede, hacerlo»: donde no hay nada delante esto es un
+            // no-op y la boca sigue su camino de siempre. Va DESPUÉS del tapón deliberado por lo
+            // mismo que los bucles van antes — una boca que muere en una sala vale más que una
+            // pared ciega, pero no más que la decisión de cerrar.
+            if self.settings.absorb_chance > 0.0 {
+                let mut absorb_stream = hash::stream_at(self.world_seed, px, pz, SALT_ABSORB);
+                if absorb_stream.next01() < self.settings.absorb_chance
+                    && self.try_absorb(pi, si, px, pz, parent_world_side, &parent_socket)
+                {
                     continue;
                 }
             }
@@ -1042,6 +1121,133 @@ impl<'a> Composer<'a> {
         false
     }
 
+    /// ADR-099 paso 1 — tender un tramo desde esta boca hasta la pieza que tenga enfrente.
+    ///
+    /// Hermana de `try_close_loop`, y la diferencia es lo que la hace valer: aquélla necesita que
+    /// otra BOCA caiga clavada en el mismo punto —lo que casi nunca pasa, de ahí los cero anillos de
+    /// ADR-096 enmienda 1—, y ésta sólo necesita que haya PARED enfrente, que es lo que sobra.
+    ///
+    /// **El tramo muere contra la pared y lleva UNA sola boca, la del padre.** Poner la segunda sin
+    /// haber excavado el vano dejaría una boca contra materia maciza, que es exactamente lo que
+    /// `no_mouth_in_the_served_world_is_walled_shut` prohíbe — y con razón, porque el cliente
+    /// dibujaría un paso donde el servidor tiene muro. El vano es D3, y va en el paso siguiente.
+    fn try_absorb(
+        &mut self,
+        node: usize,
+        socket: usize,
+        px: f32,
+        pz: f32,
+        parent_world_side: u8,
+        parent_socket: &Wg3Socket,
+    ) -> bool {
+        // ADR-098 enmienda 2 — por debajo de esto el rasterizado conservador se come el vano y el
+        // tramo nace impasable. Se descarta la absorción antes que emitir un pasillo falso.
+        self.absorb_tries += 1;
+        let width = parent_socket.width;
+        if to_centimetres(width) < MIN_GENERATED_WIDTH_CM {
+            self.absorb_narrow += 1;
+            return false;
+        }
+        let half = width * 0.5;
+
+        let (dx, dz) = outward_normal(parent_world_side);
+        let along_x = dx != 0.0;
+
+        // La pieza más cercana EN LA DIRECCIÓN DE AVANCE que además dé fachada suficiente. Lo
+        // segundo importa tanto como lo primero: rozar una esquina no deja sitio para el vano que
+        // vendrá, y absorber contra ella sería construir un pasillo que nunca podrá abrirse.
+        let mut best: Option<(f32, usize)> = None;
+        for other in 0..self.nodes.len() {
+            if other == node {
+                continue;
+            }
+            let n = &self.nodes[other];
+            let piece = &self.manifest.pieces[n.piece as usize];
+            let (nw, nd) = if n.rotation.is_multiple_of(2) {
+                (piece.size_x, piece.size_z)
+            } else {
+                (piece.size_z, piece.size_x)
+            };
+            let (nx0, nz0) = (n.origin_x, n.origin_z);
+            let (nx1, nz1) = (nx0 + nw, nz0 + nd);
+
+            let (distance, frontage) = if along_x {
+                let overlap = nz1.min(pz + half) - nz0.max(pz - half);
+                let d = if dx > 0.0 { nx0 - px } else { px - nx1 };
+                (d, overlap)
+            } else {
+                let overlap = nx1.min(px + half) - nx0.max(px - half);
+                let d = if dz > 0.0 { nz0 - pz } else { pz - nz1 };
+                (d, overlap)
+            };
+
+            if frontage < ABSORB_MIN_FRONTAGE_M || distance < ABSORB_MIN_M {
+                continue;
+            }
+            if distance > MAX_SEGMENT_M {
+                continue;
+            }
+            if best.is_none_or(|(bd, _)| distance < bd) {
+                best = Some((distance, other));
+            }
+        }
+
+        let Some((distance, _hit)) = best else {
+            self.absorb_no_target += 1;
+            return false;
+        };
+
+        // Huella del tramo. Se ancla en la boca y crece hacia donde mira el padre.
+        let (sx, sz, sw, sd) = if along_x {
+            if dx > 0.0 {
+                (px, pz - half, distance, width)
+            } else {
+                (px - distance, pz - half, distance, width)
+            }
+        } else if dz > 0.0 {
+            (px - half, pz, width, distance)
+        } else {
+            (px - half, pz - distance, width, distance)
+        };
+
+        // Que sea el más cercano no basta: una pieza puede quedar de lado sin estar «enfrente» y
+        // aun así pisar el tramo. Se comprueba la huella entera, que es lo que de verdad ocupa.
+        if overlaps_any(&self.nodes, self.manifest, sx, sz, sw, sd, 0.0) {
+            self.absorb_blocked += 1;
+            return false;
+        }
+        if let Some((bmin_x, bmin_z, bmax_x, bmax_z)) = self.settings.bounds {
+            if sx < bmin_x || sz < bmin_z || sx + sw > bmax_x || sz + sd > bmax_z {
+                self.absorb_blocked += 1;
+                return false;
+            }
+        }
+
+        // La boca del tramo mira HACIA el padre, o sea al lado opuesto del avance. Sale a `half` de
+        // la esquina en los cuatro casos: la boca va centrada en el ancho, y el ancho del tramo ES
+        // el de la boca.
+        let floor_y = self.nodes[node].origin_y + parent_socket.floor_y;
+        let ceiling = parent_socket.ceiling_y - parent_socket.floor_y;
+        self.segments.push(Wg3Segment {
+            x_cm: to_centimetres(sx),
+            z_cm: to_centimetres(sz),
+            size_x_cm: to_centimetres(sw),
+            size_z_cm: to_centimetres(sd),
+            floor_y_cm: to_centimetres(floor_y),
+            height_cm: to_centimetres(ceiling),
+            openings: vec![Wg3Opening {
+                side: (parent_world_side + 2) % 4,
+                offset_cm: to_centimetres(half),
+                width_cm: to_centimetres(width),
+            }],
+            style: 0,
+        });
+
+        self.nodes[node].socket_state[socket] = SOCKET_CONNECTED;
+        self.absorbed += 1;
+        true
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn place(
         &mut self,
@@ -1111,6 +1317,11 @@ impl<'a> Composer<'a> {
             placements,
             caps: self.caps,
             absorption_hits: self.absorption_hits,
+            absorbed: self.absorbed,
+            absorb_tries: self.absorb_tries,
+            absorb_narrow: self.absorb_narrow,
+            absorb_no_target: self.absorb_no_target,
+            absorb_blocked: self.absorb_blocked,
             rejected_by_overlap: self.rejected_by_overlap,
             rejected_by_validator: self.rejected_by_validator,
             forced_caps: self.forced_caps,
