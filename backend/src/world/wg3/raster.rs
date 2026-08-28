@@ -163,6 +163,73 @@ impl Wg3RasterBuilder {
         }
     }
 
+    /// ADR-099 D3 — EXCAVA UN VANO: quita materia en vez de ponerla.
+    ///
+    /// Es la única operación del ráster que RESTA, y va necesariamente después de estampar: un vano
+    /// se abre en una pared que ya existe. Sin esto una pieza colocada es inmutable, que es la
+    /// diferencia de fondo entre WG3 y el sistema de salas que Joel echaba de menos — allí una sala
+    /// autorada no encajaba con el laberinto y se le EXCAVABA el vano (`carve_authored_into_layout`)
+    /// en vez de exigirle que encajara.
+    ///
+    /// **ANTI-CONSERVADOR A PROPÓSITO, y es lo contrario que `add_box`.** Aquélla maciza toda celda
+    /// que la caja TOQUE, porque equivocarse hacia el macizo es seguro. Ésta abre solo la celda cuyo
+    /// CENTRO cae dentro, porque equivocarse hacia el hueco abre pared que sostenía algo. Con el
+    /// mínimo de 200 cm de vano quedan tres celdas limpias de las cuatro que toca, de sobra para los
+    /// 70 cm que mide el jugador.
+    ///
+    /// La banda vertical NO llega al suelo: se deja `CARVE_FLOOR_GUARD_CM` por debajo intactos, o el
+    /// vano se llevaría por delante la losa sobre la que se anda y abriría un agujero en vez de una
+    /// puerta.
+    pub fn carve_box(
+        &mut self,
+        min_x: f32,
+        min_z: f32,
+        max_x: f32,
+        max_z: f32,
+        bottom_cm: i32,
+        top_cm: i32,
+    ) {
+        let lo = bottom_cm.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        let hi = top_cm.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        if hi <= lo {
+            return;
+        }
+
+        let (ix0, ix1) = self.cell_range_x(min_x, max_x);
+        let (iz0, iz1) = self.cell_range_z(min_z, max_z);
+        for iz in iz0..iz1 {
+            for ix in ix0..ix1 {
+                let (ccx, ccz) = self.cell_centre(ix, iz);
+                if ccx < min_x || ccx > max_x || ccz < min_z || ccz > max_z {
+                    continue;
+                }
+                let column = &mut self.columns[iz * self.cells_x + ix];
+                let mut out = Vec::with_capacity(column.len());
+                for span in column.iter() {
+                    // Cuatro casos, y el tercero es el que obliga a reconstruir la columna entera:
+                    // un vano en mitad de un muro alto lo parte en dos tramos, el zócalo y el dintel.
+                    if span.top_cm <= lo || span.bottom_cm >= hi {
+                        out.push(*span);
+                        continue;
+                    }
+                    if span.bottom_cm < lo {
+                        out.push(Span {
+                            bottom_cm: span.bottom_cm,
+                            top_cm: lo,
+                        });
+                    }
+                    if span.top_cm > hi {
+                        out.push(Span {
+                            bottom_cm: hi,
+                            top_cm: span.top_cm,
+                        });
+                    }
+                }
+                *column = out;
+            }
+        }
+    }
+
     fn cell_centre(&self, ix: usize, iz: usize) -> (f32, f32) {
         let ox = self.origin_x_cm as f32 / CM_PER_M;
         let oz = self.origin_z_cm as f32 / CM_PER_M;

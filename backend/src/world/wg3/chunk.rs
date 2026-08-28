@@ -22,7 +22,7 @@
 use super::manifest::Wg3Manifest;
 use super::placement::{self, Wg3Placement};
 use super::raster::{Wg3Raster, Wg3RasterBuilder, CM_PER_M, WG3_CELL_M};
-use super::segment::{self, Wg3Segment};
+use super::segment::{self, Wg3Carve, Wg3Segment};
 
 /// Lado del chunk en metros. Mismo tamaño que el chunk de WG2 a propósito: mientras los dos mundos
 /// convivan (D3), el streaming, la caché de simulación y los logs hablan de la misma cuadrícula, y
@@ -84,6 +84,24 @@ pub fn build_chunk_raster(
     segments: &[Wg3Segment],
     coord: Wg3ChunkCoord,
 ) -> Wg3Raster {
+    build_chunk_raster_with_carves(manifest, placements, segments, &[], coord)
+}
+
+/// ADR-099 D3 — igual que [`build_chunk_raster`], pero excavando los vanos al final.
+///
+/// **El orden no es un detalle: los vanos van DESPUÉS de estampar todo.** Un vano se abre en una
+/// pared que ya existe, así que excavar antes no quitaría nada y excavar a medias —entre las piezas
+/// y los tramos— dejaría que el tramo volviera a tapiar lo que la pieza acababa de abrir.
+///
+/// Va en una función aparte y no como parámetro más de la de siempre para no tocar los catorce
+/// sitios que la llaman con mundos sin absorción.
+pub fn build_chunk_raster_with_carves(
+    manifest: &Wg3Manifest,
+    placements: &[Wg3Placement],
+    segments: &[Wg3Segment],
+    carves: &[Wg3Carve],
+    coord: Wg3ChunkCoord,
+) -> Wg3Raster {
     let (ox, oz) = coord.origin_cm();
     let mut builder = Wg3RasterBuilder::new(ox, oz, WG3_CHUNK_CELLS, WG3_CHUNK_CELLS);
     let (cmin_x, cmin_z, cmax_x, cmax_z) = coord.bounds();
@@ -118,6 +136,19 @@ pub fn build_chunk_raster(
         for b in segment::segment_boxes(c) {
             builder.add_box(&b);
         }
+    }
+
+    // ADR-099 D3 — y al final, quitar. No se filtran por caja envolvente como lo demás: un vano
+    // mide medio metro y el recorte costaría más que excavarlo.
+    for k in carves {
+        builder.carve_box(
+            k.x_cm as f32 / 100.0,
+            k.z_cm as f32 / 100.0,
+            (k.x_cm + k.size_x_cm) as f32 / 100.0,
+            (k.z_cm + k.size_z_cm) as f32 / 100.0,
+            k.bottom_y_cm,
+            k.top_y_cm,
+        );
     }
 
     builder.finish()

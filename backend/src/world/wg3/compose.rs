@@ -26,7 +26,9 @@ use super::manifest::{Wg3Manifest, Wg3Piece, Wg3Socket};
 use super::placement::{local_point, outward_normal, Wg3Placement};
 use super::route::{self, Mouth, Rect, RouteSettings};
 use super::scale;
-use super::segment::{Wg3Opening, Wg3Segment, MAX_SEGMENT_M, MIN_GENERATED_WIDTH_CM};
+use super::segment::{
+    Wg3Carve, Wg3Opening, Wg3Segment, CARVE_FLOOR_GUARD_CM, MAX_SEGMENT_M, MIN_GENERATED_WIDTH_CM,
+};
 
 /// Estado de una boca. Espejo de las constantes de `Wg3World`.
 pub const SOCKET_OPEN: u8 = 0;
@@ -64,6 +66,14 @@ const ABSORB_MIN_FRONTAGE_M: f32 = MIN_GENERATED_WIDTH_CM as f32 / 100.0;
 /// caja al mundo. Las dos piezas ya se tocan ahí, así que lo que hace falta en ese caso es el vano
 /// (D3) y no un conector.
 const ABSORB_MIN_M: f32 = 1.0;
+
+/// ADR-099 D3 — cuánto entra el vano a cada lado de la cara de contacto, en metros.
+///
+/// Tiene que pasar de largo el grosor de la pared del absorbido (0,15 m) Y de la celda del ráster
+/// (0,50), porque una celda que la pared toque queda maciza entera: excavar sólo 0,15 dejaría el
+/// vano tapiado por el propio redondeo. Medio metro a cada lado atraviesa las dos cosas sin llegar a
+/// comerse la pared de enfrente de una pieza estrecha.
+const CARVE_DEPTH_M: f32 = 0.5;
 
 /// Sal del sorteo de tapón voluntario.
 const SALT_CAP: u32 = 0xC0DE_C0DE;
@@ -317,12 +327,21 @@ pub struct Wg3ComposedWorld {
     /// número que contrasta con las ~20 por región que predijo `probe_absorption_ceiling`: si sale
     /// muy por debajo, la predicción contaba choques que en el mundo real nunca llegan a intentarse.
     pub absorbed: u32,
+
+    /// ADR-099 D3 — los vanos que hay que excavar. Van APARTE de los tramos porque no son geometría
+    /// del tramo: son materia que se le quita a OTRA pieza, y el ráster los aplica al final.
+    pub carves: Vec<Wg3Carve>,
+
     /// ADR-099 — diagnóstico del paso 1: intentos y en qué se cae cada uno. Sin esto, un cero de
     /// `absorbed` no distingue «no se intenta» de «se intenta y no hay nada delante».
     pub absorb_tries: u32,
     pub absorb_narrow: u32,
     pub absorb_no_target: u32,
     pub absorb_blocked: u32,
+    /// ADR-099 — vanos que son ATAJO (los dos extremos ya se alcanzaban) frente a los que UNEN dos
+    /// trozos sueltos. Sólo los segundos añaden mundo; los primeros cambian cómo se recorre.
+    pub absorb_rings: u32,
+    pub absorb_merges: u32,
 
     /// Candidatas descartadas porque la huella pisaba algo ya colocado. No es un error: es la medida
     /// de cuánto aprieta el mundo. Un cero sostenido significa que el catálogo es demasiado pequeño
@@ -429,11 +448,15 @@ struct Composer<'a> {
     absorption_hits: Vec<Wg3AbsorptionHit>,
     /// ADR-099 — absorciones aplicadas.
     absorbed: u32,
+    /// ADR-099 D3 — vanos por excavar.
+    carves: Vec<Wg3Carve>,
     /// ADR-099 — diagnóstico: intentos, y en qué se cae cada uno.
     absorb_tries: u32,
     absorb_narrow: u32,
     absorb_no_target: u32,
     absorb_blocked: u32,
+    absorb_rings: u32,
+    absorb_merges: u32,
 
     /// ADR-098 — la geometría generada y el grafo que hace falta para decidir dónde tenderla.
     ///
@@ -472,10 +495,13 @@ impl<'a> Composer<'a> {
             forced_caps: 0,
             absorption_hits: Vec::new(),
             absorbed: 0,
+            carves: Vec::new(),
             absorb_tries: 0,
             absorb_narrow: 0,
             absorb_no_target: 0,
             absorb_blocked: 0,
+            absorb_rings: 0,
+            absorb_merges: 0,
             segments: Vec::new(),
             edges: Vec::new(),
             connectors: 0,
@@ -1192,7 +1218,7 @@ impl<'a> Composer<'a> {
             }
         }
 
-        let Some((distance, _hit)) = best else {
+        let Some((distance, hit)) = best else {
             self.absorb_no_target += 1;
             return false;
         };
@@ -1235,17 +1261,102 @@ impl<'a> Composer<'a> {
             size_z_cm: to_centimetres(sd),
             floor_y_cm: to_centimetres(floor_y),
             height_cm: to_centimetres(ceiling),
-            openings: vec![Wg3Opening {
-                side: (parent_world_side + 2) % 4,
-                offset_cm: to_centimetres(half),
-                width_cm: to_centimetres(width),
-            }],
+            // ADR-099 D3 — LAS DOS BOCAS. La de atrás mira al padre; la de delante da al absorbido,
+            // y sólo puede existir porque el vano se excava a la vez que se declara. Declararla sin
+            // excavar sería una boca contra materia maciza — el fallo que ADR-098 enmienda 2 midió
+            // y que no se ve en una captura porque el cliente dibuja el paso abierto.
+            openings: vec![
+                Wg3Opening {
+                    side: (parent_world_side + 2) % 4,
+                    offset_cm: to_centimetres(half),
+                    width_cm: to_centimetres(width),
+                },
+                Wg3Opening {
+                    side: parent_world_side,
+                    offset_cm: to_centimetres(half),
+                    width_cm: to_centimetres(width),
+                },
+            ],
             style: 0,
         });
+
+        // El vano: una caja centrada en la boca de delante, del ancho de la boca, que entra en el
+        // absorbido lo bastante para atravesar su pared. Se toma el grosor del contacto y no la
+        // cara, porque medio vano es un muro con una marca.
+        let (cmin_x, cmin_z, cmax_x, cmax_z) = if along_x {
+            let face = if dx > 0.0 { sx + sw } else { sx };
+            (
+                face - CARVE_DEPTH_M,
+                pz - half,
+                face + CARVE_DEPTH_M,
+                pz + half,
+            )
+        } else {
+            let face = if dz > 0.0 { sz + sd } else { sz };
+            (
+                px - half,
+                face - CARVE_DEPTH_M,
+                px + half,
+                face + CARVE_DEPTH_M,
+            )
+        };
+        self.carves.push(Wg3Carve {
+            x_cm: to_centimetres(cmin_x),
+            z_cm: to_centimetres(cmin_z),
+            size_x_cm: to_centimetres(cmax_x - cmin_x),
+            size_z_cm: to_centimetres(cmax_z - cmin_z),
+            bottom_y_cm: to_centimetres(floor_y) + CARVE_FLOOR_GUARD_CM,
+            top_y_cm: to_centimetres(floor_y + ceiling),
+        });
+
+        // ¿ANILLO O UNIÓN DE ISLAS? Son cosas distintas y sólo una añade mundo. Si los dos extremos
+        // ya se alcanzaban por el árbol, el vano es un ATAJO: cambia cómo se recorre, no cuánto hay.
+        // Si no se alcanzaban, une dos trozos y sí añade. Sin separarlos, un «+0 % de superficie»
+        // se leería como «no sirve» cuando puede estar haciendo justo lo que se le pidió.
+        if self.already_linked(node, hit) {
+            self.absorb_rings += 1;
+        } else {
+            self.absorb_merges += 1;
+        }
 
         self.nodes[node].socket_state[socket] = SOCKET_CONNECTED;
         self.absorbed += 1;
         true
+    }
+
+    /// ¿Se llega de `a` a `b` por lo ya construido? Recorre padres y aristas de bucle, que son las
+    /// dos formas que tiene el compositor de unir dos piezas antes de que exista un vano.
+    fn already_linked(&self, a: usize, b: usize) -> bool {
+        let mut seen = vec![false; self.nodes.len()];
+        let mut stack = vec![a];
+        seen[a] = true;
+        while let Some(n) = stack.pop() {
+            if n == b {
+                return true;
+            }
+            let push = |i: usize, seen: &mut Vec<bool>, stack: &mut Vec<usize>| {
+                if !seen[i] {
+                    seen[i] = true;
+                    stack.push(i);
+                }
+            };
+            if let Some(p) = self.nodes[n].parent {
+                push(p, &mut seen, &mut stack);
+            }
+            for i in 0..self.nodes.len() {
+                if self.nodes[i].parent == Some(n) {
+                    push(i, &mut seen, &mut stack);
+                }
+            }
+            for &(u, v) in &self.edges {
+                if u == n {
+                    push(v, &mut seen, &mut stack);
+                } else if v == n {
+                    push(u, &mut seen, &mut stack);
+                }
+            }
+        }
+        false
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1318,10 +1429,13 @@ impl<'a> Composer<'a> {
             caps: self.caps,
             absorption_hits: self.absorption_hits,
             absorbed: self.absorbed,
+            carves: self.carves,
             absorb_tries: self.absorb_tries,
             absorb_narrow: self.absorb_narrow,
             absorb_no_target: self.absorb_no_target,
             absorb_blocked: self.absorb_blocked,
+            absorb_rings: self.absorb_rings,
+            absorb_merges: self.absorb_merges,
             rejected_by_overlap: self.rejected_by_overlap,
             rejected_by_validator: self.rejected_by_validator,
             forced_caps: self.forced_caps,

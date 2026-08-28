@@ -1617,7 +1617,7 @@ fn probe_absorption_applied() {
 
         println!(
             "[wg3] región ({rx:>2},{rz:>2}): piezas {:>3} → {:>3} | tapones forzados {:>3} → {:>3} \
-             | tramos {:>3} → {:>3} | ABSORCIONES {:>3} \
+             | tramos {:>3} → {:>3} | ABSORCIONES {:>3} (vanos {:>3}) \
              | intentos {:>3} (estrecha {:>3}, sin destino {:>3}, bloqueada {:>3})",
             off.placements.len(),
             on.placements.len(),
@@ -1626,6 +1626,7 @@ fn probe_absorption_applied() {
             off.segments.len(),
             on.segments.len(),
             on.absorbed,
+            on.carves.len(),
             on.absorb_tries,
             on.absorb_narrow,
             on.absorb_no_target,
@@ -1639,6 +1640,234 @@ fn probe_absorption_applied() {
         "[wg3] absorciones aplicadas: {} por región de media (el TECHO decía ~20)",
         total / regions.max(1) as u32
     );
+}
+
+/// ADR-099 D3 — EL TEST QUE DECIDE SI LA ABSORCIÓN VALE PARA ALGO: por el vano SE PASA.
+///
+/// Un tramo absorbido declara una boca contra la pieza que ha topado. Si el vano no se excava —o se
+/// excava y el rasterizado conservador se lo come— esa boca da a materia maciza: el cliente dibuja
+/// el paso abierto y el servidor no deja entrar. Es el fallo que ADR-098 enmienda 2 midió, y es el
+/// que no sale en una captura.
+///
+/// Se pregunta al RÁSTER, que es lo que resuelve el movimiento, y no al grafo, que sólo dice lo que
+/// el compositor cree.
+#[test]
+fn the_absorbed_doorway_is_open_in_the_raster() {
+    let m = real_manifest();
+    let side = REGION_CHUNKS as f32 * 50.0;
+
+    let mut checked = 0usize;
+    for (rx, rz) in [(0, 0), (0, 1), (-1, -1), (2, 5)] {
+        let (min_x, min_z) = (rx as f32 * side, rz as f32 * side);
+        let seed = Wg3RegionCoord { x: rx, z: rz }.composer_seed(SERVED_SEED);
+        let composed = compose::compose(
+            seed,
+            &m,
+            &compose::Wg3ComposerSettings {
+                budget: INTERIM_BUDGET,
+                close_loops: true,
+                bounds: Some((min_x, min_z, min_x + side, min_z + side)),
+                absorb_chance: 1.0,
+                ..compose::Wg3ComposerSettings::default()
+            },
+        );
+        if composed.carves.is_empty() {
+            continue;
+        }
+
+        let placements: Vec<_> = composed.placements.iter().map(|c| c.placement).collect();
+
+        for k in &composed.carves {
+            // El centro del vano, que es por donde se pasaría.
+            let cx = (k.x_cm + k.size_x_cm / 2) as f32 / 100.0;
+            let cz = (k.z_cm + k.size_z_cm / 2) as f32 / 100.0;
+            let probe_y = k.bottom_y_cm as f32 / 100.0 + 1.0;
+
+            let coord = chunk::Wg3ChunkCoord::containing(cx, cz);
+            let raster = chunk::build_chunk_raster_with_carves(
+                &m,
+                &placements,
+                &composed.segments,
+                &composed.carves,
+                coord,
+            );
+
+            // Con el vano abierto tiene que haber HUECO a la altura de la cabeza. Sin excavar, la
+            // pared del absorbido llega hasta el techo y no lo hay.
+            let headroom = raster.headroom_above_floor(cx, probe_y, cz);
+            assert!(
+                headroom.is_some_and(|h| h >= 1.8),
+                "el vano de ({cx:.2}, {cz:.2}) está tapiado: hueco {headroom:?}"
+            );
+            checked += 1;
+        }
+    }
+
+    assert!(
+        checked > 0,
+        "ninguna región produjo un vano, así que este test no ha probado nada"
+    );
+}
+
+/// SONDA — ADR-099 paso 2: ¿la absorción con vano AGRANDA lo que se puede andar?
+///
+/// `#[ignore]` porque no afirma nada: busca un número. Lánzala con
+/// `cargo test --manifest-path backend/Cargo.toml probe_absorption_reach -- --ignored --nocapture`.
+///
+/// Es la pregunta que decide si ADR-099 vale para algo. El paso 1 ya medía absorciones, pero una
+/// absorción sin vano es un callejón: geometría, no topología. Aquí se mide lo único que le importa
+/// a quien juega — **cuántos metros cuadrados se alcanzan a pie desde donde apareces** — y se mide
+/// sobre el RÁSTER, que es lo que resuelve el movimiento.
+///
+/// Inundación a ras de suelo con una sola cota por celda: no distingue altillos, y por eso NO
+/// sustituye a `probe_how_much_of_the_region_can_be_walked_from_the_spawn`. Aquí sólo hace falta
+/// comparar dos mundos con la misma vara.
+#[test]
+#[ignore]
+fn probe_absorption_reach() {
+    const CELL: f32 = 0.5;
+    const HEAD_M: f32 = 1.8;
+    let m = real_manifest();
+    let side_m = REGION_CHUNKS as f32 * 50.0;
+    let cells = (side_m / CELL) as usize;
+
+    // Alcanzable a pie desde el centro de la región, en m².
+    let reach = |composed: &compose::Wg3ComposedWorld, min_x: f32, min_z: f32| -> f32 {
+        let placements: Vec<_> = composed.placements.iter().map(|c| c.placement).collect();
+        let chunks = REGION_CHUNKS as usize;
+        let base = chunk::Wg3ChunkCoord::containing(min_x + 1.0, min_z + 1.0);
+        let mut rasters = Vec::with_capacity(chunks * chunks);
+        for cz in 0..chunks {
+            for cx in 0..chunks {
+                let coord = chunk::Wg3ChunkCoord {
+                    x: base.x + cx as i32,
+                    z: base.z + cz as i32,
+                };
+                rasters.push(chunk::build_chunk_raster_with_carves(
+                    &m,
+                    &placements,
+                    &composed.segments,
+                    &composed.carves,
+                    coord,
+                ));
+            }
+        }
+
+        let standable = |ix: usize, iz: usize| -> bool {
+            let x = min_x + ix as f32 * CELL + CELL * 0.5;
+            let z = min_z + iz as f32 * CELL + CELL * 0.5;
+            let coord = chunk::Wg3ChunkCoord::containing(x, z);
+            let (dx, dz) = (coord.x - base.x, coord.z - base.z);
+            if dx < 0 || dz < 0 || dx as usize >= chunks || dz as usize >= chunks {
+                return false;
+            }
+            let Some(r) = rasters.get(dz as usize * chunks + dx as usize) else {
+                return false;
+            };
+            let column = r.column_at(x, z);
+            for (i, span) in column.iter().enumerate() {
+                let head = match column.get(i + 1) {
+                    Some(next) => (next.bottom_cm - span.top_cm) as f32 / 100.0,
+                    None => f32::MAX,
+                };
+                // Con techo y no a cielo abierto: la cara de arriba de una pared cumple «hay suelo
+                // y hay hueco» y no es sitio por donde se ande.
+                if (HEAD_M..=6.0).contains(&head) {
+                    return true;
+                }
+            }
+            false
+        };
+
+        // Arranca en la celda pisable más cercana al centro, que es donde aparece el jugador.
+        let mid = cells / 2;
+        let mut start = None;
+        'outer: for r in 0..mid {
+            for dz in -(r as i32)..=(r as i32) {
+                for dx in -(r as i32)..=(r as i32) {
+                    let (ix, iz) = (mid as i32 + dx, mid as i32 + dz);
+                    if ix < 0 || iz < 0 || ix as usize >= cells || iz as usize >= cells {
+                        continue;
+                    }
+                    if standable(ix as usize, iz as usize) {
+                        start = Some((ix as usize, iz as usize));
+                        break 'outer;
+                    }
+                }
+            }
+        }
+        let Some(start) = start else {
+            return 0.0;
+        };
+
+        let mut seen = vec![false; cells * cells];
+        let mut stack = vec![start];
+        seen[start.1 * cells + start.0] = true;
+        let mut count = 0usize;
+        while let Some((ix, iz)) = stack.pop() {
+            count += 1;
+            let neighbours = [
+                (ix.wrapping_sub(1), iz),
+                (ix + 1, iz),
+                (ix, iz.wrapping_sub(1)),
+                (ix, iz + 1),
+            ];
+            for (nx, nz) in neighbours {
+                if nx >= cells || nz >= cells || seen[nz * cells + nx] {
+                    continue;
+                }
+                if standable(nx, nz) {
+                    seen[nz * cells + nx] = true;
+                    stack.push((nx, nz));
+                }
+            }
+        }
+        count as f32 * CELL * CELL
+    };
+
+    // BARRIDO, y hace falta: absorber tiene un coste —consume la boca y corta la rama— y un
+    // beneficio —el vano—, y los dos crecen con la perilla. Un solo valor no dice dónde está el
+    // punto en que se cruzan, y a 1,0 el coste ya gana.
+    let mut base_total = 0.0f32;
+    for chance in [0.0f32, 0.05, 0.10, 0.20, 0.35, 0.60, 1.0] {
+        let mut sum = 0.0f32;
+        let mut pieces = 0usize;
+        let mut carves = 0usize;
+        let mut rings = 0u32;
+        let mut merges = 0u32;
+        for (rx, rz) in [(0, 0), (1, 0), (0, 1), (-1, -1), (3, -2), (7, 11), (2, 5)] {
+            let (min_x, min_z) = (rx as f32 * side_m, rz as f32 * side_m);
+            let seed = Wg3RegionCoord { x: rx, z: rz }.composer_seed(SERVED_SEED);
+            let w = compose::compose(
+                seed,
+                &m,
+                &compose::Wg3ComposerSettings {
+                    budget: INTERIM_BUDGET,
+                    close_loops: true,
+                    bounds: Some((min_x, min_z, min_x + side_m, min_z + side_m)),
+                    absorb_chance: chance,
+                    ..compose::Wg3ComposerSettings::default()
+                },
+            );
+            sum += reach(&w, min_x, min_z);
+            pieces += w.placements.len();
+            carves += w.carves.len();
+            rings += w.absorb_rings;
+            merges += w.absorb_merges;
+        }
+        if chance == 0.0 {
+            base_total = sum;
+        }
+        println!(
+            "[wg3] chance {chance:>4.2}: andable {sum:>8.0} m² ({:+5.1} %) | piezas {pieces:>4} \
+             | vanos {carves:>3} (atajos {rings:>3}, unen islas {merges:>3})",
+            if base_total > 0.0 {
+                (sum - base_total) / base_total * 100.0
+            } else {
+                0.0
+            }
+        );
+    }
 }
 
 // ── contrato de junta (ADR-096) ─────────────────────────────────────────────────────────────

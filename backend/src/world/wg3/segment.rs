@@ -103,6 +103,35 @@ pub struct Wg3Opening {
     pub width_cm: i32,
 }
 
+/// ADR-099 D3 — un vano excavado: materia que se QUITA después de estampar.
+///
+/// Existe porque una pieza colocada es inmutable y su pared viene horneada del catálogo, así que
+/// cuando un tramo absorbido muere contra ella no hay forma de abrirle paso poniendo geometría —
+/// sólo quitándola. Es la operación que el sistema de salas tenía (`carve_authored_into_layout`) y
+/// WG3 no.
+///
+/// EN CENTÍMETROS ENTEROS por lo mismo que todo lo demás que cruza procesos.
+///
+/// **Se excava en los DOS lados o en ninguno**: medio vano es un muro con una marca. Por eso la caja
+/// cubre el grosor entero del contacto y no se para en la cara.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Wg3Carve {
+    pub x_cm: i32,
+    pub z_cm: i32,
+    pub size_x_cm: i32,
+    pub size_z_cm: i32,
+    /// Banda vertical que se abre. NO llega al suelo: ver `carve_box`.
+    pub bottom_y_cm: i32,
+    pub top_y_cm: i32,
+}
+
+/// ADR-099 D3 — cuánto se deja intacto por encima del suelo al excavar, en centímetros.
+///
+/// Sin esta guarda el vano se lleva la losa sobre la que se anda y abre un agujero por el que se cae
+/// en vez de una puerta. Es el mismo fallo que ADR-095 ya pagó con las bocas al vacío, y aquí sería
+/// más difícil de ver porque el agujero está DENTRO de una puerta que funciona.
+pub const CARVE_FLOOR_GUARD_CM: i32 = 5;
+
 /// Un rectángulo generado, con sus bocas.
 ///
 /// EN CENTÍMETROS ENTEROS, por lo mismo que `Wg3Placement`: esto viaja, se compara entre dos

@@ -46,7 +46,7 @@ use super::junction;
 use super::manifest::Wg3Manifest;
 use super::placement::Wg3Placement;
 use super::route;
-use super::segment::Wg3Segment;
+use super::segment::{Wg3Carve, Wg3Segment};
 
 /// Tope de piezas del mundo interino.
 ///
@@ -159,6 +159,9 @@ pub struct Wg3ServedWorld {
     /// encajar. Van aparte de las colocaciones y no dentro porque no son piezas: no tienen índice
     /// de catálogo, y ésa es toda la novedad del ADR.
     segments: Vec<Wg3Segment>,
+    /// ADR-099 D3 — los vanos excavados. Aparte de los tramos porque no son geometria del tramo:
+    /// son materia que se le quita a otra pieza, y el raster los aplica al final.
+    carves: Vec<Wg3Carve>,
 }
 
 /// Los ajustes con los que se compone una región del mundo SERVIDO.
@@ -297,6 +300,7 @@ impl Wg3ServedWorld {
             world_seed,
             placements: composed.placements.iter().map(|c| c.placement).collect(),
             segments: composed.segments,
+            carves: composed.carves,
         }
     }
 
@@ -324,6 +328,7 @@ impl Wg3ServedWorld {
             world_seed,
             placements: composed.placements.iter().map(|c| c.placement).collect(),
             segments: composed.segments,
+            carves: composed.carves,
         }
     }
 
@@ -384,6 +389,27 @@ impl Wg3ServedWorld {
             .iter()
             .filter(|c| Self::segment_owner_chunk(c) == coord)
             .cloned()
+            .collect()
+    }
+
+    /// ADR-099 D3 — los vanos que TOCAN el chunk.
+    ///
+    /// Se filtra ancho: un vano se excava justo en la frontera entre dos piezas, y ésa es
+    /// exactamente la clase de sitio donde cae también una frontera de chunk. Perderlo por un
+    /// centímetro dejaría la puerta abierta por un lado y tapiada por el otro, que es el mismo
+    /// fallo de siempre visto desde otro sitio.
+    pub fn carves_touching_chunk(&self, coord: Wg3ChunkCoord) -> Vec<Wg3Carve> {
+        let (cmin_x, cmin_z, cmax_x, cmax_z) = coord.bounds();
+        self.carves
+            .iter()
+            .filter(|k| {
+                let min_x = k.x_cm as f32 / 100.0;
+                let min_z = k.z_cm as f32 / 100.0;
+                let max_x = (k.x_cm + k.size_x_cm) as f32 / 100.0;
+                let max_z = (k.z_cm + k.size_z_cm) as f32 / 100.0;
+                max_x > cmin_x && min_x < cmax_x && max_z > cmin_z && min_z < cmax_z
+            })
+            .copied()
             .collect()
     }
 
