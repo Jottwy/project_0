@@ -3116,6 +3116,10 @@ async fn handle_network_event(
             match taken {
                 Some((def_id, count)) => {
                     remove_stack_from_mirror(player, def_id, count);
+                    // AUDIT-2026-08-28 A28-01: remembered until the client's next
+                    // `report_inventory` OR a `report_death_loot` consumes it — see
+                    // `apply_pending_theft_deductions`.
+                    player.pending_theft_deductions.push((def_id, count));
                     info!(
                         "MPTRACE step=FL_STEAL event=steal_served request_id={} thief_id={} def_id={} count={}",
                         request_id, thief_id, def_id, count
@@ -3829,6 +3833,11 @@ async fn handle_action(
             }
         }
         "report_inventory" => {
+            // AUDIT-2026-08-28 A28-01: a fresh report supersedes any theft this backend was
+            // still tracking against a possible race with `report_death_loot` — see
+            // `pending_theft_deductions`'s doc.
+            player.pending_theft_deductions.clear();
+
             let mut items = parse_loot_stacks(&action.data);
             crate::world::corpse::sanitize_loot_stacks(&mut items);
             debug!("report_inventory: {} stacks", items.len());
@@ -3932,7 +3941,10 @@ async fn handle_action(
             } else if player.death_loot_reported {
                 info!("MPTRACE step=CORPSE event=death_loot_ignored reason=already_reported");
             } else if net.is_host {
-                let (equipment, held_item, items) = parse_death_loot(&action.data);
+                let (equipment, held_item, mut items) = parse_death_loot(&action.data);
+                // AUDIT-2026-08-28 A28-01: strip anything a still-unreconciled theft already
+                // granted the thief, before it can duplicate into this corpse.
+                apply_pending_theft_deductions(&mut items, &mut player.pending_theft_deductions);
                 // ADR-028 post-E3: a corpse born empty would be immortal (despawn-on-empty
                 // only runs after a take) — dying naked leaves no physical trace.
                 if crate::world::corpse::corpse_loot_is_empty(&items) {
@@ -3964,7 +3976,10 @@ async fn handle_action(
                 // ADR-028 Fase E: joiners do NOT spawn locally — corpse ids are host-assigned
                 // (global uniqueness) and the roster mirror brings the corpse back within one
                 // 10 Hz broadcast tick. Reliable + host-side (requester, request_id) dedupe.
-                let (equipment, held_item, items) = parse_death_loot(&action.data);
+                let (equipment, held_item, mut items) = parse_death_loot(&action.data);
+                // AUDIT-2026-08-28 A28-01: same strip as the host branch above — the request we
+                // are about to forward must not carry a stack this backend already gave away.
+                apply_pending_theft_deductions(&mut items, &mut player.pending_theft_deductions);
                 // ADR-028 post-E3: empty snapshot → no corpse anywhere; skip the hop too.
                 if crate::world::corpse::corpse_loot_is_empty(&items) {
                     player.death_loot_reported = true;
@@ -5095,9 +5110,15 @@ fn pick_stealable_stack(player: &Player) -> Option<(i32, u16)> {
 /// Removes what `pick_stealable_stack` chose from BOTH mirrors the backend keeps.
 ///
 /// These are mirrors, not the inventory — the real one is the client's STP, and the `item_stolen`
-/// IPC event is what actually takes it. Keeping them in step anyway matters for the window before
-/// the client's next `report_inventory`: a death in that window writes a corpse from
-/// `stp_inventory`, and a stale mirror would duplicate the stolen stack into the loot.
+/// IPC event is what actually takes it. Keeping them in step matters for `pick_stealable_stack`
+/// itself (a second hit before the client's next `report_inventory` must not pick the same
+/// already-stolen stack again) and so that report does not silently undo the theft when it lands.
+///
+/// It does NOT protect `report_death_loot`: that snapshot is built LIVE by the client at the
+/// death edge (`DeathLootReporter.BuildSnapshot`), never read from these mirrors. The race that
+/// creates (a death whose stale client snapshot still shows a just-stolen stack) is closed
+/// separately by `pending_theft_deductions` / `apply_pending_theft_deductions` below
+/// (AUDIT-2026-08-28 A28-01).
 fn remove_stack_from_mirror(player: &mut Player, def_id: i32, count: u16) {
     let mut left = count as i32;
     player.inventory_v2.retain_mut(|s| {
@@ -5120,6 +5141,29 @@ fn remove_stack_from_mirror(player: &mut Player, def_id: i32, count: u16) {
         left -= take;
         s.quantity > 0
     });
+}
+
+/// AUDIT-2026-08-28 A28-01: subtracts theft(s) `remove_stack_from_mirror` already took but this
+/// player has not yet reconciled, from a freshly client-reported `report_death_loot` snapshot —
+/// draining `pending` in the process (each pending theft applies at most once). Without this, a
+/// death whose client-built snapshot races the `item_stolen` IPC event still lists the stolen
+/// stack, duplicating it: once already granted to the thief, once in the new corpse.
+fn apply_pending_theft_deductions(
+    items: &mut Vec<crate::world::corpse::CorpseStack>,
+    pending: &mut Vec<(i32, u16)>,
+) {
+    for (item_id, count) in pending.drain(..) {
+        let mut left = count;
+        items.retain_mut(|s| {
+            if left == 0 || s.item_id != item_id {
+                return true;
+            }
+            let take = left.min(s.quantity);
+            s.quantity -= take;
+            left -= take;
+            s.quantity > 0
+        });
+    }
 }
 
 fn accept_phantom_attack_grant(

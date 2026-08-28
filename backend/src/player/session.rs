@@ -169,6 +169,18 @@ pub struct Player {
     /// Diagnostic-only: never serialized (`skip`), never persisted, never read by gameplay logic.
     #[serde(skip)]
     pub last_reposition_tick: Option<u64>,
+    /// Bugfix (AUDIT-2026-08-28 A28-01): `(item_id, quantity)` pairs taken by
+    /// `remove_stack_from_mirror` (ADR-094 theft) that have not yet been reconciled by this
+    /// player's next `report_inventory`. `report_death_loot`'s snapshot is built LIVE by the
+    /// client at the moment of death (`DeathLootReporter.BuildSnapshot`, never read from
+    /// `stp_inventory`), so a theft whose `item_stolen` IPC event the client has not yet applied
+    /// when a LOCAL death fires (fall, starvation — no server round-trip involved) can still show
+    /// the stolen stack in that snapshot, after the backend already granted it to the thief.
+    /// Drained by `apply_pending_theft_deductions` on the next `report_death_loot`, or cleared
+    /// outright by the next `report_inventory` (a fresh report supersedes it). Session-transient,
+    /// like `death_loot_reported`: never serialized (`skip`), never persisted.
+    #[serde(skip)]
+    pub pending_theft_deductions: Vec<(i32, u16)>,
 }
 
 impl Player {
@@ -204,6 +216,7 @@ impl Player {
             inventory_v2: Vec::new(),
             identity_key: None,
             last_reposition_tick: None,
+            pending_theft_deductions: Vec::new(),
         }
     }
 }

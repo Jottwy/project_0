@@ -11237,3 +11237,173 @@ async fn no_resource_falls_in_fewer_than_four_hits() {
     process_stp_harvest_hit(4, 7, 1.0, 2, close, &mut net);
     assert_eq!(0.0, remaining(&net), "al cuarto golpe cae");
 }
+
+// AUDIT-2026-08-28 A28-01: a theft this backend already granted to a thief must never also
+// survive into the victim's death-loot corpse. `report_death_loot`'s snapshot is built LIVE by
+// the client at the death edge (never read from `stp_inventory`/`inventory_v2`), so a theft whose
+// matching `item_stolen` IPC event the client had not yet applied when a LOCAL death fired (fall,
+// starvation — no server round-trip needed) can still list the just-stolen stack. Reinstate the
+// mirror-only removal (drop the `pending_theft_deductions.push` in the `StealCommand` arm) and
+// this goes red: the corpse below would still hold the full 2x item 1000.
+#[tokio::test]
+async fn report_death_loot_subtracts_pending_theft_deduction_from_stale_snapshot() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let mut world = World::new(42);
+    let mut player = Player::new(1, "Host");
+    player.stats.health = 0.0; // dead — required by report_death_loot's is_dead() gate
+    let (tx, _rx) = broadcast::channel(16);
+    let mut processed: BoundedDedupeSet<(u16, u64)> = BoundedDedupeSet::with_capacity(DEDUPE_CAP);
+
+    // A faceling stole 2x item 1000 and 1x item 2000 moments ago; the backend's mirrors already
+    // reflect that (the real `StealCommand` path), but the CLIENT's death snapshot below is
+    // stale — built before it applied the matching `item_stolen` IPC events — and still lists
+    // the full pre-theft amounts.
+    player.pending_theft_deductions.push((1000, 2));
+    player.pending_theft_deductions.push((2000, 1));
+
+    let action = crate::ipc::PlayerAction {
+        action_type: "report_death_loot".into(),
+        data: serde_json::json!({
+            "equipment": [0, 0, 0, 0],
+            "held_item": 0,
+            "items": [
+                { "item_id": 1000, "quantity": 2 }, // fully stolen — must vanish
+                { "item_id": 2000, "quantity": 3 }, // partially stolen — must drop to 2
+                { "item_id": 5, "quantity": 1 },    // untouched — must survive intact
+            ],
+        }),
+    };
+    let mut adult_driver = AdultDriver::new(net.world_seed);
+    let mut child_driver = ChildDriver::new(net.world_seed);
+    handle_action(
+        &action,
+        &mut player,
+        &mut world,
+        &mut net,
+        &mut adult_driver,
+        &mut child_driver,
+        &tx,
+        &mut processed,
+        0,
+    )
+    .await;
+
+    assert!(
+        player.pending_theft_deductions.is_empty(),
+        "pending deductions must drain once consumed"
+    );
+
+    let corpse = world
+        .corpses
+        .values()
+        .next()
+        .expect("a non-empty death-loot report must spawn a corpse");
+    assert!(
+        !corpse.items.iter().any(|s| s.item_id == 1000),
+        "fully-stolen stack must not duplicate into the corpse"
+    );
+    let remaining_2000 = corpse
+        .items
+        .iter()
+        .find(|s| s.item_id == 2000)
+        .expect("partially-stolen item must still be present, reduced");
+    assert_eq!(
+        remaining_2000.quantity, 2,
+        "only the un-stolen remainder survives"
+    );
+    let untouched = corpse
+        .items
+        .iter()
+        .find(|s| s.item_id == 5)
+        .expect("an item nobody stole must be untouched");
+    assert_eq!(untouched.quantity, 1);
+}
+
+// AUDIT-2026-08-28 A28-01 companion: a fresh `report_inventory` reflects the client's CURRENT
+// state (any earlier theft is either already reconciled there or moot), so pending deductions
+// this backend was still tracking must not survive it — otherwise a later, unrelated re-theft of
+// the same item_id would wrongly double-subtract from a future death-loot report.
+#[tokio::test]
+async fn report_inventory_clears_pending_theft_deductions() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let mut world = World::new(42);
+    let mut player = Player::new(1, "Host");
+    player.pending_theft_deductions.push((1000, 2));
+    let (tx, _rx) = broadcast::channel(16);
+    let mut processed: BoundedDedupeSet<(u16, u64)> = BoundedDedupeSet::with_capacity(DEDUPE_CAP);
+
+    let action = crate::ipc::PlayerAction {
+        action_type: "report_inventory".into(),
+        data: serde_json::json!({ "items": [{ "item_id": 1000, "quantity": 5 }] }),
+    };
+    let mut adult_driver = AdultDriver::new(net.world_seed);
+    let mut child_driver = ChildDriver::new(net.world_seed);
+    handle_action(
+        &action,
+        &mut player,
+        &mut world,
+        &mut net,
+        &mut adult_driver,
+        &mut child_driver,
+        &tx,
+        &mut processed,
+        0,
+    )
+    .await;
+
+    assert!(
+        player.pending_theft_deductions.is_empty(),
+        "a fresh report_inventory must drop stale pending deductions"
+    );
+}
+
+// AUDIT-2026-08-28 A28-01, wiring check: a real `StealCommand` (the network event the THIEF's
+// backend sends the VICTIM's own backend, ADR-094 punto 4) must record the pending deduction the
+// two tests above rely on — not just remove the mirror copies. Comment out the
+// `player.pending_theft_deductions.push(...)` line in the `StealCommand` arm and this goes red.
+#[tokio::test]
+async fn steal_command_records_a_pending_theft_deduction() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let mut world = World::new(42);
+    let mut player = Player::new(1, "Host");
+    player.inventory_v2 = vec![crate::player::session::InventoryStackV2 {
+        item_id: 1000,
+        quantity: 2,
+        container: 0,
+        slot: 0,
+        props: Vec::new(),
+    }];
+    let (tx, _rx) = broadcast::channel(16);
+    let mut processed: BoundedDedupeSet<(u16, u64)> = BoundedDedupeSet::with_capacity(DEDUPE_CAP);
+
+    let mut adult_driver = AdultDriver::new(net.world_seed);
+    let mut child_driver = ChildDriver::new(net.world_seed);
+    handle_network_event(
+        NetworkEvent::StealCommand {
+            request_id: 1,
+            victim_id: 1, // matches net.local_id — "we are the victim's own backend"
+            thief_id: 2,
+        },
+        &mut player,
+        &mut world,
+        &mut net,
+        &mut adult_driver,
+        &mut child_driver,
+        &tx,
+        &tx,
+        &mut processed,
+        0,
+        None,
+    )
+    .await;
+
+    assert_eq!(
+        player.pending_theft_deductions,
+        vec![(1000, 2)],
+        "a served theft must be tracked as pending until reconciled"
+    );
+    assert!(
+        player.inventory_v2.is_empty(),
+        "the mirror removal itself must still happen, same as before this fix"
+    );
+}

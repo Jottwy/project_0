@@ -68,6 +68,9 @@
 - [AUDIT-2026-08-13.md](AUDIT-2026-08-13.md) — complemento del anterior: barre lo escrito después
   (audio de sala, aislamiento, spray, menús de editor) y re-mide los tier C que aquel dejó
   bloqueados. Misma regla: el comportamiento observable no cambia.
+- [AUDIT-2026-08-28.md](AUDIT-2026-08-28.md) — auditoría de BUGS de todo el código (10 pasadas,
+  cliente + backend): 1 crítico, 6 altos, medios/bajos con fichero:línea y escenario, ya-conocidos
+  confirmados, y registro vivo para apuntar bugs nuevos por append.
 
 ## Otros documentos de referencia
 - [reference/asset-packs.md](reference/asset-packs.md) — los dos packs de arte (Business Office, 147 prefabs; Grocery Store Props, 406), importados y **arreglados** el 2026-08-26: todo a URP/Lit, 552 de 553 con colisión en la raíz, 698 MB de huérfanos purgados, y el catálogo con tamaños reales contra el tile de 2,5 m. La sección 2 cuenta lo que venía roto de fábrica — shader Built-in y shaders portados de Unreal sin `_BaseColor` — porque vuelve a pasar con el siguiente pack que se compre.
