@@ -52,6 +52,13 @@ use super::hash;
 use super::junction::Wg3Gate;
 use super::raster::CM_PER_M;
 use super::scale;
+use super::segment::SLAB_THICKNESS_M;
+
+/// El grosor de losa en centímetros enteros, que es la unidad del plan.
+///
+/// Derivado y no escrito a mano: si alguien engorda el forjado, la altura de planta y el tope de techo
+/// tienen que moverse con él o la geometría de abajo vuelve a atravesar el suelo de arriba.
+pub const SLAB_THICKNESS_CM: i32 = (SLAB_THICKNESS_M * CM_PER_M) as i32;
 
 /// Sal del sorteo de corte: eje y posición.
 const SALT_SPLIT: u32 = 0x9A17_0000;
@@ -71,6 +78,14 @@ const SALT_TERRACE: u32 = 0x9A17_0005;
 const SALT_STOREY: u32 = 0x9A17_0006;
 /// Sal de la elección de hueco de escalera.
 const SALT_WELL: u32 = 0x9A17_0007;
+
+/// Plantas que se sirven por región (ADR-102 D3).
+///
+/// **Dos, y no porque dos sea el número correcto**: el salto de una a dos es donde están todos los
+/// fallos —el forjado que hay que perforar, la geometría de abajo que atraviesa el suelo de arriba, la
+/// métrica que deja de significar lo mismo— y el de dos a tres no aporta ninguno nuevo. Subirlo es
+/// cambiar este número y volver a medir, no escribir código.
+pub const REGION_STOREYS: usize = 2;
 
 /// Cuánto tiene que apartarse un corte del centro de una puerta de junta, en centímetros.
 ///
@@ -126,11 +141,20 @@ pub const STOREY_HEIGHT_CM: i32 = 332;
 /// lo que de verdad manda— y 4 m de tiro dan huellas de 28,6.
 pub const STOREY_RISE_CM: i32 = 24;
 
-/// Huella de un peldaño de escalera de planta, en centímetros. 14 × 30 = 4,20 m de tiro.
+/// Huella de un peldaño de escalera de planta, en centímetros. 15 × 60 = 9 m de tiro.
 ///
-/// Cómoda a propósito y no la mínima: la mínima es un suelo para que nada salga absurdo, no un
-/// objetivo. Con 30 cm de huella y 23,7 de contrahuella la escalera se sube sin pensar.
-const STAIR_TREAD_CM: i32 = 30;
+/// **Sesenta porque la celda del ráster mide cincuenta, y no porque sea cómodo.** El primer intento
+/// puso 30 —una huella cómoda de verdad— y la escalera salió INANDABLE, con el plan coherente y todos
+/// los contadores en verde. El ráster es conservador: toda celda que una caja toque queda maciza a la
+/// cota de esa caja, así que con la huella por debajo de la celda cada celda de 50 cm se come dos
+/// peldaños y su cara pisable salta a la del más alto. Medido en el volcado de (0,0): celdas vecinas a
+/// 0,5 m se llevaban 40 cm de desnivel entre ellas, más de los 27 que sube el jugador. La escalera
+/// existía, se dibujaba entera, y no se podía subir.
+///
+/// Con 60 una celda alcanza dos peldaños como mucho y el salto entre celdas vecinas se queda en una
+/// contrahuella. El punto 3 de la documentación de `fill::emit_stair` ya lo decía con todas las
+/// letras; el precio de no leerlo fue una tarde.
+const STAIR_TREAD_CM: i32 = 60;
 
 /// Ancho de un hueco de escalera, en centímetros.
 ///
@@ -140,12 +164,13 @@ const STAIR_TREAD_CM: i32 = 30;
 /// dos personas de frente y dejan sitio para que el resto del espacio siga siendo suelo.
 const STAIR_WIDTH_CM: i32 = 360;
 
-/// Huella mínima de un peldaño, en centímetros.
+/// Huella mínima de un peldaño, en centímetros: la celda del ráster y un poco más.
 ///
-/// Al `CharacterController` le basta con que la contrahuella quepa en su `m_StepOffset`; la huella no
-/// le importa. Importa aquí porque nada impedía que un espacio corto produjera peldaños de 17 cm: con
-/// desniveles de 60 cm no se notaba, con 332 sí. 26 cm es aproximadamente un pie.
-pub const MIN_TREAD_CM: i32 = 26;
+/// **El suelo no lo pone el pie del jugador, lo pone la resolución de la colisión.** Al
+/// `CharacterController` le basta con que la contrahuella quepa en su `m_StepOffset` y la huella le da
+/// igual; al ráster no. Por debajo de la celda, un peldaño desaparece dentro de otro y el desnivel
+/// entre celdas vecinas pasa a ser de varias contrahuellas. Ver [`STAIR_TREAD_CM`].
+pub const MIN_TREAD_CM: i32 = (super::raster::WG3_CELL_M * CM_PER_M) as i32 + 5;
 
 /// Probabilidad de que un corte interior se lleve un desnivel.
 const TERRACE_CHANCE: f32 = 0.34;
@@ -297,6 +322,22 @@ impl PlanRect {
     }
     pub fn area_m2(&self) -> f32 {
         (self.width_cm() as f32 / CM_PER_M) * (self.depth_cm() as f32 / CM_PER_M)
+    }
+    /// El mismo rectángulo metido `margin` hacia dentro por los cuatro lados (ADR-102 D5).
+    pub fn shrunk(&self, margin_cm: i32) -> PlanRect {
+        PlanRect {
+            min_x_cm: self.min_x_cm + margin_cm,
+            min_z_cm: self.min_z_cm + margin_cm,
+            max_x_cm: self.max_x_cm - margin_cm,
+            max_z_cm: self.max_z_cm - margin_cm,
+        }
+    }
+    /// ¿Se pisan estos dos rectángulos, tocarse NO cuenta? (ADR-102 D2)
+    pub fn overlaps(&self, other: &PlanRect) -> bool {
+        self.min_x_cm < other.max_x_cm
+            && self.max_x_cm > other.min_x_cm
+            && self.min_z_cm < other.max_z_cm
+            && self.max_z_cm > other.min_z_cm
     }
     /// ¿Cae este punto dentro, bordes EXCLUIDOS? (ADR-102 D4)
     ///
@@ -460,6 +501,15 @@ pub struct PlannedSpace {
     /// cierre contra la losa, y la escalera de planta usa [`STOREY_RISE_CM`] para caber en un hueco y
     /// no en un salón. Con un solo número, el que se elija arruina el otro caso.
     pub rise_step_cm: i32,
+
+    /// ADR-102 D2 — tope de altura libre en centímetros. `0` = sin tope.
+    ///
+    /// Lo pone [`plan_building`] a los espacios que tienen algo CONSTRUIDO encima, y es lo que impide
+    /// que una nave de 4,50 m plante su losa de techo 130 cm por encima del suelo de la planta de
+    /// arriba. Que valga cero cuando lo de encima es vacío intencionado no es un descuido: es la
+    /// decisión de que una sala a doble altura exista **porque el plan la quiso**, y no porque nadie
+    /// mirara.
+    pub max_clear_cm: i32,
 }
 
 /// Cómo se conectan dos espacios.
@@ -874,6 +924,7 @@ pub fn plan_building(
         let Some(w) = dig_well(&mut out[n - 1], &plan, n - 1, seed) else {
             break;
         };
+        cap_headroom_under(&mut out[n - 1], &plan);
         wells.push(w);
         out.push(plan);
     }
@@ -995,7 +1046,9 @@ fn dig_well(
         // ENFRENTE de la puerta, así que lo que queda entre la puerta y el pie de la escalera es lo
         // que sigue siendo sala — y es también lo que sostiene todos los enlaces que ya tenía este
         // espacio. Sin sobrante no hay dónde repartirlos.
-        if run < run_cm + MIN_SIDE_CM || across < STAIR_WIDTH_CM {
+        // Lo que sobra tiene que dar para un vestíbulo con su puerta, no para una sala entera:
+        // exigirle [`MIN_SIDE_CM`] descartaba la mitad de los sitios donde cabe una escalera.
+        if run < run_cm + GOOD_WALL_CM || across < STAIR_WIDTH_CM {
             continue;
         }
         // Y ningún hueco puede caer DENTRO de la franja que se va a volver escalera: ahí la cota sube
@@ -1009,11 +1062,16 @@ fn dig_well(
         // El sitio al que se sale, y contra la franja RECORTADA: lo que tiene que caber dentro de un
         // espacio de arriba es el hueco, no la sala entera de la que se recorta.
         let (stair, _) = stair_and_flank(&s.rect, side, run_cm, seed);
-        let Some(j) = above
-            .spaces
-            .iter()
-            .position(|t| t.role.is_built() && t.rect.contains_rect(&stair))
-        else {
+        // Y el sitio al que se sale tiene que ser PLANO. Un espacio hundido de la planta de arriba
+        // baja sus peldaños de 12 en 12 justo dentro del pozo: la escalera sube sus trece perfectos y
+        // los ocho de arriba se quedan con menos de un metro de techo, colgando de la terraza de
+        // encima. Salió en `(1,0)` como una escalera que se andaba hasta la mitad.
+        let Some(j) = above.spaces.iter().position(|t| {
+            t.role.is_built()
+                && t.rise_cm == 0
+                && t.role != SpaceRole::Stair
+                && t.rect.shrunk(STAIR_MARGIN_CM).contains_rect(&stair)
+        }) else {
             continue;
         };
         // Sorteo por posición, que es lo que hace que la elección no dependa del orden del vector.
@@ -1034,16 +1092,55 @@ fn dig_well(
     })
 }
 
-/// TIRAS de una escalera que sube una planta entera — no contrahuellas: son una más.
+/// Le pone techo a los espacios de `below` que tengan algo CONSTRUIDO encima (ADR-102 D2).
 ///
-/// Redondeando las contrahuellas hacia arriba, porque el tope de [`STOREY_RISE_CM`] es un tope: 13
-/// darían 25,5 cm cada una y 14 dan 23,7. Y una más porque la primera tira está a la cota de entrada
-/// y no sube nada.
-pub fn storey_steps() -> i32 {
-    let risers = STOREY_HEIGHT_CM.div_euclid(STOREY_RISE_CM)
-        + i32::from(STOREY_HEIGHT_CM % STOREY_RISE_CM != 0);
-    risers + 1
+/// El tope sale de la aritmética de la planta y no de un gusto: el suelo de arriba está a
+/// [`STOREY_HEIGHT_CM`] y su losa cuelga [`SLAB_THICKNESS_CM`] por debajo, así que lo que queda libre
+/// son los 320 de rigor. Sin esto, una nave pide 450 y su losa de techo aterriza en `[450, 462]`,
+/// metro y pico dentro de las salas de arriba.
+///
+/// Y sólo si lo de encima está CONSTRUIDO. Donde arriba hay vacío intencionado —o no hay planta— no
+/// hay tope, y la nave se queda con sus 4,50 m: eso es una sala a doble altura, y existe porque el
+/// plan puso vacío ahí, no porque se le olvidara a nadie.
+fn cap_headroom_under(below: &mut RegionPlan, above: &RegionPlan) {
+    let cap = STOREY_HEIGHT_CM - SLAB_THICKNESS_CM;
+    for s in &mut below.spaces {
+        if above
+            .spaces
+            .iter()
+            .any(|t| t.role.is_built() && t.rect.overlaps(&s.rect))
+        {
+            s.max_clear_cm = cap;
+        }
+    }
 }
+
+/// TIRAS de una escalera que sube una planta entera — no contrahuellas: son DOS más.
+///
+/// Una más porque la primera tira está a la cota de entrada y no sube nada. Y otra más porque **el
+/// rellano de arriba tiene que medir dos celdas del ráster**: el vano que abre el forjado es
+/// conservador igual que todo lo demás, así que se come la losa de cualquier celda que TOQUE, y con
+/// un rellano de una sola tira la celda que comparte con el peldaño de abajo se queda sin suelo. Con
+/// dos tiras siempre sobra una celda entera de rellano, que es donde se pisa al salir.
+/// Las contrahuellas salen de dividir HACIA ABAJO, igual que en `fill::emit_stair`, y las dos cuentas
+/// tienen que dar lo mismo o el tiro se dimensiona para una escalera que no es la que se construye.
+/// [`STOREY_RISE_CM`] es un objetivo; el tope de verdad es [`MAX_WALK_STEP_CM`], y 332 / 13 = 25,5 lo
+/// cumple de sobra.
+pub fn storey_steps() -> i32 {
+    STOREY_HEIGHT_CM.div_euclid(STOREY_RISE_CM).max(1) + 2
+}
+
+/// Cuánto tiene que separarse un hueco de escalera de las paredes de la sala de arriba, en cm.
+///
+/// **Pegado a la pared, el rellano no existe.** El muro perimetral de la planta alta llena su celda
+/// del ráster de arriba abajo, así que un rellano contra él queda dentro de una columna maciza: la
+/// escalera sube trece peldaños perfectos y el último no tiene dónde dejarte. Salió en `(1,0)`, con el
+/// hueco naciendo justo en `x = 150,00` — la costura entre regiones.
+///
+/// Grosor de pared más una celda del ráster, y ni un centímetro más: con 100 cm la segunda planta se
+/// caía de 49 regiones a 23, porque lo que este número recorta no es la escalera sino la lista de
+/// sitios donde puede haberla.
+const STAIR_MARGIN_CM: i32 = 70;
 
 /// La franja de `rect` que se vuelve escalera: contra la pared de ENFRENTE de la puerta, `run_cm` de
 /// fondo.
@@ -2091,6 +2188,8 @@ impl Planner {
             // todavía, porque depende del grafo.
             rise_from_side: 0,
             rise_step_cm: STEP_RISE_CM,
+            // Sin tope mientras no haya nada encima. Lo pone el edificio, no la planta.
+            max_clear_cm: 0,
         });
         self.spaces.len() - 1
     }

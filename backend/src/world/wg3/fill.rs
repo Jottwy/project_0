@@ -37,7 +37,9 @@
 
 use super::manifest::{Wg3Manifest, Wg3Piece};
 use super::placement::Wg3Placement;
-use super::plan::{LinkKind, PlannedSpace, RegionPlan, SpaceRole};
+use super::plan::{
+    LinkKind, PlannedSpace, RegionBuilding, RegionPlan, SpaceRole, SLAB_THICKNESS_CM,
+};
 use super::raster::CM_PER_M;
 use super::route::{self, Mouth, PlannedRoute, Rect, RouteSettings};
 use super::segment::{
@@ -55,7 +57,7 @@ const CARVE_DEPTH_M: f32 = 0.5;
 /// que midieran sus piezas; con el plan decidiendo el papel, una nave puede ser alta porque es una
 /// nave. No mueve el suelo —eso es otro trabajo— pero sí el techo, que es la mitad de lo que hace que
 /// un sitio se sienta distinto al de al lado.
-fn clear_height_cm(role: SpaceRole) -> i32 {
+fn clear_height_by_role(role: SpaceRole) -> i32 {
     match role {
         SpaceRole::Hall => 450,
         SpaceRole::Spine => 360,
@@ -66,6 +68,25 @@ fn clear_height_cm(role: SpaceRole) -> i32 {
         // baja encima de ti justo donde estás subiendo.
         SpaceRole::Stair => 380,
         _ => 320,
+    }
+}
+
+/// La altura libre que de verdad le toca a este espacio.
+///
+/// **ADR-102 D2 — la altura libre deja de ser libre en cuanto hay planta encima.** Sin el tope, una
+/// nave de la planta baja pide 450 y su losa de techo se planta en `[450, 462]`, o sea 130 cm POR
+/// ENCIMA del suelo de la planta de arriba, que está en 332: geometría de abajo atravesando el
+/// forjado y saliendo dentro de las salas de arriba. No da error, no rompe ningún contador, y desde
+/// dentro se lee como un bloque de hormigón en mitad de una oficina.
+///
+/// El tope lo pone el PLAN y no esta función, porque saber si hay algo encima es cosa del edificio y
+/// no del papel del espacio. Cero quiere decir que no hay nada encima, y entonces la nave es una nave.
+fn clear_height_cm(space: &PlannedSpace) -> i32 {
+    let want = clear_height_by_role(space.role);
+    if space.max_clear_cm > 0 {
+        want.min(space.max_clear_cm)
+    } else {
+        want
     }
 }
 
@@ -127,6 +148,30 @@ pub struct FilledRegion {
     pub gates_failed: u32,
 }
 
+impl FilledRegion {
+    /// Se traga otra planta ya rellenada. Los contadores se suman; la geometría se concatena.
+    ///
+    /// **Los índices de espacio dejan de ser únicos al juntar plantas**, y está dicho aquí para que
+    /// nadie los lea como si lo fueran: `openings_dropped_at`, `links_to_route` y `links_failed`
+    /// llevan el índice DENTRO de su planta. Para depurar sirve la coordenada, que es de mundo y no se
+    /// repite; el índice, no.
+    fn absorb(&mut self, other: FilledRegion) {
+        self.placements.extend(other.placements);
+        self.segments.extend(other.segments);
+        self.carves.extend(other.carves);
+        self.spaces_by_piece += other.spaces_by_piece;
+        self.spaces_by_segment += other.spaces_by_segment;
+        self.spaces_unbuilt += other.spaces_unbuilt;
+        self.openings_built += other.openings_built;
+        self.openings_dropped += other.openings_dropped;
+        self.openings_dropped_at.extend(other.openings_dropped_at);
+        self.links_to_route.extend(other.links_to_route);
+        self.links_failed.extend(other.links_failed);
+        self.gates_built += other.gates_built;
+        self.gates_failed += other.gates_failed;
+    }
+}
+
 /// Un hueco pedido en la pared exterior de un espacio, antes de repartirlo entre sus tramos.
 #[derive(Debug, Clone, Copy)]
 struct Wanted {
@@ -143,16 +188,22 @@ pub fn fill(plan: &RegionPlan, manifest: &Wg3Manifest) -> FilledRegion {
     fill_with(plan, manifest, true)
 }
 
-/// Igual, pudiendo APAGAR el catálogo.
+/// **EL EDIFICIO ENTERO** (ADR-102 D5): todas las plantas, y el suelo perforado por donde suben las
+/// escaleras.
 ///
-/// **Y hoy el mundo que se sirve lo apaga, por una razón de contrato y no de calidad.** Una pieza
-/// colocada necesita que se le EXCAVEN las puertas del plan (ver [`FilledRegion::carves`]), y los
-/// vanos excavados **no cruzan el wire**: `Wg3ChunkView` lleva colocaciones y tramos, y nada más. Con
-/// el catálogo encendido el servidor abriría puertas que el cliente dibuja tapiadas — el fallo que
-/// ADR-095 R6 existe para impedir, y que no se ve en una captura.
-///
-/// Meter los vanos en el cable es un cambio de esquema, y eso pide su propio ADR. Hasta entonces el
-/// mundo servido se construye sólo con tramos, que el wire ya lleva y que el cliente ya dibuja.
+/// Cada planta se rellena por su cuenta —incluido el enrutador, que ve sólo la ocupación de la suya—
+/// y lo único que las relaciona es el vano del forjado. Ésa es la misma decisión de D1 vista desde
+/// aquí: nada de este módulo aprende una tercera coordenada, porque la planta ya viene con su cota
+/// puesta en cada espacio.
+pub fn fill_building(building: &RegionBuilding, manifest: &Wg3Manifest) -> FilledRegion {
+    let mut out = FilledRegion::default();
+    for plan in &building.storeys {
+        out.absorb(fill(plan, manifest));
+    }
+    out
+}
+
+/// Igual, pudiendo APAGAR el catálogo. Lo usan las sondas que quieren medir sólo lo generado.
 pub fn fill_with(plan: &RegionPlan, manifest: &Wg3Manifest, use_catalogue: bool) -> FilledRegion {
     fill_full(plan, manifest, use_catalogue, &RouteSettings::default())
 }
@@ -278,7 +329,7 @@ pub fn fill_full(
             // dibujó y no donde hace falta. Ver `FilledRegion::carves`.
             for w in &wanted[i] {
                 out.carves
-                    .push(carve_for(w, space.floor_y_cm, clear_height_cm(space.role)));
+                    .push(carve_for(w, space.floor_y_cm, clear_height_cm(space)));
                 out.openings_built += 1;
             }
             continue;
@@ -377,7 +428,7 @@ fn mouth_on(
         side,
         width: width_cm as f32 / CM_PER_M,
         floor_y: s.floor_y_cm as f32 / CM_PER_M,
-        clear_height: clear_height_cm(s.role) as f32 / CM_PER_M,
+        clear_height: clear_height_cm(s) as f32 / CM_PER_M,
         kind: 0,
     })
 }
@@ -505,7 +556,7 @@ fn emit_space(index: usize, space: &PlannedSpace, wanted: &[Wanted], out: &mut F
     shift_cuts(&mut xs, wanted, true);
     shift_cuts(&mut zs, wanted, false);
 
-    let height = clear_height_cm(space.role);
+    let height = clear_height_cm(space);
     // Qué huecos ha alojado alguien. Un `false` al terminar es una puerta perdida, y hay que contarla.
     let mut placed = vec![false; wanted.len()];
     // Índices en `out.segments` de lo que emite ESTE espacio, para poder volver sobre ellos si algún
@@ -627,6 +678,36 @@ fn carve_for(w: &Wanted, floor_y_cm: i32, height_cm: i32) -> Wg3Carve {
     }
 }
 
+/// **EL HUECO DEL FORJADO** (ADR-102 D5): el trozo de suelo de la planta de arriba que se lleva la
+/// escalera por delante.
+///
+/// Productor APARTE de [`carve_for`], y esa separación es la decisión entera. Los dos vanos de vivir
+/// hoy —la puerta del plan y la de la absorción— suman [`CARVE_FLOOR_GUARD_CM`] al construirse, y con
+/// razón: sin esa guarda una puerta se lleva la losa sobre la que se anda y abre un agujero por el que
+/// se cae. Bajar la constante para que quepa la escalera **convertiría toda puerta del mundo en un
+/// agujero**. Así que la escalera trae su propio productor y la guarda no se toca.
+///
+/// La maquinaria de restar ya servía tal cual: `Wg3RasterBuilder::carve_box` parte el tramo en zócalo
+/// y dintel sin mirar de qué es, y `Wg3Carving.Apply` hace lo mismo en el cliente. El bloqueo estaba
+/// al cien por cien en los dos productores, no en la operación.
+///
+/// Y hay que RESTAR el grosor de losa, no igualar la cota: el suelo cuelga por debajo de su cota, así
+/// que un vano que empiece exactamente en `floor_y_cm` deja la losa entera intacta y el último peldaño
+/// da contra el techo.
+fn carve_for_well(rect: (i32, i32, i32, i32), upper_floor_y_cm: i32) -> Wg3Carve {
+    let (min_x, min_z, max_x, max_z) = rect;
+    Wg3Carve {
+        x_cm: min_x,
+        z_cm: min_z,
+        size_x_cm: max_x - min_x,
+        size_z_cm: max_z - min_z,
+        // Un centímetro de más por cada lado. `carve_box` deja intacto el tramo que sólo TOCA la banda
+        // (`span.top_cm <= lo`), así que una banda que empiece justo en la cara de la losa no la corta.
+        bottom_y_cm: upper_floor_y_cm - SLAB_THICKNESS_CM - 1,
+        top_y_cm: upper_floor_y_cm + 1,
+    }
+}
+
 /// Como [`opening_in`], pero corriendo el hueco lo justo para que quepa en este tramo.
 ///
 /// Sólo lo aloja si el CENTRO cae dentro de su pared: correr un vano hasta un tramo que no lo tocaba
@@ -731,15 +812,22 @@ fn emit_stair(index: usize, space: &PlannedSpace, wanted: &[Wanted], out: &mut F
     // que se subía igual y nadie se enteraba. Con una planta más alta, o una contrahuella distinta,
     // el mismo código deja un escalón imposible en el último peldaño.
     let risers = (rise.abs() / space.rise_step_cm.max(1)).max(1);
-    let steps = risers + 1;
+    // Y subiendo una planta, una tira MÁS: el rellano de arriba son dos, porque el vano que abre el
+    // forjado es conservador y se lleva la losa de toda celda que toque. Con un rellano de una sola
+    // tira, la celda que comparte con el peldaño de abajo se queda sin suelo justo donde hay que
+    // pisar. Una terraza no lo necesita: no perfora nada.
+    let steps = risers + 1 + i32::from(rise > 0);
     // **Y el techo del hueco es UNO, a la cota de arriba del todo.**
     //
     // Con altura constante el techo sube con cada peldaño, que es lo correcto en una terraza —se baja
     // dentro de la misma sala— y es un desastre subiendo una planta: el techo de la primera tira
     // quedaría a 3,80 m, o sea medio metro DENTRO del suelo de la planta de encima. Un hueco de
     // escalera es un pozo abierto, y su techo está donde el de la planta a la que llega.
-    let clear = clear_height_cm(space.role);
-    let ceiling_cm = space.floor_y_cm + rise.max(0) + clear;
+    let clear = clear_height_cm(space);
+    // Un centímetro por debajo del techo de la planta a la que llega, y no a la misma cota: la sala de
+    // arriba pone su propio techo sobre el hueco, y dos losas en el mismo sitio son la misma cara
+    // dibujada dos veces — z-fighting, que sí se ve en una captura.
+    let ceiling_cm = space.floor_y_cm + rise.max(0) + clear - i32::from(rise > 0);
     let max_cm = (MAX_SEGMENT_M * CM_PER_M) as i32;
     let ceil_div = |v: i32, by: i32| (v + by - 1) / by;
 
@@ -769,7 +857,9 @@ fn emit_stair(index: usize, space: &PlannedSpace, wanted: &[Wanted], out: &mut F
     for step in 0..steps {
         // `step` cuenta desde la PUERTA. La tira 0 se queda a la cota de la puerta —que es lo que
         // hace que ningún vecino se entere del desnivel— y cada siguiente baja una contrahuella.
-        let floor = space.floor_y_cm + (rise * step) / risers;
+        // `min(risers)` para que las dos tiras del rellano compartan cota: la subida se reparte entre
+        // las contrahuellas y ahí ya no queda ninguna.
+        let floor = space.floor_y_cm + (rise * step.min(risers)) / risers;
         // De ahí a la tira geométrica: entrando por el máximo, la tira 0 es la última del eje.
         let slot = if from_max { steps - 1 - step } else { step };
         let (a0, a1) = (
@@ -816,6 +906,37 @@ fn emit_stair(index: usize, space: &PlannedSpace, wanted: &[Wanted], out: &mut F
             }
             if run + 1 < runs {
                 openings.push(full_side(run_hi, along_len));
+            }
+
+            // **EL RELLANO NO TIENE PAREDES** (ADR-102 D5).
+            //
+            // Es lo que le faltaba a la escalera para servir de algo. Subiendo una planta, la última
+            // tira queda a la cota del suelo de arriba y ENMEDIO de una sala de esa planta: si
+            // conserva sus paredes, se sube hasta arriba del todo y se da uno con ellas. El plan no
+            // podía poner ahí una puerta —sus enlaces son de una sola planta, que es justo lo que
+            // ADR-102 D1 decide—, así que la salida la abre quien conoce las dos cotas: esto.
+            //
+            // Sólo los lados que no se hayan abierto ya, que abrir dos veces el mismo es una boca
+            // duplicada.
+            if rise > 0 && step >= risers {
+                if slot == 0 {
+                    openings.push(full_side(lo_side, across_len));
+                }
+                if slot + 1 == steps {
+                    openings.push(full_side(hi_side, across_len));
+                }
+                if run == 0 {
+                    openings.push(full_side(run_lo, along_len));
+                }
+                if run + 1 == runs {
+                    openings.push(full_side(run_hi, along_len));
+                }
+            } else if rise > 0 {
+                // Y por debajo del rellano hay que QUITAR el suelo de la planta de encima, o la
+                // escalera sube hasta darse con él en la cabeza. El rellano no: ése es el suelo por
+                // el que se sale, y perforarlo deja un agujero donde debería haber salida.
+                out.carves
+                    .push(carve_for_well((x0, z0, x1, z1), space.floor_y_cm + rise));
             }
 
             for (k, w) in wanted.iter().enumerate() {

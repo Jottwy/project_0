@@ -288,8 +288,16 @@ impl Wg3ServedWorld {
         // de la región, porque dos vecinas tienen que planificar edificios distintos.
         let gates =
             junction::gates_of_region(composer_seed(world_seed), region.x, region.z, bounds);
-        let plan = plan::plan_region(region.composer_seed(world_seed), bounds, &gates);
-        let filled = fill::fill(&plan, manifest);
+        // **ADR-102 — y ahora son PLANTAS.** Lo que se sirve es un edificio y no un plano: la baja
+        // completa, la de encima recortada al corte principal de la de abajo, y el suelo de arriba
+        // perforado por donde sube la escalera.
+        let building = plan::plan_building(
+            region.composer_seed(world_seed),
+            bounds,
+            &gates,
+            plan::REGION_STOREYS,
+        );
+        let filled = fill::fill_building(&building, manifest);
 
         // **Un enlace que el plan pidió y que nadie pudo construir se dice EN VOZ ALTA.** El sistema
         // viejo tapaba ese hueco inventando un conector; aquí no hay nada que inventar, así que lo

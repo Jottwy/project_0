@@ -374,7 +374,7 @@ fn the_flood_distinguishes_storeys() {
                 Some(next) => (next.bottom_cm - span.top_cm) as f32 / 100.0,
                 None => f32::MAX,
             };
-            (HEAD_M..=6.0)
+            (HEAD_M..=CEILING_CAP_M)
                 .contains(&head)
                 .then_some(span.top_cm as f32 / 100.0)
         })
@@ -409,7 +409,7 @@ fn the_flood_distinguishes_storeys() {
                         Some(next) => (next.bottom_cm - span.top_cm) as f32 / 100.0,
                         None => f32::MAX,
                     };
-                    (HEAD_M..=6.0).contains(&head)
+                    (HEAD_M..=CEILING_CAP_M).contains(&head)
                 })
                 .count();
             if here > 0 {
@@ -1986,7 +1986,7 @@ fn probe_absorption_reach() {
                 };
                 // Con techo y no a cielo abierto: la cara de arriba de una pared cumple «hay suelo
                 // y hay hueco» y no es sitio por donde se ande.
-                if (HEAD_M..=6.0).contains(&head) {
+                if (HEAD_M..=CEILING_CAP_M).contains(&head) {
                     return true;
                 }
             }
@@ -2313,7 +2313,7 @@ fn reach_and_total(
             };
             // Con techo y no a cielo abierto: la cara de arriba de una pared cumple «hay suelo y
             // hay hueco» y contarla metería los TEJADOS en la cuenta.
-            if (HEAD_M..=6.0).contains(&head) {
+            if (HEAD_M..=CEILING_CAP_M).contains(&head) {
                 return true;
             }
         }
@@ -3983,7 +3983,7 @@ fn probe_how_much_of_the_region_can_be_walked_from_the_spawn() {
     const CELL: f32 = 0.5;
     const HEAD_M: f32 = 1.0;
     // La contrahuella del catálogo. Por encima de esto no es un escalón, es un bordillo.
-    const MAX_STEP: f32 = 0.20;
+    const MAX_STEP: f32 = WALK_STEP_M;
 
     let m = real_manifest();
 
@@ -4044,7 +4044,7 @@ fn probe_how_much_of_the_region_can_be_walked_from_the_spawn() {
                 // Con techo, y no a cielo abierto: la cara de arriba de una pared o de una losa de
                 // techo cumple «hay suelo y hay hueco» y no es sitio donde se ande. Contarla metía
                 // los TEJADOS en la cuenta y hacía el mundo más grande y más roto de lo que es.
-                if (HEAD_M..=6.0).contains(&head) {
+                if (HEAD_M..=CEILING_CAP_M).contains(&head) {
                     out.push(top);
                 }
             }
@@ -4488,7 +4488,7 @@ fn probe_what_step_each_piece_demands() {
                     Some(next) => (next.bottom_cm - span.top_cm) as f32 / 100.0,
                     None => f32::MAX,
                 };
-                if (HEAD_M..=6.0).contains(&head) {
+                if (HEAD_M..=CEILING_CAP_M).contains(&head) {
                     out.push(span.top_cm as f32 / 100.0);
                 }
             }
@@ -4661,7 +4661,7 @@ fn no_mouth_in_the_served_world_is_walled_shut() {
 fn probe_what_each_walkable_blob_is_made_of() {
     const CELL: f32 = 0.5;
     const HEAD_M: f32 = 1.0;
-    const MAX_STEP: f32 = 0.20;
+    const MAX_STEP: f32 = WALK_STEP_M;
 
     let m = real_manifest();
 
@@ -4711,7 +4711,7 @@ fn probe_what_each_walkable_blob_is_made_of() {
                     Some(next) => (next.bottom_cm - span.top_cm) as f32 / 100.0,
                     None => f32::MAX,
                 };
-                if (HEAD_M..=6.0).contains(&head) {
+                if (HEAD_M..=CEILING_CAP_M).contains(&head) {
                     out.push(top);
                 }
             }
@@ -5377,7 +5377,7 @@ fn the_generated_cell_expands_the_same_in_both_languages() {
 fn sweep_cap_chance() {
     const CELL: f32 = 0.5;
     const HEAD_M: f32 = 1.0;
-    const MAX_STEP: f32 = 0.20;
+    const MAX_STEP: f32 = WALK_STEP_M;
 
     let m = real_manifest();
 
@@ -5424,7 +5424,7 @@ fn sweep_cap_chance() {
                         Some(next) => (next.bottom_cm - span.top_cm) as f32 / 100.0,
                         None => f32::MAX,
                     };
-                    if (HEAD_M..=6.0).contains(&head) {
+                    if (HEAD_M..=CEILING_CAP_M).contains(&head) {
                         out.push(span.top_cm as f32 / 100.0);
                     }
                 }
@@ -5574,7 +5574,7 @@ fn sweep_cap_chance() {
 fn dump_region_maps() {
     const CELL: f32 = 0.5;
     const HEAD_M: f32 = 1.0;
-    const MAX_STEP: f32 = 0.20;
+    const MAX_STEP: f32 = WALK_STEP_M;
     const PX: f32 = 4.0;
 
     let dir = std::env::var("WG3_MAP_DIR").expect("WG3_MAP_DIR: carpeta donde escribir los planos");
@@ -5637,7 +5637,7 @@ fn dump_region_maps() {
                         Some(next) => (next.bottom_cm - span.top_cm) as f32 / 100.0,
                         None => f32::MAX,
                     };
-                    if (HEAD_M..=6.0).contains(&head) {
+                    if (HEAD_M..=CEILING_CAP_M).contains(&head) {
                         out.push(span.top_cm as f32 / 100.0);
                     }
                 }
@@ -5784,6 +5784,28 @@ use super::plan::{self, LinkKind, RegionPlan, SpaceRole};
 /// medidas tomadas con una semana de diferencia.
 const AUDIT_REGIONS: [(i32, i32); 4] = [(0, 0), (1, 0), (0, 1), (-1, 2)];
 
+/// Hueco de cabeza por encima del cual una sonda deja de considerar que se anda ahí, en metros.
+///
+/// **Subido de 6,0 a 7,0 por ADR-102 D5, y el motivo importa más que el número.** El tope existe para
+/// que la cara de arriba de una pared no cuente como suelo; el caso de verdad —un tejado— ya lo
+/// descarta no tener NADA encima. Lo que el 6,0 descartaba de más era el hueco de escalera: un pozo
+/// que atraviesa dos plantas mide 6,52 m de suelo a techo, así que sus celdas del pie quedaban fuera
+/// de lo pisable y la escalera aparecía desconectada de la planta baja por abajo. Salió como
+/// `x=32.85: pisables []` en el corte del volcador, con los trece peldaños de encima perfectos.
+///
+/// Cambia todas las cifras de superficie andable que se publiquen a partir de aquí, y por eso está en
+/// un solo sitio con nombre.
+const CEILING_CAP_M: f32 = 7.0;
+
+/// Escalón que una sonda acepta subir entre dos celdas vecinas, en metros.
+///
+/// **Subido de 0,20 a 0,27 por ADR-102 D5, y por el mismo motivo que el de arriba.** El 0,20 era la
+/// contrahuella del catálogo, y en su día valía porque no había otra escalera; la de planta sube 25,5
+/// cm por peldaño —332 entre trece— y con el tope viejo las sondas la declaraban insubible. Salía como
+/// «mancha mayor 73 % de lo pisable» con la planta alta entera al otro lado. El número que manda es lo
+/// que sube el jugador, `plan::MAX_WALK_STEP_CM`, medido contra el `m_StepOffset` del prefab.
+const WALK_STEP_M: f32 = plan::MAX_WALK_STEP_CM as f32 / 100.0;
+
 /// El plan de una región de la auditoría, con sus puertas de junta reales.
 fn plan_of(m: &Wg3Manifest, rx: i32, rz: i32) -> RegionPlan {
     let region = Wg3RegionCoord { x: rx, z: rz };
@@ -5912,6 +5934,206 @@ fn every_upper_storey_has_a_stair_that_lands_somewhere() {
                 "({rx},{rz}): escalera de {across} cm de ancho — el recorte no se aplicó"
             );
         }
+    }
+}
+
+#[test]
+#[ignore = "sonda: imprime, no exige"]
+fn probe_the_well_column() {
+    let m = real_manifest();
+    for (rx, rz) in AUDIT_REGIONS {
+        let region = Wg3RegionCoord { x: rx, z: rz };
+        let b = building_of(rx, rz);
+        let Some(w) = b.wells.first() else {
+            println!("[wg3] ({rx},{rz}) SIN hueco: se queda en una planta");
+            continue;
+        };
+        let stair = b.storeys[0].spaces[w.space_below];
+        println!(
+            "[wg3] ({rx},{rz}) escalera {:?} sube {} paso {} entra por {}",
+            stair.rect, stair.rise_cm, stair.rise_step_cm, stair.rise_from_side
+        );
+
+        let served = Wg3ServedWorld::plan_region(&m, SERVED_SEED, region);
+        // Un corte a lo largo del tiro: la cota pisable de cada celda, y el hueco donde se rompe.
+        let along_x = !stair.rise_from_side.is_multiple_of(2);
+        let (cx, cz) = stair.rect.centre_m();
+        let (lo, hi) = if along_x {
+            (stair.rect.min_x_cm, stair.rect.max_x_cm)
+        } else {
+            (stair.rect.min_z_cm, stair.rect.max_z_cm)
+        };
+        let mut t = lo as f32 / 100.0 - 1.5;
+        while t < hi as f32 / 100.0 + 1.5 {
+            let (x, z) = if along_x { (t, cz) } else { (cx, t) };
+            let coord = chunk::Wg3ChunkCoord::containing(x, z);
+            let r = chunk::build_chunk_raster_with_carves(
+                &m,
+                &served.placements_touching_chunk(&m, coord),
+                &served.segments_touching_chunk(coord),
+                &served.carves_touching_chunk(coord),
+                coord,
+            );
+            let col = r.column_at(x, z);
+            let walk: Vec<i16> = col
+                .iter()
+                .enumerate()
+                .filter(|(i, s)| {
+                    let head = match col.get(i + 1) {
+                        Some(n) => (n.bottom_cm - s.top_cm) as f32 / 100.0,
+                        None => f32::MAX,
+                    };
+                    (1.0..=CEILING_CAP_M).contains(&head)
+                })
+                .map(|(_, s)| s.top_cm)
+                .collect();
+            println!("[wg3]   t={t:.2}: pisables {walk:?} de {col:?}");
+            t += 0.5;
+        }
+    }
+}
+
+/// **ADR-102 verificación (b): SE SUBE.**
+///
+/// Se inunda el ráster del mundo SERVIDO desde un suelo de la planta baja, con clave `(celda, nivel)`
+/// y con el escalón que de verdad sube el jugador —[`plan::MAX_WALK_STEP_CM`], medido contra el
+/// `m_StepOffset` del prefab—, y se exige llegar a un suelo a la cota de la planta de arriba.
+///
+/// Es el test que caza los dos fallos que ningún contador ve: el forjado sin perforar —la escalera
+/// llega y se da con el suelo de encima en la cabeza— y la escalera construida sin que nada la
+/// conecte. En los dos casos el plan es coherente, el relleno no se queja y la geometría existe.
+#[test]
+fn a_second_storey_is_actually_reachable() {
+    const CELL: f32 = 0.5;
+    const HEAD_M: f32 = 1.0;
+    let max_step = plan::MAX_WALK_STEP_CM as f32 / 100.0;
+
+    let m = real_manifest();
+    for (rx, rz) in AUDIT_REGIONS {
+        let region = Wg3RegionCoord { x: rx, z: rz };
+        let (min_x, min_z, _, _) = region.bounds();
+        let served = Wg3ServedWorld::plan_region(&m, SERVED_SEED, region);
+
+        let side = REGION_CHUNKS as usize;
+        let base = chunk::Wg3ChunkCoord::containing(min_x + 1.0, min_z + 1.0);
+        let mut rasters = Vec::with_capacity(side * side);
+        for cz in 0..side {
+            for cx in 0..side {
+                let coord = chunk::Wg3ChunkCoord {
+                    x: base.x + cx as i32,
+                    z: base.z + cz as i32,
+                };
+                rasters.push(chunk::build_chunk_raster_with_carves(
+                    &m,
+                    &served.placements_touching_chunk(&m, coord),
+                    &served.segments_touching_chunk(coord),
+                    &served.carves_touching_chunk(coord),
+                    coord,
+                ));
+            }
+        }
+
+        let cells = (REGION_M / CELL) as usize;
+        let mut floors: Vec<Vec<f32>> = vec![Vec::new(); cells * cells];
+        for iz in 0..cells {
+            for ix in 0..cells {
+                let x = min_x + ix as f32 * CELL + CELL * 0.5;
+                let z = min_z + iz as f32 * CELL + CELL * 0.5;
+                let coord = chunk::Wg3ChunkCoord::containing(x, z);
+                let (dx, dz) = (coord.x - base.x, coord.z - base.z);
+                if dx < 0 || dz < 0 || dx as usize >= side || dz as usize >= side {
+                    continue;
+                }
+                let Some(r) = rasters.get(dz as usize * side + dx as usize) else {
+                    continue;
+                };
+                let column = r.column_at(x, z);
+                let mut out = Vec::new();
+                for (i, span) in column.iter().enumerate() {
+                    let head = match column.get(i + 1) {
+                        Some(next) => (next.bottom_cm - span.top_cm) as f32 / 100.0,
+                        None => f32::MAX,
+                    };
+                    if (HEAD_M..=CEILING_CAP_M).contains(&head) {
+                        out.push(span.top_cm as f32 / 100.0);
+                    }
+                }
+                floors[iz * cells + ix] = out;
+            }
+        }
+
+        // **Se etiquetan TODAS las manchas y se mira la que más planta baja tiene.**
+        //
+        // Y no se inunda desde una celda cualquiera, que fue el primer intento: la planta baja tiene
+        // manchas sueltas, así que salir de un rincón mide en qué rincón se cayó la sonda y no si se
+        // sube. La pregunta correcta es si desde el sitio DONDE ESTÁ EL MUNDO se llega arriba.
+        let upper = plan::STOREY_HEIGHT_CM as f32 / 100.0;
+        let mut blob: Vec<Vec<i32>> = floors.iter().map(|l| vec![-1; l.len()]).collect();
+        let mut ground = Vec::new();
+        let mut above = Vec::new();
+        let mut size = Vec::new();
+        for c0 in 0..cells * cells {
+            for l0 in 0..floors[c0].len() {
+                if blob[c0][l0] >= 0 {
+                    continue;
+                }
+                let id = ground.len() as i32;
+                ground.push(0usize);
+                above.push(0usize);
+                size.push(0usize);
+                blob[c0][l0] = id;
+                let mut q = std::collections::VecDeque::new();
+                q.push_back((c0 % cells, c0 / cells, l0));
+                while let Some((ix, iz, li)) = q.pop_front() {
+                    let here = floors[iz * cells + ix][li];
+                    size[id as usize] += 1;
+                    if here.abs() < 0.05 {
+                        ground[id as usize] += 1;
+                    } else if (here - upper).abs() < 0.05 {
+                        above[id as usize] += 1;
+                    }
+                    for (dx, dz) in [(1i32, 0i32), (-1, 0), (0, 1), (0, -1)] {
+                        let (nx, nz) = (ix as i32 + dx, iz as i32 + dz);
+                        if nx < 0 || nz < 0 || nx as usize >= cells || nz as usize >= cells {
+                            continue;
+                        }
+                        let (nx, nz) = (nx as usize, nz as usize);
+                        for (nl, there) in floors[nz * cells + nx].iter().enumerate() {
+                            if blob[nz * cells + nx][nl] >= 0 || (there - here).abs() > max_step {
+                                continue;
+                            }
+                            blob[nz * cells + nx][nl] = id;
+                            q.push_back((nx, nz, nl));
+                        }
+                    }
+                }
+            }
+        }
+
+        let best = (0..ground.len())
+            .max_by_key(|&i| ground[i])
+            .expect("ni una mancha");
+        let total_above: usize = above.iter().sum();
+        let total: usize = size.iter().sum();
+        let mut top = size.clone();
+        top.sort_unstable_by(|a, b| b.cmp(a));
+        top.truncate(4);
+        println!(
+            "[wg3] ({rx},{rz}): mancha mayor {} celdas de planta baja y {} de la alta, de {} altas \
+             en total ({:.0} %) | mayores {top:?} de {total} pisables",
+            ground[best],
+            above[best],
+            total_above,
+            above[best] as f32 * 100.0 / total_above.max(1) as f32
+        );
+        // Un puñado de celdas sería el rellano y nada más. Se pide media planta de verdad.
+        assert!(
+            above[best] > 2000,
+            "({rx},{rz}): desde la mancha mayor de la planta baja ({} celdas) sólo se andan {} de la \
+             de arriba — o el forjado no está perforado, o la escalera no conecta",
+            ground[best],
+            above[best]
+        );
     }
 }
 
@@ -6462,6 +6684,7 @@ fn plan_with_a_gap(blocked: bool) -> plan::RegionPlan {
         rise_cm: 0,
         rise_from_side: 0,
         rise_step_cm: plan::STEP_RISE_CM,
+        max_clear_cm: 0,
     };
 
     let mut spaces = vec![room(0, 1200), room(3000, 4200)];
@@ -6577,7 +6800,7 @@ fn a_link_that_cannot_be_routed_is_named_and_not_replaced() {
 fn probe_filled_plan() {
     const CELL: f32 = 0.5;
     const HEAD_M: f32 = 1.0;
-    const MAX_STEP: f32 = 0.20;
+    const MAX_STEP: f32 = WALK_STEP_M;
 
     let m = real_manifest();
     let region_m2 = REGION_M * REGION_M;
@@ -6635,7 +6858,7 @@ fn probe_filled_plan() {
                         Some(next) => (next.bottom_cm - span.top_cm) as f32 / 100.0,
                         None => f32::MAX,
                     };
-                    if (HEAD_M..=6.0).contains(&head) {
+                    if (HEAD_M..=CEILING_CAP_M).contains(&head) {
                         out.push(span.top_cm as f32 / 100.0);
                     }
                 }
@@ -6804,7 +7027,7 @@ fn a_sunken_space_can_actually_be_walked_down() {
 fn the_regions_can_be_walked_between() {
     const CELL: f32 = 0.5;
     const HEAD_M: f32 = 1.0;
-    const MAX_STEP: f32 = 0.20;
+    const MAX_STEP: f32 = WALK_STEP_M;
 
     let m = real_manifest();
     let base_region = Wg3RegionCoord { x: 0, z: 0 };
@@ -6864,7 +7087,7 @@ fn the_regions_can_be_walked_between() {
                     Some(next) => (next.bottom_cm - span.top_cm) as f32 / 100.0,
                     None => f32::MAX,
                 };
-                if (HEAD_M..=6.0).contains(&head) {
+                if (HEAD_M..=CEILING_CAP_M).contains(&head) {
                     out.push(span.top_cm as f32 / 100.0);
                 }
             }
@@ -6952,7 +7175,7 @@ fn the_regions_can_be_walked_between() {
 fn dump_served_maps() {
     const CELL: f32 = 0.5;
     const HEAD_M: f32 = 1.0;
-    const MAX_STEP: f32 = 0.20;
+    const MAX_STEP: f32 = WALK_STEP_M;
     const PX: f32 = 4.0;
 
     let dir = std::env::var("WG3_MAP_DIR").expect("WG3_MAP_DIR: carpeta donde escribir los planos");
@@ -7004,7 +7227,7 @@ fn dump_served_maps() {
                         Some(next) => (next.bottom_cm - span.top_cm) as f32 / 100.0,
                         None => f32::MAX,
                     };
-                    if (HEAD_M..=6.0).contains(&head) {
+                    if (HEAD_M..=CEILING_CAP_M).contains(&head) {
                         out.push(span.top_cm as f32 / 100.0);
                     }
                 }
