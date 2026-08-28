@@ -39,7 +39,16 @@ namespace BackroomsSurvival.WorldGen3
 
         private readonly Dictionary<Vector2Int, GameObject> _built = new Dictionary<Vector2Int, GameObject>();
         private readonly HashSet<Vector2Int> _requested = new HashSet<Vector2Int>();
-        private readonly List<Mesh> _meshes = new List<Mesh>();
+        /// <summary>
+        /// Mallas POR CHUNK, no una lista plana.
+        ///
+        /// Con una lista compartida, `Prune` destruía el GameObject del chunk y dejaba sus mallas
+        /// vivas: andar por el mundo las acumulaba sin techo, porque solo `ClearAll` las tiraba. Es
+        /// exactamente la fuga que este mismo fichero cita de `VerticalShaftChunk` —«destruía los
+        /// hijos y nunca los recursos»— colada por la puerta de al lado.
+        /// </summary>
+        private readonly Dictionary<Vector2Int, List<Mesh>> _meshes =
+            new Dictionary<Vector2Int, List<Mesh>>();
         private List<Wg3Piece> _catalog;
         private float _nextRefresh;
         private bool _digestChecked;
@@ -124,8 +133,11 @@ namespace BackroomsSurvival.WorldGen3
             var coord = new Vector2Int(chunk.cx, chunk.cz);
             _requested.Add(coord);
 
+            // Al rehacer un chunk se van TAMBIÉN sus mallas: recibirlo dos veces (una repetición
+            // del servidor, o volver a entrar en el radio) duplicaría los recursos si no.
             if (_built.TryGetValue(coord, out GameObject existing) && existing != null)
                 Destroy(existing);
+            DestroyMeshesOf(coord);
 
             // Una lista vacía es un resultado VÁLIDO: un chunk donde no cae ninguna pieza. Se
             // registra igualmente para no volver a pedirlo — sin esto, todo hueco del mundo se
@@ -139,6 +151,9 @@ namespace BackroomsSurvival.WorldGen3
             var root = new GameObject($"wg3_chunk_{chunk.cx}_{chunk.cz}");
             root.transform.SetParent(transform, false);
             _built[coord] = root;
+
+            var mine = new List<Mesh>();
+            _meshes[coord] = mine;
 
             foreach (Wg3PlacementMsg wire in chunk.placements)
             {
@@ -162,7 +177,7 @@ namespace BackroomsSurvival.WorldGen3
 
                 var single = new Wg3World();
                 single.placements.Add(placement);
-                Wg3SceneAssembler.Assemble(single, root.transform, materials, _meshes, spawnLights);
+                Wg3SceneAssembler.Assemble(single, root.transform, materials, mine, spawnLights);
 
                 if (!_hasSpawn)
                 {
@@ -203,6 +218,7 @@ namespace BackroomsSurvival.WorldGen3
             foreach (Vector2Int coord in doomed)
             {
                 if (_built[coord] != null) Destroy(_built[coord]);
+                DestroyMeshesOf(coord);
                 _built.Remove(coord);
                 _requested.Remove(coord);
             }
@@ -216,11 +232,18 @@ namespace BackroomsSurvival.WorldGen3
             _requested.Clear();
 
             // Y las mallas, que no son hijas de ningún GameObject y por tanto no se van con ellos.
-            // Es la fuga documentada en `VerticalShaftChunk`: `Clear()` destruía los hijos y nunca
-            // los recursos, y la memoria subía en cada regeneración.
-            foreach (Mesh mesh in _meshes)
-                if (mesh != null) Destroy(mesh);
+            foreach (KeyValuePair<Vector2Int, List<Mesh>> kv in _meshes)
+                foreach (Mesh mesh in kv.Value)
+                    if (mesh != null) Destroy(mesh);
             _meshes.Clear();
+        }
+
+        private void DestroyMeshesOf(Vector2Int coord)
+        {
+            if (!_meshes.TryGetValue(coord, out List<Mesh> list)) return;
+            foreach (Mesh mesh in list)
+                if (mesh != null) Destroy(mesh);
+            _meshes.Remove(coord);
         }
 
         public static Vector2Int ChunkOf(Vector3 world) => new Vector2Int(

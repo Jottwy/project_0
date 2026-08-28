@@ -1907,9 +1907,15 @@ fn probe_is_the_served_world_one_piece_or_islands() {
         counts.sort_unstable_by(|a, b| b.cmp(a));
         let biggest = counts.first().copied().unwrap_or(0);
 
+        // ¿Cuadra el número de islas con el de puertas? Si islas == puertas + 1 (el árbol de la
+        // semilla), la causa está aislada: cada ancla de junta crece su propio árbol.
+        let seed = composer_seed(SERVED_SEED);
+        let gates = junction::gates_of_region(seed, region.x, region.z, region.bounds()).len();
+
         println!(
-            "[wg3] región ({rx},{rz}): {n} piezas en **{} islas** — la mayor tiene {biggest} ({:.0} %), tamaños {:?}",
+            "[wg3] región ({rx},{rz}): {n} piezas en **{} islas** ({gates} puertas + semilla = {}) — la mayor tiene {biggest} ({:.0} %), tamaños {:?}",
             counts.len(),
+            gates + 1,
             biggest as f32 * 100.0 / n.max(1) as f32,
             &counts[..counts.len().min(8)]
         );
