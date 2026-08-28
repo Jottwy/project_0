@@ -889,8 +889,9 @@ fn settings_from(oracle: &CompositionOracle, budget: usize) -> compose::Wg3Compo
         // Y sin holgura de solape, por lo mismo que lo de arriba: C# rechaza toda candidata que
         // pise algo colocado. Cualquier valor distinto de cero aquí mediría otro algoritmo.
         overlap_slack_m: 0.0,
-        // ADR-099 — apagada por lo mismo: C# no absorbe.
+        // ADR-099 — apagadas por lo mismo: C# ni absorbe ni densifica.
         absorb_chance: 0.0,
+        densify_attempts: 0,
         collect_absorption_hits: false,
         anchors: Vec::new(),
     }
@@ -1987,6 +1988,193 @@ fn probe_absorption_reach() {
     }
 }
 
+/// SONDA — ADR-099: DENSIFICAR. ¿Plantar piezas en el hueco llena el mundo?
+///
+/// `#[ignore]` porque no afirma nada. Lánzala con
+/// `cargo test --manifest-path backend/Cargo.toml probe_densify_sweep -- --ignored --nocapture`.
+///
+/// Es la palanca contra el VACÍO, que es lo que se ve en el isométrico de la semilla 42: manchas
+/// densas de salas unidas por tubos de decenas de metros, con negro en medio. Ninguna de las
+/// anteriores lo movía —compartir pared da +0,9 puntos, la absorción cambia topología sin tocar
+/// superficie— porque todas trabajaban sobre las bocas, y el hueco está vacío justamente porque
+/// **ahí no llega ninguna boca**.
+///
+/// Se miden tres cosas y hacen falta las tres:
+///  · **llenado** por unión de huellas — cuánto suelo hay;
+///  · **andable** desde el spawn — cuánto de eso se alcanza, que es lo único que se juega;
+///  · **intentos contra plantadas** — si se gastan muchos y entran pocas, el hueco ya está lleno y
+///    subir la perilla no daría nada.
+#[test]
+#[ignore]
+fn probe_densify_sweep() {
+    const CELL: f32 = 0.5;
+    let m = real_manifest();
+    let side_m = REGION_CHUNKS as f32 * 50.0;
+    let area = side_m * side_m;
+    let cells_side = (side_m / CELL) as usize;
+
+    for attempts in [0usize, 15, 25, 40, 50, 65, 85, 120] {
+        let mut fill = 0.0f32;
+        let mut pieces = 0usize;
+        let mut planted = 0u32;
+        let mut tries = 0u32;
+        let mut segments = 0usize;
+        let mut walk = 0.0f32;
+
+        for (rx, rz) in [(0, 0), (1, 0), (0, 1), (-1, -1), (3, -2), (7, 11), (2, 5)] {
+            let region = Wg3RegionCoord { x: rx, z: rz };
+            let (min_x, min_z, _, _) = region.bounds();
+            // LOS AJUSTES SERVIDOS, no los del defecto. Con `Wg3ComposerSettings::default()` el
+            // enrutador va apagado, así que todo lo plantado nace isla y el número de llenado sale
+            // precioso mientras el mundo no se puede andar. La primera versión de esta sonda medía
+            // eso y daba «tramos 0» sin que nadie lo hubiera pedido.
+            let settings = compose::Wg3ComposerSettings {
+                densify_attempts: attempts,
+                ..region_settings(&m, SERVED_SEED, region)
+            };
+            let w = compose::compose(region.composer_seed(SERVED_SEED), &m, &settings);
+
+            // Llenado por UNIÓN: sumar huellas contaría dos veces nada aquí, pero la unión es la
+            // vara con la que se midieron las otras palancas y hay que compararlas con la misma.
+            let mut grid = vec![false; cells_side * cells_side];
+            for c in &w.placements {
+                let piece = m.piece(c.placement.piece).expect("pieza");
+                let (x0, z0, x1, z1) = c.placement.bounds(piece);
+                let cx0 = (((x0 - min_x) / CELL).floor().max(0.0)) as usize;
+                let cz0 = (((z0 - min_z) / CELL).floor().max(0.0)) as usize;
+                let cx1 = (((x1 - min_x) / CELL).ceil().max(0.0) as usize).min(cells_side);
+                let cz1 = (((z1 - min_z) / CELL).ceil().max(0.0) as usize).min(cells_side);
+                for cz in cz0..cz1 {
+                    for cx in cx0..cx1 {
+                        grid[cz * cells_side + cx] = true;
+                    }
+                }
+            }
+            fill += grid.iter().filter(|c| **c).count() as f32 * CELL * CELL / area * 100.0;
+            pieces += w.placements.len();
+            planted += w.densified;
+            tries += w.densify_tries;
+            segments += w.segments.len();
+            walk += reach_from_centre(&m, &w, min_x, min_z);
+        }
+
+        println!(
+            "[wg3] intentos {attempts:>5}: llenado {:>5.1} % | ANDABLE {walk:>8.0} m² \
+             | piezas {pieces:>4} (plantadas {planted:>4} de {tries:>5}) | tramos {segments:>4}",
+            fill / 7.0
+        );
+    }
+}
+
+/// Superficie alcanzable a pie desde el centro de la región, en m².
+///
+/// Aparte y no dentro de una sonda porque lo miden dos, y dos copias de una inundación divergen: la
+/// de la absorción y la del densificado tienen que responder con la MISMA vara o sus números no se
+/// pueden poner en la misma frase.
+///
+/// Inundación a ras de suelo, una cota por celda: no distingue altillos, así que NO sustituye a
+/// `probe_how_much_of_the_region_can_be_walked_from_the_spawn`. Sirve para comparar dos mundos.
+fn reach_from_centre(
+    m: &Wg3Manifest,
+    composed: &compose::Wg3ComposedWorld,
+    min_x: f32,
+    min_z: f32,
+) -> f32 {
+    const CELL: f32 = 0.5;
+    const HEAD_M: f32 = 1.8;
+
+    let placements: Vec<_> = composed.placements.iter().map(|c| c.placement).collect();
+    let chunks = REGION_CHUNKS as usize;
+    let cells = (REGION_CHUNKS as f32 * 50.0 / CELL) as usize;
+    let base = chunk::Wg3ChunkCoord::containing(min_x + 1.0, min_z + 1.0);
+
+    let mut rasters = Vec::with_capacity(chunks * chunks);
+    for cz in 0..chunks {
+        for cx in 0..chunks {
+            let coord = chunk::Wg3ChunkCoord {
+                x: base.x + cx as i32,
+                z: base.z + cz as i32,
+            };
+            rasters.push(chunk::build_chunk_raster_with_carves(
+                m,
+                &placements,
+                &composed.segments,
+                &composed.carves,
+                coord,
+            ));
+        }
+    }
+
+    let standable = |ix: usize, iz: usize| -> bool {
+        let x = min_x + ix as f32 * CELL + CELL * 0.5;
+        let z = min_z + iz as f32 * CELL + CELL * 0.5;
+        let coord = chunk::Wg3ChunkCoord::containing(x, z);
+        let (dx, dz) = (coord.x - base.x, coord.z - base.z);
+        if dx < 0 || dz < 0 || dx as usize >= chunks || dz as usize >= chunks {
+            return false;
+        }
+        let Some(r) = rasters.get(dz as usize * chunks + dx as usize) else {
+            return false;
+        };
+        let column = r.column_at(x, z);
+        for (i, span) in column.iter().enumerate() {
+            let head = match column.get(i + 1) {
+                Some(next) => (next.bottom_cm - span.top_cm) as f32 / 100.0,
+                None => f32::MAX,
+            };
+            // Con techo y no a cielo abierto: la cara de arriba de una pared cumple «hay suelo y
+            // hay hueco» y contarla metería los TEJADOS en la cuenta.
+            if (HEAD_M..=6.0).contains(&head) {
+                return true;
+            }
+        }
+        false
+    };
+
+    let mid = cells / 2;
+    let mut start = None;
+    'outer: for r in 0..mid {
+        for dz in -(r as i32)..=(r as i32) {
+            for dx in -(r as i32)..=(r as i32) {
+                let (ix, iz) = (mid as i32 + dx, mid as i32 + dz);
+                if ix < 0 || iz < 0 || ix as usize >= cells || iz as usize >= cells {
+                    continue;
+                }
+                if standable(ix as usize, iz as usize) {
+                    start = Some((ix as usize, iz as usize));
+                    break 'outer;
+                }
+            }
+        }
+    }
+    let Some(start) = start else {
+        return 0.0;
+    };
+
+    let mut seen = vec![false; cells * cells];
+    let mut stack = vec![start];
+    seen[start.1 * cells + start.0] = true;
+    let mut count = 0usize;
+    while let Some((ix, iz)) = stack.pop() {
+        count += 1;
+        for (nx, nz) in [
+            (ix.wrapping_sub(1), iz),
+            (ix + 1, iz),
+            (ix, iz.wrapping_sub(1)),
+            (ix, iz + 1),
+        ] {
+            if nx >= cells || nz >= cells || seen[nz * cells + nx] {
+                continue;
+            }
+            if standable(nx, nz) {
+                seen[nz * cells + nx] = true;
+                stack.push((nx, nz));
+            }
+        }
+    }
+    count as f32 * CELL * CELL
+}
+
 /// SONDA — el mundo en ISOMÉTRICA, para mirarlo con ojos en vez de con números.
 ///
 /// `#[ignore]` porque no afirma nada. Lánzala con
@@ -2017,6 +2205,10 @@ fn dump_isometric() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(0.0);
+    let densify: usize = std::env::var("WG3_DENSIFY")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
     // Cuántos chunks de lado se dibujan, centrados en el origen de la región.
     let span: i32 = std::env::var("WG3_ISO_CHUNKS")
         .ok()
@@ -2047,6 +2239,7 @@ fn dump_isometric() {
             let region = Wg3RegionCoord { x: rx, z: rz };
             let settings = compose::Wg3ComposerSettings {
                 absorb_chance: absorb,
+                densify_attempts: densify,
                 ..region_settings(&m, seed, region)
             };
             let world = Wg3ServedWorld::compose_region_with(&m, seed, region, &settings);

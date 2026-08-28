@@ -87,6 +87,8 @@ const SALT_CAP: u32 = 0xC0DE_C0DE;
 /// ADR-099 D4 — sal del sorteo de absorción. Propia, para que encenderla no mueva ninguna otra
 /// decisión del compositor: dos sorteos que comparten sal se arrastran el uno al otro.
 const SALT_ABSORB: u32 = 0xAB50_4B10;
+/// ADR-099 — sal del sorteo de densificado. Propia, por lo mismo que la de absorción.
+const SALT_DENSIFY: u32 = 0xDE14_51F1;
 /// Sal de la elección de pieza. Distinta de la anterior para que las dos decisiones que ocurren en el
 /// MISMO punto no queden correlacionadas.
 const SALT_PICK: u32 = 0x0F1C_E5ED;
@@ -216,6 +218,15 @@ pub struct Wg3ComposerSettings {
     /// `0.0` por defecto, como `close_loops` y `route`: C# no absorbe, y el oráculo fija su mundo.
     pub absorb_chance: f32,
 
+    /// ADR-099 — cuántas veces se intenta plantar una pieza suelta en el hueco libre. `0` lo apaga.
+    ///
+    /// Es un número de INTENTOS y no de piezas a propósito: cuántas caben no se sabe de antemano y
+    /// depende de lo lleno que esté ya, así que se tira y se ve. El coste por intento es una
+    /// comprobación de solape contra lo colocado, lo mismo que paga cada candidata del árbol.
+    ///
+    /// `0` por defecto, como el resto: C# no densifica y el oráculo fija su mundo.
+    pub densify_attempts: usize,
+
     /// SONDA — apuntar CONTRA QUÉ se choca cada candidata rechazada por solape, no solo cuántas.
     ///
     /// Mide el techo de la absorción: la idea de que un pasillo que topa con una sala no se
@@ -267,6 +278,7 @@ impl Default for Wg3ComposerSettings {
             route: None,
             overlap_slack_m: 0.0,
             absorb_chance: 0.0,
+            densify_attempts: 0,
             collect_absorption_hits: false,
             anchors: Vec::new(),
         }
@@ -349,6 +361,13 @@ pub struct Wg3ComposedWorld {
     /// trozos sueltos. Sólo los segundos añaden mundo; los primeros cambian cómo se recorre.
     pub absorb_rings: u32,
     pub absorb_merges: u32,
+
+    /// ADR-099 — piezas plantadas sueltas en el hueco libre, intentos gastados y descartes por no
+    /// caber. Los tres juntos dicen si queda sitio: muchos intentos y pocas plantadas significa que
+    /// el hueco está lleno, y subir la perilla ya no daría nada.
+    pub densified: u32,
+    pub densify_tries: u32,
+    pub densify_rejected: u32,
 
     /// Candidatas descartadas porque la huella pisaba algo ya colocado. No es un error: es la medida
     /// de cuánto aprieta el mundo. Un cero sostenido significa que el catálogo es demasiado pequeño
@@ -464,6 +483,9 @@ struct Composer<'a> {
     absorb_blocked: u32,
     absorb_rings: u32,
     absorb_merges: u32,
+    densified: u32,
+    densify_tries: u32,
+    densify_rejected: u32,
 
     /// ADR-098 — la geometría generada y el grafo que hace falta para decidir dónde tenderla.
     ///
@@ -509,6 +531,9 @@ impl<'a> Composer<'a> {
             absorb_blocked: 0,
             absorb_rings: 0,
             absorb_merges: 0,
+            densified: 0,
+            densify_tries: 0,
+            densify_rejected: 0,
             segments: Vec::new(),
             edges: Vec::new(),
             connectors: 0,
@@ -723,11 +748,110 @@ impl<'a> Composer<'a> {
             push_sockets(&mut frontier, &self.nodes, child);
         }
 
+        // ADR-099 — DENSIFICAR va aquí: después del árbol, que ya no crece, y ANTES del enrutador,
+        // que es quien tiene que conectar lo que se acaba de plantar. Al revés no serviría de nada:
+        // las piezas nuevas nacen sueltas, y sin enrutador después serían islas.
+        self.densify();
+
         // ADR-098 — el enrutador va AQUÍ: después del árbol, para saber qué quedó suelto, y antes de
         // la pasada de tapones, porque sellar una boca que podía unir una isla es perder la isla.
         self.run_router();
 
         self.cap_everything_still_open();
+    }
+
+    /// ADR-099 — LLENAR EL VACÍO: plantar piezas donde no llega ninguna boca.
+    ///
+    /// **El problema que ataca, y está medido y visto.** El compositor crece encadenando pieza a
+    /// boca, así que el mundo avanza como una rama y se para donde la rama se seca. El resultado es
+    /// un 32 % de llenado: en un isométrico de la semilla 42 se ven manchas densas de salas unidas
+    /// por tubos de decenas de metros, con negro en medio. Palabras de Joel mirándolo: «se ve
+    /// claramente que hay cosas sin solaparse bien».
+    ///
+    /// Ninguna de las palancas anteriores lo movía. Dejar que las piezas compartan pared da +0,9
+    /// puntos de llenado (`probe_fill_with_overlap_allowed`), y la absorción cambia la topología sin
+    /// tocar la superficie. El hueco no está vacío porque las reglas lo prohíban: está vacío porque
+    /// **nadie va a mirar ahí**, y a mirar se le manda con un sorteo, no con una regla.
+    ///
+    /// LO QUE HACE, Y ES DELIBERADAMENTE TONTO: tira una pieza al azar en un sitio al azar, y la
+    /// deja si cabe. Sin bocas, sin cadena, sin padre. Nace SUELTA, con todas sus bocas abiertas —
+    /// que es justo lo que el enrutador necesita y lo que le faltaba (ADR-098 enmienda 3: está
+    /// hambriento). Por eso va antes que él.
+    ///
+    /// Determinista como todo lo demás: el sorteo cuelga de la semilla y del número de intento, no
+    /// del recorrido.
+    fn densify(&mut self) {
+        if self.settings.densify_attempts == 0 {
+            return;
+        }
+        let Some((min_x, min_z, max_x, max_z)) = self.settings.bounds else {
+            // Sin caja no hay «dentro» donde plantar, y sembrar al infinito no termina.
+            return;
+        };
+
+        // Los tapones no se plantan sueltos: existen para SELLAR una boca, y uno suelto es un
+        // armario en mitad de la nada. Lo mismo los callejones.
+        let candidates: Vec<u16> = self
+            .manifest
+            .pieces
+            .iter()
+            .filter(|p| !p.dead_end)
+            .map(|p| p.index)
+            .collect();
+        if candidates.is_empty() {
+            return;
+        }
+
+        for attempt in 0..self.settings.densify_attempts {
+            if self.nodes.len() >= self.settings.budget {
+                break;
+            }
+            self.densify_tries += 1;
+
+            // Un sorteo por intento, con la coordenada del intento como sal: así dos regiones
+            // vecinas no plantan lo mismo en el mismo sitio relativo.
+            let mut stream = hash::stream_at(
+                self.world_seed,
+                min_x + attempt as f32,
+                min_z + attempt as f32,
+                SALT_DENSIFY,
+            );
+
+            let piece_index =
+                candidates[(stream.next01() * candidates.len() as f32) as usize % candidates.len()];
+            let piece = &self.manifest.pieces[piece_index as usize];
+            let rotation = ((stream.next01() * 4.0) as u8) % 4;
+            let (w, d) = if rotation.is_multiple_of(2) {
+                (piece.size_x, piece.size_z)
+            } else {
+                (piece.size_z, piece.size_x)
+            };
+            if w > max_x - min_x || d > max_z - min_z {
+                continue;
+            }
+
+            let ox = min_x + stream.next01() * (max_x - min_x - w);
+            let oz = min_z + stream.next01() * (max_z - min_z - d);
+
+            if overlaps_any(&self.nodes, self.manifest, ox, oz, w, d, 0.0) {
+                self.densify_rejected += 1;
+                continue;
+            }
+            // Y tampoco encima de un conector ya tendido: los tramos de junta van puestos desde el
+            // principio, y plantar sobre uno taparía la puerta que la región vecina ya da por hecha.
+            if self.segments.iter().any(|s| {
+                let (sx0, sz0, sx1, sz1) = s.bounds();
+                sx0 < ox + w && sx1 > ox && sz0 < oz + d && sz1 > oz
+            }) {
+                self.densify_rejected += 1;
+                continue;
+            }
+
+            // Cota 0 y sin padre: es una pieza suelta. La verticalidad se propaga por la cadena de
+            // bocas (ADR-097) y aquí no hay cadena.
+            self.place(piece_index, rotation, ox, oz, 0.0, 0, None);
+            self.densified += 1;
+        }
     }
 
     /// ADR-098 — tiende conectores generados entre lo que quedó abierto.
@@ -1457,6 +1581,9 @@ impl<'a> Composer<'a> {
             absorb_blocked: self.absorb_blocked,
             absorb_rings: self.absorb_rings,
             absorb_merges: self.absorb_merges,
+            densified: self.densified,
+            densify_tries: self.densify_tries,
+            densify_rejected: self.densify_rejected,
             rejected_by_overlap: self.rejected_by_overlap,
             rejected_by_validator: self.rejected_by_validator,
             forced_caps: self.forced_caps,
