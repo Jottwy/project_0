@@ -208,10 +208,51 @@ pub fn region_settings(
         // que es exactamente lo que se siente andando como «llega un punto que se cierra y no hay
         // manera de moverte».
         route: Some(route::RouteSettings::default()),
+        // ADR-098 enmienda 4 — CON EL ENRUTADOR ENCENDIDO, EL COMPOSITOR DEJA MÁS BOCAS SIN TAPAR.
+        //
+        // El enrutador estaba hambriento: el catálogo pone 1,96 bocas por pieza y un árbol de N las
+        // gasta de dos en dos, así que al terminar el recorrido no quedaba NADA a lo que engancharse
+        // dentro del árbol del jugador (enmienda 3). Una boca que el compositor decide tapar a
+        // propósito queda en `SOCKET_PENDING_CAP` y SÍ llega al enrutador; si no la usa, la pasada
+        // final la sella igual que antes. Subir esta perilla no añade geometría: reparte la que hay.
+        //
+        // Barrido sobre 16 regiones (`sweep_cap_chance`), y el estado de partida era mucho peor de
+        // lo que decían cuatro: **solo 4 de 16 regiones se recorrían enteras y el 35 % de las
+        // puertas de junta era inalcanzable**, o sea que la mayoría de los cruces entre regiones no
+        // existían andando.
+        //
+        //   cap    m² ALCANZABLES  regiones enteras  tramos pisados  puertas  piezas/región
+        //   0,05       3216             4/16              54 %         35 %       29,5
+        //   0,08       3155            10/16              83 %         66 %       25,8
+        //   0,11       3119            10/16              82 %         68 %       24,0
+        //   0,14       3072            12/16              89 %         79 %       21,6
+        //   0,18       2943            14/16              95 %         87 %       19,7
+        //   0,22       2562            15/16              97 %         93 %       15,9
+        //   0,30       1909            16/16             100 %        100 %       12,9
+        //
+        // **LA PRIMERA COLUMNA ES LA QUE MANDA, y la primera versión de esta tabla no la tenía.**
+        // Con el porcentaje de lo pisable el 0,30 parecía perfecto; en metros cuadrados es un mundo
+        // un 41 % más pequeño. Una región que pasa de 3298 m² al 89 % a 789 m² al 100 % ha perdido
+        // dos tercios de sitio donde estar. Mismo error que ya costó tres conclusiones falsas el
+        // 08-27: contar bien una cosa que no es la que importa.
+        //
+        // **El precio es real: piezas autoradas a cambio de conectores generados**, y un conector
+        // hoy no tiene aspecto (el byte `style` no lo lee nadie). 0,18 cuesta un 8 % del área
+        // alcanzable y compra 14 de 16 regiones recorribles y el 87 % de las puertas. Es un número:
+        // bajarlo a 0,14 cuesta la mitad de área y da algo menos de conectividad; subirlo a 0,30 da
+        // un mundo perfecto y un 41 % más pequeño.
+        //
+        // **Solo con el enrutador encendido.** El compositor por defecto sigue en 0,05 y el oráculo,
+        // que fija el mundo de C#, no se mueve.
+        deliberate_cap_chance: ROUTED_CAP_CHANCE,
         anchors,
         ..Wg3ComposerSettings::default()
     }
 }
+
+/// Probabilidad de dejar una boca sin usar cuando el enrutador está encendido. Ver la tabla del
+/// barrido en `region_settings`.
+pub const ROUTED_CAP_CHANCE: f32 = 0.18;
 
 impl Wg3ServedWorld {
     /// ADR-096 — compone UNA REGIÓN: acotada a su caja y sembrada en su centro.
@@ -225,7 +266,23 @@ impl Wg3ServedWorld {
     /// que ser fino o basta con poco.
     pub fn compose_region(manifest: &Wg3Manifest, world_seed: u64, region: Wg3RegionCoord) -> Self {
         let settings = region_settings(manifest, world_seed, region);
-        let composed = compose::compose(region.composer_seed(world_seed), manifest, &settings);
+        Self::compose_region_with(manifest, world_seed, region, &settings)
+    }
+
+    /// La misma composición de región, con los ajustes puestos desde fuera.
+    ///
+    /// Existe para que una sonda pueda medir el mundo que SE SIRVE cambiando un solo ajuste, en vez
+    /// de rehacer el montaje. Copiarlo ya salió mal una vez: `compose_with` usa
+    /// `composer_seed(world_seed)` y no la semilla de la REGIÓN, así que un barrido escrito con ella
+    /// mide cuatro veces el mismo mundo con bordes distintos — números que no se parecen en nada a
+    /// los del mundo servido y que invitan a una conclusión falsa.
+    pub fn compose_region_with(
+        manifest: &Wg3Manifest,
+        world_seed: u64,
+        region: Wg3RegionCoord,
+        settings: &Wg3ComposerSettings,
+    ) -> Self {
+        let composed = compose::compose(region.composer_seed(world_seed), manifest, settings);
         if composed.connectors > 0 {
             log::debug!(
                 "[wg3] región ({},{}): {} conectores ({} unieron islas), {} tramos",

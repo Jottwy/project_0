@@ -4112,3 +4112,206 @@ fn the_generated_cell_expands_the_same_in_both_languages() {
         }
     }
 }
+
+/// **DE DÓNDE SALE `ROUTED_CAP_CHANCE`** (ADR-098 enmienda 4). El instrumento que eligió el número.
+///
+/// Mide, sobre 16 regiones del mundo SERVIDO, qué cambia al dejar más bocas sin tapar: **metros
+/// cuadrados alcanzables a pie desde donde aparece el jugador** —la columna que manda—, cuántas
+/// regiones se recorren enteras, cuántos conectores generados se pisan, cuántas puertas de junta se
+/// alcanzan y cuántas piezas del catálogo quedan.
+///
+/// Dos trampas que este barrido ya pisó, y por eso se queda escrito:
+///
+/// 1. La primera versión usaba `compose_with`, que toma `composer_seed(world_seed)` y **no** la
+///    semilla de la REGIÓN: componía cuatro veces el mismo mundo con bordes distintos. Los números
+///    no se parecían en nada a los del mundo servido. Se compone con `compose_region_with`.
+/// 2. La segunda medía el PORCENTAJE de lo pisable que se alcanza. Con eso, 0,30 salía perfecto —y
+///    es un mundo un 41 % más pequeño. Una región que pasa de 3298 m² al 89 % a 789 m² al 100 % ha
+///    perdido dos tercios de sitio donde estar. La unidad es el metro cuadrado.
+#[test]
+#[ignore]
+fn sweep_cap_chance() {
+    const CELL: f32 = 0.5;
+    const HEAD_M: f32 = 1.0;
+    const MAX_STEP: f32 = 0.20;
+
+    let m = real_manifest();
+
+    let walk = |world: &Wg3ServedWorld,
+                region: Wg3RegionCoord|
+     -> (f32, usize, usize, usize, usize) {
+        let (min_x, min_z, _, _) = region.bounds();
+        let side = REGION_CHUNKS as usize;
+        let base = chunk::Wg3ChunkCoord::containing(min_x + 1.0, min_z + 1.0);
+        let mut rasters = Vec::with_capacity(side * side);
+        for cz in 0..side {
+            for cx in 0..side {
+                let coord = chunk::Wg3ChunkCoord {
+                    x: base.x + cx as i32,
+                    z: base.z + cz as i32,
+                };
+                rasters.push(chunk::build_chunk_raster(
+                    &m,
+                    &world.placements_touching_chunk(&m, coord),
+                    &world.segments_touching_chunk(coord),
+                    coord,
+                ));
+            }
+        }
+        let raster_at = |x: f32, z: f32| -> Option<&Wg3Raster> {
+            let coord = chunk::Wg3ChunkCoord::containing(x, z);
+            let (dx, dz) = (coord.x - base.x, coord.z - base.z);
+            if dx < 0 || dz < 0 || dx as usize >= side || dz as usize >= side {
+                return None;
+            }
+            rasters.get(dz as usize * side + dx as usize)
+        };
+        let cells = (REGION_M / CELL) as usize;
+        let mut floors: Vec<Vec<f32>> = vec![Vec::new(); cells * cells];
+        for iz in 0..cells {
+            for ix in 0..cells {
+                let x = min_x + ix as f32 * CELL + CELL * 0.5;
+                let z = min_z + iz as f32 * CELL + CELL * 0.5;
+                let Some(r) = raster_at(x, z) else { continue };
+                let column = r.column_at(x, z);
+                let mut out = Vec::new();
+                for (i, span) in column.iter().enumerate() {
+                    let head = match column.get(i + 1) {
+                        Some(next) => (next.bottom_cm - span.top_cm) as f32 / 100.0,
+                        None => f32::MAX,
+                    };
+                    if (HEAD_M..=6.0).contains(&head) {
+                        out.push(span.top_cm as f32 / 100.0);
+                    }
+                }
+                floors[iz * cells + ix] = out;
+            }
+        }
+        let start = (cells / 2, cells / 2);
+        let mut from = None;
+        'search: for radius in 0..cells / 2 {
+            for dz in -(radius as i32)..=(radius as i32) {
+                for dx in -(radius as i32)..=(radius as i32) {
+                    let (ix, iz) = (start.0 as i32 + dx, start.1 as i32 + dz);
+                    if ix < 0 || iz < 0 || ix as usize >= cells || iz as usize >= cells {
+                        continue;
+                    }
+                    if !floors[iz as usize * cells + ix as usize].is_empty() {
+                        from = Some((ix as usize, iz as usize));
+                        break 'search;
+                    }
+                }
+            }
+        }
+        let Some(from) = from else {
+            return (0.0, 0, 0, 0, world.placements().len());
+        };
+        let mut seen_level: Vec<Vec<bool>> = floors.iter().map(|l| vec![false; l.len()]).collect();
+        let mut seen = vec![false; cells * cells];
+        let mut q = std::collections::VecDeque::new();
+        seen_level[from.1 * cells + from.0][0] = true;
+        q.push_back((from.0, from.1, 0usize));
+        let mut reached = 0usize;
+        while let Some((ix, iz, li)) = q.pop_front() {
+            if !seen[iz * cells + ix] {
+                seen[iz * cells + ix] = true;
+                reached += 1;
+            }
+            let here = floors[iz * cells + ix][li];
+            for (dx, dz) in [(1i32, 0i32), (-1, 0), (0, 1), (0, -1)] {
+                let (nx, nz) = (ix as i32 + dx, iz as i32 + dz);
+                if nx < 0 || nz < 0 || nx as usize >= cells || nz as usize >= cells {
+                    continue;
+                }
+                let (nx, nz) = (nx as usize, nz as usize);
+                for (nl, there) in floors[nz * cells + nx].iter().enumerate() {
+                    if seen_level[nz * cells + nx][nl] || (there - here).abs() > MAX_STEP {
+                        continue;
+                    }
+                    seen_level[nz * cells + nx][nl] = true;
+                    q.push_back((nx, nz, nl));
+                }
+            }
+        }
+        let walked = |x: f32, z: f32| -> bool {
+            let ix = ((x - min_x) / CELL) as i32;
+            let iz = ((z - min_z) / CELL) as i32;
+            ix >= 0
+                && iz >= 0
+                && (ix as usize) < cells
+                && (iz as usize) < cells
+                && seen[iz as usize * cells + ix as usize]
+        };
+        let segs_ok = world
+            .segments()
+            .iter()
+            .filter(|s| {
+                let (cx, cz) = s.centre();
+                walked(cx, cz)
+            })
+            .count();
+        let seed = composer_seed(SERVED_SEED);
+        let gates = junction::gates_of_region(seed, region.x, region.z, region.bounds());
+        let gates_ok = gates
+            .iter()
+            .filter(|g| {
+                let (nx, nz) = match g.outward_side % 4 {
+                    0 => (0.0, -0.45),
+                    1 => (-0.45, 0.0),
+                    2 => (0.0, 0.45),
+                    _ => (0.45, 0.0),
+                };
+                walked(g.x + nx, g.z + nz)
+            })
+            .count();
+        (
+            reached as f32 * CELL * CELL,
+            segs_ok,
+            world.segments().len(),
+            gates_ok,
+            world.placements().len(),
+        )
+    };
+
+    let regions: Vec<(i32, i32)> = (-2..2).flat_map(|x| (0..4).map(move |z| (x, z))).collect();
+    for chance in [0.05f32, 0.08, 0.11, 0.14, 0.18, 0.22, 0.30] {
+        let (
+            mut area_sum,
+            mut seg_ok,
+            mut seg_all,
+            mut gate_ok,
+            mut gate_all,
+            mut pieces,
+            mut full,
+        ) = (0.0f32, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
+        for &(rx, rz) in &regions {
+            let region = Wg3RegionCoord { x: rx, z: rz };
+            let mut settings = region_settings(&m, SERVED_SEED, region);
+            settings.deliberate_cap_chance = chance;
+            let world = Wg3ServedWorld::compose_region_with(&m, SERVED_SEED, region, &settings);
+            let (area, so, st, go, np) = walk(&world, region);
+            let gates = junction::gates_of_region(
+                composer_seed(SERVED_SEED),
+                region.x,
+                region.z,
+                region.bounds(),
+            );
+            area_sum += area;
+            seg_ok += so;
+            seg_all += st;
+            gate_ok += go;
+            gate_all += gates.len();
+            pieces += np;
+            if so == st && st > 0 {
+                full += 1;
+            }
+        }
+        let n = regions.len() as f32;
+        println!(
+            "[wg3] cap {chance:.2} | m2 ALCANZABLES/region {:.0} | regiones con todos los tramos              pisados {full}/{} | tramos {seg_ok}/{seg_all} | puertas {gate_ok}/{gate_all} |              piezas/region {:.1}",
+            area_sum / n,
+            regions.len(),
+            pieces as f32 / n
+        );
+    }
+}
