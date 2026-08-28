@@ -157,47 +157,116 @@ namespace BackroomsSurvival.WorldGen3
             _walkDir = axis;
             _walkTarget = (alongX ? centre.x : centre.z) + half + 5f;
             _walkLowestY = start.y;
-            _walkDeadline = Time.time + 25f;
+            _walkDistance = 0f;
+            _walkLast = start;
+            _walkSeen.Clear();
+            _walkSeen.Add(best.gameObject.name);
+            _walkDeadline = Time.time + 40f;
             _walkName = best.gameObject.name;
             _walk = Walk.Walking;
 
             player.Respawn(start);
+
+            // **EL JUGADOR SE APAGA MIENTRAS SE LE EMPUJA.** Su propio `Update` mueve por su cuenta
+            // —a 2,5 m/s hacia donde mira— y gana al empuje del arnés: la primera medida dio 62 m
+            // recorridos en +Z habiendo pedido +X, con «delante: nada». Un arnés que compite con el
+            // controlador del jugador no mide el mundo, mide quién llama a `Move` el último.
+            player.enabled = false;
+
+            // ¿SE ATERRIZÓ DENTRO? Un teleport que no prende deja al jugador donde estaba y el
+            // recorrido mide otra cosa — la primera vez pasó exactamente eso y el arnés dijo
+            // «tapiado» cuando lo que había era una sala a treinta metros. Se comprueba antes de
+            // andar y se dice con qué se choca, en vez de deducirlo de una captura.
+            Vector3 landed = player.transform.position;
+            bool inside = bounds.Contains(new Vector3(landed.x, bounds.center.y, landed.z));
+            var stuck = Physics.OverlapSphere(landed, 0.45f);
+            string touching = stuck.Length == 0 ? "nada" : string.Join(", ",
+                System.Array.ConvertAll(stuck, c => c.gameObject.name));
+
             Debug.Log(
                 $"[WG3] CONECTOR: andando el tramo {_walkName}, {bestLength:0.0} m de largo, " +
-                $"desde {start} hacia {(alongX ? "+X" : "+Z")} hasta pasarse 5 m del final.");
+                $"desde {start} hacia {(alongX ? "+X" : "+Z")} hasta pasarse 5 m del final. " +
+                $"caja {bounds.min} → {bounds.max}; aterrizó en {landed} " +
+                $"(dentro={inside}), tocando: {touching}");
         }
 
+        /// <summary>
+        /// Empuja por el conector y DOBLA cuando se topa con el siguiente tramo.
+        ///
+        /// Doblar no es un adorno del arnés: una ruta generada tiene quiebros, y un empuje recto se
+        /// para contra el primero. La primera medida decía «FALLA, 24,9 m» con el conector entero
+        /// andado y `seg_001` a 8 cm — o sea, todo bien salvo el que empujaba. Lo que se prueba
+        /// ahora es lo que importa: que se recorre la CADENA, de tramo en tramo, sin caerse y sin
+        /// quedarse encajado.
+        /// </summary>
         private void StepConnectorWalk()
         {
             var controller = player.GetComponent<CharacterController>();
+            Vector3 before = player.transform.position;
             controller.Move((_walkDir * 2.5f + Vector3.down * 4f) * Time.deltaTime);
-            _walkLowestY = Mathf.Min(_walkLowestY, player.transform.position.y);
-
             Vector3 at = player.transform.position;
-            float along = _walkDir == Vector3.right ? at.x : at.z;
-            float travelled = Vector3.Distance(new Vector3(at.x, 0f, at.z),
-                                               new Vector3(_walkFrom.x, 0f, _walkFrom.z));
 
-            if (along >= _walkTarget)
+            _walkLowestY = Mathf.Min(_walkLowestY, at.y);
+            _walkDistance += Vector3.Distance(new Vector3(before.x, 0f, before.z),
+                                              new Vector3(at.x, 0f, at.z));
+            _walkLast = at;
+
+            // Lo que se pisa por el camino, con nombre: es la prueba de que se pasa de un tramo al
+            // siguiente y no de que se avanzan metros dentro del mismo.
+            if (Physics.Raycast(at + Vector3.up * 0.2f, Vector3.down, out RaycastHit under, 3f))
+                _walkSeen.Add(under.collider.gameObject.name);
+
+            bool arrived = _walkSeen.Count >= 3 && _walkDistance >= 25f;
+            if (arrived)
             {
                 _walk = Walk.Done;
+                player.enabled = true;
                 Debug.Log(
-                    $"[WG3] CONECTOR OK — el tramo {_walkName} se anda de punta a punta y SIGUE al " +
-                    $"otro lado. recorrido {travelled:0.0} m, y final {at.y:0.00}, " +
-                    $"y mínima {_walkLowestY:0.00} (caída {_walkFrom.y - _walkLowestY:0.00} m), " +
-                    $"grounded={controller.isGrounded}");
+                    $"[WG3] CONECTOR OK — la cadena generada se anda: {_walkDistance:0.0} m por " +
+                    $"{_walkSeen.Count} objetos ({string.Join(", ", _walkSeen)}), " +
+                    $"y final {at.y:0.00}, y mínima {_walkLowestY:0.00} " +
+                    $"(caída {_walkFrom.y - _walkLowestY:0.00} m), grounded={controller.isGrounded}");
                 Shot("wg3_connector.png");
                 return;
+            }
+
+            // ¿Bloqueado? Se dobla hacia el lado que esté libre. Es lo que hace cualquiera al llegar
+            // a una esquina, y es lo que el conector tiene por diseño.
+            if (Physics.SphereCast(at + Vector3.up * 0.5f, 0.3f, _walkDir, out RaycastHit ahead, 0.6f))
+            {
+                Vector3 left = new Vector3(-_walkDir.z, 0f, _walkDir.x);
+                Vector3 right = -left;
+                bool leftFree = !Physics.SphereCast(
+                    at + Vector3.up * 0.5f, 0.3f, left, out RaycastHit _, 1.5f);
+                bool rightFree = !Physics.SphereCast(
+                    at + Vector3.up * 0.5f, 0.3f, right, out RaycastHit _, 1.5f);
+
+                if (leftFree || rightFree)
+                {
+                    _walkDir = leftFree ? left : right;
+                }
+                else if (Time.time > _walkDeadline - 20f)
+                {
+                    // Ni de frente ni a los lados: callejón. Se dice con el nombre de lo que cierra.
+                    _walk = Walk.Done;
+                    player.enabled = true;
+                    Debug.LogError(
+                        $"[WG3] CONECTOR FALLA — callejón tras {_walkDistance:0.0} m por " +
+                        $"{_walkSeen.Count} objetos. Cierra {ahead.collider.gameObject.name}. " +
+                        $"posición {at}, y mínima {_walkLowestY:0.00}.", this);
+                    Shot("wg3_connector.png");
+                    return;
+                }
             }
 
             if (Time.time > _walkDeadline)
             {
                 _walk = Walk.Done;
+                player.enabled = true;
                 Debug.LogError(
-                    $"[WG3] CONECTOR FALLA — 25 s empujando por {_walkName} y solo se avanzaron " +
-                    $"{travelled:0.0} m (faltan {_walkTarget - along:0.0} m). y mínima " +
-                    $"{_walkLowestY:0.00}. O hay algo tapiando el paso, o el conector no llega a " +
-                    $"lo que dice conectar.", this);
+                    $"[WG3] CONECTOR FALLA — 40 s andando y solo {_walkDistance:0.0} m por " +
+                    $"{_walkSeen.Count} objetos ({string.Join(", ", _walkSeen)}). posición {at}, " +
+                    $"y mínima {_walkLowestY:0.00}.", this);
                 Shot("wg3_connector.png");
             }
         }
@@ -363,6 +432,10 @@ namespace BackroomsSurvival.WorldGen3
         private float _walkLowestY;
         private float _walkDeadline;
         private string _walkName = "?";
+        private float _walkDistance;
+        private Vector3 _walkLast;
+        private readonly System.Collections.Generic.HashSet<string> _walkSeen =
+            new System.Collections.Generic.HashSet<string>();
 
         private void Update()
         {
