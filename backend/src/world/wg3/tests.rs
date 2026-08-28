@@ -4315,3 +4315,206 @@ fn sweep_cap_chance() {
         );
     }
 }
+
+/// **MIRAR EL MUNDO SIN UNITY.** Vuelca cada región a un SVG en la carpeta `WG3_MAP_DIR`.
+///
+/// Existe porque durante toda la migración la única forma de ver WG3 ha sido montar una sesión de
+/// juego de noventa segundos, y eso no se puede hacer en cada cambio. Un plano no sustituye a
+/// jugarlo —no dice nada del aspecto— pero contesta lo único que se le pregunta a la topología:
+/// dónde se puede ir.
+///
+/// Verde: lo que se anda desde donde aparece el jugador. Gris: pisable pero incomunicado. Trazo
+/// claro: piezas del catálogo. Trazo ámbar: conectores GENERADOS. Círculo rojo: el spawn.
+#[test]
+#[ignore]
+fn dump_region_maps() {
+    const CELL: f32 = 0.5;
+    const HEAD_M: f32 = 1.0;
+    const MAX_STEP: f32 = 0.20;
+    const PX: f32 = 4.0;
+
+    let dir = std::env::var("WG3_MAP_DIR").expect("WG3_MAP_DIR: carpeta donde escribir los planos");
+    let m = real_manifest();
+
+    for (rx, rz) in [(0, 0), (1, 0), (0, 1), (-1, 2)] {
+        let region = Wg3RegionCoord { x: rx, z: rz };
+        let world = Wg3ServedWorld::compose_region(&m, SERVED_SEED, region);
+        let (min_x, min_z, _, _) = region.bounds();
+
+        let side = REGION_CHUNKS as usize;
+        let base = chunk::Wg3ChunkCoord::containing(min_x + 1.0, min_z + 1.0);
+        let mut rasters = Vec::with_capacity(side * side);
+        for cz in 0..side {
+            for cx in 0..side {
+                let coord = chunk::Wg3ChunkCoord {
+                    x: base.x + cx as i32,
+                    z: base.z + cz as i32,
+                };
+                rasters.push(chunk::build_chunk_raster(
+                    &m,
+                    &world.placements_touching_chunk(&m, coord),
+                    &world.segments_touching_chunk(coord),
+                    coord,
+                ));
+            }
+        }
+        let raster_at = |x: f32, z: f32| -> Option<&Wg3Raster> {
+            let coord = chunk::Wg3ChunkCoord::containing(x, z);
+            let (dx, dz) = (coord.x - base.x, coord.z - base.z);
+            if dx < 0 || dz < 0 || dx as usize >= side || dz as usize >= side {
+                return None;
+            }
+            rasters.get(dz as usize * side + dx as usize)
+        };
+
+        let cells = (REGION_M / CELL) as usize;
+        let mut floors: Vec<Vec<f32>> = vec![Vec::new(); cells * cells];
+        for iz in 0..cells {
+            for ix in 0..cells {
+                let x = min_x + ix as f32 * CELL + CELL * 0.5;
+                let z = min_z + iz as f32 * CELL + CELL * 0.5;
+                let Some(r) = raster_at(x, z) else { continue };
+                let column = r.column_at(x, z);
+                let mut out = Vec::new();
+                for (i, span) in column.iter().enumerate() {
+                    let head = match column.get(i + 1) {
+                        Some(next) => (next.bottom_cm - span.top_cm) as f32 / 100.0,
+                        None => f32::MAX,
+                    };
+                    if (HEAD_M..=6.0).contains(&head) {
+                        out.push(span.top_cm as f32 / 100.0);
+                    }
+                }
+                floors[iz * cells + ix] = out;
+            }
+        }
+
+        let mut blob_of: Vec<Vec<i32>> = floors.iter().map(|l| vec![-1; l.len()]).collect();
+        let mut blobs = 0i32;
+        for iz0 in 0..cells {
+            for ix0 in 0..cells {
+                for l0 in 0..floors[iz0 * cells + ix0].len() {
+                    if blob_of[iz0 * cells + ix0][l0] >= 0 {
+                        continue;
+                    }
+                    let id = blobs;
+                    blobs += 1;
+                    blob_of[iz0 * cells + ix0][l0] = id;
+                    let mut q = std::collections::VecDeque::new();
+                    q.push_back((ix0, iz0, l0));
+                    while let Some((ix, iz, li)) = q.pop_front() {
+                        let here = floors[iz * cells + ix][li];
+                        for (dx, dz) in [(1i32, 0i32), (-1, 0), (0, 1), (0, -1)] {
+                            let (nx, nz) = (ix as i32 + dx, iz as i32 + dz);
+                            if nx < 0 || nz < 0 || nx as usize >= cells || nz as usize >= cells {
+                                continue;
+                            }
+                            let (nx, nz) = (nx as usize, nz as usize);
+                            for (nl, there) in floors[nz * cells + nx].iter().enumerate() {
+                                if blob_of[nz * cells + nx][nl] >= 0
+                                    || (there - here).abs() > MAX_STEP
+                                {
+                                    continue;
+                                }
+                                blob_of[nz * cells + nx][nl] = id;
+                                q.push_back((nx, nz, nl));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let spawn = {
+            let c = cells / 2;
+            let mut found = -1;
+            'ring: for radius in 0..(cells / 2) as i32 {
+                for dz in -radius..=radius {
+                    for dx in -radius..=radius {
+                        let (ix, iz) = (c as i32 + dx, c as i32 + dz);
+                        if ix < 0 || iz < 0 || ix as usize >= cells || iz as usize >= cells {
+                            continue;
+                        }
+                        if let Some(&b) = blob_of[iz as usize * cells + ix as usize].first() {
+                            if b >= 0 {
+                                found = b;
+                                break 'ring;
+                            }
+                        }
+                    }
+                }
+            }
+            found
+        };
+
+        let w = REGION_M * PX;
+        let mut svg = format!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {w:.0} {w:.0}\" \
+             width=\"{w:.0}\" height=\"{w:.0}\">\n<rect width=\"100%\" height=\"100%\" \
+             fill=\"#14161a\"/>\n"
+        );
+        for iz in 0..cells {
+            let mut run_start: Option<usize> = None;
+            let mut run_blob = -2;
+            for ix in 0..=cells {
+                let b = if ix == cells {
+                    -2
+                } else {
+                    *blob_of[iz * cells + ix].first().unwrap_or(&-1)
+                };
+                if b != run_blob {
+                    if let Some(s) = run_start {
+                        if run_blob >= 0 {
+                            let fill = if run_blob == spawn {
+                                "#4ade80"
+                            } else {
+                                "#64748b"
+                            };
+                            svg += &format!(
+                                "<rect x=\"{:.1}\" y=\"{:.1}\" width=\"{:.1}\" height=\"{:.1}\" \
+                                 fill=\"{fill}\" opacity=\"0.85\"/>\n",
+                                s as f32 * CELL * PX,
+                                (cells - 1 - iz) as f32 * CELL * PX,
+                                (ix - s) as f32 * CELL * PX,
+                                CELL * PX
+                            );
+                        }
+                    }
+                    run_start = Some(ix);
+                    run_blob = b;
+                }
+            }
+        }
+        for p in world.placements() {
+            let piece = m.piece(p.piece).expect("pieza fuera del catálogo");
+            let (x0, z0, x1, z1) = p.bounds(piece);
+            svg += &format!(
+                "<rect x=\"{:.1}\" y=\"{:.1}\" width=\"{:.1}\" height=\"{:.1}\" fill=\"none\" \
+                 stroke=\"#e2e8f0\" stroke-width=\"1\" opacity=\"0.55\"/>\n",
+                (x0 - min_x) * PX,
+                (REGION_M - (z1 - min_z)) * PX,
+                (x1 - x0) * PX,
+                (z1 - z0) * PX
+            );
+        }
+        for s in world.segments() {
+            let (x0, z0, x1, z1) = s.bounds();
+            svg += &format!(
+                "<rect x=\"{:.1}\" y=\"{:.1}\" width=\"{:.1}\" height=\"{:.1}\" fill=\"none\" \
+                 stroke=\"#fbbf24\" stroke-width=\"1.6\"/>\n",
+                (x0 - min_x) * PX,
+                (REGION_M - (z1 - min_z)) * PX,
+                (x1 - x0) * PX,
+                (z1 - z0) * PX
+            );
+        }
+        svg += &format!(
+            "<circle cx=\"{:.1}\" cy=\"{:.1}\" r=\"6\" fill=\"none\" stroke=\"#f87171\" \
+             stroke-width=\"2.5\"/>\n</svg>\n",
+            REGION_M * 0.5 * PX,
+            REGION_M * 0.5 * PX
+        );
+        let path = format!("{dir}/wg3_region_{rx}_{rz}.svg");
+        std::fs::write(&path, svg).expect("escribir el plano");
+        println!("[wg3] {path} — mancha del jugador #{spawn} de {blobs}");
+    }
+}
