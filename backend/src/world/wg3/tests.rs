@@ -5959,6 +5959,234 @@ fn probe_region_plan() {
     }
 }
 
+// ── ADR-100 paso 2: el relleno ──────────────────────────────────────────────────────────────
+
+use super::fill;
+
+/// **Ni un solo tramo emitido puede ser inválido.**
+///
+/// `Wg3Segment::problems` es lo que separa geometría que se anda de geometría que se dibuja abierta y
+/// bloquea: una boca por debajo del mínimo la tapia el ráster conservador, y el síntoma no se ve en
+/// una captura. Aquí se exige sobre TODO lo que sale de rellenar las cuatro regiones.
+#[test]
+fn every_filled_segment_is_valid() {
+    let m = real_manifest();
+    for (rx, rz) in AUDIT_REGIONS {
+        let p = plan_of(&m, rx, rz);
+        let f = fill::fill(&p, &m);
+        for (i, s) in f.segments.iter().enumerate() {
+            let problems = s.problems();
+            assert!(
+                problems.is_empty(),
+                "({rx},{rz}) tramo {i} en ({},{}) cm: {}",
+                s.x_cm,
+                s.z_cm,
+                problems.join("; ")
+            );
+        }
+        assert_eq!(
+            f.spaces_unbuilt, 0,
+            "({rx},{rz}) dejó {} espacios sin construir",
+            f.spaces_unbuilt
+        );
+    }
+}
+
+/// **Ningún enlace del plan puede quedarse sin cumplir en silencio.**
+///
+/// Un `Route` es un encargo legítimo al enrutador y no cuenta. Lo que no puede haber es un enlace que
+/// el plan declaró como vano y que el relleno no supo abrir: eso es una puerta que existe en el plano
+/// y no en el mundo, que es la clase de divergencia que ADR-095 vino a evitar.
+#[test]
+fn the_fill_honours_every_planned_doorway() {
+    let m = real_manifest();
+    for (rx, rz) in AUDIT_REGIONS {
+        let p = plan_of(&m, rx, rz);
+        let f = fill::fill(&p, &m);
+        assert!(
+            f.links_failed.is_empty(),
+            "({rx},{rz}) no pudo abrir {} vanos que el plan pidió: {:?}",
+            f.links_failed.len(),
+            &f.links_failed[..f.links_failed.len().min(5)]
+        );
+        assert_eq!(
+            f.gates_failed, 0,
+            "({rx},{rz}) dejó {} puertas de junta sin cumplir — la región vecina abre la suya y se \
+             cae por ahí",
+            f.gates_failed
+        );
+        // **Y ninguna puerta puede perderse en la tesela.** Es el fallo silencioso de este módulo:
+        // los contadores cuadran, ningún enlace sale fallido, y la sala nace sellada.
+        assert_eq!(
+            f.openings_dropped, 0,
+            "({rx},{rz}) perdió {} huecos entre tramos hermanas — salas selladas con la puerta \
+             dibujada en el plano",
+            f.openings_dropped
+        );
+    }
+}
+
+/// El determinismo llega hasta el final: mismo plan y mismo catálogo, misma geometría.
+#[test]
+fn the_fill_is_deterministic() {
+    let m = real_manifest();
+    for (rx, rz) in AUDIT_REGIONS {
+        let p = plan_of(&m, rx, rz);
+        let a = fill::fill(&p, &m);
+        let b = fill::fill(&p, &m);
+        assert_eq!(a.segments, b.segments, "({rx},{rz}) la geometría cambia");
+        assert_eq!(a.placements, b.placements, "({rx},{rz}) las piezas cambian");
+    }
+}
+
+/// **LA MEDIDA QUE COMPARA CON EL MUNDO DE HOY.**
+///
+/// Rasteriza la región rellenada igual que el servidor y recorre lo andable desde el centro. Es la
+/// misma cuenta que `probe_how_much_of_the_region_can_be_walked_from_the_spawn` hace sobre el
+/// compositor por bocas, así que los dos números son comparables — y ésa es toda la gracia: el 21, 26,
+/// 3,5 y 24 % de la auditoría contra lo que da el plan.
+#[test]
+fn probe_filled_plan() {
+    const CELL: f32 = 0.5;
+    const HEAD_M: f32 = 1.0;
+    const MAX_STEP: f32 = 0.20;
+
+    let m = real_manifest();
+    let region_m2 = REGION_M * REGION_M;
+
+    for (rx, rz) in AUDIT_REGIONS {
+        let p = plan_of(&m, rx, rz);
+        let f = fill::fill(&p, &m);
+        let region = Wg3RegionCoord { x: rx, z: rz };
+        let (min_x, min_z, _, _) = region.bounds();
+
+        let side = REGION_CHUNKS as usize;
+        let base = chunk::Wg3ChunkCoord::containing(min_x + 1.0, min_z + 1.0);
+        let mut rasters = Vec::with_capacity(side * side);
+        for cz in 0..side {
+            for cx in 0..side {
+                let coord = chunk::Wg3ChunkCoord {
+                    x: base.x + cx as i32,
+                    z: base.z + cz as i32,
+                };
+                let (cmin_x, cmin_z, cmax_x, cmax_z) = coord.bounds();
+                let segments: Vec<_> = f
+                    .segments
+                    .iter()
+                    .filter(|s| {
+                        let (a, b, c, d) = s.bounds();
+                        c > cmin_x && a < cmax_x && d > cmin_z && b < cmax_z
+                    })
+                    .cloned()
+                    .collect();
+                rasters.push(chunk::build_chunk_raster_with_carves(
+                    &m,
+                    &f.placements,
+                    &segments,
+                    &f.carves,
+                    coord,
+                ));
+            }
+        }
+        let raster_at = |x: f32, z: f32| -> Option<&Wg3Raster> {
+            let coord = chunk::Wg3ChunkCoord::containing(x, z);
+            let (dx, dz) = (coord.x - base.x, coord.z - base.z);
+            if dx < 0 || dz < 0 || dx as usize >= side || dz as usize >= side {
+                return None;
+            }
+            rasters.get(dz as usize * side + dx as usize)
+        };
+
+        // Suelos pisables por celda: la cara de arriba de un tramo macizo con hueco para la cabeza.
+        let cells = (REGION_M / CELL) as usize;
+        let mut floors: Vec<Vec<f32>> = vec![Vec::new(); cells * cells];
+        for iz in 0..cells {
+            for ix in 0..cells {
+                let x = min_x + ix as f32 * CELL + CELL * 0.5;
+                let z = min_z + iz as f32 * CELL + CELL * 0.5;
+                let Some(r) = raster_at(x, z) else { continue };
+                let column = r.column_at(x, z);
+                let mut out = Vec::new();
+                for (i, span) in column.iter().enumerate() {
+                    let head = match column.get(i + 1) {
+                        Some(next) => (next.bottom_cm - span.top_cm) as f32 / 100.0,
+                        None => f32::MAX,
+                    };
+                    if (HEAD_M..=6.0).contains(&head) {
+                        out.push(span.top_cm as f32 / 100.0);
+                    }
+                }
+                floors[iz * cells + ix] = out;
+            }
+        }
+
+        // Manchas conexas, con el mismo escalón máximo que usa la sonda del mundo de hoy.
+        let mut blob_of: Vec<Vec<i32>> = floors.iter().map(|l| vec![-1; l.len()]).collect();
+        let mut sizes: Vec<usize> = Vec::new();
+        for iz0 in 0..cells {
+            for ix0 in 0..cells {
+                for l0 in 0..floors[iz0 * cells + ix0].len() {
+                    if blob_of[iz0 * cells + ix0][l0] >= 0 {
+                        continue;
+                    }
+                    let id = sizes.len() as i32;
+                    sizes.push(0);
+                    blob_of[iz0 * cells + ix0][l0] = id;
+                    let mut q = std::collections::VecDeque::new();
+                    q.push_back((ix0, iz0, l0));
+                    while let Some((ix, iz, li)) = q.pop_front() {
+                        sizes[id as usize] += 1;
+                        let here = floors[iz * cells + ix][li];
+                        for (dx, dz) in [(1i32, 0i32), (-1, 0), (0, 1), (0, -1)] {
+                            let (nx, nz) = (ix as i32 + dx, iz as i32 + dz);
+                            if nx < 0 || nz < 0 || nx as usize >= cells || nz as usize >= cells {
+                                continue;
+                            }
+                            let (nx, nz) = (nx as usize, nz as usize);
+                            for (nl, there) in floors[nz * cells + nx].iter().enumerate() {
+                                if blob_of[nz * cells + nx][nl] >= 0
+                                    || (there - here).abs() > MAX_STEP
+                                {
+                                    continue;
+                                }
+                                blob_of[nz * cells + nx][nl] = id;
+                                q.push_back((nx, nz, nl));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let total: usize = sizes.iter().sum();
+        let biggest = sizes.iter().copied().max().unwrap_or(0);
+        let walkable_m2 = biggest as f32 * CELL * CELL;
+
+        println!(
+            "[fill] región ({rx},{rz}): {} espacios ⇒ {} por pieza, {} por tramos | {} tramos, {} \
+             piezas, {} vanos",
+            p.spaces.len(),
+            f.spaces_by_piece,
+            f.spaces_by_segment,
+            f.segments.len(),
+            f.placements.len(),
+            f.openings_built,
+        );
+        println!(
+            "[fill]   ANDABLE {walkable_m2:.0} m² = {:.0} % de la región | mancha mayor {:.0} % de \
+             lo pisable | {} manchas | por enrutar {} | fallidos {}",
+            walkable_m2 / region_m2 * 100.0,
+            if total > 0 {
+                biggest as f32 / total as f32 * 100.0
+            } else {
+                0.0
+            },
+            sizes.len(),
+            f.links_to_route.len(),
+            f.links_failed.len(),
+        );
+    }
+}
+
 /// **EL VOLCADOR DEL PLAN — y es el criterio de aceptación de ADR-100.**
 ///
 /// Dibuja SOLO el plan: ni piezas, ni conectores, ni ráster, ni una sola malla. Si con las mallas

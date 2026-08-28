@@ -10,6 +10,8 @@
 pub mod chunk;
 pub mod compose;
 pub mod config;
+/// ADR-100 — el relleno: convertir un plan en geometría, sin que la geometría decida nada.
+pub mod fill;
 pub mod hash;
 pub mod junction;
 pub mod manifest;

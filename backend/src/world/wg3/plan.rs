@@ -468,6 +468,9 @@ impl RegionPlan {
     }
 }
 
+/// Un vecino de un espacio, con la pared que comparten: `(otro, solape, x del paso, z del paso)`.
+type Touching = (usize, i32, i32, i32);
+
 /// Nodo del árbol de subdivisión. Vive sólo mientras se planifica.
 struct Node {
     rect: PlanRect,
@@ -821,8 +824,8 @@ impl Planner {
                 best_access[room] = Some((w, band, x, z));
             }
         }
-        for room in 0..self.spaces.len() {
-            let Some((w, band, x, z)) = best_access[room] else {
+        for (room, slot) in best_access.iter().enumerate() {
+            let Some((w, band, x, z)) = *slot else {
                 continue;
             };
             let width = if self.spaces[room].role == SpaceRole::Hall && w >= WIDE_DOORWAY_CM {
@@ -954,10 +957,9 @@ impl Planner {
             degree[l.a] += 1;
             degree[l.b] += 1;
         }
-        for i in 0..self.spaces.len() {
-            let role = self.spaces[i].role;
-            if degree[i] == 1 && matches!(role, SpaceRole::Office | SpaceRole::Storage) {
-                self.spaces[i].role = SpaceRole::DeadEnd;
+        for (space, d) in self.spaces.iter_mut().zip(degree) {
+            if d == 1 && matches!(space.role, SpaceRole::Office | SpaceRole::Storage) {
+                space.role = SpaceRole::DeadEnd;
             }
         }
     }
@@ -1088,12 +1090,12 @@ impl Planner {
                 .expect("hay al menos dos componentes");
 
             // Un vacío que toca la componente mayor y alguna otra: devolverlo a sala las une.
-            let mut bridge: Option<(usize, Vec<(usize, i32, i32, i32)>)> = None;
+            let mut bridge: Option<(usize, Vec<Touching>)> = None;
             for v in 0..self.spaces.len() {
                 if self.spaces[v].role != SpaceRole::Void {
                     continue;
                 }
-                let touching: Vec<(usize, i32, i32, i32)> = adj
+                let touching: Vec<Touching> = adj
                     .iter()
                     .filter_map(|&(i, j, w, x, z)| match (i == v, j == v) {
                         (true, false) => Some((j, w, x, z)),
