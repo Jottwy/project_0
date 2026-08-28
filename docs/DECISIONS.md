@@ -8055,3 +8055,93 @@ Seis tandas, una preocupación cada una, ninguna por encima de ~300 líneas de d
 
 `docs/WORLDGEN3-BRIEF.md` gana en T1 la nota de que la transición de anchura pasa a poder generarse:
 las reglas L5/L6 viven ahí y un brief que no lo diga envejece a mentira.
+
+---
+
+## ADR-098 — Enmienda 1: implementado y medido; cuatro cosas cambian y una verificación NO se cumple (2026-08-28)
+
+Las seis tandas están hechas (`64ab4cc1` el ADR, y las tres de implementación). Suite 1086/0 con 34
+ignorados, clippy `--all-targets -D warnings` y fmt limpios, `CompileCheckClient` 0 errores en las
+cuatro asambleas.
+
+### Lo que salió, sobre el mundo que se sirve
+
+| | antes | después |
+|---|---|---|
+| Islas por región (0,0)/(1,0)/(0,1)/(−1,2) | 6 / 6 / 7 / 5 | **2 / 1 / 3 / 3** |
+| Árbol mayor | 71 / 66 / 61 / 74 % | **86 / 100 / 84 / 82 %** |
+| Conectores tendidos | — | 4 / 4 / 4 / 2 |
+| Tramos generados | — | 25 / 37 / 21 / 11 |
+| Bocas sin suelo al otro lado | 5 de 244 | **3 de 202** |
+| Componer una región (release) | 0–9 ms | **20–63 ms** |
+
+**La verificación (a) NO se cumple, y se dice aquí antes que en ningún sitio.** El ADR pedía UNA
+componente por región; sale en una de las cuatro. Lo que queda son bolsillos de dos piezas cuya única
+boca no tiene ruta posible: uno de ellos está a **0,5 m del borde de su región y mirando hacia
+fuera**, así que no hay geometría que quepa —y ésa es la respuesta correcta, no un fallo—. Los otros
+están rodeados. Sin poder excavar en una pieza autorada —que no se puede: su malla la dibuja el
+cliente desde el catálogo— no hay más que hacer desde el enrutador.
+
+### Cuatro decisiones que la implementación tuvo que tomar, y ninguna estaba en el ADR
+
+**1. Sellar se APLAZA mientras el enrutador esté encendido** (`SOCKET_PENDING_CAP`). El ADR daba por
+hecho que las bocas muertas llegaban abiertas a la pasada final; no es así: el compositor sella en el
+momento, igual que C#, y al terminar el recorrido no queda una sola boca abierta salvo las de los
+tramos de junta. Medido: con el sellado inmediato, **tres de cuatro regiones daban CERO conectores**,
+y no por falta de sitio sino por falta de candidatas. Ahora la decisión se toma igual y la geometría
+espera. Con el enrutador apagado no cambia nada, así que el oráculo sigue valiendo.
+
+**2. Las bocas libres son el recurso escaso, y de ahí salen las tomas.** Cada isla aporta
+exactamente una, así que unir boca con boca funde dos islas en una que ya no puede crecer. Empalmar a
+MITAD de un conector —abrirle un hueco en la pared— no gasta ninguna, y es lo mismo que hace el
+sistema de salas con el laberinto. Se prefieren siempre, y crecer desde la componente mayor es
+preferencia y no ley: exigirlo dejó una región entera sin un solo conector.
+
+**3. El puente, que es lo que cierra el agujero del diseño.** Una isla que ya gastó su boca quedaba
+varada para siempre. Un conector es geometría generada, así que se le puede abrir una puerta **a los
+dos lados**: una ruta de pared a pared que no usa ninguna boca. Con él, la región (1,0) pasó de dos
+islas a una.
+
+**4. La búsqueda se paga solo cuando hace falta.** Las formas fijas —recto, L, Z, U— resuelven la
+mayoría en microsegundos; cuando ninguna cabe entra una búsqueda que ESQUIVA (rejilla de Hanan más
+Dijkstra con penalización de giro). Ponerla siempre costaba 400 ms por región; en dos pasadas son
+20–63 ms en release. El puente tiene además tope de INTENTOS y no de parejas: descartar una pared por
+su geometría es gratis, y contar esos descartes dejaba fuera parejas lejanas que sí valían — medido,
+una región que se unía entera se quedaba en dos islas.
+
+### Dos números que cambian una decisión
+
+**El desnivel se enciende (D7 pasa a `climb = true`).** Con `climb` apagado, entre 4 y 11 parejas por
+región se descartaban solo por cota — en las regiones donde hay rampas, la mayoría. Y no costó
+formato: cada tramo ya lleva su cota, así que una escalera generada es una cadena de tramos con la
+losa de cada uno haciendo de contrahuella del anterior, con la contrahuella del catálogo (18 cm) como
+tope.
+
+**Dejar ramificar los tramos de junta: probado y descartado.** Ahora podría hacerse —dos árboles ya
+se unen— y llena mucho más: de 28 a **52 piezas** por región. Pero las llena tanto que el enrutador
+se queda sin hueco: de 2 islas a **6**, con el árbol mayor bajando del 86 % al **27 %**. El llenado y
+la conectividad tiran en direcciones opuestas mientras el catálogo tenga pocas bocas por pieza, y
+entre las dos manda poder andar. Queda anotado en el sitio, no en un documento aparte.
+
+### Un centímetro, y por qué el oráculo valió lo que costó
+
+El primer rojo de la paridad fue un centímetro en el centro de una pared: C# convierte centímetros a
+metros con `* 0.01f` y Rust dividía entre 100. **No es la misma operación** —`240 * 0.01f` cae un
+pelo por debajo de 2,4 y `240 / 100.0` un pelo por encima— y al redondear salían 232 y 233. La
+resolución del ráster lo habría tapado hoy; el oráculo lo cazó el primer día. Rust pasa a hacer la
+misma operación y el test compara con redondeo a la par, como `Mathf.RoundToInt`.
+
+### Estado de las verificaciones
+
+- (a) UNA componente por región — **NO**: 2/1/3/3 (era 6/6/7/5). Explicado arriba.
+- (b) Un anillo real, no una unión contada — **hecho**, con un test que monta una cadena de ocho
+  piezas y exige que se unan sus dos EXTREMOS.
+- (c) Paridad de expansión C# ↔ Rust — **hecha**, y con dientes: cazó el centímetro de arriba.
+- (d) Cero solapes contra piezas y contra otros tramos, sobre el mundo servido — **hecho**.
+- (e) Bocas sin suelo al otro lado — **mejor que antes**: 3 de 202 contra 5 de 244. Y la sonda tuvo
+  que aprender a mirar los tramos: sin ellos contaba como agujero toda boca que ahora da a un
+  conector, que es medir un mundo que no se sirve.
+- (f) Llenado — **sin cambio en piezas** (7–34 %), y el número está incompleto a propósito: la sonda
+  suma huellas de PIEZAS y los tramos generados no cuentan todavía. Con 11–37 tramos por región, lo
+  andable ha subido bastante más de lo que dice esa cifra.
+- (g) Wire 48 a los dos lados — **hecho**. **Andarlo en juego: PENDIENTE.**

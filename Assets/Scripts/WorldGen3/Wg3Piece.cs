@@ -18,6 +18,15 @@ namespace BackroomsSurvival.WorldGen3
     /// coincide. Un socket "vale para todo" convierte la composición en ruido, y es la regla que
     /// más tienta romper cuando falta una transición en el catálogo. La respuesta correcta a esa
     /// falta es autorar la transición, no relajar el tipo.
+    ///
+    /// **ADR-098 matiza esto, y conviene leer QUÉ matiza.** Un CONECTOR generado sí puede empezar a
+    /// 2,4 m y acabar a 5,0: la transición deja de tener que autorarse porque la pone el generador,
+    /// como un tramo con dos bocas de anchura distinta. Lo que NO cambia es esta regla: ninguna
+    /// pieza del catálogo gana una boca que valga para todo, y dos piezas siguen encajando solo si
+    /// coinciden. En el catálogo de código anchura y tipo van atados —<c>Sock()</c> da 5,0 m a
+    /// <see cref="Wg3SocketType.Wide"/> y 2,4 a <see cref="Wg3SocketType.Corridor"/>—, así que sin
+    /// esa concesión los dos anchos serían dos mundos que no se mezclan. <c>Service</c> queda fuera:
+    /// solo conecta consigo mismo, porque es la clase semántica y no una medida.
     /// </summary>
     public enum Wg3SocketType
     {
