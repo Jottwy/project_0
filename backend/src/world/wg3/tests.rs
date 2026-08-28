@@ -1052,7 +1052,7 @@ fn a_composed_world_has_no_overlaps_and_no_sockets_left_open() {
 
 use super::world::{
     composer_seed, region_settings, Wg3RegionCoord, Wg3ServedWorld, Wg3WorldCache, INTERIM_BUDGET,
-    REGION_CHUNKS,
+    REGION_CHUNKS, REGION_M,
 };
 
 /// Semilla de las pruebas del mundo servido. Es la del oráculo con los 32 bits altos puestos: así
@@ -2734,6 +2734,351 @@ fn the_ring_pass_joins_the_two_ends_of_a_chain() {
         outcome.edges,
         "el anillo tiene que unir los dos EXTREMOS de la cadena"
     );
+}
+
+/// **SE ANDA DE VERDAD, Y HASTA DÓNDE** (ADR-098, verificación g por el lado del servidor).
+///
+/// Recorre el mundo servido A PIE: desde donde aparece el jugador —el centro de la región, que es
+/// donde siembra el compositor— se propaga por celdas de medio metro con las reglas de andar (hay
+/// suelo, hay hueco para la cabeza, y el escalón entre celda y celda no pasa de la contrahuella del
+/// catálogo). Lo que sale es cuánto del mundo se alcanza sin volar y si se llega a las puertas de
+/// junta, que es la pregunta que Joel hizo andando: «llega un punto que se cierra y no hay manera de
+/// moverte».
+///
+/// **Contra el RÁSTER y no contra la lista de piezas**, que es lo que separa esto de una tautología:
+/// el ráster es lo que el servidor va a usar para resolver el movimiento, y es donde una pared
+/// generada de más o un suelo de menos aparecen.
+#[test]
+fn probe_how_much_of_the_region_can_be_walked_from_the_spawn() {
+    const CELL: f32 = 0.5;
+    const HEAD_M: f32 = 1.0;
+    // La contrahuella del catálogo. Por encima de esto no es un escalón, es un bordillo.
+    const MAX_STEP: f32 = 0.20;
+
+    let m = real_manifest();
+
+    for (rx, rz) in [(0, 0), (1, 0), (0, 1), (-1, 2)] {
+        let region = Wg3RegionCoord { x: rx, z: rz };
+        let world = Wg3ServedWorld::compose_region(&m, SERVED_SEED, region);
+        let (min_x, min_z, max_x, max_z) = region.bounds();
+
+        // Un ráster por chunk de la región, resuelto como lo resolvería el servidor.
+        let side = REGION_CHUNKS as usize;
+        let base = chunk::Wg3ChunkCoord::containing(min_x + 1.0, min_z + 1.0);
+        let mut rasters = Vec::with_capacity(side * side);
+        for cz in 0..side {
+            for cx in 0..side {
+                let coord = chunk::Wg3ChunkCoord {
+                    x: base.x + cx as i32,
+                    z: base.z + cz as i32,
+                };
+                rasters.push(chunk::build_chunk_raster(
+                    &m,
+                    &world.placements_touching_chunk(&m, coord),
+                    &world.segments_touching_chunk(coord),
+                    coord,
+                ));
+            }
+        }
+        let raster_at = |x: f32, z: f32| -> Option<&Wg3Raster> {
+            let coord = chunk::Wg3ChunkCoord::containing(x, z);
+            let (dx, dz) = (coord.x - base.x, coord.z - base.z);
+            if dx < 0 || dz < 0 || dx as usize >= side || dz as usize >= side {
+                return None;
+            }
+            rasters.get(dz as usize * side + dx as usize)
+        };
+
+        let cells = (REGION_M / CELL) as usize;
+
+        // **TODAS LAS COTAS DE UNA COLUMNA, Y NO SOLO LA DE ABAJO.** Preguntar por «el suelo bajo la
+        // cabeza» daba un número falso desde ADR-097: una pieza a dos metros de alto no tiene suelo
+        // por debajo de 1 m, así que la sonda la contaba como no pisable y el mundo salía la mitad
+        // de andable de lo que es. Una columna de tramos puede tener varios sitios donde estar de
+        // pie, y hay que mirarlos todos — que es justo la razón de que el formato sean tramos.
+        let levels_of = |ix: usize, iz: usize| -> Vec<f32> {
+            let x = min_x + ix as f32 * CELL + CELL * 0.5;
+            let z = min_z + iz as f32 * CELL + CELL * 0.5;
+            let Some(r) = raster_at(x, z) else {
+                return Vec::new();
+            };
+            let column = r.column_at(x, z);
+            let mut out = Vec::new();
+            for (i, span) in column.iter().enumerate() {
+                let top = span.top_cm as f32 / 100.0;
+                // Hueco para la cabeza hasta el siguiente macizo de la misma columna.
+                let head = match column.get(i + 1) {
+                    Some(next) => (next.bottom_cm - span.top_cm) as f32 / 100.0,
+                    None => f32::MAX,
+                };
+                // Con techo, y no a cielo abierto: la cara de arriba de una pared o de una losa de
+                // techo cumple «hay suelo y hay hueco» y no es sitio donde se ande. Contarla metía
+                // los TEJADOS en la cuenta y hacía el mundo más grande y más roto de lo que es.
+                if (HEAD_M..=6.0).contains(&head) {
+                    out.push(top);
+                }
+            }
+            out
+        };
+
+        let mut floors: Vec<Vec<f32>> = vec![Vec::new(); cells * cells];
+        let mut standable = 0usize;
+        for iz in 0..cells {
+            for ix in 0..cells {
+                let levels = levels_of(ix, iz);
+                if !levels.is_empty() {
+                    standable += 1;
+                }
+                floors[iz * cells + ix] = levels;
+            }
+        }
+
+        // Se arranca donde aparece el jugador: el centro de la región.
+        let start = (cells / 2, cells / 2);
+        let mut queue = std::collections::VecDeque::new();
+        let mut seen_level: Vec<Vec<bool>> = floors.iter().map(|l| vec![false; l.len()]).collect();
+        // Si el centro exacto no es pisable, se busca la celda pisable más cercana — que es
+        // exactamente lo que hace el arnés del cliente al aterrizar.
+        let mut from = None;
+        'search: for radius in 0..cells / 2 {
+            for dz in -(radius as i32)..=(radius as i32) {
+                for dx in -(radius as i32)..=(radius as i32) {
+                    let (ix, iz) = (start.0 as i32 + dx, start.1 as i32 + dz);
+                    if ix < 0 || iz < 0 || ix as usize >= cells || iz as usize >= cells {
+                        continue;
+                    }
+                    if !floors[iz as usize * cells + ix as usize].is_empty() {
+                        from = Some((ix as usize, iz as usize));
+                        break 'search;
+                    }
+                }
+            }
+        }
+        let Some(from) = from else {
+            println!("[wg3] región ({rx},{rz}): ni una celda pisable — nada que andar");
+            continue;
+        };
+
+        // Se arranca por la cota MÁS BAJA de esa celda, que es donde caería el jugador al soltarlo.
+        seen_level[from.1 * cells + from.0][0] = true;
+        queue.push_back((from.0, from.1, 0usize));
+        let mut reached = 0usize;
+        let mut seen = vec![false; cells * cells];
+        while let Some((ix, iz, li)) = queue.pop_front() {
+            if !seen[iz * cells + ix] {
+                seen[iz * cells + ix] = true;
+                reached += 1;
+            }
+            let here = floors[iz * cells + ix][li];
+            for (dx, dz) in [(1i32, 0i32), (-1, 0), (0, 1), (0, -1)] {
+                let (nx, nz) = (ix as i32 + dx, iz as i32 + dz);
+                if nx < 0 || nz < 0 || nx as usize >= cells || nz as usize >= cells {
+                    continue;
+                }
+                let (nx, nz) = (nx as usize, nz as usize);
+                for (nl, there) in floors[nz * cells + nx].iter().enumerate() {
+                    if seen_level[nz * cells + nx][nl] {
+                        continue;
+                    }
+                    if (there - here).abs() > MAX_STEP {
+                        continue;
+                    }
+                    seen_level[nz * cells + nx][nl] = true;
+                    queue.push_back((nx, nz, nl));
+                }
+            }
+        }
+
+        // ¿Y se llega a las puertas de junta? Es lo que decide si cruzar de región sirve de algo.
+        let seed = composer_seed(SERVED_SEED);
+        let gates = junction::gates_of_region(seed, region.x, region.z, region.bounds());
+        let mut gates_reached = 0usize;
+        for g in &gates {
+            // DENTRO DEL TRAMO DE PUERTA, no detrás de él: el tramo tiene menos de un metro de
+            // fondo, así que medir metro y medio adentro mediría lo que haya al otro lado de su
+            // pared, que es otra cosa. Lo que se pregunta es si se llega A la puerta.
+            let (nx, nz) = match g.outward_side % 4 {
+                0 => (0.0, -0.45),
+                1 => (-0.45, 0.0),
+                2 => (0.0, 0.45),
+                _ => (0.45, 0.0),
+            };
+            let (x, z) = (g.x + nx, g.z + nz);
+            let ix = ((x - min_x) / CELL) as i32;
+            let iz = ((z - min_z) / CELL) as i32;
+            if ix < 0 || iz < 0 || ix as usize >= cells || iz as usize >= cells {
+                continue;
+            }
+            if seen[iz as usize * cells + ix as usize] {
+                gates_reached += 1;
+            }
+        }
+
+        // Y cuántas PIEZAS se pisan. Es la cuenta que se puede comparar con la de islas: si el grafo
+        // dice que el 86 % del mundo es una sola componente y andando solo se llega a la mitad, lo
+        // que está roto no es la conexión, es la junta entre lo generado y lo autorado.
+        let walked = |x: f32, z: f32| -> bool {
+            let ix = ((x - min_x) / CELL) as i32;
+            let iz = ((z - min_z) / CELL) as i32;
+            ix >= 0
+                && iz >= 0
+                && (ix as usize) < cells
+                && (iz as usize) < cells
+                && seen[iz as usize * cells + ix as usize]
+        };
+
+        // LOS TAPONES NO CUENTAN, y no es maquillaje: un tapón es una pieza de una sola boca y 0,9 m
+        // de fondo puesta para cerrar un extremo. Su centro cae dentro de su propia pared, así que
+        // contarlo como «no se pisa» mediría el grosor del tapón y no el mundo.
+        let mut pieces_reached = 0usize;
+        let mut pieces_counted = 0usize;
+        for p in world.placements() {
+            let piece = m.piece(p.piece).expect("pieza fuera del catálogo");
+            if piece.sockets.len() < 2 {
+                continue;
+            }
+            pieces_counted += 1;
+            let (px0, pz0, px1, pz1) = p.bounds(piece);
+            if walked((px0 + px1) * 0.5, (pz0 + pz1) * 0.5) {
+                pieces_reached += 1;
+            }
+        }
+
+        // ¿Es la mancha del jugador la MAYOR del mundo, o le ha tocado un rincón? Se recorre todo lo
+        // pisable y se cuentan las manchas. Es la diferencia entre «el mundo está partido» y «el
+        // jugador aparece en el sitio equivocado», que piden arreglos opuestos.
+        {
+            let mut visited: Vec<Vec<bool>> = floors.iter().map(|l| vec![false; l.len()]).collect();
+            let mut sizes: Vec<usize> = Vec::new();
+            for iz0 in 0..cells {
+                for ix0 in 0..cells {
+                    for l0 in 0..floors[iz0 * cells + ix0].len() {
+                        if visited[iz0 * cells + ix0][l0] {
+                            continue;
+                        }
+                        visited[iz0 * cells + ix0][l0] = true;
+                        let mut blob = std::collections::VecDeque::new();
+                        blob.push_back((ix0, iz0, l0));
+                        let mut size = 0usize;
+                        while let Some((ix, iz, li)) = blob.pop_front() {
+                            size += 1;
+                            let here = floors[iz * cells + ix][li];
+                            for (dx, dz) in [(1i32, 0i32), (-1, 0), (0, 1), (0, -1)] {
+                                let (nx, nz) = (ix as i32 + dx, iz as i32 + dz);
+                                if nx < 0 || nz < 0 || nx as usize >= cells || nz as usize >= cells
+                                {
+                                    continue;
+                                }
+                                let (nx, nz) = (nx as usize, nz as usize);
+                                for (nl, there) in floors[nz * cells + nx].iter().enumerate() {
+                                    if visited[nz * cells + nx][nl]
+                                        || (there - here).abs() > MAX_STEP
+                                    {
+                                        continue;
+                                    }
+                                    visited[nz * cells + nx][nl] = true;
+                                    blob.push_back((nx, nz, nl));
+                                }
+                            }
+                        }
+                        sizes.push(size);
+                    }
+                }
+            }
+            sizes.sort_unstable_by(|a, b| b.cmp(a));
+            let big: Vec<usize> = sizes.iter().copied().take(5).collect();
+            println!(
+                "[wg3]   manchas andables: {} en total, las mayores {:?} celdas",
+                sizes.len(),
+                big
+            );
+        }
+
+        // Diagnóstico: hasta dónde llega la mancha que se anda, y por dónde se corta.
+        {
+            let (mut bx0, mut bz0, mut bx1, mut bz1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+            for iz in 0..cells {
+                for ix in 0..cells {
+                    if !seen[iz * cells + ix] {
+                        continue;
+                    }
+                    let x = min_x + ix as f32 * CELL;
+                    let z = min_z + iz as f32 * CELL;
+                    bx0 = bx0.min(x);
+                    bz0 = bz0.min(z);
+                    bx1 = bx1.max(x);
+                    bz1 = bz1.max(z);
+                }
+            }
+            println!(
+                "[wg3]   la mancha andable va de ({bx0:.0},{bz0:.0}) a ({bx1:.0},{bz1:.0}), \
+                 saliendo de ({:.1},{:.1})",
+                min_x + from.0 as f32 * CELL,
+                min_z + from.1 as f32 * CELL
+            );
+        }
+
+        // Diagnóstico: un tramo al que no se llega puede ser que no CONECTE o que no se pueda ni
+        // pisar. Son dos fallos distintos y hay que saber cuál es antes de tocar nada.
+        for s in world.segments().iter().take(4) {
+            let (cx, cz) = s.centre();
+            // A cada lado de cada boca del tramo: si fuera se anda y dentro no, el vano no abre — y
+            // ése es un fallo de geometría. Si no se anda ni fuera, el tramo cuelga de una isla y el
+            // fallo es de enrutado. Son dos arreglos distintos.
+            let mut mouths = String::new();
+            for o in &s.openings {
+                let (lx, lz) = placement::local_point(
+                    o.side,
+                    o.offset_cm as f32 / 100.0,
+                    s.size_x(),
+                    s.size_z(),
+                );
+                let (mx, mz) = (s.min_x() + lx, s.min_z() + lz);
+                let (nx, nz) = match o.side % 4 {
+                    0 => (0.0, 1.0),
+                    1 => (1.0, 0.0),
+                    2 => (0.0, -1.0),
+                    _ => (-1.0, 0.0),
+                };
+                mouths += &format!(
+                    " boca(lado {}) fuera={} dentro={};",
+                    o.side,
+                    walked(mx + nx * 0.6, mz + nz * 0.6),
+                    walked(mx - nx * 0.6, mz - nz * 0.6)
+                );
+            }
+            println!(
+                "[wg3]   tramo ({cx:.2},{cz:.2}) {}×{} cm cota {} pisado {} —{mouths}",
+                s.size_x_cm,
+                s.size_z_cm,
+                s.floor_y_cm,
+                walked(cx, cz)
+            );
+        }
+
+        let segments_reached = world
+            .segments()
+            .iter()
+            .filter(|s| {
+                let (cx, cz) = s.centre();
+                walked(cx, cz)
+            })
+            .count();
+
+        println!(
+            "[wg3] región ({rx},{rz}): {reached} celdas a pie de {standable} pisables ({:.0} %), \
+             {:.0} m² andables | piezas pisadas {pieces_reached} de {pieces_counted} | tramos \
+             pisados {segments_reached} de {} | puertas alcanzadas {gates_reached} de {}",
+            reached as f32 * 100.0 / standable.max(1) as f32,
+            reached as f32 * CELL * CELL,
+            world.segments().len(),
+            gates.len()
+        );
+        assert!(
+            max_x > min_x && max_z > min_z,
+            "la región tiene que tener caja"
+        );
+    }
 }
 
 /// **QUÉ TIENDE EL ENRUTADOR, Y QUÉ DESCARTA** (ADR-098 T6).
