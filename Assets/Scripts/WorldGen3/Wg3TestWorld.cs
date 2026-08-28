@@ -60,16 +60,38 @@ namespace BackroomsSurvival.WorldGen3
 
         private void OnDestroy() => Wg3SceneAssembler.Clear(transform, _meshes);
 
+        /// <summary>
+        /// **EL BUCLE QUE SE COMÍA EL EDITOR, Y POR QUÉ NO SE VEÍA.** 2026-08-28.
+        ///
+        /// `Generate()` destruye y crea GameObjects, y crear objetos en una escena marca la escena
+        /// sucia; eso vuelve a disparar `OnValidate`, que vuelve a encolar un `delayCall`, que vuelve
+        /// a generar. El editor entra en una noria que no para nunca: el log crecía a 4 KB cada 20
+        /// segundos con mundos cada vez más grandes (1081 piezas, 1665…) y, lo peor, **con la noria
+        /// girando Unity no llega a compilar**, así que cualquier cambio de código se quedaba fuera y
+        /// el DLL parecía al día por su fecha. Se descubrió intentando lanzar una sesión de juego.
+        ///
+        /// La cura es que solo pueda haber UNA regeneración encolada a la vez. No es un contador de
+        /// seguridad ni un cooldown: es que encolar la segunda no tiene ningún sentido — la primera
+        /// todavía no ha corrido.
+        /// </summary>
+        private bool _regenerationQueued;
+
         private void OnValidate()
         {
             if (!regenerateOnValidate || !isActiveAndEnabled) return;
+            if (_regenerationQueued) return;
+            _regenerationQueued = true;
             // OnValidate corre dentro de la serialización: destruir objetos ahí es ilegal y Unity
             // lo avisa con un error rojo por cada uno. Se aplaza un frame.
 #if UNITY_EDITOR
             UnityEditor.EditorApplication.delayCall += () =>
             {
-                if (this != null) Generate();
+                if (this == null) return;
+                _regenerationQueued = false;
+                Generate();
             };
+#else
+            _regenerationQueued = false;
 #endif
         }
 
