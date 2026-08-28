@@ -144,6 +144,30 @@ pub struct Wg3ComposerSettings {
     /// llevan a ninguna parte, que son el mismo problema visto por tres sitios.
     pub route: Option<RouteSettings>,
 
+    /// SONDA — cuánto se deja que dos piezas se pisen, en metros. `0.0` es la regla de siempre.
+    ///
+    /// **No es una perilla de producción: existe para MEDIR.** Hoy el compositor rechaza toda
+    /// candidata que pise algo ya colocado, y eso tiene un precio que nadie había puesto en un
+    /// número: cada pieza carga sus cuatro paredes, así que entre dos salas contiguas hay dos muros
+    /// y un hueco, el llenado se queda en ~20 % y el mundo se lee como cajas sueltas unidas por
+    /// tubos en vez de como un edificio.
+    ///
+    /// Con holgura `s`, una candidata se acepta mientras la intersección no pase de `s` en alguno
+    /// de los dos ejes — o sea, se permite que las piezas COMPARTAN pared en vez de duplicarla.
+    ///
+    /// **Ojo con lo que este número NO dice:** permitir el solape sin excavar el muro común deja
+    /// geometría cruzada, y el ráster la estampa maciza. Sirve para saber cuánto subiría el
+    /// llenado; no para servir un mundo. El excavado es el trabajo de verdad y necesita ADR.
+    pub overlap_slack_m: f32,
+
+    /// SONDA — apuntar CONTRA QUÉ se choca cada candidata rechazada por solape, no solo cuántas.
+    ///
+    /// Mide el techo de la absorción: la idea de que un pasillo que topa con una sala no se
+    /// descarte, sino que se recorte contra ella, le abra un vano y deje de expandirse. Hoy cada
+    /// uno de esos choques se cuenta y se tira, así que el material está ahí sin que nadie lo haya
+    /// mirado. Cuesta memoria, así que `false` salvo en la sonda.
+    pub collect_absorption_hits: bool,
+
     /// ADR-096 — piezas que van puestas ANTES del recorrido, con una boca ya conectada al otro lado
     /// de una junta.
     ///
@@ -185,6 +209,8 @@ impl Default for Wg3ComposerSettings {
             bounds: None,
             seed_at: None,
             route: None,
+            overlap_slack_m: 0.0,
+            collect_absorption_hits: false,
             anchors: Vec::new(),
         }
     }
@@ -219,12 +245,33 @@ pub struct Wg3Cap {
     pub forced: bool,
 }
 
+/// SONDA — un choque de huella que HOY se descarta y que la absorción convertiría en conexión.
+///
+/// La idea que mide: un pasillo que topa con una sala no se descarta, se recorta contra ella, le
+/// abre un vano y deja de expandirse — la sala manda sobre el pasillo. Cada rechazo por solape es
+/// un sitio donde el mundo QUISO crecer, y hoy no queda constancia de dónde.
+#[derive(Debug, Clone, Copy)]
+pub struct Wg3AbsorptionHit {
+    /// Nodo ya colocado contra el que se choca: quien absorbería.
+    pub hit_node: usize,
+    /// Pieza candidata que venía: quien sería absorbido.
+    pub candidate_piece: u16,
+    /// Fachada de contacto, PERPENDICULAR a la dirección de llegada. Es lo que decide si cabe un
+    /// vano: por debajo del ancho de una puerta el choque no sirve de conexión.
+    pub frontage_m: f32,
+    /// Cuánto se metería la candidata dentro de la otra, o sea lo que habría que recortarle.
+    pub depth_m: f32,
+}
+
 /// Resultado de una composición.
 #[derive(Debug, Clone, Default)]
 pub struct Wg3ComposedWorld {
     pub world_seed: i32,
     pub placements: Vec<Wg3Composed>,
     pub caps: Vec<Wg3Cap>,
+
+    /// SONDA — vacío salvo con `collect_absorption_hits`. Ver [`Wg3AbsorptionHit`].
+    pub absorption_hits: Vec<Wg3AbsorptionHit>,
 
     /// Candidatas descartadas porque la huella pisaba algo ya colocado. No es un error: es la medida
     /// de cuánto aprieta el mundo. Un cero sostenido significa que el catálogo es demasiado pequeño
@@ -327,6 +374,8 @@ struct Composer<'a> {
     forced_caps: u32,
     loops_closed: u32,
     rejected_by_bounds: u32,
+    /// SONDA — ver [`Wg3AbsorptionHit`]. Vacío salvo con `collect_absorption_hits`.
+    absorption_hits: Vec<Wg3AbsorptionHit>,
 
     /// ADR-098 — la geometría generada y el grafo que hace falta para decidir dónde tenderla.
     ///
@@ -363,6 +412,7 @@ impl<'a> Composer<'a> {
             rejected_by_overlap: 0,
             rejected_by_validator: 0,
             forced_caps: 0,
+            absorption_hits: Vec::new(),
             segments: Vec::new(),
             edges: Vec::new(),
             connectors: 0,
@@ -431,6 +481,7 @@ impl<'a> Composer<'a> {
             seed_oz,
             seed_piece.size_x,
             seed_piece.size_z,
+            self.settings.overlap_slack_m,
         ) && match self.settings.bounds {
             Some((bmin_x, bmin_z, bmax_x, bmax_z)) => {
                 seed_ox >= bmin_x
@@ -774,7 +825,15 @@ impl<'a> Composer<'a> {
                     continue;
                 }
             }
-            if overlaps_any(&self.nodes, manifest, ox, oz, w, d) {
+            if overlaps_any(
+                &self.nodes,
+                manifest,
+                ox,
+                oz,
+                w,
+                d,
+                self.settings.overlap_slack_m,
+            ) {
                 continue;
             }
             // ADR-098 — y tampoco encima de un conector. La pasada final de tapones corre DESPUÉS
@@ -861,8 +920,41 @@ impl<'a> Composer<'a> {
                     }
                 }
 
-                if overlaps_any(&self.nodes, manifest, ox, oz, w, d) {
+                if let Some(hit) = first_overlap(
+                    &self.nodes,
+                    manifest,
+                    ox,
+                    oz,
+                    w,
+                    d,
+                    self.settings.overlap_slack_m,
+                ) {
                     self.rejected_by_overlap += 1;
+                    if self.settings.collect_absorption_hits {
+                        let n = &self.nodes[hit];
+                        let hp = &manifest.pieces[n.piece as usize];
+                        let (nw, nd) = if n.rotation.is_multiple_of(2) {
+                            (hp.size_x, hp.size_z)
+                        } else {
+                            (hp.size_z, hp.size_x)
+                        };
+                        let ix = (n.origin_x + nw).min(ox + w) - n.origin_x.max(ox);
+                        let iz = (n.origin_z + nd).min(oz + d) - n.origin_z.max(oz);
+                        // Se llega por `needed_side`: pares (0/2) avanzan en Z, impares en X. La
+                        // fachada del vano es la del OTRO eje — el ancho del pasillo que llega,
+                        // no lo que se ha metido dentro.
+                        let (frontage_m, depth_m) = if needed_side.is_multiple_of(2) {
+                            (ix, iz)
+                        } else {
+                            (iz, ix)
+                        };
+                        self.absorption_hits.push(Wg3AbsorptionHit {
+                            hit_node: hit,
+                            candidate_piece: piece.index,
+                            frontage_m,
+                            depth_m,
+                        });
+                    }
                     continue;
                 }
 
@@ -1018,6 +1110,7 @@ impl<'a> Composer<'a> {
             world_seed: self.world_seed,
             placements,
             caps: self.caps,
+            absorption_hits: self.absorption_hits,
             rejected_by_overlap: self.rejected_by_overlap,
             rejected_by_validator: self.rejected_by_validator,
             forced_caps: self.forced_caps,
@@ -1164,18 +1257,50 @@ fn weighted_pick(candidates: &[Candidate], stream: &mut hash::Stream) -> Candida
     candidates[candidates.len() - 1]
 }
 
-fn overlaps_any(nodes: &[Node], manifest: &Wg3Manifest, x: f32, z: f32, w: f32, d: f32) -> bool {
-    nodes.iter().any(|n| {
+fn overlaps_any(
+    nodes: &[Node],
+    manifest: &Wg3Manifest,
+    x: f32,
+    z: f32,
+    w: f32,
+    d: f32,
+    slack: f32,
+) -> bool {
+    first_overlap(nodes, manifest, x, z, w, d, slack).is_some()
+}
+
+/// `slack` en metros: cuánto se tolera que las cajas se pisen. Con `0.0` —el defecto y lo único que
+/// sirve un mundo hoy— la condición es la de siempre, intersección de AABB con epsilon. Con holgura
+/// se mide la PROFUNDIDAD de la intersección en cada eje y solo se rechaza si las dos pasan de
+/// `slack`: dos piezas que se solapan el grosor de un muro comparten pared en vez de duplicarla.
+///
+/// Devuelve CUÁL se pisa y no solo si se pisa, porque el nodo contra el que se choca es el dato que
+/// hace falta para medir la absorción: sin él, un rechazo es un número y no un sitio.
+fn first_overlap(
+    nodes: &[Node],
+    manifest: &Wg3Manifest,
+    x: f32,
+    z: f32,
+    w: f32,
+    d: f32,
+    slack: f32,
+) -> Option<usize> {
+    nodes.iter().position(|n| {
         let piece = &manifest.pieces[n.piece as usize];
         let (nw, nd) = if n.rotation.is_multiple_of(2) {
             (piece.size_x, piece.size_z)
         } else {
             (piece.size_z, piece.size_x)
         };
-        n.origin_x < x + w - OVERLAP_EPS
-            && n.origin_x + nw - OVERLAP_EPS > x
-            && n.origin_z < z + d - OVERLAP_EPS
-            && n.origin_z + nd - OVERLAP_EPS > z
+        if slack <= 0.0 {
+            return n.origin_x < x + w - OVERLAP_EPS
+                && n.origin_x + nw - OVERLAP_EPS > x
+                && n.origin_z < z + d - OVERLAP_EPS
+                && n.origin_z + nd - OVERLAP_EPS > z;
+        }
+        let depth_x = (n.origin_x + nw).min(x + w) - n.origin_x.max(x);
+        let depth_z = (n.origin_z + nd).min(z + d) - n.origin_z.max(z);
+        depth_x > slack && depth_z > slack
     })
 }
 

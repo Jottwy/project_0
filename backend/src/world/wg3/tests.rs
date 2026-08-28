@@ -886,6 +886,10 @@ fn settings_from(oracle: &CompositionOracle, budget: usize) -> compose::Wg3Compo
         // ADR-098 — sin enrutador, por lo mismo que sin bucles: C# no genera conectores, así que
         // encenderlo aquí no mediría una deriva, mediría que hemos cambiado el algoritmo.
         route: None,
+        // Y sin holgura de solape, por lo mismo que lo de arriba: C# rechaza toda candidata que
+        // pise algo colocado. Cualquier valor distinto de cero aquí mediría otro algoritmo.
+        overlap_slack_m: 0.0,
+        collect_absorption_hits: false,
         anchors: Vec::new(),
     }
 }
@@ -1351,6 +1355,212 @@ fn region_size_sweep() {
              (min {min:.0}, max {max:.0}), piezas {counts:?}"
         );
     }
+}
+
+/// SONDA — ¿cuánto sube el LLENADO si se deja que las piezas compartan pared?
+///
+/// `#[ignore]` porque no afirma nada: busca un número. Lánzala con
+/// `cargo test --manifest-path backend/Cargo.toml probe_fill_with_overlap_allowed -- --ignored --nocapture`.
+///
+/// LA PREGUNTA QUE CONTESTA, y es una decisión de diseño esperando un dato. Hoy el compositor
+/// rechaza toda candidata que pise algo ya colocado, así que cada pieza carga sus cuatro paredes y
+/// entre dos salas contiguas hay DOS muros y un hueco. Eso es lo que se ve en un plano como cajas
+/// sueltas unidas por tubos en vez de como un edificio, y por lo que el llenado se queda en ~20 %.
+/// Antes de escribir el ADR del excavado hay que saber cuánto techo hay: si al permitir el solape el
+/// llenado apenas se mueve, el problema no es la regla de solape y el ADR estaría atacando lo que no
+/// es.
+///
+/// **EL LLENADO SE MIDE POR UNIÓN, NO SUMANDO HUELLAS.** `region_size_sweep` suma y hace bien —hoy no
+/// hay solapes que descontar—, pero con holgura esa cuenta se dispara contando dos veces el terreno
+/// compartido y diría que el mundo se llena cuando solo se están pisando. Aquí se rasteriza la
+/// región a celdas de 0,5 m y se cuenta terreno ÚNICO.
+///
+/// El otro número, y es el que dice si el excavado tiene de qué tirar: **parejas de piezas que se
+/// tocan**. Sin adyacencia no hay muro común que excavar, por mucho llenado que haya.
+#[test]
+#[ignore]
+fn probe_fill_with_overlap_allowed() {
+    const CELL: f32 = 0.5;
+    let m = real_manifest();
+    let side = REGION_CHUNKS as f32 * 50.0;
+    let area = side * side;
+    let cells_side = (side / CELL) as usize;
+
+    println!(
+        "[wg3] región de {REGION_CHUNKS} chunks ({side:.0} m). Llenado por UNIÓN de huellas, \
+         celda {CELL} m."
+    );
+
+    for slack in [0.0f32, 0.15, 0.30, 0.60, 1.20, 2.50] {
+        let mut fills = Vec::new();
+        let mut counts = Vec::new();
+        let mut touching = Vec::new();
+
+        for (rx, rz) in [(0, 0), (1, 0), (0, 1), (-1, -1), (3, -2), (7, 11), (2, 5)] {
+            let (min_x, min_z) = (rx as f32 * side, rz as f32 * side);
+            let settings = compose::Wg3ComposerSettings {
+                budget: INTERIM_BUDGET,
+                close_loops: true,
+                bounds: Some((min_x, min_z, min_x + side, min_z + side)),
+                overlap_slack_m: slack,
+                ..compose::Wg3ComposerSettings::default()
+            };
+            let seed = Wg3RegionCoord { x: rx, z: rz }.composer_seed(SERVED_SEED);
+            let w = compose::compose(seed, &m, &settings);
+
+            // Unión: una celda cuenta una vez la pisen las piezas que la pisen.
+            let mut grid = vec![false; cells_side * cells_side];
+            let mut boxes = Vec::with_capacity(w.placements.len());
+            for c in &w.placements {
+                let piece = m.piece(c.placement.piece).expect("pieza");
+                let (x0, z0, x1, z1) = c.placement.bounds(piece);
+                boxes.push((x0, z0, x1, z1));
+
+                let cx0 = (((x0 - min_x) / CELL).floor().max(0.0)) as usize;
+                let cz0 = (((z0 - min_z) / CELL).floor().max(0.0)) as usize;
+                let cx1 = (((x1 - min_x) / CELL).ceil().max(0.0) as usize).min(cells_side);
+                let cz1 = (((z1 - min_z) / CELL).ceil().max(0.0) as usize).min(cells_side);
+                for cz in cz0..cz1 {
+                    for cx in cx0..cx1 {
+                        grid[cz * cells_side + cx] = true;
+                    }
+                }
+            }
+            let used = grid.iter().filter(|c| **c).count() as f32 * CELL * CELL;
+            fills.push(used / area * 100.0);
+            counts.push(w.placements.len());
+
+            // Parejas que se tocan CON FACHADA SUFICIENTE PARA UN VANO. Rozar en una esquina no
+            // sirve: para excavar una puerta hacen falta 1,2 m de pared compartida. Y se separan
+            // las que YA están conectadas por boca de las que no, porque solo las segundas son
+            // adyacencias desperdiciadas — dos salas espalda contra espalda, cuatro paredes entre
+            // ellas y ni un paso.
+            let connected: std::collections::HashSet<(usize, usize)> = w
+                .placements
+                .iter()
+                .enumerate()
+                .filter_map(|(i, c)| c.parent.map(|p| (i.min(p), i.max(p))))
+                .collect();
+
+            let mut pairs = 0usize;
+            for i in 0..boxes.len() {
+                for j in (i + 1)..boxes.len() {
+                    let (ax0, az0, ax1, az1) = boxes[i];
+                    let (bx0, bz0, bx1, bz1) = boxes[j];
+                    let gap_x = ax0.max(bx0) - ax1.min(bx1);
+                    let gap_z = az0.max(bz0) - az1.min(bz1);
+                    // Rozan en X y comparten fachada en Z, o al revés.
+                    let touch_x = gap_x <= 0.05 && -gap_z >= 1.2;
+                    let touch_z = gap_z <= 0.05 && -gap_x >= 1.2;
+                    if (touch_x || touch_z) && !connected.contains(&(i, j)) {
+                        pairs += 1;
+                    }
+                }
+            }
+            touching.push(pairs);
+        }
+
+        let mean: f32 = fills.iter().sum::<f32>() / fills.len() as f32;
+        let min = fills.iter().cloned().fold(f32::MAX, f32::min);
+        let max = fills.iter().cloned().fold(f32::MIN, f32::max);
+        let pieces: usize = counts.iter().sum::<usize>() / counts.len();
+        let pairs: usize = touching.iter().sum::<usize>() / touching.len();
+        println!(
+            "[wg3] holgura {slack:>4.2} m: llenado medio {mean:>5.1} % (min {min:>5.1}, \
+             max {max:>5.1}) | piezas/región {pieces:>3} | adyacencias SIN puerta {pairs:>3}"
+        );
+    }
+}
+
+/// SONDA — el techo de la ABSORCIÓN: ¿cuánto mundo hay en los choques que hoy se tiran?
+///
+/// `#[ignore]` porque no afirma nada: busca un número. Lánzala con
+/// `cargo test --manifest-path backend/Cargo.toml probe_absorption_ceiling -- --ignored --nocapture`.
+///
+/// LA IDEA QUE MIDE, y es de Joel: un pasillo que topa con una sala no se descarta. Se recorta
+/// contra ella, le abre un vano y deja de expandirse — la sala manda sobre el pasillo. Hoy ese
+/// choque se cuenta en `rejected_by_overlap` y se tira, así que el material ya existe y nadie lo
+/// había mirado.
+///
+/// POR QUÉ ESTA MEDIDA Y NO LA DE ANTES. `probe_fill_with_overlap_allowed` preguntaba si dejar que
+/// las piezas compartan pared llenaba el mundo, y la respuesta fue que no: de 31,7 % a 32,6 % con el
+/// grosor de un muro, y 1 sola adyacencia sin puerta por región. Las piezas no acaban pegadas porque
+/// el compositor las encadena boca con boca. La absorción no necesita que acaben pegadas: usa los
+/// choques, que son otra cosa y sí abundan.
+///
+/// LOS TRES NÚMEROS, y cada uno descarta la idea por un sitio distinto:
+///  · **choques** — si son pocos, no hay material y la idea muere aquí;
+///  · **con fachada ≥ 1,2 m** — un choque de esquina no da un vano, da un roce;
+///  · **destinos DISTINTOS** — cien choques contra la misma sala son una puerta, no cien. Éste es el
+///    que dice cuántas conexiones nuevas habría de verdad.
+#[test]
+#[ignore]
+fn probe_absorption_ceiling() {
+    const DOOR_M: f32 = 1.2;
+    let m = real_manifest();
+    let side = REGION_CHUNKS as f32 * 50.0;
+
+    println!(
+        "[wg3] región de {REGION_CHUNKS} chunks ({side:.0} m). Choques por solape que hoy se \
+         descartan, y qué daría absorberlos."
+    );
+
+    let mut total_new = 0usize;
+    let mut regions = 0usize;
+    for (rx, rz) in [(0, 0), (1, 0), (0, 1), (-1, -1), (3, -2), (7, 11), (2, 5)] {
+        let (min_x, min_z) = (rx as f32 * side, rz as f32 * side);
+        let settings = compose::Wg3ComposerSettings {
+            budget: INTERIM_BUDGET,
+            close_loops: true,
+            bounds: Some((min_x, min_z, min_x + side, min_z + side)),
+            collect_absorption_hits: true,
+            ..compose::Wg3ComposerSettings::default()
+        };
+        let seed = Wg3RegionCoord { x: rx, z: rz }.composer_seed(SERVED_SEED);
+        let w = compose::compose(seed, &m, &settings);
+
+        let wide: Vec<_> = w
+            .absorption_hits
+            .iter()
+            .filter(|h| h.frontage_m >= DOOR_M)
+            .collect();
+
+        // Un destino distinto es una conexión nueva; los repetidos son la misma puerta pedida
+        // muchas veces desde bocas distintas.
+        let destinations: std::collections::HashSet<usize> =
+            wide.iter().map(|h| h.hit_node).collect();
+
+        // ¿Contra QUÉ se choca? Si lo que absorbe son salas y lo absorbido pasillos, la regla de
+        // Joel —la sala manda— cae sola. Si es al revés, la jerarquía hay que pensarla.
+        let mut into_bigger = 0usize;
+        for h in &wide {
+            let hit_scale = m
+                .piece(w.placements[h.hit_node].placement.piece)
+                .expect("pieza")
+                .scale;
+            let cand_scale = m.piece(h.candidate_piece).expect("pieza").scale;
+            if hit_scale > cand_scale {
+                into_bigger += 1;
+            }
+        }
+
+        let pieces = w.placements.len();
+        println!(
+            "[wg3] región ({rx:>2},{rz:>2}): {pieces:>3} piezas | choques {:>5} \
+             (con fachada ≥ {DOOR_M} m: {:>4}) | destinos DISTINTOS {:>3} \
+             | de los anchos, {into_bigger:>4} son contra algo MAYOR",
+            w.absorption_hits.len(),
+            wide.len(),
+            destinations.len(),
+        );
+        total_new += destinations.len();
+        regions += 1;
+    }
+
+    println!(
+        "[wg3] conexiones nuevas que daría la absorción: {} por región de media",
+        total_new / regions.max(1)
+    );
 }
 
 // ── contrato de junta (ADR-096) ─────────────────────────────────────────────────────────────
