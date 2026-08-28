@@ -270,6 +270,19 @@ impl NetworkManager {
             StpBuildAddRequest { add_id, building_id, material_id },
         ]
         {
+            // Alcance de cosecha: el host lo mide contra la pose conocida de quien manda el golpe,
+            // así que `requester_id` sale de la CABECERA y no del payload.
+            PacketPayload::StpHarvestHitRequest {
+                hit_id,
+                harvestable_id,
+                amount,
+            } => Some(NetworkEvent::StpHarvestHitRequest {
+                hit_id,
+                harvestable_id,
+                amount,
+                requester_id: sender_id,
+            }),
+
             // ADR-081 llevado a la demolición: el dueño se comprueba contra la CABECERA. Por eso
             // este arm no puede vivir en la lista 1:1 de arriba — necesita `sender_id`, que el
             // payload no trae ni debe traer.
@@ -433,7 +446,6 @@ impl NetworkManager {
 
         }
         [
-            StpHarvestHitRequest { hit_id, harvestable_id, amount },
             StpPickupRequest { item_id, requester_id },
             // ADR-028 Fase E: corpse relay — 1:1 payload→event mapping; all the authority
             // logic (dedupe, spawn/take, verdict relay, mirroring) lives in game_loop, which

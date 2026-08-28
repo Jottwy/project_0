@@ -11157,3 +11157,45 @@ async fn the_requester_pose_comes_from_the_roster_and_never_from_the_packet() {
         "sin pose conocida no se inventa una: quien llama decide, y en la interacción rechaza"
     );
 }
+
+/// BARRA LIBRE EN LA COSECHA, CERRADA POR DOS SITIOS.
+///
+/// `remaining` arranca en **1,0** —es una fracción del recurso, no puntos de vida—, así que un solo
+/// paquete con un `amount` grande dejaba cualquier árbol del mapa a cero desde cualquier distancia.
+/// Y `amount.abs()` aceptaba además lo que no es un número: un `NaN` envenena `remaining` para
+/// siempre, porque toda comparación con él es falsa y el recurso ni se agota ni se recupera.
+#[tokio::test]
+async fn a_harvest_hit_needs_a_real_number_and_someone_standing_close() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    net.stp_harvestables
+        .push(crate::network::protocol::StpHarvestableInfo {
+            id: 7,
+            position: [100.0, 0.0, 100.0],
+            remaining: 1.0,
+        });
+    let remaining = |net: &NetworkManager| net.stp_harvestables[0].remaining;
+    let far = Some(Vec3::new(0.0, 1.8, 0.0));
+    let close = Some(Vec3::new(101.0, 1.8, 100.0));
+
+    // Desde el otro lado del mapa, aunque el golpe sea legítimo.
+    process_stp_harvest_hit(1, 7, 0.25, 2, far, &mut net);
+    assert_eq!(1.0, remaining(&net), "no se tala a 141 m");
+
+    // No-números, cada uno con su hit_id para que no los pare el dedupe.
+    for (i, bad) in [f32::NAN, f32::INFINITY, -0.5, 0.0].into_iter().enumerate() {
+        process_stp_harvest_hit(10 + i as u64, 7, bad, 2, close, &mut net);
+    }
+    assert_eq!(
+        1.0,
+        remaining(&net),
+        "ni NaN, ni infinito, ni negativo, ni cero: un golpe es un número positivo"
+    );
+
+    // Y el golpe bueno, de cerca, sí entra — si no, el test pasaría por tenerlo todo bloqueado.
+    process_stp_harvest_hit(20, 7, 0.25, 2, close, &mut net);
+    assert!(
+        (remaining(&net) - 0.75).abs() < 1e-6,
+        "el golpe legítimo tiene que descontar: {}",
+        remaining(&net)
+    );
+}

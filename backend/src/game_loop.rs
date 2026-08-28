@@ -2622,9 +2622,18 @@ async fn handle_network_event(
             hit_id,
             harvestable_id,
             amount,
+            requester_id,
         } => {
             if net.is_host {
-                process_stp_harvest_hit(hit_id, harvestable_id, amount, net);
+                let requester_pos = authoritative_requester_pos(net, player.position, requester_id);
+                process_stp_harvest_hit(
+                    hit_id,
+                    harvestable_id,
+                    amount,
+                    requester_id,
+                    requester_pos,
+                    net,
+                );
             }
         }
 
@@ -4644,7 +4653,15 @@ async fn handle_action(
                 return;
             }
             if net.is_host {
-                process_stp_harvest_hit(hit_id, harvestable_id, amount, net);
+                // El host golpeando desde su propio cliente: la pose la pone el backend.
+                process_stp_harvest_hit(
+                    hit_id,
+                    harvestable_id,
+                    amount,
+                    net.local_id,
+                    Some(player.position),
+                    net,
+                );
             } else {
                 let payload = crate::network::protocol::PacketPayload::StpHarvestHitRequest {
                     hit_id,
@@ -6075,6 +6092,8 @@ fn process_stp_harvest_hit(
     hit_id: u64,
     harvestable_id: u32,
     amount: f32,
+    requester_id: u16,
+    requester_pos: Option<Vec3>,
     net: &mut NetworkManager,
 ) {
     if hit_id != 0 && !net.processed_stp_harvest_hits.insert(hit_id) {
@@ -6100,10 +6119,37 @@ fn process_stp_harvest_hit(
         }
     };
 
-    harvestable.remaining = (harvestable.remaining - amount.abs()).max(0.0);
+    // Un golpe tiene que ser un NÚMERO. `amount` llega del cliente y se restaba con `.abs()`, que
+    // convierte un negativo en un mordisco legítimo y deja pasar `NaN` e infinito tal cual: un solo
+    // `NaN` envenena `remaining` para siempre —toda comparación con él es falsa, así que el recurso
+    // ni se agota ni se recupera— y no hay log que lo explique después.
+    if !amount.is_finite() || amount <= 0.0 {
+        info!(
+            "MPTRACE step=HV event=stp_harvest_hit_rejected harvestable_id={} hit_id={} requester_id={} amount={} reason=not_a_positive_number",
+            harvestable_id, hit_id, requester_id, amount
+        );
+        return;
+    }
+
+    // Alcance. Sin esto, un paquete vacía cualquier recurso del mapa desde donde sea: `remaining`
+    // arranca en 1,0 —es una fracción, no puntos de vida—, así que un `amount` grande lo deja a
+    // cero de un golpe. Se mide contra la pose que el host YA CONOCE, nunca contra el paquete.
+    //
+    // El tope es el mismo que el de recoger, y se reutiliza a propósito en vez de inventar otro:
+    // aquel empezó en 5 m y hubo que subirlo a 8 en playtest porque 5 clavados daban `too_far` con
+    // el objeto al lado. Talar tiene el mismo problema y el mismo brazo.
+    if !pickup_within_reach(requester_pos, harvestable.position) {
+        info!(
+            "MPTRACE step=HV event=stp_harvest_hit_rejected harvestable_id={} hit_id={} requester_id={} reason=too_far max={:.2}",
+            harvestable_id, hit_id, requester_id, STP_PICKUP_MAX_DISTANCE
+        );
+        return;
+    }
+
+    harvestable.remaining = (harvestable.remaining - amount).max(0.0);
     info!(
-        "MPTRACE step=HV event=stp_harvest_hit harvestable_id={} amount={:.3} remaining={:.3} hit_id={}",
-        harvestable_id, amount, harvestable.remaining, hit_id
+        "MPTRACE step=HV event=stp_harvest_hit harvestable_id={} amount={:.3} remaining={:.3} hit_id={} requester_id={}",
+        harvestable_id, amount, harvestable.remaining, hit_id, requester_id
     );
 }
 

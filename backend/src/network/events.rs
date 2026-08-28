@@ -158,10 +158,15 @@ pub enum NetworkEvent {
         rotation: f32,
     },
     /// Phase B2.6: a joiner reports a harvest hit on a scene harvestable (host-authoritative).
+    ///
+    /// `requester_id` sale de la CABECERA, nunca del payload: es contra la posición conocida de ESE
+    /// peer contra la que el host mide el alcance, y un `amount` no vale nada si quien lo manda
+    /// puede estar en la otra punta del mapa.
     StpHarvestHitRequest {
         hit_id: u64,
         harvestable_id: u32,
         amount: f32,
+        requester_id: u16,
     },
     /// ADR-028 Fase E: a joiner's player died — it asks the host to spawn the corpse.
     CorpseSpawnRequest {
