@@ -75,6 +75,13 @@ const ABSORB_MIN_M: f32 = 1.0;
 /// comerse la pared de enfrente de una pieza estrecha.
 const CARVE_DEPTH_M: f32 = 0.5;
 
+/// ADR-099 — huella mínima del ABSORBIDO para que absorber contra él lleve a algún sitio, en m².
+///
+/// 120 m² deja fuera los tapones y los pasillos —`cor_straight` son 26, `cap_corridor` 2,4— y deja
+/// dentro las salas de `room_small` (130) para arriba. Es un proxy de «tiene sitio dentro» hecho
+/// con lo único que el compositor puede mirar sin romper R1: la huella.
+const ABSORB_MIN_TARGET_AREA_M2: f32 = 120.0;
+
 /// Sal del sorteo de tapón voluntario.
 const SALT_CAP: u32 = 0xC0DE_C0DE;
 /// ADR-099 D4 — sal del sorteo de absorción. Propia, para que encenderla no mueva ninguna otra
@@ -1189,6 +1196,20 @@ impl<'a> Composer<'a> {
             }
             let n = &self.nodes[other];
             let piece = &self.manifest.pieces[n.piece as usize];
+
+            // ADR-099 — CONTRA QUÉ SE PUEDE ABSORBER, y esto sale de una medida, no de una regla
+            // estética. Sin filtro, los 37 vanos de siete regiones daban a un avance MEDIANO DE
+            // 1,0 m —el ancho de la propia excavación—: se abría un agujero en una pared y detrás
+            // había un nicho. Lo más cercano a una boca suele ser un tapón (`cap_corridor` mide
+            // 0,9 × 2,7) o el canto de un pasillo, y atravesarlos no lleva a ninguna parte.
+            //
+            // El filtro es por HUELLA y no por lo que haya dentro, y eso es a propósito: R1 dice
+            // que aquí no hay geometría. El compositor no puede saber si detrás de esa pared hay
+            // sala o armario; lo que sí sabe es que una pieza grande tiene sitio dentro.
+            if piece.dead_end || piece.size_x * piece.size_z < ABSORB_MIN_TARGET_AREA_M2 {
+                continue;
+            }
+
             let (nw, nd) = if n.rotation.is_multiple_of(2) {
                 (piece.size_x, piece.size_z)
             } else {

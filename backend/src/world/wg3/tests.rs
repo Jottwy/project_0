@@ -1709,6 +1709,123 @@ fn the_absorbed_doorway_is_open_in_the_raster() {
     );
 }
 
+/// SONDA — ADR-099: ¿el vano da a algún sitio, o a un armario?
+///
+/// `#[ignore]` porque no afirma nada: busca un número. Lánzala con
+/// `cargo test --manifest-path backend/Cargo.toml probe_absorption_leads_somewhere -- --ignored --nocapture`.
+///
+/// LA PREGUNTA QUE NO CONTESTA NINGUNA DE LAS OTRAS. `the_absorbed_doorway_is_open_in_the_raster`
+/// prueba que por el vano SE PASA; no prueba que al otro lado haya algo. Y las piezas del catálogo
+/// están llenas de materia interior — `room_core` lleva un núcleo de 8 × 7 m, `hall_large` paredes
+/// parciales, y varias tienen columnas de medio metro. Un vano contra eso abre un agujero a un
+/// bloque macizo: se ve una puerta, se cruza, y detrás hay pared.
+///
+/// Se mide andando HACIA ADENTRO desde el vano y mirando cuánto se avanza antes de chocar. Es lo
+/// más cerca que se puede estar de «¿esto se ve bien?» sin montar el cliente.
+#[test]
+#[ignore]
+fn probe_absorption_leads_somewhere() {
+    const CELL: f32 = 0.5;
+    const HEAD_M: f32 = 1.8;
+    // Lo que hay que poder avanzar hacia adentro para que la puerta lleve a un sitio y no a un
+    // hueco entre dos paredes.
+    const WANT_M: f32 = 3.0;
+
+    let m = real_manifest();
+    let side_m = REGION_CHUNKS as f32 * 50.0;
+
+    let mut good = 0usize;
+    let mut shallow = 0usize;
+    let mut blind = 0usize;
+    let mut depths: Vec<f32> = Vec::new();
+
+    for (rx, rz) in [(0, 0), (1, 0), (0, 1), (-1, -1), (3, -2), (7, 11), (2, 5)] {
+        let (min_x, min_z) = (rx as f32 * side_m, rz as f32 * side_m);
+        let seed = Wg3RegionCoord { x: rx, z: rz }.composer_seed(SERVED_SEED);
+        let composed = compose::compose(
+            seed,
+            &m,
+            &compose::Wg3ComposerSettings {
+                budget: INTERIM_BUDGET,
+                close_loops: true,
+                bounds: Some((min_x, min_z, min_x + side_m, min_z + side_m)),
+                absorb_chance: 1.0,
+                ..compose::Wg3ComposerSettings::default()
+            },
+        );
+        let placements: Vec<_> = composed.placements.iter().map(|c| c.placement).collect();
+
+        for k in &composed.carves {
+            let cx = (k.x_cm + k.size_x_cm / 2) as f32 / 100.0;
+            let cz = (k.z_cm + k.size_z_cm / 2) as f32 / 100.0;
+            let probe_y = k.bottom_y_cm as f32 / 100.0 + 1.0;
+
+            // SE ENTRA POR EL EJE ESTRECHO. La caja del vano mide el grosor del contacto (1 m) en
+            // la dirección de paso y el ANCHO de la puerta (2,4 o 5) a lo ancho, así que el eje de
+            // avance es el MENOR. Escrito al revés —y lo estuvo— la sonda camina a lo largo de la
+            // puerta, se mete en la pared de al lado y devuelve 1,0 m para todos los vanos: un
+            // número redondo y repetido, que es justo como se ve un eje equivocado.
+            let along_x = k.size_x_cm < k.size_z_cm;
+
+            let standable = |x: f32, z: f32| -> bool {
+                let coord = chunk::Wg3ChunkCoord::containing(x, z);
+                let raster = chunk::build_chunk_raster_with_carves(
+                    &m,
+                    &placements,
+                    &composed.segments,
+                    &composed.carves,
+                    coord,
+                );
+                raster
+                    .headroom_above_floor(x, probe_y, z)
+                    .is_some_and(|h| h >= HEAD_M)
+            };
+
+            // SE TOMA EL PEOR DE LOS DOS SENTIDOS, y la diferencia no es cosmética. Uno de los dos
+            // lados es el tramo que se acaba de tender —abierto por construcción, hasta 25 m—, así
+            // que quedarse con el mejor mide el pasillo propio y da 20 m siempre. El lado que dice
+            // si el vano sirve es el OTRO, y como la sonda no sabe cuál es, se queda con el mínimo.
+            let mut best = f32::MAX;
+            for sign in [1.0f32, -1.0] {
+                let mut depth = 0.0f32;
+                let mut step = CELL;
+                // Tope generoso: con `WANT_M * 2` la mediana salía clavada en el tope y un número
+                // que toca el techo de su propia sonda no es una medida.
+                while step <= 20.0 {
+                    let (x, z) = if along_x {
+                        (cx + sign * step, cz)
+                    } else {
+                        (cx, cz + sign * step)
+                    };
+                    if !standable(x, z) {
+                        break;
+                    }
+                    depth = step;
+                    step += CELL;
+                }
+                best = best.min(depth);
+            }
+
+            depths.push(best);
+            if best >= WANT_M {
+                good += 1;
+            } else if best >= 1.0 {
+                shallow += 1;
+            } else {
+                blind += 1;
+            }
+        }
+    }
+
+    depths.sort_by(f32::total_cmp);
+    let median = depths.get(depths.len() / 2).copied().unwrap_or(0.0);
+    println!(
+        "[wg3] vanos: {} en total | llevan a sitio (≥{WANT_M} m) {good} | cortos (1–3 m) {shallow} \
+         | CIEGOS (<1 m) {blind} | avance mediano {median:.1} m",
+        depths.len()
+    );
+}
+
 /// SONDA — ADR-099 paso 2: ¿la absorción con vano AGRANDA lo que se puede andar?
 ///
 /// `#[ignore]` porque no afirma nada: busca un número. Lánzala con
