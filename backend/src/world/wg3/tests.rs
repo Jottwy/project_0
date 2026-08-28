@@ -1987,6 +1987,201 @@ fn probe_absorption_reach() {
     }
 }
 
+/// SONDA — el mundo en ISOMÉTRICA, para mirarlo con ojos en vez de con números.
+///
+/// `#[ignore]` porque no afirma nada. Lánzala con
+/// `WG3_ISO_DIR=<carpeta> WG3_SEED=42 cargo test ... dump_isometric -- --ignored --nocapture`.
+///
+/// El volcador de planta (`dump_region_maps`) contesta a la topología: qué se anda y qué no. No
+/// contesta a la forma, que es lo que se pregunta cuando uno dice «¿esto se verá bien?». Esto
+/// tampoco es el juego —ni materiales, ni luz, ni el vestido de los conectores— pero enseña VOLUMEN:
+/// alturas, escalas relativas, y si el mundo se lee como edificio o como cajas sueltas.
+///
+/// **Los techos NO se dibujan.** Con ellos sólo se ve una manta gris: un isométrico de un interior
+/// es siempre una sección. Suelos y paredes, que es lo que da la forma.
+#[test]
+#[ignore]
+fn dump_isometric() {
+    // Proyección isométrica clásica 2:1. `Y` sube en pantalla.
+    const ISO_X: f32 = 0.866; // cos 30°
+    const ISO_Y: f32 = 0.5; // sin 30°
+    const PX: f32 = 3.2; // píxeles por metro
+    const MARGIN: f32 = 40.0;
+
+    let dir = std::env::var("WG3_ISO_DIR").expect("WG3_ISO_DIR: carpeta donde escribir");
+    let seed: u64 = std::env::var("WG3_SEED")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(SERVED_SEED);
+    let absorb: f32 = std::env::var("WG3_ABSORB")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0.0);
+    // Cuántos chunks de lado se dibujan, centrados en el origen de la región.
+    let span: i32 = std::env::var("WG3_ISO_CHUNKS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(REGION_CHUNKS);
+
+    let m = real_manifest();
+    let region0 = Wg3RegionCoord { x: 0, z: 0 };
+    let (rmin_x, rmin_z, _, _) = region0.bounds();
+
+    // Ventana de chunks que se dibuja, desde el origen de la región (0,0).
+    let win_min_x = rmin_x;
+    let win_min_z = rmin_z;
+    let win_max_x = rmin_x + span as f32 * chunk::WG3_CHUNK_M;
+    let win_max_z = rmin_z + span as f32 * chunk::WG3_CHUNK_M;
+
+    // UNA REGIÓN SON 3 CHUNKS, así que pedir más obliga a componer las VECINAS. Componerlas por
+    // separado y dibujarlas juntas es exactamente lo que hace el servidor (ADR-096): cada región es
+    // función pura de su coordenada y sólo se ponen de acuerdo en la junta. Sin este bucle, pedir 9
+    // chunks devolvía el mismo dibujo de 3 — el mundo no acaba ahí, es que no se había compuesto.
+    let regions_across = span.div_euclid(REGION_CHUNKS) + 1;
+    let mut boxes: Vec<(placement::PlacedBox, bool)> = Vec::new();
+    let mut pieces_drawn = 0usize;
+    let mut segments_drawn = 0usize;
+
+    for rz in 0..regions_across {
+        for rx in 0..regions_across {
+            let region = Wg3RegionCoord { x: rx, z: rz };
+            let settings = compose::Wg3ComposerSettings {
+                absorb_chance: absorb,
+                ..region_settings(&m, seed, region)
+            };
+            let world = Wg3ServedWorld::compose_region_with(&m, seed, region, &settings);
+
+            for p in world.placements() {
+                let Some(piece) = m.piece(p.piece) else {
+                    continue;
+                };
+                let (bx0, bz0, bx1, bz1) = p.bounds(piece);
+                if bx1 <= win_min_x || bx0 >= win_max_x || bz1 <= win_min_z || bz0 >= win_max_z {
+                    continue;
+                }
+                pieces_drawn += 1;
+                for b in placement::placed_collision(piece, p) {
+                    boxes.push((b, false));
+                }
+            }
+            for c in world.segments() {
+                let (bx0, bz0, bx1, bz1) = c.bounds();
+                if bx1 <= win_min_x || bx0 >= win_max_x || bz1 <= win_min_z || bz0 >= win_max_z {
+                    continue;
+                }
+                segments_drawn += 1;
+                for b in segment::segment_boxes(c) {
+                    boxes.push((b, true));
+                }
+            }
+        }
+    }
+    // Fuera techos: un isométrico de un interior es siempre una sección.
+    boxes.retain(|(b, _)| b.kind != segment::KIND_CEILING);
+
+    // Painter: lo que está más «al fondo» se pinta antes. En isométrica el fondo es x + z menor, y
+    // a igualdad, lo más bajo.
+    boxes.sort_by(|(a, _), (b, _)| {
+        let ka = a.center[0] + a.center[2] + a.center[1] * 0.001;
+        let kb = b.center[0] + b.center[2] + b.center[1] * 0.001;
+        ka.total_cmp(&kb)
+    });
+
+    let project = |x: f32, y: f32, z: f32| -> (f32, f32) {
+        ((x - z) * ISO_X * PX, ((x + z) * ISO_Y - y) * PX)
+    };
+
+    // Extensión en pantalla, para encuadrar.
+    let (mut sx0, mut sy0, mut sx1, mut sy1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+    for (b, _) in &boxes {
+        for dx in [-0.5f32, 0.5] {
+            for dy in [-0.5f32, 0.5] {
+                for dz in [-0.5f32, 0.5] {
+                    let (px, py) = project(
+                        b.center[0] + b.size[0] * dx,
+                        b.center[1] + b.size[1] * dy,
+                        b.center[2] + b.size[2] * dz,
+                    );
+                    sx0 = sx0.min(px);
+                    sy0 = sy0.min(py);
+                    sx1 = sx1.max(px);
+                    sy1 = sy1.max(py);
+                }
+            }
+        }
+    }
+    assert!(sx0 < sx1, "no hay ni una caja en la ventana");
+
+    let width = sx1 - sx0 + MARGIN * 2.0;
+    let height = sy1 - sy0 + MARGIN * 2.0;
+    let mut svg = format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{width:.0}\" height=\"{height:.0}\" \
+         viewBox=\"0 0 {width:.0} {height:.0}\">\n\
+         <rect width=\"{width:.0}\" height=\"{height:.0}\" fill=\"#0d0f12\"/>\n"
+    );
+
+    let ox = -sx0 + MARGIN;
+    let oy = -sy0 + MARGIN;
+    for (b, generated) in &boxes {
+        let (hx, hy, hz) = (b.size[0] * 0.5, b.size[1] * 0.5, b.size[2] * 0.5);
+        let (cx, cy, cz) = (b.center[0], b.center[1], b.center[2]);
+        let corner = |dx: f32, dy: f32, dz: f32| -> (f32, f32) {
+            let (px, py) = project(cx + hx * dx, cy + hy * dy, cz + hz * dz);
+            (px + ox, py + oy)
+        };
+
+        // Tres caras visibles: arriba, y las dos que miran a la cámara.
+        let top = [
+            corner(-1.0, 1.0, -1.0),
+            corner(1.0, 1.0, -1.0),
+            corner(1.0, 1.0, 1.0),
+            corner(-1.0, 1.0, 1.0),
+        ];
+        let left = [
+            corner(-1.0, 1.0, 1.0),
+            corner(1.0, 1.0, 1.0),
+            corner(1.0, -1.0, 1.0),
+            corner(-1.0, -1.0, 1.0),
+        ];
+        let right = [
+            corner(1.0, 1.0, -1.0),
+            corner(1.0, 1.0, 1.0),
+            corner(1.0, -1.0, 1.0),
+            corner(1.0, -1.0, -1.0),
+        ];
+
+        // El suelo se distingue de la pared, y lo GENERADO de lo autorado: son las dos cosas que se
+        // quieren mirar en un plano así.
+        let (c_top, c_left, c_right) = match (*generated, b.kind) {
+            (true, segment::KIND_FLOOR) => ("#3f6212", "#2f4a0e", "#25390b"),
+            (true, _) => ("#a16207", "#7c4d06", "#613c05"),
+            (false, segment::KIND_FLOOR) => ("#3f4652", "#2f353e", "#252a31"),
+            _ => ("#8a94a6", "#6b7383", "#565d6a"),
+        };
+
+        let poly = |pts: &[(f32, f32); 4], fill: &str| -> String {
+            format!(
+                "<polygon points=\"{:.1},{:.1} {:.1},{:.1} {:.1},{:.1} {:.1},{:.1}\" \
+                 fill=\"{fill}\"/>\n",
+                pts[0].0, pts[0].1, pts[1].0, pts[1].1, pts[2].0, pts[2].1, pts[3].0, pts[3].1
+            )
+        };
+        svg.push_str(&poly(&left, c_left));
+        svg.push_str(&poly(&right, c_right));
+        svg.push_str(&poly(&top, c_top));
+    }
+    svg.push_str("</svg>\n");
+
+    let path = format!("{dir}/wg3_iso_seed{seed}_{span}chunks.svg");
+    std::fs::write(&path, svg).expect("no se pudo escribir el isométrico");
+    println!(
+        "[wg3] isométrico semilla {seed}, {span} chunks ({} regiones): {pieces_drawn} piezas, \
+         {segments_drawn} tramos, {} cajas → {path}",
+        regions_across * regions_across,
+        boxes.len()
+    );
+}
+
 // ── contrato de junta (ADR-096) ─────────────────────────────────────────────────────────────
 
 /// EL TEST DEL CONTRATO. Dos regiones vecinas ven la MISMA puerta, con lados opuestos, sin haberse
