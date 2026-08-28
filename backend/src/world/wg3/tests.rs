@@ -12,6 +12,7 @@ use super::junction;
 use super::manifest::{self, Wg3Manifest, Wg3Piece};
 use super::placement::{self, PlacedBox, Wg3Placement};
 use super::raster::{Span, Wg3Raster, Wg3RasterBuilder, CM_PER_M, WG3_CELL_M};
+use super::route;
 
 /// Radio del jugador, espejo de `collision::PLAYER_RADIUS`. Duplicado y no importado a propósito
 /// (R4): WG3 no debe engancharse a la colisión de WG2 mientras convivan, y un test que se rompa al
@@ -2017,9 +2018,9 @@ fn probe_densify_sweep() {
         let mut fill = 0.0f32;
         let mut pieces = 0usize;
         let mut planted = 0u32;
-        let mut tries = 0u32;
         let mut segments = 0usize;
         let mut walk = 0.0f32;
+        let mut floor = 0.0f32;
 
         for (rx, rz) in [(0, 0), (1, 0), (0, 1), (-1, -1), (3, -2), (7, 11), (2, 5)] {
             let region = Wg3RegionCoord { x: rx, z: rz };
@@ -2053,15 +2054,93 @@ fn probe_densify_sweep() {
             fill += grid.iter().filter(|c| **c).count() as f32 * CELL * CELL / area * 100.0;
             pieces += w.placements.len();
             planted += w.densified;
-            tries += w.densify_tries;
             segments += w.segments.len();
-            walk += reach_from_centre(&m, &w, min_x, min_z);
+            let (r, t) = reach_and_total(&m, &w, min_x, min_z);
+            walk += r;
+            floor += t;
         }
 
         println!(
-            "[wg3] intentos {attempts:>5}: llenado {:>5.1} % | ANDABLE {walk:>8.0} m² \
-             | piezas {pieces:>4} (plantadas {planted:>4} de {tries:>5}) | tramos {segments:>4}",
-            fill / 7.0
+            "[wg3] intentos {attempts:>5}: llenado {:>5.1} % | ANDABLE {walk:>8.0} de {floor:>8.0} m² \
+             ({:>5.1} % alcanzable) | piezas {pieces:>4} (plantadas {planted:>4}) | tramos {segments:>4}",
+            fill / 7.0,
+            if floor > 0.0 { walk / floor * 100.0 } else { 0.0 }
+        );
+    }
+}
+
+/// SONDA — ADR-099: el PRESUPUESTO DEL ENRUTADOR con el mundo densificado.
+///
+/// `#[ignore]` porque no afirma nada. Lánzala con
+/// `cargo test --manifest-path backend/Cargo.toml probe_router_budget_sweep -- --ignored --nocapture`.
+///
+/// Joel, mirando el isométrico densificado: «aún hay zonas que no son accesibles». Tenía razón y el
+/// número lo dice: a 40 intentos de densificado sólo el **82 % del suelo es alcanzable**, y a 120
+/// baja al 60 %. Lo que lo delata es que los TRAMOS se quedan clavados en ~380 por más piezas que se
+/// planten — un número que no se mueve no es un resultado, es un tope.
+///
+/// El tope es `max_connectors: 12` por composición. Se eligió con regiones de ~30 piezas y el
+/// densificado las pone en 80: el enrutador se queda sin presupuesto antes de llegar a la mitad de
+/// las islas. Esta sonda mide cuánto hay que subirlo y qué cuesta en tiempo, que es la otra mitad
+/// de la decisión — componer ocurre al cruzar una frontera de región y se nota como un tirón.
+#[test]
+#[ignore]
+fn probe_router_budget_sweep() {
+    let m = real_manifest();
+
+    for (densify, budget) in [
+        (0usize, 12usize),
+        (40, 12),
+        (40, 30),
+        (40, 60),
+        (40, 120),
+        (40, 250),
+        (120, 250),
+        (120, 500),
+    ] {
+        let mut walk = 0.0f32;
+        let mut floor = 0.0f32;
+        let mut segments = 0usize;
+        let mut pieces = 0usize;
+        let mut worst_ms = 0.0f32;
+
+        for (rx, rz) in [(0, 0), (1, 0), (0, 1), (-1, -1), (3, -2), (7, 11), (2, 5)] {
+            let region = Wg3RegionCoord { x: rx, z: rz };
+            let (min_x, min_z, _, _) = region.bounds();
+            let base = region_settings(&m, SERVED_SEED, region);
+            let route = base.route.clone().map(|r| route::RouteSettings {
+                max_connectors: budget,
+                // Los anillos suben con el presupuesto: dejarlos en 4 haría que todo lo nuevo se
+                // fuera a unir islas y el mundo siguiera siendo un árbol, sólo que más grande.
+                max_rings: (budget / 3).max(4),
+                ..r
+            });
+            let settings = compose::Wg3ComposerSettings {
+                densify_attempts: densify,
+                route,
+                ..base
+            };
+
+            let started = std::time::Instant::now();
+            let w = compose::compose(region.composer_seed(SERVED_SEED), &m, &settings);
+            worst_ms = worst_ms.max(started.elapsed().as_secs_f32() * 1000.0);
+
+            let (r, t) = reach_and_total(&m, &w, min_x, min_z);
+            walk += r;
+            floor += t;
+            segments += w.segments.len();
+            pieces += w.placements.len();
+        }
+
+        println!(
+            "[wg3] densificado {densify:>3}, conectores {budget:>3}: ANDABLE {walk:>8.0} de \
+             {floor:>8.0} m² ({:>5.1} % alcanzable) | piezas {pieces:>4} | tramos {segments:>4} \
+             | peor composición {worst_ms:>6.0} ms",
+            if floor > 0.0 {
+                walk / floor * 100.0
+            } else {
+                0.0
+            }
         );
     }
 }
@@ -2080,6 +2159,21 @@ fn reach_from_centre(
     min_x: f32,
     min_z: f32,
 ) -> f32 {
+    reach_and_total(m, composed, min_x, min_z).0
+}
+
+/// Lo mismo, pero devolviendo también el suelo PISABLE total de la región.
+///
+/// La diferencia entre los dos es lo que Joel ve y las sondas no decían: superficie que existe, que
+/// tiene suelo y techo, y a la que no se llega desde donde apareces. Un «+51 % de andable» puede
+/// venir de un mundo mejor conectado o de un mundo más grande igual de roto, y sin el total no se
+/// distinguen.
+fn reach_and_total(
+    m: &Wg3Manifest,
+    composed: &compose::Wg3ComposedWorld,
+    min_x: f32,
+    min_z: f32,
+) -> (f32, f32) {
     const CELL: f32 = 0.5;
     const HEAD_M: f32 = 1.8;
 
@@ -2131,6 +2225,20 @@ fn reach_from_centre(
         false
     };
 
+    // El suelo pisable TOTAL, alcanzable o no. Se calcula entero y una vez: `standable` reconstruye
+    // el ráster del chunk en cada consulta, así que preguntarlo dos veces cuesta el doble.
+    let mut walkable_grid = vec![false; cells * cells];
+    let mut total_cells = 0usize;
+    for iz in 0..cells {
+        for ix in 0..cells {
+            if standable(ix, iz) {
+                walkable_grid[iz * cells + ix] = true;
+                total_cells += 1;
+            }
+        }
+    }
+    let total = total_cells as f32 * CELL * CELL;
+
     let mid = cells / 2;
     let mut start = None;
     'outer: for r in 0..mid {
@@ -2140,7 +2248,7 @@ fn reach_from_centre(
                 if ix < 0 || iz < 0 || ix as usize >= cells || iz as usize >= cells {
                     continue;
                 }
-                if standable(ix as usize, iz as usize) {
+                if walkable_grid[iz as usize * cells + ix as usize] {
                     start = Some((ix as usize, iz as usize));
                     break 'outer;
                 }
@@ -2148,7 +2256,7 @@ fn reach_from_centre(
         }
     }
     let Some(start) = start else {
-        return 0.0;
+        return (0.0, total);
     };
 
     let mut seen = vec![false; cells * cells];
@@ -2166,13 +2274,13 @@ fn reach_from_centre(
             if nx >= cells || nz >= cells || seen[nz * cells + nx] {
                 continue;
             }
-            if standable(nx, nz) {
+            if walkable_grid[nz * cells + nx] {
                 seen[nz * cells + nx] = true;
                 stack.push((nx, nz));
             }
         }
     }
-    count as f32 * CELL * CELL
+    (count as f32 * CELL * CELL, total)
 }
 
 /// SONDA — el mundo en ISOMÉTRICA, para mirarlo con ojos en vez de con números.
