@@ -14,6 +14,8 @@ pub mod hash;
 pub mod junction;
 pub mod manifest;
 pub mod placement;
+/// ADR-100 — el plan de región: qué edificio hay aquí, decidido ANTES de colocar una pieza.
+pub mod plan;
 pub mod raster;
 pub mod route;
 pub mod scale;

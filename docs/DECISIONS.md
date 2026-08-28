@@ -8471,3 +8471,144 @@ seguirán siendo pobres.
 2. El vano: la lista de huecos y la resta en el rasterizado, con (b) y (c).
 3. Encenderlo en el mundo servido y medir superficie andable y anillos, con (a) y (d).
 4. (f), que es de Joel.
+
+## ADR-100 — El PLAN DE REGIÓN: la arquitectura se decide antes que la primera pieza (2026-08-28) — PROPUESTA
+
+### Contexto
+
+La auditoría del 2026-08-28 contestó la pregunta que la motivaba y de paso corrigió su premisa. **No
+queda una sola celda en el camino de decisión de WG3**: el máximo común divisor de las huellas del
+catálogo es 10 cm, de 346 orígenes realmente colocados sólo el 2,6 % cae en múltiplo de 5 m, y el
+enrutador traza sobre una rejilla de Hanan y no sobre una malla de paso fijo. La sospecha de que el
+generador seguía decidiendo con tiles es falsa.
+
+Lo que sí quedó de WG2 es el **procedimiento**, y ADR-095 lo dice sin querer: su diagnóstico fue de
+REPRESENTACIÓN, no de algoritmo (`«La causa no es el algoritmo de laberinto: es la representación»`,
+línea 6986). Se cambió la unidad —de celda a pieza— y nunca se introdujo una capa que decidiera el
+edificio antes de construirlo. La posición de una pieza la sigue fijando la boca de la anterior, que
+es igual de local que una celda.
+
+Las consecuencias están medidas, y son las de siempre vistas desde arriba:
+
+- **Superficie andable del 21, 26, 3,5 y 24 %** en las cuatro regiones de referencia. Entre tres
+  cuartos y el 96 % de cada región es vacío que nadie decidió.
+- **Los conectores generados igualan o superan a las piezas autoradas**: la región (0,1) tiene 8
+  piezas de catálogo contra 29 tramos generados. Es «todo es pasillos» con un número delante.
+- **El mundo no siempre es uno**: (1,0) sale en 4 islas, con 10 de 35 piezas inalcanzables y 3 de 5
+  puertas de junta a las que no se llega andando.
+
+Y las tres palancas que se probaron atacan el síntoma, no la causa: compartir pared sube el llenado
+**nueve décimas de punto** (ADR-099), la absorción cambia la topología sin tocar la superficie, y
+densificar lo dobla pero rompe la conectividad porque planta al azar. Son parches sobre un reparto
+que nadie ha decidido.
+
+### Decisión
+
+**Nace `wg3::plan`, y es la nueva fuente de verdad arquitectónica.** Antes de mirar el catálogo, una
+región se reparte en ESPACIOS con papel (`RegionPlan { spaces, links, gates }`) y en las CONEXIONES
+que deben existir entre ellos. Todo lo que viene después ejecuta ese plan y no puede contradecirlo:
+
+```
+región → plan → espacios + enlaces → rellenar espacios → enrutar enlaces → geometría → mallas
+```
+
+El reparto es una subdivisión recursiva del rectángulo de región **con los corredores tallados en los
+cortes de los primeros niveles**. Eso da tres cosas que el compositor-árbol no podía dar:
+
+1. **Masa contigua por construcción** — los hijos de un corte llenan al padre entero, así que el
+   vacío deja de ser lo que sobra y pasa a ser un papel (`SpaceRole::Void`) que se marca a propósito.
+2. **Jerarquía real** — el corte de nivel 0 es la espina, los de nivel 1 y 2 son corredores, y de ahí
+   para abajo los cortes NO tallan banda: las salas hermanas comparten pared y se comunican por un
+   vano. Un edificio, no una cuadrícula de pasillos.
+3. **El grafo antes que la geometría** — las adyacencias del reparto SON las conexiones candidatas, y
+   salen gratis.
+
+`scale_at` deja de multiplicar el peso de una pieza candidata y pasa a fijar el ÁREA OBJETIVO de la
+subdivisión. Es el mismo campo, decidiendo ahora tamaños de espacio en vez de sesgando un sorteo.
+
+### D1 — El oráculo de composición deja de fijar el mundo servido
+
+`wg3_composition_oracle.json` prueba que Rust reproduce el ALGORITMO de `Wg3Composer` en C#. Cuando
+la posición la decida el plan, ese algoritmo ya no describe el mundo que se sirve, y **forzar el
+sistema nuevo contra un oráculo hecho para garantizar el viejo sería conservar el problema en forma
+de test**.
+
+Se elige **degradar el oráculo de composición a prueba del compositor por bocas**, que sigue
+existiendo y sigue siendo el relleno de un espacio, y **no portar el plan a C#**. La partida doble se
+paga donde compra algo —rotación, geometría de pieza, expansión de tramo, todo lo que el cliente
+DIBUJA y el servidor RASTERIZA— y no donde sólo compra simetría: el cliente no compone, y desde
+ADR-095 F2 no ha vuelto a hacerlo.
+
+**Lo que se conserva y sigue vigilando:** el oráculo de rotación, el de conectores, el catálogo
+congelado y su digest. Lo que se pierde, dicho: si alguien tocara `Wg3Composer` en C#, ningún test lo
+cazaría. Es aceptable porque ese código ya sólo corre en la escena aislada y en los tests de Unity.
+
+### D2 — El vacío es un papel, no un residuo
+
+No se persigue el 100 % de llenado, y la métrica «porcentaje ocupado» deja de ser el criterio. Lo que
+se mide es **masa arquitectónica coherente + conectividad + variedad**. Un patio, una zona clausurada
+o un hueco de instalaciones son `SpaceRole::Void` y se deciden; lo que no puede haber es terreno
+vacío porque nadie fue a mirar.
+
+**Un vacío nunca parte el edificio.** Si un hueco aísla un ala, se rescata a sala: un patio que deja
+un ala inaccesible no es un patio, es el agujero de conectividad de siempre con otro nombre.
+
+### D3 — El enrutador construye, no repara
+
+`route.rs` se conserva entero —las 98 formas fijas, el Dijkstra sobre la rejilla de Hanan, el coste de
+giro, el determinismo— y **sólo cambia su entrada**: recibe los `PlannedLink` de tipo `Route` en vez
+de descubrir islas con un union-find. `Goal::JoinIslands` y `best_bridge` quedan obsoletos, y se
+retiran **sólo cuando la ruta nueva esté demostrada**, no antes.
+
+Un enlace que no se pueda trazar es `PlannedLink X → Y no enrutable`: un fallo con nombre, no una
+arquitectura inventada en silencio para taparlo.
+
+### Lo medido antes de escribir esto
+
+Plan aislado, sin tocar `compose`, sobre las cuatro regiones de la auditoría:
+
+| región | espacios | enlaces | planificado | componentes | proporción media |
+|--------|---------:|--------:|------------:|------------:|-----------------:|
+| (0,0)  | 178      | 240     | 96 %        | 1           | 1,78:1           |
+| (1,0)  | 174      | 217     | 91 %        | 1           | 1,85:1           |
+| (0,1)  | 155      | 191     | 92 %        | 1           | 1,55:1           |
+| (−1,2) | 199      | 242     | 87 %        | 1           | 1,82:1           |
+
+Contra el 21 / 26 / 3,5 / 24 % de superficie andable de hoy. **Son magnitudes distintas y hay que
+decirlo**: el plan mide reparto y el mundo mide suelo pisable, así que el número final bajará al
+rellenar —una pieza tiene paredes, y el hueco entre el plan y lo que se anda es el grosor del
+edificio—. La comparación honesta llegará con la integración.
+
+**Dos fallos que ningún número vio y cazó el volcado**, anotados porque son la razón de que el
+volcador exista: (1) el eje del corte estaba invertido y la región salía en lonchas de 5 × 30 m con
+área, tamaños y conectividad perfectos; (2) rendirse al primer eje que no cabía dejaba hojas del
+doble del área objetivo. Las dos métricas que faltaban —proporción y histograma de tamaños— ya están
+en la sonda.
+
+### Verificaciones
+
+- (a) El plan es UNA componente en las cuatro regiones, y es un test, no una medida.
+- (b) `problems()` vacío: ni un solape entre espacios, ni un enlace a un vacío.
+- (c) Determinismo: la misma región planifica el mismo edificio dos veces.
+- (d) Jerarquía: una espina, rango de profundidad ≥ 3, y más salas que circulación.
+- (e) **El plano se lee como un edificio con las mallas apagadas.** Es el criterio que manda y no lo
+  puede afirmar un test: se mira.
+- (f) Tras integrar: superficie andable y número de islas contra el 21 / 26 / 3,5 / 24 % de hoy.
+- (g) Tras integrar: los oráculos de rotación, conectores y geometría siguen verdes.
+
+### Troceado
+
+1. `wg3::plan` aislado, con su sonda y su volcador. **Hecho y medido** — la tabla de arriba.
+2. `compose` como RELLENO: la posición viene del `PlannedSpace`; sobreviven `collect_candidates`,
+   `connection_ok` y `weigh`, y muere el encadenado como fuente de posición.
+3. `route` como CONSTRUCTOR: entrada `PlannedLink`, con el fallo nombrado.
+4. Encenderlo en el mundo servido y medir (f).
+5. Retirar `Goal::JoinIslands` y `best_bridge`, sólo entonces.
+
+### Lo que este ADR NO toca, y sigue siendo deuda de ADR-095
+
+WG3 sigue sin ser la autoridad de colisión, movimiento, navegación ni *spawn*: `BACKROOMS_WG3=1` es
+una bandera ADITIVA y con ella encendida el servidor manda piezas para DIBUJAR y sigue colisionando
+contra el mundo de WG2 (`Level0Collision::resolve_move`). `build_chunk_raster` no tiene un solo
+llamante en producción. **Un mundo que se ve de una forma y se anda de otra no está terminado**, y
+ese trabajo es de su propio ADR.

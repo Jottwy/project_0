@@ -5665,3 +5665,394 @@ fn dump_region_maps() {
         println!("[wg3] {path} — mancha del jugador #{spawn} de {blobs}");
     }
 }
+
+// ── ADR-100: el plan de región ──────────────────────────────────────────────────────────────
+
+use super::plan::{self, LinkKind, RegionPlan, SpaceRole};
+
+/// Las cuatro regiones sobre las que se mide todo desde la auditoría del 2026-08-28. Se fijan aquí
+/// para que cada sonda nueva compare contra las MISMAS, que es lo único que hace comparables dos
+/// medidas tomadas con una semana de diferencia.
+const AUDIT_REGIONS: [(i32, i32); 4] = [(0, 0), (1, 0), (0, 1), (-1, 2)];
+
+/// El plan de una región de la auditoría, con sus puertas de junta reales.
+fn plan_of(m: &Wg3Manifest, rx: i32, rz: i32) -> RegionPlan {
+    let region = Wg3RegionCoord { x: rx, z: rz };
+    let bounds = region.bounds();
+    let seed = composer_seed(SERVED_SEED);
+    let gates = junction::gates_of_region(seed, rx, rz, bounds);
+    // La semilla del PLAN es la de la región, igual que la del compositor: dos regiones vecinas del
+    // mismo mundo tienen que planificar edificios distintos. La de las PUERTAS es la del mundo, por
+    // lo mismo de siempre — la de la región difiere a cada lado del borde y daría dos listas que no
+    // casan (`junction`).
+    let _ = m;
+    plan::plan_region(region.composer_seed(SERVED_SEED), bounds, &gates)
+}
+
+#[test]
+fn the_plan_is_coherent_in_every_audited_region() {
+    let m = real_manifest();
+    for (rx, rz) in AUDIT_REGIONS {
+        let p = plan_of(&m, rx, rz);
+        let problems = p.problems();
+        assert!(
+            problems.is_empty(),
+            "el plan de ({rx},{rz}) no es coherente: {}",
+            problems.join("; ")
+        );
+        assert!(
+            !p.spaces.is_empty(),
+            "el plan de ({rx},{rz}) no tiene un solo espacio"
+        );
+    }
+}
+
+/// **El invariante que sustituye a «cuántas islas quedaron».**
+///
+/// Antes la conectividad era un resultado que se medía después de construir; ahora es una propiedad
+/// del PLAN, y se puede exigir. Un plan en dos trozos no se arregla enrutando: está mal decidido.
+#[test]
+fn the_plan_is_one_building() {
+    let m = real_manifest();
+    for (rx, rz) in AUDIT_REGIONS {
+        let p = plan_of(&m, rx, rz);
+        assert_eq!(
+            p.components(),
+            1,
+            "el plan de ({rx},{rz}) sale en {} trozos — un plan en islas es un plan mal decidido, \
+             no un problema del enrutador",
+            p.components()
+        );
+    }
+}
+
+/// Determinismo (R3): el mismo sitio planifica el mismo edificio, siempre.
+#[test]
+fn the_plan_is_deterministic() {
+    let m = real_manifest();
+    for (rx, rz) in AUDIT_REGIONS {
+        assert_eq!(
+            plan_of(&m, rx, rz),
+            plan_of(&m, rx, rz),
+            "el plan de ({rx},{rz}) cambia entre dos llamadas"
+        );
+    }
+}
+
+/// **JERARQUÍA, comprobada y no prometida.**
+///
+/// Un reparto puede tener rectángulos de tamaños distintos y seguir siendo una cuadrícula. Lo que lo
+/// separa de un edificio es que haya NIVELES: una espina, corredores que cuelgan de ella y salas que
+/// cuelgan de ellos. Este test lo exige como estructura, no como aspecto.
+#[test]
+fn the_plan_has_a_hierarchy() {
+    let m = real_manifest();
+    for (rx, rz) in AUDIT_REGIONS {
+        let p = plan_of(&m, rx, rz);
+
+        let spines = p
+            .spaces
+            .iter()
+            .filter(|s| s.role == SpaceRole::Spine)
+            .count();
+        assert_eq!(
+            spines, 1,
+            "({rx},{rz}) tiene {spines} espinas — el corte de nivel 0 es uno y sólo uno"
+        );
+
+        let depths: Vec<u8> = p.spaces.iter().map(|s| s.depth).collect();
+        let spread = depths.iter().max().unwrap() - depths.iter().min().unwrap();
+        assert!(
+            spread >= 3,
+            "({rx},{rz}) reparte todo a la misma profundidad (rango {spread}): eso es una \
+             cuadrícula, no una jerarquía"
+        );
+
+        // Y las salas tienen que ser MAYORÍA sobre los corredores. Un plano donde manda la
+        // circulación es el mundo de antes —«todo es pasillos»— con otro generador debajo.
+        let circulation = p.spaces.iter().filter(|s| s.role.is_circulation()).count();
+        let rooms = p.spaces.len() - circulation;
+        assert!(
+            rooms > circulation,
+            "({rx},{rz}): {circulation} espacios de circulación contra {rooms} salas — vuelve a ser \
+             «todo es pasillos»"
+        );
+    }
+}
+
+/// El vacío tiene que ser una DECISIÓN y no el terreno que sobró: poco, y marcado.
+#[test]
+fn the_void_is_deliberate_and_bounded() {
+    let m = real_manifest();
+    for (rx, rz) in AUDIT_REGIONS {
+        let p = plan_of(&m, rx, rz);
+        let region_m2 = REGION_M * REGION_M;
+        let built = p.built_area_m2();
+        let ratio = built / region_m2;
+        assert!(
+            ratio > 0.60,
+            "({rx},{rz}) planifica sólo el {:.0} % de la región — el vacío ha dejado de ser una \
+             decisión y ha vuelto a ser lo que sobra",
+            ratio * 100.0
+        );
+        // Y no el 100 %: un edificio sin patios ni zonas muertas no es un Backrooms, es un almacén.
+        assert!(
+            ratio < 0.995,
+            "({rx},{rz}) planifica el {:.1} % — no queda un solo hueco intencionado",
+            ratio * 100.0
+        );
+    }
+}
+
+/// **LA SONDA DEL PLAN.** Las diez métricas, antes de que exista una sola pieza.
+///
+/// No afirma nada a propósito: es la que dice si el reparto se parece a un edificio, y eso se lee,
+/// no se asevera. Los invariantes que sí se pueden exigir están en los tests de arriba.
+#[test]
+fn probe_region_plan() {
+    let m = real_manifest();
+    let region_m2 = REGION_M * REGION_M;
+
+    for (rx, rz) in AUDIT_REGIONS {
+        let p = plan_of(&m, rx, rz);
+        let degree = p.degree();
+
+        let built: Vec<usize> = p.built().map(|(i, _)| i).collect();
+        let built_area = p.built_area_m2();
+        let planned_total: f32 = p.spaces.iter().map(|s| s.rect.area_m2()).sum();
+
+        let max_depth = p.spaces.iter().map(|s| s.depth).max().unwrap_or(0);
+        let min_depth = p.spaces.iter().map(|s| s.depth).min().unwrap_or(0);
+
+        // Longitud de un enlace: entre los centros de los dos espacios que une. Es lo que dice si el
+        // grafo es de vecinos o de saltos largos — un plan lleno de enlaces de 40 m no es un
+        // edificio, es el mundo de antes dibujado de otra forma.
+        let mut lengths: Vec<f32> = Vec::with_capacity(p.links.len());
+        for l in &p.links {
+            let (ax, az) = p.spaces[l.a].rect.centre_m();
+            let (bx, bz) = p.spaces[l.b].rect.centre_m();
+            lengths.push(((ax - bx).powi(2) + (az - bz).powi(2)).sqrt());
+        }
+        let mean_len = if lengths.is_empty() {
+            0.0
+        } else {
+            lengths.iter().sum::<f32>() / lengths.len() as f32
+        };
+
+        let orphan = built.iter().filter(|&&i| degree[i] == 0).count();
+        let to_route = p.links.iter().filter(|l| l.kind == LinkKind::Route).count();
+        let impossible = p.problems().len();
+
+        let mut roles: Vec<(&str, usize, f32)> = Vec::new();
+        for role in [
+            SpaceRole::Spine,
+            SpaceRole::Corridor,
+            SpaceRole::Junction,
+            SpaceRole::Hall,
+            SpaceRole::Office,
+            SpaceRole::Service,
+            SpaceRole::Storage,
+            SpaceRole::DeadEnd,
+            SpaceRole::Void,
+        ] {
+            let sel: Vec<&plan::PlannedSpace> =
+                p.spaces.iter().filter(|s| s.role == role).collect();
+            if sel.is_empty() {
+                continue;
+            }
+            let area: f32 = sel.iter().map(|s| s.rect.area_m2()).sum();
+            roles.push((role.name(), sel.len(), area));
+        }
+
+        let areas: Vec<f32> = p
+            .built()
+            .filter(|(_, s)| !s.role.is_circulation())
+            .map(|(_, s)| s.rect.area_m2())
+            .collect();
+        let (amin, amax) = areas
+            .iter()
+            .fold((f32::MAX, 0.0f32), |(lo, hi), a| (lo.min(*a), hi.max(*a)));
+
+        println!(
+            "[plan] región ({rx},{rz}): {} espacios ({} construidos), {} enlaces | \
+             planificado {planned_total:.0} m², construido {built_area:.0} m² = {:.0} % de la región \
+             | {} componentes | jerarquía {min_depth}..{max_depth}",
+            p.spaces.len(),
+            built.len(),
+            p.links.len(),
+            built_area / region_m2 * 100.0,
+            p.components(),
+        );
+        println!(
+            "[plan]   enlace medio {mean_len:.1} m | sin conexión {orphan} | pendientes de \
+             enrutador {to_route} | incoherencias {impossible}"
+        );
+        println!(
+            "[plan]   sala menor {:.0} m², mayor {:.0} m² (×{:.1})",
+            amin,
+            amax,
+            if amin > 0.0 { amax / amin } else { 0.0 }
+        );
+
+        // Histograma de tamaños. **Es lo que distingue «variedad» de «todo grande»**, y sin él un
+        // mínimo y un máximo lejanos se leen como variedad cuando puede que el 90 % esté arriba.
+        let cuts = [50.0f32, 100.0, 200.0, 400.0, 800.0];
+        let mut bins = vec![0usize; cuts.len() + 1];
+        for a in &areas {
+            let b = cuts.iter().position(|c| a < c).unwrap_or(cuts.len());
+            bins[b] += 1;
+        }
+        println!(
+            "[plan]   tamaños: <50 {} | 50-100 {} | 100-200 {} | 200-400 {} | 400-800 {} | >800 {}",
+            bins[0], bins[1], bins[2], bins[3], bins[4], bins[5]
+        );
+        // Y por clase de escala, que es lo que decide el área objetivo: si una región es toda
+        // `Large`, salir toda de naves es correcto y no un fallo del reparto.
+        let mut by_scale = [0usize; 4];
+        for (_, s) in p.built() {
+            by_scale[(s.scale as usize).min(3)] += 1;
+        }
+        println!(
+            "[plan]   campo de escala: estrecha {} | media {} | grande {} | rara {}",
+            by_scale[0], by_scale[1], by_scale[2], by_scale[3]
+        );
+
+        // **PROPORCIÓN, y esta métrica nació de un fallo que ningún número veía.** Con el eje del
+        // corte invertido, el reparto salía en lonchas de 5 × 30 m: área correcta, tamaños variados,
+        // conectividad perfecta, y un plano que no se parecía a un edificio. Lo cazó el volcado. Ya
+        // no hace falta mirarlo para cazarlo otra vez.
+        let mut aspects: Vec<f32> = p
+            .built()
+            .filter(|(_, s)| !s.role.is_circulation())
+            .map(|(_, s)| {
+                let w = s.rect.width_cm().max(s.rect.depth_cm()) as f32;
+                let d = s.rect.width_cm().min(s.rect.depth_cm()).max(1) as f32;
+                w / d
+            })
+            .collect();
+        aspects.sort_by(f32::total_cmp);
+        let mean_aspect = aspects.iter().sum::<f32>() / aspects.len().max(1) as f32;
+        let p90 = aspects[(aspects.len() * 9 / 10).min(aspects.len().saturating_sub(1))];
+        println!(
+            "[plan]   proporción de sala: media {mean_aspect:.2}:1, p90 {p90:.2}:1, peor {:.2}:1",
+            aspects.last().copied().unwrap_or(0.0)
+        );
+        let reparto: Vec<String> = roles
+            .iter()
+            .map(|(n, c, a)| format!("{n} {c} ({a:.0} m²)"))
+            .collect();
+        println!("[plan]   papeles: {}", reparto.join(", "));
+
+        let mut kinds = [0usize; 4];
+        for l in &p.links {
+            kinds[match l.kind {
+                LinkKind::Doorway => 0,
+                LinkKind::Access => 1,
+                LinkKind::Junction => 2,
+                LinkKind::Route => 3,
+            }] += 1;
+        }
+        println!(
+            "[plan]   enlaces: {} vano entre salas, {} acceso a corredor, {} cruce, {} por enrutar",
+            kinds[0], kinds[1], kinds[2], kinds[3]
+        );
+    }
+}
+
+/// **EL VOLCADOR DEL PLAN — y es el criterio de aceptación de ADR-100.**
+///
+/// Dibuja SOLO el plan: ni piezas, ni conectores, ni ráster, ni una sola malla. Si con las mallas
+/// apagadas esto no se lee ya como una planta de edificio, el planificador no está haciendo su
+/// trabajo y no hay relleno que lo arregle.
+///
+/// Ámbar grueso: la espina. Ámbar fino: corredores. Naranja: cruces. Azul: naves. Gris: oficinas.
+/// Violeta: servicio. Rojo: callejones. Punteado oscuro: vacío INTENCIONADO. Líneas finas: los
+/// enlaces; en rojo discontinuo, los que necesitan enrutador.
+///
+/// `#[ignore]` porque no afirma nada: dibuja para que se mire. Lánzalo con
+/// `WG3_MAP_DIR=... cargo test dump_region_plans -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn dump_region_plans() {
+    const PX: f32 = 4.0;
+    let dir = std::env::var("WG3_MAP_DIR").expect("WG3_MAP_DIR: carpeta donde escribir los planos");
+    let m = real_manifest();
+
+    for (rx, rz) in AUDIT_REGIONS {
+        let p = plan_of(&m, rx, rz);
+        let region = Wg3RegionCoord { x: rx, z: rz };
+        let (min_x, min_z, _, _) = region.bounds();
+        let w = REGION_M * PX;
+
+        // Y hacia ABAJO en SVG, Z hacia arriba en el mundo: se voltea aquí y en un solo sitio, para
+        // que un plano y un volcado de ráster se puedan poner uno al lado del otro.
+        let to_px = |x: f32, z: f32| ((x - min_x) * PX, (REGION_M - (z - min_z)) * PX);
+
+        let mut svg = format!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {w:.0} {w:.0}\" \
+             width=\"{w:.0}\" height=\"{w:.0}\">\n<rect width=\"100%\" height=\"100%\" \
+             fill=\"#14161a\"/>\n"
+        );
+
+        for s in &p.spaces {
+            let (x0, z0, x1, z1) = s.rect.bounds_m();
+            let (px, py) = to_px(x0, z1);
+            let (fill, stroke, dash) = match s.role {
+                SpaceRole::Spine => ("#f59e0b", "#fbbf24", ""),
+                SpaceRole::Corridor => ("#b45309", "#fbbf24", ""),
+                SpaceRole::Junction => ("#ea580c", "#fb923c", ""),
+                SpaceRole::Hall => ("#0369a1", "#38bdf8", ""),
+                SpaceRole::Office => ("#334155", "#94a3b8", ""),
+                SpaceRole::Service => ("#5b21b6", "#a78bfa", ""),
+                SpaceRole::Storage => ("#1e293b", "#64748b", ""),
+                SpaceRole::DeadEnd => ("#7f1d1d", "#f87171", ""),
+                SpaceRole::Void => ("none", "#3f3f46", " stroke-dasharray=\"5 4\""),
+            };
+            svg += &format!(
+                "<rect x=\"{px:.1}\" y=\"{py:.1}\" width=\"{:.1}\" height=\"{:.1}\" \
+                 fill=\"{fill}\" fill-opacity=\"0.55\" stroke=\"{stroke}\" \
+                 stroke-width=\"1.2\"{dash}/>\n",
+                (x1 - x0) * PX,
+                (z1 - z0) * PX
+            );
+        }
+
+        for l in &p.links {
+            let (ax, az) = p.spaces[l.a].rect.centre_m();
+            let (bx, bz) = p.spaces[l.b].rect.centre_m();
+            let (x0, y0) = to_px(ax, az);
+            let (x1, y1) = to_px(bx, bz);
+            let (colour, extra) = match l.kind {
+                LinkKind::Route => ("#f87171", " stroke-dasharray=\"6 4\""),
+                LinkKind::Junction => ("#fed7aa", ""),
+                LinkKind::Access => ("#e2e8f0", ""),
+                LinkKind::Doorway => ("#94a3b8", ""),
+            };
+            // **La arista va FLOJA y la puerta va FUERTE, y eso lo decidió mirar el volcado.** Con
+            // las aristas a plena opacidad, los cincuenta accesos de un corredor convergen a su
+            // centro y el plano se lee como un estallido de líneas en vez de como una planta. Lo que
+            // importa —dónde está la puerta— tiene que verse; la arista sólo tiene que dejar seguir
+            // el grafo a quien lo busque.
+            let strength = if l.kind == LinkKind::Route { 0.9 } else { 0.20 };
+            svg += &format!(
+                "<line x1=\"{x0:.1}\" y1=\"{y0:.1}\" x2=\"{x1:.1}\" y2=\"{y1:.1}\" \
+                 stroke=\"{colour}\" stroke-width=\"1\" opacity=\"{strength}\"{extra}/>\n"
+            );
+            // El punto del paso, que es lo que el relleno tiene que respetar. Sin dibujarlo, dos
+            // planos con los mismos enlaces y las puertas en sitios distintos se ven iguales.
+            let (dx, dy) = to_px(l.at_x_cm as f32 / 100.0, l.at_z_cm as f32 / 100.0);
+            svg +=
+                &format!("<circle cx=\"{dx:.1}\" cy=\"{dy:.1}\" r=\"2.4\" fill=\"{colour}\"/>\n");
+        }
+
+        svg += "</svg>\n";
+        let path = format!("{dir}/wg3_plan_{rx}_{rz}.svg");
+        std::fs::write(&path, svg).expect("escribir el plano del plan");
+        println!(
+            "[plan] {path} — {} espacios, {} enlaces, {} componentes",
+            p.spaces.len(),
+            p.links.len(),
+            p.components()
+        );
+    }
+}
