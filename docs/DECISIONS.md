@@ -10616,3 +10616,46 @@ abrir nada más.
 **La regla, y este proyecto ya la tenía escrita:** cuando algo «no aparece», medir qué produce el
 sistema **antes** de deducir por qué no lo produce. Tres de los cuatro errores de arriba se caen solos
 con una sola lectura del dato en vez de una cadena de inferencias sobre el código.
+
+---
+
+### ADR-108 — Enmienda 2 (2026-08-29): los facelings, y dos cosas que la migración del robapieles no había destapado
+
+Adultos y niños pasan a la navegación de WG3 por la puerta que ya abrió el robapieles: colisión, A\*
+con cota, bigotes y suavizado son **el mismo código**, no una segunda copia, así que heredan sin pagar
+todo lo que costó arreglar allí. `steer_around_walls` de WG3 se comparte entre las dos especies —iba a
+ser una tercera copia— con el reglaje en una estructura `Whiskers`, porque son cinco números del mismo
+tema y cada especie trae los suyos.
+
+Lo que **no** venía hecho, y son dos:
+
+**(1) VER NO ES PASAR.** El robapieles no lo destapó porque su percepción sigue en `grid_gen` — está
+migrado su movimiento, no su vista. Los facelings sí perciben mucho, y ahí `segment_is_clear` no vale
+como línea de visión: pregunta si un **cuerpo** recorre la recta **andando**, o sea quiere suelo debajo
+y altura encima. Como mirada, ciega a la criatura al otro lado de un atrio —donde no hay suelo— y la
+deja ver a través de una barandilla de 90 cm, que corta el paso y no corta la vista. `line_of_sight` es
+un rayo y sólo un rayo, a cota de ojo, y un chunk sin cargar **no** tapa: fallar hacia «sólido» aquí
+ciega, y una criatura que no ve no persigue, mientras que una que ve de más se equivoca un tick.
+
+Medido, y la sonda se queda (`probe_sight_is_not_the_same_as_passage`): de 611 parejas a 12 m, **49 se
+separan (8 %)**, todas en el sentido «ve pero no pasa». Uno de cada doce chequeos de percepción habría
+sido falso.
+
+**(2) LAS CAPAS NO ALINEAN CON LAS PLANTAS**, y éste estaba escondido. Quince puertas del módulo
+preguntaban `world_pos_to_layer(otro.y) == mi_capa`. La capa de `grid_gen` es un cajón de 4 m y la
+planta de WG3 mide 3,32: cada pocas plantas, dos criaturas que están en la **misma** caen a los dos
+lados de una frontera, y entonces perseguir, golpear, ver y congelarse se cierran **a la vez** y sin
+que nada en pantalla lo explique. A rachas, según la cota — la clase de fallo que se atribuye a la IA
+y no al sistema de cotas. `same_level` mide diferencia de cota contra media planta: menos que una
+planta, para que nadie pegue a través de un forjado, y más que cualquier escalón.
+
+Y por **cuarta vez** en esta migración, una constante escrita en celdas: el radio de llegada valía
+1,25 —«media celda» de las de 2,5 m— copiado del robapieles con un «same as», y con él el fallo. La
+celda de WG3 mide 0,5, así que eran dos celdas y media. **Esto ya no es una anécdota: es el patrón de
+error propio de esta migración.** Toda constante heredada de `grid_gen` cuya justificación mencione la
+celda o la capa está mal hasta que se demuestre lo contrario, porque el comentario que la justifica
+sigue sonando razonable después de cambiar la unidad.
+
+Aparte: pin de cota en `advance_step` (con `grid_gen` la Y de una criatura era la de su capa y no
+cambiaba nunca; en WG3 el suelo sube y baja dentro de la planta) y `pick_puesto` deja de derivar la Y
+de la capa.
