@@ -185,6 +185,14 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             wg3.viewer = player;
             wg3.radius = viewRadius;
             wg3.materials = wg3Materials;
+            // ADR-107 D5 — el ambiente de WG3 es, POR AHORA, el visual de la capa 0: es el marcador
+            // de posición del perfil Threshold mientras ADR-103 no tenga código. De aquí salen el
+            // material de la luminaria, el volumen del zumbido y el timbre autorado del reverb.
+            //
+            // Que sea el mismo objeto que usa WG2 no es portar la rejilla vieja: es no inventarse un
+            // segundo cuadro de mandos antes de que exista el que lo va a sustituir.
+            var visuals = ResolveLayerVisuals();
+            wg3.ambience = visuals != null && visuals.Length > 0 ? visuals[0] : null;
             if (wg3Materials == null || wg3Materials.floor == null)
             {
                 Debug.LogWarning(

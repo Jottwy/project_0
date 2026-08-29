@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using BackroomsSurvival.Net;
+using Audio = BackroomsSurvival.Gameplay.Audio;
 using UnityEngine;
 
 namespace BackroomsSurvival.WorldGen3
@@ -33,6 +34,11 @@ namespace BackroomsSurvival.WorldGen3
         public Wg3Materials materials = new Wg3Materials();
 
         public bool spawnLights = true;
+
+        [Tooltip("ADR-107 — de dónde salen el material de la luminaria y el volumen del zumbido. " +
+                 "Es el marcador de posición del perfil Threshold mientras ADR-103 no tenga código " +
+                 "(ADR-107 D5): lo pone GridTestWorld con su visual de capa 0.")]
+        public BackroomsSurvival.Gameplay.GridWorld.LayerVisualConfig ambience;
 
         /// <summary>El transform que decide qué chunks se piden. Sin él, la cámara principal.</summary>
         public Transform viewer;
@@ -82,6 +88,10 @@ namespace BackroomsSurvival.WorldGen3
                 _digestChecked = true;
                 VerifyDigest(client.Wg3ManifestDigest);
             }
+
+            // ADR-107 D4 — el reverb se mira CADA frame y no cada refresco: cruzar de un pasillo a un
+            // atrio es instantáneo, y medio segundo de cola equivocada se oye.
+            UpdateReverb();
 
             if (Time.time < _nextRefresh) return;
             _nextRefresh = Time.time + Mathf.Max(0.1f, refreshSeconds);
@@ -156,6 +166,13 @@ namespace BackroomsSurvival.WorldGen3
 
             var mine = new List<Mesh>();
             _meshes[coord] = mine;
+            // ADR-107 D3 — el lote de zumbido de ESTE chunk. Se llena mientras se montan los tramos y
+            // se entrega entero al final: un alta por chunk, no por lámpara.
+            var hum = new Wg3HumBatch();
+            // ADR-107 D4 — y las salas de este chunk con su reverb, para saber luego en cuál está el
+            // jugador. Se pueblan aquí y mueren con el chunk, igual que el lote de zumbido.
+            var rooms = new List<(Bounds, Audio.ReverbMixerDriver.RoomTone)>();
+            _rooms[coord] = rooms;
             _builtChunks++;
 
             foreach (Wg3PlacementMsg wire in chunk.placements)
@@ -232,7 +249,18 @@ namespace BackroomsSurvival.WorldGen3
                 // paga en cuanto hay que diagnosticar por qué dos espacios se ven igual.
                 Wg3SceneAssembler.AssembleSegment(
                     segment, root.transform, materials, mine, $"seg_{i:D3}_s{segment.style}",
-                    spawnLights, chunk.carves);
+                    spawnLights, chunk.carves, LampMaterial(), hum);
+                if (ambience != null)
+                {
+                    rooms.Add((
+                        new Bounds(
+                            new Vector3(
+                                segment.Origin.x + segment.SizeX * 0.5f,
+                                segment.Origin.y + segment.Height * 0.5f,
+                                segment.Origin.z + segment.SizeZ * 0.5f),
+                            new Vector3(segment.SizeX, segment.Height, segment.SizeZ)),
+                        ToneFor(segment)));
+                }
                 _builtSegments++;
             }
 
@@ -246,7 +274,92 @@ namespace BackroomsSurvival.WorldGen3
                 _builtSolids++;
             }
 
+            // ADR-107 D3 — UN alta por chunk, con el root del chunk como dueño: el lote se retira solo
+            // cuando ese root muera con el chunk, así que no hay baja explícita que se pueda olvidar
+            // ni fuente que quede huérfana al descargar.
+            if (hum.positions.Count > 0 && ambience != null)
+            {
+                BackroomsSurvival.Gameplay.Audio.FluorescentHumDirector.RegisterChunkLamps(
+                    root.transform, root.layer, hum.positions, hum.pitches,
+                    hum.flickerHz, hum.flickerPhase, ambience, 0);
+                _builtLamps += hum.positions.Count;
+            }
+
             ReportOnce();
+        }
+
+        /// <summary>ADR-107 D2 — el material emisivo de la luminaria, construido UNA vez desde la
+        /// config de ambiente. Sin config no hay lámpara visible, y eso es preferible a inventar un
+        /// material: una luminaria del color equivocado se lee como un fallo de arte.</summary>
+        private Material LampMaterial()
+        {
+            if (ambience == null) return null;
+            if (_lampMaterial == null)
+            {
+                _lampMaterial = BackroomsSurvival.Gameplay.GridWorld.LayerVisualMaterials
+                    .Build(ambience).lamp;
+            }
+            return _lampMaterial;
+        }
+
+        private Material _lampMaterial;
+        private int _builtLamps;
+
+        /// <summary>ADR-107 D4 — las salas de WG3 con su reverb ya calculado, para saber en cuál está
+        /// el jugador. Se pueblan al montar el chunk y mueren con él.</summary>
+        private readonly Dictionary<Vector2Int, List<(Bounds box, Audio.ReverbMixerDriver.RoomTone tone)>>
+            _rooms = new Dictionary<Vector2Int, List<(Bounds, Audio.ReverbMixerDriver.RoomTone)>>();
+
+        /// <summary>
+        /// ADR-107 D4 — **el reverb sale de la GEOMETRÍA, no de una tabla por zona.**
+        ///
+        /// `RoomTone` lleva `decay` —el largo de la cola— y `reflectDelay` —«a qué distancia está la
+        /// pared»—: son parámetros GEOMÉTRICOS. WG2 los sacaba de una tabla por zona porque no sabía
+        /// en qué sala estabas; WG3 lo sabe al centímetro, así que un atrio de 6,40 m y 600 m²
+        /// (ADR-104) suena distinto de un cuarto de servicio de 2,80 — con una tabla sonarían igual.
+        ///
+        /// **No se inventa el timbre**: se parte del autorado —valores ya validados en partida— y sólo
+        /// se doblan los dos que la geometría conoce mejor que cualquier tabla.
+        /// </summary>
+        private Audio.ReverbMixerDriver.RoomTone ToneFor(Wg3Segment seg)
+        {
+            var t = ambience.ReverbFor(0);
+
+            // Tamaño característico: la media geométrica de las tres dimensiones. Se usa el VOLUMEN y
+            // no el lado mayor porque un pasillo de 25 × 2 × 3 no suena como una nave de 25 × 25 × 6,
+            // y con el lado mayor los dos medirían lo mismo.
+            float size = Mathf.Pow(
+                Mathf.Max(seg.SizeX, 0.5f) * Mathf.Max(seg.SizeZ, 0.5f) * Mathf.Max(seg.Height, 0.5f),
+                1f / 3f);
+            // Seis metros es una sala corriente de este mundo: por debajo la cola se acorta, por
+            // encima se alarga. Acotado para no salirse del rango que admite el mezclador.
+            t.decay = Mathf.Clamp(t.decay * (size / 6f), 0.1f, 20f);
+
+            // Y el retardo del primer rebote es literalmente distancia partido por velocidad del
+            // sonido: la pared más cercana está a medio lado corto.
+            float near = Mathf.Min(seg.SizeX, seg.SizeZ) * 0.5f;
+            t.reflectDelay = Mathf.Clamp(near / 343f, 0f, 0.3f);
+            return t;
+        }
+
+        /// <summary>Pone el reverb de la sala donde está el jugador. Sin sala encontrada no se toca
+        /// nada: dejar la última es mejor que un salto a silencio cada vez que se cruza una junta.
+        /// </summary>
+        private void UpdateReverb()
+        {
+            if (ambience == null || viewer == null) return;
+            Vector3 p = viewer.position;
+            var coord = new Vector2Int(
+                Mathf.FloorToInt(p.x / ChunkSize), Mathf.FloorToInt(p.z / ChunkSize));
+            if (!_rooms.TryGetValue(coord, out var rooms)) return;
+            for (int i = 0; i < rooms.Count; i++)
+            {
+                if (rooms[i].box.Contains(p))
+                {
+                    Audio.ReverbMixerDriver.SetRoom(rooms[i].tone, 0);
+                    return;
+                }
+            }
         }
 
         private Vector3 _spawn;
@@ -279,7 +392,7 @@ namespace BackroomsSurvival.WorldGen3
             _reported = true;
 
             Debug.Log($"[WG3] streamer: {_builtChunks} chunks con geometría y {_emptyChunks} vacíos; " +
-                      $"{_builtPieces} piezas, {_builtSegments} tramos y {_builtSolids} macizos montados. materiales " +
+                      $"{_builtPieces} piezas, {_builtSegments} tramos, {_builtSolids} macizos y {_builtLamps} lamparas con zumbido montados. materiales " +
                       $"{(materials?.floor != null ? "asignados" : "SIN ASIGNAR — se dibujaría en rosa o invisible")}; " +
                       $"radio {radius}.", this);
         }
@@ -305,6 +418,7 @@ namespace BackroomsSurvival.WorldGen3
             }
             foreach (Vector2Int coord in doomed)
             {
+                _rooms.Remove(coord);
                 if (_built[coord] != null) Destroy(_built[coord]);
                 DestroyMeshesOf(coord);
                 _built.Remove(coord);

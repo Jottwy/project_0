@@ -6,6 +6,22 @@ namespace BackroomsSurvival.WorldGen3
     /// <summary>Los cuatro materiales, en el orden de submalla de
     /// <see cref="Wg3MeshBuilder.SubMesh"/>.</summary>
     [System.Serializable]
+    /// <summary>
+    /// ADR-107 D3 — lo que un chunk le entrega al director del zumbido.
+    ///
+    /// **Un alta por CHUNK y no por lámpara**, que es la forma que WG2 ya eligió y por un motivo que
+    /// se pierde si se copia sin leerlo: así **ningún <c>AudioSource</c> cuelga jamás de un chunk**, y
+    /// descargarlo no puede dejar fuentes huérfanas. El director reparte sus propias fuentes entre las
+    /// posiciones que se le dan.
+    /// </summary>
+    public sealed class Wg3HumBatch
+    {
+        public readonly List<Vector3> positions = new List<Vector3>();
+        public readonly List<float> pitches = new List<float>();
+        public readonly List<float> flickerHz = new List<float>();
+        public readonly List<float> flickerPhase = new List<float>();
+    }
+
     public sealed class Wg3Materials
     {
         public Material floor;
@@ -192,7 +208,8 @@ namespace BackroomsSurvival.WorldGen3
         /// </summary>
         public static GameObject AssembleSegment(Wg3Segment segment, Transform parent,
             Wg3Materials materials, List<Mesh> createdMeshes, string name, bool addLight = true,
-            List<BackroomsSurvival.Net.Wg3CarveMsg> carves = null)
+            List<BackroomsSurvival.Net.Wg3CarveMsg> carves = null,
+            Material lampMaterial = null, Wg3HumBatch hum = null)
         {
             if (segment == null || parent == null) return null;
 
@@ -226,7 +243,7 @@ namespace BackroomsSurvival.WorldGen3
 
             AddColliders(go, volumes, origin);
 
-            if (addLight) AddSegmentLights(go, segment);
+            if (addLight) AddSegmentLights(go, segment, lampMaterial, hum);
 
             return go;
         }
@@ -291,7 +308,8 @@ namespace BackroomsSurvival.WorldGen3
         /// **No se toca ni el alcance, ni la intensidad, ni el color**: son valores que Joel validó
         /// mirándolos en partida. Lo que cambia aquí es CUÁNTOS y DÓNDE.
         /// </summary>
-        private static void AddSegmentLights(GameObject go, Wg3Segment segment)
+        private static void AddSegmentLights(GameObject go, Wg3Segment segment,
+            Material lampMaterial, Wg3HumBatch hum)
         {
             // Un plafón cada seis metros por eje, que es el ritmo que ya tenía el conector.
             const float Spacing = 6f;
@@ -327,8 +345,59 @@ namespace BackroomsSurvival.WorldGen3
                     // `Light.renderingLayerMask` es int y el del Renderer es uint: la conversión
                     // es explícita a propósito en la API de Unity, no un descuido de aquí.
                     light.renderingLayerMask = (int)Wg3StoreyLayers.ForLight(segment.FloorY);
+
+                    // ADR-107 D2 — **la luminaria, que hasta hoy no existía: había luz sin lámpara.**
+                    // Es decorativa y sin collider, igual que la de WG2, porque un plafón que frena
+                    // es una viga invisible a la altura de la cabeza.
+                    if (lampMaterial != null) AddLuminaire(lamp.transform, lampMaterial);
+
+                    // ADR-107 D3 — y el zumbido. Pitch y fase salen de la POSICIÓN con las mismas
+                    // funciones que usa WG2, así que dos jugadores oyen la misma lámpara, la misma
+                    // lámpara suena igual al volver, y no viaja nada por el cable.
+                    if (hum != null)
+                    {
+                        Vector3 world = lamp.transform.position;
+                        int gx = Mathf.RoundToInt(world.x);
+                        int gz = Mathf.RoundToInt(world.z);
+                        hum.positions.Add(world);
+                        hum.pitches.Add(
+                            BackroomsSurvival.Gameplay.Audio.FluorescentHumDirector.PitchFor(gx, gz));
+                        // Sin parpadeo en esta fase: `LampFlicker` es comportamiento aparte y meterlo
+                        // aquí de contrabando sería otro ADR disfrazado de detalle. Cero = luz fija.
+                        hum.flickerHz.Add(0f);
+                        hum.flickerPhase.Add(
+                            BackroomsSurvival.Gameplay.Audio.FluorescentHumDirector
+                                .FlickerPhaseFor(gx, gz));
+                    }
                 }
             }
+        }
+
+        /// <summary>
+        /// ADR-107 D2 — el panel emisivo que se ve cuando miras al techo.
+        ///
+        /// Copia la forma de <c>BackroomsLighting.MakeLuminaire</c>: cubo aplanado, **sin collider**
+        /// —es decoración, y un plafón que frena es una viga invisible a la altura de la cabeza— y con
+        /// la emisión por `MaterialPropertyBlock` para no instanciar un material por lámpara.
+        /// </summary>
+        private static void AddLuminaire(Transform parent, Material lampMaterial)
+        {
+            var go = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            go.name = "Luminaire";
+            go.hideFlags = HideFlags.DontSave;
+            if (go.TryGetComponent<Collider>(out var col))
+            {
+                if (Application.isPlaying) Object.Destroy(col);
+                else Object.DestroyImmediate(col);
+            }
+            go.transform.SetParent(parent, false);
+            go.transform.localPosition = Vector3.zero;
+            go.transform.localScale = new Vector3(1.65f, 0.08f, 1.65f);
+            var r = go.GetComponent<MeshRenderer>();
+            r.sharedMaterial = lampMaterial;
+            // La luminaria pertenece a la planta de su lámpara (ADR-104 enmienda 2): si no, la de
+            // abajo se ve iluminada desde arriba y vuelve el síntoma que esa enmienda quitó.
+            r.renderingLayerMask = Wg3StoreyLayers.ForLight(parent.position.y);
         }
 
         /// <summary>
