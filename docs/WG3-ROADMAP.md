@@ -74,7 +74,9 @@ transportable**, que es lo que se pidió. Buscar ahí un fallo de la migración 
 | **Facelings (adultos y niños)** | ✅ | **andados y validados en juego** | 108 enm. 1-3 |
 | **Loot por papel** | 🟡 | **andado, sin ver en partida**; densidad intacta | 108 enm. 4 |
 | **Construcción y claims** | 🟡 | **andado, sin ver en partida**; se construye en servicio/almacén/callejón | 108 D6 |
-| Retirada de WG2 | 🔴 | ya no la bloquea nadie; el servidor sigue generándolo | sin ADR |
+| **Retirada de WG2** | 🟡 | **etapa 1 hecha: ya no se genera ni se manda**; borrar el código lo bloquea el contenido | 109 |
+| Spawn de criaturas | 🔴 | **se mueven con WG3, pero NACEN donde diga WG2** | 109 |
+| Level 4 y salas autoradas en WG3 | 🔴 | sólo existen en WG2; bloquean el borrado | 109 D2 |
 
 ### Cifras del mundo servido, hoy
 
@@ -134,7 +136,11 @@ contra el ráster, ambos validados en juego el 2026-08-29. Lo que queda es el re
   almacén y callejón sin salida, y el claim es el espacio con su cota. Falta verlo en partida, y falta
   la **guarda de aislamiento** que pidió Joel —medir que reclamar una sala no puede cerrar un paso—,
   que hoy sólo está garantizada de rebote por cómo el plan cuelga esas salas.
-- **Ya no queda ningún consumidor de autoridad en WG2**, así que la retirada deja de estar bloqueada.
+- **Ya no queda ningún consumidor de autoridad en WG2.** La retirada arrancó (ADR-109): con WG3
+  mandando ya no se genera el mundo viejo ni viajan sus vistas. **Borrar el código está bloqueado por
+  contenido**: el Level 4 y las salas autoradas existen sólo en WG2, y el borrado se las lleva.
+- Y una que no estaba en ninguna lista: **las criaturas se mueven con WG3 pero NACEN donde diga WG2**
+  — el sorteo de spawn sigue siendo puro por semilla sobre `grid_gen`.
 - Tres lecciones de la mudanza de la IA, por si sirven para la del loot: (a) **ver no es pasar** —
   `segment_is_clear` exige suelo bajo la recta, y como línea de visión falla el 8 % de las veces
   (medido: 49 de 611 parejas, sonda `probe_sight_is_not_the_same_as_passage`); (b) las **capas de 4 m

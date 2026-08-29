@@ -10762,3 +10762,70 @@ más alto por debajo del punto**, empate por área (manda el más pequeño, que 
 del mundo. Y el aislamiento de las salas construibles es hoy el que el plan ya da (servicio y almacén
 cuelgan del fondo de una rama, el callejón tiene una sola conexión); **una guarda de aislamiento
 explícita —medir que reclamar una sala no puede cerrar un paso— queda pendiente y con nombre**.
+
+---
+
+## ADR-109 — La retirada de WorldGen2, por etapas (2026-08-29)
+
+Estado: **etapa 1 implementada; etapas 2 y 3 propuestas, bloqueadas por contenido.**
+
+### El encargo, y por qué no es un borrado
+
+«Cambia todo rastro de WG2 a WG3 de una vez» se pidió tres veces a lo largo de la migración, y las tres
+la respuesta fue la misma: primero los consumidores. Con ADR-108 D6 ya no queda ninguno, así que la
+retirada deja de estar bloqueada por dependencias. Pero **medida, no es un borrado**, y esto es lo que
+sale de mirar en vez de deducir:
+
+- **294 referencias a `grid_gen` fuera de `grid_gen`**, y 12.124 líneas dentro. No cabe en un diff.
+- **`world.chunks` no es geometría: es el contenedor de entidades y objetos tirados**, y varias puertas
+  del bucle preguntan `!world.chunks.is_empty()`. Vaciarlo no retira WG2, rompe el mundo.
+- **El Level 4 y las salas autoradas existen SÓLO en WG2.** `grid_gen::level4` y
+  `grid_gen::authored_rooms` no tienen equivalente en WG3 — buscado, no supuesto. Borrar el código
+  borra contenido que se construyó a propósito, incluida la cadena ADR-083/084/085 entera.
+
+### D1 — Etapa 1: apagar la PRODUCCIÓN, no el código (implementada)
+
+Con WG3 mandando (`Wg3Config::is_enabled()`, la misma puerta que decide si se sirve WG3):
+
+1. **No se genera.** `update_ownership` deja de llamar a `generate_chunk` —sorteo de plantilla,
+   rejilla, entidades, relocalización de contenido, por columna y a cada cruce de chunk— y deja de
+   restaurar el escaparate V30A, que es geometría de WG2 colocada a mano cerca del origen y que en
+   este mundo cae dentro de lo que WG3 haya planificado ahí.
+2. **No se manda.** `visible_chunk_views` devuelve vacío. Es el coste mayor de los dos: cada vista
+   lleva su `layout_cells` de 20 × 20 y viajaban todas las columnas visibles a 10 Hz. Del lado del
+   cliente no queda un consumidor —`ChunkRenderer` apagado, y `ZoneRegistry` sólo alimentaba ambiente,
+   loot y construcción, los tres ya mudados.
+3. **El chunk SÍ se sigue creando**, vacío, por lo dicho arriba: es el contenedor.
+4. **El spawn deja de preguntarle a WG2**, anfitrión y el que se une. Sin esto, `find_safe_spawn` no
+   encontraría nada y `repair_starter_spawn` tallaría una celda segura en un chunk vacío para tirarla
+   acto seguido; y el que se une —cuyos chunks llegan por el goteo— acabaría en la esquina del origen.
+
+Son **guardas, no borrado**: apagar WG3 devuelve el comportamiento anterior byte a byte, que es la
+propiedad que hace esta etapa segura de meter sin playtest previo.
+
+### D2 — Etapa 2: portar lo que sólo existe en WG2, o decidir perderlo
+
+**Bloqueante, y es una decisión de contenido, no de código.** Dos cosas:
+
+- **El Level 4.** Reserva propia a 2.000 chunks del origen, con su layout de región, su portal y su
+  regla de «aquí no se construye». Nada de eso existe en WG3.
+- **Las salas autoradas** (ADR-083, 084, 085): el pool de salas hechas a mano, su horneado, su proxy
+  de colisión y el multi-chunk. Se talla dentro de `grid_gen`.
+
+Hasta que una de las dos frases sea cierta —«portado» o «se pierde a sabiendas»— la etapa 3 no puede
+empezar, porque el borrado se las lleva por delante.
+
+### D3 — Etapa 3: borrar
+
+Sólo después de D2, y por trozos con la suite en verde entre uno y otro: primero los consumidores
+muertos (`build_rooms`, `nav`, `zone_density`), luego el generador y sus plantillas, luego el cliente
+(`ChunkStreamer`, `GridChunkBuilder`, `ProceduralWorldGenerator`, `ZoneRegistry`), y `ChunkView` del
+wire al final, que es lo único que pide bump de esquema.
+
+### Lo que esta etapa NO arregla, y conviene saberlo
+
+El apagado no toca `contact_stance` (ADR-108 enm. 3) ni el sitio donde nacen las criaturas: el sorteo
+de spawn del robapieles y de los facelings sigue siendo puro por semilla sobre `grid_gen`. Ahora se
+mueven, ven y golpean con WG3, pero **el sitio donde aparecen sigue eligiéndolo el mundo viejo**. No lo
+destapó esta etapa —lleva ahí desde ADR-108— pero es lo siguiente que hay que mirar, y es más barato
+que cualquier cosa de D2.
