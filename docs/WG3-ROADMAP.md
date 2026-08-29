@@ -51,6 +51,8 @@ que se cae y macizos —pretiles y megapilares— (ADR-104 y ADR-105, wire 50).
 | **WG3 como autoridad del jugador** | ✅ | **andado en `BackroomsWithSTP` con el player real** | 106 |
 | Spawn contra WG3 | ✅ | sitio de pie en 4/4 regiones | 106 |
 | Luz que no atraviesa el forjado | 🟡 | capas por planta, sin andar | 104 enm. 2 |
+| **Luminaria, zumbido y reverb** | ✅ | **andados**; reverb por geometría, mejor que WG2 | 107 |
+| Atmósfera por identidad (el AIRE) | 🔴 | todas las regiones tienen el mismo aire | 107 D5 = 103 |
 | Identidad de subnivel (Level 0.1…) | 🔴 | aprobado, cero código | 103 |
 | Plantas bajo la cota base | 🔴 | | 104 D5 |
 | **Fantasma, facelings, loot** | 🔴 | **siguen en WG2 — atraviesan lo que tú no** | 106 deuda |

@@ -10406,3 +10406,45 @@ posición, el reverb es función del tramo, y la identidad la recalcula el clien
   ADR-095: la regla R32 quiere la luz autorada en la pieza). Este ADR no lo resuelve y lo hereda.
 - **No hay ninguna métrica que mire la luz ni el sonido** en todo el sistema. Las verificaciones de
   arriba son las primeras, y siguen sin cubrir «suena bien» — eso sólo lo dice un oído.
+
+---
+
+## ADR-107 — Enmienda 1: D2, D3 y D4 implementados y ANDADOS, y un campo vacío que parecía un sistema roto (2026-08-29)
+
+`724cded4` (luminaria, zumbido y reverb) y `352ebb82` (el respaldo de materiales).
+`CompileCheckClient` 0 errores en las cuatro asambleas. **Cero wire, v50 intacta.**
+
+**Verificado por Joel en `BackroomsWithSTP`, y aquí la verificación es la única posible: ojos y
+oídos.** Confirma que se ven las lámparas, que se oye el zumbido y que el reverb cambia. Las tres
+cosas que este ADR trajo, andadas el mismo día.
+
+### El episodio del magenta, que es la lección de la sesión
+
+Al probarlo por primera vez **el mundo entero salió magenta**. La causa: `GridTestWorld` no tenía
+asignados los cuatro materiales de WG3, así que `Wg3StyleMaterials.Resolve` devolvía `null`, el
+`MeshRenderer` se quedaba sin material, y en URP eso es rosa.
+
+**Un campo vacío produjo un síntoma que se lee como «el generador nuevo está roto».** Nadie mira un
+mundo entero en magenta y piensa «falta configurar algo»: piensa que el sistema que acaba de entrar no
+funciona. Y el aviso de consola que sí existía —nombrando los cuatro assets— no llegó a leerse, porque
+la pantalla ya había contado otra historia más fuerte.
+
+Arreglado con **respaldo a los materiales de WG2**: sin los propios, el mundo se pinta con los de
+siempre. Peor que el aspecto de verdad, pero **es un mundo**, y el aviso sigue diciendo qué asignar.
+La regla que se lleva: **cuando falte configuración, degradar a algo que se pueda mirar, nunca a algo
+que grite «roto».** Es la misma decisión que ya había tomado `Wg3Config` al fallar hacia WG2 cuando
+falta el manifiesto, aplicada al otro lado del cable.
+
+Detalle que no es cosmético: **la instancia del respaldo se cachea, y no por rendimiento**.
+`Wg3StyleMaterials.Resolve` invalida su caché entera cuando le llega otro juego base, así que devolver
+un objeto nuevo por llamada reconstruiría todas las variantes de tinte en cada tramo.
+
+### Lo que queda de este ADR
+
+- **D5, el eje del AIRE**, que es ADR-103 y no tiene código. Mientras tanto el ambiente es el visual de
+  capa 0 —el marcador de Threshold— y **todas las regiones tienen el mismo aire**. Si alguien compara
+  dos esperando atmósferas distintas, va a encontrar la misma, y no es un fallo.
+- **El parpadeo** (`LampFlicker`), dejado fuera a propósito: es comportamiento, no atmósfera.
+- **La deuda de fondo sigue en pie y esta enmienda la confirma:** no hay ni una métrica que mire la luz
+  o el sonido. Lo de hoy se validó mirando y escuchando, que es el único instrumento que hay — y por
+  eso el magenta se descubrió jugando y no en una suite de 1126 tests en verde.
