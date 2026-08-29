@@ -88,8 +88,15 @@ td.num,th.num{font-family:"IBM Plex Mono",monospace; font-variant-numeric:tabula
 .chip{display:inline-block; font-family:"IBM Plex Mono",monospace; font-size:10.5px; letter-spacing:.08em; text-transform:uppercase; padding:1px 6px; border:1px solid currentColor; white-space:nowrap}
 .chip.ok{color:var(--good)} .chip.mid{color:var(--warn)} .chip.no{color:var(--bad)} .chip.neu{color:var(--ink-faint)}
 
+.meter{display:flex; align-items:center; gap:10px; min-width:190px}
+.meter .track{position:relative; flex:1; height:8px; background:var(--surface-2); border:1px solid var(--line-soft)}
+.meter .fill{position:absolute; inset:0 auto 0 0; background:var(--accent-soft)}
+.meter .fill.ok{background:var(--good)} .meter .fill.mid{background:var(--warn)} .meter .fill.no{background:var(--bad)}
+.meter .pct{font-family:"IBM Plex Mono",monospace; font-size:12px; font-variant-numeric:tabular-nums; color:var(--ink-soft); min-width:4ch; text-align:right}
+
 .note{border-left:3px solid var(--accent-soft); background:var(--surface); padding:12px 16px; margin:16px 0}
 .note.risk{border-left-color:var(--bad)}
+.note.win{border-left-color:var(--good)}
 .note .t{font-family:"IBM Plex Sans Condensed",sans-serif; font-weight:700; font-size:15px; margin-bottom:2px}
 .note p{margin:.35em 0}
 
@@ -120,13 +127,14 @@ footer p{max-width:78ch}
     <div>
       <div class="eyebrow">Backrooms Survival MMO · documento único</div>
       <h1>Compendio</h1>
-      <p class="lede">Los cinco documentos del proyecto, comprimidos en uno: estado del loop, economía de supervivencia, deuda técnica, roadmap de negocio y mapa de ajustes. Cada sección conserva los números decisivos y enlaza al original cuando hace falta el detalle largo.</p>
+      <p class="lede">Dónde está el proyecto el 29 de agosto de 2026, sección por sección: el mundo nuevo (WorldGen3), la IA que acaba de mudarse a él, el loop de supervivencia, la deuda técnica, el camino a la Alpha 1 y el mapa de ajustes. Los números son los medidos; lo estimado va marcado.</p>
     </div>
     <div class="stamp">
-      versión <b>0.0.0.13</b> prealpha<br>
+      versión <b>0.0.0.8c</b> prealpha<br>
       rama <b>migration/worldgraph-v1</b><br>
-      wire <b>v38</b> · IPC y P2P<br>
-      corte de datos <b>2026-08-20</b>
+      wire <b>v50</b> · IPC y P2P<br>
+      <b>1.248</b> commits · HEAD <b>359fb5fe</b><br>
+      corte de datos <b>2026-08-29</b>
     </div>
   </div>
 </header>
@@ -134,82 +142,286 @@ footer p{max-width:78ch}
 <div class="wrap shell">
   <nav class="rail" aria-label="Secciones">
     <ol>
-      <li><a href="#fuentes"><span class="n">00</span><span>Fuentes</span></a></li>
-      <li><a href="#loop"><span class="n">01</span><span>Estado del loop</span></a></li>
-      <li><a href="#economia"><span class="n">02</span><span>Economía</span></a></li>
-      <li><a href="#deuda"><span class="n">03</span><span>Deuda técnica</span></a></li>
-      <li><a href="#negocio"><span class="n">04</span><span>Roadmap y negocio</span></a></li>
-      <li><a href="#ajustes"><span class="n">05</span><span>Ajustes</span></a></li>
-      <li><a href="#nuevo"><span class="n">06</span><span>Desde el corte</span></a></li>
-      <li><a href="#procedencia"><span class="n">07</span><span>Procedencia</span></a></li>
+      <li><a href="#estado"><span class="n">00</span><span>Estado global</span></a></li>
+      <li><a href="#wg3"><span class="n">01</span><span>WorldGen3</span></a></li>
+      <li><a href="#ia"><span class="n">02</span><span>IA y criaturas</span></a></li>
+      <li><a href="#loop"><span class="n">03</span><span>Loop</span></a></li>
+      <li><a href="#economia"><span class="n">04</span><span>Economía</span></a></li>
+      <li><a href="#deuda"><span class="n">05</span><span>Deuda técnica</span></a></li>
+      <li><a href="#alpha"><span class="n">06</span><span>Alpha 1 y negocio</span></a></li>
+      <li><a href="#ajustes"><span class="n">07</span><span>Ajustes</span></a></li>
+      <li><a href="#fuentes"><span class="n">08</span><span>Fuentes</span></a></li>
+      <li><a href="#procedencia"><span class="n">09</span><span>Procedencia</span></a></li>
     </ol>
   </nav>
 
   <main>
 
-  <section id="fuentes">
+  <section id="estado">
     <div class="sec-head">
-      <div class="kicker">00 — Qué comprime esto</div>
-      <h2>Cinco documentos, uno vigente por tema</h2>
-      <p>Ninguno se borra: siguen publicados y con su URL. Lo que cambia es que ya no hace falta abrir cinco para saber dónde está el proyecto.</p>
+      <div class="kicker">00 — Dónde está el proyecto</div>
+      <h2>El mundo dio un salto de nivel; el loop sigue esperando su eslabón</h2>
+      <p>Nueve días de agosto cambiaron la pieza más grande del juego: el mundo dejó de ser una pila de rejillas 2D y pasó a WorldGen3, con dos plantas, atrios y agujeros por los que se cae. La IA se mudó detrás y quedó validada en partida. Lo que no se ha movido en todo ese tiempo es el crafteo, y sigue siendo el bloqueante del loop.</p>
     </div>
 
-    <div class="srcs">
-      <div class="src">
-        <a href="https://claude.ai/code/artifact/27c4bfe4-3a84-4fe5-8e50-8371e99a6d68">Análisis de loop</a>
-        <div class="meta">rev. 34 · 2026-08-18 · vigente</div>
-        <p>El grande: siete pestañas — diseño técnico, roadmap, inversores, versiones, semana, devlog, deuda. Fuente de las secciones 01, 04 y parte de 03.</p>
-      </div>
-      <div class="src">
-        <a href="https://claude.ai/code/artifact/5ff6680e-6a11-4b64-abc8-49be3fd0e92e">Debt Roadmap</a>
-        <div class="meta">2026-08-18 · vigente · tracker vivo</div>
-        <p>Los 68 hallazgos con insignia de estado por ítem. Es el sitio donde se marca lo arreglado, no este compendio.</p>
-      </div>
-      <div class="src">
-        <a href="https://claude.ai/code/artifact/60ed8d22-6328-4a23-8187-fc0580e544f0">Economía de supervivencia</a>
-        <div class="meta">2026-08-17 · vigente</div>
-        <p>Los siete commits de escasez, con densidades medidas sobre 10.000 chunks por zona. Fuente de la sección 02.</p>
-      </div>
-      <div class="src">
-        <a href="https://claude.ai/code/artifact/ea8cdb8b-e526-4867-b5f0-9f9c8047de4f">Dónde está cada ajuste</a>
-        <div class="meta">2026-08-13 · vigente para pulido</div>
-        <p>Manual de mandos: qué valor vive en asset, en código o en entorno. Fuente de la sección 05; el detalle campo a campo se queda allí.</p>
-      </div>
-      <div class="src">
-        <a href="https://claude.ai/code/artifact/6f15dffc-98f3-4f4c-bd3e-827500556e1c">Análisis de loop — variante Level 0</a>
-        <div class="meta">2026-08-13 · <span class="chip no">superado</span></div>
-        <p>Versión anterior del dossier: 67 ADR, sin pestaña de deuda ni de semana. Todo lo suyo está dentro de la rev. 34. No hay que leerlo.</p>
-      </div>
+    <div class="tiles">
+      <div class="tile good"><div class="k">Tests backend</div><div class="v">1139</div><div class="s">0 fallos · clippy y fmt limpios</div></div>
+      <div class="tile"><div class="k">ADR escritos</div><div class="v">109</div><div class="s">095 → 109 son WorldGen3</div></div>
+      <div class="tile good"><div class="k">Autoridad en WG2</div><div class="v">0</div><div class="s">no queda un solo consumidor</div></div>
+      <div class="tile bad"><div class="k">Crafteo</div><div class="v">0 %</div><div class="s">tabla de recetas sin consumidor</div></div>
     </div>
+
+    <h3>Porcentaje por sistema</h3>
+    <p>Los porcentajes son <b>estimación de criterio</b>, no una métrica del repo: se calculan sobre el alcance que cada sistema necesita para la Alpha 1, no sobre su visión final. Los números que aparecen dentro de cada fila sí son medidos.</p>
+    <div class="scroller">
+      <table>
+        <thead><tr><th>Sistema</th><th class="num">Avance</th><th>Qué falta</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>Geometría WG3</td>
+            <td><div class="meter"><div class="track"><div class="fill ok" style="width:85%"></div></div><span class="pct">85 %</span></div></td>
+            <td>Pretiles y megapilares medidos pero sin andar; plantas bajo la cota base; ADR-103 aprobado con cero código.</td>
+          </tr>
+          <tr>
+            <td>Atmósfera WG3</td>
+            <td><div class="meter"><div class="track"><div class="fill ok" style="width:80%"></div></div><span class="pct">80 %</span></div></td>
+            <td>Luz, zumbido y reverb andados. El <b>aire</b> por identidad de subnivel no existe: todas las regiones huelen igual.</td>
+          </tr>
+          <tr>
+            <td>Migración de autoridad a WG3</td>
+            <td><div class="meter"><div class="track"><div class="fill ok" style="width:90%"></div></div><span class="pct">90 %</span></div></td>
+            <td><b>Cerrada</b>: loot, construcción, claims, spawn de criaturas y reparto de facelings, todo jugado. Lo que queda es <b>retirar</b> WG2, y eso está bloqueado por contenido, no por dependencias.</td>
+          </tr>
+          <tr>
+            <td>IA (robapieles y facelings)</td>
+            <td><div class="meter"><div class="track"><div class="fill ok" style="width:85%"></div></div><span class="pct">85 %</span></div></td>
+            <td>Validada en partida con un jugador. Nunca probada con 2+, pendiente desde junio.</td>
+          </tr>
+          <tr>
+            <td>Red y escala (para Alpha 1)</td>
+            <td><div class="meter"><div class="track"><div class="fill ok" style="width:100%"></div></div><span class="pct">100 %</span></div></td>
+            <td>La Alpha solo pide E0, implementada y medida. E1 a medias no la bloquea.</td>
+          </tr>
+          <tr>
+            <td>Loop de supervivencia</td>
+            <td><div class="meter"><div class="track"><div class="fill mid" style="width:55%"></div></div><span class="pct">55 %</span></div></td>
+            <td><b>Crafteo sin consumidor</b>; HUD de propiedad y capa; jornada de 4 h contra el objetivo de 45-90 min.</td>
+          </tr>
+          <tr>
+            <td>Farmeo y almacenaje</td>
+            <td><div class="meter"><div class="track"><div class="fill mid" style="width:70%"></div></div><span class="pct">70 %</span></div></td>
+            <td><code>BR_BuildingPiece_StorageRack</code> existe; <code>carryableZoneChance</code> a 0 en las 13 zonas; el contenido de contenedores no sincroniza.</td>
+          </tr>
+          <tr>
+            <td>Deuda técnica</td>
+            <td><div class="meter"><div class="track"><div class="fill mid" style="width:55%"></div></div><span class="pct">55 %</span></div></td>
+            <td>Muerto, leve y medio cerrados. <b>Grave (13) y Muy grave (6) sin abrir</b> — el bloque de seguridad de red.</td>
+          </tr>
+          <tr>
+            <td>Empaquetado de build</td>
+            <td><div class="meter"><div class="track"><div class="fill no" style="width:30%"></div></div><span class="pct">30 %</span></div></td>
+            <td>El proyecto está en <b>Mono, no IL2CPP</b>: los assemblies salen legibles y descompilables. Hay que volver antes de la Alpha.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="tiles">
+      <div class="tile"><div class="k">Global del proyecto</div><div class="v">~60 %</div><div class="s">estimado sobre alcance</div></div>
+      <div class="tile warn"><div class="k">Hacia Alpha 1</div><div class="v">45-55 %</div><div class="s">itch.io · noviembre 2026</div></div>
+      <div class="tile"><div class="k">Margen</div><div class="v">3 meses</div><div class="s">da, si no entra nada nuevo</div></div>
+      <div class="tile good"><div class="k">Wire</div><div class="v">v50</div><div class="s">v38 → v50 en nueve días</div></div>
+    </div>
+
+    <div class="note risk">
+      <div class="t">El techo ya no es la mudanza: es el loop, y una decisión de contenido</div>
+      <p><b>El loop no cierra.</b> Minar no sirve para nada mientras el crafteo no consuma la tabla de recetas, y sin eso los tres tiers de estabilización son texto muerto. Es la única pieza del loop que hay que construir de verdad; el resto es HUD y parámetros. <b>Nada de WorldGen3 la ha movido en nueve días.</b></p>
+      <p><b>Y una decisión que no es de código.</b> El borrado de WG2 se lleva por delante el <b>Level 4</b> y las <b>salas autoradas</b>, que existen sólo ahí. Hasta que una de las dos frases sea cierta —«portado» o «se pierde a sabiendas»— el código viejo se queda: 294 referencias fuera de <code>grid_gen</code> y 12.124 líneas dentro.</p>
+    </div>
+  </section>
+
+  <section id="wg3">
+    <div class="sec-head">
+      <div class="kicker">01 — WorldGen3</div>
+      <h2>El mundo se anda entero, y el 40 % de él todavía obedece al mundo viejo</h2>
+      <p>Trece ADR en nueve días (095 a 108). El mundo servido sale del <b>plan</b>, no del compositor por bocas: <code>Wg3ServedWorld::plan_region</code> → <code>plan::plan_building</code> → <code>fill::fill_building</code>. Regiones de 150 m, infinitas, con contrato en la junta.</p>
+    </div>
+
+    <h3>Los tres estados en los que puede estar una cosa</h3>
+    <p>Distinción propia del roadmap de WG3, y la que evita las discusiones caras: <span class="chip ok">andado</span> una persona lo ha visto funcionando en la partida real · <span class="chip mid">medido</span> verde en el ráster del servidor, nadie lo ha visto · <span class="chip no">no existe</span> escrito en un ADR y sin implementar.</p>
+
+    <div class="scroller">
+      <table>
+        <thead><tr><th>Pieza del mundo</th><th>Estado</th><th class="num">Cifra medida</th><th class="num">ADR</th></tr></thead>
+        <tbody>
+          <tr><td>Mundo por regiones, junta cruzable</td><td><span class="chip ok">andado</span></td><td class="num">150 m · infinito</td><td class="num">096</td></tr>
+          <tr><td>Dos plantas y escalera</td><td><span class="chip ok">andado</span></td><td class="num">46/49 regiones · 2-5 escaleras</td><td class="num">102</td></tr>
+          <tr><td>Vanos excavados (catálogo encendido)</td><td><span class="chip ok">andado</span></td><td class="num">8/8/6/2 piezas por región</td><td class="num">101</td></tr>
+          <tr><td>Identidad visual por papel</td><td><span class="chip ok">andado</span></td><td class="num">7 papeles a 20 m</td><td class="num">Frente A</td></tr>
+          <tr><td>Atrio de dos plantas</td><td><span class="chip ok">andado</span></td><td class="num">11 atrios · 6,39 m</td><td class="num">104</td></tr>
+          <tr><td>Agujero de forjado</td><td><span class="chip ok">andado</span></td><td class="num">15 · caída de 3,32 m</td><td class="num">104</td></tr>
+          <tr><td>WG3 como autoridad del jugador</td><td><span class="chip ok">andado</span></td><td class="num">spawn de pie 4/4 regiones</td><td class="num">106</td></tr>
+          <tr><td>Luminaria, zumbido y reverb</td><td><span class="chip ok">andado</span></td><td class="num">reverb por geometría</td><td class="num">107</td></tr>
+          <tr><td>Fantasma y facelings en WG3</td><td><span class="chip ok">andado</span></td><td class="num">validado en juego 29-08</td><td class="num">108</td></tr>
+          <tr><td>Pretiles</td><td><span class="chip mid">medido</span></td><td class="num">5 · sólo en 2 atrios</td><td class="num">105</td></tr>
+          <tr><td>Megapilares</td><td><span class="chip mid">medido</span></td><td class="num">12</td><td class="num">105</td></tr>
+          <tr><td>Luz que no atraviesa el forjado</td><td><span class="chip mid">medido</span></td><td class="num">capas por planta</td><td class="num">104 enm. 2</td></tr>
+          <tr><td>Atmósfera por identidad (el aire)</td><td><span class="chip no">no existe</span></td><td class="num">—</td><td class="num">107 D5 / 103</td></tr>
+          <tr><td>Identidad de subnivel (Level 0.1…)</td><td><span class="chip no">no existe</span></td><td class="num">aprobado, cero código</td><td class="num">103</td></tr>
+          <tr><td><b>Loot por papel</b></td><td><span class="chip ok">andado</span></td><td class="num">7 papeles · densidad intacta</td><td class="num">108 D4</td></tr>
+          <tr><td><b>Construcción y claims</b></td><td><span class="chip ok">andado</span></td><td class="num">el claim es esquina + cota</td><td class="num">108 D6</td></tr>
+          <tr><td><b>Sitio donde nacen las criaturas</b></td><td><span class="chip ok">andado</span></td><td class="num">el ráster corrige 10 de 18</td><td class="num">109 D4</td></tr>
+          <tr><td><b>Reparto de facelings</b></td><td><span class="chip ok">andado</span></td><td class="num">por papel, hueco a hueco</td><td class="num">109 D5</td></tr>
+          <tr><td>Retirada de WG2 — etapa 1</td><td><span class="chip ok">hecha</span></td><td class="num">ni se genera ni se manda</td><td class="num">109 D1</td></tr>
+          <tr><td>Retirada de WG2 — etapas 2 y 3</td><td><span class="chip no">bloqueadas</span></td><td class="num">294 refs · 12.124 líneas</td><td class="num">109 D2/D3</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Nivel de migración: cerrada — cero consumidores de autoridad en WG2</h3>
+    <div class="scroller">
+      <table>
+        <thead><tr><th>Ya vive en WG3</th><th>Sigue existiendo en WG2</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>geometría · movimiento y colisión del jugador · spawn · materiales y papel · luz, zumbido y reverb · <b>robapieles y facelings</b> (navegación, vista, golpe y sitio de nacimiento) · <b>loot</b> · <b>construcción y claims</b> · reparto de facelings</td>
+            <td><b>Level 4</b> y <b>salas autoradas</b> — contenido que sólo existe ahí · el código de <code>grid_gen</code>, ya sin producir nada · <code>ChunkView</code> en el wire</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p><b>Lo que eso significa jugando:</b> el mundo se ve, se anda, se reparte y se construye entero contra WG3. Lo que queda de WG2 no decide nada — es código dormido y dos piezas de contenido que nadie ha portado todavía.</p>
+
+    <h4>La retirada, por etapas (ADR-109)</h4>
+    <div class="scroller">
+      <table>
+        <thead><tr><th>Etapa</th><th>Qué hace</th><th>Estado</th></tr></thead>
+        <tbody>
+          <tr><td><b>1 — apagar la producción</b></td><td>Con WG3 mandando, <code>update_ownership</code> deja de generar y <code>visible_chunk_views</code> devuelve vacío: cada vista llevaba su rejilla de 20 × 20 a 10 Hz por columna visible, <b>sin un solo consumidor</b>. Son guardas, no borrado — apagar WG3 devuelve el comportamiento anterior byte a byte.</td><td><span class="chip ok">hecha</span></td></tr>
+          <tr><td><b>2 — portar o perder</b></td><td>El <b>Level 4</b> (reserva a 2.000 chunks, portal, regla de no construir) y las <b>salas autoradas</b> (ADR-083/084/085: pool, horneado, proxy de colisión, multi-chunk) se tallan dentro de <code>grid_gen</code> y no tienen equivalente. <b>Es decisión de contenido, no de código.</b></td><td><span class="chip no">bloqueante</span></td></tr>
+          <tr><td><b>3 — borrar</b></td><td>Por trozos y con la suite verde entre uno y otro: consumidores muertos → generador y plantillas → cliente (<code>ChunkStreamer</code>, <code>GridChunkBuilder</code>, <code>ZoneRegistry</code>) → <code>ChunkView</code> del wire al final, que es lo único que pide bump de esquema.</td><td><span class="chip neu">después de 2</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p><code>world.chunks</code> <b>se sigue creando, vacío y a propósito</b>: no es geometría, es el contenedor de entidades y objetos tirados, y varias puertas del bucle preguntan <code>!world.chunks.is_empty()</code>. Vaciarlo no retira WG2 — rompe el mundo.</p>
 
     <div class="note">
-      <div class="t">Sincronización con el Análisis de loop <span class="chip ok">al día · 2026-08-20</span></div>
-      <p>Este compendio comprime la <b>rev. 34</b> del dossier. Última comprobación: el texto publicado hoy es <b>idéntico</b> al que se comprimió — cero líneas de diferencia sobre 1.945 párrafos extraídos. Si el dossier cambia, la sección 01 y la 04 son las que se recalculan; el resto no depende de él.</p>
-      <p>La comprobación no es automática dentro de la página —una página publicada no puede leer otra—: se hace desde la sesión, comparando el texto del dossier contra el que ya está comprimido aquí. Cuando el dossier suba a rev. 35, este documento se reescribe y se republica en <b>esta misma URL</b>.</p>
+      <div class="t">Y una corrección que el propio roadmap tuvo que hacerse</div>
+      <p>Que casi no salga loot <b>no es una regresión de WG3</b>. <code>itemCacheChance</code> bajó ×10 y <code>carryableZoneChance</code> está a cero en las trece zonas desde el recorte de escasez del 17 de agosto: un alijo por kilómetro andado y ningún transportable, que es exactamente lo que se pidió. Buscar ahí un fallo de la migración es perseguir un fantasma — y se persiguió (ADR-108 enmienda 1).</p>
     </div>
 
-    <div class="note">
-      <div class="t">Qué NO se comprime aquí</div>
-      <p>Tres cosas se quedan a propósito en su documento original porque son listas largas de consulta, no estado: el catálogo de 40 <code>ItemDefinition</code> y 17 piezas de construcción, la ficha completa de cada uno de los 68 hallazgos de deuda, y la tabla campo a campo de los ajustes. Este compendio dice qué hay y dónde está; el original dice cómo se llama cada fila.</p>
+    <h3>Cifras del mundo servido</h3>
+    <div class="scroller">
+      <table>
+        <thead><tr><th>Región</th><th class="num">(0,0)</th><th class="num">(1,0)</th><th class="num">(0,1)</th><th class="num">(−1,2)</th></tr></thead>
+        <tbody>
+          <tr><td>Superficie andable</td><td class="num">109 %</td><td class="num">113 %</td><td class="num">113 %</td><td class="num">114 %</td></tr>
+          <tr><td>Mancha andable mayor</td><td class="num">99 %</td><td class="num">99 %</td><td class="num">99 %</td><td class="num">99 %</td></tr>
+          <tr><td>Atrios</td><td class="num">4</td><td class="num">4</td><td class="num">3</td><td class="num">0</td></tr>
+          <tr><td>Macizos</td><td class="num">5</td><td class="num">7</td><td class="num">5</td><td class="num">0</td></tr>
+        </tbody>
+      </table>
     </div>
+    <p>Por encima del 100 % porque hay más suelo que región: dos plantas. Reparto de papeles sobre 504 tramos medidos en cliente contra servidor: oficina 31 %, <b>escalera 23 %</b>, servicio 16 %, pasillo 11 %, callejón 10 %, nave 5 %, <b>espina 4 %</b>. Las dos en negrita son las que hay que vigilar — la espina existe para decir por dónde ir y es el papel más raro del mundo, y el 23 % de escalera debería <b>bajar</b> si la verticalidad sustituye escaleras en vez de sumarse a ellas.</p>
+
+    <h3>Reglas medidas que no hay que volver a descubrir</h3>
+    <ul>
+      <li><b>Un delta de albedo del 10 % no existe.</b> Para distinguir dos cosas: tono o material, nunca claridad — el ruido que mete sólo la luz entre dos paredes del mismo fotograma es del 29,5 %.</li>
+      <li><b>Forma libre en la malla, forma cara en la colisión, y el umbral son 50 cm.</b> Toda geometría más fina que la celda del ráster cambia de significado, no de precisión.</li>
+      <li><b>WG3 sabía restar y le costó un ADR saber añadir.</b> Los vanos viajaban desde ADR-101 y por eso atrios y agujeros salieron gratis; pretil y megapilar no tenían canal y estaban parados por lo mismo. Antes de prometer geometría nueva, mirar por qué canal va a viajar.</li>
+      <li><b>La niebla es presupuesto compartido</b>, no un valor: gasta de la legibilidad del papel y de encontrar por dónde subir. <code>rho ≤ 0,045</code>, y <code>≤ 0,030</code> mientras la escalera dependa de su rodapié.</li>
+      <li><b>Un canal nuevo hay que enseñárselo a las sondas.</b> Los macizos entraron y las seis sondas del mundo servido siguieron construyendo el ráster sin ellos: la primera medida del peaje dio «sin cambio» y era mentira. Una sonda ciega no da error, da un cero tranquilizador.</li>
+      <li><b>Contar colocaciones no es medir el mundo</b>, y un tope no es un resultado: «hasta seis escaleras» son 2-5 reales.</li>
+    </ul>
+
+    <div class="note risk">
+      <div class="t">Verificaciones que siguen sin hacerse</div>
+      <ul>
+        <li><b>ADR-104 (e)</b> — que el 23 % de tramos de escalera baje con la verticalidad nueva. Está instrumentado y es la métrica que dice si se está sustituyendo verticalidad o sólo añadiéndola.</li>
+        <li><b>ADR-104 (f)</b> — contrato de junta con un atrio justo en la frontera de región.</li>
+        <li><b>ADR-103 (c)</b> — que los cuatro perfiles de identidad se distingan medidos. No se puede hacer: no hay ni un perfil construido.</li>
+        <li><b><code>Wg3CarvingTests</code></b> — los 5 tests de ADR-101 compilan y <b>no se han ejecutado nunca</b>. Falso verde por omisión.</li>
+        <li>Pretil y megapilar <b>con ojos</b>: se anduvo un atrio y una caída, no un balcón.</li>
+      </ul>
+    </div>
+
+    <h3>El orden que viene, y la decisión que lo bloquea</h3>
+    <ol>
+      <li><s>Terminar la mudanza de autoridad</s> — <b>hecho el 29 de agosto</b>: loot, construcción, claims, sitio de nacimiento y reparto de facelings, todo jugado.</li>
+      <li><b>Identidad de subnivel (ADR-103)</b> — desbloqueada por ADR-104: los agujeros son el descenso que le faltaba al eje Y. La identidad se mueve en el aire (niebla, ambiente, color de plafón) porque el papel ya se quedó el eje de tono.</li>
+      <li><b>Retirar WG2</b> — ADR-109. Etapa 1 hecha; la 2 la decide una elección de contenido (Level 4 y salas autoradas) y la 3 es el borrado, 12.124 líneas.</li>
+      <li><b>Contenido y formas</b> — el cuello no es código: las huellas autoradas no coinciden con las que el plan pide (5-14 piezas colocadas sobre ~170 espacios por región), y ya hay histograma para autorar contra él.</li>
+    </ol>
+    <p><b>La decisión pendiente:</b> el Frente C (que el plan se ajuste al catálogo) hace el mundo <b>más regular</b> y ADR-103 lo hace <b>más raro</b>. Van en direcciones opuestas y hay que decidir cuál manda antes de tocar ninguno de los dos.</p>
+
+    <h3>Lo que se queda en WG2 mientras tanto: las salas autoradas</h3>
+    <p>El sistema de ADR-083 sigue vivo y sigue colocando contra el mundo viejo. Cómo funciona hoy: horneas una sala, el horneado reexporta <code>room_manifest.json</code>, el backend lo carga al arrancar, reserva la huella más un anillo <code>SealedWall</code> y margen macizo, vacía el interior y excava un pasillo <b>por cada abertura del prefab</b>; el cliente instancia el prefab y no pinta suelo, techo ni paredes encima. Cadencia medida: <b>31 salas en 9 km²</b>, una cada ~539 m, con 27 tests propios en verde.</p>
+    <p>Su cuello no es código, y es el mismo que el de WG3 por otro camino: <b>una sola pieza en el pool</b>, así que sale siempre la misma. Hornear 6-8 piezas pequeñas era el 80 % del retorno y cuesta cero líneas. Con la mudanza a WG3, el autorado cambió de mesa —el editor de salas es ahora el de WG3 y <code>Wg3PieceBake</code> traduce el dibujo a huella real con bocas tipadas—, así que este sistema es legado con fecha: entra en la retirada de WG2.</p>
+
+    <h4>Coste real de una feature del mapa, por escalón</h4>
+    <div class="scroller">
+      <table>
+        <thead><tr><th>Escalón</th><th>Qué entra</th><th>Por qué</th></tr></thead>
+        <tbody>
+          <tr><td><span class="chip ok">gratis</span></td><td>Megapilares, agujeros de suelo, mezzanines, artesonados, rejillas, zócalos</td><td>Son cajas alineadas a los ejes y el relleno ya sabe emitirlas.</td></tr>
+          <tr><td><span class="chip ok">barato</span></td><td>Marcos, medias lunas, arcos, molduras, dinteles, rodapiés</td><td>Malla de cliente sobre una puerta que ya existe: el servidor sólo necesita saber dónde está el hueco. <b>El mejor ratio sensación/coste de la lista.</b></td></tr>
+          <tr><td><span class="chip mid">medio</span></td><td>Salas redondas, triangulares, en diagonal — como pieza autorada</td><td>La malla es libre; la colisión se rasteriza a 50 cm. Sirve para salas, no para detalles.</td></tr>
+          <tr><td><span class="chip no">hoy imposible</span></td><td>Geometría no-caja <b>generada</b> (un pasillo curvo que salga del plan)</td><td><code>PlanRect</code> es literalmente un rectángulo y la subdivisión BSP no sabe otra cosa. No es un ajuste: es otro sistema, con su propio ADR y probablemente su propio rasterizador.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="ia">
+    <div class="sec-head">
+      <div class="kicker">02 — IA y criaturas</div>
+      <h2>La IA se mudó al mundo nuevo, y por el camino ganó verticalidad</h2>
+      <p>ADR-108 y sus tres enmiendas, todo el 29 de agosto. Robapieles, facelings adultos y niños navegan, ven y golpean contra el ráster de WG3. Validado en partida, las dos especies, sin bump de wire.</p>
+    </div>
+
+    <div class="tiles">
+      <div class="tile good"><div class="k">Especies mudadas</div><div class="v">2</div><div class="s">robapieles · facelings</div></div>
+      <div class="tile good"><div class="k">Wire</div><div class="v">0</div><div class="s">bumps necesarios</div></div>
+      <div class="tile warn"><div class="k">Fallos de navegación</div><div class="v">6+2</div><div class="s">todos cerrados el mismo día</div></div>
+      <div class="tile bad"><div class="k">Sin probar</div><div class="v">2+</div><div class="s">jugadores simultáneos</div></div>
+    </div>
+
+    <h3>Qué cambia jugando</h3>
+    <ul>
+      <li><b>La IA tiene verticalidad.</b> El A* lleva la planta en la clave: sube escaleras, cruza atrios, entiende un agujero de forjado. Antes navegaba una rejilla invisible de un mundo que ya no se dibujaba — 606 eventos <code>faceling_unwedged</code> en tres minutos era el síntoma.</li>
+      <li><b>Escapar cuesta más, y es geometría, no dificultad autorada.</b> El mundo obliga a correr por pasillos y habitaciones; el reparto de papeles deja pasillo en el 11 % y callejón en el 10 %. Los atajos gratis que daba el cierre de islas de WG2 ya no sirven el mundo.</li>
+      <li><b>Los niños funcionan.</b> Facelings adultos que trabajan y niños que roban en colmena (ADR-094), ahora sobre el ráster nuevo, dados por buenos en partida.</li>
+    </ul>
+
+    <div class="note win">
+      <div class="t">Ver no es pasar — y esto se midió, no se dedujo</div>
+      <p><code>segment_is_clear</code> pregunta si un <b>cuerpo</b> recorre la recta andando: exige suelo debajo. Usarla como línea de visión ciega a la criatura al otro lado de un atrio y no distingue una barandilla. Medido con la sonda <code>probe_sight_is_not_the_same_as_passage</code>: <b>de 611 parejas, 49 discrepan — el 8 %</b>. Los facelings perciben mucho más que el robapieles, y por eso su mudanza destapó lo que la del robapieles no.</p>
+    </div>
+
+    <div class="note risk">
+      <div class="t">La familia de fallos que ya ha picado cuatro veces</div>
+      <p>Los seis fallos de navegación del robapieles eran el mismo: <b>un número que dejó de significar lo que dice su comentario</b>. El radio de llegada venía en celdas de WG2 y se saltaba las esquinas; la recta no medía el cuerpo y se clavaba en ellas; el cuerpo no tenía tolerancia de escalón y se paraba a media escalera; el A* no llevaba la planta en la clave; y el radio de la ventana de navegación se midió con el de un jugador.</p>
+      <p><b>La celda pasa de 2,5 m a 0,5 m al migrar: cualquier constante escrita en celdas cambia de tamaño ×5 sin que su comentario deje de sonar razonable.</b> Cuarta reincidencia contada, y el loot es el siguiente que va a pisarla.</p>
+      <p>Añadido: las <b>capas de 4 m de WG2 no alinean con las plantas de 3,32 m</b> de WG3, así que cualquier <code>world_pos_to_layer</code> que compare dos criaturas miente a rachas según la cota.</p>
+    </div>
+
+    <div class="note risk">
+      <div class="t">Y dos consultas que la mudanza deshizo sin dar un solo error</div>
+      <p><b>Las piezas construidas dejaron de parar a la criatura.</b> <code>sync_built_cells</code> escribía las celdas ocupadas en la caja de <code>grid_gen</code>, y la navegación de WG3 no mira esa caja: desde ADR-108 el robapieles <b>volvía a atravesar el muro que acababas de levantar</b>. Se lee como juego roto, no como bicho temible. Ahora las celdas van al <code>Wg3CollisionCache</code>, aparte del ráster porque el ráster es función pura de la semilla y esto cambia cada vez que alguien pone una pieza.</p>
+      <p><b>Y el sub-objetivo de viaje largo venía en celdas</b> — quinta vez en esta migración. ADR-041 lo pone «justo dentro de la ventana» y lo ponía a 55 m, o sea 22 celdas de 2,5: la ventana de WG3 mide 30 m, así que el sub-objetivo caía <b>fuera de su propia ventana</b>, la búsqueda no encontraba nada y el viaje largo degradaba a la recta ciega — exactamente lo que ADR-041 existe para evitar. Las dos salieron de <b>auditar qué quedaba de WG2</b>, no de un playtest.</p>
+      <p>Vivo y con nombre: las piezas construidas <b>paran</b> a las criaturas pero no las <b>rodean</b>, y no cortan la vista. Y quedan 15 usos de <code>world_pos_to_layer</code> fuera de la navegación —activación, capa del ruido, agrupar claims, el coro de gritos— midiendo capas de 4 m en un mundo de plantas de 3,32.</p>
+    </div>
+
+    <h4>Un ajuste de bulto que sale de jugar</h4>
+    <p>La forma bestia chocaba con el techo de las escaleras: <code>RealFormScale</code> 1,75 → 1,63, o sea 2,90 m → <b>2,70 m</b>. El ×1,75 se había dimensionado contra techo de pasillo (3,3 m) y el intradós de una escalera da menos. Sólo cliente — <code>PHANTOM_BODY_RADIUS</code> no se toca y el avatar remoto hereda la escala sin re-hornear.</p>
   </section>
 
   <section id="loop">
     <div class="sec-head">
-      <div class="kicker">01 — Estado del loop</div>
-      <h2>El loop ya está construido; nadie se lo ha enseñado al jugador</h2>
-      <p>Once sistemas de jugabilidad comprobados con grep sobre <code>backend/src/</code> y <code>Assets/Scripts/</code> antes de mirar ningún ADR — porque las cabeceras de los ADR han demostrado mentir sobre sí mismas.</p>
+      <div class="kicker">03 — El loop</div>
+      <h2>Ocho sistemas de once, y el eslabón que los conecta sigue sin escribirse</h2>
+      <p>La frase del juego no ha cambiado: <b>le arrancas territorio estable a un laberinto que se mueve</b>. La máquina de estados lleva meses corriendo; lo que falta es que el jugador pueda actuar sobre ella.</p>
     </div>
-
-    <div class="tiles">
-      <div class="tile good"><div class="k">Implementados</div><div class="v">8</div><div class="s">de 11 sistemas verificados</div></div>
-      <div class="tile warn"><div class="k">Parciales</div><div class="v">2</div><div class="s">minería · crafteo</div></div>
-      <div class="tile bad"><div class="k">Inexistente</div><div class="v">1</div><div class="s">objetivo / extracción</div></div>
-      <div class="tile"><div class="k">Piezas que faltan</div><div class="v">3</div><div class="s">no es un rediseño</div></div>
-    </div>
-
-    <h3>La mecánica núcleo, que lleva meses en el backend</h3>
-    <p>La meta no hay que inventarla: es arrancarle territorio estable a un laberinto que se mueve. Un chunk cuenta su <code>teleport_timer</code> y se desplaza; estabilizarlo lo frena; anclarlo lo fija para siempre y ahí vive tu base. La máquina de estados ya corre en producción (<code>world/mod.rs:869-882</code>), persiste (<code>save.rs</code>) y su tabla de recetas está autorada (<code>crafting/recipes.rs</code>) — sin un solo consumidor.</p>
 
     <div class="scroller">
       <table>
@@ -217,13 +429,14 @@ footer p{max-width:78ch}
         <tbody>
           <tr><td>RANDOM</td><td>se desplaza cuando el temporizador llega a cero</td><td class="num">—</td></tr>
           <tr><td>STABILIZED</td><td>resiste el desplazamiento, la cordura drena menos</td><td class="num">T1 instantáneo · T2 15 min · T3 30 min</td></tr>
-          <tr><td>ANCHORED</td><td>no se desplaza jamás</td><td class="num">50 cable · 25 min</td></tr>
+          <tr><td>ANCHORED</td><td>no se desplaza jamás; ahí vive la base</td><td class="num">50 cable · 25 min</td></tr>
         </tbody>
       </table>
     </div>
-    <p>Esa curva —barato, caro, permanente— es exactamente la progresión tecnológica pedida, y ningún competidor del género la tiene: su mundo es diseño de nivel estático.</p>
+    <p>Esa curva —barato, caro, permanente— es la progresión tecnológica del juego, y ningún competidor del género la tiene: sus mundos son diseño de nivel estático. <b>Regla de diseño dura:</b> cuándo se moverá un chunk es aleatorio y opaco a propósito. El HUD no lo delata nunca; anticiparlo será función de un objeto del mundo por diseñar, no de la interfaz.</p>
 
     <h3>Verificación sistema por sistema</h3>
+    <p>Comprobado con grep sobre <code>backend/src/</code> y <code>Assets/Scripts/</code> antes de mirar ningún ADR — porque las cabeceras de los ADR han demostrado mentir sobre sí mismas.</p>
     <div class="scroller">
       <table>
         <thead><tr><th>Sistema</th><th>Estado</th><th>Evidencia</th><th>Qué dice el registro</th></tr></thead>
@@ -231,33 +444,31 @@ footer p{max-width:78ch}
           <tr><td>Hambre / sed / cordura</td><td><span class="chip ok">implementado</span></td><td><code>stats.rs:116-149</code></td><td>coincide</td></tr>
           <tr><td>Comer / beber</td><td><span class="chip ok">implementado</span></td><td><code>stats.rs:91-98</code></td><td>coincide</td></tr>
           <tr><td>Construcción de base</td><td><span class="chip ok">implementado</span></td><td><code>StpBuildingReplicator.cs</code> · <code>save.rs</code></td><td>ADR-037 dice «no implementada»</td></tr>
-          <tr><td>Capas verticales</td><td><span class="chip ok">implementado</span></td><td><code>vertical_flags.rs:13-14</code> · <code>generator.rs:576-578</code></td><td>coincide</td></tr>
-          <tr><td>Robapieles</td><td><span class="chip ok">implementado</span></td><td><code>game_loop/phantom.rs</code> — 12 estados con ADR-075/076</td><td>ADR-050 dice «propuesta»; IA v2 sin playtest</td></tr>
-          <tr><td>Voz de proximidad</td><td><span class="chip ok">implementado</span></td><td><code>protocol.rs:755</code> — 25 m, filtro 3D con test</td><td>ADR-046 dice «cero código»</td></tr>
+          <tr><td>Capas verticales</td><td><span class="chip ok">implementado</span></td><td><code>vertical_flags.rs</code> · <code>generator.rs</code></td><td>en WG3 la capa la sustituye la planta</td></tr>
+          <tr><td>Robapieles</td><td><span class="chip ok">implementado</span></td><td><code>game_loop/phantom.rs</code> — 12 estados, ya sobre WG3</td><td>ADR-050 dice «propuesta»</td></tr>
+          <tr><td>Facelings adultos y niños</td><td><span class="chip ok">implementado</span></td><td>ADR-094 + ADR-108 enm. 2</td><td>validado en partida</td></tr>
+          <tr><td>Voz de proximidad</td><td><span class="chip ok">implementado</span></td><td><code>protocol.rs</code> — 25 m, filtro 3D con test</td><td>ADR-046 dice «cero código»</td></tr>
           <tr><td>Persistencia</td><td><span class="chip ok">implementado</span></td><td><code>save.rs:22-80</code></td><td>coincide</td></tr>
           <tr><td>Minería / recolección</td><td><span class="chip mid">parcial</span></td><td>replica en red; persistencia sin confirmar</td><td>sin ADR</td></tr>
-          <tr><td>Crafteo</td><td><span class="chip mid">parcial</span></td><td>tabla completa, flujo diferido a «Fase 4»</td><td>declarado como scaffolding</td></tr>
-          <tr><td>HUD de capa / profundidad</td><td><span class="chip mid">parcial</span></td><td><code>MinimapRenderer.cs:26</code> conoce la capa y nunca la dibuja</td><td>sin ADR</td></tr>
-          <tr><td>Objetivo / extracción</td><td><span class="chip no">no existe</span></td><td>cero código de meta, quest o salida de nivel</td><td>sin ADR</td></tr>
+          <tr><td>Crafteo</td><td><span class="chip mid">parcial</span></td><td>tabla completa, flujo diferido</td><td>declarado como scaffolding</td></tr>
+          <tr><td>HUD de capa / profundidad</td><td><span class="chip mid">parcial</span></td><td><code>MinimapRenderer.cs</code> conoce la capa y nunca la dibuja</td><td>sin ADR</td></tr>
+          <tr><td>Objetivo / extracción</td><td><span class="chip no">no existe</span></td><td>cero código de meta, quest o salida de nivel</td><td>sin ADR · y es deliberado</td></tr>
         </tbody>
       </table>
     </div>
 
-    <h3>Lo que falta de verdad — tres piezas</h3>
+    <h3>Las tres piezas que faltan</h3>
     <ul>
-      <li><b>El flujo de crafteo (Fase 4).</b> <span class="chip no">bloqueante</span> La tabla de recetas existe y nadie la consume. Sin este eslabón, minar no sirve para nada y los tres tiers son texto muerto. ADR-064 ya decidió el modelo: el crafteo se muda al vocabulario STP, el cliente reporta y el servidor valida contra <code>stp_inventory</code>. Queda opcode, bump de wire, quién cuenta el tiempo y proximidad al Workbench.</li>
-      <li><b>Hacer legible la estabilización.</b> <span class="chip mid">alto impacto, coste bajo</span> El jugador no ve qué chunk es suyo, cuál está anclado ni en qué capa está. Es HUD, no arquitectura, y desde ADR-077 hay superficie diegética donde ponerlo (el reloj de muñeca). Lo que el HUD NO debe decir: cuándo se moverá un chunk — esa incertidumbre es la mecánica.</li>
-      <li><b>Peligro creciente por profundidad.</b> <span class="chip mid">tuneo</span> Que bajar sea peor: más entidades, menos luz, cordura más rápida. Parámetros sobre sistemas existentes. Es el antídoto directo al «grind sin escalada» que hundió a los competidores.</li>
+      <li><b>Que craftear funcione.</b> <span class="chip no">bloqueante</span> La tabla de recetas existe (<code>crafting/recipes.rs</code>) y nadie la consume. Sin este eslabón, minar no sirve para nada y los tres tiers son texto muerto. ADR-064 ya decidió el modelo — el crafteo se muda al vocabulario STP, el cliente reporta, el servidor valida contra <code>stp_inventory</code>. Queda opcode, bump de wire, quién cuenta el tiempo y proximidad al banco.</li>
+      <li><b>Que se vea de quién es el suelo.</b> <span class="chip mid">alto impacto, coste bajo</span> Qué chunk es tuyo, cuál está anclado, en qué capa estás. Es interfaz, no arquitectura, y hay superficie diegética donde ponerlo: el reloj de muñeca (ADR-077).</li>
+      <li><b>Que bajar sea peor.</b> <span class="chip mid">tuneo</span> Más entidades, menos luz, cordura más rápida a mayor profundidad, sobre sistemas que ya existen. Es el antídoto directo al «grind sin escalada» que hundió a <i>Inside the Backrooms</i> — 78 % → 45 % en 30 días.</li>
     </ul>
 
-    <h4>Y lo que conviene dejar quieto</h4>
-    <p>PvP (ya en V0, ningún competidor lo usa como motor), superestructuras (contenido de relleno, generador retirado) y más entidades (el robapieles aún no se ha validado a 2+ jugadores). Los tres, leídos al revés, son el contenido post-lanzamiento de la sección 04.</p>
+    <h4>La primera hora del jugador nuevo, sin tutorial</h4>
+    <p>Despiertas con sed y buscas · encuentras agua y aprendes que hay poca · encuentras chatarra y un banco, y crafteas <span class="chip no">falta</span> · vuelves a un sitio y ya no está, y entiendes el juego · estabilizas un chunk y aguanta <span class="chip mid">ilegible hoy</span> · anclas, y ese suelo es tuyo para siempre.</p>
 
-    <div class="note risk">
-      <div class="t">El problema más caro no es de diseño: es que nadie sabe qué está construido</div>
-      <p>Tres sistemas terminados figuraban como pendientes, y se planificó dos veces trabajo ya hecho. Con un registro append-only donde el estado se congela en la fecha de redacción, leer mal el estado se encarece cada sesión. La regla que sale de esto: enmienda de estado anclada al cerrar cada implementación — dos líneas.</p>
-      <p>La lección tiene simétrica y vale más que cualquier fila: una tabla de deuda escrita de un barrido rápido envejece igual de mal que una cabecera de ADR. De la primera tabla de deuda, cuatro afirmaciones propias no sobrevivieron a verificarse contra código.</p>
-    </div>
+    <h4>Lo que conviene dejar quieto</h4>
+    <p>PvP (ya en V0; ningún competidor del género lo usa como motor), superestructuras (contenido de relleno) y más entidades (el robapieles aún no se ha validado a 2+ jugadores). Los tres son contenido post-lanzamiento, no loop.</p>
 
     <h3>Contraste de género — qué premia y qué castiga</h3>
     <div class="scroller">
@@ -274,14 +485,14 @@ footer p{max-width:78ch}
         </tbody>
       </table>
     </div>
-    <p>El ciclo salir/volver es el patrón de 3008, el título que más ha aguantado. La trampa es el grind sin escalada — y el antídoto ya está autorado en los tres tiers. El segundo riesgo llega después: con territorio anclado persistente, un save corrupto no es molestia, es la partida entera.</p>
+    <p>El ciclo salir/volver es el patrón de 3008, el título que más ha aguantado. La trampa es el grind sin escalada, y el antídoto ya está autorado en los tres tiers. El segundo riesgo llega después: con territorio anclado persistente, un save corrupto no es una molestia, es la partida entera.</p>
   </section>
 
   <section id="economia">
     <div class="sec-head">
-      <div class="kicker">02 — Economía de supervivencia</div>
-      <h2>La escasez ya es real; la jornada todavía no está calibrada</h2>
-      <p>Siete commits (17 ago) recortaron la oferta y arreglaron la demanda. Las densidades están medidas con un arnés headless sobre 10.000 chunks por zona, no estimadas.</p>
+      <div class="kicker">04 — Economía de supervivencia</div>
+      <h2>La escasez ya es real; la jornada sigue sin calibrarse</h2>
+      <p>Las densidades están medidas con arnés headless sobre 10.000 chunks por zona. Nada de esta sección se ha movido desde el recorte del 17 de agosto — y eso es, en sí, el dato.</p>
     </div>
 
     <div class="scroller">
@@ -291,10 +502,14 @@ footer p{max-width:78ch}
           <tr><td>Hambre</td><td class="num">0,05/s</td><td class="num">0,005/s</td><td>33 min → 5 h 33 min</td></tr>
           <tr><td>Sed (servidor)</td><td class="num">0,07/s</td><td class="num">0,007/s</td><td>24 min → 3 h 58 min</td></tr>
           <tr><td>Sed (cliente offline)</td><td class="num">0,09/s</td><td class="num">0,007/s</td><td>cierra una divergencia del 28,6 %</td></tr>
-          <tr><td>Muerte por sed</td><td class="num">26 min</td><td class="num">4 h 01 min</td><td>la sed sigue siendo la restricción vinculante</td></tr>
-          <tr><td>Respawn</td><td class="num">100 / 100</td><td class="num">conserva</td><td>suelo de gracia 25 (~59 min de sed)</td></tr>
+          <tr><td>Muerte por sed</td><td class="num">26 min</td><td class="num">4 h 01 min</td><td>sigue siendo la restricción vinculante</td></tr>
         </tbody>
       </table>
+    </div>
+
+    <div class="note risk">
+      <div class="t">La jornada objetivo son 45-90 min y el depósito dura 4 horas</div>
+      <p>Con la sed a 0,007/s, la muerte por sed más rápida posible son cuatro horas, por escasa que sea el agua: una expedición no puede tener presión de recursos si el depósito cubre media sesión. Recortar la jornada a su rango objetivo va <b>antes</b> de dar por buena ninguna otra cifra de economía. Y hay un corolario: rebajar drenajes y «el agua como palanca social» son mutuamente excluyentes — la presión entre jugadores se paga en distancia y exposición, no en caudal.</p>
     </div>
 
     <div class="scroller">
@@ -303,33 +518,24 @@ footer p{max-width:78ch}
         <tbody>
           <tr><td>Catálogo del mundo</td><td class="num">20+ objetos</td><td class="num">solo Spray Can</td></tr>
           <tr><td>Caché por chunk</td><td class="num">30-70 %</td><td class="num">3-7 %</td></tr>
-          <tr><td>Objetos por caché</td><td class="num">6 fijos</td><td class="num">1-3 · media 1,26</td></tr>
           <tr><td>Zonas de carryable</td><td class="num">20-75 %</td><td class="num">0 %</td></tr>
-          <tr><td>Cofres por partida</td><td class="num">16</td><td class="num">4</td></tr>
-          <tr><td>Contenido del cofre</td><td class="num">7-8 stacks variados</td><td class="num">1 agua + 0-2 spray</td></tr>
           <tr><td>Densidad medida</td><td class="num">21,6 objetos / anillo 3×3</td><td class="num">0,37-0,80 botes / anillo</td></tr>
         </tbody>
       </table>
     </div>
 
-    <div class="note risk">
-      <div class="t">Las dos mitades tiraron en direcciones opuestas</div>
-      <p>El agua pasó de cubrir 45 min a cubrir ~13 h 30 min por partida: la escasez ya no es lo que limita una sesión. Y hay un techo aritmético nuevo — con sed a 0,007/s, la muerte por sed más rápida posible son 4 horas, por escasa que sea el agua. Rebajar drenajes y «el agua como palanca social» son mutuamente excluyentes: la presión entre jugadores tendrá que pagarse en distancia y exposición, no en caudal.</p>
-    </div>
-
-    <h3>Lo que queda para estabilizarlo, en orden</h3>
-    <p>Los dos primeros hacen que cualquier número de arriba mienta, así que calibrar antes de arreglarlos es trabajo perdido.</p>
+    <h3>Lo que queda para estabilizarla, en orden</h3>
+    <p>Los dos primeros hacen que cualquier número de arriba mienta, así que calibrar antes de arreglarlos es trabajo perdido. Ninguno se ha tocado desde el 20 de agosto.</p>
     <div class="scroller">
       <table>
         <thead><tr><th>Pendiente</th><th>Tipo</th><th>Qué pasa hoy</th></tr></thead>
         <tbody>
           <tr><td>Los cofres se acumulan en cada arranque</td><td><span class="chip no">bug · ADR</span></td><td>El dedupe vive en RAM y nace vacío; la única guarda que sobrevive al reinicio es posicional (0,5 m) contra colocación aleatoria sin semilla. Un save llegó a 36 cofres; un backup tiene 112 = 7 arranques × 16.</td></tr>
-          <tr><td>El agua solo puede existir donde empezaste</td><td><span class="chip no">arquitectura · ADR</span></td><td>Siembra one-shot, centrada en la cámara del host, radio 5-200 m, solo el host siembra. El 99,99 % del mapa infinito no tiene un solo cofre. Bloquea cualquier diseño de pozos repartidos.</td></tr>
+          <tr><td>El agua sólo puede existir donde empezaste</td><td><span class="chip no">arquitectura · ADR</span></td><td>Siembra one-shot centrada en la cámara del host, radio 5-200 m, y sólo el host siembra. El 99,99 % del mapa infinito no tiene un solo cofre.</td></tr>
           <tr><td>La cordura es 86× más rápida que la sed y es inerte</td><td><span class="chip mid">colateral</span></td><td>Drena a ~0,60/s, se clava en cero en minutos, no hace daño y <code>SanityEffects</code> está comentado en el bootstrap.</td></tr>
           <tr><td>«Un día» no está definido</td><td><span class="chip mid">decisión</span></td><td>Dos relojes con 43× de discrepancia: el ciclo del vendor hace un día en 33 min; la esfera del reloj va a tiempo real. Propuesta: fijar el día a 4 horas reales — una línea.</td></tr>
-          <tr><td>El servidor no valida cuánta agua trae un cofre</td><td><span class="chip no">seguridad · ADR</span></td><td>El backend acepta el loot que rollea el cliente: solo comprueba host, dedupe y no-vacío. Un host parcheado se siembra agua ilimitada.</td></tr>
+          <tr><td>El servidor no valida cuánta agua trae un cofre</td><td><span class="chip no">seguridad · ADR</span></td><td>El backend acepta el loot que rollea el cliente: sólo comprueba host, dedupe y no-vacío. Un host parcheado se siembra agua ilimitada.</td></tr>
           <tr><td>Beber por sorbos</td><td><span class="chip mid">feature</span></td><td>Es lo que hace legible compartir. Y hace falta por otra razón medida: bebiendo con sed por encima de 40, el clamp a 100 tira hasta el 60 % del recurso más importante.</td></tr>
-          <tr><td>Construcción sin materiales</td><td><span class="chip neu">consecuencia aceptada</span></td><td>Con las zonas de carryable a cero no hay Log, Stone ni Metal por el suelo. Decisión consciente; si se prueba a construir hoy, no habrá con qué.</td></tr>
         </tbody>
       </table>
     </div>
@@ -337,17 +543,25 @@ footer p{max-width:78ch}
     <h4>Lo que hay que playtestear antes de calibrar — un cambio por vez</h4>
     <ul>
       <li>Depósito lleno cronometrado, con <code>DEV_FREEZE_SURVIVAL</code> fuera del entorno y los tres regímenes de conexión coincidiendo.</li>
-      <li>Con qué sed bebe el jugador — si bebe por encima de 40, cualquier cuenta de oferta queda inválida.</li>
-      <li>Velocidad real de avance en el laberinto: convierte «una caja cada 25-40 min» de estimación en medición.</li>
+      <li>Con qué sed bebe el jugador: si bebe por encima de 40, cualquier cuenta de oferta queda inválida.</li>
+      <li>Velocidad real de avance en el mundo de WG3 — y esta cifra <b>cambió</b> con la geometría nueva y las marchas del jugador, así que la vieja no vale.</li>
       <li>Fracción de cofres que se encuentran al pasar, y si los jugadores siguen usando la muerte como gestión de sed.</li>
+    </ul>
+
+    <h3>Farmeo y almacenaje — dónde quedó</h3>
+    <ul>
+      <li><b>La estantería existe como pieza:</b> <code>BR_BuildingPiece_StorageRack</code>, con su visual de contenido (<code>StorageRackDisplay.cs</code>). Era el bloque grande del roadmap de farmeo y está construido.</li>
+      <li><b>Encender el metal es rebalancear, no construir:</b> el pipeline de carryables está completo y determinista por <code>(worldSeed,cx,cz,slot)</code>, con respawn de 30 min y autoridad del backend. Lo único que falta es subir <code>carryableZoneChance</code> de cero y afinar la pila.</li>
+      <li><b>Lo que un contenedor construido guarda no sincroniza:</b> es host-local, el joiner lo abre vacío y el contenido no sobrevive a la reconexión. Diferido a propósito — pide ADR y bump de wire.</li>
+      <li><b>Agujero de seguridad conocido:</b> <code>process_stp_carryable_pickup</code> no comprueba distancia; <code>process_stp_pickup</code> sí. Es media jornada de backend y entra en el bloque de la sección 05.</li>
     </ul>
   </section>
 
   <section id="deuda">
     <div class="sec-head">
-      <div class="kicker">03 — Deuda técnica</div>
-      <h2>68 hallazgos, 36 con trabajo hecho</h2>
-      <p>Auditoría de solo lectura del 18 de agosto: 20 pasadas multi-agente en cuatro rondas más re-verificación adversarial —agentes instruidos a refutar, no a confirmar—. De 42 claims originales, una cayó.</p>
+      <div class="kicker">05 — Deuda técnica</div>
+      <h2>Lo barato está cerrado; el bloque caro sigue entero</h2>
+      <p>Dos auditorías vigentes: la de 68 hallazgos del 18 de agosto (multi-agente, solo lectura, con re-verificación adversarial) y la del 28 de agosto sobre 186 <code>.cs</code> y 109 <code>.rs</code> en diez pasadas paralelas.</p>
     </div>
 
     <div class="bar" role="img" aria-label="68 hallazgos por severidad: 27 código muerto, 5 muy leve, 8 leve, 9 medio, 13 grave, 6 muy grave">
@@ -367,238 +581,257 @@ footer p{max-width:78ch}
       <span><i style="background:var(--ink)"></i>Muy grave 6</span>
     </div>
 
-    <div class="tiles">
-      <div class="tile good"><div class="k">Resueltos</div><div class="v">35</div><div class="s">7 commits, 18-19 ago</div></div>
-      <div class="tile warn"><div class="k">Parcial</div><div class="v">1</div><div class="s">BoundedDedupeSet</div></div>
-      <div class="tile"><div class="k">Conservados</div><div class="v">3</div><div class="s">features con diseño razonado</div></div>
-      <div class="tile bad"><div class="k">Pendientes marcados</div><div class="v">6</div><div class="s">+ Grave/Muy grave sin abrir</div></div>
-      <div class="tile neu"><div class="k">Descartado</div><div class="v">1</div><div class="s">falso positivo al reverificar</div></div>
-    </div>
-
-    <h3>Orden de trabajo, tal y como quedó</h3>
     <div class="scroller">
       <table>
         <thead><tr><th>Categoría</th><th class="num">Avance</th><th>Nota</th></tr></thead>
         <tbody>
-          <tr><td>Código muerto</td><td class="num">17 ✓ + 1 parcial</td><td>Commits <code>0da821ca</code> / <code>91c9f62a</code> / <code>1c7840e0</code>. Quedan 3 conservados a propósito y <code>PacketType</code>, que toca el wire y exige confirmar el lado C#.</td></tr>
+          <tr><td>Código muerto</td><td class="num">17 ✓ + 1 parcial</td><td>Quedan 3 conservados a propósito y <code>PacketType</code>, que toca el wire.</td></tr>
           <tr><td>Muy leve</td><td class="num">5 / 5 ✓</td><td>Impacto cero verificado antes de tocar.</td></tr>
-          <tr><td>Leve</td><td class="num">4 / 8 ✓</td><td>Los 4 diferidos cambian comportamiento en un camino real de hoy — mismo rigor que Medio.</td></tr>
-          <tr><td>Medio</td><td class="num">7 / 9 ✓</td><td>El fix de reconexión (<code>BuildRoomRegistry</code>/<code>ZoneRegistry</code>) resolvió de rebote 1 Grave y 1 Leve. 2 pausados: son rearquitectura de control de flujo.</td></tr>
-          <tr><td>Grave</td><td class="num">13 abiertos</td><td>El secuestro de <code>peer.addr</code> pide visto bueno explícito: toca el modelo de confianza de red (ADR-015/079).</td></tr>
-          <tr><td>Muy grave</td><td class="num">6 abiertos</td><td>El bloque de seguridad de red. Dos exigen ADR nuevo por tocar el formato de wire — regla dura #7.</td></tr>
+          <tr><td>Leve</td><td class="num">5 / 8 ✓</td><td>Los diferidos cambian comportamiento en un camino que se ejerce hoy.</td></tr>
+          <tr><td>Medio</td><td class="num">7 / 9 ✓</td><td>2 pausados: son rearquitectura de control de flujo, no fixes.</td></tr>
+          <tr><td>Grave</td><td class="num">13 abiertos</td><td>Sin tocar.</td></tr>
+          <tr><td>Muy grave</td><td class="num">6 abiertos</td><td>Sin tocar. Dos exigen ADR nuevo por tocar el formato de wire.</td></tr>
         </tbody>
       </table>
     </div>
 
     <div class="note risk">
-      <div class="t">Lo más serio: identidad de red confiada al payload</div>
-      <p>Nueve claims re-verificadas, ninguna refutada, y dos subieron de severidad. La raíz es una: <code>allocate_peer_id</code> deja que el cliente se autoasigne su <code>PeerId</code>, y varios handlers leen quién actúa del payload en vez de la cabecera del paquete.</p>
+      <div class="t">Lo más serio, y no se ha movido: identidad de red confiada al payload</div>
+      <p>La raíz es una — <code>allocate_peer_id</code> deja que el cliente se autoasigne su <code>PeerId</code>, y varios handlers leen quién actúa del payload en vez de la cabecera del paquete.</p>
       <ul>
-        <li><code>PvpHitCandidate</code> confía <code>attacker_id</code>/<code>victim_id</code> del payload — un tercer peer atribuye daño letal falso entre otros dos.</li>
-        <li><code>process_stp_build_add</code>/<code>process_stp_demolish</code> no comprueban dueño ni distancia; el wire ni siquiera transporta esos datos. Cualquiera demuele la base de cualquiera — anula el territorio de ADR-081.</li>
-        <li><code>StpCarryablePickupRequest</code> sin distancia: vaciar todo el loot de construcción del mundo. <code>process_stp_harvest_hit</code> sin tope: dejar cualquier recurso a cero de un paquete.</li>
-        <li><code>WorldInteractRequest</code> lleva dos spoofs apilados — posición declarada por el propio paquete e identidad sin pin a cabecera.</li>
+        <li><code>PvpHitCandidate</code> confía <code>attacker_id</code>/<code>victim_id</code> del payload: un tercer peer atribuye daño letal falso entre otros dos.</li>
+        <li><code>process_stp_build_add</code>/<code>process_stp_demolish</code> no comprueban dueño ni distancia — el wire ni siquiera transporta esos datos. Cualquiera demuele la base de cualquiera, lo que anula el territorio de ADR-081.</li>
+        <li><code>StpCarryablePickupRequest</code> sin distancia: vaciar el loot de construcción del mundo entero.</li>
         <li><code>handle_packet</code> migra <code>peer.addr</code> a cualquier IP que mande un <code>sender_id</code> conocido; basta alcanzar el puerto UDP del host.</li>
       </ul>
-      <p><b>Por qué es accionable hoy:</b> <code>SprayPlaceRequest</code>/<code>StpPlaceRequest</code> ya se corrigieron con el patrón correcto (<code>requester_id</code> de cabecera, ADR-068/081). Esto es la misma corrección aplicada a medias, no un hueco nuevo. La identidad autenticada de verdad está diferida a E2.</p>
+      <p><b>Por qué es accionable hoy:</b> <code>SprayPlaceRequest</code> y <code>StpPlaceRequest</code> ya se corrigieron con el patrón correcto (<code>requester_id</code> de cabecera). Esto es la misma corrección aplicada a medias, no un hueco nuevo. La identidad autenticada de verdad está diferida a E2.</p>
     </div>
 
-    <h3>Rendimiento — 9 sitios abiertos con alloc en hot path o crecimiento sin cota</h3>
+    <h3>Rendimiento — 9 sitios con alloc en camino caliente o crecimiento sin cota</h3>
     <div class="scroller">
       <table>
         <thead><tr><th>Hallazgo</th><th>Ubicación</th><th>Prioridad</th></tr></thead>
         <tbody>
           <tr><td>Clonado de materiales sin límite ni cleanup — fuga de memoria</td><td><code>ChunkRenderer.cs</code></td><td><span class="chip no">alta</span></td></tr>
-          <tr><td><code>build_world_state</code> clona 5 rosters 10×/seg — ~50 allocs/seg en el loop caliente</td><td><code>game_loop.rs</code></td><td><span class="chip no">alta</span></td></tr>
+          <tr><td><code>build_world_state</code> clona 5 rosters 10×/seg — ~50 allocs/seg en el bucle caliente</td><td><code>game_loop.rs</code></td><td><span class="chip no">alta</span></td></tr>
           <tr><td><code>interact_with_item</code> escanea todos los chunks para un lookup por id</td><td><code>world/mod.rs</code></td><td><span class="chip mid">media</span></td></tr>
           <tr><td>Minimapa, cadáveres, arrays vacíos a 10 Hz, backtracker del maze, marcadores de debug</td><td>5 sitios C# y Rust</td><td><span class="chip neu">baja</span></td></tr>
         </tbody>
       </table>
     </div>
-    <p>Ya resuelto y no estaba en la lista porque solo se ve arrancando el juego: cuatro watchers STP consultaban <code>GameMode.Instance</code> cada frame sin instancia en escena — 2.478.780 líneas de log en minutos, estando en el menú. Cerrado con <code>GameMode.HasInstance</code>, cero ediciones dentro del vendor.</p>
 
     <h3>Lo que nadie ha visto correr</h3>
     <ul>
-      <li><b>IA v2 del robapieles</b> — emboscada, derribo, caza predictiva. Verde en tests y símbolos verificados en el binario; los cinco guiones R1-R5 llevan escritos desde el 14 de agosto sin ejecutar. El robapieles a 2+ jugadores lleva pendiente desde junio.</li>
-      <li><b>Checklist de red</b> — evict de ADR-062, gate host-only, versión P2P y recorte de catálogo: los cuatro en <b>una misma sesión host+joiner</b>, para no perder correlación si algo interactúa.</li>
-      <li><b>ADR-059 y ADR-057</b> — autoría OFFICE y subregión 2×2: implementados, confirmados solo por aritmética.</li>
-      <li><b>Deuda silenciosa de despliegue</b> — el binario release no siempre se copia a la carpeta de builds (procesos huérfanos bloquean el archivo). Quien arranque de ahí corre la versión anterior sin que nada se lo diga.</li>
+      <li><b>El robapieles con 2+ jugadores</b> — pendiente desde junio, y ahora con más razón: su navegación es nueva entera.</li>
+      <li><b><code>Wg3CarvingTests</code></b> — los 5 tests de ADR-101 compilan y no se han ejecutado nunca. Piden el editor cerrado: <code>-runTests -batchmode -testPlatform EditMode</code>.</li>
+      <li><b>Pretiles y megapilares</b> — verdes en el ráster, ningún ojo humano los ha visto.</li>
+      <li><b>Deuda silenciosa de despliegue</b> — el binario release no siempre se copia a la carpeta de builds: procesos huérfanos bloquean el archivo y el script imprime éxito igual. Quien arranque de ahí corre la versión anterior sin que nada se lo diga.</li>
     </ul>
+
+    <h3>Auditoría del 28 de agosto — 15 hallazgos, y el método vale tanto como el resultado</h3>
+    <div class="tiles">
+      <div class="tile good"><div class="k">Resueltos</div><div class="v">2</div><div class="s">con test en rojo primero</div></div>
+      <div class="tile"><div class="k">Falsos positivos</div><div class="v">6</div><div class="s">verificados uno a uno</div></div>
+      <div class="tile warn"><div class="k">Reales menores</div><div class="v">5</div><div class="s">2 piden ADR para arreglarse</div></div>
+      <div class="tile neu"><div class="k">Sobrevalorados</div><div class="v">2</div><div class="s">rebajados por el consolidador</div></div>
+    </div>
+    <p>El crítico real era una <b>duplicación de loot en la ventana robo → muerte</b>: el evento <code>item_stolen</code> y el reporte <code>report_death_loot</code> viajan por canales independientes sin orden garantizado, así que un robo de faceling seguido de una muerte por causa local en los mismos frames dejaba el stack dos veces —una con el ladrón, otra en el cadáver—. Cerrado con deducciones pendientes por sesión, sin tocar wire ni schema, con tres tests confirmados en rojo antes de arreglar. <b>El diagnóstico original del hallazgo era incorrecto</b> y se corrigió al verificarlo: seis de los quince eran falsos positivos.</p>
 
     <div class="note">
       <div class="t">Antes de confiar en los documentos de auditoría del repo</div>
-      <p>Tres de los cuatro (<code>ARCHITECTURE_RISK_REVIEW.md</code>, <code>STABILITY_AUDIT_CURRENT.md</code>, <code>NETWORK_ARCHITECTURE_CURRENT.md</code>) siguen fechados el 2026-06-08. Léanse como histórico de qué se pensaba, no como estado. <code>AUDIT-2026-08-03.md</code> sí está vigente.</p>
+      <p><code>ARCHITECTURE_RISK_REVIEW.md</code>, <code>STABILITY_AUDIT_CURRENT.md</code> y <code>NETWORK_ARCHITECTURE_CURRENT.md</code> siguen fechados el 8 de junio: son histórico de qué se pensaba, no estado. Vigentes: <code>AUDIT-2026-08-13</code>, <code>AUDIT-2026-08-28</code> y <code>DEBT-ROADMAP.md</code>. Y la advertencia que ya costó dinero dos veces: <b>las cabeceras de los ADR no son estado</b> — se congelan en la fecha de redacción.</p>
     </div>
   </section>
 
-  <section id="negocio">
+  <section id="alpha">
     <div class="sec-head">
-      <div class="kicker">04 — Roadmap y negocio</div>
-      <h2>Una fecha externa fija, una decisión cara sin tomar</h2>
-      <p>Anclas reales: Early Access en abril 2027 y meta de $40.000, ambas dadas por Joel. Todo lo demás se calculó hacia atrás repartiendo el trabajo pendiente por tamaño de alcance — plan, no promesa.</p>
+      <div class="kicker">06 — Alpha 1 y negocio</div>
+      <h2>Tres meses hasta noviembre, con el camino crítico escrito</h2>
+      <p>Alpha 1 en itch.io en noviembre de 2026 sólo necesita la etapa E0 de escalado, que está implementada y medida. Lo que la bloquea es jugabilidad, no red.</p>
     </div>
 
-    <div class="note risk">
-      <div class="t">Conflicto abierto: el repo movió el calendario y el dossier no</div>
-      <p><code>docs/SCALING-ROADMAP.md</code> fija Alpha 1 en itch.io en noviembre de 2026, Next Fest en <b>febrero de 2027</b> y Early Access en primavera de 2027. El carril de negocio del dossier está calculado sobre el Next Fest de <b>octubre de 2026</b>: campaña de Kickstarter montada sobre esa ola, clips fuertes guardados para octubre, demo antes de la campaña. Next Fest se usa una vez por juego — gastarlo en octubre con lo que hay construido quema la única bala. Si se mueve a febrero, la campaña y el plan de contenido se recalculan enteros. Es la decisión pendiente más cara del proyecto.</p>
-    </div>
-
-    <h3>Hitos, y qué desbloquea cada uno</h3>
+    <h3>Camino crítico, en orden</h3>
     <div class="scroller">
       <table>
-        <thead><tr><th>Hito</th><th class="num">Fecha</th><th>Gatea</th></tr></thead>
+        <thead><tr><th class="num">#</th><th>Trabajo</th><th>Tipo</th><th>Por qué va aquí</th></tr></thead>
         <tbody>
-          <tr><td>Página de Steam + wishlist</td><td class="num">abrir ya</td><td>Lo que rinda CUALQUIER Next Fest futuro. No depende del build: capsule, descripción y trailer.</td></tr>
-          <tr><td>Flujo de crafteo (Fase 4)</td><td class="num">~mediados sep 2026 <span class="chip neu">estimado</span></td><td>HUD útil, playtest con sentido, demo mostrable.</td></tr>
-          <tr><td>HUD de legibilidad + peligro por profundidad</td><td class="num">~principios oct 2026 <span class="chip neu">estimado</span></td><td>Que la demo se lea como diseñada, no como beta cruda.</td></tr>
-          <tr><td>Steam Next Fest con demo jugable</td><td class="num">19-26 oct 2026 <span class="chip ok">real</span></td><td>El único evento gratuito con fecha confirmada de todo el plan.</td></tr>
-          <tr><td>Campaña de Kickstarter, 30 días</td><td class="num">nov 2026 <span class="chip mid">ventana</span></td><td>Fondos ~enero 2027 → ~3 meses de runway financiado.</td></tr>
-          <tr><td>Early Access</td><td class="num">abril 2027 <span class="chip ok">dato Joel</span></td><td>Ancla real. 1.0 después de EA, sin fecha.</td></tr>
+          <tr><td class="num">1</td><td>Flujo de crafteo</td><td><span class="chip no">bloqueante</span></td><td>Sin él, el anillo de la expedición no cierra. <b>Es lo primero desde que la mudanza se cerró.</b></td></tr>
+          <tr><td class="num">2</td><td>Level 4 y salas autoradas: portar o perder</td><td><span class="chip mid">decisión</span></td><td>No es código: hasta que se decida, el borrado de WG2 no puede empezar. Barato de decidir, caro de aplazar.</td></tr>
+          <tr><td class="num">3</td><td>Borrado de <code>grid_gen</code></td><td><span class="chip neu">limpieza</span></td><td>294 referencias fuera, 12.124 líneas dentro. No urge para la Alpha, pero cada día que siga ahí es superficie que mantener.</td></tr>
+          <tr><td class="num">4</td><td>Las piezas construidas <b>no se rodean</b></td><td><span class="chip mid">IA</span></td><td>Paran a la criatura y no cortan la vista. Nunca existió, tampoco en WG2 — pero ahora se nota más.</td></tr>
+          <tr><td class="num">5</td><td>HUD de propiedad, anclaje y capa</td><td><span class="chip mid">interfaz</span></td><td>Hace legible la progresión que ya existe.</td></tr>
+          <tr><td class="num">6</td><td>Jornada a 45-90 min + peligro por profundidad</td><td><span class="chip mid">parámetros</span></td><td>Un cambio por vez, sobre sistemas existentes.</td></tr>
+          <tr><td class="num">7</td><td>Volver a IL2CPP</td><td><span class="chip no">build</span></td><td>Con Mono los assemblies se publican descompilables. Es fácil que se olvide porque no rompe nada mientras tanto.</td></tr>
+          <tr><td class="num">8</td><td>Soak con 8-12 jugadores + IA con 2+</td><td><span class="chip mid">validación</span></td><td>El gate de E0, y la prueba que el robapieles lleva esperando desde junio.</td></tr>
+          <tr><td class="num">9</td><td>Bloque Grave / Muy grave de deuda</td><td><span class="chip no">seguridad</span></td><td>Una alpha pública con demolición ajena sin dueño es una alpha con bases borradas.</td></tr>
+          <tr><td class="num">10</td><td>Capa de pulido</td><td><span class="chip neu">continuo</span></td><td>Va aparte y no cuenta dentro de ningún porcentaje de la sección 00.</td></tr>
         </tbody>
       </table>
     </div>
-    <p>El riesgo que la compresión de calendario no resuelve es de asignación, no de margen: la velocidad observada es altísima pero fue toda a deuda de red. Esa deuda ya está cerrada — el argumento se acabó, y Fase 4 sigue sin empezar.</p>
 
-    <h3>El «MM» del nombre — cinco etapas con puerta medible (ADR-073)</h3>
+    <div class="note risk">
+      <div class="t">El riesgo no es capacidad, es alcance</div>
+      <p>El ritmo observado es altísimo —trece ADR y 1.234 commits acumulados, con el mundo entero rehecho en nueve días—. Lo que amenaza noviembre es dejar entrar trabajo nuevo: <b>ADR-103 (identidad de subnivel) y el Frente C son opcionales para la Alpha</b>, tiran en direcciones opuestas y ninguno de los dos aparece en la lista de arriba. Aparcarlos hasta después de la build es la decisión barata.</p>
+    </div>
+
+    <h3>Etapas de escalado — el «MM» del nombre (ADR-073)</h3>
     <div class="scroller">
       <table>
         <thead><tr><th>Etapa</th><th class="num">Aspira a</th><th>Qué la abre</th><th>Estado</th></tr></thead>
         <tbody>
-          <tr><td>E0 — host doméstico honesto</td><td class="num">8-12</td><td>gate por chunk, coalescing, un encode por origen</td><td><span class="chip ok">implementada</span></td></tr>
-          <tr><td>E1 — interest management</td><td class="num">16-24</td><td>poses y rosters por celda (ADR-074)</td><td><span class="chip mid">a medias</span> fase 1 medida: sobrevive 19-21 % del relay</td></tr>
+          <tr><td>E0 — host doméstico honesto</td><td class="num">8-12</td><td>gate por chunk, coalescing, un encode por origen</td><td><span class="chip ok">implementada</span> subida del host 35,8 → 10,4 Mbps</td></tr>
+          <tr><td>E1 — interest management</td><td class="num">16-24</td><td>poses y rosters por celda (ADR-074)</td><td><span class="chip mid">a medias</span> sobrevive el 19-21 % del relay</td></tr>
           <tr><td>E2 — transporte de verdad</td><td class="num">24-40</td><td>sockets de Steam: NAT, cifrado, identidad autenticada</td><td><span class="chip neu">sin ADR</span></td></tr>
           <tr><td>E3 — servidor dedicado</td><td class="num">40-64</td><td>backend sin cliente local, anticheat server-side real</td><td><span class="chip neu">sin ADR</span></td></tr>
           <tr><td>E4 — instancias por capa</td><td class="num">100+</td><td>las capas del lore como shards naturales</td><td><span class="chip neu">sin ADR</span></td></tr>
-          <tr><td>E5 — zonas continuas</td><td class="num">condicional</td><td>solo si el diseño lo exige y E4 aguanta</td><td><span class="chip neu">condicional</span></td></tr>
+          <tr><td>E5 — zonas continuas</td><td class="num">condicional</td><td>sólo si el diseño lo exige y E4 aguanta en producción</td><td><span class="chip neu">condicional</span></td></tr>
         </tbody>
       </table>
     </div>
-    <p>La Alpha 1 de noviembre solo necesita E0, que ya está implementada y medida. Y una frase del propio ADR que conviene no perder: un host doméstico no servirá miles nunca — 5-50 Mbps de uplink contra necesidades de orden Gbps. El «MMO» vive en E4, en instancias, no en un mapa único infinito.</p>
+    <p>Una frase del propio ADR que conviene no perder: un host doméstico no servirá miles nunca — 5-50 Mbps de uplink contra necesidades de orden Gbps. El «MMO» vive en E4, en instancias, no en un mapa único infinito.</p>
 
-    <h3>Crowdfunding — Kickstarter, decidido sobre evidencia</h3>
-    <p>Fig está cerrada desde mayo de 2023. Indiegogo cobra ~0,5-1,5 puntos menos de fee, pero no aparece un solo caso reciente de terror/survival indie con resultado público. Self-funded sigue siendo el plan B legítimo. Queda Kickstarter: 441 campañas de juegos financiadas en 2024 (+9 %), y es donde la comunidad del género ya mira.</p>
-    <div class="tiles">
-      <div class="tile"><div class="k">Meta</div><div class="v">$40.000</div><div class="s">dato Joel · USD asumido</div></div>
-      <div class="tile"><div class="k">Neto tras fees</div><div class="v">~$36.3k</div><div class="s">8,5-10 % en Kickstarter</div></div>
-      <div class="tile warn"><div class="k">Éxito del sector</div><div class="v">~32 %</div><div class="s">juegos digitales · all-or-nothing</div></div>
-      <div class="tile"><div class="k">Backers a $30</div><div class="v">~1.335</div><div class="s">a $25 son ~1.600; a $40, ~1.000</div></div>
+    <h3>Calendario y financiación</h3>
+    <div class="scroller">
+      <table>
+        <thead><tr><th>Hito</th><th class="num">Fecha</th><th>Qué necesita</th></tr></thead>
+        <tbody>
+          <tr><td>Página de Steam + wishlist</td><td class="num">abrir ya</td><td>No depende del build: capsule, descripción y trailer. Gatea lo que rinda cualquier Next Fest futuro.</td></tr>
+          <tr><td>Alpha 1 en itch.io</td><td class="num">noviembre 2026</td><td>Sólo E0. Los diez puntos del camino crítico.</td></tr>
+          <tr><td>Steam Next Fest</td><td class="num">febrero 2027</td><td>E1 validada, E2 si llegó. <b>En octubre de 2026 no se participa</b>: se usa una vez por juego y quemarla con una build pre-Alpha es irreversible.</td></tr>
+          <tr><td>Early Access</td><td class="num">primavera 2027</td><td>E3 operativo; E4 si hay demanda.</td></tr>
+        </tbody>
+      </table>
     </div>
-    <p>El umbral que premia Next Fest son 2.000+ wishlists: el orden de magnitud de gente para financiar y para que el evento rinda es el mismo, no son dos públicos. La mitigación estándar del riesgo all-or-nothing es separar la meta pública del presupuesto real y tratar el resto como stretch goals. Y para un dev solo: nada de recompensas físicas — el envío internacional hunde campañas que sí financiaron.</p>
-
-    <h4>Wishlists — los dos umbrales que sobreviven a cualquier revisión</h4>
-    <ul>
-      <li><b>2.000+</b> acumuladas antes de entrar, o Next Fest no da impulso algorítmico significativo.</li>
-      <li><b>30.000+</b> como piso de visibilidad real al lanzar. La conversión wishlist→venta cayó de ~20 % (2018) a 5-10 % (2026).</li>
-    </ul>
+    <p>Kickstarter sigue siendo la vía elegida sobre evidencia: Fig está cerrada desde 2023, Indiegogo no tiene un solo caso reciente público de terror/survival indie, y en Kickstarter se financiaron 441 campañas de juegos en 2024. Meta $40.000 (~$36,3k netos tras fees), ~1.335 backers a $30, tasa de éxito del sector ~32 % en all-or-nothing. Los dos umbrales de wishlists que sobreviven a cualquier revisión: <b>2.000+</b> antes de entrar en un Next Fest, <b>30.000+</b> como piso de visibilidad al lanzar. Y para un dev solo: nada de recompensas físicas.</p>
 
     <div class="note">
       <div class="t">La estimación de ventas tiene fecha de caducidad, acordada el 2026-08-10</div>
-      <p>Los tres escenarios (~250 / ~1.125-1.500 / ~2.250-5.000 unidades en ventana de lanzamiento) son aritmética de wishlists × conversión, no una proyección. Los tres comparables con cifras —Backrooms: Escape Together, Content Warning, Lethal Company— son los outliers virales del género: sesgo de supervivencia declarado. La sección entera se sustituye en cuanto la página de Steam acumule wishlists reales; hasta entonces no hay nada que actualizar.</p>
+      <p>Los tres escenarios (~250 / ~1.125-1.500 / ~2.250-5.000 unidades en ventana de lanzamiento) son aritmética de wishlists × conversión, no una proyección. Los tres comparables con cifras —Backrooms: Escape Together, Content Warning, Lethal Company— son los outliers virales del género: sesgo de supervivencia declarado. La sección entera se sustituye en cuanto la página de Steam acumule wishlists reales.</p>
     </div>
 
     <h4>Post-lanzamiento — contenido ya identificado, no fechas nuevas</h4>
-    <p>Los tres sistemas que se dejan quietos hoy son, leídos al revés, la respuesta honesta a qué entra en cada actualización: estabilización de EA (Q3 2027), retomar PvP (Q4 2027), superestructuras (Q1 2028), variedad de entidades (Q2 2028, y solo tras validar el robapieles a 2+ jugadores). La grilla es relativa al ancla de abril 2027: si EA se mueve, se mueve entera.</p>
+    <p>Los tres sistemas que se dejan quietos hoy son, leídos al revés, la respuesta a qué entra en cada actualización: estabilización de Early Access, retomar PvP, superestructuras, y variedad de entidades —esta última sólo tras validar el robapieles con 2+ jugadores—. La grilla es relativa al ancla de la primavera de 2027: si Early Access se mueve, se mueve entera.</p>
   </section>
 
   <section id="ajustes">
     <div class="sec-head">
-      <div class="kicker">05 — Mapa de ajustes</div>
+      <div class="kicker">07 — Mapa de ajustes</div>
       <h2>Dónde vive cada mando, y qué exige recompilar</h2>
-      <p>Resumen de sesión de pulido. La tabla campo a campo —con el valor por defecto de cada uno— se queda en el documento original; esto es la orientación y las trampas que ya han costado tiempo.</p>
+      <p>Vigente para el mundo de WG2 y para todo lo que no sea geometría de WG3 — que tiene sus propias perillas en el plan. La tabla campo a campo se queda en el documento original.</p>
     </div>
 
     <h3>Cómo se resuelve un valor — cuatro pasos</h3>
     <ol>
       <li><b>Capa.</b> El <code>LayerVisualConfig</code> de la capa macro (0-3) da el valor base de todo.</li>
-      <li><b>Zona.</b> Si la zona del chunk tiene override autorado, gana sobre el de capa. Cuatro listas dispersas: luz, techo, ambiente, props.</li>
+      <li><b>Zona.</b> Si la zona del chunk tiene override autorado, gana sobre el de capa.</li>
       <li><b>Chunk.</b> Un <code>System.Random</code> sembrado con las coordenadas decide lámparas rotas, props y variedad. Igual en todos los clientes.</li>
       <li><b>Tile.</b> Hashes deterministas por baldosa: tinte, humedad, modelo de pared, pitch del zumbido.</li>
     </ol>
-    <p>Regla de los overrides: gana la primera entrada que case, y un set sin ningún <code>override*</code> marcado no cuenta como coincidencia — cada campo lleva su booleano porque 0 es un valor legítimo. El error más caro es tocar el mando de la capa cuando el que manda es el de la zona.</p>
+    <p>Gana la primera entrada que case, y un set sin ningún <code>override*</code> marcado no cuenta como coincidencia — cada campo lleva su booleano porque 0 es un valor legítimo. El error más caro es tocar el mando de la capa cuando el que manda es el de la zona.</p>
 
     <div class="scroller">
       <table>
         <thead><tr><th>Bloque</th><th>Dónde vive</th><th>Lo que conviene saber</th></tr></thead>
         <tbody>
-          <tr><td>Iluminación</td><td><code>Layer0_Vestibulo.asset</code> + <code>BackroomsLighting.cs</code></td><td><code>lampRange</code> tope duro 6 m o la luz cruza su pared (NORMAL es la única excepción, a 9). Por encima de ~1.6 de emisión revienta con el bloom. El amarillo del canon lo ponen las superficies, no la lámpara.</td></tr>
-          <tr><td>Zumbido de fluorescente</td><td><code>FluorescentHumDirector.cs</code></td><td>Presupuesto fijo de 8 <code>AudioSource</code> — de ahí sale el diseño entero (histéresis 1,5 m, reasignación 0,25 s, fade 0,12 s). <code>humVolume</code> 0.038 está cerrado y es lo único ajustable en vivo. Canal <code>Ambience</code>: fuera del mixer nada lo baja.</td></tr>
+          <tr><td>Iluminación</td><td><code>Layer0_Vestibulo.asset</code> + <code>BackroomsLighting.cs</code></td><td><code>lampRange</code> tope duro 6 m o la luz cruza su pared. Por encima de ~1.6 de emisión revienta con el bloom. El amarillo del canon lo ponen las superficies, no la lámpara.</td></tr>
+          <tr><td>Zumbido de fluorescente</td><td><code>FluorescentHumDirector.cs</code></td><td>Presupuesto fijo de 8 <code>AudioSource</code>: de ahí sale el diseño entero. <code>humVolume</code> 0.038 está cerrado. Canal <code>Ambience</code>: fuera del mixer nada lo baja.</td></tr>
+          <tr><td>Reverb por zona</td><td>mixer + <code>ReverbMixerDriver</code></td><td>Se autora en milibelios: discreto es −2000, no −20. En WG3 el reverb sale de la geometría medida y se comporta mejor que el de zona.</td></tr>
           <tr><td>Aislamiento dinámico</td><td><code>IsolationDirector.cs</code></td><td>Un 0..1 medido por distancia a la lámpara encendida más cercana: en Level 0 la luz es la compañía. Tau de 8 s a propósito — describe una situación, no un evento. Nunca enciende reverb en zona muda.</td></tr>
-          <tr><td>Reverb por zona</td><td>mixer + <code>ReverbMixerDriver</code></td><td>Se autora en milibelios, no decibelios: discreto es −2000, no −20. <code>reverbReflect</code> a −10000 (sin paredes) es deliberado en BLACKOUT y PIT. <code>BACKROOMS_VERBOSE_LOG=1</code> es lo único que dice en qué zona estás mientras afinas.</td></tr>
-          <tr><td>Superficies y color</td><td><code>Resources/GridMaterials/</code></td><td>Tres materiales canon iguales en las cuatro capas; la config solo decide el tinte que se multiplica encima. Ningún píxel baja de 171/255: un negro en pantalla no puede ser material.</td></tr>
-          <tr><td>Atmósfera</td><td><code>RenderSettings</code> global</td><td>Niebla exponencial²: distancia al 50 % = 0.8326 / density. Las 13 zonas van de .020 a .070.</td></tr>
-          <tr><td>Geometría y variedad</td><td>asset, hoy a cero</td><td>Paneles y medias paredes apagados a propósito — datos a cero, no capacidad borrada. Siguen activos dinteles (mín. 1,9 m de paso), tuberías y modelo de pared por zona.</td></tr>
-          <tr><td>Streaming</td><td>escena · <code>ChunkStreamer</code></td><td><code>viewRadius</code> multiplica el coste por el cuadrado. <code>seed</code> 42 rebaraja geometría, zonas y botín. <code>debugLogging</code> ya tumbó el editor una vez.</td></tr>
-          <tr><td>Arranque y red</td><td>variables de entorno</td><td><code>SESSION_MODE</code>, <code>CONNECT_TO</code>, <code>WORLD_SEED</code>, <code>DEBUG_SPAWN_PHANTOM</code>, <code>RUST_LOG</code>. <code>BACKROOMS_VERBOSE_LOG</code> apagado por defecto desde el crash de 8 GB.</td></tr>
+          <tr><td>Superficies y color</td><td><code>Resources/GridMaterials/</code></td><td>Tres materiales canon iguales en las cuatro capas; la config sólo decide el tinte que se multiplica encima. Ningún píxel baja de 171/255: un negro en pantalla no puede ser material.</td></tr>
+          <tr><td>Geometría y variedad (WG2)</td><td>asset, hoy a cero</td><td>Paneles y medias paredes apagados a propósito — datos a cero, no capacidad borrada. Siguen activos dinteles (mín. 1,9 m de paso), tuberías y modelo de pared por zona.</td></tr>
+          <tr><td>Atmósfera</td><td><code>RenderSettings</code> global</td><td>Niebla exponencial²: distancia al 50 % = 0.8326 / density. En WG3 la niebla es presupuesto compartido con la legibilidad del papel.</td></tr>
+          <tr><td>Streaming</td><td>escena · <code>ChunkStreamer</code></td><td><code>viewRadius</code> multiplica el coste por el cuadrado. <code>debugLogging</code> ya tumbó el editor una vez.</td></tr>
+          <tr><td>Arranque y red</td><td>variables de entorno</td><td><code>SESSION_MODE</code>, <code>CONNECT_TO</code>, <code>WORLD_SEED</code>, <code>BACKROOMS_WG3</code>, <code>RUST_LOG</code>. <code>BACKROOMS_VERBOSE_LOG</code> apagado por defecto desde el crash de 8 GB.</td></tr>
         </tbody>
       </table>
     </div>
 
     <h3>Trampas que ya han costado tiempo</h3>
     <ul>
-      <li><b>Un campo nuevo no existe en el <code>.asset</code> hasta que lo tocas</b> — si el YAML no lo tiene, manda el valor por defecto del código; en cuanto lo mueves en el Inspector, el asset gana. Por eso un cambio en código deja de tener efecto sin previo aviso.</li>
-      <li><b>Una línea en blanco en un <code>.asset</code> se come el resto del archivo</b> — trunca el mapping en silencio. Un doble salto dejado por un script borró 13 <code>zoneAmbienceSets</code> y estuvo tres commits sin detectarse.</li>
-      <li><b>Ctrl+S no guarda los ScriptableObjects</b> — hace falta File ▸ Save Project. Y el editor no importa nada mientras no tenga foco: comprueba la fecha de <code>Library/ScriptAssemblies/</code> antes de dar por muerto un ajuste.</li>
-      <li><b><code>AudioMixer.SetFloat</code> no falla en silencio</b> — un nombre desconocido escribe error con traza en cada llamada: siete escrituras por frame dejaron 229.725 errores y 386 MB de log. Sondea con <code>GetFloat</code>. Renombrar expuestos por YAML no llega al runtime.</li>
+      <li><b>Un campo nuevo no existe en el <code>.asset</code> hasta que lo tocas</b> — si el YAML no lo tiene, manda el valor por defecto del código; en cuanto lo mueves en el Inspector, gana el asset.</li>
+      <li><b>Una línea en blanco en un <code>.asset</code> se come el resto del archivo</b> — trunca el mapping en silencio. Un doble salto borró 13 <code>zoneAmbienceSets</code> y estuvo tres commits sin detectarse.</li>
+      <li><b>Ctrl+S no guarda los ScriptableObjects</b> — hace falta File ▸ Save Project, y el editor no importa nada mientras no tenga foco.</li>
+      <li><b><code>AudioMixer.SetFloat</code> no falla en silencio</b> — un nombre desconocido escribe error con traza en cada llamada: siete escrituras por frame dejaron 229.725 errores y 386 MB de log.</li>
       <li><b>Toda <code>AudioSource</code> propia tiene que ir al mixer</b> — sin <code>outputAudioMixerGroup</code> sale por Master y ninguna bajada de volumen la corrige.</li>
       <li><b>Importar un <code>.unitypackage</code> del vendor pisa las escenas</b> — commitea antes y desmarca todo lo que no sea render.</li>
       <li><b>El <code>Name</code> de una definición del vendor no es el del asset</b> — corta en el primer <code>_</code>: <code>GetWithName("FPS_Dirt")</code> devuelve null sin quejarse.</li>
+      <li><b>Los tests EditMode piden el editor cerrado</b> — <code>-runTests -batchmode</code> es la vía fiable; el disparador en editor muere en <code>RunFailed</code> y el síntoma es un «sin resultado» eterno.</li>
+      <li><b>El despliegue del backend miente cuando falla</b> — el script imprime «copied successfully» aunque un proceso huérfano bloquee el archivo. Comprobar el md5 contra <code>backend/target/release/</code>.</li>
     </ul>
   </section>
 
-  <section id="nuevo">
+  <section id="fuentes">
     <div class="sec-head">
-      <div class="kicker">06 — Desde el corte de los originales</div>
-      <h2>Lo que pasó después del 18 de agosto</h2>
-      <p>Ninguno de los cinco documentos cubre esto. Sale de <code>docs/STATE.md</code> y del log de la rama.</p>
+      <div class="kicker">08 — Qué comprime esto</div>
+      <h2>Un documento por tema, y este por encima</h2>
+      <p>Ninguno se borra. Lo que cambia es que ya no hace falta abrir siete para saber dónde está el proyecto.</p>
     </div>
 
-    <h3>Salas autoradas colocadas por el servidor — ADR-083, enmiendas 1 y 2</h3>
-    <p>Punto de partida medido, no supuesto: el sistema estaba entero escrito y colocaba <b>cero salas</b> en todo el mundo. El cliente exigía que el footprint del pool fuese exactamente igual al rect de una zona <code>SealedRoom</code> —3×3 tiles— mientras el pool tenía piezas de 4×4 y 10×10. Nadie lo notó porque nada fallaba: simplemente no aparecía ninguna sala.</p>
-    <p>Hoy, con el mundo corriendo: horneas una sala → el horneado reexporta <code>room_manifest.json</code> → el backend lo carga al arrancar → reserva footprint + anillo <code>SealedWall</code> + margen macizo, vacía el interior y excava un pasillo <b>por cada abertura del prefab</b> → manda <code>authored_room</code> por wire 38 → el cliente instancia el prefab y no pinta suelo, techo ni paredes encima. Talla lo mismo en las dos representaciones del mundo (<code>grid_gen</code> 2,5 m y <code>ChunkLayoutV1</code> 5 m).</p>
-    <div class="tiles">
-      <div class="tile"><div class="k">Cadencia medida</div><div class="v">31</div><div class="s">salas en 9 km² · una cada ~539 m</div></div>
-      <div class="tile good"><div class="k">Tests propios</div><div class="v">27</div><div class="s">en verde</div></div>
-      <div class="tile warn"><div class="k">Piezas en el pool</div><div class="v">1</div><div class="s">sale siempre la misma</div></div>
-      <div class="tile bad"><div class="k">Tests en rojo</div><div class="v">9</div><div class="s">de ítems, de una sesión concurrente</div></div>
+    <div class="srcs">
+      <div class="src">
+        <a href="https://claude.ai/code/artifact/27c4bfe4-3a84-4fe5-8e50-8371e99a6d68">Análisis de loop</a>
+        <div class="meta">rev. 34 · 2026-08-18 · <span class="chip mid">anterior a WG3</span></div>
+        <p>Siete pestañas: diseño técnico, roadmap, inversores, versiones, semana, devlog, deuda. Su carril de negocio calcula sobre el Next Fest de octubre, que ya se movió a febrero.</p>
+      </div>
+      <div class="src">
+        <a href="https://claude.ai/code/artifact/5ff6680e-6a11-4b64-abc8-49be3fd0e92e">Debt Roadmap</a>
+        <div class="meta">2026-08-18 · vigente · tracker vivo</div>
+        <p>Los 68 hallazgos con insignia por ítem. Es el sitio donde se marca lo arreglado, no este compendio.</p>
+      </div>
+      <div class="src">
+        <a href="https://claude.ai/code/artifact/60ed8d22-6328-4a23-8187-fc0580e544f0">Economía de supervivencia</a>
+        <div class="meta">2026-08-17 · vigente</div>
+        <p>Los siete commits de escasez con densidades sobre 10.000 chunks por zona. Nada se ha movido desde entonces.</p>
+      </div>
+      <div class="src">
+        <a href="https://claude.ai/code/artifact/ea8cdb8b-e526-4867-b5f0-9f9c8047de4f">Dónde está cada ajuste</a>
+        <div class="meta">2026-08-13 · vigente para pulido</div>
+        <p>Manual de mandos campo a campo: qué valor vive en asset, en código o en entorno.</p>
+      </div>
+      <div class="src">
+        <a href="https://claude.ai/code/artifact/6f15dffc-98f3-4f4c-bd3e-827500556e1c">Análisis de loop — variante Level 0</a>
+        <div class="meta">2026-08-13 · <span class="chip no">superado</span></div>
+        <p>Versión anterior del dossier. Todo lo suyo está dentro de la rev. 34; no hay que leerlo.</p>
+      </div>
     </div>
-    <p><b>Lo que más sube el valor no es código:</b> hornear 6-8 piezas de ≤7×7 tiles y ≤4 m es el 80 % del retorno y cuesta cero líneas. Limitaciones duras que piden ADR: props y loot (lo más serio), multi-chunk, altura por encima de una capa y colisión del interior. El pendiente está escrito para ejecutarse tal cual en <code>docs/ROOMS-ROADMAP.md</code>.</p>
-    <p>Cuatro fallos reales salieron en playtest y están arreglados: geometría duplicada, manifiesto y pool desparejados por una ruta de horneado que no reexportaba, túnel excavado en el centro del lado en vez de en el vano real, y una sola puerta por sala —las demás aberturas daban contra el margen macizo—.</p>
 
-    <div class="note risk">
-      <div class="t">Deuda de proceso, a saber antes de tocar la rama</div>
-      <p>El commit <code>951e7a0f</code> arrastra trabajo de otra sesión concurrente (apagado de ítems v1 y trazas NETPROBE) en cinco ficheros que no eran separables. De ahí salen los 9 tests de ítems en rojo: son suyos, no del sistema de salas. Los 837 restantes pasan.</p>
+    <h4>Y en el repo, lo que manda sobre cada tema</h4>
+    <div class="scroller">
+      <table>
+        <thead><tr><th>Documento</th><th>Qué manda</th></tr></thead>
+        <tbody>
+          <tr><td><code>docs/STATE.md</code></td><td>Estado vivo, reescrito al cierre de cada sesión. Es la fuente de la sección 00.</td></tr>
+          <tr><td><code>docs/WG3-ROADMAP.md</code></td><td>Estado vivo de WorldGen3: qué está andado, medido o inexistente. Manda sobre la sección 01.</td></tr>
+          <tr><td><code>docs/DECISIONS.md</code></td><td>Registro ADR append-only, 108 ADR con sus enmiendas. Vinculante; las cabeceras no son estado.</td></tr>
+          <tr><td><code>docs/GAME-LOOP-GDD.md</code></td><td>Diseño del loop en tres anillos. Fuente de la sección 03.</td></tr>
+          <tr><td><code>docs/DEBT-ROADMAP.md</code> · <code>AUDIT-2026-08-28.md</code></td><td>Deuda y auditorías vigentes. Sección 05.</td></tr>
+          <tr><td><code>docs/SCALING-ROADMAP.md</code> · <code>FARMING-ROADMAP.md</code></td><td>Etapas E0-E5 con sus gates, y el cierre de farmeo para Alpha 1. Secciones 04 y 06.</td></tr>
+        </tbody>
+      </table>
     </div>
-
-    <h3>La semana del 17 al 21 de agosto, y lo que se cayó</h3>
-    <ul>
-      <li><b>Lunes 17</b> — no fue inventario: trazo de spray en vivo verificado con dos clientes (ADR-078 VALIDADA), el recorte de escasez de la sección 02, morir dejó de producir agua y comida, auditoría de código muerto (de 120 avisos, 3 eran muertos reales) y ADR-079 para que el joiner vea al robapieles, wire v34 → v35.</li>
-      <li><b>Martes-miércoles</b> — props desmontables: la tercera pieza de la economía. Desmontar una estantería es mutación de estado del mundo, no efecto visual: autoridad del backend, persistencia por chunk y replicación, el mismo trío que ya resolvieron las pintadas. La regeneración se apoya en el desplazamiento de chunks — cupo por chunk, colocación al generador— para que no exista «la sala de las cuarenta estanterías».</li>
-      <li><b>Jueves</b> — tema propio del inventario, aplicado desde fuera del vendor.</li>
-      <li><b>Viernes</b> — ejecutar R1-R5 antes de diseñar la IA v3. Subir a v3 sin verla correr es apostar días a que no hay nada roto debajo.</li>
-      <li><b>Se cayó a la semana siguiente:</b> el faceling pacífico y la implementación de la IA v3. Cuatro frentes no caben en tres días planificables.</li>
-    </ul>
-    <p>Las tres reglas de la semana siguen valiendo: el colchón de 2 h diarias es la parte del plan que sabe que el plan falla; nada se marca hecho sin verlo en juego —compilar no es ver—; y un ADR antes de tocar el protocolo.</p>
   </section>
 
   <section id="procedencia">
     <div class="sec-head">
-      <div class="kicker">07 — Procedencia</div>
+      <div class="kicker">09 — Procedencia</div>
       <h2>De dónde sale cada número</h2>
     </div>
     <div class="scroller">
       <table>
         <thead><tr><th>Sección</th><th>Fuente</th><th class="num">Fecha del dato</th></tr></thead>
         <tbody>
-          <tr><td>01 Estado del loop</td><td>Análisis de loop rev. 34, pestañas técnica y contraste — grep sobre código antes que ADR</td><td class="num">2026-08-17/18</td></tr>
-          <tr><td>02 Economía</td><td>Economía de supervivencia — código en <code>35bd98e4</code>, densidades por arnés headless</td><td class="num">2026-08-17</td></tr>
-          <tr><td>03 Deuda</td><td>Debt Roadmap (68 ítems) + <code>docs/STATE.md</code> para el avance por categoría</td><td class="num">2026-08-18/19</td></tr>
-          <tr><td>04 Roadmap y negocio</td><td>Análisis de loop rev. 34, pestañas Roadmap e Inversores; fechas de Valve confirmadas</td><td class="num">2026-08-10/18</td></tr>
-          <tr><td>05 Ajustes</td><td>Dónde está cada ajuste — valores de la rama en esa fecha</td><td class="num">2026-08-13</td></tr>
-          <tr><td>06 Desde el corte</td><td><code>docs/STATE.md</code> + commits <code>9b593c19</code> y <code>951e7a0f</code></td><td class="num">2026-08-20</td></tr>
+          <tr><td>00 Estado global</td><td><code>docs/STATE.md</code> + <code>WG3-ROADMAP.md</code>; los porcentajes son estimación de criterio sobre alcance de Alpha</td><td class="num">2026-08-29</td></tr>
+          <tr><td>01 WorldGen3</td><td><code>WG3-ROADMAP.md</code> y ADR-095 a <b>109</b>; cifras de las sondas del mundo servido sobre 4 regiones de referencia. Estado de la retirada verificado en código (<code>update_ownership</code>, <code>visible_chunk_views</code>, <code>sync_built_cells</code>), no sólo en el registro</td><td class="num">2026-08-29 noche</td></tr>
+          <tr><td>02 IA y criaturas</td><td>ADR-108 y enmiendas 1-3; sonda <code>probe_sight_is_not_the_same_as_passage</code>; validación en partida</td><td class="num">2026-08-29</td></tr>
+          <tr><td>03 Loop</td><td><code>docs/GAME-LOOP-GDD.md</code>, verificado con grep sobre código antes que sobre ADR</td><td class="num">2026-08-25</td></tr>
+          <tr><td>04 Economía</td><td>Economía de supervivencia + <code>FARMING-ROADMAP.md</code>; densidades por arnés headless</td><td class="num">2026-08-17/22</td></tr>
+          <tr><td>05 Deuda</td><td><code>DEBT-ROADMAP.md</code> (68 ítems) + <code>AUDIT-2026-08-28.md</code> (15 hallazgos)</td><td class="num">2026-08-18/28</td></tr>
+          <tr><td>06 Alpha 1 y negocio</td><td><code>SCALING-ROADMAP.md</code> para calendario y etapas; cifras de crowdfunding del dossier de negocio</td><td class="num">2026-08-10/20</td></tr>
+          <tr><td>07 Ajustes</td><td>Manual de ajustes, con los valores de la rama en esa fecha</td><td class="num">2026-08-13</td></tr>
         </tbody>
       </table>
     </div>
-    <p>Dos advertencias que los originales repiten y aquí se heredan: las cabeceras de los ADR no son estado —se congelan en la fecha de redacción—, y una tabla de deuda escrita de un barrido rápido envejece igual de mal. Todo lo marcado como estimado se calculó por tamaño de alcance, no por velocidad medida.</p>
+    <p>Dos advertencias heredadas de los originales y confirmadas otra vez esta semana: las cabeceras de los ADR no son estado —se congelan en la fecha de redacción, y por eso ADR-103 aparece como propuesta estando aprobado—, y una tabla de deuda escrita de un barrido rápido envejece igual de mal: de los 15 hallazgos de la última auditoría, seis eran falsos positivos y dos venían con el diagnóstico equivocado.</p>
   </section>
 
   </main>
@@ -606,7 +839,7 @@ footer p{max-width:78ch}
 
 <footer>
   <div class="wrap">
-    <p>Compendio de los cinco documentos del proyecto · Backrooms Survival MMO · rama <code>migration/worldgraph-v1</code> · corte 2026-08-20. Para marcar avance de deuda, el sitio sigue siendo el Debt Roadmap; para el detalle campo a campo de un ajuste, el manual de ajustes.</p>
+    <p>Compendio del proyecto · Backrooms Survival MMO · rama <code>migration/worldgraph-v1</code> · wire v50 · corte 2026-08-29. Para marcar avance de deuda, el sitio sigue siendo el Debt Roadmap; para el estado vivo de WorldGen3, <code>docs/WG3-ROADMAP.md</code>; para el detalle campo a campo de un ajuste, el manual de ajustes.</p>
   </div>
 </footer>
 

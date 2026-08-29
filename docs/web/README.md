@@ -6,8 +6,8 @@ un artifact nuevo.
 
 | Documento | URL | Fuente | Estado |
 |---|---|---|---|
-| Compendio | `claude.ai/code/artifact/8845e548-f4b3-4f9d-9aa1-b78961b55c33` | `docs/web/compendio.html` (aquí) | vigente — comprime los otros cuatro |
-| Análisis de loop | `claude.ai/code/artifact/27c4bfe4-3a84-4fe5-8e50-8371e99a6d68` | scratchpad de sesión (`dossier-loop.html`) | vigente · rev. 34 |
+| Compendio | `claude.ai/code/artifact/8845e548-f4b3-4f9d-9aa1-b78961b55c33` | `docs/web/compendio.html` (aquí) | **vigente · corte 2026-08-29 noche** — reescrito entero para la era WorldGen3 (ADR-095 a 109), con la mudanza de autoridad cerrada. Ya no comprime sólo a los otros cuatro: su fuente principal es el repo (`STATE.md`, `WG3-ROADMAP.md`, `DECISIONS.md`, `AUDIT-2026-08-28.md`) |
+| Análisis de loop | `claude.ai/code/artifact/27c4bfe4-3a84-4fe5-8e50-8371e99a6d68` | **`docs/web/dossier-loop.html` (aquí, recuperado del artifact vivo el 2026-08-29)** | **vigente · rev. 36** — pestaña «Mundo — WG3» con la mudanza CERRADA y la retirada por etapas (ADR-109), tramo 0.0.0.14 en Versiones, cinco entradas de devlog y calendario resuelto en favor del repo. La pestaña Semana queda archivada |
 | Debt Roadmap | `claude.ai/code/artifact/5ff6680e-6a11-4b64-abc8-49be3fd0e92e` | scratchpad de sesión (`debt-roadmap.html`) | vigente — tracker de los 68 hallazgos |
 | Economía de supervivencia | `claude.ai/code/artifact/60ed8d22-6328-4a23-8187-fc0580e544f0` | scratchpad de sesión (`economia-supervivencia.html`) | vigente |
 | Dónde está cada ajuste | `claude.ai/code/artifact/ea8cdb8b-e526-4867-b5f0-9f9c8047de4f` | scratchpad de sesión (`settings-manual.html`) | vigente |
@@ -33,6 +33,23 @@ Para comprobar si el Compendio se ha quedado atrás, sin reescribir nada:
    Cero líneas de diferencia = el Compendio está al día.
 
 Última comprobación: **2026-08-20**, cero diferencias sobre 1.945 párrafos.
+
+## Corte del 2026-08-29 — la regla de arriba cambia
+
+El Compendio se reescribió entero (secciones 00 a 09) contra el estado del repo, no
+contra los cuatro artifacts. Motivo: entre el 21 y el 29 de agosto el mundo pasó a
+WorldGen3 (ADR-095 a 108, wire 38 → 50) y ninguno de los cuatro documentos lo cubre.
+
+Lo que eso implica para la sincronización:
+
+- El Compendio ya **no depende** del Análisis de loop para las secciones de estado; sus
+  fuentes son `docs/STATE.md`, `docs/WG3-ROADMAP.md`, `docs/DECISIONS.md`,
+  `docs/DEBT-ROADMAP.md`, `docs/AUDIT-2026-08-28.md`, `SCALING-` y `FARMING-ROADMAP.md`.
+- Sigue heredando de los artifacts lo que no está en el repo: cifras de crowdfunding y
+  contraste de género (Análisis de loop) y el manual de ajustes campo a campo.
+- Nada del contenido publicado anteriormente se ha perdido: lo que dejó de ser estado
+  —salas autoradas de ADR-083, pendientes de economía, rendimiento— se conserva
+  recolocado en su sección nueva.
 
 ## Aviso sobre las fuentes en scratchpad
 

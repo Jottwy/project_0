@@ -26,15 +26,31 @@ El mundo servido sale del **PLAN**, no del compositor por bocas (ADR-100): `Wg3S
 excavadas (ADR-101, wire 49). Papel visible por tono (Frente A). Atrios de dos plantas, agujeros por los
 que se cae y macizos —pretiles y megapilares— (ADR-104 y ADR-105, wire 50).
 
-### Nivel de migración: 5 subsistemas de 12
+### Nivel de migración: CERRADA — cero consumidores de autoridad en WG2
 
-| En WG3 | Sigue en WG2 |
+> Corregido el 2026-08-29 noche. Esta tabla decía «5 subsistemas de 12» y listaba en WG2 la IA, el loot
+> y la construcción, que ya estaban mudados desde la misma mañana — se contradecía con la sección
+> «Hacia dónde vamos» de este mismo fichero. Es exactamente el modo de fallo contra el que avisa la
+> regla del proyecto: **una tabla envejece igual de mal que la cabecera de un ADR**.
+
+| En WG3 | Sigue existiendo en WG2 |
 |---|---|
-| geometría · movimiento y colisión del jugador · spawn · materiales y papel · luz, zumbido y reverb | robapieles · facelings · loot (se reparte por la zona de WG2, o sea por un mapa que ya no existe) · construcción y claims · salas autoradas del editor · zonas y su ambiente · la generación de WG2 en el servidor |
+| geometría · movimiento y colisión del jugador · spawn · materiales y papel · luz, zumbido y reverb · **robapieles y facelings** (navegación, vista, golpe y sitio de nacimiento) · **loot por papel** (ADR-108 D4) · **construcción y claims** (ADR-108 D6) · **reparto de facelings** (ADR-109 D5) | **Level 4** y **salas autoradas** — contenido que sólo existe ahí y que el borrado se lleva · el código de `grid_gen`, ya sin producir nada (294 referencias fuera, 12.124 líneas dentro) · `ChunkView` en el wire |
 
-**Lo que eso significa jugando:** el mundo se ve y se anda entero, pero las criaturas se mueven por una
-geometría que ya no existe y el loot se reparte por las zonas del mundo viejo. Es el precio de haber
-mudado la autoridad antes que sus consumidores, y estaba previsto.
+**Lo que eso significa jugando:** el mundo se ve, se anda, se reparte y se construye entero contra WG3.
+Lo que queda del mundo viejo **no decide nada**: es código dormido y dos piezas de contenido sin portar.
+
+**Estado de la retirada (ADR-109).** Etapa 1 hecha: con WG3 mandando, WG2 **ni se genera ni se manda**
+—`update_ownership` deja de llamar a `generate_chunk` y `visible_chunk_views` devuelve vacío—, y son
+**guardas, no borrado**: apagar WG3 devuelve el comportamiento anterior byte a byte. Etapa 2
+**bloqueada por contenido** —portar el Level 4 y las salas autoradas, o perderlos a sabiendas—, y la 3
+es el borrado, que no puede empezar antes. `world.chunks` se sigue creando **vacío y a propósito**: no
+es geometría, es el contenedor de entidades y objetos tirados.
+
+**Deuda viva con nombre, de la propia mudanza.** Las piezas construidas **paran** a las criaturas
+(`Wg3CollisionCache`, ADR-109 D7) pero no las **rodean**, y no cortan la vista. Y quedan 15 usos de
+`world_pos_to_layer` fuera de la navegación —activación, capa del ruido, agrupar claims, el coro de
+gritos— midiendo capas de 4 m en un mundo de plantas de 3,32.
 
 **Y una corrección, porque este fichero llegó a afirmar lo contrario:** que casi no salga loot **no es
 una regresión de WG3**. `itemCacheChance` bajó ×10 y `carryableZoneChance` está a CERO en las trece
