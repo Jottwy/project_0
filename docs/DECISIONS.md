@@ -9545,3 +9545,204 @@ jugadores en el mismo sitio ven lo mismo.
 - **El 4 % de espina** es problema del reparto del plan, no del color, y no lo arregla nada de este ADR.
 - La verificación **(c)** del ADR —que los cuatro perfiles se distingan medidos— **sigue sin hacer**.
   Lo verificado aquí es el MECANISMO, no los perfiles: nadie ha construido todavía una identidad.
+
+---
+
+## ADR-104 — La verticalidad del plan: una sala puede ocupar dos plantas, y un hueco sin escalera es un agujero (2026-08-29) — PROPUESTA
+
+### Contexto, y por qué es ADR nuevo y no enmienda a ADR-102
+
+Lo pedido, con las palabras de Joel: salas «más abiertas, más expansivas», «algo más masivo», cosas que
+ocupen «una verticalidad de varios subniveles», megapilares «ultra profundos», y **agujeros en el suelo
+por los que caer y acabar más abajo**. Con una aclaración que decide medio ADR: *«sigue siendo dentro
+de la misma escena y mismo mundo, sólo que otra altura»*. **No hay teletransporte.** La geometría es
+continua y el jugador nunca sale del edificio.
+
+ADR-102 dice, en la documentación de `RegionBuilding`: *«Una planta por [`RegionPlan`] … lo vertical
+vive aquí y sólo aquí: **ninguna planta sabe que hay otra**, y por eso ninguna comprobación 2D de
+[`RegionPlan`] tiene que aprender una tercera coordenada»*. **Una sala que ocupa dos plantas rompe esa
+premisa**, y romper una premisa escrita se hace donde se pueda leer, no en un `//`.
+
+### Lo que ya está construido, y hay que decirlo antes de proponer nada
+
+Tres piezas del mecanismo existen y hoy se usan para EVITAR lo que ahora se quiere buscar:
+
+- `plan::cap_headroom_under` sólo pone tope de altura donde encima hay algo **construido**. Su propia
+  documentación dice: *«Donde arriba hay vacío intencionado —o no hay planta— no hay tope, y la nave se
+  queda con sus 4,50 m: eso es una sala a doble altura, y existe porque el plan puso vacío ahí»*.
+- `StairWell` ya perfora el forjado, y su documentación distingue el caso: *«El espacio de la planta de
+  arriba tiene que estar construido: **salir a un vacío intencionado es una caída, no una escalera**»*.
+- El vacío intencionado ya lo produce el plan (`VOID_CHANCE_WEIRD`).
+
+O sea: el plan ya sabe poner vacío arriba, ya sabe que debajo de un vacío no hay tope, y ya sabe
+perforar la losa. **Lo que falta no es maquinaria, es intención.**
+
+### D1 — Una sala a doble altura pide DOS plantas de altura libre, no 4,50 m
+
+Hoy una nave bajo vacío no está limitada… y aun así pide 450, porque eso es lo que dice
+`fill::clear_height_by_role(Hall)`. Sale una sala **alta**, no un atrio.
+
+**Decisión: cuando `max_clear_cm == 0` —nada encima— un `Hall` pide `2 × STOREY_HEIGHT_CM − 2 ×
+SLAB_THICKNESS_CM = 640 cm.**
+
+Es la misma resta de dos losas de ADR-102 y por el mismo motivo: el techo del atrio ocupa el sitio del
+techo de la planta de arriba, así que si se cuenta una sola losa salen dos caras coplanares y vuelve el
+z-fighting que costó 456 pares. **Y sólo `Hall`**: un pasillo de 6,4 m de techo no es expansivo, es un
+error de datos.
+
+### D2 — El vacío se BUSCA encima de una nave, no se tolera donde caiga
+
+Hoy un atrio es casualidad: sale si el sorteo de vacío de la planta de arriba coincide en huella con
+una nave de abajo. **Decisión: la planta de arriba, al planificarse, puede colocar vacío
+deliberadamente sobre una nave de la de abajo**, con su propia probabilidad y su propio tope por
+región.
+
+Esto es lo que rompe la premisa de ADR-102: la planta de arriba pasa a **mirar** la de abajo. Se acota
+al mínimo: **una sola consulta, de la huella de las naves, y en un solo sentido** —arriba mira abajo,
+nunca al revés—. `RegionPlan` sigue sin aprender una tercera coordenada; quien coordina sigue siendo
+`RegionBuilding`, igual que con los huecos de escalera.
+
+### D3 — El borde de un vacío es una decisión, y hay dos
+
+Un vacío con el borde a pelo es un precipicio sin aviso. Un vacío con parapeto es un balcón.
+**Las dos cosas se quieren**, así que el borde se declara:
+
+- **`Balcony`** — parapeto de altura de pretil. Se asoma uno y ve el atrio. Es el borde por defecto.
+- **`Open`** — sin parapeto. Se puede caer, **a propósito**.
+
+Sin esta distinción, o no hay atrios que asomarse o no hay agujeros por los que caer; con ella, las dos
+salen del mismo mecanismo y la diferencia es un dato.
+
+### D4 — Un hueco sin escalera dentro es un AGUJERO, y es el tercer tipo de `Well`
+
+`StairWell` pasa a llevar un tipo: **`Stair`** (lo de hoy), **`Atrium`** (el vacío de D2, con su borde
+de D3) y **`Hole`** (una perforación pequeña de la losa, sin escalera, con borde `Open`).
+
+Un agujero es **la conexión vertical más barata que existe**: una escalera recta pide 12,6 m de sala y
+por eso sólo hay de 2 a 5 sitios por región; un agujero pide su propia huella y nada más. Es de un solo
+sentido, y eso no es un defecto — es exactamente la sensación pedida.
+
+### D5 — El edificio crece hacia ABAJO, y estructuralmente es lo mismo que crecer hacia arriba
+
+`RegionBuilding.storeys` es un `Vec<RegionPlan>` y `plan_storey` ya recibe `base_y_cm`. **Decisión:
+`REGION_STOREYS` deja de ser un contador y pasa a ser un rango con origen** —plantas por debajo de la
+cota base con `base_y_cm` negativo—. El mecanismo no cambia: cambia el offset.
+
+**No se sube el número en este ADR.** ADR-102 eligió dos plantas razonando que el salto de 1 a 2 tiene
+todos los fallos y el de 2 a 3 ninguno nuevo; eso es una predicción sin medir, y este ADR no la va a
+verificar de paso. Lo que decide es la FORMA del índice, para que añadir una planta bajo tierra sea
+cambiar un rango y volver a medir.
+
+### D6 — Y esto es el eje Y que ADR-103 D7 dejó clavado a 0
+
+ADR-103 puso la `y` en la firma de `identity::at` y la clavó a cero, escribiendo que el descenso entre
+subniveles **no existía y construirlo entonces sería construir sobre nada**. Con D4 y D5 existe: bajar
+un agujero es bajar de verdad, en el mismo mundo continuo.
+
+**Decisión: el perfil de identidad varía con la profundidad, y ésa es la fase 2 de ADR-103.** No se
+implementa aquí —este ADR sólo hace que haya adónde bajar— pero queda dicho que el eje ya no está
+bloqueado y que **no hace falta ningún mecanismo de transición**: la identidad es función pura de la
+posición, y la posición ahora incluye la cota.
+
+### D7 — Megapilares: cajas que cruzan el forjado
+
+Una columna que atraviesa las dos plantas de un atrio son cajas alineadas a los ejes de altura 640, que
+es lo único que WG3 dibuja. **Cero mecanismo nuevo.** Se listan aquí porque son la mitad de la
+sensación de escala —un atrio vacío es un hueco; un atrio con pilares profundos es masivo— y porque sin
+escribirlo nadie se lo va a pedir al relleno.
+
+### D8 — Lo que este ADR NO toca
+
+- **Cero wire.** La geometría viaja como cajas, y los vanos de forjado ya cruzan desde ADR-101
+  (wire 49). Un atrio es losa ausente; un agujero es losa restada. **`WIRE_SCHEMA_VERSION` se queda
+  en 49.**
+- **La celda del ráster**, el contrato de junta de ADR-096 y `compose_region`.
+- **El daño por caída y la supervivencia**: son reglas de juego del backend, no del plan. WG3 decide que
+  hay un agujero, no qué pasa al caer por él.
+
+### D9 — La luz de un atrio no es la de un pasillo, y la máscara no puede salir de la cota
+
+Dos consecuencias que este ADR crea y que hay que dejar escritas antes de que las descubra alguien
+mirando:
+
+1. **Una sala de 640 cm no se alumbra con el plafón de un corredor.** Los plafones de
+   `Wg3SceneAssembler` son puntuales sin sombra con alcance de hasta 21,75 m; en un atrio la fuga de luz
+   deja de ser *entre* plantas y pasa a ser *dentro* de la sala. Es problema de iluminación y no de
+   plan, pero nace aquí.
+2. **El arreglo por Rendering Layers no vale tal cual.** Excluir la luz de abajo de los renderers de
+   arriba es correcto **mientras haya forjado**; sobre un atrio o un agujero el jugador VE la planta de
+   abajo a propósito y la necesita iluminada. Regla: **la máscara sale de la cota MENOS la unión de los
+   vanos de forjado**, derivada en el cliente a partir de lo que ya viaja —cero wire—, y **con una celda
+   de margen**: con el rectángulo justo, la primera fila de renderers del borde queda del lado
+   equivocado y aparece un anillo oscuro alrededor del agujero, que se lee como artefacto y no como
+   sombra.
+
+### D10 — El catálogo de formas, ordenado por lo único que decide su coste
+
+Aprobado por Joel el 2026-08-29 como marco para toda la variedad geométrica que venga, no sólo para la
+de este ADR. **La frontera de coste la marca una sola cosa: WG3 dibuja cajas alineadas a los ejes, y su
+colisión se rasteriza a celdas de 50 cm.** De ahí salen cuatro escalones, y saber en cuál cae una idea
+es lo que evita prometer un mes y entregar una tarde, o al revés.
+
+| | Qué entra | Por qué cuesta lo que cuesta |
+|---|---|---|
+| **1. Gratis** | Pilares y megapilares, agujeros, mezzanines, techos artesonados, rejillas hechas de barras, escalonados | **Son cajas.** El relleno ya sabe emitirlas; nadie se las había pedido |
+| **2. Barato** | Marcos de puerta, medias lunas, molduras, arcos, zócalos, remates | **Decoración sin colisión.** El servidor sólo necesita saber dónde está el HUECO; la forma del marco no la ve |
+| **3. Medio** | Salas redondas, triangulares, poligonales, como pieza AUTORADA | La malla es libre —se dibuja y se hornea—, pero **su colisión se rasteriza a 50 cm**. Un círculo grande se siente redondo; uno pequeño, una escalera de píxeles |
+| **4. Hoy imposible** | Geometría no-caja **generada**: un pasillo curvo que salga del plan | `PlanRect` es literalmente un rectángulo y la subdivisión BSP no sabe otra cosa. No es un ajuste, es otro sistema |
+
+**La regla que resume las cuatro, y es la que hay que memorizar: forma libre en la malla, forma cara en
+la colisión, y el umbral son 50 cm.** Es la misma que ya costó una tarde con los peldaños de 30 cm
+(ADR-097 enmienda 1): *toda* geometría de WG3 más fina que la celda del ráster **cambia de significado,
+no de precisión**, al pasar al servidor.
+
+Consecuencia de reparto que conviene decir: el escalón 3 es **autorado**, o sea trabajo de Joel en el
+editor de salas, no de código. Y hay un dato que lo condiciona — hoy se colocan **de 5 a 14 piezas por
+región sobre unos 170 espacios**, porque las huellas autoradas no coinciden con las que el plan pide.
+Dibujar más piezas sin mirar el histograma de tamaños que ya imprime `probe_region_plan` las deja fuera
+igual de rápido.
+
+### Alternativas descartadas
+
+- **Umbral / noclip entre niveles.** Caer y aparecer en algo no continuo es lo que dice el lore, y Joel
+  lo descartó explícitamente: misma escena, mismo mundo, otra altura. Además tocaría red y persistencia.
+- **Más plantas como respuesta a la verticalidad.** Es lo que se midió primero y no es lo pedido: más
+  plantas con la misma escasez de escaleras empeora «no sé dónde ir a subir».
+- **Doblar la escalera.** Medido en `probe_stair_sites_if_doubled` (commiteada dentro de `a8de06c6`):
+  de 252 a 339 espacios candidatos, **+35 %**, con el hallazgo de que **lo que ata es el largo y no el
+  ancho** —entre 4,10 y 5,30 m de ancho sólo se pierde un 10 % de sitios—. Sirve, y **no es lo que se
+  pidió**: la respuesta a «quiero sensación de masa» no son más escaleras. La medida se guarda porque la
+  pregunta puede volver.
+- **Salas redondas o triangulares generadas.** `PlanRect` es literalmente un rectángulo y la
+  subdivisión no sabe otra cosa. La forma libre entra por el catálogo autorado, donde la malla es libre
+  y **la colisión se rasteriza a 50 cm**: sirve para salas grandes, no para arcos ni molduras.
+
+### Verificación — qué tiene que medir antes de darse por cierto
+
+- **(a)** Un atrio mide **640 cm de altura libre en el RÁSTER**, no sólo en el plan. La altura que
+  cuenta es la que resuelve el movimiento.
+- **(b)** **No hay losa fantasma sobre el atrio.** El suelo de la planta de arriba tiene que estar
+  ausente en toda la huella, y se comprueba en el ráster: un techo invisible a media altura es el fallo
+  clásico de este sistema y no sale en una captura.
+- **(c)** Desde la planta de arriba **se ve** la de abajo por el atrio, y el borde `Balcony` bloquea el
+  paso mientras el `Open` lo deja caer. Los dos bordes verificados por separado.
+- **(d)** **La superficie andable no se hunde.** Un atrio le quita suelo a la planta de arriba: hoy es
+  109-116 % de la región y 46 de 49 regiones tienen segunda planta. Si el atrio se lleva eso por
+  delante, el precio de la sensación es un mundo más pequeño y hay que verlo, no descubrirlo.
+- **(e)** **El 23 % de tramos de escalera debería BAJAR**, no subir. Está instrumentado
+  (`probe_which_roles_a_client_actually_sees`). Si la verticalidad nueva no sustituye escaleras sino que
+  se suma a ellas, estamos añadiendo mundo en vez de mejorarlo, y ese número lo dice solo.
+- **(f)** El contrato de junta de ADR-096 sigue cumpliéndose con atrios en la frontera de región.
+- **(g)** `WIRE_SCHEMA_VERSION` y `WireSchema.Expected` siguen en 49 al cerrar.
+
+### Consecuencias y deuda
+
+- **Un agujero no funciona en el juego real, y es el límite de todo esto.** WG3 **no es autoridad** de
+  colisión ni movimiento: subir una planta hoy te congela, y caer por un agujero tampoco te va a llevar
+  abajo. Los atrios se VEN sin resolver eso; las caídas no. **El Frente B sigue siendo el techo de todo
+  lo que se construya aquí**, y cuanto más contenido vertical se apile encima de WG2, más cara será la
+  mudanza.
+- El **4 % de espina** medido en la enmienda 2 de ADR-103 no lo arregla este ADR y es del mismo módulo:
+  el papel que existe para decir por dónde ir es el más raro del mundo, y eso es reparto del plan.
+- La probabilidad de atrio, el tope por región y la huella mínima de un agujero **son propuestas sin
+  medir**. La enmienda 1 de este ADR tiene que traerlas medidas o decir por qué se quedan.
