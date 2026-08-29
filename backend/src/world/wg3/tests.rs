@@ -6860,6 +6860,7 @@ fn plan_with_a_gap(blocked: bool) -> plan::RegionPlan {
         rise_from_side: 0,
         rise_step_cm: plan::STEP_RISE_CM,
         max_clear_cm: 0,
+        void_above: false,
     };
 
     let mut spaces = vec![room(0, 1200), room(3000, 4200)];
@@ -7710,4 +7711,63 @@ fn probe_stair_sites_if_doubled() {
             totals[v].0, totals[v].1
         );
     }
+}
+
+/// ADR-104 D1 — **cuántos ATRIOS produce el plan hoy, y cuántos podría producir.**
+///
+/// Un atrio es una nave (`Hall`) con la planta de arriba vacía justo encima: `void_above && Hall`.
+/// La sonda cuenta eso, y al lado cuenta dos cosas más que dicen si el número es pequeño porque el
+/// mecanismo falla o porque **no hay naves**: cuántos espacios tienen vacío encima sea cual sea su
+/// papel, y cuántas naves hay en total.
+///
+/// **Es la medida que decide si D1 basta o hace falta D2.** Si casi todas las naves ya tienen vacío
+/// encima, colocar vacíos a propósito no añade nada y el cuello es el reparto de naves; si hay muchos
+/// vacíos y pocas naves debajo, D2 es exactamente la palanca.
+///
+/// `cargo test --manifest-path backend/Cargo.toml probe_how_many_atria -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn probe_how_many_atria() {
+    let mut t_atria = 0usize;
+    let mut t_halls = 0usize;
+    let mut t_void_above = 0usize;
+
+    for (rx, rz) in AUDIT_REGIONS {
+        let b = building_of(rx, rz);
+        let mut atria = 0usize;
+        let mut halls = 0usize;
+        let mut void_above = 0usize;
+        let mut atrium_area = 0.0f32;
+
+        // La última planta no cuenta: `void_above` sólo lo pone quien tiene una planta encima.
+        for storey in &b.storeys {
+            for s in &storey.spaces {
+                if !s.role.is_built() {
+                    continue;
+                }
+                if s.role == SpaceRole::Hall {
+                    halls += 1;
+                }
+                if s.void_above {
+                    void_above += 1;
+                    if s.role == SpaceRole::Hall {
+                        atria += 1;
+                        atrium_area += s.rect.area_m2();
+                    }
+                }
+            }
+        }
+
+        println!(
+            "[atrio] ({rx},{rz}) — {atria} atrios ({atrium_area:.0} m²) · {halls} naves · \
+             {void_above} espacios con vacío encima"
+        );
+        t_atria += atria;
+        t_halls += halls;
+        t_void_above += void_above;
+    }
+
+    println!(
+        "[atrio] TOTAL — {t_atria} atrios · {t_halls} naves · {t_void_above} con vacío encima"
+    );
 }

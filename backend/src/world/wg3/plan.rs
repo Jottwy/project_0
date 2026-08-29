@@ -510,6 +510,15 @@ pub struct PlannedSpace {
     /// decisión de que una sala a doble altura exista **porque el plan la quiso**, y no porque nadie
     /// mirara.
     pub max_clear_cm: i32,
+    /// ADR-104 D1 — **hay planta encima y encima de ESTE espacio no hay nada construido.**
+    ///
+    /// No es lo mismo que `max_clear_cm == 0`, y confundirlos convierte el ADR en un bulto en el
+    /// tejado. Cero quiere decir «sin tope», y eso pasa por DOS motivos distintos: porque arriba hay
+    /// vacío intencionado, o porque **no hay planta arriba** —la última siempre vale cero—. Un atrio
+    /// es lo primero; subirle el techo a lo segundo es levantar 3,08 m de sala por encima del edificio.
+    ///
+    /// Sólo lo pone [`cap_headroom_under`], que por definición se llama con una planta encima delante.
+    pub void_above: bool,
 }
 
 /// Cómo se conectan dos espacios.
@@ -1182,6 +1191,11 @@ fn cap_headroom_under(below: &mut RegionPlan, above: &RegionPlan) {
             .any(|t| t.role.is_built() && t.rect.overlaps(&s.rect))
         {
             s.max_clear_cm = cap;
+        } else {
+            // ADR-104 D1 — el otro lado del mismo `if`, y hasta hoy no lo miraba nadie: hay planta
+            // encima y sobre este espacio no hay nada construido. Eso es un atrio en potencia, y es
+            // la ÚNICA vez que se puede saber, porque aquí es donde las dos plantas se ven a la vez.
+            s.void_above = true;
         }
     }
 }
@@ -2280,6 +2294,8 @@ impl Planner {
             rise_step_cm: STEP_RISE_CM,
             // Sin tope mientras no haya nada encima. Lo pone el edificio, no la planta.
             max_clear_cm: 0,
+            // Y esto sólo lo sabe el edificio: una planta sola no puede saber si tiene otra encima.
+            void_above: false,
         });
         self.spaces.len() - 1
     }

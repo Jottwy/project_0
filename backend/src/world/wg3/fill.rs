@@ -39,6 +39,7 @@ use super::manifest::{Wg3Manifest, Wg3Piece};
 use super::placement::Wg3Placement;
 use super::plan::{
     LinkKind, PlannedSpace, RegionBuilding, RegionPlan, SpaceRole, SLAB_THICKNESS_CM,
+    STOREY_HEIGHT_CM,
 };
 use super::raster::CM_PER_M;
 use super::route::{self, Mouth, PlannedRoute, Rect, RouteSettings};
@@ -82,12 +83,35 @@ fn clear_height_by_role(role: SpaceRole) -> i32 {
 /// El tope lo pone el PLAN y no esta función, porque saber si hay algo encima es cosa del edificio y
 /// no del papel del espacio. Cero quiere decir que no hay nada encima, y entonces la nave es una nave.
 fn clear_height_cm(space: &PlannedSpace) -> i32 {
+    if is_atrium(space) {
+        return ATRIUM_CLEAR_CM;
+    }
     let want = clear_height_by_role(space.role);
     if space.max_clear_cm > 0 {
         want.min(space.max_clear_cm)
     } else {
         want
     }
+}
+
+/// ADR-104 D1 — **una nave con vacío encima es un ATRIO, y pide dos plantas de altura libre.**
+///
+/// Hasta ADR-104 una nave bajo un vacío no estaba limitada… y aun así pedía los 450 de su papel, así
+/// que salía una sala ALTA y no un atrio. La diferencia entre 4,50 y 6,40 m es la diferencia entre
+/// «techo generoso» y «esto ocupa dos pisos», que es la sensación que se pidió.
+///
+/// **Y son dos losas restadas, no una**, por el mismo motivo que en `plan::cap_headroom_under`: el
+/// techo del atrio ocupa el sitio del techo de la planta de arriba, y contar una sola losa deja dos
+/// caras coplanares — el z-fighting que costó 456 pares y hasta 94,8 m² en ADR-102.
+const ATRIUM_CLEAR_CM: i32 = 2 * STOREY_HEIGHT_CM - 2 * SLAB_THICKNESS_CM;
+
+/// Si este espacio es un atrio: una NAVE con la planta de arriba vacía justo encima.
+///
+/// **Sólo `Hall`, y a propósito.** Un pasillo con 6,40 m de techo no es expansivo, es un error de
+/// datos que nadie va a leer como intención. El papel es lo que separa «el plan quiso un atrio» de
+/// «aquí arriba resultó no haber nada».
+fn is_atrium(space: &PlannedSpace) -> bool {
+    space.void_above && space.role == SpaceRole::Hall
 }
 
 /// Cuánto puede sobrar entre la huella de una pieza y la del espacio para que se considere que
