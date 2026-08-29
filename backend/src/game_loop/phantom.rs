@@ -1336,6 +1336,15 @@ pub(super) struct PhantomDriver {
     /// usual home of `world_seed`) is not in hand.
     pub(super) world_seed: u64,
     pub(super) grid_cache: GridGenChunkCache,
+    /// ADR-108 — el ráster de WG3, cuando WG3 manda. `None` en el camino de siempre.
+    ///
+    /// **Es un caché aparte y no un reemplazo del de arriba**: `settle_items_tick` sigue usando el de
+    /// `grid_gen` para la caída de objetos, y mezclarlos sería cambiar dos cosas a la vez en el
+    /// fichero más delicado del backend.
+    pub(super) wg3: Option<crate::world::wg3::collision::Wg3CollisionCache>,
+    /// Buffer del camino crudo de WG3, reutilizado por el mismo motivo que `nav_cells`: una búsqueda
+    /// por replanificación y por mover no puede asignar.
+    pub(super) nav_world: Vec<Vec3>,
     pub(super) movers: Vec<PhantomMover>,
     /// ADR-089 — every claim marker standing in the world this step: `(owner, position, layer)`.
     /// Derived from `net.stp_buildings` once per step (ADR-081: the claims ARE the markers, there is
@@ -1958,6 +1967,9 @@ impl PhantomDriver {
     pub(super) fn new(world_seed: u64) -> Self {
         Self {
             world_seed,
+            // ADR-108 — lo enciende el bucle cuando WG3 manda; aquí no se sabe todavía.
+            wg3: None,
+            nav_world: Vec::new(),
             // ADR-033: el fantasma colisiona contra la MISMA densidad por zona que
             // se renderiza. Es el consumidor que hereda el cambio sin divergencia
             // (a diferencia del jugador real, que sigue contra world::generator —
@@ -2603,9 +2615,7 @@ impl PhantomDriver {
     /// idea that walls have sides. Kept separate so the whisker filter above is one wrapper instead
     /// of an edit at each of this function's three exits.
     fn steer_heading_raw(&mut self, i: usize, layer: u8, from: Vec3, target: Vec3, dt: f32) -> f32 {
-        use crate::world::grid_gen::{
-            cell_of, find_path, segment_is_clear_for_body, string_pull, PHANTOM_BODY_RADIUS,
-        };
+        use crate::world::grid_gen::{cell_of, find_path, string_pull};
 
         let straight = |to: Vec3| {
             (to.x - from.x)
@@ -2633,15 +2643,7 @@ impl PhantomDriver {
         // the pathfinder must win regardless of what any shortcut claims
         // (see PHANTOM_WEDGE_HYSTERESIS_TICKS).
         self.movers[i].wedge_cooldown = self.movers[i].wedge_cooldown.saturating_sub(1);
-        if !self.movers[i].prefers_route()
-            && segment_is_clear_for_body(
-                &mut self.grid_cache,
-                layer,
-                from,
-                target,
-                PHANTOM_BODY_RADIUS,
-            )
-        {
+        if !self.movers[i].prefers_route() && self.straight_is_clear(layer, from, target) {
             self.movers[i].nav_waypoints.clear();
             self.movers[i].nav_cursor = 0;
             self.movers[i].nav_goal = None;
@@ -2687,25 +2689,37 @@ impl PhantomDriver {
             } else {
                 target
             };
-            let start = cell_of(from);
-            let goal = cell_of(nav_target);
-            find_path(
-                &mut self.grid_cache,
-                layer,
-                start,
-                goal,
-                &mut self.nav_scratch,
-                &mut self.nav_cells,
-            );
-            let cells = std::mem::take(&mut self.nav_cells);
-            string_pull(
-                &mut self.grid_cache,
-                layer,
-                from.y,
-                &cells,
-                &mut self.movers[i].nav_waypoints,
-            );
-            self.nav_cells = cells; // give the buffer back; no per-search allocation
+            // ADR-108 — con WG3 mandando, la ruta sale de SU navegación. Y sale más corta de
+            // escribir: `wg3::nav::find_path` devuelve posiciones de mundo, no celdas, así que no
+            // hace falta la conversión que `string_pull` hace aquí — el suavizado sí, y lo hace
+            // `simplify` con una comprobación de recta que además mira COTAS.
+            if let Some(cache) = self.wg3.take() {
+                let mut raw = std::mem::take(&mut self.nav_world);
+                crate::world::wg3::nav::find_path(&cache, from, nav_target, &mut raw);
+                crate::world::wg3::nav::simplify(&cache, &raw, &mut self.movers[i].nav_waypoints);
+                self.nav_world = raw;
+                self.wg3 = Some(cache);
+            } else {
+                let start = cell_of(from);
+                let goal = cell_of(nav_target);
+                find_path(
+                    &mut self.grid_cache,
+                    layer,
+                    start,
+                    goal,
+                    &mut self.nav_scratch,
+                    &mut self.nav_cells,
+                );
+                let cells = std::mem::take(&mut self.nav_cells);
+                string_pull(
+                    &mut self.grid_cache,
+                    layer,
+                    from.y,
+                    &cells,
+                    &mut self.movers[i].nav_waypoints,
+                );
+                self.nav_cells = cells; // give the buffer back; no per-search allocation
+            }
             self.movers[i].nav_cursor = 0;
             self.movers[i].nav_goal = Some(target);
             self.movers[i].nav_age = 0.0;
@@ -3227,7 +3241,7 @@ impl PhantomDriver {
             from.y,
             from.z + dir.z * speed * ctx.dt,
         );
-        let moved = resolve_move_grid_gen_ex(&mut self.grid_cache, layer, from, desired);
+        let moved = self.resolve_ex(layer, from, desired);
         // ADR-075: SEARCH now feeds the projected-advance detector too — it was the one travelling
         // state that did not, so an endless wall-slide here was invisible (a full block cleared the
         // route below, but a diagonal slide never registered as anything). Same mechanism, one more
@@ -3469,7 +3483,7 @@ impl PhantomDriver {
             from.y,
             from.z + dir.z * speed * ctx.dt,
         );
-        let resolved = resolve_move_grid_gen(&mut self.grid_cache, layer, from, desired);
+        let resolved = self.resolve_pos(layer, from, desired);
         let advance = (resolved.x - from.x) * dir.x + (resolved.z - from.z) * dir.z;
         self.movers[i].note_step_progress(advance, speed * ctx.dt);
         let yaw = heading.to_degrees().rem_euclid(360.0);
@@ -3603,7 +3617,7 @@ impl PhantomDriver {
             from.y,
             from.z + dir.z * speed * ctx.dt,
         );
-        let moved = resolve_move_grid_gen_ex(&mut self.grid_cache, layer, from, desired);
+        let moved = self.resolve_ex(layer, from, desired);
         if moved.blocked {
             // Cornered. Drop the route so the next tick re-plans instead of grinding: an animal
             // pressed into a dead end should look for another way out, not vibrate against it.
@@ -3823,7 +3837,7 @@ impl PhantomDriver {
             from.y,
             from.z + dir.z * speed * ctx.dt,
         );
-        let resolved = resolve_move_grid_gen(&mut self.grid_cache, layer, from, desired);
+        let resolved = self.resolve_pos(layer, from, desired);
         // Wedge detection. `intended` is 0 while STALK holds its distance band, which
         // `note_step_progress` reads as "not trying to travel" rather than as stuck.
         let advance = (resolved.x - from.x) * dir.x + (resolved.z - from.z) * dir.z;
@@ -4054,7 +4068,7 @@ impl PhantomDriver {
             from.y,
             from.z + dir.z * PHANTOM_WALK_SPEED * ctx.dt,
         );
-        let resolved = resolve_move_grid_gen(&mut self.grid_cache, layer, from, desired);
+        let resolved = self.resolve_pos(layer, from, desired);
         let blocked = (resolved.x - from.x).abs() < 1e-4 && (resolved.z - from.z).abs() < 1e-4;
         if blocked {
             let turn =
@@ -4350,7 +4364,7 @@ impl PhantomDriver {
             from.y,
             from.z + dir.z * speed * ctx.dt,
         );
-        let resolved = resolve_move_grid_gen(&mut self.grid_cache, layer, from, desired);
+        let resolved = self.resolve_pos(layer, from, desired);
         // A lunge always intends to travel, so any step that gains nothing toward the
         // player is the creature grinding along geometry.
         let advance = (resolved.x - from.x) * dir.x + (resolved.z - from.z) * dir.z;
@@ -4496,7 +4510,7 @@ impl PhantomDriver {
             from.y,
             from.z + dir.z * speed * ctx.dt,
         );
-        let resolved = resolve_move_grid_gen(&mut self.grid_cache, layer, from, desired);
+        let resolved = self.resolve_pos(layer, from, desired);
         let advance = (resolved.x - from.x) * dir.x + (resolved.z - from.z) * dir.z;
         self.movers[i].note_step_progress(advance, speed * ctx.dt);
         let yaw = heading.to_degrees().rem_euclid(360.0);
@@ -4517,6 +4531,60 @@ impl PhantomDriver {
     // deliberately NOT carrying them. Grouping them into a struct would satisfy the lint and is
     // worth doing the next time this signature is opened for another reason; it is not worth
     // touching forty-six call sites for on its own.
+    /// ADR-108 — **el único punto donde se decide contra qué mundo choca el robapieles.**
+    ///
+    /// Con WG3 mandando resuelve contra su ráster, con la misma lógica de deslizamiento que usa el
+    /// jugador. Sin él, el camino de `grid_gen` de siempre, byte a byte.
+    ///
+    /// El `layer` sólo lo usa la rama de WG2: en WG3 no hay capas, y ésa es justamente la razón de que
+    /// una escalera se pueda subir (ADR-106 D4).
+    fn resolve_ex(
+        &mut self,
+        layer: u8,
+        from: Vec3,
+        desired: Vec3,
+    ) -> crate::world::grid_gen::MoveResult {
+        match &self.wg3 {
+            Some(cache) => {
+                let r = crate::world::collision::Level0Collision::resolve_move_wg3(
+                    cache, from, desired,
+                );
+                use crate::world::collision::CollisionResultKind as K;
+                crate::world::grid_gen::MoveResult {
+                    pos: r.position,
+                    blocked: r.kind == K::Blocked,
+                    // Deslizó si se movió por un solo eje. El resolutor del jugador ya lo distingue
+                    // con su propio nombre, y ADR-040 lo necesita: es el disparador que hace que el
+                    // fantasma REPLANIFIQUE en vez de molerse contra la pared.
+                    slid: matches!(r.kind, K::SlidX | K::SlidZ),
+                }
+            }
+            None => resolve_move_grid_gen_ex(&mut self.grid_cache, layer, from, desired),
+        }
+    }
+
+    /// ADR-108 — ¿se puede ir en línea recta, andando? Mismo dispatch que el movimiento.
+    ///
+    /// La de WG3 mira además la COTA: dos puntos pueden verse y estar en plantas distintas, así que
+    /// una recta por encima de un atrio pasaría por libre porque abajo hay suelo — a tres metros.
+    fn straight_is_clear(&mut self, layer: u8, a: Vec3, b: Vec3) -> bool {
+        match &self.wg3 {
+            Some(cache) => crate::world::wg3::nav::segment_is_clear(cache, a, b),
+            None => crate::world::grid_gen::segment_is_clear_for_body(
+                &mut self.grid_cache,
+                layer,
+                a,
+                b,
+                crate::world::grid_gen::PHANTOM_BODY_RADIUS,
+            ),
+        }
+    }
+
+    /// Igual, cuando sólo interesa a dónde se llegó.
+    fn resolve_pos(&mut self, layer: u8, from: Vec3, desired: Vec3) -> Vec3 {
+        self.resolve_ex(layer, from, desired).pos
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn step(
         &mut self,
@@ -4664,9 +4732,7 @@ impl PhantomDriver {
     /// creatures giving up in the same room do not pick the same corner), three radii each. `None`
     /// when the geometry offers nothing — then it gives up for real, as before.
     pub(super) fn pick_lurk_spot(&mut self, i: usize, from: Vec3, layer: u8) -> Option<Vec3> {
-        use crate::world::grid_gen::{
-            is_walkable_grid_gen, segment_is_clear, segment_is_clear_for_body, PHANTOM_BODY_RADIUS,
-        };
+        use crate::world::grid_gen::{is_walkable_grid_gen, segment_is_clear};
         let last_seen = self.movers[i].last_known_player_pos?;
         let id = self.movers[i].id;
         let base = (id as f32 * 0.618_034).fract() * std::f32::consts::TAU;
@@ -4682,13 +4748,7 @@ impl PhantomDriver {
                     continue;
                 }
                 // Reachable for the body from here, and hidden from the last sighting.
-                if !segment_is_clear_for_body(
-                    &mut self.grid_cache,
-                    layer,
-                    from,
-                    p,
-                    PHANTOM_BODY_RADIUS,
-                ) {
+                if !self.straight_is_clear(layer, from, p) {
                     continue;
                 }
                 if segment_is_clear(&mut self.grid_cache, layer, p, last_seen) {
@@ -4746,7 +4806,7 @@ impl PhantomDriver {
                 from.y,
                 from.z + dir.z * PHANTOM_WALK_SPEED * ctx.dt,
             );
-            let resolved = resolve_move_grid_gen(&mut self.grid_cache, layer, from, desired);
+            let resolved = self.resolve_pos(layer, from, desired);
             let advance = (resolved.x - from.x) * dir.x + (resolved.z - from.z) * dir.z;
             self.movers[i].note_step_progress(advance, PHANTOM_WALK_SPEED * ctx.dt);
             let yaw = h.to_degrees().rem_euclid(360.0);

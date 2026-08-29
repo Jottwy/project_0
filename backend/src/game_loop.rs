@@ -19,9 +19,7 @@ use crate::network::{BoundedDedupeSet, NetworkEvent, NetworkManager, PeerId, DED
 use crate::player::Player;
 use crate::utils::{world_to_chunk, ChunkPos, Vec3, CHUNK_SIZE};
 use crate::world::collision::{resolve_safe_spawn, Level0Collision};
-use crate::world::grid_gen::{
-    resolve_move_grid_gen, resolve_move_grid_gen_ex, world_pos_to_layer, GridGenChunkCache,
-};
+use crate::world::grid_gen::{resolve_move_grid_gen_ex, world_pos_to_layer, GridGenChunkCache};
 use crate::world::phantom_spawn;
 use crate::world::World;
 
@@ -1689,6 +1687,32 @@ pub async fn run(
                         mark_item_settled(&mut net, id);
                     }
                 }
+                // ADR-108 — con WG3 mandando, el robapieles choca y navega contra SU ráster. El
+                // precalentado va aquí y no dentro del driver por lo mismo que el del jugador: pide
+                // la caché de regiones en préstamo MUTABLE, y a partir de él la búsqueda es lectura
+                // pura. Se calienta alrededor de cada mover y del jugador, que son los dos extremos
+                // por los que la ruta puede pasar.
+                if let (Some(manifest), true) = (wg3.manifest(), wg3.is_enabled()) {
+                    let mut cache = phantom_driver.wg3.take().unwrap_or_default();
+                    // La POSE del robapieles vive en su `PeerConnection` —es la fuente de render—,
+                    // así que se lee del roster por id y no del mover.
+                    for m in &phantom_driver.movers {
+                        let here = net
+                            .peers
+                            .get(&m.id)
+                            .map(|p| Vec3::from_array(p.position))
+                            .unwrap_or(player.position);
+                        cache.prewarm_for_move(
+                            &mut wg3_world,
+                            manifest,
+                            net.world_seed,
+                            here,
+                            player.position,
+                        );
+                    }
+                    phantom_driver.wg3 = Some(cache);
+                }
+
                 // Copied out rather than borrowed so the driver is free again immediately — the
                 // voice echoes below need it mutably, and an attack is two `Copy` words.
                 let mut attacks: Vec<_> = phantom_driver
