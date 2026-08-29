@@ -9746,3 +9746,76 @@ igual de rápido.
   el papel que existe para decir por dónde ir es el más raro del mundo, y eso es reparto del plan.
 - La probabilidad de atrio, el tope por región y la huella mínima de un agujero **son propuestas sin
   medir**. La enmienda 1 de este ADR tiene que traerlas medidas o decir por qué se quedan.
+
+---
+
+## ADR-104 — Enmienda 1: D1 a D3 implementados y medidos; el techo no era el que dije y `Balcony` no cabe sin wire (2026-08-29)
+
+Cuatro commits: `aef4f453` (D1), `87be6f81` (D2), `32dc2cc4` (verificaciones a y b) y `d586d212`
+(D3 más la verificación c). `cargo test` 1122/1122, clippy `--all-targets -D warnings` y fmt limpios.
+**Cero wire, v49 intacta.**
+
+### Lo que hay, medido
+
+| | |
+|---|---|
+| Atrios | **11** en las cuatro regiones de referencia (4 · 4 · 3 · 0), de 316 a 665 m² |
+| Altura en el RÁSTER | **6,39 m** en los 11, contra los 3,08 de una planta |
+| Macizo alrededor a la altura de los ojos de arriba | **0 %**, contra el 97 % de antes de D3 |
+| Andable | **110 / 114 / 113 / 114 %** contra la línea base 109 / 116 / 116 / 114 |
+| Mancha andable mayor | **99-100 %** — el atrio no fragmenta el mundo |
+
+### Corrección al ADR: el techo de atrios nunca fue 26
+
+El ADR daba a entender que el límite eran las 26 naves de las cuatro regiones. **Falso, y lo dice la
+medida: sólo 14 están en la planta baja.** Una nave del último piso **no puede ser atrio nunca** —
+`void_above` sólo lo pone `cap_headroom_under`, que por definición necesita una planta encima.
+
+De esas 14: **9 ya eran atrio sin ayuda** (la huella de la planta alta es más pequeña que la región,
+así que muchas naves no tienen nada encima), **D2 talló 2** y **3 quedaron vetadas** porque su huella
+toca circulación de arriba. Conversión de naves elegibles: **64 % → 79 %**.
+
+**Así que D2 funciona y el cuello está en otro sitio: cuántas naves caen en la planta baja.** La región
+(−1,2) sigue con cero atrios porque tiene 4 de sus 5 naves arriba. Subir la oferta de naves bajas es
+reparto del plan y no se toca aquí.
+
+### El hallazgo que D3 sacó, y es el que valía la sesión
+
+**Un atrio de dos plantas verificado en el ráster seguía siendo invisible.** Medido: **el 97 % del
+anillo alrededor de un atrio era macizo a la altura de los ojos de la planta alta.** La causa es que
+`segment::emit_side` emite las cuatro paredes de cada tramo a altura COMPLETA, cortadas sólo por sus
+bocas, así que cada espacio de arriba que daba al vacío le plantaba un muro de 3,08 m.
+
+**Es la peor combinación posible: todos los contadores en verde y la sensación pedida ausente.** Las
+verificaciones (a) y (b) pasaban —el hueco existía— y nadie podía verlo. Un número que mide la
+geometría no mide lo que se ve desde donde se está.
+
+Se resuelve **restando**: `Wg3Carve` ya viaja desde ADR-101 y el cliente ya lo aplica antes de malla y
+colisión. La caja lleva la huella del atrio ensanchada `CARVE_DEPTH_M` —las paredes de arriba viven en
+el rectángulo del VECINO, así que con la huella exacta no se toca ninguna— y en vertical va **desde la
+cota del suelo de la planta alta**, ni un centímetro por debajo: la losa de arriba cuelga en
+`[320, 332]`, y empezar antes sería abrir un agujero en el suelo del vecino en vez de tirar su pared.
+
+### D3 se parte en dos, y sólo una mitad cabe sin tocar el cable
+
+**`Open` sale gratis. `Balcony` no, y eso corrige lo que D3 daba por hecho.**
+
+Restar sabe hacerlo el sistema; **añadir un muro bajo, no.** Un pretil es una caja NUEVA de altura
+reducida y `Wg3Segment` no tiene dónde declararla: emitirla pide campo nuevo, o sea **bump de wire y su
+propio ADR** (regla dura #7). Hasta entonces **el borde de todo atrio es `Open`**, o sea un sitio del
+que se cae — que es la mitad de lo que se pidió, y la mitad barata.
+
+Consecuencia de diseño que hay que decir en voz alta: **hoy no hay ninguna barandilla en el mundo.**
+Con 11 atrios y bordes abiertos, el jugador de la planta alta puede caer sin aviso. Eso es coherente
+con lo pedido —agujeros por los que caer— pero **no es una decisión que nadie haya tomado mirando**:
+salió de lo que se podía construir sin wire. Cuando se ande, es lo primero que hay que juzgar.
+
+### Deuda que esta enmienda deja
+
+- **`Balcony` pendiente**, y con él la elección real entre asomarse y caerse. Pide wire.
+- **Caer sigue sin funcionar en el juego real.** WG3 no es autoridad: el agujero está, y el jugador no
+  se cae por él porque el movimiento lo resuelve WG2. **El atrio se VE sin el Frente B; la caída no.**
+- Las verificaciones **(e)** —que el 23 % de tramos de escalera baje— y **(f)** —contrato de junta con
+  atrios en la frontera— siguen sin hacer.
+- Los 3 vetos por circulación se recuperarían si un atrio pudiera ser **parte** de una nave en vez de
+  la nave entera. Eso convierte `void_above` de booleano en huella, y es más ADR del que cabe aquí.
