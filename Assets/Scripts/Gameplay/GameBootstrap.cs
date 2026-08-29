@@ -10,6 +10,13 @@ namespace BackroomsSurvival.Gameplay
         [Tooltip("Spawn the robapieles (phantom peer) on the host for play-testing. Forwarded to the runtime-added NetworkInitializer (which injects DEBUG_SPAWN_PHANTOM=1).")]
         [SerializeField] private bool _debugSpawnPhantom = false;
 
+        [Header("WorldGen3 (ADR-106)")]
+        [Tooltip("Arranca el backend sirviendo WorldGen3 en vez de WG2. Se reenvía al " +
+                 "NetworkInitializer, que es quien lanza el proceso con BACKROOMS_WG3=1. " +
+                 "Necesita el manifiesto exportado en StreamingAssets/wg3_manifest.json " +
+                 "(Backrooms ▸ WorldGen3 ▸ Exportar manifiesto).")]
+        [SerializeField] private bool _enableWorldGen3 = false;
+
         private void Awake()
         {
             //EnsureComponent<ChunkRenderer>();
@@ -47,6 +54,17 @@ namespace BackroomsSurvival.Gameplay
             var ni = GetComponent<NetworkInitializer>();
             if (ni != null)
             {
+                // ADR-106 — y AQUÍ el interruptor de WorldGen3, por el mismo motivo y en el mismo
+                // sitio que el del fantasma: `NetworkInitializer` no vive en la escena, lo crean en
+                // runtime `AutoConnect` / `NetworkMenuBootstrap` / `JoinSessionUI`, así que su propia
+                // casilla del inspector **no se puede marcar en ninguna parte** y `enableWorldGen3`
+                // nacía siempre en false. Sin esto, WG3 no se puede encender en una sesión normal:
+                // el backend arranca en WG2, el saludo dice `wg3_enabled: false`, y el cliente monta
+                // el mundo de siempre — que es exactamente el síntoma de «no carga WorldGen3».
+                //
+                // A diferencia del fantasma, esto NO se apaga en build: servir WG3 es una decisión
+                // de mundo, no una comodidad de depuración.
+                ni.enableWorldGen3 = _enableWorldGen3;
 #if UNITY_EDITOR
                 ni.debugSpawnPhantom = _debugSpawnPhantom;
 #else
