@@ -1,57 +1,29 @@
 # STATE.md — Estado vivo del proyecto
 > Actualizado por /checkpoint al cierre de cada sesión. Leído al inicio de cada sesión.
 
-## SESIÓN AUTÓNOMA — ARRANQUE (leer primero; borrar este bloque al terminar el carril)
-- **MILESTONE ACTUAL:** M8 — sin abrir.
-- **ESTADO:** M1–M7 cerrados y commiteados. HEAD `2ee95005` + los appends de las enmiendas.
-- **ÚLTIMO VERDE:** `cargo test --release` 1091/0/36 · clippy `--all-targets -D warnings` limpio ·
-  `cargo fmt --check` limpio · `CompileCheckClient.sh` 0 errores en las cuatro asambleas.
-- **COMPLETADO, y cómo se verificó:**
-  - `c4580553` sonda que anda el mundo servido por el RÁSTER. Verificada porque midió algo que el
-    grafo no decía (0/25 tramos pisados con 86 % de árbol mayor).
-  - `ac41cf19` la escena de prueba se regeneraba en noria y no dejaba compilar a Unity.
-  - `ecc1a8fa` arnés (g) de ADR-098 — compila, **no se ha corrido**.
-  - `02b2b70f` sonda de diagnóstico que aisló la causa, con el volcado de cajas que la prueba.
-  - `1fdb4e18` el arreglo: `MIN_GENERATED_WIDTH_CM = 200`. Verificado con antes/después sobre el
-    mundo servido: bocas macizas 46 → 0; tramos pisados 9/37 → 17/26 y 4/31 → 11/24.
-  - `915abfd1` ADR-098 enmienda 2 + este checkpoint.
-  - `9773237e` la cuenta que cierra M4: **1,96 bocas por pieza**, excedente 0–1 sobre el árbol.
-  - `ebd82639` guardia `no_mouth_in_the_served_world_is_walled_shut`, con dientes verificados
-    mutando la constante a 120 (rojo, nombra las bocas) y restaurando (verde).
-  - Enmienda 3 de ADR-098, que **corrige a la enmienda 2**: lo que queda NO es enrutado.
-  - `8606a2cc` la sonda que mide qué escalón pide cada pieza. Verificada porque cazó sola las dos
-    piezas verticales del catálogo sin saber lo que es una escalera.
-  - `869ca1d3` **`ROUTED_CAP_CHANCE = 0.18`** — el compositor deja bocas al enrutador. Verificado con
-    barrido de 16 regiones y con antes/después sobre las cuatro de siempre.
-  - `2ee95005` `dump_region_maps`: un SVG por región para mirar la topología sin sesión de juego.
-- **DECISIONES TOMADAS SIN JOEL:** (1) el mínimo de anchura generada sale de la medida
-  (`narrowest_doorway_clearance`) y no de una opinión; (2) va en `problems()`, así que una ruta
-  estrecha se DESCARTA en vez de emitirse impasable — prefiere menos conectores a conectores falsos.
-- **LO PRIMERO DE LA PRÓXIMA SESIÓN CON UNITY DELANTE:** subir `run` de `Wg3StairRun`
-  (`Wg3Geometry.cs:62`, hoy `0.29f`) a **≥ 0,50 m** y estirar los dos tramos del catálogo
-  (`Wg3Catalog.cs:262` `room_stair` y `:335` `cor_ramp`), y **reexportar `wg3_manifest.json`**.
-  Sin el reexporte, C# y el servidor dicen cosas distintas. Comprobación:
-  `probe_what_step_each_piece_demands` tiene que decir «ninguna».
-- **PRÓXIMO PASO CONCRETO (sin Unity):** ya NO es tocar `route.rs`, y esto es lo que hay que leer
-  antes de abrirlo. La única palanca medida son **piezas con más de dos bocas**: hoy 1,96 por pieza y un
-  árbol gasta 2 por pieza, así que el enrutador se queda sin material. Para dejarle K bocas libres
-  en una región de N piezas hace falta una media de 2 + K/N — con N ≈ 28 y K ≈ 10, **2,36**. Eso es
-  autorado, y necesita a Joel. Lo que SÍ se puede hacer sin él: (a) la verificación (g) cuando haya
-  sesión de juego; (b) los 2 nodos por región con las bocas en manchas distintas —una pieza que no
-  se puede cruzar— que la sonda ya cuenta y nadie ha mirado.
-- **PROHIBIDO / BLOQUEADO sin Joel:** la verificación (g) andando en juego (pide sesión de ~90 s con
-  el editor); llenar la biblioteca de piezas (criterio visual); cualquier bump de wire.
-- **SCOPE:** escribir solo en `backend/src/world/wg3/**`, `backend/tests/fixtures/wg3_*.json`,
-  `Assets/Scripts/WorldGen3/**`, `Assets/Editor/Wg3*`, `docs/STATE.md` y `docs/DECISIONS.md` (solo
-  Edit anclado al final, con `@(Get-Content).Count` antes y después). Dependencia dura, mínima y
-  dicha en el commit: `WIRE_SCHEMA_VERSION` + su espejo `WireSchema.Expected` (los dos o ninguno) y
-  el carril `BACKROOMS_WG3` de `game_loop.rs`. Prohibido: WG2 (`world/grid_gen`, `world/graph`,
-  `ChunkStreamer`), IA, UI, red, persistencia, `Assets/PolymindGames/**`, y cualquier `.unity` o
-  prefab que no sea escena de prueba de WG3. Nunca `git add -A / -a / . / :/`.
+## Última sesión
+- Fecha: 2026-08-29 (**WorldGen3 — ADR-103, 104 y 105: la verticalidad se ANDA**, dos sesiones en paralelo unificadas a media tarde) — **20 commits, `b5c6cfc3` → `a9c39a56`. `cargo test` 1124/1124, clippy `--all-targets -D warnings` y fmt limpios, `CompileCheckClient` 0 errores en las cuatro asambleas. WIRE 49 → 50.**
+
+0. **LO PRIMERO: hay tres ADRs nuevos y el estado vivo de WG3 está en [`WG3-ROADMAP.md`](WG3-ROADMAP.md), no aquí.** Su cabecera se reescribió para decir qué está ANDADO (lo ha visto una persona), qué está MEDIDO (verde en el ráster, nadie lo ha visto) y qué NO EXISTE. Leer eso antes de tocar WG3.
+
+1. **ANDADO POR JOEL: se cayó por un agujero y aterrizó una planta más abajo.** Es lo primero de toda la cadena 103 → 105 que ha visto una persona. Atrio de dos plantas, agujero de forjado y caída funcionan. Los siete papeles se distinguen a 20 m.
+
+2. **ADR-103 — la identidad de subnivel es una MEZCLA, no un sitio.** Aprobado, **cero código**. Los subniveles (Level 0, 0.1, 0.2, 0.3) son un perfil de perillas sobre las constantes del plan, con un campo de grano 900 m que devuelve dos anclas y un peso. La mezcla es **por celda y no por metro**, para no romper la premisa de ADR-095. Enmienda 2: el mecanismo del tinte SÍ da, pero **el papel se quedó el eje de tono**, así que la identidad se muda al AIRE — niebla primero, con presupuesto medido y dos techos (`rho ≤ 0,045`, y `≤ 0,030` mientras la escalera dependa de su rodapié).
+
+3. **ADR-104 — verticalidad, HECHO Y ANDADO.** Un atrio es una nave con vacío encima y pide 640 cm (dos plantas menos dos losas). El vacío se BUSCA sobre una nave en vez de tolerarse donde caiga. Un hueco sin escalera dentro es un AGUJERO. Medido: **11 atrios a 6,39 m en el ráster, 15 agujeros de 3,32 m**, andable 109/113/113/114 con mancha mayor 99 %.
+
+4. **ADR-105 — el MACIZO, y el diagnóstico vale más que el código: WG3 sabía restar y no sabía añadir.** Los vanos viajaban desde ADR-101 y por eso atrios y agujeros salieron gratis; un pretil y un megapilar no tenían canal —`Wg3Segment::problems` rechaza un tramo sin bocas— y **los dos estaban parados por lo mismo**. `Wg3Solid` es espejo de `Wg3Carve` más `style`. **Wire 49 → 50 con su espejo C# en el mismo commit.**
+
+5. ⚠️ **CINCO COSAS QUE SÓLO SE VIERON HACIENDO, y son la deuda de método de la sesión.** (a) **Un canal nuevo hay que enseñárselo a las SONDAS**: los macizos entraron y las seis sondas del mundo servido siguieron construyendo el ráster sin ellos — la primera medida del peaje dio «sin cambio» y era mentira. (b) **Los vanos NO pueden tocar a los macizos** y se demostró invirtiendo el orden: el pretil de (62.50, 10.00) desaparece, comido por el vano del atrio. (c) **La luz estaba escrita para pasillos**: el conteo salía de `Max(SizeX, SizeZ)` y en una nave de 25 × 25 dejaba cuatro esquinas negras, que en pantalla se lee como falta de geometría. (d) **Casi ningún atrio es un balcón** —9 de 11 no tienen nada encima—, así que el valor de ADR-104 D2 es mayor del reportado: los únicos balcones reales son los dos que talla. (e) **Un tope no es un resultado**: dije «seis escaleras por región» y son 2-5.
+
+6. **PRÓXIMO PASO, y hay uno obvio y uno grande.** El obvio: **la fuga de luz entre plantas**, diseñada y sin escribir — la máscara sale de la cota MENOS la unión de los vanos de forjado, derivada en cliente, cero wire, con una celda de margen; con atrios es peor que nunca. El grande: **el Frente B, WG3 como autoridad**, que NO se ha movido en toda la cadena y sigue siendo el techo — hoy esto se anda sólo en `WorldGen3Live`, y en partida real subir una planta te congela y por un agujero no te caes.
+
+7. **PROCESO — dos sesiones en paralelo, y esta vez salió bien porque se habló.** El carril A (identidad visual) y el de diseño se coordinaron por mensajes: `docs/DECISIONS.md` con dueño único y traspaso dicho por los dos lados con el hash, y el índice de git compartido con stage+commit en una sola llamada. **Dos avisos que costaron tiempo igual:** una sonda ajena se coló en un commit por estacionar el fichero entero, y un playtest se corrió tres veces contra un backend sin desplegar (`Builds/Backend/` gana; el log ya decía «STALE BACKEND»).
+
+8. **NO TOCAR (validado humano, 2026-08-29).** Alcance, intensidad y color de los plafones: Joel los miró en partida. Lo que se cambió es CUÁNTOS y DÓNDE, que es otra cosa.
 
 ---
 
-## Última sesión
 - Fecha: 2026-08-28 (**WorldGen3 — ADR-102: plantas apiladas, mundo de dos pisos**, sesión autónoma) — **5 commits, `382f9a14` → `dfd78ddd`. `cargo test` verde, clippy y fmt limpios. Cero wire.**
 
 0. **DOS PLANTAS SERVIDAS.** El mundo servido de WorldGen3 pasa de una planta (Y singular, cota base) a dos: `RegionPlan` es una, `plan.rs` delega a `plan_region` vía `plan_storey(seed, bounds, gates, base_y_cm, may_sink)`. Estructura en `plan::RegionBuilding { storeys, wells }`, una capa por encima. Cinco commits resuelven el paso D1 (plan vertical + `plan_building`), D4 (recorte de huecos, escalera recortada adentro), D5 (productor de vano de forjado) y dos fallos de juego (losas coplanares, escalera única).
