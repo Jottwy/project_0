@@ -125,6 +125,68 @@ pub struct Wg3Carve {
     pub top_y_cm: i32,
 }
 
+/// ADR-105 — **un MACIZO: materia que se AÑADE, y que no pertenece a la cáscara de ninguna sala.**
+///
+/// Es el espejo exacto de [`Wg3Carve`] más un `style`, y la simetría es la decisión: los dos lados ya
+/// saben leer esta caja, ya la comparan en centímetros enteros y ya la rasterizan. Uno resta, el otro
+/// suma. Quien entienda uno entiende el otro, y el fallo de un lado se busca donde el del otro.
+///
+/// # Por qué hacía falta un canal entero para esto
+///
+/// WG3 sabía quitar materia y no sabía ponerla suelta. Un [`Wg3Segment`] es un rectángulo con suelo,
+/// techo y cuatro paredes, y **no puede ser macizo**: [`Wg3Segment::problems`] rechaza un tramo sin
+/// bocas con todas las letras. Un tramo diminuto haciendo de pilar traería su losa de suelo y la de
+/// techo, coplanares con las del atrio — el z-fighting que ADR-102 pagó con 456 pares. Y una pieza de
+/// catálogo sirve para un pilar concreto y no para un pretil, que mide lo que mida cada borde.
+///
+/// # No se le puede excavar (ADR-105 D2)
+///
+/// **Un macizo es inmune a los [`Wg3Carve`].** No es un detalle: el vano de atrio de ADR-104 cubre la
+/// huella del atrio ensanchada medio metro, que es exactamente donde va un pretil. Restando después de
+/// sumar, cada pretil emitido desaparecería y el síntoma sería «el pretil no sale», sin un solo error
+/// en ninguna parte.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Wg3Solid {
+    pub x_cm: i32,
+    pub z_cm: i32,
+    pub size_x_cm: i32,
+    pub size_z_cm: i32,
+    pub bottom_y_cm: i32,
+    pub top_y_cm: i32,
+    /// Aspecto, como en [`Wg3Segment`]. El servidor no lo interpreta: sin él un pretil se lee como un
+    /// objeto pegado en vez de como arquitectura de la sala a la que pertenece.
+    pub style: u8,
+}
+
+impl Wg3Solid {
+    /// El centro de la huella, en metros. Es lo que decide de qué chunk es el macizo (ADR-105 D3).
+    pub fn centre(&self) -> (f32, f32) {
+        (
+            metres(self.x_cm) + metres(self.size_x_cm) * 0.5,
+            metres(self.z_cm) + metres(self.size_z_cm) * 0.5,
+        )
+    }
+
+    /// `(min_x, min_z, max_x, max_z)` en metros.
+    pub fn bounds(&self) -> (f32, f32, f32, f32) {
+        let (x, z) = (metres(self.x_cm), metres(self.z_cm));
+        (x, z, x + metres(self.size_x_cm), z + metres(self.size_z_cm))
+    }
+}
+
+/// La caja de colisión de un macizo. Una sola, y por eso este canal existe.
+pub fn solid_box(s: &Wg3Solid) -> PlacedBox {
+    let (x, z) = (metres(s.x_cm), metres(s.z_cm));
+    let (sx, sz) = (metres(s.size_x_cm), metres(s.size_z_cm));
+    let sy = metres(s.top_y_cm - s.bottom_y_cm);
+    PlacedBox {
+        center: [x + sx * 0.5, metres(s.bottom_y_cm) + sy * 0.5, z + sz * 0.5],
+        size: [sx, sy, sz],
+        yaw_degrees: 0.0,
+        kind: KIND_WALL,
+    }
+}
+
 /// ADR-099 D3 — cuánto se deja intacto por encima del suelo al excavar, en centímetros.
 ///
 /// Sin esta guarda el vano se lleva la losa sobre la que se anda y abre un agujero por el que se cae

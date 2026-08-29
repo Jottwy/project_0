@@ -54,7 +54,7 @@ use super::manifest::Wg3Manifest;
 use super::placement::Wg3Placement;
 use super::plan;
 use super::route;
-use super::segment::{Wg3Carve, Wg3Segment};
+use super::segment::{Wg3Carve, Wg3Segment, Wg3Solid};
 
 /// Tope de piezas del mundo interino.
 ///
@@ -170,6 +170,9 @@ pub struct Wg3ServedWorld {
     /// ADR-099 D3 — los vanos excavados. Aparte de los tramos porque no son geometria del tramo:
     /// son materia que se le quita a otra pieza, y el raster los aplica al final.
     carves: Vec<Wg3Carve>,
+    /// ADR-105 — los MACIZOS: materia que se anade y a la que los vanos no tocan (D2). Aparte de
+    /// los tramos porque no son la cascara de ninguna sala.
+    solids: Vec<Wg3Solid>,
 }
 
 /// Los ajustes con los que se compone una región del mundo SERVIDO.
@@ -324,6 +327,7 @@ impl Wg3ServedWorld {
             placements: filled.placements,
             segments: filled.segments,
             carves: filled.carves,
+            solids: filled.solids,
         }
     }
 
@@ -370,6 +374,8 @@ impl Wg3ServedWorld {
             placements: composed.placements.iter().map(|c| c.placement).collect(),
             segments: composed.segments,
             carves: composed.carves,
+            // El compositor por bocas es legado y no emite macizos: ADR-105 vive en el PLAN.
+            solids: Vec::new(),
         }
     }
 
@@ -398,6 +404,8 @@ impl Wg3ServedWorld {
             placements: composed.placements.iter().map(|c| c.placement).collect(),
             segments: composed.segments,
             carves: composed.carves,
+            // El compositor por bocas es legado y no emite macizos: ADR-105 vive en el PLAN.
+            solids: Vec::new(),
         }
     }
 
@@ -467,6 +475,37 @@ impl Wg3ServedWorld {
     /// exactamente la clase de sitio donde cae también una frontera de chunk. Perderlo por un
     /// centímetro dejaría la puerta abierta por un lado y tapiada por el otro, que es el mismo
     /// fallo de siempre visto desde otro sitio.
+    /// ADR-105 D3 — los MACIZOS que TOCAN este chunk, para el raster.
+    ///
+    /// **Tocan, no pertenecen**, y es la misma asimetria que ya tienen las piezas: al cliente se le
+    /// manda el macizo en UN chunk --el de su centro, porque el cliente monta un GameObject por chunk
+    /// y no deduplica-- pero el raster necesita todos los que tocan, porque un pilar a caballo de la
+    /// frontera bloquea a los dos lados. Romper esta asimetria da un pilar dibujado dos veces o un
+    /// pilar que no colisiona por un lado, y ninguno de los dos sale en una captura.
+    pub fn solids_touching_chunk(&self, coord: Wg3ChunkCoord) -> Vec<Wg3Solid> {
+        let (cmin_x, cmin_z, cmax_x, cmax_z) = coord.bounds();
+        self.solids
+            .iter()
+            .filter(|s| {
+                let (min_x, min_z, max_x, max_z) = s.bounds();
+                max_x > cmin_x && min_x < cmax_x && max_z > cmin_z && min_z < cmax_z
+            })
+            .copied()
+            .collect()
+    }
+
+    /// ADR-105 D3 — los macizos de los que este chunk es DUENO, por su centro. Es lo que viaja.
+    pub fn solids_owned_by_chunk(&self, coord: Wg3ChunkCoord) -> Vec<Wg3Solid> {
+        self.solids
+            .iter()
+            .filter(|s| {
+                let (cx, cz) = s.centre();
+                Wg3ChunkCoord::containing(cx, cz) == coord
+            })
+            .copied()
+            .collect()
+    }
+
     pub fn carves_touching_chunk(&self, coord: Wg3ChunkCoord) -> Vec<Wg3Carve> {
         let (cmin_x, cmin_z, cmax_x, cmax_z) = coord.bounds();
         self.carves

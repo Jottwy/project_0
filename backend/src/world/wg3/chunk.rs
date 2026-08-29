@@ -22,7 +22,7 @@
 use super::manifest::Wg3Manifest;
 use super::placement::{self, Wg3Placement};
 use super::raster::{Wg3Raster, Wg3RasterBuilder, CM_PER_M, WG3_CELL_M};
-use super::segment::{self, Wg3Carve, Wg3Segment};
+use super::segment::{self, Wg3Carve, Wg3Segment, Wg3Solid};
 
 /// Lado del chunk en metros. Mismo tamaño que el chunk de WG2 a propósito: mientras los dos mundos
 /// convivan (D3), el streaming, la caché de simulación y los logs hablan de la misma cuadrícula, y
@@ -102,6 +102,23 @@ pub fn build_chunk_raster_with_carves(
     carves: &[Wg3Carve],
     coord: Wg3ChunkCoord,
 ) -> Wg3Raster {
+    build_chunk_raster_full(manifest, placements, segments, carves, &[], coord)
+}
+
+/// ADR-105 — el mundo entero: piezas, tramos, vanos y MACIZOS, en ese orden.
+///
+/// **El orden es el contrato de ADR-105 D2**, y está escrito abajo donde se aplica. Va en una función
+/// aparte por el mismo motivo que [`build_chunk_raster_with_carves`] lo estaba de
+/// [`build_chunk_raster`]: no tocar los catorce sitios que llaman a las de antes con mundos que no
+/// tienen macizos.
+pub fn build_chunk_raster_full(
+    manifest: &Wg3Manifest,
+    placements: &[Wg3Placement],
+    segments: &[Wg3Segment],
+    carves: &[Wg3Carve],
+    solids: &[Wg3Solid],
+    coord: Wg3ChunkCoord,
+) -> Wg3Raster {
     let (ox, oz) = coord.origin_cm();
     let mut builder = Wg3RasterBuilder::new(ox, oz, WG3_CHUNK_CELLS, WG3_CHUNK_CELLS);
     let (cmin_x, cmin_z, cmax_x, cmax_z) = coord.bounds();
@@ -149,6 +166,22 @@ pub fn build_chunk_raster_with_carves(
             k.bottom_y_cm,
             k.top_y_cm,
         );
+    }
+
+    // ADR-105 D2 — **y los macizos DESPUÉS de excavar, que es lo que los hace inmunes.**
+    //
+    // El orden es la regla, no una consecuencia del orden en que se escribió esto. El vano de atrio
+    // de ADR-104 cubre la huella del atrio ensanchada medio metro, o sea exactamente donde va un
+    // pretil: sumando antes de restar, cada pretil desaparecería y no habría error en ninguna parte.
+    //
+    // Se filtran por caja envolvente como los tramos y no como los vanos: un macizo tiene tamaño de
+    // arquitectura, así que descartarlo sale más barato que rasterizarlo.
+    for s in solids {
+        let (pmin_x, pmin_z, pmax_x, pmax_z) = s.bounds();
+        if pmax_x <= cmin_x || pmin_x >= cmax_x || pmax_z <= cmin_z || pmin_z >= cmax_z {
+            continue;
+        }
+        builder.add_box(&segment::solid_box(s));
     }
 
     builder.finish()

@@ -44,7 +44,8 @@ use super::plan::{
 use super::raster::CM_PER_M;
 use super::route::{self, Mouth, PlannedRoute, Rect, RouteSettings};
 use super::segment::{
-    Wg3Carve, Wg3Opening, Wg3Segment, CARVE_FLOOR_GUARD_CM, MAX_SEGMENT_M, MIN_GENERATED_WIDTH_CM,
+    Wg3Carve, Wg3Opening, Wg3Segment, Wg3Solid, CARVE_FLOOR_GUARD_CM, MAX_SEGMENT_M,
+    MIN_GENERATED_WIDTH_CM,
 };
 
 /// ADR-099 D3 — cuánto entra el vano a cada lado de la cara de contacto, en metros. Mismo número que
@@ -137,6 +138,13 @@ pub struct FilledRegion {
     /// La operación ya existía —la trajo ADR-099 para la absorción— y no tenía consumidor.
     pub carves: Vec<Wg3Carve>,
 
+    /// ADR-105 — los MACIZOS: materia que se ANADE y que no es la cascara de ninguna sala.
+    ///
+    /// Aparte de los vanos porque hacen lo contrario, y aparte de los tramos porque un tramo trae
+    /// suelo, techo y cuatro paredes: un pilar hecho de tramo dejaria dos losas coplanares con las
+    /// del atrio, que es el z-fighting que ADR-102 pago con 456 pares.
+    pub solids: Vec<Wg3Solid>,
+
     /// Espacios resueltos con una pieza del catálogo, y con tramos generados. **Los dos números
     /// juntos son la salud del catálogo frente al plan**, y hoy el primero es pequeño: ver la
     /// cabecera del módulo.
@@ -183,6 +191,7 @@ impl FilledRegion {
         self.placements.extend(other.placements);
         self.segments.extend(other.segments);
         self.carves.extend(other.carves);
+        self.solids.extend(other.solids);
         self.spaces_by_piece += other.spaces_by_piece;
         self.spaces_by_segment += other.spaces_by_segment;
         self.spaces_unbuilt += other.spaces_unbuilt;
