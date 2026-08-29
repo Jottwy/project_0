@@ -47,7 +47,37 @@ impl NetworkManager {
     /// it never inflates `real_peer_count` and is skipped by reliable broadcasts. The mark is
     /// backend-only (never serialized → never crosses the wire). Host-only by construction.
     /// Returns the assigned phantom id.
-    pub fn spawn_phantom(&mut self, name: &str, position: [f32; 3]) -> PeerId {
+    pub fn spawn_phantom(
+        &mut self,
+        name: &str,
+        position: [f32; 3],
+        // ADR-109 — el ráster con el que se pega al suelo cuando manda WG3. `None` es WG2.
+        wg3: Option<&crate::world::wg3::collision::Wg3CollisionCache>,
+    ) -> PeerId {
+        // ADR-109 — CON WG3, EL SITIO LO DA EL RÁSTER, y hacía falta: hasta aquí el robapieles se
+        // movía con WG3 pero NACÍA donde dijera WG2. Las dos líneas de abajo son de la rejilla vieja,
+        // y la de la cota es la peor de las dos: `grid_floor_y(layer)` devuelve la cota de una capa
+        // de 4 m, o sea 0 para la capa 0 — en un mundo con plantas y suelos a distinta altura, eso es
+        // aparecer enterrado o en el aire. `standable_near` mira suelo, hueco de pie y estorbos.
+        if let Some(cache) = wg3 {
+            let preferred = crate::utils::Vec3::from_array(position);
+            let placed = match cache.standable_near(preferred) {
+                Some(p) => p,
+                None => {
+                    // No se inventa un sitio: se deja el candidato. Aparecerá mal, pero se ve en el
+                    // log en vez de aterrizar en una cota de WG2 que parece válida y no lo es.
+                    log::warn!(
+                        "[wg3] sin sitio de pie para el robapieles cerca de ({:.1},{:.1},{:.1})",
+                        position[0],
+                        position[1],
+                        position[2]
+                    );
+                    preferred
+                }
+            };
+            return self.insert_phantom_peer(name, placed.to_array());
+        }
+
         // ADR-018: the phantom collides + renders against grid_gen, but `position` comes from the
         // world::generator player spawn and may be a grid_gen WALL → it would spawn stuck. Snap it
         // to a nearby grid_gen-walkable cell.
@@ -70,6 +100,12 @@ impl NetworkManager {
         position[1] = crate::world::grid_gen::grid_floor_y(
             crate::world::grid_gen::world_pos_to_layer(position[1]),
         ) + crate::world::collision::PLAYER_BASE_Y;
+        self.insert_phantom_peer(name, position)
+    }
+
+    /// El alta del peer sintético, sin decidir dónde. Se separó al mudar el sitio a WG3 (ADR-109):
+    /// los dos mundos eligen la posición de forma distinta y dan de alta exactamente igual.
+    fn insert_phantom_peer(&mut self, name: &str, position: [f32; 3]) -> PeerId {
         let id = self.allocate_phantom_id();
         // Inert, non-routable addr (shared sentinel, see INERT_PEER_ADDR): nobody sends to it
         // on the normal path, and reliable broadcasts skip it explicitly.

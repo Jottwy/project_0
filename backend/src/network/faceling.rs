@@ -37,7 +37,34 @@ impl NetworkManager {
     /// stamped HERE rather than left for `build_peer_list`/`is_phantom` to derive, because a
     /// faceling has no `phantom_ids`-equivalent union to fall back on at those sites — see the
     /// module doc. Returns the assigned faceling id.
-    pub fn spawn_faceling(&mut self, name: &str, position: [f32; 3], species: u8) -> PeerId {
+    pub fn spawn_faceling(
+        &mut self,
+        name: &str,
+        position: [f32; 3],
+        species: u8,
+        // ADR-109 — el ráster con el que se pega al suelo cuando manda WG3. `None` es WG2.
+        wg3: Option<&crate::world::wg3::collision::Wg3CollisionCache>,
+    ) -> PeerId {
+        // ADR-109 — CON WG3, EL SITIO LO DA EL RÁSTER. Mismo motivo y mismo fallo que en
+        // `spawn_phantom`: se movían con WG3 y NACÍAN donde dijera WG2, con la cota de una capa de
+        // 4 m en un mundo de plantas de 3,32. Y aquí duele más, porque son muchos más.
+        if let Some(cache) = wg3 {
+            let preferred = crate::utils::Vec3::from_array(position);
+            let placed = match cache.standable_near(preferred) {
+                Some(p) => p,
+                None => {
+                    log::warn!(
+                        "[wg3] sin sitio de pie para un faceling cerca de ({:.1},{:.1},{:.1})",
+                        position[0],
+                        position[1],
+                        position[2]
+                    );
+                    preferred
+                }
+            };
+            return self.insert_faceling_peer(name, placed.to_array(), species);
+        }
+
         // THE SNAP `faceling_spawn`'s own doc already promised this function did ("positions are
         // raw cell centres and may land inside a wall: snapping is `spawn_faceling`'s job via
         // `resolve_spawn_near`, exactly like `spawn_phantom`") and which was never actually here.
@@ -60,6 +87,11 @@ impl NetworkManager {
         position[1] = crate::world::grid_gen::grid_floor_y(
             crate::world::grid_gen::world_pos_to_layer(position[1]),
         ) + crate::world::collision::PLAYER_BASE_Y;
+        self.insert_faceling_peer(name, position, species)
+    }
+
+    /// El alta del peer sintético, sin decidir dónde. Separado por lo mismo que en el robapieles.
+    fn insert_faceling_peer(&mut self, name: &str, position: [f32; 3], species: u8) -> PeerId {
         let id = self.allocate_faceling_id();
         let addr: SocketAddr = super::INERT_PEER_ADDR;
         let mut conn = PeerConnection::new(id, name.to_string(), addr);

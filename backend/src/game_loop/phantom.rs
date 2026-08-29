@@ -2204,7 +2204,7 @@ impl PhantomDriver {
                 break;
             }
             let (victim_name, victim_bound) = choose_victim_name_for(net, self.next_victim_slot);
-            let id = net.spawn_phantom(&victim_name, cand.position);
+            let id = net.spawn_phantom(&victim_name, cand.position, self.wg3.as_ref());
             // The SNAPPED position is the anchor for the leash, not the raw draw: `spawn_phantom`
             // may have moved it up to 7.5 m to find a walkable cell, and leashing it to a spot
             // inside a wall would have it pressing against that wall forever.
@@ -2319,7 +2319,7 @@ impl PhantomDriver {
                 }
                 let (victim_name, victim_bound) =
                     choose_victim_name_for(net, self.next_victim_slot);
-                let id = net.spawn_phantom(&victim_name, cand.position);
+                let id = net.spawn_phantom(&victim_name, cand.position, self.wg3.as_ref());
                 let spawn_pos = net
                     .peers
                     .get(&id)

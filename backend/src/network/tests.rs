@@ -267,7 +267,7 @@ async fn goodbye_destinations_exclude_phantoms() {
         real_id,
         PeerConnection::new(real_id, "Joiner".into(), "127.0.0.1:9999".parse().unwrap()),
     );
-    let phantom_id = host.spawn_phantom("Skinwalker", [0.0, 0.0, 0.0]);
+    let phantom_id = host.spawn_phantom("Skinwalker", [0.0, 0.0, 0.0], None);
 
     let dests = host.broadcast_destinations();
     assert!(
@@ -749,7 +749,7 @@ async fn a_phantom_is_never_a_broadcast_destination() {
     host.process_incoming().await;
 
     let joiner_id = *host.peers.keys().next().expect("joiner should be a peer");
-    let phantom_id = host.spawn_phantom("Victima", [2.0, 1.8, 0.0]);
+    let phantom_id = host.spawn_phantom("Victima", [2.0, 1.8, 0.0], None);
 
     let dests = host.broadcast_destinations();
     assert!(
@@ -864,7 +864,7 @@ async fn reliable_retransmit_exhaustion_evicts_peer() {
 #[tokio::test]
 async fn reliable_retransmit_exhaustion_does_not_evict_a_phantom() {
     let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
-    let phantom_id = host.spawn_phantom("Skinwalker", [0.0, 1.8, 0.0]);
+    let phantom_id = host.spawn_phantom("Skinwalker", [0.0, 1.8, 0.0], None);
 
     {
         let peer = host.peers.get_mut(&phantom_id).unwrap();
@@ -905,7 +905,7 @@ async fn broadcasts_skip_phantoms_so_their_reliable_queue_never_grows() {
     let real_addr: SocketAddr = "127.0.0.1:9700".parse().unwrap();
     host.peers
         .insert(2, PeerConnection::new(2, "Real".into(), real_addr));
-    let phantom_id = host.spawn_phantom("Skinwalker", [0.0, 1.8, 0.0]);
+    let phantom_id = host.spawn_phantom("Skinwalker", [0.0, 1.8, 0.0], None);
 
     assert!(
         !host
@@ -1384,7 +1384,7 @@ async fn exhausted_retries_purge_the_deferred_queue_with_the_inflight_one() {
 #[tokio::test]
 async fn exhausted_retries_purge_a_phantoms_deferred_queue_without_evicting_it() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
-    let phantom_id = net.spawn_phantom("Victima", [2.0, 1.8, 0.0]);
+    let phantom_id = net.spawn_phantom("Victima", [2.0, 1.8, 0.0], None);
     {
         let peer = net.peers.get_mut(&phantom_id).unwrap();
         peer.queue_reliable(0, vec![0u8; 8]);
@@ -1552,7 +1552,7 @@ async fn unclaimed_address_is_still_adopted_after_nat_rebind() {
 #[tokio::test]
 async fn phantom_counts_in_roster_but_not_in_real_count() {
     let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
-    let pid = host.spawn_phantom("Robapieles_Test", [10.0, 1.8, 5.0]);
+    let pid = host.spawn_phantom("Robapieles_Test", [10.0, 1.8, 5.0], None);
 
     // Renders as a peer (the roster / build_world_state includes it)…
     assert_eq!(host.peer_count(), 1);
@@ -1581,7 +1581,7 @@ async fn phantom_counts_in_roster_but_not_in_real_count() {
 #[tokio::test]
 async fn phantom_survives_timeout_when_refreshed() {
     let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
-    let pid = host.spawn_phantom("Robapieles_Test", [0.0, 1.8, 0.0]);
+    let pid = host.spawn_phantom("Robapieles_Test", [0.0, 1.8, 0.0], None);
     // Force its heartbeat stale (it never receives real packets), then refresh as the
     // game loop does each heartbeat-tick.
     host.peers.get_mut(&pid).unwrap().last_heartbeat = Instant::now() - Duration::from_secs(10);
@@ -1596,7 +1596,7 @@ async fn phantom_survives_timeout_when_refreshed() {
 async fn phantom_is_reaped_without_refresh() {
     // Sanity check that the refresh is load-bearing: without it the timeout reaps it.
     let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
-    let pid = host.spawn_phantom("Robapieles_Test", [0.0, 1.8, 0.0]);
+    let pid = host.spawn_phantom("Robapieles_Test", [0.0, 1.8, 0.0], None);
     host.peers.get_mut(&pid).unwrap().last_heartbeat = Instant::now() - Duration::from_secs(10);
 
     let events = host.check_timeouts();
@@ -1613,7 +1613,7 @@ async fn broadcast_reliable_skips_phantom() {
     host.peers
         .insert(real_id, PeerConnection::new(real_id, "Real".into(), addr));
     // …and a phantom alongside it.
-    let phantom_id = host.spawn_phantom("Robapieles_Test", [0.0, 1.8, 0.0]);
+    let phantom_id = host.spawn_phantom("Robapieles_Test", [0.0, 1.8, 0.0], None);
 
     let payload = PacketPayload::AnchorBroadcast {
         chunk_pos: [0, 0],
@@ -1645,8 +1645,8 @@ async fn pose_relay_addresses_real_peers_only_but_still_relays_phantom_poses() {
     let addr: SocketAddr = "127.0.0.1:9999".parse().unwrap();
     host.peers
         .insert(real_id, PeerConnection::new(real_id, "Real".into(), addr));
-    let ghost_a = host.spawn_phantom("Robapieles_A", [0.0, 1.8, 0.0]);
-    let ghost_b = host.spawn_phantom("Robapieles_B", [40.0, 1.8, 40.0]);
+    let ghost_a = host.spawn_phantom("Robapieles_A", [0.0, 1.8, 0.0], None);
+    let ghost_b = host.spawn_phantom("Robapieles_B", [40.0, 1.8, 40.0], None);
 
     let dests = super::sync::relay_destinations(&host);
 
@@ -2145,7 +2145,7 @@ async fn a_phantom_inside_the_aoi_is_relayed_like_any_player() {
     joiner.process_incoming().await;
 
     // Fantasma sintético al lado del joiner (ADR-016: entra fuera del handshake).
-    let phantom_id = host.spawn_phantom("robapieles", [10.0, 1.8, 0.0]);
+    let phantom_id = host.spawn_phantom("robapieles", [10.0, 1.8, 0.0], None);
     // El snap de ADR-018 puede moverlo a la celda caminable más próxima; se recoloca al lado del
     // joiner para que la prueba sea sobre el AOI y no sobre dónde aterrizó.
     place_peer(&mut host, phantom_id, [10.0, 1.8, 0.0]);
@@ -2178,7 +2178,7 @@ async fn a_relay_only_roster_entry_makes_the_phantom_visible_to_the_joiner() {
     tokio::time::sleep(Duration::from_millis(150)).await;
     joiner.process_incoming().await;
 
-    let phantom_id = host.spawn_phantom("Skinwalker", [10.0, 1.8, 0.0]);
+    let phantom_id = host.spawn_phantom("Skinwalker", [10.0, 1.8, 0.0], None);
     place_peer(&mut host, phantom_id, [10.0, 1.8, 0.0]);
     place_peer(&mut host, 4001, [0.0, 1.8, 0.0]);
 

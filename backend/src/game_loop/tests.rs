@@ -1020,7 +1020,7 @@ fn parse_inventory_v2_stacks_degrades_to_empty_on_malformed_payload() {
 #[tokio::test]
 async fn phantom_spawns_at_the_player_pivot_height() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
-    let pid = net.spawn_phantom("Robapieles_Test", [25.0, 1.8, 25.0]);
+    let pid = net.spawn_phantom("Robapieles_Test", [25.0, 1.8, 25.0], None);
 
     let y = net.peers[&pid].position[1];
     let expected = crate::world::grid_gen::grid_floor_y(0) + crate::world::collision::PLAYER_BASE_Y;
@@ -1077,7 +1077,7 @@ async fn phantom_steers_around_geometry_instead_of_into_it() {
         found.expect("seed 42 must contain a blocked-but-connected pair near the origin");
 
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
-    let pid = net.spawn_phantom("Robapieles_Test", from.to_array());
+    let pid = net.spawn_phantom("Robapieles_Test", from.to_array(), None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, 0.0, from, true);
 
@@ -1128,7 +1128,7 @@ async fn clear_line_of_travel_beats_the_plan() {
     let (from, target) = pair.expect("seed 42 must have an open pair near the origin");
 
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
-    let pid = net.spawn_phantom("Robapieles_Test", from.to_array());
+    let pid = net.spawn_phantom("Robapieles_Test", from.to_array(), None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, 0.0, from, true);
     // Poison it with a stale plan: the shortcut must throw it away, not follow it.
@@ -1156,7 +1156,7 @@ async fn clear_line_of_travel_beats_the_plan() {
 async fn replan_policy_throttles_a_static_target() {
     let start = [25.0, 1.8, 25.0];
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     let from = Vec3::from_array(net.peers[&pid].position);
     driver.add(pid, 0.0, from, true);
@@ -1231,7 +1231,7 @@ async fn phantom_driver_walks_via_grid_cache_far_from_host() {
     // on-demand GridGenChunkCache (the host player is parked very far so it never chases).
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [5000.0, 1.8, 5000.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let world = World::new(42); // seed source only; the phantom no longer reads world.chunks
     let mut driver = PhantomDriver::new(world.seed);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
@@ -1277,7 +1277,7 @@ async fn phantom_transitions_wander_to_spotted_in_radius() {
     // regardless of the sim collision at the origin).
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let world = World::new(42);
     let mut driver = PhantomDriver::new(world.seed);
     // PHANTOM_INITIAL_HEADING faces +X (dir = (sin, _, cos) at FRAC_PI_2 = (1, 0, 0)).
@@ -1307,7 +1307,7 @@ async fn phantom_stays_wander_when_player_beyond_radius() {
     // A player well past DETECT_RADIUS → no detection (stays in WANDER).
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let world = World::new(42);
     let mut driver = PhantomDriver::new(world.seed);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
@@ -1328,7 +1328,7 @@ async fn phantom_spotted_to_stalk_after_duration() {
     // The duration check precedes the random lunge, so an elapsed window is deterministic.
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let world = World::new(42);
     let mut driver = PhantomDriver::new(world.seed);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
@@ -1353,7 +1353,7 @@ async fn phantom_sprints_after_patience_exceeded() {
     // SPRINT. The patience check precedes the random roll, so this is deterministic.
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let world = World::new(42);
     let mut driver = PhantomDriver::new(world.seed);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
@@ -1392,7 +1392,7 @@ async fn phantom_fake_pickup_touches_only_animation_not_real_state() {
         rotation: 0.0,
         settling: false,
     });
-    let pid = net.spawn_phantom("Robapieles_Test", [10.0, 1.8, 10.0]);
+    let pid = net.spawn_phantom("Robapieles_Test", [10.0, 1.8, 10.0], None);
     let spawn_pos = net.peers[&pid].position; // actual (grid_gen-snapped) spawn position
     let world = World::new(42);
     let mut driver = PhantomDriver::new(world.seed);
@@ -1624,7 +1624,7 @@ async fn phantoms_spread_their_victims_across_real_peers() {
     for _ in 0..3 {
         let slot = driver.next_victim_slot;
         let (name, bound) = choose_victim_name_for(&net, slot);
-        let id = net.spawn_phantom(&name, start);
+        let id = net.spawn_phantom(&name, start, None);
         driver.add(id, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), bound);
     }
 
@@ -1649,7 +1649,7 @@ async fn phantom_clones_victim_name_but_keeps_its_own_id() {
     let (name0, bound0) = choose_victim_name_for(&net, 0);
     assert_eq!(name0, net.local_name, "solo fallback is the host name");
     assert!(!bound0, "fallback spawn must be unbound");
-    let pid = net.spawn_phantom(&name0, [0.0, 1.8, 0.0]);
+    let pid = net.spawn_phantom(&name0, [0.0, 1.8, 0.0], None);
     let mut driver = PhantomDriver::new(42);
     driver.add(
         pid,
@@ -1691,7 +1691,7 @@ async fn phantom_statue_freezes_when_player_looks() {
     // (within range + horizontal cone). Deterministic — no rand on this path.
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let world = World::new(42);
     let mut driver = PhantomDriver::new(world.seed);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
@@ -1713,7 +1713,7 @@ async fn phantom_statue_releases_to_stalk_when_player_looks_away() {
     // STATUE resumes STALK (not WANDER) the moment the player looks away.
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let world = World::new(42);
     let mut driver = PhantomDriver::new(world.seed);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
@@ -1738,7 +1738,7 @@ async fn a_wedged_hunter_drops_its_route_and_stops_trusting_the_straight_line() 
     // player as clear, throwing away the one plan that could have routed around it.
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     driver.movers[0].nav_waypoints = vec![Vec3::new(9.0, 1.8, 9.0)];
@@ -1793,7 +1793,7 @@ async fn a_sprint_into_a_built_wall_registers_as_blocked() {
     // (ADR-041 overlay), the lunge cannot advance, and the wedge counter climbs.
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     driver.movers[0].state = PhantomState::Sprint;
@@ -1841,7 +1841,7 @@ async fn search_notices_a_wall_slide() {
     // Same walled-in setup as the sprint test above, through the REAL tick path.
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     driver.movers[0].state = PhantomState::Search;
@@ -1885,7 +1885,7 @@ async fn a_wedged_hunt_gives_up_into_search() {
     // same hatch STALK got on 2026-08-05: break to SEARCH (which re-dresses it, via state change).
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     driver.movers[0].state = PhantomState::Hunting;
@@ -1935,7 +1935,7 @@ async fn hunting_presses_to_point_blank_between_lunges() {
     // never enters: one step from outside the floor must advance, one step inside it must hold.
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     driver.movers[0].state = PhantomState::Hunting;
@@ -1995,7 +1995,7 @@ async fn a_camping_target_shrinks_the_stalk_band() {
     // the creature drifts closer.
     let at = probe_open_run(6); // 15 m of open corridor: the 9.5 m start plus creep headroom
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
-    let pid = net.spawn_phantom("Robapieles_Test", at.to_array());
+    let pid = net.spawn_phantom("Robapieles_Test", at.to_array(), None);
     let mut driver = PhantomDriver::new(42);
     driver.add(
         pid,
@@ -2041,7 +2041,7 @@ async fn a_sated_creature_never_creeps_in() {
     // matter how long you stand still (ADR-050 point 8 is not amended by the creep).
     let at = probe_open_run(6); // 15 m of open corridor around the 14.5 m hold point
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
-    let pid = net.spawn_phantom("Robapieles_Test", at.to_array());
+    let pid = net.spawn_phantom("Robapieles_Test", at.to_array(), None);
     let mut driver = PhantomDriver::new(42);
     driver.add(
         pid,
@@ -2073,7 +2073,7 @@ async fn a_hungry_hunt_searches_longer_and_faster_than_default() {
     // full 2.5× patience (capped at the noise ceiling) and the hunt stride, not the idle amble.
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     driver.movers[0].state = PhantomState::Stalk;
@@ -2114,7 +2114,7 @@ async fn search_entry_always_resets_patience_and_speed() {
     // ended in re-acquisition instead of giving up.
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     driver.movers[0].state = PhantomState::Stalk;
@@ -2162,7 +2162,7 @@ async fn search_sweeps_the_predicted_point_then_the_exact_one() {
     let exact = probe_open_run(4); // 10 m of open corridor, clearing the 7.5 m lead
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(
         pid,
@@ -2234,7 +2234,7 @@ async fn a_stationary_target_gets_no_prediction() {
     // from the start, with no fallback held in reserve (there is nothing to fall back FROM).
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     driver.movers[0].state = PhantomState::Stalk;
@@ -2268,7 +2268,7 @@ async fn an_unreachable_prediction_falls_back_to_last_known() {
     // regardless of the procedurally generated layout underneath it.
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     driver.movers[0].state = PhantomState::Stalk;
@@ -2354,7 +2354,7 @@ async fn search_peeks_once_at_a_blind_corner() {
     // the piece the design docs flagged as never built.
     let (origin, goal) = probe_blind_corner();
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
-    let pid = net.spawn_phantom("Robapieles_Test", origin.to_array());
+    let pid = net.spawn_phantom("Robapieles_Test", origin.to_array(), None);
     let mut driver = PhantomDriver::new(42);
     driver.add(
         pid,
@@ -2383,7 +2383,7 @@ async fn peek_reacquires_on_sight_into_stalk() {
     // still get you spotted, not wait out a blind window.
     let (origin, goal) = probe_blind_corner();
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
-    let pid = net.spawn_phantom("Robapieles_Test", origin.to_array());
+    let pid = net.spawn_phantom("Robapieles_Test", origin.to_array(), None);
     let mut driver = PhantomDriver::new(42);
     driver.add(
         pid,
@@ -2412,7 +2412,7 @@ async fn peek_expires_back_into_search_and_never_repeats() {
     // the per-hunt flag still spent, so the very next tick cannot peek again at the same corner.
     let (origin, goal) = probe_blind_corner();
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
-    let pid = net.spawn_phantom("Robapieles_Test", origin.to_array());
+    let pid = net.spawn_phantom("Robapieles_Test", origin.to_array(), None);
     let mut driver = PhantomDriver::new(42);
     driver.add(
         pid,
@@ -2451,7 +2451,7 @@ async fn peek_is_interruptible_by_noise() {
     // redirect it, exactly as it would redirect the SEARCH the peek is a beat inside of.
     let (origin, goal) = probe_blind_corner();
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
-    let pid = net.spawn_phantom("Robapieles_Test", origin.to_array());
+    let pid = net.spawn_phantom("Robapieles_Test", origin.to_array(), None);
     let mut driver = PhantomDriver::new(42);
     driver.add(
         pid,
@@ -2481,7 +2481,7 @@ async fn ambush_needs_hunger_and_an_unwatched_back() {
     async fn try_ambush(hunger: f32, player_rot: f32) -> PhantomState {
         let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
         let start = [0.0, 1.8, 0.0];
-        let pid = net.spawn_phantom("Robapieles_Test", start);
+        let pid = net.spawn_phantom("Robapieles_Test", start, None);
         let mut driver = PhantomDriver::new(42);
         driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
         driver.movers[0].state = PhantomState::Stalk;
@@ -2516,7 +2516,7 @@ async fn ambush_needs_hunger_and_an_unwatched_back() {
 async fn ambush_never_reveals_while_charging() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     driver.movers[0].state = PhantomState::Ambush;
@@ -2551,7 +2551,7 @@ async fn knockdown_connect_arms_strike_recovery_and_enters_unmasking() {
     // on a player who is still on the ground.
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     driver.movers[0].state = PhantomState::Ambush;
@@ -2582,7 +2582,7 @@ async fn knockdown_connect_arms_strike_recovery_and_enters_unmasking() {
 async fn a_failed_ambush_returns_to_stalk_without_revealing() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     driver.movers[0].state = PhantomState::Ambush;
@@ -2621,7 +2621,7 @@ async fn a_failed_ambush_returns_to_stalk_without_revealing() {
 async fn ambush_is_once_per_hunt_and_cooldown_gated() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     driver.movers[0].state = PhantomState::Stalk;
@@ -2715,7 +2715,7 @@ async fn a_searching_creature_shrieks_without_dropping_its_disguise() {
     // still looks like a player to be the thing making the sound.
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     let here = Vec3::from_array(net.peers[&pid].position);
@@ -2752,7 +2752,7 @@ async fn a_stalker_breathes_and_the_breath_never_mutes_a_scream() {
     // must still be unable to fire during one.
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     driver.movers[0].state = PhantomState::Stalk;
@@ -2837,7 +2837,7 @@ async fn a_distant_shot_is_answered_and_a_close_one_only_grunted() {
     for (dist, want) in [(300.0f32, VOCAL_DISTANT_ANSWER), (10.0, VOCAL_NOISE_GRUNT)] {
         let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
         let start = [0.0, 1.8, 0.0];
-        let pid = net.spawn_phantom("Robapieles_Test", start);
+        let pid = net.spawn_phantom("Robapieles_Test", start, None);
         let mut driver = PhantomDriver::new(42);
         driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
         let here = Vec3::from_array(net.peers[&pid].position);
@@ -2872,7 +2872,7 @@ async fn hearing_a_shot_cancels_the_theatre_and_enrages() {
     // kept performing it for a full second after being told to come.
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     driver.movers[0].pickup_until = Some(Instant::now() + Duration::from_secs(30));
@@ -2912,7 +2912,7 @@ async fn a_kill_leaves_it_sated_and_it_roars_once() {
     // which killed them is not still coming. Without it, death loops straight into death.
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     driver.movers[0].state = PhantomState::Sprint;
@@ -3084,7 +3084,7 @@ async fn a_strike_reaches_further_than_the_body_can_travel() {
     // reached at all and the creature stood at ~2 m staring. Reach and travel are now separate.
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     driver.movers[0].state = PhantomState::Sprint;
@@ -3119,7 +3119,7 @@ async fn extra_reach_never_strikes_through_a_wall() {
     // geometry, which is why the strike is gated on a clear segment and not on distance alone.
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     driver.movers[0].state = PhantomState::Sprint;
@@ -3152,7 +3152,7 @@ async fn a_wedged_lunge_eventually_gives_up_instead_of_grinding_forever() {
     // good. It re-stalks and comes back from somewhere else.
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     driver.movers[0].state = PhantomState::Sprint;
@@ -3183,7 +3183,7 @@ async fn a_hesitating_lunge_holds_still_before_it_comes() {
     // starts closing and there is nothing to read.
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     driver.movers[0].state = PhantomState::Sprint;
@@ -3225,7 +3225,7 @@ async fn phantom_stops_hunting_a_dead_player() {
     // stayed anchored over it indefinitely. Losing the target is what releases both.
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let world = World::new(42);
     let mut driver = PhantomDriver::new(world.seed);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
@@ -3255,7 +3255,7 @@ async fn phantom_still_strikes_a_living_player_at_point_blank() {
     // strike entirely would leave `phantom_stops_hunting_a_dead_player` green.
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let world = World::new(42);
     let mut driver = PhantomDriver::new(world.seed);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
@@ -3277,7 +3277,7 @@ async fn phantom_sound_detection_hears_running_player_outside_cone() {
     // from the per-tick position delta, so we pre-seed last tick's position.
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let world = World::new(42);
     let mut driver = PhantomDriver::new(world.seed);
     // Heading +X; the player is BEHIND (-X) at ~18 m: outside the cone AND beyond
@@ -3313,7 +3313,7 @@ async fn phantom_sound_detection_hears_running_player_outside_cone() {
 async fn crouching_mutes_the_sound_channel() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     driver
@@ -3339,7 +3339,7 @@ async fn walking_is_heard_only_close_by() {
     for (dist, expect_heard) in [(6.0_f32, true), (14.0_f32, false)] {
         let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
         let start = [0.0, 1.8, 0.0];
-        let pid = net.spawn_phantom("Robapieles_Test", start);
+        let pid = net.spawn_phantom("Robapieles_Test", start, None);
         let mut driver = PhantomDriver::new(42);
         driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
         // Behind it (-X) so the view cone can never be the thing that detects.
@@ -3363,7 +3363,7 @@ async fn walking_is_heard_only_close_by() {
 async fn a_noise_within_earshot_starts_an_investigation() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [25.0, 1.8, 25.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     let from = Vec3::from_array(net.peers[&pid].position);
     driver.add(pid, 0.0, from, true);
@@ -3400,7 +3400,7 @@ async fn a_noise_within_earshot_starts_an_investigation() {
 async fn a_noise_beyond_earshot_is_ignored() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [25.0, 1.8, 25.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     let from = Vec3::from_array(net.peers[&pid].position);
     driver.add(pid, 0.0, from, true);
@@ -3428,7 +3428,7 @@ async fn a_noise_beyond_earshot_is_ignored() {
 async fn a_noise_does_not_interrupt_a_committed_sprint() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [25.0, 1.8, 25.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     let from = Vec3::from_array(net.peers[&pid].position);
     driver.add(pid, 0.0, from, true);
@@ -3471,7 +3471,7 @@ fn noise_localization_error_scales_with_distance_and_is_stable() {
 async fn losing_the_target_starts_a_search_not_amnesia() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [25.0, 1.8, 25.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     let from = Vec3::from_array(net.peers[&pid].position);
     driver.add(pid, 0.0, from, true);
@@ -3504,7 +3504,7 @@ async fn losing_the_target_starts_a_search_not_amnesia() {
 async fn search_gives_up_and_forgets_after_its_patience() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [25.0, 1.8, 25.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     let from = Vec3::from_array(net.peers[&pid].position);
     driver.add(pid, 0.0, from, true);
@@ -3562,7 +3562,7 @@ async fn phantom_sprint_grabs_from_behind() {
     // then. See `a_grab_that_runs_out_of_time_kills_and_feeds` for the other half.
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let world = World::new(42);
     let mut driver = PhantomDriver::new(world.seed);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
@@ -3593,7 +3593,7 @@ async fn phantom_sprint_grabs_from_behind() {
 async fn phantom_attacking_a_joiner_names_the_joiner_not_the_host() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
 
     // A real joiner, point-blank on the phantom. The host's own player is far away — the
     // configuration that used to send the host's health down for no visible reason.
@@ -3631,7 +3631,7 @@ async fn phantom_attacking_a_joiner_names_the_joiner_not_the_host() {
 async fn a_noise_does_not_travel_between_layers() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, stand_on(0), 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     let from = Vec3::from_array(net.peers[&pid].position);
     driver.add(pid, 0.0, from, true);
@@ -3658,7 +3658,7 @@ async fn a_noise_does_not_travel_between_layers() {
 async fn a_noise_on_the_same_layer_is_still_heard() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, stand_on(0), 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     let from = Vec3::from_array(net.peers[&pid].position);
     driver.add(pid, 0.0, from, true);
@@ -3739,7 +3739,7 @@ async fn phantom_sprint_hits_from_front() {
     // `a_strike_does_not_end_the_lunge_on_the_same_tick`.
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let world = World::new(42);
     let mut driver = PhantomDriver::new(world.seed);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
@@ -3770,7 +3770,7 @@ async fn a_strike_does_not_end_the_lunge_on_the_same_tick() {
     // explicit that `revealed` is a derived level, and its rejected alternative (C) is a latch.
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     driver.movers[0].state = PhantomState::Sprint;
@@ -3823,7 +3823,7 @@ async fn breaking_the_line_of_sight_ends_a_committed_hunt() {
     // above would be indistinguishable from "the creature never stops", which is a worse game.
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     driver.movers[0].state = PhantomState::Sprint;
@@ -3884,7 +3884,7 @@ async fn phantom_statue_timeout_knocks_back_point_blank() {
     // STATUE that times out while the player is point-blank → SPRINT + a Knockback signal.
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let world = World::new(42);
     let mut driver = PhantomDriver::new(world.seed);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
@@ -3937,7 +3937,7 @@ async fn phantom_statue_timeout_knocks_back_point_blank() {
 async fn grabbed_setup() -> (NetworkManager, PhantomDriver, PeerId, Vec3) {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     driver.movers[0].hunger = 0.0;
@@ -4094,7 +4094,7 @@ async fn the_same_shot_scares_a_full_creature_and_summons_a_hungry_one() {
     async fn shot_near(hunger: f32) -> (PhantomState, Option<Vec3>) {
         let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
         let start = [0.0, 1.8, 0.0];
-        let pid = net.spawn_phantom("Robapieles_Test", start);
+        let pid = net.spawn_phantom("Robapieles_Test", start, None);
         let mut driver = PhantomDriver::new(42);
         driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
         driver.movers[0].hunger = hunger;
@@ -4140,7 +4140,7 @@ async fn a_burst_of_fire_does_not_restart_the_same_scare_forever() {
     // happens past it. This test stays entirely inside the window on purpose.
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     driver.movers[0].hunger = 1.0;
@@ -4219,7 +4219,7 @@ async fn a_second_close_noise_during_flee_turns_it_around() {
     // noise cancels the flee outright and sends it to investigate, enraged.
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     driver.movers[0].state = PhantomState::Flee;
@@ -4252,7 +4252,7 @@ async fn an_early_burst_does_not_cancel_a_fresh_flee() {
     // must leave a just-started flee completely untouched.
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     driver.movers[0].state = PhantomState::Flee;
@@ -4280,7 +4280,7 @@ async fn a_distant_noise_never_provokes_a_fleeing_creature() {
     // applies to a fleeing creature exactly as it applies to any other.
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     driver.movers[0].state = PhantomState::Flee;
@@ -4308,7 +4308,7 @@ async fn provoked_rage_accumulates_to_a_ceiling() {
     // needs its own saturation policy, same reasoning as the wedge counter's `u8`.
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     driver.movers[0].state = PhantomState::Flee;
@@ -4333,7 +4333,7 @@ async fn rage_bridges_the_satiety_gate() {
     // suppress their calm multiplier under `enraged_for > 0`; this pins the GATE that reads them.
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     driver.movers[0].state = PhantomState::Stalk;
@@ -4364,7 +4364,7 @@ async fn a_sated_creature_wears_your_pose_a_beat_late() {
     // already established for the driver to write cosmetics, so there is no wire and no client code.
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     driver.movers[0].hunger = 1.0; // sated: it follows and copies
@@ -4404,7 +4404,7 @@ async fn a_hungry_creature_does_not_imitate_anyone() {
     // on the band where it is about to stop mattering.
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     driver.movers[0].hunger = 0.0;
@@ -4434,7 +4434,7 @@ async fn a_charge_blows_and_recovers_without_ever_ending_the_hunt() {
     // the obvious way to reintroduce it by accident.
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     // Entered through the REAL door, not by assigning the state: `enter_sprint` emits the reveal
@@ -4510,7 +4510,7 @@ async fn a_sated_creature_stares_at_you_without_ever_breaking_its_skin() {
     // face, and nothing comes off.
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     driver.movers[0].hunger = 1.0; // just fed: it is here to follow and copy, not to eat
@@ -4543,7 +4543,7 @@ async fn the_skin_only_breaks_after_the_warning_and_never_grows_back_mid_hunt() 
     // torn, a failed lunge does not hand it back.
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     driver.movers[0].hunger = 0.0; // starving: this one has decided
@@ -4667,7 +4667,7 @@ async fn an_unmasked_hunter_recovers_its_breath_and_does_not_ping_pong_into_spri
     //    bounce because `enter_sprint` vocalises.
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     driver.movers[0].hunger = 0.0;
@@ -4722,7 +4722,7 @@ async fn it_throws_your_own_voice_back_at_you_but_only_while_disguised() {
     // corridor that still looks like your friend.
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     // Something we said is on file, which is what makes an echo possible at all.
@@ -4812,7 +4812,7 @@ async fn a_sated_creature_never_charges_however_long_its_patience_ran() {
     // the reported feel, and the cause was that nothing but a dice roll gated the charge.
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let world = World::new(42);
     let mut driver = PhantomDriver::new(world.seed);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
@@ -4884,7 +4884,7 @@ async fn hunger_drains_even_while_the_fsm_is_skipped() {
     // the preamble with the other timers for that reason.
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     driver.movers[0].hunger = 1.0;
@@ -4913,7 +4913,7 @@ async fn phantom_idle_step_returns_no_attack() {
     // A plain WANDER step far from any player produces no attack.
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let world = World::new(42);
     let mut driver = PhantomDriver::new(world.seed);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
@@ -4948,8 +4948,8 @@ async fn phantom_step_reports_every_attacker_not_just_the_last() {
 
     // Both phantoms are seeded on the same cell, so both end up point-blank on the player.
     let start = [0.0, 1.8, 0.0];
-    let a = net.spawn_phantom("Robapieles_A", start);
-    let b = net.spawn_phantom("Robapieles_B", start);
+    let a = net.spawn_phantom("Robapieles_A", start, None);
+    let b = net.spawn_phantom("Robapieles_B", start, None);
     for id in [a, b] {
         driver.add(id, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     }
@@ -7384,7 +7384,7 @@ fn look_pitch_sign_follows_adr_021() {
 async fn a_committed_phantom_seals_a_stare_and_drops_it_when_it_loses_you() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let world = World::new(42);
     let mut driver = PhantomDriver::new(world.seed);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
@@ -7423,7 +7423,7 @@ async fn a_lit_torch_is_seen_far_beyond_the_sight_radius() {
     // Lo que se mide es la regla de la luz, no la geometría del seed ni el rumbo con el que nace.
     let nominal = [0.0, 1.8, 0.0];
     let mut dark_net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
-    let dark_pid = dark_net.spawn_phantom("Robapieles_Test", nominal);
+    let dark_pid = dark_net.spawn_phantom("Robapieles_Test", nominal, None);
     let from = Vec3::from_array(dark_net.peers[&dark_pid].position);
 
     let player = {
@@ -7464,7 +7464,7 @@ async fn a_lit_torch_is_seen_far_beyond_the_sight_radius() {
     );
 
     let mut lit_net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
-    let lit_pid = lit_net.spawn_phantom("Robapieles_Test", nominal);
+    let lit_pid = lit_net.spawn_phantom("Robapieles_Test", nominal, None);
     let mut lit = PhantomDriver::new(World::new(42).seed);
     lit.add(lit_pid, facing, from, true);
     // El único cambio entre los dos escenarios: el jugador lleva algo encendido.
@@ -7482,7 +7482,7 @@ async fn a_lit_torch_is_seen_far_beyond_the_sight_radius() {
 async fn a_lit_torch_behind_the_creature_is_not_seen() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(World::new(42).seed);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
 
@@ -7502,7 +7502,7 @@ async fn a_lit_torch_behind_the_creature_is_not_seen() {
 async fn a_sated_phantom_copies_your_lean_but_never_your_aim() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(World::new(42).seed);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     // Saciada: la banda donde la imitación existe (ADR-050 punto 8).
@@ -7538,8 +7538,8 @@ async fn a_distant_scream_is_answered_after_a_beat() {
     let screamer_pos = [0.0, 1.8, 0.0];
     // 120 m: dentro de [PHANTOM_CHORUS_MIN_DISTANCE, PHANTOM_CHORUS_MAX_DISTANCE].
     let listener_pos = [120.0, 1.8, 0.0];
-    let screamer = net.spawn_phantom("Screamer", screamer_pos);
-    let listener = net.spawn_phantom("Listener", listener_pos);
+    let screamer = net.spawn_phantom("Screamer", screamer_pos, None);
+    let listener = net.spawn_phantom("Listener", listener_pos, None);
     // `spawn_phantom` ajusta la posición a la celda caminable más próxima; se recolocan para que la
     // prueba sea sobre la distancia y no sobre dónde aterrizaron.
     net.peers.get_mut(&screamer).unwrap().position = screamer_pos;
@@ -7611,8 +7611,8 @@ async fn an_answer_never_seeds_another_answer() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let a_pos = [0.0, 1.8, 0.0];
     let b_pos = [120.0, 1.8, 0.0];
-    let a = net.spawn_phantom("A", a_pos);
-    let b = net.spawn_phantom("B", b_pos);
+    let a = net.spawn_phantom("A", a_pos, None);
+    let b = net.spawn_phantom("B", b_pos, None);
     net.peers.get_mut(&a).unwrap().position = a_pos;
     net.peers.get_mut(&b).unwrap().position = b_pos;
 
@@ -7739,7 +7739,7 @@ fn plant_claim_marker(net: &mut NetworkManager, owner: u16, at: [f32; 3]) {
 async fn a_lost_hunt_checks_your_claim_before_giving_up() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     let here = Vec3::from_array(net.peers[&pid].position);
@@ -7785,7 +7785,7 @@ async fn a_lost_hunt_checks_your_claim_before_giving_up() {
 async fn the_home_is_checked_once_per_hunt_and_then_it_gives_up() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     let here = Vec3::from_array(net.peers[&pid].position);
@@ -7815,7 +7815,7 @@ async fn the_home_is_checked_once_per_hunt_and_then_it_gives_up() {
 async fn a_home_on_another_layer_or_too_far_is_ignored() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     let here = Vec3::from_array(net.peers[&pid].position);
@@ -7853,7 +7853,7 @@ async fn a_home_on_another_layer_or_too_far_is_ignored() {
 async fn the_patrol_ring_surrounds_the_marker() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     let here = Vec3::from_array(net.peers[&pid].position);
@@ -7883,7 +7883,7 @@ async fn the_patrol_ring_surrounds_the_marker() {
 async fn a_hunter_sidesteps_when_aimed_at() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     driver.movers[0].traits.is_hunter = true;
@@ -7917,7 +7917,7 @@ async fn a_hunter_sidesteps_when_aimed_at() {
 async fn no_aim_no_sidestep() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     driver.movers[0].traits.is_hunter = true;
@@ -7946,7 +7946,7 @@ async fn no_aim_no_sidestep() {
 async fn the_sidestep_respects_its_cooldown() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     driver.movers[0].traits.is_hunter = true;
@@ -7980,7 +7980,7 @@ async fn a_spent_hunt_feints_according_to_its_roll_and_hides_out_of_sight() {
     use crate::game_loop::phantom::{chorus_delay_fraction, PHANTOM_LURK_CHANCE_HUNTER};
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     let here = Vec3::from_array(net.peers[&pid].position);
@@ -8029,7 +8029,7 @@ async fn a_spent_hunt_feints_according_to_its_roll_and_hides_out_of_sight() {
 async fn a_sated_creature_never_feints() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     let here = Vec3::from_array(net.peers[&pid].position);
@@ -8051,7 +8051,7 @@ async fn a_sated_creature_never_feints() {
 async fn after_waiting_it_comes_back_to_look_clothed() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     let here = Vec3::from_array(net.peers[&pid].position);
@@ -8102,7 +8102,7 @@ async fn after_waiting_it_comes_back_to_look_clothed() {
 async fn a_player_walking_into_the_lurk_is_stalked_at_once() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
-    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     let here = Vec3::from_array(net.peers[&pid].position);
@@ -8182,7 +8182,7 @@ async fn adult_never_leaves_its_office_chunk_even_when_aimed_outside_it() {
     let mut driver = AdultDriver::new(seed);
     let (x0, x1, z0, z1) = chunk_bounds((ox, oz));
     let center = Vec3::new((x0 + x1) / 2.0, stand_on(0), (z0 + z1) / 2.0);
-    let id = net.spawn_faceling("Faceling_Test", center.to_array(), 1);
+    let id = net.spawn_faceling("Faceling_Test", center.to_array(), 1, None);
     let start = Vec3::from_array(net.peers[&id].position);
     driver.movers.push(AdultMover {
         id,
@@ -8228,8 +8228,8 @@ async fn the_whole_office_regards_together_even_when_only_one_adult_is_in_range(
     let (x0, _x1, z0, _z1) = chunk_bounds((ox, oz));
     let near = Vec3::new(x0 + 5.0, stand_on(0), z0 + 5.0);
     let far = Vec3::new(x0 + 5.0, stand_on(0), z0 + 40.0); // > FACELING_REGARD_RADIUS from `near`
-    let near_id = net.spawn_faceling("Faceling_Near", near.to_array(), 1);
-    let far_id = net.spawn_faceling("Faceling_Far", far.to_array(), 1);
+    let near_id = net.spawn_faceling("Faceling_Near", near.to_array(), 1, None);
+    let far_id = net.spawn_faceling("Faceling_Far", far.to_array(), 1, None);
     for (id, pos) in [(near_id, near), (far_id, far)] {
         driver.movers.push(AdultMover {
             id,
@@ -8286,8 +8286,8 @@ async fn pvp_hit_on_a_faceling_applies_damage_locally_and_alerts_the_whole_offic
     let (x0, _x1, z0, _z1) = chunk_bounds((ox, oz));
     let pos_a = Vec3::new(x0 + 5.0, stand_on(0), z0 + 5.0);
     let pos_b = Vec3::new(x0 + 5.0, stand_on(0), z0 + 40.0); // far from A, same office
-    let id_a = net.spawn_faceling("Faceling_A", pos_a.to_array(), 1);
-    let id_b = net.spawn_faceling("Faceling_B", pos_b.to_array(), 1);
+    let id_a = net.spawn_faceling("Faceling_A", pos_a.to_array(), 1, None);
+    let id_b = net.spawn_faceling("Faceling_B", pos_b.to_array(), 1, None);
     for (id, pos) in [(id_a, pos_a), (id_b, pos_b)] {
         adult_driver.movers.push(AdultMover {
             id,
@@ -8350,7 +8350,7 @@ async fn a_faceling_reduced_to_zero_health_is_despawned() {
     let seed = 42;
     let mut net = NetworkManager::bind(0, 1, seed, true).await.unwrap();
     let mut adult_driver = AdultDriver::new(seed);
-    let id = net.spawn_faceling("Faceling_Test", [0.0, 1.8, 0.0], 1);
+    let id = net.spawn_faceling("Faceling_Test", [0.0, 1.8, 0.0], 1, None);
     adult_driver.movers.push(AdultMover {
         id,
         home_chunk: (0, 0),
@@ -8386,7 +8386,7 @@ async fn an_enforcing_adult_in_reach_actually_strikes() {
     let mut net = NetworkManager::bind(0, 1, seed, true).await.unwrap();
     let host = net.local_id;
     let mut adult_driver = AdultDriver::new(seed);
-    let id = net.spawn_faceling("Faceling_Test", [2.0, stand_on(0), 2.0], 1);
+    let id = net.spawn_faceling("Faceling_Test", [2.0, stand_on(0), 2.0], 1, None);
     // Read the position BACK: `spawn_faceling` snaps to a walkable cell, and the blow needs a
     // clear segment as well as reach, so the host has to be placed relative to where the world
     // actually put it — not to the coordinates we asked for.
@@ -8443,7 +8443,7 @@ async fn an_enforcing_adult_out_of_reach_does_not_strike() {
     let mut net = NetworkManager::bind(0, 1, seed, true).await.unwrap();
     let host = net.local_id;
     let mut adult_driver = AdultDriver::new(seed);
-    let id = net.spawn_faceling("Faceling_Test", [2.0, stand_on(0), 2.0], 1);
+    let id = net.spawn_faceling("Faceling_Test", [2.0, stand_on(0), 2.0], 1, None);
     let spot = Vec3::from_array(net.peers[&id].position);
     adult_driver.movers.push(AdultMover {
         id,
@@ -8688,7 +8688,7 @@ async fn a_child_never_roams_past_its_patrol_radius() {
     let mut driver = ChildDriver::new(seed);
     let (x0, x1, z0, z1) = chunk_bounds((ox, oz));
     let anchor = Vec3::new((x0 + x1) / 2.0, stand_on(0), (z0 + z1) / 2.0);
-    let id = net.spawn_faceling("Faceling_Child_Test", anchor.to_array(), 2);
+    let id = net.spawn_faceling("Faceling_Child_Test", anchor.to_array(), 2, None);
     driver.packs.push(ChildPack {
         home_chunk: (ox, oz),
         layer: 0,
@@ -8755,7 +8755,7 @@ async fn four_member_pack(
 ) -> ChildPack {
     let mut members = Vec::with_capacity(4);
     for _ in 0..4 {
-        let id = net.spawn_faceling("Faceling_Child_Test", anchor.to_array(), 2);
+        let id = net.spawn_faceling("Faceling_Child_Test", anchor.to_array(), 2, None);
         members.push(ChildMover {
             id,
             heading: 0.0,
@@ -8898,7 +8898,7 @@ async fn faceling_pathfinding_cost() {
         let anchor = Vec3::new(centre.x + p as f32 * 12.0, centre.y, centre.z);
         let mut pack = four_member_pack(&mut net, (ox + p, oz), 0, anchor).await;
         while pack.members.len() < FACELING_CHILD_PACK_MAX {
-            let extra = net.spawn_faceling("Faceling_Child_Probe", anchor.to_array(), 2);
+            let extra = net.spawn_faceling("Faceling_Child_Probe", anchor.to_array(), 2, None);
             pack.members.push(ChildMover {
                 id: extra,
                 heading: 0.0,
@@ -9473,7 +9473,7 @@ async fn a_lone_survivor_does_not_overfill_a_full_pack() {
     // A pack at FACELING_CHILD_PACK_MAX (eight since Enmienda 5), built by topping up a four.
     let mut full = four_member_pack(&mut net, (1, 0), 0, Vec3::new(6.0, stand_on(0), 0.0)).await;
     while full.members.len() < 8 {
-        let extra = net.spawn_faceling("Faceling_Child_Test", [6.0, stand_on(0), 0.0], 2);
+        let extra = net.spawn_faceling("Faceling_Child_Test", [6.0, stand_on(0), 0.0], 2, None);
         full.members.push(ChildMover {
             id: extra,
             heading: 0.0,
@@ -10160,7 +10160,7 @@ async fn a_faceling_never_spawns_inside_a_wall() {
         (13.0, -7.0),
         (-40.0, 31.0),
     ] {
-        let id = net.spawn_faceling("Faceling_SpawnTest", [x, stand_on(0), z], 1);
+        let id = net.spawn_faceling("Faceling_SpawnTest", [x, stand_on(0), z], 1, None);
         let landed = Vec3::from_array(net.peers[&id].position);
         assert!(
             crate::world::grid_gen::is_walkable_grid_gen(&mut cache, landed, 0),
@@ -10180,7 +10180,7 @@ async fn a_wedged_adult_gives_up_its_puesto_instead_of_pushing_forever() {
     let (ox, oz) = find_office_chunk(seed);
     let (x0, x1, z0, z1) = chunk_bounds((ox, oz));
     let anchor = Vec3::new((x0 + x1) / 2.0, stand_on(0), (z0 + z1) / 2.0);
-    let id = net.spawn_faceling("Faceling_Test", anchor.to_array(), 1);
+    let id = net.spawn_faceling("Faceling_Test", anchor.to_array(), 1, None);
     let here = Vec3::from_array(net.peers[&id].position);
     adult_driver.movers.push(AdultMover {
         id,
@@ -11239,7 +11239,7 @@ async fn an_adult_can_strike_a_player_pressed_into_a_wall() {
     let (adult_at, player_at) =
         author_wall_hugging_pair(&mut driver.grid_cache, FACELING_CHILD_ATTACK_REACH - 0.2);
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
-    let id = net.spawn_faceling("Faceling_Adult_Test", adult_at.to_array(), 1);
+    let id = net.spawn_faceling("Faceling_Adult_Test", adult_at.to_array(), 1, None);
     net.peers.get_mut(&id).unwrap().position = adult_at.to_array();
     let home = (0, 0); // the authored chunk
 

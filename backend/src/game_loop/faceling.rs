@@ -413,7 +413,7 @@ impl AdultDriver {
                         if self.movers.len() >= FACELING_ACTIVE_CAP {
                             break;
                         }
-                        let id = net.spawn_faceling("Faceling", pos, 1);
+                        let id = net.spawn_faceling("Faceling", pos, 1, self.wg3.as_ref());
                         let spawn_pos = net
                             .peers
                             .get(&id)
@@ -2112,7 +2112,7 @@ impl ChildDriver {
                     }
                     let mut members = Vec::with_capacity(drawn.len());
                     for pos in drawn.iter().copied() {
-                        let id = net.spawn_faceling("Faceling_Child", pos, 2);
+                        let id = net.spawn_faceling("Faceling_Child", pos, 2, self.wg3.as_ref());
                         let spawn_pos = net
                             .peers
                             .get(&id)

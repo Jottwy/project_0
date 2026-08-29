@@ -134,7 +134,7 @@ mod peer_list_tests {
         let real_addr: std::net::SocketAddr = "127.0.0.1:9800".parse().unwrap();
         host.peers
             .insert(2, PeerConnection::new(2, "Real".into(), real_addr));
-        let phantom_id = host.spawn_phantom("Skinwalker", [0.0, 1.8, 0.0]);
+        let phantom_id = host.spawn_phantom("Skinwalker", [0.0, 1.8, 0.0], None);
 
         let player = Player::new(host.local_id, "Host");
         let list = build_peer_list(&host, &player);
@@ -1239,7 +1239,7 @@ mod voice_tests {
         ])
         .await;
         // Un fantasma pegado al hablante: su addr es el 127.0.0.1:1 inerte de ADR-043.
-        let phantom_id = net.spawn_phantom("Victima", [2.0, 1.8, 0.0]);
+        let phantom_id = net.spawn_phantom("Victima", [2.0, 1.8, 0.0], None);
 
         let dests = voice_destinations(&net, 2);
         assert!(!dests.contains(&3), "un muerto no oye a los vivos");

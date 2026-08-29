@@ -709,7 +709,11 @@ pub async fn run(
                 player.position.z,
             ];
             let (victim_name, victim_bound) = choose_victim_name_for(&net, 0);
-            let phantom_id = net.spawn_phantom(&victim_name, phantom_pos);
+            let phantom_id = net.spawn_phantom(
+                &victim_name,
+                phantom_pos,
+                wg3.is_enabled().then_some(&wg3_collision),
+            );
             phantom_driver.add(
                 phantom_id,
                 PHANTOM_INITIAL_HEADING,

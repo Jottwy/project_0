@@ -9193,3 +9193,65 @@ fn space_at_answers_by_storey_not_by_list_order() {
     assert!(comprobados > 0, "la región servida no tiene tramos");
     println!("PROBE space_at: centros={comprobados} resuelven_a_otro={resuelven_a_otro}");
 }
+
+/// ADR-109 — el sitio donde NACE una criatura tiene que salir del ráster, no de la capa de WG2.
+///
+/// Hasta esta tanda el robapieles y los facelings se movían con WG3 y aparecían donde dijera la
+/// rejilla vieja: la cota salía de `grid_floor_y(layer)`, que es la cota de una capa de 4 m —o sea
+/// CERO para la capa 0— en un mundo cuyas plantas miden 3,32 y cuyos suelos suben y bajan. Este test
+/// mide cuántos de los sitios que sortea el reparto de facelings quedan mal por eso, y exige que el
+/// ráster los corrija.
+#[test]
+fn creature_spawn_height_comes_from_the_raster_not_from_the_wg2_layer() {
+    use crate::world::faceling_spawn::draw_adults;
+    use crate::world::wg3::collision::Wg3CollisionCache;
+    use crate::world::wg3::world::Wg3WorldCache;
+    use crate::world::Vec3;
+
+    let m = real_manifest();
+    let mut worlds = Wg3WorldCache::default();
+    let mut cache = Wg3CollisionCache::new();
+
+    let mut sorteados = 0;
+    let mut corregidos = 0;
+    let mut sin_sitio = 0;
+    let mut peor_correccion: f32 = 0.0;
+
+    for cx in 0..3 {
+        for cz in 0..3 {
+            for pos in draw_adults(SERVED_SEED, cx, cz, 0, 8.0) {
+                sorteados += 1;
+                let wg2 = Vec3::new(pos[0], pos[1], pos[2]);
+                cache.prewarm_for_move(&mut worlds, &m, SERVED_SEED, wg2, wg2);
+                match cache.standable_near(wg2) {
+                    Some(p) => {
+                        // La corrección que importa es la de SITIO, no sólo la de cota: en la planta
+                        // baja de esta región el suelo está a cero y la cota de WG2 acierta por
+                        // casualidad, pero el punto sorteado cae dentro de un muro a menudo.
+                        let delta = ((p.x - wg2.x).powi(2) + (p.z - wg2.z).powi(2)).sqrt()
+                            + (p.y - wg2.y).abs();
+                        if delta > 0.27 {
+                            corregidos += 1;
+                            peor_correccion = peor_correccion.max(delta);
+                        }
+                        // Lo que se exige de verdad: donde el ráster deja aparecer, se está de pie.
+                        assert!(
+                            !cache.blocked_at(p, 0.35),
+                            "el sitio elegido para nacer no puede estar ocupado"
+                        );
+                    }
+                    None => sin_sitio += 1,
+                }
+            }
+        }
+    }
+
+    assert!(sorteados > 0, "el reparto no sorteó ni un faceling");
+    assert!(
+        corregidos > 0,
+        "si el ráster no corrigiera ni un sitio, este cambio no estaría haciendo nada"
+    );
+    println!(
+        "PROBE spawn: sorteados={sorteados} corregidos={corregidos}          sin_sitio={sin_sitio} peor_correccion={peor_correccion:.2}m"
+    );
+}
