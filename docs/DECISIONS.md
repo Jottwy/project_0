@@ -10190,3 +10190,73 @@ sistemas de colisión es exactamente donde un jugador se queda enganchado sin qu
 - **`MAX_CLAIMED_Y_STEP` y la Y reclamada por el cliente** (ADR-026 parte 3) se escribieron para un
   mundo de capas planas. Con escaleras reales, atrios y caídas, ese tope hay que volver a mirarlo — **no
   se toca en este ADR**, pero queda dicho que su premisa cambió.
+
+---
+
+## ADR-106 — Enmienda 1: ANDADO en el juego real, y lo que impedía encenderlo no era código de mundo (2026-08-29)
+
+Cinco commits: `f621389f` (la costura, refactor puro), `88370b91` (la autoridad), `2e096ab8` (spawn de
+WG3 y WG2 deja de dibujar), `68369e67` (`GridTestWorld` monta el streamer de WG3) y `9972ef59` (la
+casilla que faltaba). `cargo test` 1126/1126, clippy y fmt limpios, `CompileCheckClient` 0 errores.
+
+**Joel lo ha jugado en `BackroomsWithSTP` con el player real y funciona.** Es la primera vez que toda
+la cadena ADR-103 → 106 —papel por tono, dos plantas, atrios, agujeros, macizos y autoridad— se anda
+fuera de la escena de pruebas.
+
+### Lo que de verdad impedía encenderlo, y no era ninguna de las cosas que este ADR arregla
+
+`NetworkInitializer.enableWorldGen3` es un campo **serializado**… y `NetworkInitializer` **no vive en
+ninguna escena**: lo crean en runtime `AutoConnect`, `NetworkMenuBootstrap` y `JoinSessionUI` con
+`AddComponent`. **Su casilla del inspector no se podía marcar en ninguna parte**, así que el campo
+nacía en `false` en toda sesión normal.
+
+Cadena entera: el backend arrancaba en WG2 → el saludo decía `wg3_enabled: false` → el cliente montaba
+el mundo de siempre. El síntoma que reportó Joel fue *«no carga WorldGen3, me sigue cargando todo del
+gen2»*, y **no había nada roto en el mundo**.
+
+**La lección, y vale para cualquier bandera de este proyecto: un campo serializado en un componente que
+se crea en runtime es un campo que nadie puede poner.** Parece configurable y no lo es. `GameBootstrap`
+ya había resuelto exactamente esto para `_debugSpawnPhantom` —lo reenvía antes de que el backend
+arranque— y el interruptor de WG3 va ahora por el mismo sitio.
+
+### Dos conclusiones falsas mías, las dos por fiarme de un nombre
+
+`ProceduralWorldGenerator.cs` **no contiene ninguna clase con ese nombre**: la única `MonoBehaviour`
+del fichero es `ChunkStreamer`, y es la que `GridTestWorld` crea en runtime. Buscando el componente por
+el nombre del fichero no aparecía en ninguna escena, y de ahí salieron dos afirmaciones equivocadas
+seguidas — «en la escena principal está el generador de WG2» y, peor, «la guarda que acabo de escribir
+no hace nada». **Sí la hace**: está dentro de `ChunkStreamer`.
+
+**Un nombre de fichero no es una fuente de verdad.** En un proyecto donde los componentes se añaden en
+runtime, la única forma de saber qué corre es leer quién hace `AddComponent`.
+
+### Corrección a D2: el fantasma NO cruzó gratis, porque no lo crucé
+
+D2 dice que `resolve_move` y `resolve_move_simulated` comparten `resolve_move_src`, así que cambiar el
+par por debajo mueve a los dos. **Eso es cierto del diseño y no de lo hecho**: sólo se enchufó WG3 en
+el camino del jugador; `resolve_move_simulated` sigue construyendo `MoveSource::Grid(WorldThenSim)`.
+
+Está a un `match` de distancia y la costura funciona como se esperaba, pero **estaba escrito como si
+estuviera hecho**. Hoy, con WG3 activo: el jugador y su spawn resuelven contra WG3; **el robapieles,
+los facelings, el spawn de objetos y el loot siguen en WG2**.
+
+### Estado de las verificaciones
+
+| | |
+|---|---|
+| **(a)** subir una planta no congela | ✅ medido en ráster **y andado** |
+| **(b)** se cae por un agujero | ✅ andado |
+| **(c)** el pretil para, el atrio se anda | 🟡 sin juzgar con ojos |
+| **(d)** el fantasma cruza sin código propio | ❌ **no hecho**, ver arriba |
+| **(e)** cero regresión con WG3 apagado | ✅ 1126/1126, ni una aserción tocada |
+| **(f)** los `faceling_unwedged` no empeoran | ⬜ sin medir |
+
+### Deuda
+
+- **El fantasma** (D2 arriba). Es lo más barato que queda y lo más visible: hoy atraviesa paredes que
+  el jugador no puede cruzar.
+- **Los facelings**, que no pasan por `resolve_move_src` y necesitan trabajo propio.
+- **WG2 sigue generándose en el servidor**: `update_ownership` y el handler de `RequestChunk` siguen
+  vivos. Es deliberado (D6) y su retirada es otro ADR.
+- **El spawn de objetos y el loot** siguen resolviendo contra WG2, así que pueden aparecer dentro de un
+  macizo de WG3.
