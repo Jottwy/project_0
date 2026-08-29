@@ -966,6 +966,30 @@ pub async fn run(
                     }));
                 }
                 ClientMessage::RequestChunk { cx, cz, layer } => {
+                    // ADR-109 etapa 1, el lado que RESPONDE. `update_ownership` ya no genera y
+                    // `visible_chunk_views` ya no manda, pero esta puerta seguía generando WG2
+                    // entero —rejilla, salas construibles y salas autoradas— para quien lo pidiera.
+                    // Hoy no lo pide nadie: el cliente de WG3 usa `RequestWg3Chunk` y el streamer
+                    // de WG2 se apaga solo con la misma bandera del saludo. O sea que la
+                    // producción estaba apagada por el lado que PREGUNTA, y bastaba un cliente
+                    // viejo o un test para revivirla sin que nada lo impidiera.
+                    //
+                    // Se ignora en vez de contestar vacío a propósito: un cliente de WG2 contra un
+                    // mundo de WG3 no es un cliente al que le falte geometría, es uno que chocaría
+                    // contra la que no es —paredes que se atraviesan y aire que para—, y eso lo
+                    // dice ya el comentario de `ProceduralWorldGenerator`. Un mundo vacío se lee
+                    // como bug del mundo; un silencio con aviso se lee como lo que es.
+                    if wg3.is_enabled() {
+                        static WARNED: std::sync::atomic::AtomicBool =
+                            std::sync::atomic::AtomicBool::new(false);
+                        if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                            warn!(
+                                "request_chunk ignorado: WG3 manda y WG2 ya no se produce \
+                                 (primer chunk pedido: {cx},{cz},{layer})"
+                            );
+                        }
+                        continue;
+                    }
                     // Fase 4.1: grid_gen is the world source of truth. Generate the
                     // requested chunk (with seam stitching) and reply with the 5 m
                     // tile-wall bitmask. net.world_seed is the shared canonical seed
