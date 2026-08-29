@@ -9819,3 +9819,132 @@ salió de lo que se podía construir sin wire. Cuando se ande, es lo primero que
   atrios en la frontera— siguen sin hacer.
 - Los 3 vetos por circulación se recuperarían si un atrio pudiera ser **parte** de una nave en vez de
   la nave entera. Eso convierte `void_above` de booleano en huella, y es más ADR del que cabe aquí.
+
+---
+
+## ADR-105 — El MACIZO: WG3 sabe restar y no sabe añadir, y eso es lo que bloquea el pretil y el megapilar (2026-08-29) — PROPUESTA
+
+### El problema, dicho en una línea
+
+**WG3 tiene un canal para quitar materia y ninguno para poner materia suelta.** `Wg3Carve` viaja desde
+ADR-101 y el cliente lo aplica antes de malla y colisión; gracias a eso los vanos, los atrios abiertos
+y los agujeros de ADR-104 salieron **sin tocar el cable**. Pero todo lo que hay que AÑADIR fuera de la
+cáscara de una sala no tiene por dónde ir:
+
+- `Wg3Segment` es un rectángulo con suelo, techo y cuatro paredes. **No puede ser macizo**:
+  `Wg3Segment::problems()` rechaza un tramo sin bocas con «sería una caja maciza», y hay test que lo
+  exige.
+- Un tramo diminuto haciendo de pilar **trae su losa de suelo y su losa de techo**, que quedarían
+  coplanares con las del atrio. Eso es el z-fighting que ADR-102 pagó con 456 pares y hasta 94,8 m².
+- `Wg3Placement` sí puede tener cualquier forma, pero es **catálogo autorado**: existe una pieza o no
+  existe, y no hay forma de pedir «un pretil a lo largo de ESTE borde», que es distinto en cada atrio.
+
+Dos cosas concretas están paradas por esto, y son la misma cosa: **el pretil de un balcón** (ADR-104 D3,
+que quedó reducido a «todo borde es `Open`») y **el megapilar** (ADR-104 D7, no implementado). Ninguna
+es un capricho: sin pretil no hay elección entre asomarse y caerse, y hoy **no hay una sola barandilla
+en el mundo**; sin pilares un atrio es un hueco y no una nave.
+
+### D1 — Un canal nuevo, espejo exacto del que ya funciona
+
+```
+Wg3Solid { x_cm, z_cm, size_x_cm, size_z_cm, bottom_y_cm, top_y_cm, style }
+```
+
+**La misma forma que `Wg3Carve` más un `style`**, y a propósito: los dos lados ya saben leer esa caja,
+ya la comparan en centímetros enteros y ya la rasterizan. Uno resta y el otro suma. Que sean simétricos
+no es elegancia — es que cualquiera que entienda uno entiende el otro, y que el bug de un lado se busca
+en el mismo sitio que el del otro.
+
+`style` va incluido porque desde ADR-103 enmienda 2 el papel se lee por TONO y
+`Wg3StyleMaterials.Resolve` es el único punto que viste un espacio. Un pretil que no se pueda vestir
+como la sala a la que pertenece se lee como un objeto pegado, no como arquitectura.
+
+### D2 — Los vanos NO tocan a los macizos, y esto es lo primero que se rompería
+
+**Un macizo es inmune a los `Wg3Carve`.** No es un detalle de implementación: el vano de atrio de
+ADR-104 cubre la huella del atrio ensanchada medio metro, que es **exactamente donde va el pretil**. Con
+el orden ingenuo —restar después de sumar— cada pretil que se emitiera desaparecería, y el síntoma
+sería «el pretil no sale» sin ningún error en ninguna parte.
+
+Regla, y va en los dos lados: **los vanos se aplican a tramos y a colocaciones; los macizos se añaden
+después y nadie los toca.** Si algún día hace falta restarle a un macizo, eso es otro ADR y otra
+decisión, no un ajuste.
+
+### D3 — Reparto por chunk: el macizo copia la regla de la pieza, incluida su asimetría
+
+Es una regla ya pagada y no se reinventa (ADR-095): **un macizo se manda en UN chunk, el de su centro**
+—el cliente monta un `GameObject` por chunk y no deduplica, así que mandarlo en los dos que toca lo
+dibuja dos veces con la colisión duplicada— **y el ráster usa todos los que TOCAN el chunk**, porque un
+pilar que cruza la frontera bloquea a los dos lados.
+
+Consecuencia dura: **un macizo no puede ser mayor que un chunk** (50 m). Un pretil largo se parte en
+varios, igual que un espacio grande se tesela en tramos.
+
+### D4 — Wire 49 → 50, y el espejo C# en el MISMO commit
+
+`WIRE_SCHEMA_VERSION` pasa a **50** y `WireSchema.Expected` con él. **Los dos o ninguno**: desde ADR-061
+bumpear uno sin el otro no deja un aviso, deja el juego inarrancable.
+
+`Wg3ChunkView` gana la lista de macizos junto a colocaciones, tramos y vanos.
+
+### D5 — Quién emite macizos, y quién NO
+
+**Sólo el PLAN, a través del relleno, y por casos con nombre.** El primer conjunto es cerrado:
+
+| Caso | Qué es | Dónde |
+|---|---|---|
+| **Pretil** | Borde `Balcony` de un atrio: caja de `PARAPET_H_CM` de alto a lo largo del borde | ADR-104 D3 |
+| **Megapilar** | Columna del suelo al techo de un atrio | ADR-104 D7 |
+
+**Lo que este ADR NO abre es una vía libre para que el relleno improvise geometría.** Un canal que
+acepta cajas arbitrarias es, si no se acota, un segundo sistema de geometría sin disciplina — y el
+motivo entero de ADR-100 fue que la geometría dejara de decidir. Añadir un caso nuevo a esa tabla es
+una enmienda a este ADR, no una tarde.
+
+### D6 — El ráster cobra su peaje, y hay que decir cuánto ANTES de construirlo
+
+La regla de siempre: **toda geometría más fina que la celda de 50 cm cambia de significado, no de
+precisión.**
+
+- Un **pretil** de 20 cm de grosor macizará la celda entera que toque. **Cuesta medio metro de suelo
+  andable a cada lado del borde del atrio**, y con 11 atrios eso es medible. Hay que medirlo, no
+  suponerlo: `probe_filled_plan` ya da la superficie andable.
+- Un **megapilar** de 1,2 m puede bloquear hasta 2 m de celdas. **Por eso son MEGApilares**: un pilar
+  fino sale caro en colisión y pequeño en la vista, que es el peor cambio posible. Suelo propuesto:
+  **no menos de 150 cm de lado**, a medir.
+
+### Verificación
+
+- **(a)** Un macizo emitido **existe en el ráster**: sólido donde debe, y no un centímetro más lejos.
+- **(b)** **Un vano que cruce un macizo NO se lo lleva** (D2). Con dientes: el mismo caso con la regla
+  invertida tiene que ponerse rojo.
+- **(c)** **Un pretil BLOQUEA**: `blocked_standing_at` cierto en el borde del atrio, y el atrio sigue
+  viéndose por encima —o sea que el pretil no llega al techo—.
+- **(d)** **La superficie andable no se hunde** por el peaje de D6. Línea base de hoy: 110 / 114 / 113 /
+  114 %, mancha mayor 99-100 %.
+- **(e)** Un macizo que cruza frontera de chunk **se dibuja UNA vez y colisiona en los dos lados**
+  (D3). Es la regla que más veces se ha roto sola en este sistema.
+- **(f)** `WIRE_SCHEMA_VERSION` y `WireSchema.Expected` valen los dos **50**, y el juego arranca.
+
+### Alternativas descartadas
+
+- **Un tramo hueco haciendo de pilar.** Trae losa de suelo y de techo coplanares con las del atrio: el
+  z-fighting de ADR-102, y encima habría que saltarse el test que prohíbe un tramo sin bocas.
+- **Piezas autoradas de catálogo.** Sirven para un pilar concreto y **no** para un pretil, que tiene la
+  longitud que tenga el borde de cada atrio. Y no arreglan que el sistema no sepa añadir: mueven el
+  problema a la biblioteca.
+- **Un campo `parapet_sides` en `Wg3Segment`.** Resuelve el pretil y no el pilar, gasta el mismo bump
+  de wire, y deja el sistema sin saber añadir para la siguiente cosa que haga falta. **Dos bumps por
+  el precio de uno mal gastado.**
+- **Marcar el macizo como un vano NEGATIVO.** Reusa el canal sin bump, y convierte un campo de datos en
+  un modo con signo — la clase de ahorro que se paga tres veces al depurar.
+
+### Consecuencias y deuda
+
+- **Un canal nuevo es una superficie nueva que puede desincronizarse.** Hoy los dos lados coinciden
+  porque el vano se aplica igual; el macizo hay que dibujarlo igual en los dos, y el síntoma de que no
+  —malla en un sitio, colisión en otro— **no sale en una captura**.
+- **Sigue sin resolver que WG3 no sea autoridad.** Un pretil que bloquea en el ráster de WG3 no bloquea
+  en el juego real mientras el movimiento lo resuelva WG2. **El Frente B sigue siendo el techo.**
+- `PARAPET_H_CM` y el lado mínimo de un megapilar **son propuestas sin medir**, como todo lo que entra
+  aquí sin haberse andado.
