@@ -2710,7 +2710,12 @@ impl PhantomDriver {
             if let Some(cache) = self.wg3.take() {
                 let mut raw = std::mem::take(&mut self.nav_world);
                 crate::world::wg3::nav::find_path(&cache, from, nav_target, &mut raw);
-                crate::world::wg3::nav::simplify(&cache, &raw, &mut self.movers[i].nav_waypoints);
+                crate::world::wg3::nav::simplify(
+                    &cache,
+                    from,
+                    &raw,
+                    &mut self.movers[i].nav_waypoints,
+                );
                 self.nav_world = raw;
                 self.wg3 = Some(cache);
             } else {

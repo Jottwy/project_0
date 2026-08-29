@@ -8531,13 +8531,30 @@ fn a_simplified_path_is_still_walkable() {
                 continue;
             }
             let mut simple = Vec::new();
-            nav::simplify(&cache, &raw, &mut simple);
+            nav::simplify(&cache, start, &raw, &mut simple);
 
             raw_total += raw.len();
             saved += raw.len() - simple.len();
 
             let mut prev = start;
             for (k, p) in simple.iter().enumerate() {
+                // El suavizado no puede ser PEOR que el camino crudo: si un tramo no cabe en recta,
+                // el punto tiene que ser uno que el A* ya diera por bueno celda a celda —o sea, el
+                // siguiente del camino crudo— y no un salto inventado más lejos.
+                if !nav::segment_is_clear(&cache, prev, *p) {
+                    assert!(
+                        raw.contains(p),
+                        "({rx},{rz}) el tramo {k} no cabe en recta Y el punto no está en el camino                          crudo: eso es un atajo inventado, de ({:.1},{:.2},{:.1}) a                          ({:.1},{:.2},{:.1})",
+                        prev.x,
+                        prev.y,
+                        prev.z,
+                        p.x,
+                        p.y,
+                        p.z
+                    );
+                    prev = *p;
+                    continue;
+                }
                 assert!(
                     nav::segment_is_clear(&cache, prev, *p),
                     "({rx},{rz}) el tramo {k} del camino simplificado no es andable: de \

@@ -38,6 +38,12 @@ pub const NAV_MAX_EXPANSIONS: usize = 3_000;
 /// Alto del cuerpo que tiene que caber de pie. Mismo que usa la colisión.
 const BODY_M: f32 = 1.8;
 
+/// Radio del cuerpo que tiene que caber al andar en línea recta.
+///
+/// El mismo que usa la colisión del jugador: si la navegación fuera más estrecha, planearía rutas por
+/// huecos donde el cuerpo no cabe, y el resolutor las frenaría una por una.
+const BODY_RADIUS_M: f32 = 0.35;
+
 /// Cuánto se busca el suelo por encima de los pies, en metros. Espejo de la colisión: es lo que
 /// convierte una escalera en algo que se sube en vez de una pared de 25 cm.
 const STEP_UP_M: f32 = 0.30;
@@ -258,7 +264,13 @@ pub fn find_path(
                     continue;
                 }
                 let nk: CellKey = (nc.0, nc.1, (nfloor * 100.0).round() as i32);
-                let ng = g + 1;
+                // **El camino paga por pegarse a la pared.** Sin esto la ruta va por el borde —el A*
+                // no sabe que el cuerpo mide 35 cm de radio, sólo que la celda existe— y entonces el
+                // suavizado no tiene margen para cortar una esquina sin meter media espalda en el
+                // muro. Con el recargo, un pasillo se recorre por el centro y las esquinas se doblan
+                // holgadas. Es tres veces el coste de un paso: bastante para elegir el centro cuando
+                // se puede, poco para no rechazar un pasillo estrecho cuando es el único camino.
+                let ng = g + 1 + 3 * hugs_wall(cache, nc, nfloor) as i64;
                 if cost.get(&nk).is_some_and(|&c| c <= ng) {
                     continue;
                 }
@@ -299,6 +311,17 @@ pub fn find_path(
     stats
 }
 
+/// Cuántas de las cuatro vecinas de una celda NO son andables — o sea, cuánta pared la rodea.
+fn hugs_wall(cache: &Wg3CollisionCache, c: (i32, i32), floor: f32) -> usize {
+    [(1, 0), (-1, 0), (0, 1), (0, -1)]
+        .iter()
+        .filter(|(dx, dz)| {
+            let (nx, nz) = cell_centre(c.0 + dx, c.1 + dz);
+            floor_at(cache, nx, nz, floor).is_none()
+        })
+        .count()
+}
+
 /// ¿Se puede ir de `a` a `b` en línea recta, andando?
 ///
 /// Muestrea la recta cada media celda y exige lo mismo en cada punto que exige la búsqueda: que haya
@@ -313,13 +336,24 @@ pub fn segment_is_clear(cache: &Wg3CollisionCache, a: Vec3, b: Vec3) -> bool {
         return true;
     }
     let steps = (dist / (WG3_CELL_M * 0.5)).ceil() as i32;
-    let mut floor = a.y - BODY_M;
-    for i in 1..=steps {
-        let t = i as f32 / steps as f32;
-        let (x, z) = (a.x + dx * t, a.z + dz * t);
-        match floor_at(cache, x, z, floor) {
-            Some(f) => floor = f,
-            None => return false,
+
+    // **TRES RAÍLES Y NO UNO, y con uno solo el robapieles se clava en las esquinas.**
+    //
+    // La línea central puede pasar a diez centímetros de una jamba y salir «libre»; el cuerpo mide 35
+    // de radio y se come la pared. El suavizado entonces recorta la esquina, la criatura se lanza a la
+    // diagonal, el resolutor la frena y ahí se queda — visto jugando, media espalda dentro del muro.
+    // Es lo mismo que `segment_is_clear_for_body` de `grid_gen` hace desde ADR-082, y por lo mismo.
+    let (nx, nz) = (-dz / dist * BODY_RADIUS_M, dx / dist * BODY_RADIUS_M);
+
+    for (ox, oz) in [(0.0, 0.0), (nx, nz), (-nx, -nz)] {
+        let mut floor = a.y - BODY_M;
+        for i in 1..=steps {
+            let t = i as f32 / steps as f32;
+            let (x, z) = (a.x + dx * t + ox, a.z + dz * t + oz);
+            match floor_at(cache, x, z, floor) {
+                Some(f) => floor = f,
+                None => return false,
+            }
         }
     }
     true
@@ -332,25 +366,33 @@ pub fn segment_is_clear(cache: &Wg3CollisionCache, a: Vec3, b: Vec3) -> bool {
 /// lee como un fallo de animación. Es el mismo trabajo que hace `string_pull` en `grid_gen`, con la
 /// comprobación de recta de aquí — que además de paredes mira COTAS, porque en este mundo dos puntos
 /// pueden verse y estar en plantas distintas.
-pub fn simplify(cache: &Wg3CollisionCache, path: &[Vec3], out: &mut Vec<Vec3>) {
+pub fn simplify(cache: &Wg3CollisionCache, from: Vec3, path: &[Vec3], out: &mut Vec<Vec3>) {
     out.clear();
     if path.is_empty() {
         return;
     }
-    let mut anchor = path[0];
-    out.push(anchor);
-    let mut i = 1;
+    // **El ancla es DÓNDE ESTÁ la criatura, no el primer punto del camino.** Anclando en `path[0]`,
+    // el salto que de verdad va a dar primero —de su posición a ese punto— no lo validaba nadie: con
+    // el cuerpo de por medio ese trozo puede atravesar una jamba, y es exactamente donde se la ve
+    // clavarse. Y de paso, si desde donde está alcanza ya un punto más adelante, se ahorra el rodeo.
+    let mut anchor = from;
+    let mut i = 0;
     while i < path.len() {
         // Se avanza mientras la recta desde el ancla siga siendo andable, y se fija el último que lo
         // era. El punto final entra siempre.
-        let mut last_ok = i;
+        let mut last_ok: Option<usize> = None;
         let mut j = i;
         while j < path.len() && segment_is_clear(cache, anchor, path[j]) {
-            last_ok = j;
+            last_ok = Some(j);
             j += 1;
         }
-        anchor = path[last_ok];
+        // **Si ni el primero es alcanzable en recta, se emite igual y se sigue.** No es rendirse: ese
+        // punto viene del A*, que ya lo dio por andable celda a celda; lo que no cabe es la RECTA con
+        // el cuerpo, y el que la anda paso a paso sí llega. Emitir uno más lejos ahí sería inventarse
+        // un atajo, que es el fallo que este suavizado existe para no cometer.
+        let take = last_ok.unwrap_or(i);
+        anchor = path[take];
         out.push(anchor);
-        i = last_ok + 1;
+        i = take + 1;
     }
 }
