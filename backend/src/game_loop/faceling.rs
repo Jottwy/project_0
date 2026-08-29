@@ -491,6 +491,25 @@ impl AdultDriver {
         }
     }
 
+    /// ADR-109 D6 — la POSTURA DE CONTACTO, y con WG3 no hace falta. Misma razón, palabra por
+    /// palabra, que en el robapieles: `contact_stance` existe porque en `grid_gen` quien se pega a
+    /// una pared se cuantiza dentro de una celda sólida de 2,5 m. La de WG3 mide 0,5, y el rayo de
+    /// visión no cuantiza. Y seguir llamándola sería preguntarle a OTRO mundo dónde está la pared:
+    /// su `Some(..)` es un punto de una pared que aquí puede no existir.
+    fn contact_or_target(&mut self, layer: u8, from: Vec3, target: Vec3) -> Vec3 {
+        if self.wg3.is_some() {
+            return target;
+        }
+        contact_stance(
+            &mut self.grid_cache,
+            layer,
+            from,
+            target,
+            PHANTOM_BODY_RADIUS,
+        )
+        .unwrap_or(target)
+    }
+
     /// ADR-108 — ¿se puede ir en línea recta? Con el ancho del cuerpo, que es lo que evita que se
     /// clave en las esquinas.
     fn straight_is_clear(&mut self, layer: u8, a: Vec3, b: Vec3) -> bool {
@@ -817,14 +836,7 @@ impl AdultDriver {
                 let strike_target = match self.movers[i].strike_recover <= 0.0 {
                     false => None,
                     true => target_pos.filter(|target| {
-                        let line_to = contact_stance(
-                            &mut self.grid_cache,
-                            layer,
-                            from,
-                            *target,
-                            PHANTOM_BODY_RADIUS,
-                        )
-                        .unwrap_or(*target);
+                        let line_to = self.contact_or_target(layer, from, *target);
                         same_level(wg3_on, layer, from.y, target.y)
                             && target.distance_xz(from) <= FACELING_ADULT_ATTACK_REACH
                             && self.straight_is_clear(layer, from, line_to)
@@ -2545,6 +2557,25 @@ impl ChildDriver {
         }
     }
 
+    /// ADR-109 D6 — la POSTURA DE CONTACTO, y con WG3 no hace falta. Misma razón, palabra por
+    /// palabra, que en el robapieles: `contact_stance` existe porque en `grid_gen` quien se pega a
+    /// una pared se cuantiza dentro de una celda sólida de 2,5 m. La de WG3 mide 0,5, y el rayo de
+    /// visión no cuantiza. Y seguir llamándola sería preguntarle a OTRO mundo dónde está la pared:
+    /// su `Some(..)` es un punto de una pared que aquí puede no existir.
+    fn contact_or_target(&mut self, layer: u8, from: Vec3, target: Vec3) -> Vec3 {
+        if self.wg3.is_some() {
+            return target;
+        }
+        contact_stance(
+            &mut self.grid_cache,
+            layer,
+            from,
+            target,
+            PHANTOM_BODY_RADIUS,
+        )
+        .unwrap_or(target)
+    }
+
     /// ADR-108 — ¿se puede ir en línea recta? Con el ancho del cuerpo, que es lo que evita que se
     /// clave en las esquinas.
     fn straight_is_clear(&mut self, layer: u8, a: Vec3, b: Vec3) -> bool {
@@ -2688,7 +2719,15 @@ impl ChildDriver {
             // ADR-041's long-range trick: the A* window is ±24 cells, so a goal outside it is
             // aimed at a sub-goal ON THE BEARING just inside the edge. Same machinery, same cost,
             // and the trip keeps real obstacle avoidance instead of degrading to a blind line.
-            let reach = (crate::world::grid_gen::NAV_WINDOW_CELLS - 2) as f32 * CELL_SIZE_M;
+            // ADR-109 D6 — la ventana del A* de WG3 mide 30 m, no 55; ver la nota larga en
+            // `phantom.rs`. Un sub-objetivo fuera de la ventana no se encuentra nunca.
+            let reach = match self.wg3.is_some() {
+                true => {
+                    crate::world::wg3::nav::NAV_WINDOW_M
+                        - 2.0 * crate::world::wg3::raster::WG3_CELL_M
+                }
+                false => (crate::world::grid_gen::NAV_WINDOW_CELLS - 2) as f32 * CELL_SIZE_M,
+            };
             let far = from.distance_xz(target);
             let nav_target = match far > reach {
                 true => Vec3::new(
@@ -3470,14 +3509,7 @@ impl ChildDriver {
                     // adult's own strike test. Backed into a wall you were untouchable by the whole
                     // pack: no shove, no screamer, no knockdown, because the line to a cell
                     // grid_gen calls solid is never clear. `dist` above still measures against YOU.
-                    let line_to = contact_stance(
-                        &mut self.grid_cache,
-                        layer,
-                        from,
-                        tpos,
-                        PHANTOM_BODY_RADIUS,
-                    )
-                    .unwrap_or(tpos);
+                    let line_to = self.contact_or_target(layer, from, tpos);
                     let clear = same_layer && self.straight_is_clear(layer, from, line_to);
                     let dx = tpos.x - from.x;
                     let dz = tpos.z - from.z;
@@ -3602,14 +3634,7 @@ impl ChildDriver {
                         // the partition it is standing behind. And, ported with it, the line goes
                         // to the CONTACT STANCE — otherwise the one blow the whole cerco exists to
                         // land is the one that a wall at your back makes impossible.
-                        let line_to = contact_stance(
-                            &mut self.grid_cache,
-                            layer,
-                            from,
-                            tpos,
-                            PHANTOM_BODY_RADIUS,
-                        )
-                        .unwrap_or(tpos);
+                        let line_to = self.contact_or_target(layer, from, tpos);
                         if same_level(wg3_on, layer, from.y, tpos.y)
                             && tpos.distance_xz(from) <= FACELING_CHILD_ATTACK_REACH
                             && self.straight_is_clear(layer, from, line_to)

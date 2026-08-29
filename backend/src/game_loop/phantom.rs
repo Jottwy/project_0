@@ -2710,8 +2710,22 @@ impl PhantomDriver {
             // window: the same machinery, the same cost, and the journey keeps real local obstacle
             // avoidance the whole way instead of degrading to a blind straight line.
             // Stay inside the window edge (2 cells of margin).
-            let reach = (crate::world::grid_gen::NAV_WINDOW_CELLS - 2) as f32
-                * crate::world::grid_gen::CELL_SIZE_M;
+            // ADR-109 D6 — **QUINTA vez que una constante en celdas cambia de tamaño al mudarse.**
+            // El sub-objetivo se ponía a 55 m —22 celdas de 2,5— porque ésa era la ventana del A* de
+            // WG2. La de WG3 mide 30 m (`nav::NAV_WINDOW_M`), así que el sub-objetivo caía FUERA de
+            // su propia ventana: la búsqueda no encontraba nada y un viaje largo degradaba a la recta
+            // ciega, que es justo lo que ADR-041 existe para evitar. El margen sigue siendo de dos
+            // celdas, pero de las que use cada mundo.
+            let reach = match self.wg3.is_some() {
+                true => {
+                    crate::world::wg3::nav::NAV_WINDOW_M
+                        - 2.0 * crate::world::wg3::raster::WG3_CELL_M
+                }
+                false => {
+                    (crate::world::grid_gen::NAV_WINDOW_CELLS - 2) as f32
+                        * crate::world::grid_gen::CELL_SIZE_M
+                }
+            };
             let far = from.distance_xz(target);
             let nav_target = if far > reach {
                 let dx = (target.x - from.x) / far;
@@ -3478,14 +3492,7 @@ impl PhantomDriver {
         // creature pressing on somebody backed into a wall aims at a cell the router cannot reach
         // and stalls a cell short — with its skin off, in plain sight, which is the worst possible
         // moment for it to look broken.
-        let press_to = crate::world::grid_gen::contact_stance(
-            &mut self.grid_cache,
-            layer,
-            from,
-            tpos,
-            crate::world::grid_gen::PHANTOM_BODY_RADIUS,
-        )
-        .unwrap_or(tpos);
+        let press_to = self.contact_or_target(layer, from, tpos);
         // ADR-088: same interception as the lunge, at the press speed this state actually moves at.
         let press_to = match ctx.target_vels.get(&tid).copied() {
             Some(vel) => intercept_point(
@@ -4198,14 +4205,7 @@ impl PhantomDriver {
         // clear, `sprint_blind_for` ran out and the lunge gave up — hugging geometry worked as a
         // perfect hiding place while standing in the open. Falling back to `tpos` when there is no
         // stance keeps a genuine corner working exactly as before.
-        let contact = crate::world::grid_gen::contact_stance(
-            &mut self.grid_cache,
-            layer,
-            from,
-            tpos,
-            crate::world::grid_gen::PHANTOM_BODY_RADIUS,
-        );
-        let line_to = contact.unwrap_or(tpos);
+        let line_to = self.contact_or_target(layer, from, tpos);
         let has_line = self.can_see(layer, from, line_to);
         if has_line {
             self.movers[i].sprint_blind_for = 0.0;
@@ -4476,14 +4476,7 @@ impl PhantomDriver {
         // ADR-082: to the contact stance, for the same reason and with the same fallback as SPRINT.
         // An ambush that cannot land on somebody with their back to a wall is an ambush that fails
         // in exactly the spot people back into when something charges them.
-        let ambush_line_to = crate::world::grid_gen::contact_stance(
-            &mut self.grid_cache,
-            layer,
-            from,
-            tpos,
-            crate::world::grid_gen::PHANTOM_BODY_RADIUS,
-        )
-        .unwrap_or(tpos);
+        let ambush_line_to = self.contact_or_target(layer, from, tpos);
         let in_reach = dist < PHANTOM_ATTACK_REACH && self.can_see(layer, from, ambush_line_to);
         if in_reach {
             let dx = tpos.x - from.x;
@@ -4653,6 +4646,30 @@ impl PhantomDriver {
                 crate::world::grid_gen::PHANTOM_BODY_RADIUS,
             ),
         }
+    }
+
+    /// ADR-109 D6 — la POSTURA DE CONTACTO, y con WG3 no hace falta.
+    ///
+    /// `contact_stance` nació (ADR-082) porque en `grid_gen` la posición de quien se pega a una pared
+    /// se cuantiza dentro de una celda SÓLIDA —de 2,5 m—, así que la recta hasta ella no estaba nunca
+    /// libre y el bicho ni golpeaba ni empujaba. La celda de WG3 mide 0,5 y el rayo de visión no
+    /// cuantiza en absoluto, de modo que el objetivo vale tal cual.
+    ///
+    /// Lo que NO vale es seguir llamándola: resuelve sobre `grid_gen`, o sea sobre otro mundo, y su
+    /// `Some(..)` es un punto de una pared que aquí puede no existir. Devolver el objetivo es más
+    /// correcto Y más barato.
+    fn contact_or_target(&mut self, layer: u8, from: Vec3, tpos: Vec3) -> Vec3 {
+        if self.wg3.is_some() {
+            return tpos;
+        }
+        crate::world::grid_gen::contact_stance(
+            &mut self.grid_cache,
+            layer,
+            from,
+            tpos,
+            crate::world::grid_gen::PHANTOM_BODY_RADIUS,
+        )
+        .unwrap_or(tpos)
     }
 
     /// ADR-108 enm. 3 — ¿HAY VISIÓN? Que no es lo mismo que «¿se puede ir andando?».
