@@ -10266,3 +10266,143 @@ los facelings, el spawn de objetos y el loot siguen en WG2**.
   vivos. Es deliberado (D6) y su retirada es otro ADR.
 - **El spawn de objetos y el loot** siguen resolviendo contra WG2, así que pueden aparecer dentro de un
   macizo de WG3.
+
+---
+
+## ADR-107 — La atmósfera de WG3: el aire, la superficie y el hueco son TRES ejes, y no compiten (2026-08-29) — PROPUESTA
+
+### Contexto: WG3 se dejó atrás medio mundo, y no es geometría
+
+WG3 sirve el mundo, resuelve el movimiento y se anda (ADR-106). Pero `BackroomsLighting` monta por
+chunk de WG2 un montón de cosas que **WG3 no tiene y nadie había anotado**:
+
+| | WG2 | WG3 hoy |
+|---|---|---|
+| Luminaria visible | `MakeLuminaire`: cubo con material emisivo | **nada** — hay luz sin lámpara |
+| Parpadeo y lámpara moribunda | `LampFlicker`, con muerte programada | ❌ |
+| Zumbido fluorescente | `FluorescentHumDirector.RegisterChunkLamps`, con pitch, Hz y fase **por lámpara** | ❌ |
+| Reverb de sala | `ReverbMixerDriver.SetRoom(tone, zoneKind)` | ❌ |
+| Aislamiento | `IsolationDirector`, montado sobre las fuentes del zumbido | ❌ |
+| Niebla, ambiente, tinte, volumen de zumbido | `LayerVisualConfig` por zona | valores a fuego |
+
+**Los pasos NO son una regresión, y se comprueba:** ni `GridChunkBuilder` ni `Wg3SceneAssembler`
+ponen `SurfaceIdentity` ni material físico, así que el sistema de superficies del vendor usa su
+defecto en los dos mundos. Estaba igual de mal antes y no entra en este ADR.
+
+### El hallazgo que decide la forma del ADR
+
+**Todo eso lo dirige `zone_kind`, que es un concepto de WG2.** WG3 no lo tiene: tiene `style` —el
+papel del espacio— que es **otro eje**. Así que esto no es «llamar a las mismas funciones desde el otro
+streamer», y portar `LayerVisualConfig` tal cual sería traerse la rejilla vieja por la puerta de atrás.
+
+Y hay algo más, que es lo que hace que este ADR exista ahora y no dentro de un mes:
+
+> **`LayerVisualConfig` y el «la identidad se muda al AIRE» de ADR-103 son la misma cosa con dos
+> nombres.** Los dos controlan niebla, ambiente, color de plafón y volumen de zumbido.
+
+Hacerlos por separado es construir dos veces el mismo cuadro de mandos.
+
+### D1 — Tres ejes, y no compiten: el AIRE, la SUPERFICIE y el HUECO
+
+| Eje | Qué manda | De dónde sale | Escala |
+|---|---|---|---|
+| **Aire** | niebla, ambiente, temperatura de luz | **identidad de nivel** (ADR-103) | región, cambia despacio |
+| **Superficie** | tinte, tipo de luminaria, pitch del zumbido | **papel** (`style`, Frente A) | espacio |
+| **Hueco** | reverb | **geometría del espacio** | espacio, exacta |
+
+**No se elige uno: se apilan.** Es la corrección a la premisa con la que se entró —«¿qué dirige el
+audio, el papel o la identidad?»— y la respuesta es que la pregunta estaba mal planteada. Un pasillo de
+Icy Rooms es *pasillo* en la superficie y *Icy Rooms* en el aire, y las dos cosas se leen a la vez sin
+pelearse porque **no tocan los mismos parámetros**.
+
+Esto además cierra la duda que dejó abierta la enmienda 2 de ADR-103: el papel se quedó el tono, y la
+identidad se fue al aire. Aquí eso deja de ser un apaño y pasa a ser la estructura.
+
+### D2 — La luminaria vuelve, y es del PAPEL
+
+Un plafón sin lámpara es luz que sale de la nada, y hoy WG3 tiene exactamente eso. La luminaria vuelve
+como malla emisiva, **y su tipo lo decide `style`**: el tubo de un pasillo no es el foco de una nave ni
+el fluorescente sucio de un cuarto de servicio.
+
+Se emite en el cliente, desde el tramo que ya tiene: **no viaja nada**.
+
+### D3 — El zumbido es FUNCIÓN PURA DE LA POSICIÓN, igual que el campo de escala
+
+`FluorescentHumDirector` pide pitch, Hz de parpadeo y fase **por lámpara**. En WG2 salen del
+`LayerVisualConfig` y de la posición de tile.
+
+**En WG3 salen de la posición y nada más**, con el mismo `hash::stream_at` que ya usa `scale.rs`. Con
+eso: dos jugadores en la misma sala oyen la misma lámpara, la misma lámpara suena igual al volver, y
+**no hace falta que nada viaje**. Es la propiedad que ADR-095 eligió para el campo de escala, aplicada
+a otra cosa.
+
+**Una alta por CHUNK y no por lámpara**, como ya hace WG2 —el director sólo necesita dónde están— y por
+el mismo motivo escrito allí: así ningún `AudioSource` cuelga de un chunk y descargarlo no puede dejar
+fuentes huérfanas.
+
+### D4 — El reverb sale de la GEOMETRÍA, no de una zona. Y eso es MEJOR que WG2
+
+`RoomTone` lleva `decay` —el largo de la cola— y `reflectDelay` —«a qué distancia está la pared»—.
+**Son parámetros geométricos**, y WG2 los sacaba de una tabla por zona porque no sabía en qué sala
+estabas.
+
+**WG3 sí lo sabe**, y al centímetro: tiene la huella del espacio y su altura libre. Un atrio de 6,40 m
+y 600 m² (ADR-104) **tiene que sonar distinto** de un cuarto de servicio de 2,80 m, y con una tabla por
+zona sonarían igual. Así que el reverb se calcula: `decay` de la dimensión mayor, `reflectDelay` de la
+distancia a la pared más cercana.
+
+Este ADR no porta `ReverbFor(zoneKind)`: **lo sustituye por algo que la rejilla vieja no podía hacer.**
+
+### D5 — La niebla y el ambiente NO se deciden aquí
+
+Son de ADR-103 y ya tienen presupuesto medido, con sus dos techos (`rho ≤ 0,045`, y `≤ 0,030` mientras
+la escalera dependa de su rodapié). **Este ADR no los duplica ni los reinventa**: declara que el eje del
+aire es ADR-103 y que `LayerVisualConfig` **no se porta, se sustituye** por el perfil de identidad.
+
+Consecuencia práctica: hasta que ADR-103 tenga código, el aire de WG3 usa el perfil de Threshold —o sea
+los valores de hoy— y sólo se mueven la superficie y el hueco.
+
+### D6 — Cero wire, y por qué sale gratis
+
+Nada de esto viaja: la luminaria sale del tramo que el cliente ya tiene, el zumbido es función de la
+posición, el reverb es función del tramo, y la identidad la recalcula el cliente (ADR-103 D8).
+**`WIRE_SCHEMA_VERSION` se queda en 50.**
+
+### D7 — Lo que NO toca
+
+- **`zone_kind` y el camino de WG2** siguen intactos. Este ADR añade el camino de WG3; retirar el otro
+  es el ADR de la retirada.
+- **Los pasos**, por lo dicho arriba: no es una regresión de WG3.
+- **El fantasma, los facelings y el loot** — deuda de ADR-106, y de movimiento, no de atmósfera.
+
+### Verificación
+
+- **(a)** Un tramo de WG3 monta luminaria VISIBLE, y su tipo cambia con el papel.
+- **(b)** El zumbido es **determinista por posición**: dos montajes del mismo chunk dan el mismo pitch y
+  la misma fase. Con dientes: mover un bit de la sal tiene que cambiarlo.
+- **(c)** **Ningún `AudioSource` sobrevive a la descarga de un chunk.** Es el fallo que WG2 se molestó
+  en evitar por diseño y el que más fácil se reintroduce.
+- **(d)** El reverb de un atrio y el de un cuarto de servicio **son distintos**, medidos sobre el
+  `RoomTone` resultante y no sobre la intención.
+- **(e)** `WIRE_SCHEMA_VERSION` y `WireSchema.Expected` siguen los dos en **50**.
+- **(f)** Con WG3 apagado, **nada de esto se enciende** y el camino de WG2 queda idéntico.
+
+### Alternativas descartadas
+
+- **Portar `LayerVisualConfig` a WG3 con un `zone_kind` sintético.** Traería la rejilla vieja por la
+  puerta de atrás y duplicaría el cuadro de mandos que ADR-103 ya definió.
+- **Que el reverb salga del papel** en vez de la geometría. Un `Hall` puede medir 316 m² o 665 m², y
+  suenan distinto. El papel dice para qué sirve un sitio, no cómo suena.
+- **Mandar el pitch del zumbido por el cable.** Es deducible de la posición; mandarlo es un sitio más
+  donde los dos lados pueden discrepar, a cambio de nada.
+- **Un `AudioSource` por lámpara.** Es lo que WG2 evitó a propósito, y con los atrios habría cientos.
+
+### Consecuencias y deuda
+
+- **La atmósfera de WG3 depende de ADR-103 para el eje del aire**, que no tiene código. Hasta entonces
+  el mundo suena y se ve con un solo perfil, y eso **hay que decirlo al medir**: si alguien compara dos
+  regiones esperando aire distinto, va a encontrar el mismo.
+- El **catálogo autorado** trae sus propias luces (`AddCeilingLight`, marcado como PROVISIONAL desde
+  ADR-095: la regla R32 quiere la luz autorada en la pieza). Este ADR no lo resuelve y lo hereda.
+- **No hay ninguna métrica que mire la luz ni el sonido** en todo el sistema. Las verificaciones de
+  arriba son las primeras, y siguen sin cubrir «suena bien» — eso sólo lo dice un oído.
