@@ -50,6 +50,16 @@ const STEP_UP_M: f32 = 0.30;
 #[derive(Debug, Default)]
 pub struct Wg3CollisionCache {
     rasters: HashMap<Wg3ChunkCoord, Wg3Raster>,
+    /// ADR-109 D7 — las celdas que ocupa lo que ha CONSTRUIDO un jugador.
+    ///
+    /// Van aparte del ráster y no dentro: el ráster es función pura de la semilla y se cachea por
+    /// chunk, mientras que esto cambia cada vez que alguien pone o quita una pieza. Meterlo dentro
+    /// obligaría a rasterizar de nuevo el chunk en cada colocación.
+    ///
+    /// **Sólo lo llenan los cachés de las CRIATURAS.** El del jugador se queda vacío, igual que en
+    /// WG2: chocar con lo construido es cosa de los colliders de Unity, y meterlo aquí sería una
+    /// segunda autoridad que puede contradecir a la primera.
+    blocked: std::collections::HashSet<(i32, i32)>,
 }
 
 impl Wg3CollisionCache {
@@ -99,6 +109,38 @@ impl Wg3CollisionCache {
                 }
             }
         }
+    }
+
+    /// ADR-109 D7 — las piezas construidas que la navegación tiene que rodear.
+    ///
+    /// **Misma aproximación que WG2 y por el mismo motivo:** el servidor conoce la posición, el
+    /// `def_id` y la rotación de una pieza, pero NO su tamaño —las huellas viven en las definiciones
+    /// de Unity—, así que cualquier cosa exacta pediría un campo de wire y un ADR. WG2 bloqueaba la
+    /// celda de 2,5 m en la que caía; aquí se bloquea el mismo cuadrado, que a 0,5 m son 5 × 5
+    /// celdas. Es lo correcto para muros y suelos, que es lo que la gente construye para esconderse.
+    pub fn set_blocked_from(&mut self, positions: impl Iterator<Item = [f32; 3]>) {
+        /// Medio lado del cuadrado que ocupa una pieza: la mitad de la celda de WG2.
+        const HALF_M: f32 = 1.25;
+        self.blocked.clear();
+        for p in positions {
+            let (cx0, cz0) = super::nav::cell_of(p[0] - HALF_M, p[2] - HALF_M);
+            let (cx1, cz1) = super::nav::cell_of(p[0] + HALF_M, p[2] + HALF_M);
+            for cz in cz0..=cz1 {
+                for cx in cx0..=cx1 {
+                    self.blocked.insert((cx, cz));
+                }
+            }
+        }
+    }
+
+    /// ¿Cae ese punto en algo construido? Falso siempre en un caché al que nadie le ha dado piezas,
+    /// que es el caso del jugador.
+    pub fn is_blocked_xz(&self, x: f32, z: f32) -> bool {
+        !self.blocked.is_empty() && self.blocked.contains(&super::nav::cell_of(x, z))
+    }
+
+    pub fn blocked_cell_count(&self) -> usize {
+        self.blocked.len()
     }
 
     /// Como `raster_at`, pero para quien está fuera del módulo: `line_of_sight` necesita preguntar

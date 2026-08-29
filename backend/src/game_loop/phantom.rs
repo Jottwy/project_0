@@ -2056,6 +2056,14 @@ impl PhantomDriver {
         }
         self.built_count = net.stp_buildings.len();
         self.built_resync_in = 2.0;
+        // ADR-109 D7 — y con WG3, al ráster. Sin esto la puerta existía y no la leía nadie: las
+        // celdas iban a la caja de `grid_gen`, que la navegación de WG3 no mira, así que desde
+        // ADR-108 el robapieles volvía a atravesar el muro que levantaste — exactamente el fallo que
+        // esta función existe para cerrar, reaparecido por la mudanza y sin que nada diera error.
+        if let Some(cache) = self.wg3.as_mut() {
+            cache.set_blocked_from(net.stp_buildings.iter().map(|b| b.position));
+            return;
+        }
         let cells: std::collections::HashSet<(i32, i32)> = net
             .stp_buildings
             .iter()

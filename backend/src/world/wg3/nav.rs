@@ -143,6 +143,13 @@ pub fn floor_at(cache: &Wg3CollisionCache, x: f32, z: f32, from_floor: f32) -> O
     // **Suelo CRUDO, no la cota del jugador.** `floor_y` conserva la de entrada cuando no encuentra
     // nada —correcto para moverse, porque no teletransporta— y eso hacía que un vacío se leyera como
     // «suelo justo aquí». Con esa confusión, un agujero de ADR-104 se recorría como si fuera pasillo.
+    // ADR-109 D7 — lo CONSTRUIDO no se pisa. Se mira antes que el ráster porque no está en él: una
+    // pieza que un jugador puso no es geometría de la semilla. Sin esto, la criatura planificaba a
+    // través del muro que acabas de levantar y luego se lo comía de frente — el fallo que se lee como
+    // juego roto y no como bicho temible.
+    if cache.is_blocked_xz(x, z) {
+        return None;
+    }
     let floor = cache.floor_below_m(x, z, from_floor)?;
     // **Altura libre de la COLUMNA, no una cápsula.** Con `blocked_at` el barrido de 35 cm de radio
     // invade el peldaño de al lado —25 cm más alto, o sea dentro del cuerpo— y **ninguna escalera

@@ -9313,3 +9313,59 @@ fn probe_faceling_draw_under_wg3() {
         "el reparto de WG3 deja {wg3_quedan} donde WG2 dejaba {wg2_total}: fuera de la banda          [{baja:.0}, {alta:.0}]. Si el cambio es a propósito, recalibra FACELING_WG3_OFFICE_KEEP."
     );
 }
+
+/// ADR-109 D7 — lo que un jugador CONSTRUYE tiene que parar a la criatura, también con WG3.
+///
+/// La puerta existía desde ADR-043 (`sync_built_cells`) pero escribía en la caja de `grid_gen`, que
+/// la navegación de WG3 no mira: desde ADR-108 el robapieles volvía a atravesar el muro que acababas
+/// de levantar, sin que nada diera error. Se mide sobre el mundo servido, no sobre una maqueta.
+#[test]
+fn built_pieces_block_wg3_navigation() {
+    use crate::world::wg3::collision::Wg3CollisionCache;
+    use crate::world::wg3::world::Wg3WorldCache;
+    use crate::world::Vec3;
+
+    const PLAYER_BASE_Y: f32 = 1.8;
+
+    let m = real_manifest();
+    let mut worlds = Wg3WorldCache::default();
+    let mut cache = Wg3CollisionCache::new();
+    let region = Wg3ServedWorld::plan_region(&m, SERVED_SEED, Wg3RegionCoord { x: 0, z: 0 });
+
+    // Un sitio de pie de verdad y un tramo corto que lo cruza, dentro del mismo espacio.
+    let seg = region
+        .segments()
+        .iter()
+        .find(|s| s.size_x_cm > 800 && s.size_z_cm > 800)
+        .expect("hace falta un espacio ancho para tender dos metros de recta");
+    let cx = (seg.x_cm + seg.size_x_cm / 2) as f32 / 100.0;
+    let cz = (seg.z_cm + seg.size_z_cm / 2) as f32 / 100.0;
+    let y = seg.floor_y_cm as f32 / 100.0 + PLAYER_BASE_Y;
+    let a = Vec3::new(cx - 1.5, y, cz);
+    let b = Vec3::new(cx + 1.5, y, cz);
+    cache.prewarm_for_move(&mut worlds, &m, SERVED_SEED, a, b);
+
+    assert_eq!(
+        cache.blocked_cell_count(),
+        0,
+        "sin piezas no hay nada bloqueado"
+    );
+    assert!(
+        crate::world::wg3::nav::segment_is_clear(&cache, a, b, 0.35),
+        "el control falla: la recta ya estaba cortada antes de construir nada"
+    );
+
+    // Y ahora alguien pone una pieza justo en medio.
+    cache.set_blocked_from(std::iter::once([cx, y, cz]));
+    assert!(
+        cache.blocked_cell_count() > 0,
+        "la pieza tiene que ocupar celdas"
+    );
+    assert!(
+        !crate::world::wg3::nav::segment_is_clear(&cache, a, b, 0.35),
+        "la criatura sigue pasando por donde hay una pieza construida"
+    );
+    // Y el caché del JUGADOR, que nunca recibe piezas, no cambia de comportamiento.
+    let limpio = Wg3CollisionCache::new();
+    assert!(!limpio.is_blocked_xz(cx, cz));
+}
