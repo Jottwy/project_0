@@ -9392,3 +9392,44 @@ usa para nada, así que un campo de identidad sin materiales por papel es un sis
   identidad con `style == 0` cae por el bucle y destruye los materiales base del proyecto.** La
   guarda tiene que pasar de comparar la clave con cero a comprobar el componente `style`, y ese
   cambio va en el MISMO commit que la clave, nunca detrás.
+
+---
+
+## ADR-103 — Enmienda 1: aprobado, con la implementación RETENIDA (2026-08-29)
+
+Joel aprueba ADR-103 tal y como está escrito: las cuatro anclas de D5, los doce factores, el grano de
+900 m y el eje Y clavado a 0. **No se toca una línea de código todavía**, y la razón no es cautela
+genérica sino una dependencia concreta que se puede resolver gratis antes de escribir nada.
+
+### Por qué se retiene, y qué la suelta
+
+La verificación (c) —«los cuatro perfiles se DISTINGUEN, medido»— da por supuesto que el mecanismo con
+el que se distinguen funciona. Ese mecanismo es el del Frente A, que aterrizó el mismo día en
+`b5c6cfc3`: `Wg3StyleMaterials.Resolve` tiñe los cuatro materiales base con un factor por papel.
+
+**Si un tinte multiplicativo no se lee como «otro sitio», ADR-103 cambia de coste, no de forma.** Los
+perfiles de identidad se apoyan en exactamente el mismo mecanismo: si un factor no basta para separar
+seis papeles, tampoco va a bastar para separar cuatro identidades, y el perfil de nivel pasa a
+necesitar materiales autorados — que es contenido, y deja de ser la palanca barata que justifica el
+orden A → B → C/D del roadmap. Andar el Frente A contesta esa pregunta **antes** de implementar el
+campo, y no después de construir encima de él.
+
+### La predicción, escrita ANTES de la medida
+
+Se anota aquí a propósito, para que el paseo la confirme o la mate en vez de racionalizarse después:
+
+> El tinte multiplica sobre los MISMOS cuatro materiales, así que lo que cambia es el color y no el
+> material: ni rugosidad, ni textura, ni escala de trama. Contra luz cálida y con sombras apagadas, un
+> factor de 0,9 puede leerse como sombra en vez de como sitio. Los que más margen tienen son nave
+> (azulado) y servicio (verdoso), porque cambian de TONO; **espina y pasillo se separan sólo en brillo
+> y son los que más riesgo tienen de no leerse.**
+
+Si se cumple, la lección general es más grande que este ADR y vale para el Frente C y el D: **un factor
+sobre un material no crea un sitio nuevo, y la identidad visual de una zona no es un canal de color.**
+
+### Qué queda pendiente y de quién es
+
+Andar el Frente A. Está pendiente de que Joel decida **quién** anda —él o la sesión del carril A—, no de
+código: dos sesiones arrancando backend a la vez se levantan un servidor huérfano en la cara, y eso ya
+ha costado playtests en este proyecto. Lo que salga de ahí es la enmienda 2, y va aparte de ésta porque
+son dos hechos con fechas distintas.
