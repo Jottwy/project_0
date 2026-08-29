@@ -74,12 +74,22 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
         /// corridor. ×1.75 clears by ~0.4 m, which leaves room for the head bob and for the ceiling
         /// props rather than merely squeaking under the slab like ×1.95 (3.23 m) would.
         ///
+        /// AND ×1.75 DID NOT FIT EITHER, once WorldGen3 put stairs in the world. A corridor gives the
+        /// full 3.3 m; the underside of a flight does not, and the head clipped the soffit and stopped
+        /// the creature — seen playing, and reported as "choca con el techo de las escaleras". 20 cm of
+        /// height come off: 1.655 m × 1.63 = 2.70 m, which is 0.6 m of corridor clearance instead of
+        /// 0.4 and enough for the low side of a run of steps.
+        ///
+        /// Expressed as a scale because that is what the prefab stores, but DIMENSIONED IN METRES —
+        /// the height is the thing that either fits under a slab or does not, and the multiplier only
+        /// means something next to the asset's 1.655 m.
+        ///
         /// The builder owns this field and re-stamps it on every bake, unlike the materials — a scale
         /// that survived only until the next re-bake would be a trap. CHANGING IT REQUIRES A RE-BAKE
         /// (Backrooms ▸ Build Phantom Real Form, then re-bake the remote avatar prefab): the constant
         /// alone does nothing in a running game.
         /// </summary>
-        private const float RealFormScale = 1.75f;
+        private const float RealFormScale = 1.63f;
 
         [MenuItem("Backrooms/Build Phantom Real Form")]
         public static void BuildMenu() => BuildOrGet();
