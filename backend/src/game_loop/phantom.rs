@@ -489,6 +489,20 @@ pub(super) const PHANTOM_REPLAN_STRIDE: u64 = 3;
 /// A waypoint counts as reached inside this radius. Below ~1 m the phantom can orbit a waypoint it
 /// keeps almost-touching; this is under half a cell, so it never skips a corner either.
 pub(super) const PHANTOM_WAYPOINT_ARRIVE: f32 = 1.25;
+
+/// El mismo radio, en WG3. **Y no es el mismo número porque la celda no es la misma.**
+///
+/// El de arriba son 1,25 m «menos de media celda», y esa celda mide 2,5 m. La de WG3 mide **0,5**, así
+/// que ese radio son DOS CELDAS Y MEDIA: el robapieles da por alcanzados varios waypoints de golpe,
+/// **se salta la esquina**, se lanza contra la pared, el resolutor lo frena, replanifica y lo vuelve a
+/// intentar. Visto jugando como andar a tirones, y es exactamente el fallo del que avisa el comentario
+/// de arriba — sólo que su «nunca» valía para su celda y no para ésta.
+///
+/// 0,60 m es poco más de una celda: no se puede quedar parado entre dos, y no llega a saltarse la
+/// siguiente. **Es la tercera constante de esta migración que se hereda mal por venir en celdas** —
+/// las otras dos fueron la ventana de navegación y la altura de planta. Cuando un número esté escrito
+/// en celdas, convertirlo, no copiarlo.
+pub(super) const PHANTOM_WAYPOINT_ARRIVE_WG3: f32 = 0.60;
 /// Consecutive fully-blocked steps after which a hunting phantom is treated as WEDGED: it force-
 /// replans (ignoring the stagger) and stops trusting the straight-line shortcut.
 ///
@@ -2730,7 +2744,12 @@ impl PhantomDriver {
         // first waypoint is underfoot does not cost a wasted tick.
         while self.movers[i].nav_cursor < self.movers[i].nav_waypoints.len() {
             let wp = self.movers[i].nav_waypoints[self.movers[i].nav_cursor];
-            if from.distance_xz(wp) <= PHANTOM_WAYPOINT_ARRIVE {
+            let arrive = if self.wg3.is_some() {
+                PHANTOM_WAYPOINT_ARRIVE_WG3
+            } else {
+                PHANTOM_WAYPOINT_ARRIVE
+            };
+            if from.distance_xz(wp) <= arrive {
                 self.movers[i].nav_cursor += 1;
             } else {
                 break;
