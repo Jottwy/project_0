@@ -10253,8 +10253,14 @@ los facelings, el spawn de objetos y el loot siguen en WG2**.
 
 ### Deuda
 
-- **El fantasma** (D2 arriba). Es lo más barato que queda y lo más visible: hoy atraviesa paredes que
-  el jugador no puede cruzar.
+- **El fantasma** (D2 arriba). ⚠️ **Y la enmienda 2 corrige esto otra vez: NO es «un `match` de
+  distancia», y D2 está equivocado en los hechos, no sólo sin hacer.** El robapieles no anda por
+  `resolve_move_simulated` —que el propio `game_loop.rs` documenta como «dead outside tests»— sino por
+  `resolve_move_grid_gen`, un TERCER resolutor que vive en `grid_gen/collision.rs`, tiene su propio
+  `GridGenChunkCache`, lleva `layer` en la firma y se llama desde **ocho sitios** de `phantom.rs`. El
+  argumento de D2 —«los dos comparten `resolve_move_src`, así que la costura los mueve a la vez»— es
+  falso: sólo el jugador pasa por ahí. Migrar el fantasma es trabajo propio y probablemente ADR propio,
+  porque además hay que decidir qué hace un `layer` en un mundo que no tiene capas.
 - **Los facelings**, que no pasan por `resolve_move_src` y necesitan trabajo propio.
 - **WG2 sigue generándose en el servidor**: `update_ownership` y el handler de `RequestChunk` siguen
   vivos. Es deliberado (D6) y su retirada es otro ADR.
