@@ -2,6 +2,22 @@
 > Actualizado por /checkpoint al cierre de cada sesión. Leído al inicio de cada sesión.
 
 ## Última sesión
+- Fecha: 2026-08-29 noche, 2.ª tanda (**verticalidad: diez plantas servidas, torres y aterrizaje por unión — VERTICALITY-ROADMAP D1**) — **4 commits, `359bf5fe` → `98428ce4`, pusheados a origin. `cargo test` 1140/1140, clippy `-D warnings` y fmt limpios. Cero wire. Release desplegado y VALIDADO EN PARTIDA por Joel (bloqueo por piezas, plantas nuevas, torres).**
+
+0. **BLOQUEO POR PIEZAS CONSTRUIDAS** (`359bf5fe`): un muro levantado por un jugador ya corta la navegación WG3 del robapieles (`Wg3CollisionCache.blocked` consultado en `nav::floor_at`). Playtest: lo rodea. Piezas cortan PASO, no VISTA; los facelings nunca las respetaron (tampoco en WG2).
+
+1. **`REGION_STOREYS` 2 → 10** (`ba094f30`), y la constante avisaba: «subirlo es volver a medir». Dos bugs que SOLO nacen con ≥3 plantas, invisibles para el barrido de 49 regiones a `STOREYS = 2` local: (a) `split_for_stair` de la planta n encogía un aterrizaje ya comprometido desde n-1; (b) un **megapilar de atrio sobre la boca del pozo** — las naves intermedias solo reciben pilares cuando existe planta encima, así que con 2 plantas jamás los tuvieron; en (0,1) dejaba el cuerpo clavado con 1,53 m de techo. **Lección nueva de la casa: todo invariante probado a 2 plantas hay que re-probarlo con más**; el test `the_served_storey_count_is_coherent_in_every_region` barre ya el plan SERVIDO.
+
+2. **TORRES + ATERRIZAJE POR UNIÓN** (`98428ce4`, decisión D1 de Joel: torres). Medido con contadores de muerte en `dig_wells` (quedan tras `WG3_WELL_DEBUG=1`): lo que rompía la subida casi nunca era la huella — era el pozo sin encajar. Dos cambios: el aterrizaje vale por **unión de espacios** (los espacios teselan sus bounds; salir a un pasillo es arquitectura normal; `well_mouth_carves` recorta la pared que cruce la boca, 15 cm por dentro para respetar barandillas), y la **torre de 18 m es un REINTENTO** cuando el pozo no cabe en la planta completa (como sustituto de `upper_bounds` no movía ni una región). Distribución en 49: de {1:3, 2:11, 3:22, 4:13} a **{3:10, 4:29, 5:8, 6:2}** — ninguna región baja de 3 plantas.
+
+3. **EL CUELLO PARA 8-10 TIENE NOMBRE**: arriba escasean salas con tiro recto de 12,6 m; torre más ancha NO ayuda (medido a 26 m, distribución casi idéntica). Lo que falta es **escalera de ida y vuelta** (media huella) — trabajo de `fill`, anotado en el roadmap, no empezado.
+
+4. **[`VERTICALITY-ROADMAP.md`](VERTICALITY-ROADMAP.md) nuevo** (`53c29a91`): D1 tope de plantas (torres, decidido y hecho hasta 6), D2 rampas (escalonadas primero, cero wire), D3 vacíos/caídas (primitivas actuales bastan), D4 conductos de ventilación (túnel bajo donde las criaturas no caben — `headroom` ya filtra gratis), D5 poblar plantas altas (el reparto elige siempre el espacio MÁS BAJO; con 6 plantas, las altas nacen sin criaturas).
+
+5. **PENDIENTE igual que antes**: Level 4 + salas autoradas bloquean el borrado de `grid_gen`; guarda de aislamiento anti-griefing; `styleProfiles` sin autorar; luz entre plantas sin máscara. Y ahora D5 pesa más: hay hasta 6 plantas que poblar.
+
+---
+
 - Fecha: 2026-08-29 noche (**se acaba la mudanza a WorldGen3: loot, construcción, claims, spawn de criaturas, y la retirada de WG2 empieza — ADR-108 D4/D6 y ADR-109**) — **8 commits, `7a9ab5c1` → `ce380ab4`. `cargo test` 1137/1137, clippy `--all-targets -D warnings` y fmt limpios, `CompileCheckClient` 0 errores en las cuatro asambleas. Cero wire. Release desplegado.**
 
 0. **VALIDADO EN PARTIDA POR JOEL, todo de una tirada.** Loot por papel, construcción y claims, y el sitio donde nacen las criaturas: *"ya hice playtest, funciona todo bien"*. **Con esto NO queda ningún consumidor de autoridad en WG2.**
