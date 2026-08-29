@@ -96,7 +96,12 @@ impl Level0Collision {
     /// instead of the historical `floor_player_y` pin. XZ gating is untouched: blocking is
     /// still tested at `from.y` (same layer/cell resolution as always).
     pub fn resolve_move(world: &World, from: Vec3, desired: Vec3) -> CollisionResolve {
-        resolve_move_src(&LayoutSource::World(world), from, desired, Some(desired.y))
+        resolve_move_src(
+            &MoveSource::Grid(LayoutSource::World(world)),
+            from,
+            desired,
+            Some(desired.y),
+        )
     }
 
     /// ADR-017: movement for a server-side entity with NO screen (the robapieles,
@@ -117,7 +122,12 @@ impl Level0Collision {
         // ADR-026 parte 3 does NOT apply here: a server-driven entity (the phantom,
         // ADR-016) has no client-reported Y — it depends on the floor pin for its
         // grounding (ADR-016 slice 2), so the entity path keeps the historical pin.
-        resolve_move_src(&LayoutSource::WorldThenSim(world, sim), from, desired, None)
+        resolve_move_src(
+            &MoveSource::Grid(LayoutSource::WorldThenSim(world, sim)),
+            from,
+            desired,
+            None,
+        )
     }
 
     pub fn is_blocked_at(world: &World, pos: Vec3, radius: f32) -> bool {
@@ -149,6 +159,78 @@ impl<'a> LayoutSource<'a> {
                 .get(&key)
                 .map(|c| &c.layout)
                 .or_else(|| sim.layouts.get(&key)),
+        }
+    }
+}
+
+/// ADR-106 D1 — **LA COSTURA DE LA AUTORIDAD, y no es la fuente de layouts.**
+///
+/// El instinto era añadir una variante a [`LayoutSource`], que devuelve un `&ChunkLayoutV1` indexado
+/// por `LayeredChunkPos`: una rejilla 2D **por capa de 4 m**. El ráster de WG3 son columnas de tramos,
+/// continuas en Y y **sin capas**; sintetizar un layout falso por capa a partir de ellas haría que una
+/// escalera de 25,5 cm por peldaño, un atrio de 6,40 m y un agujero de 2 m **cambiaran de significado,
+/// no de precisión** — la regla que ya costó una tarde con los peldaños de 30 cm.
+///
+/// Así que la costura va un nivel más arriba. Todo `resolve_move_src` descansa sobre cuatro preguntas,
+/// y son éstas las que se hacen polimórficas:
+///
+/// | | WG2 | WG3 |
+/// |---|---|---|
+/// | ¿estorba aquí? | `is_blocked_at_src` | `blocked_standing_at` |
+/// | ¿a qué cota está el suelo? | `floor_player_y_src` | `floor_below` |
+/// | ¿qué me bloqueó? | `describe_block` | — |
+/// | ¿qué celda y banderas? | `LayoutSource::layout` | — |
+///
+/// **Y la lógica de DESLIZAMIENTO se queda compartida** —probar el movimiento entero, luego sólo X,
+/// luego sólo Z—, porque es lo que el jugador siente al rozar una pared y dos copias de eso divergen
+/// sin que ningún test lo note.
+///
+/// Beneficio que decidió elegir esta costura y no otra: `resolve_move` (jugador) y
+/// `resolve_move_simulated` (el robapieles) llaman los dos a `resolve_move_src`, así que **cambiar el
+/// par por debajo mueve a los dos a la vez**. Una autoridad parcial sería incoherente: un jugador que
+/// choca contra WG3 y un fantasma que choca contra WG2 no están en el mismo mundo.
+///
+/// De momento tiene una sola variante a propósito: este commit es refactor puro y no cambia una coma
+/// de comportamiento. La variante de WG3 entra en el siguiente, cuando exista el caché de ráster.
+enum MoveSource<'a> {
+    /// El camino histórico: layouts de WG2, por capa.
+    Grid(LayoutSource<'a>),
+}
+
+impl<'a> MoveSource<'a> {
+    #[inline]
+    fn blocked_at(&self, pos: Vec3, radius: f32) -> bool {
+        match self {
+            MoveSource::Grid(src) => is_blocked_at_src(src, pos, radius),
+        }
+    }
+
+    #[inline]
+    fn floor_y(&self, pos: Vec3) -> f32 {
+        match self {
+            MoveSource::Grid(src) => floor_player_y_src(src, pos),
+        }
+    }
+
+    #[inline]
+    fn describe(&self, pos: Vec3, radius: f32) -> ((i32, i32), (usize, usize), u16, &'static str) {
+        match self {
+            MoveSource::Grid(src) => describe_block(src, pos, radius),
+        }
+    }
+
+    /// Celda y banderas del sitio donde se acabó. Es dato de DIAGNÓSTICO —va al `CollisionResolve`
+    /// para que la traza nombre lo que pasó—, no entra en la decisión de moverse.
+    #[inline]
+    fn cell_and_flags(&self, pos: Vec3) -> ((usize, usize), u16) {
+        match self {
+            MoveSource::Grid(src) => src
+                .layout(chunk_key_at(pos))
+                .map(|layout| {
+                    let cell = cell_for_pos(layout, world_to_chunk(pos), pos.x, pos.z);
+                    (cell, layout.cell_flags(cell.0, cell.1))
+                })
+                .unwrap_or(((0, 0), 0)),
         }
     }
 }
@@ -247,18 +329,18 @@ impl SimChunkCache {
 /// floor pin). XZ gating below always tests at `from.y` regardless — the claimed Y NEVER
 /// affects which layer/cells block (the TP-attribution watchpath stays bit-identical).
 fn resolve_move_src(
-    src: &LayoutSource,
+    src: &MoveSource,
     from: Vec3,
     desired: Vec3,
     claimed_y: Option<f32>,
 ) -> CollisionResolve {
     let desired = Vec3::new(desired.x, from.y, desired.z);
-    if !is_blocked_at_src(src, desired, PLAYER_RADIUS) {
+    if !src.blocked_at(desired, PLAYER_RADIUS) {
         return resolve_with_y(src, desired, CollisionResultKind::Free, "free", claimed_y);
     }
 
     let x_only = Vec3::new(desired.x, from.y, from.z);
-    if !is_blocked_at_src(src, x_only, PLAYER_RADIUS) {
+    if !src.blocked_at(x_only, PLAYER_RADIUS) {
         return resolve_with_y(
             src,
             x_only,
@@ -269,7 +351,7 @@ fn resolve_move_src(
     }
 
     let z_only = Vec3::new(from.x, from.y, desired.z);
-    if !is_blocked_at_src(src, z_only, PLAYER_RADIUS) {
+    if !src.blocked_at(z_only, PLAYER_RADIUS) {
         return resolve_with_y(
             src,
             z_only,
@@ -281,11 +363,11 @@ fn resolve_move_src(
 
     // Fully blocked — stay put, but report what actually blocked the
     // desired move so the trace logs name the real obstruction.
-    let (chunk_pos, cell, flags, reason) = describe_block(src, desired, PLAYER_RADIUS);
+    let (chunk_pos, cell, flags, reason) = src.describe(desired, PLAYER_RADIUS);
     let mut position = from;
     if claimed_y.is_none() {
         // Entity path: historical floor pin.
-        position.y = floor_player_y_src(src, position);
+        position.y = src.floor_y(position);
     }
     // Player path (claimed_y present): keep from.y — ADR-026 parte 3's literal contract
     // ("se mantiene from.y solo si el movimiento queda totalmente bloqueado").
@@ -744,22 +826,16 @@ fn edge_block_reason(kind: u8) -> &'static str {
 /// XZ move itself is never rejected over Y). `chunk_pos`/`cell`/`flags` are always computed
 /// at the floor-pinned height, exactly as before — bit-identical diagnostics either way.
 fn resolve_with_y(
-    src: &LayoutSource,
+    src: &MoveSource,
     mut position: Vec3,
     kind: CollisionResultKind,
     reason: &'static str,
     claimed_y: Option<f32>,
 ) -> CollisionResolve {
     let from_y = position.y;
-    position.y = floor_player_y_src(src, position);
+    position.y = src.floor_y(position);
     let chunk_pos = world_to_chunk(position);
-    let (cell, flags) = src
-        .layout(chunk_key_at(position))
-        .map(|layout| {
-            let cell = cell_for_pos(layout, chunk_pos, position.x, position.z);
-            (cell, layout.cell_flags(cell.0, cell.1))
-        })
-        .unwrap_or(((0, 0), 0));
+    let (cell, flags) = src.cell_and_flags(position);
     if let Some(claimed) = claimed_y {
         if claimed.is_finite() && (claimed - from_y).abs() <= MAX_CLAIMED_Y_STEP {
             position.y = claimed;
