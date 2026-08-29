@@ -72,10 +72,10 @@ transportable**, que es lo que se pidió. Buscar ahí un fallo de la migración 
 | Plantas bajo la cota base | 🔴 | | 104 D5 |
 | **Fantasma (movimiento + vista)** | ✅ | **andado y validado en juego** | 108 |
 | **Facelings (adultos y niños)** | ✅ | **andados y validados en juego** | 108 enm. 1-3 |
-| **Loot por papel** | 🟡 | **andado, sin ver en partida**; densidad intacta | 108 enm. 4 |
-| **Construcción y claims** | 🟡 | **andado, sin ver en partida**; se construye en servicio/almacén/callejón | 108 D6 |
-| **Retirada de WG2** | 🟡 | **etapa 1 hecha: ya no se genera ni se manda**; borrar el código lo bloquea el contenido | 109 |
-| **Spawn de criaturas** | 🟡 | **el SITIO ya sale del ráster** (10 de 18 corregidos); el REPARTO sigue en WG2 | 109 D4 |
+| **Loot por papel** | ✅ | **validado en partida** (2026-08-29); densidad intacta | 108 enm. 4 |
+| **Construcción y claims** | ✅ | **validado en partida** (2026-08-29); se construye en servicio/almacén/callejón | 108 D6 |
+| **Retirada de WG2** | 🟡 | **etapa 1 hecha y validada en partida**; borrar el código lo bloquea el contenido | 109 |
+| **Spawn de criaturas** | 🟡 | **el SITIO sale del ráster y está validado**; el REPARTO sigue en WG2 | 109 D4 |
 | Level 4 y salas autoradas en WG3 | 🔴 | sólo existen en WG2; bloquean el borrado | 109 D2 |
 
 ### Cifras del mundo servido, hoy

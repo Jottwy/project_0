@@ -2,6 +2,26 @@
 > Actualizado por /checkpoint al cierre de cada sesión. Leído al inicio de cada sesión.
 
 ## Última sesión
+- Fecha: 2026-08-29 noche (**se acaba la mudanza a WorldGen3: loot, construcción, claims, spawn de criaturas, y la retirada de WG2 empieza — ADR-108 D4/D6 y ADR-109**) — **8 commits, `7a9ab5c1` → `ce380ab4`. `cargo test` 1137/1137, clippy `--all-targets -D warnings` y fmt limpios, `CompileCheckClient` 0 errores en las cuatro asambleas. Cero wire. Release desplegado.**
+
+0. **VALIDADO EN PARTIDA POR JOEL, todo de una tirada.** Loot por papel, construcción y claims, y el sitio donde nacen las criaturas: *"ya hice playtest, funciona todo bien"*. **Con esto NO queda ningún consumidor de autoridad en WG2.**
+
+1. **EL LOOT SE REPARTE POR EL PAPEL DEL ESPACIO** (ADR-108 D4). `zone_kind` era de WG2: repartía por un mapa que ya no existe. El sustituto ya viajaba desde el wire 48 —`style`— y es MÁS fino que una zona de 50 m. **La densidad no se tocó**: los siete papeles llevan el 0,04 de la prueba de escasez; el papel decide QUÉ sale, no CUÁNTO. Medido con arnés dotnet sobre 20.000 columnas por papel: 0,0520 → 0,0535 objetos/columna, que es el ruido de reordenar el flujo de números. Única excepción: **escalera a cero**.
+
+2. **CONSTRUIR Y RECLAMAR** (ADR-108 D6). Se construye en servicio, almacén y callejón sin salida —los espacios que cuelgan del mundo sin sostenerlo—, que es la regla de «no bloqueante» que pidió Joel contra el griefing. **El claim es el ESPACIO: esquina y COTA**, así que el mismo cuarto una planta arriba es otro claim. Host y cliente responden con el mismo dato para que la regla y el aviso no puedan desalinearse.
+
+3. ⚠️ **LOS ESPACIOS SE SOLAPAN, y lo destapó un test.** Sonda `probe_space_overlap`: **26 pares de 47.895** en la región (0,0); el caso típico es una escalera de dos plantas cruzando el volumen de una sala de arriba. «El primero que contenga el punto» depende del orden del vector — y el cliente los recibe repartidos por chunk, o sea en otro orden: la puerta habría contestado **dos cosas distintas al host y al cliente**. Regla nueva: **el suelo más alto por debajo del punto**, empate por área.
+
+4. **LA RETIRADA DE WG2, ETAPA 1** (ADR-109). Con WG3 mandando **ya no se genera** (`update_ownership` no llama a `generate_chunk` ni restaura el escaparate V30A) **ni se manda** (`visible_chunk_views` devuelve vacío: cada vista llevaba su rejilla de 20 × 20, a 10 Hz, por columna visible, y sin un solo consumidor). **El chunk SÍ se sigue creando, vacío**: `world.chunks` no es geometría, es el contenedor de entidades y objetos. Son guardas, no borrado.
+
+5. **LAS CRIATURAS SE MOVÍAN CON WG3 Y NACÍAN DONDE DECÍA WG2** (ADR-109 D4). No lo destapó un playtest, lo destapó la retirada. `grid_floor_y(layer)` da la cota de una capa de 4 m —cero para la capa 0— en un mundo de plantas de 3,32; y una celda que WG2 da por buena puede tener macizo aquí, lo que con el movimiento ya en el ráster no deja a la criatura flotando sino **atascada**. Es el fallo que ADR-106 arregló para el jugador, vivo un año más en las criaturas. **Medido: de 18 sorteos, el ráster corrige 10, hasta 3,00 m.**
+
+6. **PENDIENTE, y el orden lo eligió Joel.** El borrado del código de `grid_gen` (294 referencias fuera, 12.124 líneas dentro) **está bloqueado por CONTENIDO**: el Level 4 y las salas autoradas (ADR-083/084/085) existen sólo en WG2 y el borrado se las lleva. Decisión aparcada a propósito. Más: el **reparto** de facelings sigue en WG2 —`zone_kind_for` decide cuántas y dónde, y la cota candidata sale de la capa, así que **hoy no nacen facelings en plantas altas**—; `contact_stance` sigue en `grid_gen`; falta la **guarda de aislamiento** contra griefing; y falta autorar `styleProfiles` en el asset.
+
+7. **NO TOCAR (validado humano, 2026-08-29).** La escasez del loot y el sitio donde nacen las criaturas: Joel los jugó y los dio por buenos.
+
+---
+
 - Fecha: 2026-08-29 tarde (**ADR-108 — la IA entera se muda a WorldGen3: robapieles, facelings adultos y niños**) — **`cargo test` 1131/1131, clippy `--all-targets -D warnings` y fmt limpios, release desplegado a `Builds/Backend/`. Cero wire.**
 
 0. **VALIDADO EN JUEGO POR JOEL, las dos especies.** Robapieles: *"ahora sí va mucho mejor"* tras seis fallos de navegación encadenados en playtest. Facelings: *"funcionan estupendamente, están bastante pulidos con el nuevo sistema"*. Es lo que cierra el Frente B para la IA — el estado vivo sigue en [`WG3-ROADMAP.md`](WG3-ROADMAP.md).
