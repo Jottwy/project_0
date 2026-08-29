@@ -48,9 +48,13 @@ que se cae y macizos —pretiles y megapilares— (ADR-104 y ADR-105, wire 50).
 | **Pretiles** | 🟡 | 5, sólo en 2 atrios | 105 D5 |
 | **Megapilares** | 🟡 | 12 | 105 D5 |
 | Luz en rejilla y colgada | 🟡 | recién arreglada, sin andar | — |
+| **WG3 como autoridad del jugador** | ✅ | **andado en `BackroomsWithSTP` con el player real** | 106 |
+| Spawn contra WG3 | ✅ | sitio de pie en 4/4 regiones | 106 |
+| Luz que no atraviesa el forjado | 🟡 | capas por planta, sin andar | 104 enm. 2 |
 | Identidad de subnivel (Level 0.1…) | 🔴 | aprobado, cero código | 103 |
 | Plantas bajo la cota base | 🔴 | | 104 D5 |
-| **WG3 como autoridad** | 🔴 | **el techo de todo** | sin ADR |
+| **Fantasma, facelings, loot** | 🔴 | **siguen en WG2 — atraviesan lo que tú no** | 106 deuda |
+| Retirada de WG2 | 🔴 | el servidor sigue generándolo | sin ADR |
 
 ### Cifras del mundo servido, hoy
 
@@ -122,7 +126,7 @@ cuál manda antes de tocar ninguno.
 | Frente | Estado |
 |---|---|
 | **A — identidad visual por papel** | ✅ **HECHO.** `b5c6cfc3`, `2c0d5dce`, `a8de06c6`. Verificado EN JUEGO: los siete papeles se distinguen desde el fondo del tramo |
-| **B — WG3 como autoridad** | 🔴 Sin empezar. **Sigue siendo el techo de todo lo demás** |
+| **B — WG3 como autoridad** | ✅ **HECHO Y ANDADO** para el jugador (ADR-106). Quedan el fantasma, los facelings y el loot |
 | **C — variedad de contenido** | Reencuadrado: ver §7, el catálogo de formas por coste |
 | **D — la rareza Backrooms** | ▶️ **DESAPARCADO.** Es ADR-103, aprobado por Joel, sin código |
 
