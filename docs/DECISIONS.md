@@ -9192,3 +9192,203 @@ comparable con las de ADRs anteriores.**
   validados en partida.
 - WG3 sigue **sin ser autoridad** de colisión, movimiento, navegación ni spawn. Las dos plantas se
   andan hoy en `WorldGen3Live` y en el juego real subir una planta te congela.
+
+---
+
+## ADR-103 — La identidad de nivel: un campo de MEZCLA de perfiles, no un nivel por sitio (2026-08-29) — PROPUESTA
+
+### Contexto
+
+El lore de Backrooms tiene subniveles: Level 0 «Threshold» y colgando de él 0.1 «Zenith Station»,
+0.2 «Remodeled Mess», 0.3 «The Icy Rooms», 0.5, 0.7. La lectura ingenua es un enum: el mundo es de un
+nivel o de otro, y cada nivel trae su set de salas. **Esa lectura no cabe en WG3 y además no es lo que
+se quiere.** Lo que distingue un subnivel de otro no son objetos distintos: es *lo turbio*, la escala,
+la altura, cuánto se desmadra la geometría. Es un ajuste de perillas, no un catálogo.
+
+Y WG3 ya tiene la máquina exacta para eso. `scale.rs` / `Wg3ScaleField` es un campo de ruido de celda,
+**función pura de la posición**, que devuelve `[0,1)` y se clasifica por umbrales. Esa propiedad —dos
+chunks vecinos coinciden sin hablarse, el mismo sitio se siente igual al volver— es la que hace posible
+el mundo infinito, y cualquier sistema de niveles que la rompa está descalificado antes de empezar.
+
+Este ADR es el **Frente D** del `WG3-ROADMAP.md`, que Joel tenía aparcado («primero veamos cómo queda
+bien hecho»). Se desaparca porque ahora hay dos plantas andadas y validadas, que era la condición.
+
+### D1 — Un nivel es un PERFIL DE PERILLAS, no un set de contenido
+
+`LevelProfile` es una estructura de factores sobre las constantes que ya deciden el aspecto del mundo.
+Cero geometría nueva, cero piezas nuevas, cero `SpaceRole` nuevo.
+
+| Perilla | Hoy | Dónde |
+|---|---|---|
+| `target_area_mul` sobre `TARGET_AREA_M2[4]` | `[60, 150, 380, 380]` | `plan.rs:245` |
+| `weird_spread_mul` sobre `WEIRD_SPREAD` | `(0.35, 2.6)` | `plan.rs:258` |
+| `void_chance` sobre `VOID_CHANCE_WEIRD` | `0.22` | `plan.rs:269` |
+| `clear_height_mul` sobre `clear_height_by_role` | 450/360/320/280 | `fill.rs:60` |
+| `band_width_mul` sobre `BAND_WIDTH_CM` | `[320, 280, 240]` | `plan.rs:193` |
+| `max_depth_delta` sobre `MAX_DEPTH` | `12` | `plan.rs:209` |
+| `palette` — sólo cliente, no lo lee el servidor | — | `fill::style_of` |
+
+**Los números de los perfiles de D5 son puntos de partida, no resultados.** Salen a medida en la
+enmienda 1, como han salido todos los de ADR-095 en adelante.
+
+### D2 — El campo devuelve una MEZCLA, y por eso hay dos números por celda
+
+La firma es `identity::at(world_seed, x, y, z) -> LevelMix`, y `LevelMix` lleva **dos perfiles ancla
+y un peso** — no un perfil. Cada perilla efectiva es la media ponderada de las dos.
+
+La celda hashea a un valor `u ∈ [0,1)` sobre una **escalera de anclas** —los subniveles, en orden— y
+`u` da a la vez qué dos anclas son vecinas y en qué proporción se mezclan. Eso es literalmente la
+petición: en un extremo Level 0 al 100 %, en el otro Level 0.1 al 100 %, y en medio combinación.
+
+**Con una corrección obligatoria: los polos puros tienen que existir.** Un `u` uniforme casi nunca cae
+clavado en un ancla, así que el mundo entero sería mezcla y ningún sitio sería «Level 0 de verdad».
+Con probabilidad `PURITY_CHANCE` (propuesta: `0.45`, a medir) la celda **encaja `u` en el ancla más
+próxima** y sale pura. Sin esto el sistema produce papilla gris, que es el fallo clásico de mezclar
+perfiles y el motivo de escribirlo aquí y no descubrirlo midiendo.
+
+### D3 — La mezcla es por CELDA, nunca por metro. Enmienda a la premisa de ADR-095
+
+El módulo del campo de escala dice, con todas las letras: *«Escalonado a propósito: el mundo cambia de
+escala al cruzar una frontera, no derivando poco a poco. Un gradiente suave se lee como terreno, y el
+terreno es lo contrario de lo liminal»* (`scale.rs`, `fn cell`; L22 en el espejo C#).
+
+Un campo de identidad que interpolara metro a metro contradice eso de frente. **Lo que se interpola es
+qué mezcla le toca a la celda; dentro de la celda la mezcla es constante y la frontera sigue siendo un
+escalón duro.** Andas por una zona 70/30, cruzas un umbral nítido, entras en una 40/60. Sigue siendo
+liminal y sigue siendo continuo. Esto no relaja la regla de ADR-095: la aplica a un campo nuevo.
+
+### D4 — El grano es MÚLTIPLO de la región, y la identidad se resuelve UNA VEZ por región
+
+`IDENTITY_CELL = 6 × REGION_M = 900 m` (`REGION_CHUNKS = 3`, `WG3_CHUNK_M = 50`, región de 150 m).
+
+Dos decisiones en una, y las dos por la misma razón:
+
+1. **Múltiplo exacto de la región**, así que una región **nunca cae a caballo de dos celdas de
+   identidad**. Si cayera, dos espacios de la misma planta pedirían anchos de banda distintos y el
+   árbol de subdivisión dejaría de ser coherente consigo mismo.
+2. **Una consulta por región, en su centro.** No por espacio. La frontera de identidad es entonces
+   una frontera de región, que es un sitio donde el mundo ya cambia de mano y donde ya hay contrato.
+
+900 m es el punto de partida: son 6 regiones de lado, varios minutos andando dentro de una misma
+identidad. Si al medir sale que se lee como colcha de retales, sube; el número no está defendido por
+nada más que el orden de magnitud.
+
+### D5 — Cuatro anclas para la fase 1, y la primera es INTOCABLE
+
+| `u` | Ancla | Carácter | Perillas que la definen |
+|---:|---|---|---|
+| 0.00 | **Level 0 — Threshold** | el mundo de hoy | **todos los factores a 1.0, exactamente** |
+| 0.33 | **0.1 — Zenith Station** | amplio y alto | `target_area ×1.9`, `clear_height ×1.35`, `band ×1.25`, `void ×0.4` |
+| 0.66 | **0.2 — Remodeled Mess** | irregular, roto | `weird_spread ×1.8`, `void ×2.2`, `max_depth +2`, `target_area ×0.8` |
+| 1.00 | **0.3 — The Icy Rooms** | apretado y bajo | `target_area ×0.45`, `clear_height ×0.8`, `band ×1.0`, `void ×0.3` |
+
+**Level 0 con todos los factores a 1.0 no es pereza: es la guardia de regresión.** Una celda pura de
+Level 0 tiene que producir el mundo servido de hoy *byte a byte*, y eso es lo que convierte «he
+añadido un sistema de niveles» en una afirmación comprobable en vez de una esperanza.
+
+### D6 — Tres perillas que NO se tocan, y una que sólo puede subir
+
+- **Los umbrales de `scale_at` (0.34 / 0.70 / 0.92) quedan fuera del perfil.** `scale.rs` tiene espejo
+  C# (`Wg3ScaleField`) atado al oráculo de composición; hacerlos por nivel pondría el oráculo rojo sin
+  que nada esté roto. El mismo efecto se consigue multiplicando `TARGET_AREA_M2`, que es donde el campo
+  de escala pasa a decidir tamaños (`plan.rs:1641`), y que no cruza a C#.
+- **`REGION_STOREYS` queda fuera.** Es `usize` y estructura, no factor; una región de tres plantas es
+  otro ADR (`plan.rs:88` ya dice qué cuesta subirlo).
+- **`BAND_WIDTH_CM` sólo puede SUBIR, y su suelo sigue siendo 240.** Por debajo el ráster conservador
+  no deja pasar (ADR-098, `MIN_GENERATED_WIDTH_CM = 200`), y un pasillo que el cliente dibuja abierto y
+  el servidor no deja cruzar es el peor fallo de su clase — no sale en una captura.
+- **`GATE_CLEARANCE_CM` se calcula con el MÁXIMO `BAND_WIDTH_CM[0]` de todos los perfiles, no con el
+  local.** Dos regiones vecinas de identidad distinta comparten puertas de junta (ADR-096); si cada
+  lado despeja según su propia banda, un corte cae encima de una puerta y **la región nace sellada por
+  ese lado**. Eso ya pasó una vez: 64 de 256 puertas perdidas, 2 de 4 regiones alcanzables, y el único
+  rastro era un `warn` en el log (ADR-100 enmienda 1).
+
+### D7 — El eje Y entra en la firma HOY y va clavado a 0
+
+`identity::at(seed, x, y, z)` recibe `y` desde el primer commit y la ignora. Fase 1 es campo XZ puro.
+
+El lore pone los subniveles *debajo*, no *al lado*, y la dirección del bucle de juego es profundidad
+como progresión persistente. Pero el descenso entre niveles **no existe hoy en ninguna parte** —WG3
+sirve dos plantas de 332 cm por región, 6,6 m de rango total, que no dan para una escalera de
+subniveles—, así que construirlo ahora sería construir sobre nada. Con la `y` en la firma, el día que
+exista el descenso se suelta el parámetro y no se reescribe una sola llamada.
+
+### D8 — Cero wire, y el cliente RECALCULA el campo en vez de recibirlo
+
+El perfil sólo mueve constantes del plan. La geometría resultante viaja por los canales de siempre
+—colocaciones, tramos, vanos excavados de ADR-101— así que **`WIRE_SCHEMA_VERSION` se queda en 49**.
+
+Para la paleta el cliente necesita saber la identidad, y no se manda: la **recalcula** con un espejo
+C# de `identity.rs`, igual que `Wg3ScaleField` es espejo de `scale.rs`. El cliente conoce `world_seed`
+desde el HandshakeAck y la posición la tiene. La asimetría que lo hace seguro, y es el argumento
+entero: **el servidor usa el campo para GEOMETRÍA, el cliente sólo para COLOR.** Una deriva entre los
+dos espejos pinta una pared del tono equivocado en una celda de frontera; nunca produce un pasillo que
+uno dibuja abierto y el otro cierra, que es la clase de fallo que ADR-097 enmienda 1 y ADR-098
+enmienda 2 pagaron caro.
+
+El espejo se escribe **con el Frente A**, no antes: hoy `style` ya viaja en wire 49 y el cliente no lo
+usa para nada, así que un campo de identidad sin materiales por papel es un sistema invisible.
+
+### Alternativas descartadas
+
+- **Nivel como enum por región.** Es lo que pedía la lectura ingenua del lore. Da fronteras duras sin
+  mezcla y obliga a autorar contenido por nivel — el coste que este ADR existe para no pagar.
+- **Gradiente continuo metro a metro.** Contradice `scale.rs` y produce terreno, no liminalidad (D3).
+- **Mandar la identidad por el cable.** Bump de wire, un `u8` por chunk, y a cambio de nada: el cliente
+  puede derivarla (D8).
+- **Un set de piezas por subnivel.** Es contenido, y el catálogo ya está por debajo de lo que el plan
+  pide (Frente C, 5-14 colocaciones sobre ~170 espacios). Multiplicarlo por cuatro niveles agrava el
+  problema en vez de resolverlo.
+
+### Verificación — qué tiene que medir antes de que esto se dé por cierto
+
+- **(a) Pureza de posición.** `identity::at` no depende del orden de generación ni de qué regiones se
+  hayan pedido antes. Mismo `(seed, x, z)` → misma mezcla, y regiones no adyacentes generadas en orden
+  invertido dan lo mismo.
+- **(b) LA GUARDIA. Una celda pura de Level 0 produce el mundo servido de hoy byte a byte.** Con
+  dientes: se verifica que el test se pone rojo moviendo un solo factor de Threshold de 1.0 a 1.01.
+- **(c) Los cuatro perfiles se DISTINGUEN, medido.** Área media de espacio, altura libre media y
+  fracción de superficie en zona `Weird`, sobre 16 regiones por perfil. Un perfil que no se separe de
+  Threshold por encima del ruido entre semillas no es un perfil: es una opinión.
+- **(d) Ningún perfil rompe lo andable.** `no_mouth_in_the_served_world_is_walled_shut` verde en los
+  cuatro, y superficie andable no por debajo de la de hoy (109-116 % en las cuatro regiones de
+  referencia, con las constantes de medida de ADR-102 enmienda 1).
+- **(e) El contrato de junta se cruza entre identidades DISTINTAS.** Test con un par de regiones
+  vecinas forzadas a Threshold e Icy Rooms: cero puertas de junta perdidas por ninguno de los dos
+  lados. Es el riesgo de D6 y no puede quedar en un argumento.
+- **(f) Cero wire, comprobado.** `WIRE_SCHEMA_VERSION` y `WireSchema.Expected` siguen en 49 al cerrar.
+- **(g) Un mapa por perfil.** `dump_region_maps` con la identidad forzada, para mirar los cuatro sin
+  sesión de juego — la verificación que de verdad decide si esto se nota es andarlo.
+
+### Consecuencias y deuda que este ADR deja escrita
+
+- **Choca con el Frente C (variedad de contenido) y hay que decidir el orden.** C2 —sesgar el plan
+  hacia las huellas que el catálogo tiene— hace el mundo más regular; esto lo hace más variado. Si se
+  hacen los dos sin decidir cuál manda, se cancelan.
+- El espejo C# es **una segunda implementación del mismo mapeo**, con el riesgo de deriva que eso
+  siempre trae. Acotado a color por D8, no eliminado. Pide su propio test de oráculo cuando se escriba.
+- `PURITY_CHANCE`, `IDENTITY_CELL` y los doce factores de D5 son **propuestas sin medir**. La enmienda 1
+  de este ADR tiene que traerlos medidos o decir por qué se quedan.
+- Fase 2 (el eje Y de D7, el descenso entre subniveles) **no está diseñada** y no la desbloquea este
+  ADR: sólo deja la firma preparada para que no cueste una reescritura.
+- **La mezcla continua de D2 no cabe en la caché del cliente, y eso es un fallo de este borrador
+  encontrado antes de implementarlo.** El Frente A aterrizó en `b5c6cfc3` con
+  `Wg3StyleMaterials.Resolve(Wg3Materials, byte style)`, y detrás hay un
+  `Dictionary<byte, Material[]>` **indexado sólo por `style`** que además instancia un `Material`
+  nuevo por variante. Añadirle el eje de identidad tal cual rompe por los dos lados: la caché
+  devuelve el tinte de otra región —un fallo silencioso, pinta bien y pinta mal en el sitio
+  equivocado— y, como el peso de mezcla es continuo, cada celda pediría su propia variante y la
+  creación de materiales se queda sin techo. **La identidad tiene que llegar al cliente
+  CUANTIZADA** —N escalones de mezcla, no un `float`— y la clave de caché pasa a ser
+  `(style, escalón)`. El número de escalones sale a medida con los perfiles de D5; la cuantización
+  es del tinte, no del plan, así que no toca la geometría del servidor.
+- **Y al mover esa clave hay una mina, con daño IRREVERSIBLE y fuera del proceso.**
+  `Wg3StyleMaterials.ClearCache` recorre la caché destruyendo variantes y se salta la entrada con
+  `entry.Key == 0`, porque el estilo 0 no devuelve una variante sino **el array del juego base**, que
+  son los `.mat` del proyecto. Fuera de play el destructor es `DestroyImmediate`, y eso sobre un
+  asset **lo borra del disco**: no lo deshace un reinicio del editor ni una recarga de dominio, sólo
+  git. Con la clave compuesta de la deuda anterior —p. ej. `(style << 8) | escalón`— la clave 0 deja
+  de significar «el juego base» y pasa a significar «estilo 0 Y escalón 0»: **todo escalón de
+  identidad con `style == 0` cae por el bucle y destruye los materiales base del proyecto.** La
+  guarda tiene que pasar de comparar la clave con cero a comprobar el componente `style`, y ese
+  cambio va en el MISMO commit que la clave, nunca detrás.
