@@ -10067,3 +10067,126 @@ redondeo**, y hay un epsilon positivo porque `3,32 / 3,32` puede dar `0,99999` e
 La lección general, que ya apareció dos veces esta misma sesión con otra ropa: **un cambio que se
 aplica correctamente a un dato mal calculado no falla, funciona al vacío.** No hay métrica en este
 sistema que mire la luz, así que sólo lo cazaba hacer la cuenta a mano antes de commitear.
+
+---
+
+## ADR-106 — WG3 pasa a ser AUTORIDAD: la costura no es la fuente de layouts, es el par (bloquea, suelo) (2026-08-29) — PROPUESTA
+
+### Por qué éste es el ADR que lleva tres sin escribirse
+
+`BACKROOMS_WG3=1` es hoy **aditiva**: WG3 dibuja y WG2 sigue resolviendo colisión, movimiento,
+navegación y spawn. Las consecuencias están medidas y son las mismas desde ADR-100:
+
+- **Subir una planta te CONGELA.** La capa sale de la Y (`layer_from_player_y`,
+  `LAYER_HEIGHT_M = 4,0`), `update_ownership` sólo genera la capa 0, un chunk ausente **bloquea**, y el
+  resultado es `Blocked` → `position = from`.
+- Las dos plantas, los 11 atrios y los 15 agujeros **sólo se andan en `WorldGen3Live`**, contra los
+  colliders del cliente.
+- Las primitivas de colisión de WG3 —`is_solid_at`, `blocked_standing_at`, `floor_below`,
+  `headroom_above_floor`— existen y **no las llama nadie**.
+- 606 eventos `faceling_unwedged` en tres minutos: las criaturas navegan una rejilla que el jugador ya
+  no ve.
+
+**Cada cosa que se apila encima de WG2 encarece la mudanza**, y la cadena ADR-103 → 105 apiló tres.
+
+### D1 — La costura NO es `LayoutSource`, y eso es el hallazgo que ordena el ADR
+
+El instinto es añadir una variante: `LayoutSource::Wg3(...)` junto a `World` y `WorldThenSim`. **No
+cabe, y forzarlo sería el error de siempre con otra ropa.**
+
+`LayoutSource::layout(key)` devuelve un `&ChunkLayoutV1` indexado por `LayeredChunkPos`, o sea **una
+rejilla 2D por CAPA de 4 m**. El ráster de WG3 son **columnas de tramos, continuas en Y y sin capas**.
+Meter uno en el otro obliga a fabricar un `ChunkLayoutV1` falso por capa a partir de los tramos, y ahí
+una escalera de 25,5 cm por peldaño, un atrio de 6,40 m y un agujero de 2 m **cambian de significado,
+no de precisión** — la regla que ya costó una tarde con los peldaños de 30 cm (ADR-097 enmienda 1).
+
+**La costura correcta está un nivel más arriba.** Todo `resolve_move_src` descansa sobre dos preguntas:
+
+| Pregunta | Hoy | En WG3 |
+|---|---|---|
+| ¿estorba aquí? | `is_blocked_at_src(src, pos, radius)` | `Wg3Raster::blocked_standing_at` |
+| ¿a qué cota está el suelo? | `floor_player_y_src(src, pos)` | `Wg3Raster::floor_below` |
+
+**Ese par es lo que se hace polimórfico. La lógica de deslizamiento se queda COMPARTIDA** —probar el
+movimiento completo, luego sólo X, luego sólo Z— porque es lo que el jugador siente al rozar una pared,
+y dos copias de eso divergen sin que ningún test lo note.
+
+### D2 — Y como el par es compartido, **se mueve todo el mundo a la vez, y sale gratis**
+
+`resolve_move` (jugador) y `resolve_move_simulated` (el robapieles) llaman los dos a
+`resolve_move_src`. Cambiando el par por debajo, **el fantasma cruza a WG3 sin una línea propia**.
+
+Eso no es un efecto secundario afortunado: es la razón de elegir esta costura y no otra. **Una
+autoridad parcial es incoherente** — un jugador que choca contra WG3 y un fantasma que choca contra WG2
+no están en el mismo mundo, y el síntoma es una criatura atravesando una pared que tú no puedes cruzar.
+
+**Lo que NO viene gratis y hay que decirlo: los facelings.** No pasan por `resolve_move_src`; navegan
+la rejilla por su cuenta. Siguen en WG2 al terminar este ADR, y ésa es la incoherencia que queda.
+
+### D3 — El caché de ráster copia `SimChunkCache`, que ya resolvió este problema
+
+`SimChunkCache` genera layouts de WG2 bajo demanda, con `prewarm_for_move` sobre el 3×3 de los dos
+extremos y un tope por distancia Chebyshev. **Misma forma para WG3**: caché de `Wg3Raster` por chunk,
+precalentado del 3×3, mismo tope. La composición de región ya está cacheada y es perezosa (R3), así que
+el ráster cuelga de ella.
+
+**Y sin capa en la clave.** La clave es `Wg3ChunkCoord`, no `LayeredChunkPos`: un ráster de WG3 cubre
+toda la altura del chunk (ADR-095 D2), que es justo la propiedad que hace posible el atrio.
+
+### D4 — La CAPA desaparece del camino de WG3, y con ella el congelado
+
+`layer_from_player_y` pasa a ser **exclusivamente de WG2**. En WG3 no hay pisos de 4 m: hay cotas. Con
+eso desaparece la causa medida del congelado —«`update_ownership` sólo genera la capa 0 y un chunk
+ausente es sólido»— porque no hay capa que generar.
+
+**Un chunk de WG3 ausente sigue bloqueando**, y eso se queda: fallar hacia sólido es lo que impide caer
+al vacío mientras se genera. Lo que cambia es que ahora **se puede** generar.
+
+### D5 — El interruptor ya existe y es de PROCESO, no de posición
+
+`Wg3Config` se lee una vez al arrancar y se pasa por parámetro (ADR-095 D3, R3: ni global ni
+`OnceLock`). **No hay que inventar nada**, y sobre todo **no hay mundo mixto**: la frontera entre dos
+sistemas de colisión es exactamente donde un jugador se queda enganchado sin que nada lo explique.
+
+### D6 — Qué queda FUERA de este ADR, con nombre
+
+- **La retirada de WG2.** Sigue generando y sirviendo sus chunks. Este ADR mueve la AUTORIDAD, no borra
+  el otro mundo; borrarlo es su propio ADR y va después de que éste se ande.
+- **`resolve_safe_spawn`** y los facelings: quedan en WG2, dicho arriba.
+- **El daño por caída.** Los agujeros de ADR-104 hoy no matan a nadie porque nadie se cae en partida;
+  cuando se caigan, «qué pasa al aterrizar» es regla de juego y no de mundo.
+
+### Verificación
+
+- **(a)** Con WG3 encendido, **subir una escalera en partida real deja de congelar**. Es la prueba de
+  que el ADR sirvió para algo, y hoy es un `Blocked` reproducible.
+- **(b)** **Se cae por un agujero en partida real**, y se aterriza una planta más abajo. Es lo que Joel
+  ya hizo en `WorldGen3Live` y que hoy no ocurre en el juego.
+- **(c)** **El pretil para**, y el atrio se anda de punta a punta sin enganchones.
+- **(d)** **El fantasma cruza a WG3 sin código propio** — se comprueba que sus rutas usan el mismo par y
+  que no aparece una segunda implementación del deslizamiento.
+- **(e)** **Cero regresión con WG3 APAGADO.** Es la verificación que más importa y la más fácil de
+  descuidar: el camino de WG2 tiene que quedar byte a byte igual. Con dientes: la suite entera en verde
+  sin tocar un solo test existente.
+- **(f)** Los `faceling_unwedged` **no empeoran**. Siguen en WG2 y se espera que sigan mal; lo que no
+  puede es subir.
+
+### Alternativas descartadas
+
+- **`LayoutSource::Wg3`.** D1. Sintetizar un layout por capa desde tramos destruye justo la geometría
+  que ADR-102 y ADR-104 acaban de construir.
+- **Duplicar `resolve_move_src` para WG3.** Dos copias del deslizamiento divergen, y la divergencia se
+  siente como un tirón sin causa que no sale en ninguna captura.
+- **Autoridad sólo para el jugador.** D2: dos entidades en dos mundos distintos.
+- **Un mundo mixto que elija fuente por posición.** La costura entre dos sistemas de colisión es donde
+  se atasca la gente.
+
+### Consecuencias y deuda
+
+- **Es el ADR con más superficie de regresión de toda la serie.** Todo lo anterior era aditivo o de
+  documentación; esto toca el camino por el que se mueve cada jugador. La verificación (e) no es un
+  trámite.
+- Los **facelings en WG2** quedan como incoherencia declarada hasta su propio trabajo.
+- **`MAX_CLAIMED_Y_STEP` y la Y reclamada por el cliente** (ADR-026 parte 3) se escribieron para un
+  mundo de capas planas. Con escaleras reales, atrios y caídas, ese tope hay que volver a mirarlo — **no
+  se toca en este ADR**, pero queda dicho que su premisa cambió.
