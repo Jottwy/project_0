@@ -64,6 +64,7 @@ namespace BackroomsSurvival.WorldGen3
             // Por Wg3ActiveCatalog y no por Wg3Catalog directamente: el exportador del manifiesto
             // hace esta misma pregunta, y si cada uno la respondiera por su cuenta el servidor
             // colocaría de un catálogo y el cliente dibujaría de otro.
+            Active = this;
             _catalog = Wg3ActiveCatalog.Build(out string catalogSource);
             if (_catalog.Count == 0)
                 Debug.LogError($"[WG3] catálogo vacío — {catalogSource}. No se va a dibujar nada.", this);
@@ -73,6 +74,7 @@ namespace BackroomsSurvival.WorldGen3
 
         private void OnDisable()
         {
+            if (ReferenceEquals(Active, this)) Active = null;
             var client = IPCClient.Instance;
             if (client != null) client.RemoveWg3ChunkListener(OnWg3Chunk);
             ClearAll();
@@ -154,6 +156,7 @@ namespace BackroomsSurvival.WorldGen3
             // pediría una y otra vez cada medio segundo.
             if (chunk.placements.Count == 0 && chunk.segments.Count == 0)
             {
+                _spaces.Remove(coord); // un chunk vacío no tiene papel que contestar
                 _built[coord] = null;
                 _emptyChunks++;
                 ReportOnce();
@@ -173,6 +176,8 @@ namespace BackroomsSurvival.WorldGen3
             // jugador. Se pueblan aquí y mueren con el chunk, igual que el lote de zumbido.
             var rooms = new List<(Bounds, Audio.ReverbMixerDriver.RoomTone)>();
             _rooms[coord] = rooms;
+            var spaces = new List<(Bounds, byte)>();
+            _spaces[coord] = spaces;
             _builtChunks++;
 
             foreach (Wg3PlacementMsg wire in chunk.placements)
@@ -250,6 +255,13 @@ namespace BackroomsSurvival.WorldGen3
                 Wg3SceneAssembler.AssembleSegment(
                     segment, root.transform, EffectiveMaterials(), mine, $"seg_{i:D3}_s{segment.style}",
                     spawnLights, chunk.carves, LampMaterial(), hum);
+                var box = new Bounds(
+                    new Vector3(
+                        segment.Origin.x + segment.SizeX * 0.5f,
+                        segment.Origin.y + segment.Height * 0.5f,
+                        segment.Origin.z + segment.SizeZ * 0.5f),
+                    new Vector3(segment.SizeX, segment.Height, segment.SizeZ));
+                spaces.Add((box, segment.style));
                 if (ambience != null)
                 {
                     rooms.Add((
@@ -345,6 +357,70 @@ namespace BackroomsSurvival.WorldGen3
         private BackroomsSurvival.Gameplay.GridWorld.LayerVisualMaterials _wg2Set;
         private Wg3Materials _fallback;
         private int _builtLamps;
+
+        /// <summary>ADR-108 enm. 4 — el PAPEL de cada espacio montado, para poder contestar «qué es
+        /// este sitio» desde fuera. Va aparte de <see cref="_rooms"/> y no dentro de su tupla porque
+        /// aquélla sólo se puebla con `ambience` puesto —el reverb la necesita— y el papel tiene que
+        /// contestar siempre. Mismo ciclo de vida: se llena al montar el chunk y muere con él.</summary>
+        private readonly Dictionary<Vector2Int, List<(Bounds box, byte style)>> _spaces =
+            new Dictionary<Vector2Int, List<(Bounds, byte)>>();
+
+        /// <summary>El streamer vivo, para quien no puede llegar por la jerarquía. `FindObjectsByType`
+        /// NO sirve: todo lo de WG3 se monta con `HideFlags.DontSave` y queda invisible a esa
+        /// búsqueda. Nulo mientras WG3 esté apagado, que es justo la pregunta que hay que hacerle.</summary>
+        public static Wg3ChunkStreamer Active { get; private set; }
+
+        /// <summary>
+        /// ADR-108 D4 — el papel del espacio que contiene ese punto del mundo, o falso si no hay
+        /// ninguno montado ahí todavía.
+        ///
+        /// La cota MANDA: dos plantas se solapan en XZ, así que un test sólo horizontal contestaría
+        /// el papel del piso de abajo la mitad de las veces. Se recorre el chunk entero y no se para
+        /// en el primero que contenga el punto en XZ.
+        /// </summary>
+        public bool TryGetStyle(Vector3 world, out byte style)
+        {
+            style = 0;
+            var coord = new Vector2Int(
+                Mathf.FloorToInt(world.x / ChunkSize), Mathf.FloorToInt(world.z / ChunkSize));
+            if (!_spaces.TryGetValue(coord, out var spaces)) return false;
+            for (int i = 0; i < spaces.Count; i++)
+            {
+                if (!spaces[i].box.Contains(world)) continue;
+                style = spaces[i].style;
+                return true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// ¿Hay ALGÚN espacio en esa columna del mundo, a cualquier cota, y está ya montado el chunk?
+        ///
+        /// Es la pregunta que separa «todavía no» de «aquí no hay nada»: sin ella, quien pregunte por
+        /// un punto que cae en el vacío del plan se queda esperando una respuesta que no va a llegar
+        /// nunca. `false` con el chunk sin montar y `true` con el chunk montado y vacío son dos
+        /// cosas distintas, y por eso el chunk montado se contesta por separado.
+        /// </summary>
+        public bool ChunkIsBuilt(Vector3 world) =>
+            _built.ContainsKey(new Vector2Int(
+                Mathf.FloorToInt(world.x / ChunkSize), Mathf.FloorToInt(world.z / ChunkSize)));
+
+        /// <summary>Algún espacio en esa vertical, IGNORANDO la cota. Con el chunk montado, un `false`
+        /// aquí es definitivo: por ahí no se pasa a ninguna altura.</summary>
+        public bool AnySpaceInColumn(Vector3 world)
+        {
+            var coord = new Vector2Int(
+                Mathf.FloorToInt(world.x / ChunkSize), Mathf.FloorToInt(world.z / ChunkSize));
+            if (!_spaces.TryGetValue(coord, out var spaces)) return false;
+            for (int i = 0; i < spaces.Count; i++)
+            {
+                Bounds b = spaces[i].box;
+                if (world.x >= b.min.x && world.x <= b.max.x &&
+                    world.z >= b.min.z && world.z <= b.max.z)
+                    return true;
+            }
+            return false;
+        }
 
         /// <summary>ADR-107 D4 — las salas de WG3 con su reverb ya calculado, para saber en cuál está
         /// el jugador. Se pueblan al montar el chunk y mueren con él.</summary>
@@ -460,6 +536,7 @@ namespace BackroomsSurvival.WorldGen3
             foreach (Vector2Int coord in doomed)
             {
                 _rooms.Remove(coord);
+                _spaces.Remove(coord);
                 if (_built[coord] != null) Destroy(_built[coord]);
                 DestroyMeshesOf(coord);
                 _built.Remove(coord);
@@ -473,6 +550,9 @@ namespace BackroomsSurvival.WorldGen3
                 if (kv.Value != null) Destroy(kv.Value);
             _built.Clear();
             _requested.Clear();
+            // El papel se va con el mundo: sobrevivir a un `ClearAll` es el bug que ya tuvo
+            // `ZoneRegistry` —contestar sobre el mundo anterior tras reconectar a otro.
+            _spaces.Clear();
 
             // Y las mallas, que no son hijas de ningún GameObject y por tanto no se van con ellos.
             foreach (KeyValuePair<Vector2Int, List<Mesh>> kv in _meshes)

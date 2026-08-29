@@ -270,7 +270,8 @@ namespace BackroomsSurvival.Net
             CollectUnloads(_generatedItemChunks, _liveItems); // appends to _removedIds, prunes generated+live
             foreach (var id in _removedIds) _confirmedItems.Remove(id);
             LiveSlotsOf(_liveItems);
-            CollectLoads(_generatedItemChunks, _collectedItems, ChunkLootRoll.RollItems, rayY);
+            CollectLoads(_generatedItemChunks, _collectedItems, ChunkLootRoll.RollItems,
+                         ChunkLootRoll.RollItemsByStyle, rayY);
 
             if (_removedIds.Count == 0 && _pendingPlacements.Count == 0)
                 return; // nothing changed this scan → no send (coalesced)
@@ -350,7 +351,8 @@ namespace BackroomsSurvival.Net
             ExpireCarryables();
             foreach (var id in _removedIds) _confirmedCarry.Remove(id);
             LiveSlotsOf(_liveCarry);
-            CollectLoads(_generatedCarryChunks, _collectedCarry.Keys, ChunkLootRoll.RollCarryables, rayY);
+            CollectLoads(_generatedCarryChunks, _collectedCarry.Keys, ChunkLootRoll.RollCarryables,
+                         ChunkLootRoll.RollCarryablesByStyle, rayY);
 
             if (_removedIds.Count == 0 && _pendingPlacements.Count == 0)
                 return;
@@ -423,12 +425,53 @@ namespace BackroomsSurvival.Net
             HashSet<(int cx, int cz)> generated,
             ICollection<(int cx, int cz, int slot)> collected,
             System.Func<long, int, int, ZoneLootProfile, List<ChunkLootRoll.Entry>> roll,
+            ChunkLootRoll.StyleRoll styleRoll,
             float rayY)
         {
             _pendingPlacements.Clear();
+            // ADR-108 D4 — con WG3 mandando, la puerta es el PAPEL del espacio, no la zona del chunk.
+            // `zone_kind` es de WG2: seguir leyéndolo aquí reparte el botín por un mapa que ya no
+            // existe. Misma fuente de verdad que el resto del cliente (`Wg3Enabled`, lo dice el
+            // backend en el saludo), no una bandera nueva que pueda contradecirla.
+            bool wg3 = IPCClient.Instance is { Wg3Enabled: true };
+            var streamer = wg3 ? BackroomsSurvival.WorldGen3.Wg3ChunkStreamer.Active : null;
             foreach (var col in _desiredColumns)
             {
                 if (generated.Contains(col)) continue;
+
+                if (wg3)
+                {
+                    // WG3 encendido pero sin streamer montado todavía: nada que preguntar. Se deja
+                    // la columna SIN sellar, igual que una zona que aún no ha llegado.
+                    if (streamer == null) continue;
+                    var here = col;
+                    Vector3 centre = Vector3.zero;
+                    var byStyle = styleRoll(
+                        _worldSeed, col.cx, col.cz,
+                        (u, v) =>
+                        {
+                            centre = new Vector3((here.cx + u) * Side, rayY, (here.cz + v) * Side);
+                            if (!streamer.TryGetStyle(centre, out byte st)) return null;
+                            return LootTable != null
+                                ? LootTable.ProfileForStyle(st)
+                                : ChunkLootRoll.DefaultStyleLootProfiles()[
+                                      Mathf.Clamp(st, 0, ChunkLootRoll.DefaultStyleLootProfiles().Length - 1)];
+                        },
+                        out bool spaceKnown);
+                    if (!spaceKnown)
+                    {
+                        // «Ahí no hay espacio» tiene DOS causas y sólo una se arregla esperando. Con
+                        // el chunk montado y sin nada en esa vertical a ninguna cota, la respuesta ya
+                        // es definitiva: el plan deja vacíos, y dejar la columna sin sellar la haría
+                        // re-sortearse a cada barrido para siempre. Si hay espacio pero en otra
+                        // planta, se espera: el jugador puede subir.
+                        if (streamer.ChunkIsBuilt(centre) && !streamer.AnySpaceInColumn(centre))
+                            generated.Add(col);
+                        continue;
+                    }
+                    PlaceRolled(col, byStyle, generated, collected, rayY);
+                    continue;
+                }
 
                 // Zone gate (Pieza 3, no-timeout variant — see class doc "ZONE GATE"): a column
                 // whose zone_kind is not known yet is left UNSEALED (no generated.Add) and retried
@@ -440,54 +483,67 @@ namespace BackroomsSurvival.Net
                     continue;
 
                 var profile = LootTable != null ? LootTable.Profile(zoneKind) : ZoneLootProfile.Default;
-                var entries = roll(_worldSeed, col.cx, col.cz, profile);
-                if (entries.Count == 0)
-                {
-                    generated.Add(col); // deterministically empty under this zone's profile — don't retry
-                    continue;
-                }
-
-                ChunkLootRoll.RemoveCollected(entries, col.cx, col.cz, collected);
-                // Also skip slots already placed & present (a re-rolled un-sealed chunk keeps its
-                // still-live materials — don't duplicate them; only expired/uncollected slots remain).
-                entries.RemoveAll(e => _liveSlotsScratch.Contains((col.cx, col.cz, e.Slot)));
-                if (entries.Count == 0)
-                {
-                    generated.Add(col); // every slot already taken or still live — sealed, don't retry
-                    continue;
-                }
-
-                bool placedAny = false;
-                bool anyPermanentlyUnwalkable = false;
-                foreach (var e in entries)
-                {
-                    switch (TryPlace(col.cx, col.cz, e, rayY, out Vector3 pos))
-                    {
-                        case PlaceResult.Placed:
-                            placedAny = true;
-                            _pendingPlacements.Add((col.cx, col.cz, e, pos));
-                            break;
-                        case PlaceResult.Unwalkable:
-                            // Every retry inside the zone's dispersion also landed in a
-                            // wall/pillar — this is not "floor not built yet" (that keeps the
-                            // column pending forever, see CollectLoads header), it is permanent
-                            // for this roll. Omit the slot instead of never sealing the column.
-                            anyPermanentlyUnwalkable = true;
-                            Debug.LogWarning($"[ChunkLootManager] slot {e.Slot} en columna " +
-                                              $"({col.cx},{col.cz}) cayo en muro/pilar tras " +
-                                              $"{WalkabilityRetries} reintentos; omitido.");
-                            break;
-                        case PlaceResult.FloorMissing:
-                            break; // retried next scan, unchanged from before this fix
-                    }
-                }
-
-                // Seal once at least one slot reached a TERMINAL outcome (placed, or permanently
-                // unwalkable). If every entry is still FloorMissing, the floor isn't rendered yet
-                // → leave pending for a later scan (unchanged from before this fix).
-                if (placedAny || anyPermanentlyUnwalkable)
-                    generated.Add(col);
+                PlaceRolled(col, roll(_worldSeed, col.cx, col.cz, profile), generated, collected, rayY);
             }
+        }
+
+        // El tramo común a las dos puertas —la de zona de WG2 y la de papel de WG3—: descontar lo ya
+        // cogido y lo que sigue vivo, colocar cada hueco y sellar la columna. Se extrajo tal cual al
+        // migrar el reparto a WG3 (ADR-108 D4); ni una regla cambia respecto a lo que hacía dentro
+        // del bucle.
+        private void PlaceRolled(
+            (int cx, int cz) col,
+            List<ChunkLootRoll.Entry> entries,
+            HashSet<(int cx, int cz)> generated,
+            ICollection<(int cx, int cz, int slot)> collected,
+            float rayY)
+        {
+            if (entries.Count == 0)
+            {
+                generated.Add(col); // deterministically empty under this zone's profile — don't retry
+                return;
+            }
+
+            ChunkLootRoll.RemoveCollected(entries, col.cx, col.cz, collected);
+            // Also skip slots already placed & present (a re-rolled un-sealed chunk keeps its
+            // still-live materials — don't duplicate them; only expired/uncollected slots remain).
+            entries.RemoveAll(e => _liveSlotsScratch.Contains((col.cx, col.cz, e.Slot)));
+            if (entries.Count == 0)
+            {
+                generated.Add(col); // every slot already taken or still live — sealed, don't retry
+                return;
+            }
+
+            bool placedAny = false;
+            bool anyPermanentlyUnwalkable = false;
+            foreach (var e in entries)
+            {
+                switch (TryPlace(col.cx, col.cz, e, rayY, out Vector3 pos))
+                {
+                    case PlaceResult.Placed:
+                        placedAny = true;
+                        _pendingPlacements.Add((col.cx, col.cz, e, pos));
+                        break;
+                    case PlaceResult.Unwalkable:
+                        // Every retry inside the zone's dispersion also landed in a
+                        // wall/pillar — this is not "floor not built yet" (that keeps the
+                        // column pending forever, see CollectLoads header), it is permanent
+                        // for this roll. Omit the slot instead of never sealing the column.
+                        anyPermanentlyUnwalkable = true;
+                        Debug.LogWarning($"[ChunkLootManager] slot {e.Slot} en columna " +
+                                          $"({col.cx},{col.cz}) cayo en muro/pilar tras " +
+                                          $"{WalkabilityRetries} reintentos; omitido.");
+                        break;
+                    case PlaceResult.FloorMissing:
+                        break; // retried next scan, unchanged from before this fix
+                }
+            }
+
+            // Seal once at least one slot reached a TERMINAL outcome (placed, or permanently
+            // unwalkable). If every entry is still FloorMissing, the floor isn't rendered yet
+            // → leave pending for a later scan (unchanged from before this fix).
+            if (placedAny || anyPermanentlyUnwalkable)
+                generated.Add(col);
         }
 
         private enum PlaceResult { FloorMissing, Unwalkable, Placed }
@@ -506,6 +562,33 @@ namespace BackroomsSurvival.Net
             {
                 point = default;
                 return PlaceResult.FloorMissing;
+            }
+
+            // ADR-108 D4 — CON WG3 NO HAY MAPA DE PAREDES QUE MIRAR, y el rayo solo no basta: sale de
+            // DENTRO del muro, y un rayo que nace dentro de un collider no lo toca (cara trasera), así
+            // que aterriza en el suelo de debajo y el objeto queda emparedado. La prueba honesta es
+            // preguntar por el SITIO que ocuparía: una esfera del tamaño de un objeto justo encima del
+            // punto. Si ahí hay geometría, no cabe, y se reintenta como cualquier otro hueco en muro.
+            if (IPCClient.Instance is { Wg3Enabled: true })
+            {
+                if (!IsClearOfGeometry(raycastPoint))
+                {
+                    var wrng = new DeterministicRng(ChunkLootRoll.Hash(_worldSeed, cx, cz,
+                        PlacementRetrySalt ^ (ulong)(uint)e.Slot));
+                    for (int attempt = 0; attempt < WalkabilityRetries; attempt++)
+                    {
+                        float ru = Clamp01(e.U + (wrng.NextFloat() - 0.5f) * 2f * ZoneSpreadNormalized);
+                        float rv = Clamp01(e.V + (wrng.NextFloat() - 0.5f) * 2f * ZoneSpreadNormalized);
+                        if (!TryRaycastFloor(cx, cz, ru, rv, rayY, out Vector3 wp)) continue;
+                        if (!IsClearOfGeometry(wp)) continue;
+                        point = wp;
+                        return PlaceResult.Placed;
+                    }
+                    point = default;
+                    return PlaceResult.Unwalkable;
+                }
+                point = raycastPoint;
+                return PlaceResult.Placed;
             }
 
             // No wall data cached yet (should not happen once the raycast above succeeded —
@@ -546,6 +629,16 @@ namespace BackroomsSurvival.Net
         // slightly further than that cluster, but never further than the zone itself; safe, not
         // worth a second constant here.
         private const float ZoneSpreadNormalized = ChunkLootRoll.ZoneSpreadRadius;
+
+        /// <summary>Radio de la esfera que decide si un objeto CABE ahí. Del orden de un bote: más
+        /// grande rechazaría rincones perfectamente buenos, más pequeño se cuela en un muro.</summary>
+        private const float FitRadius = 0.2f;
+
+        /// <summary>¿Cabe un objeto justo encima de ese punto de suelo? Se sube el centro de la esfera
+        /// su propio radio para no chocar contra el suelo que se acaba de encontrar.</summary>
+        private static bool IsClearOfGeometry(Vector3 floorPoint) =>
+            !Physics.CheckSphere(floorPoint + Vector3.up * (FitRadius + 0.02f), FitRadius,
+                                 GridChunkBuilder.GeoMask, QueryTriggerInteraction.Ignore);
 
         private static bool TryRaycastFloor(int cx, int cz, float u, float v, float rayY, out Vector3 point)
         {

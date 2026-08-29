@@ -32,6 +32,30 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                  "applies to an asset that has never been serialized.")]
         public ZoneLootProfile[] profiles = ChunkLootRoll.DefaultZoneLootProfiles();
 
+        [Tooltip("ADR-108 D4 — un perfil por PAPEL del espacio (style 0-6: 0 sin papel propio, " +
+                 "1 espina, 2 pasillo/cruce, 3 nave, 4 servicio/almacen, 5 callejon, 6 escalera). " +
+                 "Es lo que usa WorldGen3, donde zone_kind ya no existe. VACIO NO ES UN FALLO: " +
+                 "sin autorar, se sirven los valores por defecto del codigo, que es justo lo " +
+                 "contrario de lo que pasa con 'profiles' (ese asset ya esta serializado y sus " +
+                 "defaults de codigo no aplican). Rellenarlo aqui es autorado de contenido.")]
+        public ZoneLootProfile[] styleProfiles = System.Array.Empty<ZoneLootProfile>();
+
+        /// <summary>
+        /// ADR-108 D4 — perfil por PAPEL. Un array vacío cae a los valores por defecto del código
+        /// (<see cref="ChunkLootRoll.DefaultStyleLootProfiles"/>), NO al perfil 0: el asset se
+        /// serializó antes de que este campo existiera, así que vacío es el estado normal hasta que
+        /// alguien lo autore, y servir un único perfil para los siete papeles anularía en silencio
+        /// toda la decisión. Fuera de rango se CLAMPA, igual que <see cref="Profile"/>.
+        /// </summary>
+        public ZoneLootProfile ProfileForStyle(int style)
+        {
+            ZoneLootProfile[] table = styleProfiles == null || styleProfiles.Length == 0
+                ? ChunkLootRoll.DefaultStyleLootProfiles()
+                : styleProfiles;
+            int i = Mathf.Clamp(style, 0, table.Length - 1);
+            return table[i];
+        }
+
         /// <summary>Bounds-safe lookup. A null/empty array falls back to profile 0 (NORMAL); an
         /// out-of-range index is CLAMPED, so a short array serves its last entry — see the
         /// tooltip on <see cref="profiles"/>, this is a silent-degradation trap, not a fallback.</summary>

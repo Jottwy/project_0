@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 
 namespace BackroomsSurvival.Net
@@ -201,6 +202,61 @@ namespace BackroomsSurvival.Net
         /// la prueba mida la RAREZA y no un rediseño de zonas encima. Los pesos de pool y
         /// `weaponRollChance` NO se tocaron: quedan sin leer mientras `RestrictCacheCatalog` esté
         /// activo, y así el día que baje no hay que reconstruirlos de memoria.
+        /// <summary>
+        /// ADR-108 D4 — el reparto por PAPEL, siete perfiles indexados por <c>style</c>
+        /// (<c>fill::style_of</c>: 0 oficina y todo lo que no tiene número propio, 1 espina,
+        /// 2 pasillo/cruce, 3 nave, 4 servicio/almacén, 5 callejón, 6 escalera).
+        ///
+        /// **LA DENSIDAD NO CAMBIA: los siete llevan el `itemCacheChance` = 0,04 de hoy.** Es el
+        /// número de la prueba de escasez del 2026-08-17, mirado en partida, y esto no es la tarea
+        /// que viene a tocarlo. Lo que el papel decide aquí es QUÉ sale, no CUÁNTO: un almacén da
+        /// material, un cuarto de servicio da utilidad, un callejón sin salida paga el rodeo con
+        /// mejor arma. Ajustar la densidad por papel es autorado y se hace en el asset.
+        ///
+        /// `carryableZoneChance` sigue a CERO en los siete, igual que en las trece zonas de WG2 —
+        /// apagado por la misma prueba de escasez, no por esta migración.
+        /// </summary>
+        public static ZoneLootProfile[] DefaultStyleLootProfiles() => new[]
+        {
+            ZoneLootProfile.Default, // 0  sin papel propio (oficina) — la línea base intacta
+            new ZoneLootProfile // 1  ESPINA — la vía principal: de todo y poco, es sitio de paso
+            {
+                itemCacheChance = 0.04f, carryableZoneChance = 0f, weaponRollChance = 0.15f,
+                consumableWeight = 2f, medicalWeight = 2f, ammoWeight = 1f, materialWeight = 1f,
+                logWeight = 40f, stoneWeight = 35f, metalWeight = 25f,
+            },
+            new ZoneLootProfile // 2  PASILLO/CRUCE — lo que alguien soltó al pasar: consumo
+            {
+                itemCacheChance = 0.04f, carryableZoneChance = 0f, weaponRollChance = 0.10f,
+                consumableWeight = 3f, medicalWeight = 2f, ammoWeight = 1f, materialWeight = 1f,
+                logWeight = 40f, stoneWeight = 35f, metalWeight = 25f,
+            },
+            new ZoneLootProfile // 3  NAVE — espacio grande y expuesto: munición y algo de arma
+            {
+                itemCacheChance = 0.04f, carryableZoneChance = 0f, weaponRollChance = 0.25f,
+                consumableWeight = 1f, medicalWeight = 2f, ammoWeight = 3f, materialWeight = 1f,
+                logWeight = 30f, stoneWeight = 30f, metalWeight = 40f,
+            },
+            new ZoneLootProfile // 4  SERVICIO/ALMACÉN — es LO QUE ES: material y medicina
+            {
+                itemCacheChance = 0.04f, carryableZoneChance = 0f, weaponRollChance = 0.05f,
+                consumableWeight = 2f, medicalWeight = 3f, ammoWeight = 1f, materialWeight = 4f,
+                logWeight = 25f, stoneWeight = 25f, metalWeight = 50f,
+            },
+            new ZoneLootProfile // 5  CALLEJÓN SIN SALIDA — el rodeo se paga, o no se anda
+            {
+                itemCacheChance = 0.04f, carryableZoneChance = 0f, weaponRollChance = 0.35f,
+                consumableWeight = 1f, medicalWeight = 3f, ammoWeight = 2f, materialWeight = 1f,
+                logWeight = 30f, stoneWeight = 30f, metalWeight = 40f,
+            },
+            new ZoneLootProfile // 6  ESCALERA — nadie deja nada en una escalera
+            {
+                itemCacheChance = 0f, carryableZoneChance = 0f, weaponRollChance = 0.15f,
+                consumableWeight = 2f, medicalWeight = 2f, ammoWeight = 1f, materialWeight = 1f,
+                logWeight = 40f, stoneWeight = 35f, metalWeight = 25f,
+            },
+        };
+
         public static ZoneLootProfile[] DefaultZoneLootProfiles() => new[]
         {
             ZoneLootProfile.Default, // 0  ZONE_NORMAL      — baseline, unchanged from pre-Pieza-3
@@ -280,6 +336,83 @@ namespace BackroomsSurvival.Net
 
         /// <summary>Deterministic per-chunk item cache under a zone's loot profile. Empty list =
         /// this chunk has no cache.</summary>
+        /// <summary>Firma de los dos sorteos por papel, para poder pasarlos como el sorteo por zona.
+        /// Lleva `out` y por eso no vale un <c>Func</c>.</summary>
+        public delegate List<Entry> StyleRoll(
+            long worldSeed, int cx, int cz,
+            Func<float, float, ZoneLootProfile?> profileAt, out bool spaceKnown);
+
+        /// <summary>
+        /// ADR-108 D4 — la misma caché, pero el perfil sale del PAPEL del espacio donde cae, no de la
+        /// zona del chunk.
+        ///
+        /// **El centro se sortea PRIMERO**, y ése es todo el cambio de forma: hay que saber dónde cae
+        /// la caché para poder preguntar qué sitio es antes de decidir si la hay. Invierte el orden
+        /// del flujo de números respecto a <see cref="RollItems"/>, así que la misma semilla reparte
+        /// distinto — no hay nada persistido que eso rompa.
+        ///
+        /// Se pregunta por el CENTRO y no por cada hueco: todos caen dentro de
+        /// <see cref="CacheClusterRadius"/>, o sea casi siempre en el mismo espacio, y preguntar una
+        /// vez deja el sorteo independiente del orden en que se coloquen luego.
+        ///
+        /// <paramref name="profileAt"/> devuelve nulo cuando ahí todavía no hay geometría montada.
+        /// Eso NO es una caché vacía: <paramref name="spaceKnown"/> sale en falso y la columna se
+        /// queda sin sellar para reintentarla, misma regla que la puerta de zona de WG2.
+        /// </summary>
+        public static List<Entry> RollItemsByStyle(
+            long worldSeed, int cx, int cz,
+            Func<float, float, ZoneLootProfile?> profileAt, out bool spaceKnown)
+        {
+            var rng = new DeterministicRng(Hash(worldSeed, cx, cz, ItemSalt));
+            var result = new List<Entry>();
+            RollCentre(ref rng, out float cu, out float cv);
+            ZoneLootProfile? found = profileAt(cu, cv);
+            spaceKnown = found.HasValue;
+            if (!spaceKnown)
+                return result;
+
+            ZoneLootProfile profile = found.Value;
+            if (rng.NextFloat() >= profile.itemCacheChance)
+                return result; // este papel no deja caché aquí
+
+            int count = RollItemCount(ref rng); // ANTES de leer el perfil — ver la nota del reparto
+            for (int slot = 0; slot < count; slot++)
+            {
+                string name = RollItemName(ref rng, profile);
+                ClusterAround(ref rng, cu, cv, CacheClusterRadius, out float u, out float v);
+                result.Add(new Entry(slot, name, 1, u, v, rng.NextFloat() * 360f));
+            }
+            return result;
+        }
+
+        /// <summary>Igual que <see cref="RollItemsByStyle"/> para los transportables. Hoy sale vacío
+        /// siempre —`carryableZoneChance` está a cero en los siete papeles, por la prueba de escasez
+        /// del 2026-08-17, no por esta migración— pero el camino existe y es simétrico.</summary>
+        public static List<Entry> RollCarryablesByStyle(
+            long worldSeed, int cx, int cz,
+            Func<float, float, ZoneLootProfile?> profileAt, out bool spaceKnown)
+        {
+            var rng = new DeterministicRng(Hash(worldSeed, cx, cz, CarrySalt));
+            var result = new List<Entry>();
+            RollCentre(ref rng, out float cu, out float cv);
+            ZoneLootProfile? found = profileAt(cu, cv);
+            spaceKnown = found.HasValue;
+            if (!spaceKnown)
+                return result;
+
+            ZoneLootProfile profile = found.Value;
+            if (rng.NextFloat() >= profile.carryableZoneChance)
+                return result;
+
+            for (int slot = 0; slot < CarryablesPerZone; slot++)
+            {
+                string name = RollMaterialName(ref rng, profile);
+                ClusterAround(ref rng, cu, cv, ZoneSpreadRadius, out float u, out float v);
+                result.Add(new Entry(slot, name, 1, u, v, rng.NextFloat() * 360f));
+            }
+            return result;
+        }
+
         public static List<Entry> RollItems(long worldSeed, int cx, int cz, ZoneLootProfile profile)
         {
             var rng = new DeterministicRng(Hash(worldSeed, cx, cz, ItemSalt));

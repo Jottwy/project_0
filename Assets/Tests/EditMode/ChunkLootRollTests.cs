@@ -504,5 +504,99 @@ namespace BackroomsSurvival.Tests
             Assert.DoesNotThrow(() => ChunkLootRoll.IsWalkable(null, 0.5f, 0.5f));
             Assert.IsFalse(ChunkLootRoll.IsWalkable(null, 0.5f, 0.5f));
         }
+
+        // ── ADR-108 D4 — el reparto por PAPEL ───────────────────────────────────────────────
+
+        /// <summary>Un espacio que todavía no está montado NO es una caché vacía. Distinguirlo es
+        /// lo único que impide sellar la columna para siempre con el resultado de no haber podido
+        /// preguntar — el mismo fallo que la puerta de zona de WG2 evita esperando.</summary>
+        [Test]
+        public void RollByStyle_UnknownSpace_ReportsNotKnownInsteadOfEmpty()
+        {
+            var got = ChunkLootRoll.RollItemsByStyle(Seed, 3, 4, (u, v) => null, out bool known);
+            Assert.IsFalse(known, "sin geometría montada la respuesta es «no sé», no «no hay»");
+            Assert.AreEqual(0, got.Count);
+        }
+
+        /// <summary>Un papel con la caché a cero no deja nada, y sí se sabe: la columna se sella.
+        /// Es el caso de la escalera.</summary>
+        [Test]
+        public void RollByStyle_ProfileWithNoCache_IsKnownAndEmpty()
+        {
+            var barren = ZoneLootProfile.Default;
+            barren.itemCacheChance = 0f;
+            var got = ChunkLootRoll.RollItemsByStyle(Seed, 3, 4, (u, v) => barren, out bool known);
+            Assert.IsTrue(known);
+            Assert.AreEqual(0, got.Count);
+        }
+
+        /// <summary>El perfil se pide por el CENTRO de la caché, una sola vez, y ese centro cae
+        /// dentro del chunk. Sin esto el sorteo dependería del orden en que se coloquen los huecos.
+        /// </summary>
+        [Test]
+        public void RollByStyle_AsksForTheProfileOnce_AtACentreInsideTheChunk()
+        {
+            int calls = 0;
+            var seen = new List<(float u, float v)>();
+            ChunkLootRoll.RollItemsByStyle(Seed, 0, 0, (u, v) =>
+            {
+                calls++;
+                seen.Add((u, v));
+                return ZoneLootProfile.Default;
+            }, out _);
+            Assert.AreEqual(1, calls, "una pregunta por columna, no una por hueco");
+            Assert.That(seen[0].u, Is.InRange(0f, 1f));
+            Assert.That(seen[0].v, Is.InRange(0f, 1f));
+        }
+
+        /// <summary>Mismo chunk, mismo papel, mismo resultado — el sorteo sigue siendo determinista
+        /// aunque el centro se haya adelantado en el flujo de números.</summary>
+        [Test]
+        public void RollByStyle_IsDeterministic()
+        {
+            var rich = RichItemProfile;
+            var a = ChunkLootRoll.RollItemsByStyle(Seed, 11, -6, (u, v) => rich, out _);
+            var b = ChunkLootRoll.RollItemsByStyle(Seed, 11, -6, (u, v) => rich, out _);
+            Assert.AreEqual(a.Count, b.Count);
+            for (int i = 0; i < a.Count; i++)
+            {
+                Assert.AreEqual(a[i].Name, b[i].Name);
+                Assert.AreEqual(a[i].U, b[i].U);
+                Assert.AreEqual(a[i].V, b[i].V);
+            }
+        }
+
+        /// <summary>Los siete papeles existen y la densidad NO se ha tocado: todos llevan el
+        /// `itemCacheChance` de la prueba de escasez, salvo la escalera, que no deja nada.
+        /// Si alguien sube uno de estos números, que sea a sabiendas y no de rebote.</summary>
+        [Test]
+        public void DefaultStyleProfiles_KeepTodaysScarcity()
+        {
+            var t = ChunkLootRoll.DefaultStyleLootProfiles();
+            Assert.AreEqual(7, t.Length, "un perfil por style de fill::style_of (0-6)");
+            for (int i = 0; i < t.Length; i++)
+            {
+                Assert.AreEqual(0f, t[i].carryableZoneChance, $"papel {i}: los transportables siguen apagados");
+                float expected = i == 6 ? 0f : ZoneLootProfile.Default.itemCacheChance;
+                Assert.AreEqual(expected, t[i].itemCacheChance, 1e-6f, $"papel {i}: la densidad no cambia con esta tarea");
+            }
+        }
+
+        /// <summary>El campo nuevo llega VACÍO a un asset que ya estaba serializado, y eso es lo
+        /// normal, no un fallo: tiene que caer a los valores del código y no servir el perfil 0 a
+        /// los siete papeles, que anularía la decisión entera en silencio.</summary>
+        [Test]
+        public void ZoneLootTable_EmptyStyleProfiles_FallsBackToCodeDefaults()
+        {
+            var table = ScriptableObject.CreateInstance<ZoneLootTable>();
+            table.styleProfiles = System.Array.Empty<ZoneLootProfile>();
+            var code = ChunkLootRoll.DefaultStyleLootProfiles();
+            for (int i = 0; i < code.Length; i++)
+                Assert.AreEqual(code[i].materialWeight, table.ProfileForStyle(i).materialWeight,
+                                $"papel {i} tiene que salir del código mientras el asset no lo autore");
+            Assert.AreEqual(code[code.Length - 1].materialWeight,
+                            table.ProfileForStyle(99).materialWeight, "fuera de rango se clampa");
+            Object.DestroyImmediate(table);
+        }
     }
 }
