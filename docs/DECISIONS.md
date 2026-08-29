@@ -10448,3 +10448,126 @@ un objeto nuevo por llamada reconstruiría todas las variantes de tinte en cada 
 - **La deuda de fondo sigue en pie y esta enmienda la confirma:** no hay ni una métrica que mire la luz
   o el sonido. Lo de hoy se validó mirando y escuchando, que es el único instrumento que hay — y por
   eso el magenta se descubrió jugando y no en una suite de 1126 tests en verde.
+
+---
+
+## ADR-108 — WG3 sólo sabe contestar dos preguntas, y sus tres consumidores pendientes necesitan una tercera (2026-08-29) — PROPUESTA
+
+### El hallazgo que junta tres tareas en una
+
+La deuda de ADR-106 nombraba tres cosas sueltas —el robapieles, los facelings y el loot— como si
+fueran tres trabajos de tamaños distintos. **No lo son: les falta lo mismo.**
+
+WG3 sabe contestar **dos** preguntas, y son las únicas que necesita un jugador: *¿estorba aquí?* y
+*¿dónde está el suelo?*. Todo lo demás las necesita también, pero además necesita una familia entera
+que WG3 **no tiene**:
+
+| Lo que WG2 ofrece | En WG3 |
+|---|---|
+| `is_walkable_grid_gen(cache, pos, layer)` | ❌ |
+| `cell_of(pos)` · `cell_center(cell, y)` | ❌ |
+| `find_path(cache, layer, start, goal, …)` | ❌ |
+| `segment_is_clear[_for_body](…)` · `string_pull(…)` | ❌ |
+| `zone_kind` para las tablas de loot | ❌ |
+
+Y el detalle que corrige la estimación de ayer: **el robapieles no sólo colisiona, también navega**
+—`find_path`, `cell_of`, `segment_is_clear_for_body`, `string_pull`—, así que no era la tarea acotada
+que se dijo. Migrar su colisión y dejarle la navegación en la rejilla vieja daría una criatura que
+choca contra un mundo y planea sobre otro: **peor que no migrarla.**
+
+### D1 — La celda de navegación es la del RÁSTER, y no una nueva
+
+Medio metro. **No se inventa una tercera unidad**: WG3 ya tiene la geometría en cajas y la colisión en
+celdas de 0,5 m, y una malla de navegación con su propio tamaño sería una tercera representación que
+puede discrepar de las otras dos — exactamente el fallo de clase que ya costó una tarde cuando la
+huella de un peldaño era más fina que la celda.
+
+**Consecuencia que hay que decidir con ella:** `NAV_WINDOW_CELLS = 24` en WG2 son 24 × 2,5 = **60 m**
+de ventana de búsqueda. A 0,5 m serían 12, que no llega ni a cruzar una sala grande. **La ventana de
+WG3 se declara en METROS y se convierte a celdas**, no se hereda el número.
+
+### D2 — Y la celda lleva su COTA, porque si no las escaleras no se pueden navegar
+
+Ésta es la diferencia de fondo, y es la que hace que no valga portar `nav.rs` cambiando el tamaño.
+
+La celda de WG2 es 2D más un `layer` de 4 m, y funciona porque en aquel mundo **una XZ tiene un solo
+suelo**. En WG3 no: una escalera pisa la misma XZ a diez cotas, y un atrio tiene **suelo abajo y
+balcón arriba en la misma vertical** (ADR-104). Una celda 2D ahí no puede decir dónde estás.
+
+**Decisión: la celda de navegación es `(x, z, cota del suelo)`**, y las vecinas se enlazan si el salto
+entre sus cotas cabe en `MAX_WALK_STEP_CM`. Es lo mismo que ya decide si el jugador sube un peldaño,
+aplicado al grafo — así **una criatura sube una escalera exactamente cuando la subiría un jugador**, y
+no hay dos criterios de andabilidad que puedan separarse.
+
+### D3 — La andabilidad NO es una tabla nueva: sale de las primitivas que ya existen
+
+`floor_below` + `headroom_above_floor` + `blocked_standing_at` contestan «aquí cabe uno de pie» sin un
+solo dato nuevo. **Nada que hornear, nada que sincronizar, nada que pueda quedar desfasado** respecto
+a la colisión, porque es la misma fuente.
+
+El coste es tiempo de CPU en vez de memoria, y es el intercambio correcto: un grafo horneado por
+región es una copia más del mundo que mantener viva, y este proyecto ya tiene dos.
+
+### D4 — El loot se reparte por PAPEL, no por zona, y eso también es mejor que WG2
+
+`zone_kind` es de WG2 y no se sintetiza (misma razón que en ADR-107: traería la rejilla vieja por la
+puerta de atrás). El sustituto natural ya existe y ya viaja: **`style`, el papel del espacio**.
+
+Y no es un apaño: **un cuarto de servicio, un almacén, una nave y un callejón son exactamente las
+categorías que una tabla de loot quiere**, y son más finas que una zona de chunk. WG2 repartía por
+zona porque no sabía qué era cada sala; WG3 sí lo sabe.
+
+Consecuencia: `ZoneLootTable` pasa a indexarse por papel. Las tablas hay que reautorarlas, y eso es
+trabajo de contenido, no de código.
+
+### D5 — Lo que este ADR NO toca
+
+- **La IA.** No se cambia ni una decisión de comportamiento del robapieles ni de los facelings: se les
+  cambia el suelo bajo los pies, nada más. Si un faceling se comporta distinto después de esto, es un
+  fallo de la migración y no una mejora.
+- **`nav.rs` de WG2** se queda intacto. Esto añade el camino de WG3; retirar el otro es el ADR de la
+  retirada.
+- **El daño por caída** y qué pasa cuando una criatura cae por un agujero de ADR-104. Es regla de
+  juego.
+
+### Orden, y por qué
+
+1. **Navegación de WG3** (D1–D3), inerte: nadie la llama todavía.
+2. **El robapieles**, que es el consumidor más ruidoso y el que ya tiene su resolutor localizado.
+3. **Los facelings**, que son los mismos ganchos con otro consumidor.
+4. **El loot** (D4), que es cliente y contenido, y no depende de los tres anteriores.
+
+**El 4 se puede adelantar** si molesta más un mundo vacío que unas criaturas que atraviesan paredes.
+Hoy, con WG3, **no aparece un solo objeto**, y eso es más visible que cualquier otra cosa de esta lista.
+
+### Verificación
+
+- **(a)** Una criatura **sube una escalera de WG3**. Es la prueba de D2 y hoy es imposible.
+- **(b)** **Ningún camino atraviesa un macizo**: el grafo y la colisión dicen lo mismo, comprobado
+  sobre las mismas posiciones y no sobre dos muestreos distintos.
+- **(c)** Un camino **no salta entre el suelo de un atrio y su balcón** aunque compartan XZ.
+- **(d)** El coste por consulta se mide y se escribe. Sin grafo horneado, `find_path` paga cada
+  expansión contra el ráster, y **si eso no cabe en un tick hay que saberlo antes de enchufarlo**, no
+  después.
+- **(e)** Los `faceling_unwedged` **bajan**. Eran 606 en tres minutos contra la rejilla equivocada; si
+  no bajan, la migración no ha servido.
+- **(f)** Cero regresión con WG3 apagado.
+
+### Alternativas descartadas
+
+- **Portar `nav.rs` cambiando el tamaño de celda.** No basta: su celda es 2D con capa, y sin cota no
+  hay escaleras ni atrios (D2).
+- **Hornear una malla de navegación por región.** Una copia más del mundo que mantener sincronizada
+  con la geometría, en un proyecto que ya lleva dos mundos vivos.
+- **Migrar sólo la colisión del robapieles y dejarle la navegación en WG2.** Una criatura que choca
+  contra un mundo y planea sobre otro es peor que una sin migrar.
+- **Sintetizar un `zone_kind` para el loot.** Mismo argumento que ADR-107: es traer la rejilla vieja
+  disfrazada, y el papel ya dice más.
+
+### Consecuencias y deuda
+
+- **Es el ADR con más superficie de CPU de la serie.** Todo lo anterior se medía en geometría; esto se
+  mide en tiempo de tick, y la verificación (d) es la que puede tumbarlo.
+- Las **tablas de loot hay que reautorarlas** por papel. Es trabajo de Joel, no de código.
+- Cuando esto acabe, **lo único que quedará de WG2 en el juego será su generación en el servidor** — y
+  entonces sí se puede escribir el ADR de la retirada.
