@@ -224,6 +224,51 @@ pub fn fill_building(building: &RegionBuilding, manifest: &Wg3Manifest) -> Fille
     for plan in &building.storeys {
         out.absorb(fill(plan, manifest));
     }
+    out.carves.extend(atrium_carves(building));
+    out
+}
+
+/// ADR-104 D3 — **abrir el atrio por arriba, porque hasta aquí era un pozo SELLADO.**
+///
+/// El atrio ya medía dos plantas —eso lo hizo D1 y está verificado en el ráster— y aun así no se veía
+/// desde la planta alta: `segment::emit_side` emite las cuatro paredes de cada tramo a altura
+/// COMPLETA, cortadas sólo por sus bocas, así que los espacios de arriba que dan al vacío le plantan
+/// un muro de 3,08 m. Un atrio que sólo existe para quien está dentro no es un atrio: es una sala con
+/// el techo alto.
+///
+/// **Se resuelve restando, y por eso no cuesta wire.** `Wg3Carve` ya viaja desde ADR-101 y el cliente
+/// ya lo aplica antes de malla y colisión; un vano es exactamente esto. La caja va:
+///
+/// - **En horizontal**, la huella del atrio ensanchada [`CARVE_DEPTH_M`] — el mismo medio metro que usa
+///   la absorción, y por lo mismo: las paredes de arriba viven en el rectángulo del VECINO, pegadas a
+///   la frontera, así que con la huella exacta no se toca ninguna.
+/// - **En vertical**, desde la cota del suelo de la planta de arriba hasta el techo del atrio. Ni un
+///   centímetro por debajo: la losa de la planta alta cuelga en `[320, 332]`, y empezar más abajo se
+///   la llevaría por delante — sería abrir un agujero en el suelo del vecino en vez de tirar su pared.
+///
+/// # Todo borde es `Open`, y hoy no puede ser otra cosa
+///
+/// ADR-104 D3 declaraba dos bordes: `Balcony` con pretil y `Open` sin él. **Sólo `Open` se puede
+/// construir sin tocar el cable.** Un pretil es una caja NUEVA de altura reducida, y `Wg3Segment` no
+/// tiene dónde declararla: emitirla pediría campo nuevo, o sea bump de wire y ADR. Restar sabe hacerlo
+/// el sistema; añadir un muro bajo, no. Queda como enmienda, y mientras tanto el borde de un atrio es
+/// un sitio del que se cae — que es la mitad de lo que se pidió.
+fn atrium_carves(building: &RegionBuilding) -> Vec<Wg3Carve> {
+    let mut out = Vec::new();
+    let grow = (CARVE_DEPTH_M * CM_PER_M) as i32;
+
+    for plan in &building.storeys {
+        for s in plan.spaces.iter().filter(|s| is_atrium(s)) {
+            out.push(Wg3Carve {
+                x_cm: s.rect.min_x_cm - grow,
+                z_cm: s.rect.min_z_cm - grow,
+                size_x_cm: s.rect.width_cm() + 2 * grow,
+                size_z_cm: s.rect.depth_cm() + 2 * grow,
+                bottom_y_cm: s.floor_y_cm + STOREY_HEIGHT_CM,
+                top_y_cm: s.floor_y_cm + ATRIUM_CLEAR_CM,
+            });
+        }
+    }
     out
 }
 

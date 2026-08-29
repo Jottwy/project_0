@@ -7916,3 +7916,129 @@ fn an_atrium_is_two_storeys_tall_in_the_raster() {
     );
     println!("[atrio-ráster] {checked} atrios verificados a dos plantas");
 }
+
+/// ADR-104 verificación (c) — **desde la planta alta se VE el atrio**, o sea que el muro que lo
+/// sellaba ya no está.
+///
+/// Hasta D3 el atrio medía dos plantas y no se veía desde arriba, que es la peor combinación posible:
+/// todos los contadores en verde y la sensación pedida ausente. `segment::emit_side` emite las cuatro
+/// paredes de cada tramo a altura completa, así que cada espacio de la planta alta que daba al vacío
+/// le plantaba un muro de 3,08 m.
+///
+/// **Se mide en el anillo de FUERA del rectángulo del atrio**, que es donde vive la pared del vecino —
+/// dentro del atrio no hay nada que mirar, y eso ya lo dice el test de la altura. A la altura de los
+/// ojos de quien está en la planta alta.
+#[test]
+fn from_the_upper_storey_the_atrium_is_open() {
+    /// Cuánta pared se tolera en el anillo. No es cero: un atrio puede tener un pilar pegado a una
+    /// esquina, y el ráster es conservador. Antes de D3 esto es prácticamente 100 %.
+    const MAX_SOLID_FRACTION: f32 = 0.25;
+    /// A qué distancia por fuera del rectángulo se mira: dentro del medio metro que ensancha el vano.
+    const RING_OUT_M: f32 = 0.25;
+    const STEP_M: f32 = 0.5;
+    /// Altura de ojos sobre el suelo de la planta de arriba.
+    const EYE_M: f32 = 1.6;
+
+    let m = real_manifest();
+    let storey_m = plan::STOREY_HEIGHT_CM as f32 / 100.0;
+    let mut checked = 0usize;
+
+    for (rx, rz) in AUDIT_REGIONS {
+        let b = building_of(rx, rz);
+        let region = Wg3RegionCoord { x: rx, z: rz };
+        let (min_x, min_z, _, _) = region.bounds();
+        let served = Wg3ServedWorld::plan_region(&m, SERVED_SEED, region);
+
+        let side = REGION_CHUNKS as usize;
+        let base = chunk::Wg3ChunkCoord::containing(min_x + 1.0, min_z + 1.0);
+        let mut rasters = Vec::with_capacity(side * side);
+        for cz in 0..side {
+            for cx in 0..side {
+                let coord = chunk::Wg3ChunkCoord {
+                    x: base.x + cx as i32,
+                    z: base.z + cz as i32,
+                };
+                rasters.push(chunk::build_chunk_raster_with_carves(
+                    &m,
+                    &served.placements_touching_chunk(&m, coord),
+                    &served.segments_touching_chunk(coord),
+                    &served.carves_touching_chunk(coord),
+                    coord,
+                ));
+            }
+        }
+        let raster_at = |x: f32, z: f32| -> Option<&Wg3Raster> {
+            let coord = chunk::Wg3ChunkCoord::containing(x, z);
+            let (dx, dz) = (coord.x - base.x, coord.z - base.z);
+            if dx < 0 || dz < 0 || dx as usize >= side || dz as usize >= side {
+                return None;
+            }
+            rasters.get(dz as usize * side + dx as usize)
+        };
+
+        for storey in &b.storeys {
+            for s in &storey.spaces {
+                if !(s.void_above && s.role == SpaceRole::Hall) {
+                    continue;
+                }
+                let r = s.rect;
+                let eye = s.floor_y_cm as f32 / 100.0 + storey_m + EYE_M;
+                let (x0, x1) = (r.min_x_cm as f32 / 100.0, r.max_x_cm as f32 / 100.0);
+                let (z0, z1) = (r.min_z_cm as f32 / 100.0, r.max_z_cm as f32 / 100.0);
+
+                // El anillo: las cuatro líneas paralelas a los lados, por fuera.
+                let mut ring: Vec<(f32, f32)> = Vec::new();
+                let mut x = x0;
+                while x <= x1 {
+                    ring.push((x, z0 - RING_OUT_M));
+                    ring.push((x, z1 + RING_OUT_M));
+                    x += STEP_M;
+                }
+                let mut z = z0;
+                while z <= z1 {
+                    ring.push((x0 - RING_OUT_M, z));
+                    ring.push((x1 + RING_OUT_M, z));
+                    z += STEP_M;
+                }
+
+                let mut solid = 0usize;
+                let mut seen = 0usize;
+                for (px, pz) in ring {
+                    let Some(raster) = raster_at(px, pz) else {
+                        continue;
+                    };
+                    seen += 1;
+                    if raster.is_solid_at(px, eye, pz) {
+                        solid += 1;
+                    }
+                }
+                if seen == 0 {
+                    continue;
+                }
+
+                let frac = solid as f32 / seen as f32;
+                println!(
+                    "[atrio-abierto] ({rx},{rz}) nave de {:.0} m² — {:.0} % de macizo en el anillo \
+                     ({solid}/{seen})",
+                    r.area_m2(),
+                    frac * 100.0
+                );
+                assert!(
+                    frac <= MAX_SOLID_FRACTION,
+                    "({rx},{rz}) el atrio de {:.0} m² sigue TAPIADO por arriba: {:.0} % del anillo \
+                     es macizo a la altura de los ojos de la planta alta. Se ve como una sala normal \
+                     y el atrio sólo existe para quien ya está dentro",
+                    r.area_m2(),
+                    frac * 100.0
+                );
+                checked += 1;
+            }
+        }
+    }
+
+    assert!(
+        checked > 0,
+        "ningún atrio medido, el test no ha probado nada"
+    );
+    println!("[atrio-abierto] {checked} atrios abiertos por arriba");
+}
