@@ -894,12 +894,28 @@ impl RegionBuilding {
             if !sa.role.is_built() {
                 out.push(format!("hueco {i}: se sale a un VACÍO, que es una caída"));
             }
-            // Se sale DENTRO del espacio de arriba, no al lado. Si el hueco asoma fuera, lo que se
-            // perfora es forjado de nadie y el último peldaño da a la nada.
-            if !sa.rect.contains_rect(&w.rect) {
-                out.push(format!(
-                    "hueco {i}: la huella se sale del espacio de arriba al que dice llegar"
-                ));
+            // Se sale DENTRO de la planta de arriba, no al lado — y vale la UNIÓN de espacios,
+            // no hace falta que uno solo contenga el tiro (misma regla que `landing_over`): los
+            // espacios teselan los bounds, así que basta con que los bounds contengan la huella y
+            // que todo lo que la solapa sea construido, plano y no-escalera.
+            // `space_above` es contabilidad de cavado, no geometría: un split posterior en la
+            // planta de llegada puede dejar el índice en un trozo que ya no toca la boca sin que
+            // eso rompa nada — la salida la garantiza la UNIÓN, comprobada abajo.
+            let _ = sa;
+            match above.bounds_cm {
+                Some(b) if b.contains_rect(&w.rect) => {}
+                _ => out.push(format!(
+                    "hueco {i}: la huella se sale de la planta de arriba"
+                )),
+            }
+            for t in above.spaces.iter().filter(|t| t.rect.overlaps(&w.rect)) {
+                if !t.role.is_built() {
+                    out.push(format!("hueco {i}: se sale a un VACÍO, que es una caída"));
+                } else if t.rise_cm != 0 || t.role == SpaceRole::Stair {
+                    out.push(format!(
+                        "hueco {i}: se sale sobre un desnivel o dentro de otra escalera"
+                    ));
+                }
             }
         }
 
@@ -933,8 +949,10 @@ pub fn plan_building(
 
     for n in 1..storeys.max(1) {
         // La huella se estrecha (D3): si cada planta llenara la región, esto no sería un edificio
-        // sino losas de 150 × 150 apiladas, sin una silueta que mirar.
-        let Some(up) = upper_bounds(&out[n - 1], seed) else {
+        // sino losas de 150 × 150 apiladas, sin una silueta que mirar. Y cuando el estrechamiento
+        // ya no da para planta completa, sigue una TORRE de huella constante (VERTICALITY-ROADMAP
+        // D1): zigurat abajo, torre arriba.
+        let Some(up) = upper_bounds(&out[n - 1], seed).or_else(|| tower_bounds(&out[n - 1])) else {
             break;
         };
         // **SIN PUERTAS DE JUNTA ARRIBA, y es una decisión.** El contrato de junta de ADR-096 se
@@ -969,15 +987,45 @@ pub fn plan_building(
         // que se dibuja, se ilumina, cuesta y no se pisa, y como todo lo demás sale bien, ningún
         // contador se queja.
         //
-        // El hueco se abre en la planta de ABAJO, así que hay que tenerla a mano y mutable. Y los
-        // aterrizajes de los pozos que ya llegan a esa planta van protegidos: partirlos les rompería
-        // el rect a pozos ya cavados (ver `dig_wells`).
-        let landings: Vec<usize> = wells
+        // El hueco se abre en la planta de ABAJO, así que hay que tenerla a mano y mutable. Y las
+        // bocas de los pozos que ya llegan a esa planta van protegidas con su margen: una franja de
+        // escalera nueva encima de una boca vieja rompe la salida del pozo de abajo (ver
+        // `dig_wells`).
+        let landings: Vec<PlanRect> = wells
             .iter()
             .filter(|w: &&StairWell| w.storey_below + 1 == n - 1)
-            .map(|w| w.space_above)
+            .map(|w| PlanRect {
+                min_x_cm: w.rect.min_x_cm - STAIR_MARGIN_CM,
+                min_z_cm: w.rect.min_z_cm - STAIR_MARGIN_CM,
+                max_x_cm: w.rect.max_x_cm + STAIR_MARGIN_CM,
+                max_z_cm: w.rect.max_z_cm + STAIR_MARGIN_CM,
+            })
             .collect();
-        let dug = dig_wells(&mut out[n - 1], &plan, n - 1, seed, &landings);
+        let mut plan = plan;
+        let mut dug = dig_wells(&mut out[n - 1], &plan, n - 1, seed, &landings);
+        // **LA TORRE ES UN REINTENTO, no una rama** (VERTICALITY-ROADMAP D1). Medido antes de
+        // escribirla: con la torre sólo como sustituto de `upper_bounds` la distribución de 49
+        // regiones no movió ni una — lo que rompe la subida casi nunca es que no quede huella,
+        // es que el pozo no encaja en la planta que salió. Así que cuando no encaja, se planifica
+        // otra vez con la huella de torre, anclada sobre el espacio más grande de abajo, que es
+        // donde un aterrizaje tiene más sitio para caer. `dig_wells` sin resultado no mutó nada,
+        // así que reintentar es legal.
+        if dug.is_empty() {
+            if let Some(tb) = tower_bounds(&out[n - 1]) {
+                let retry = plan_storey(
+                    storey_seed(seed, n),
+                    tb,
+                    &[],
+                    n as i32 * STOREY_HEIGHT_CM,
+                    false,
+                    &atria,
+                );
+                dug = dig_wells(&mut out[n - 1], &retry, n - 1, seed, &landings);
+                if !dug.is_empty() {
+                    plan = retry;
+                }
+            }
+        }
         if dug.is_empty() {
             break;
         }
@@ -1055,6 +1103,88 @@ fn upper_bounds(below: &RegionPlan, seed: i32) -> Option<(f32, f32, f32, f32)> {
     ))
 }
 
+/// Lado de la TORRE (VERTICALITY-ROADMAP D1, decidido 2026-08-29): cuando el estrechamiento de
+/// ADR-102 D3 ya no deja planta completa, el edificio sigue subiendo con un núcleo de huella
+/// constante. Dieciocho metros y no menos, por la escalera: el tiro son 9 m (15 tiras × 60 cm) más
+/// [`GOOD_WALL_CM`] de sobrante, y los espacios de la torre tienen que poder ser candidatos a
+/// escalera para la planta siguiente — una torre en la que no cabe escalera es la última planta.
+/// Medido también a 26 m: la distribución de plantas apenas se mueve ({3:9,4:27,5:10,6:3} contra
+/// {3:10,4:29,5:8,6:2}), porque el cuello no es la huella sino que arriba escaseen salas con tiro de
+/// 12,6 m — pasar de 6 plantas pide escalera de ida y vuelta (media huella), no torre más gorda.
+const TOWER_SIDE_CM: i32 = 1800;
+
+/// La huella de una planta de torre: un cuadrado de [`TOWER_SIDE_CM`] centrado en el espacio
+/// elegible más grande de la planta de abajo, clampado a sus bounds.
+///
+/// **Sobre el espacio más grande y no sorteado**: la escalera de subida tiene que salir de un
+/// espacio de abajo Y aterrizar dentro de la torre, así que anclarla donde más sitio hay es lo que
+/// hace probable que el pozo encaje. Si los bounds de abajo son más pequeños que la torre, la torre
+/// se queda con ellos: la huella deja de encoger, que es el rasgo que la define frente a D3.
+fn tower_bounds(below: &RegionPlan) -> Option<(f32, f32, f32, f32)> {
+    let region = below.bounds_cm?;
+    let anchor = below
+        .spaces
+        .iter()
+        .filter(|s| s.role.is_built() && !s.role.is_circulation() && s.rise_cm == 0)
+        .max_by_key(|s| (s.rect.area_m2() as i64, s.rect.min_x_cm, s.rect.min_z_cm))?
+        .rect;
+
+    let side_x = TOWER_SIDE_CM.min(region.width_cm());
+    let side_z = TOWER_SIDE_CM.min(region.depth_cm());
+    // Que siga cabiendo un edificio, no un poste.
+    if side_x < MIN_SIDE_CM * 2 || side_z < MIN_SIDE_CM * 2 {
+        return None;
+    }
+    let (ax, az) = anchor.centre_m();
+    let min_x =
+        ((ax * CM_PER_M) as i32 - side_x / 2).clamp(region.min_x_cm, region.max_x_cm - side_x);
+    let min_z =
+        ((az * CM_PER_M) as i32 - side_z / 2).clamp(region.min_z_cm, region.max_z_cm - side_z);
+    Some((
+        min_x as f32 / CM_PER_M,
+        min_z as f32 / CM_PER_M,
+        (min_x + side_x) as f32 / CM_PER_M,
+        (min_z + side_z) as f32 / CM_PER_M,
+    ))
+}
+
+/// ¿Dónde aterriza este tiro en la planta de arriba? `None` = no se puede salir ahí.
+///
+/// **La unión de espacios vale como aterrizaje** (VERTICALITY-ROADMAP D1, medido antes de cambiar):
+/// exigir que UNA sola sala contuviera el tiro entero con margen mataba decenas de candidatos por
+/// planta —92 en la baja de (0,0)— y era la mitad de por qué el edificio se quedaba en 3-4 plantas.
+/// Los espacios de una planta TESELAN sus bounds, así que «la unión cubre el tiro» es exactamente
+/// «los bounds lo contienen y todo lo que solapa es construido, plano y no-escalera». Salir de una
+/// escalera a un pasillo es arquitectura normal; la pared que cruce la boca la recorta `fill`
+/// (`well_mouth_carves`), que es quien pone y quita paredes.
+fn landing_over(above: &RegionPlan, stair: &PlanRect) -> Option<usize> {
+    let grown = PlanRect {
+        min_x_cm: stair.min_x_cm - STAIR_MARGIN_CM,
+        min_z_cm: stair.min_z_cm - STAIR_MARGIN_CM,
+        max_x_cm: stair.max_x_cm + STAIR_MARGIN_CM,
+        max_z_cm: stair.max_z_cm + STAIR_MARGIN_CM,
+    };
+    if !above.bounds_cm?.contains_rect(&grown) {
+        return None;
+    }
+    let mut best: Option<(i64, usize)> = None;
+    for (idx, t) in above.spaces.iter().enumerate() {
+        if !t.rect.overlaps(&grown) {
+            continue;
+        }
+        if !t.role.is_built() || t.rise_cm != 0 || t.role == SpaceRole::Stair {
+            return None;
+        }
+        let ox = (t.rect.max_x_cm.min(grown.max_x_cm) - t.rect.min_x_cm.max(grown.min_x_cm)) as i64;
+        let oz = (t.rect.max_z_cm.min(grown.max_z_cm) - t.rect.min_z_cm.max(grown.min_z_cm)) as i64;
+        let area = ox.max(0) * oz.max(0);
+        if best.is_none_or(|(b, _)| area > b) {
+            best = Some((area, idx));
+        }
+    }
+    best.map(|(_, idx)| idx)
+}
+
 /// Convierte espacios de la planta de abajo en huecos de escalera. Vacío = no se puede subir.
 ///
 /// Cada candidato tiene que cumplir cinco cosas a la vez, y las cinco por una razón distinta:
@@ -1072,7 +1202,7 @@ fn dig_wells(
     above: &RegionPlan,
     storey_below: usize,
     seed: i32,
-    landings: &[usize],
+    landings: &[PlanRect],
 ) -> Vec<StairWell> {
     let steps = storey_steps();
     let run_cm = steps * STAIR_TREAD_CM;
@@ -1089,17 +1219,9 @@ fn dig_wells(
     }
 
     let mut candidates: Vec<(u64, usize, usize, u8)> = Vec::new();
+    let (mut k_run, mut k_band, mut k_land, mut k_door) = (0u32, 0u32, 0u32, 0u32);
     for (i, s) in below.spaces.iter().enumerate() {
         if !s.role.is_built() || s.role.is_circulation() || s.rise_cm != 0 {
-            continue;
-        }
-        // **UN ATERRIZAJE NO SE PARTE, y esto sólo muerde con tres plantas o más.** `split_for_stair`
-        // encoge el rect del espacio elegido, y si ese espacio es el `space_above` de un pozo ya
-        // cavado desde la planta de abajo, la huella de aquel pozo se queda fuera de su aterrizaje:
-        // sales de una escalera dentro de la franja de la siguiente. Con dos plantas nunca hay
-        // segunda pasada, así que el barrido de 49 regiones a `STOREYS = 2` no podía verlo — salió
-        // en `(-1,-3)` al servir diez.
-        if landings.contains(&i) {
             continue;
         }
         // **POR CADA PUERTA, no sólo por la primera.** El lado por el que se entra fija el eje del
@@ -1125,6 +1247,7 @@ fn dig_wells(
             // Lo que sobra tiene que dar para un vestíbulo con su puerta, no para una sala entera:
             // exigirle [`MIN_SIDE_CM`] descartaba la mitad de los sitios donde cabe una escalera.
             if run < run_cm + GOOD_WALL_CM || across < STAIR_WIDTH_CM {
+                k_run += 1;
                 continue;
             }
             // Y ningún hueco puede caer DENTRO de la franja que se va a volver escalera: ahí la cota sube
@@ -1133,21 +1256,28 @@ fn dig_wells(
                 .iter()
                 .any(|&(x, z)| band_of(&s.rect, side, run_cm).contains_point(x, z))
             {
+                k_band += 1;
                 continue;
             }
             // El sitio al que se sale, y contra la franja RECORTADA: lo que tiene que caber dentro de un
             // espacio de arriba es el hueco, no la sala entera de la que se recorta.
             let (stair, _) = stair_and_flank(&s.rect, side, run_cm, seed);
+            // **UNA BANDA NUEVA NO PISA UNA BOCA VIEJA, y esto sólo muerde con tres plantas o
+            // más.** La franja que se va a volver escalera no puede solapar el aterrizaje de un
+            // pozo que ya llega a esta planta: sales de una escalera dentro de la franja de la
+            // siguiente. Con dos plantas nunca hay segunda pasada, así que el barrido de 49
+            // regiones a `STOREYS = 2` no podía verlo — salió en `(-1,-3)` al servir diez. Se
+            // comprueba la GEOMETRÍA y no el índice del espacio: con el aterrizaje repartido en
+            // varios espacios, partir uno lejos de la boca es legal y bloquearlo entero sobraba.
+            if landings.iter().any(|l| l.overlaps(&stair)) {
+                continue;
+            }
             // Y el sitio al que se sale tiene que ser PLANO. Un espacio hundido de la planta de arriba
             // baja sus peldaños de 12 en 12 justo dentro del pozo: la escalera sube sus trece perfectos y
             // los ocho de arriba se quedan con menos de un metro de techo, colgando de la terraza de
             // encima. Salió en `(1,0)` como una escalera que se andaba hasta la mitad.
-            let Some(j) = above.spaces.iter().position(|t| {
-                t.role.is_built()
-                    && t.rise_cm == 0
-                    && t.role != SpaceRole::Stair
-                    && t.rect.shrunk(STAIR_MARGIN_CM).contains_rect(&stair)
-            }) else {
+            let Some(j) = landing_over(above, &stair) else {
+                k_land += 1;
                 continue;
             };
             // Sorteo por posición, que es lo que hace que el orden no dependa del orden del vector.
@@ -1159,8 +1289,14 @@ fn dig_wells(
     }
 
     if std::env::var("WG3_WELL_DEBUG").is_ok() {
+        for (i, s) in below.spaces.iter().enumerate() {
+            let ok = s.role.is_built() && !s.role.is_circulation() && s.rise_cm == 0;
+            if ok && doors[i].is_empty() {
+                k_door += 1;
+            }
+        }
         eprintln!(
-            "[well] {} espacios, {} candidatas",
+            "[well] {} espacios, {} candidatas — muertes: tiro {k_run}, puerta-en-banda {k_band}, aterrizaje {k_land}, sin-puerta {k_door}",
             below.spaces.len(),
             candidates.len()
         );

@@ -5915,10 +5915,18 @@ fn every_upper_storey_has_a_stair_that_lands_somewhere() {
             assert_eq!(plan::STOREY_HEIGHT_CM, below.rise_cm);
             assert_eq!(plan::STOREY_RISE_CM, below.rise_step_cm);
             assert!(above.role.is_built());
-            assert!(
-                above.rect.contains_rect(&w.rect),
-                "({rx},{rz}): el hueco asoma fuera del espacio de arriba"
-            );
+            // Regla de unión (VERTICALITY-ROADMAP D1): TODO lo que solapa la huella arriba es
+            // construido y plano — ya no se exige que un solo espacio la contenga.
+            for t in b.storeys[w.storey_below + 1]
+                .spaces
+                .iter()
+                .filter(|t| t.rect.overlaps(&w.rect))
+            {
+                assert!(
+                    t.role.is_built() && t.rise_cm == 0,
+                    "({rx},{rz}): la boca del hueco pisa vacío o desnivel"
+                );
+            }
             // Y que la escalera QUEPA: los peldaños se alejan de la puerta, así que el tiro corre
             // perpendicular a su pared. Sin esto el plan puede pedir quince tiras en tres metros y
             // el relleno las construye de 21 cm de huella.
@@ -6000,6 +6008,21 @@ fn probe_ten_storeys_cost() {
         let t1 = std::time::Instant::now();
         let filled = fill::fill_building(&b, &m);
         let t_fill = t1.elapsed();
+        let top = b.storeys.last().unwrap();
+        let mut sizes: Vec<(i32, i32, &str)> = top
+            .spaces
+            .iter()
+            .filter(|s| s.role.is_built() && !s.role.is_circulation() && s.rise_cm == 0)
+            .map(|s| {
+                let (w, d) = (s.rect.width_cm(), s.rect.depth_cm());
+                (w.max(d), w.min(d), s.role.name())
+            })
+            .collect();
+        sizes.sort_unstable_by_key(|&(l, ..)| std::cmp::Reverse(l));
+        println!(
+            "[wg3] ({rx},{rz}) última planta, mayores elegibles: {:?}",
+            &sizes[..sizes.len().min(6)]
+        );
         println!(
             "[wg3] ({rx},{rz}) plantas {} pozos {} cajas {} — plan {:?} fill {:?}",
             b.storeys.len(),

@@ -235,8 +235,40 @@ pub fn fill_building(building: &RegionBuilding, manifest: &Wg3Manifest) -> Fille
     }
     out.carves.extend(atrium_carves(building));
     out.carves.extend(hole_carves(building));
+    out.carves.extend(well_mouth_carves(building));
     out.solids.extend(atrium_solids(building));
     out
+}
+
+/// Altura libre de la boca de un pozo, desde el suelo de la planta de llegada.
+const WELL_MOUTH_CLEAR_CM: i32 = 240;
+
+/// VERTICALITY-ROADMAP D1 — **la pared que cruza la boca de un pozo se recorta.**
+///
+/// Con el aterrizaje repartido entre varios espacios (`landing_over`), la frontera entre dos de
+/// ellos puede cruzar por encima del tiro — y esa frontera es una pared que `fill` emite sin saber
+/// que debajo hay una escalera. El recorte va DENTRO de la huella, quince centímetros por dentro,
+/// para que las paredes que BORDEAN el pozo sigan enteras: lo que se abre es el paso sobre la boca,
+/// no una barandilla. El suelo no se toca (el vano del forjado ya lo puso `carve_for_well`), así que
+/// el recorte arranca un centímetro por encima de la cota de llegada.
+fn well_mouth_carves(building: &RegionBuilding) -> Vec<Wg3Carve> {
+    const INSET_CM: i32 = 15;
+    building
+        .wells
+        .iter()
+        .filter(|w| w.rect.width_cm() > 2 * INSET_CM && w.rect.depth_cm() > 2 * INSET_CM)
+        .map(|w| {
+            let floor = (w.storey_below as i32 + 1) * STOREY_HEIGHT_CM;
+            Wg3Carve {
+                x_cm: w.rect.min_x_cm + INSET_CM,
+                z_cm: w.rect.min_z_cm + INSET_CM,
+                size_x_cm: w.rect.width_cm() - 2 * INSET_CM,
+                size_z_cm: w.rect.depth_cm() - 2 * INSET_CM,
+                bottom_y_cm: floor + 1,
+                top_y_cm: floor + WELL_MOUTH_CLEAR_CM,
+            }
+        })
+        .collect()
 }
 
 /// Lado de un agujero de forjado, en centímetros.
