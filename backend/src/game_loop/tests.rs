@@ -8151,7 +8151,7 @@ async fn adult_population_marks_species_relay_only_and_only_wakes_in_zone_office
     driver.density_scale = 8.0; // v1 density is low; scale up so the office reliably populates
     let (x0, x1, z0, z1) = chunk_bounds((ox, oz));
     let center = Vec3::new((x0 + x1) / 2.0, stand_on(0), (z0 + z1) / 2.0);
-    driver.sync_population(&mut net, center, 0.1);
+    driver.sync_population(&mut net, center, 0.1, None);
 
     assert!(
         !driver.movers.is_empty(),
@@ -8651,7 +8651,7 @@ async fn child_pack_population_marks_species_relay_only_and_only_wakes_in_zone_o
     // happened to land near the player — this places the player within `FACELING_CHILD_ACTIVATE_
     // RADIUS` (90 m) of the anchor but far enough that no point in the chunk is within 15 m of it.
     let watcher = Vec3::new(center.x, center.y, center.z + 70.0);
-    driver.sync_population(&mut net, watcher, 0.1);
+    driver.sync_population(&mut net, watcher, 0.1, None);
 
     assert!(
         !driver.packs.is_empty(),
@@ -10083,7 +10083,12 @@ async fn deactivating_a_pack_returns_carried_loot() {
     driver.grant_loot(thief, 555, 2);
 
     // Everybody far away: the reconcile retires the whole pack.
-    driver.sync_population(&mut net, Vec3::new(-99999.0, stand_on(0), -99999.0), 99.0);
+    driver.sync_population(
+        &mut net,
+        Vec3::new(-99999.0, stand_on(0), -99999.0),
+        99.0,
+        None,
+    );
 
     // Enmienda 5: the reconcile can also WAKE packs near wherever the player now is, so the
     // roster is not necessarily empty — what must be gone is THIS pack.

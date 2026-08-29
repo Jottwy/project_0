@@ -9255,3 +9255,61 @@ fn creature_spawn_height_comes_from_the_raster_not_from_the_wg2_layer() {
         "PROBE spawn: sorteados={sorteados} corregidos={corregidos}          sin_sitio={sin_sitio} peor_correccion={peor_correccion:.2}m"
     );
 }
+
+/// ADR-109 D5 — el reparto de facelings con WG3: ¿queda mundo poblado?
+///
+/// La concentración en oficinas pasa de decidirse por CHUNK (WG2: una zona de 50 m) a decidirse por
+/// HUECO, con el papel del espacio donde cae. La pregunta que hay que contestar antes de dar esto por
+/// bueno no es si el código corre: es si la población sobrevive al cambio de resolución, porque un
+/// hueco que cae en el vacío del plan ya no se queda con nadie.
+#[test]
+fn probe_faceling_draw_under_wg3() {
+    use crate::world::faceling_spawn::{draw_adults_into, wg3_keeps_position};
+    use crate::world::wg3::world::Wg3WorldCache;
+
+    let m = real_manifest();
+    let mut worlds = Wg3WorldCache::default();
+
+    let mut wg2_total = 0usize;
+    let mut wg3_sorteados = 0usize;
+    let mut wg3_sin_espacio = 0usize;
+    let mut wg3_oficina = 0usize;
+    let mut wg3_quedan = 0usize;
+    let mut drawn = Vec::new();
+
+    for cx in 0..6 {
+        for cz in 0..6 {
+            draw_adults_into(SERVED_SEED, cx, cz, 0, 8.0, false, &mut drawn);
+            wg2_total += drawn.len();
+
+            draw_adults_into(SERVED_SEED, cx, cz, 0, 8.0, true, &mut drawn);
+            for (index, pos) in drawn.iter().copied().enumerate() {
+                wg3_sorteados += 1;
+                let coord = crate::world::wg3::chunk::Wg3ChunkCoord::containing(pos[0], pos[2]);
+                let region = worlds.region_for(&m, SERVED_SEED, coord);
+                let style = region.lowest_space_at_xz(pos[0], pos[2]).map(|s| s.style);
+                match style {
+                    None => wg3_sin_espacio += 1,
+                    Some(0) => wg3_oficina += 1,
+                    Some(_) => {}
+                }
+                if wg3_keeps_position(SERVED_SEED, cx, cz, 0, index, style) {
+                    wg3_quedan += 1;
+                }
+            }
+        }
+    }
+
+    println!(
+        "PROBE reparto: wg2={wg2_total} wg3_sorteados={wg3_sorteados} sin_espacio={wg3_sin_espacio}          oficina={wg3_oficina} quedan={wg3_quedan}"
+    );
+    assert!(wg3_quedan > 0, "el reparto de WG3 no deja a nadie en pie");
+    // LA POBLACIÓN NO CAMBIA AL MUDARSE. Es lo que justifica `FACELING_WG3_OFFICE_KEEP`, y sin esta
+    // aserción ese número se puede tocar sin enterarse de que multiplica los facelings del mundo.
+    let baja = wg2_total as f32 * 0.75;
+    let alta = wg2_total as f32 * 1.25;
+    assert!(
+        (wg3_quedan as f32) >= baja && (wg3_quedan as f32) <= alta,
+        "el reparto de WG3 deja {wg3_quedan} donde WG2 dejaba {wg2_total}: fuera de la banda          [{baja:.0}, {alta:.0}]. Si el cambio es a propósito, recalibra FACELING_WG3_OFFICE_KEEP."
+    );
+}

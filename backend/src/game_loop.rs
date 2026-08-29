@@ -1643,7 +1643,20 @@ pub async fn run(
                     }
                 }
 
-                adult_driver.sync_population(&mut net, player.position, entity_dt);
+                let spawn_seed = net.world_seed;
+                adult_driver.sync_population(
+                    &mut net,
+                    player.position,
+                    entity_dt,
+                    // ADR-109 D5 — el reparto pregunta a WG3 qué sitio es cada hueco que sortea.
+                    wg3.manifest().filter(|_| wg3.is_enabled()).map(|manifest| {
+                        crate::game_loop::faceling::Wg3SpawnCtx {
+                            worlds: &mut wg3_world,
+                            manifest,
+                            world_seed: spawn_seed,
+                        }
+                    }),
+                );
                 // ADR-094 E1c: the adults' own blows, copied out for the same reason the
                 // robapieles' are — the driver has to be free again before the routing loop below.
                 let adult_attacks: Vec<_> = adult_driver
@@ -1652,7 +1665,20 @@ pub async fn run(
                 // ADR-094 E2a/E2b/E2c: same shape, the child packs — roam, cerco by roles, and
                 // the `Press` knockdown. The theft the same role owes (point 4) is not here: it
                 // needs `0x55/0x56` and its own wire bump.
-                child_driver.sync_population(&mut net, player.position, entity_dt);
+                let spawn_seed = net.world_seed;
+                child_driver.sync_population(
+                    &mut net,
+                    player.position,
+                    entity_dt,
+                    // ADR-109 D5 — el reparto pregunta a WG3 qué sitio es cada hueco que sortea.
+                    wg3.manifest().filter(|_| wg3.is_enabled()).map(|manifest| {
+                        crate::game_loop::faceling::Wg3SpawnCtx {
+                            worlds: &mut wg3_world,
+                            manifest,
+                            world_seed: spawn_seed,
+                        }
+                    }),
+                );
                 let child_attacks: Vec<_> = child_driver
                     .step(&mut net, entity_dt, player.position, player.rotation)
                     .to_vec();

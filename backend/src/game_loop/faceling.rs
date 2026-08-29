@@ -325,6 +325,8 @@ impl AdultDriver {
         net: &mut NetworkManager,
         host_player_pos: Vec3,
         dt: f32,
+        // ADR-109 D5 — con qué se decide dónde nacen. `None` es WG2.
+        mut wg3: Option<Wg3SpawnCtx<'_>>,
     ) {
         self.population_sync_in -= dt;
         if self.population_sync_in > 0.0 {
@@ -389,6 +391,7 @@ impl AdultDriver {
                         cz,
                         layer,
                         self.density_scale,
+                        wg3.is_some(),
                         &mut drawn,
                     );
                     if drawn.is_empty() {
@@ -409,10 +412,34 @@ impl AdultDriver {
                     }) {
                         continue;
                     }
-                    for pos in drawn.iter().copied() {
+                    for (index, pos) in drawn.iter().copied().enumerate() {
                         if self.movers.len() >= FACELING_ACTIVE_CAP {
                             break;
                         }
+                        // ADR-109 D5 — el hueco se queda o no según el PAPEL del espacio donde cae,
+                        // y su cota sale de ese espacio. Antes lo decidía la zona del chunk entero.
+                        let pos = match &mut wg3 {
+                            Some(ctx) => {
+                                let Some(p) = wg3_spawn_point(ctx, cx, cz, layer, index, pos)
+                                else {
+                                    continue;
+                                };
+                                // Y se precalienta el ráster AHÍ: sin esto `standable_near` no tiene
+                                // nada que mirar y el sitio se queda sin comprobar.
+                                if let Some(cache) = self.wg3.as_mut() {
+                                    let v = Vec3::from_array(p);
+                                    cache.prewarm_for_move(
+                                        ctx.worlds,
+                                        ctx.manifest,
+                                        ctx.world_seed,
+                                        v,
+                                        v,
+                                    );
+                                }
+                                p
+                            }
+                            None => pos,
+                        };
                         let id = net.spawn_faceling("Faceling", pos, 1, self.wg3.as_ref());
                         let spawn_pos = net
                             .peers
@@ -1704,6 +1731,60 @@ const FACELING_REPLAN_STRIDE: u64 = 11;
 /// `resolve_move` mide el cuerpo hacia abajo desde ellas, así que pinar al suelo es sumarle esto.
 pub(super) const BODY_TOP_M: f32 = 1.8;
 
+/// ADR-109 D5 — lo que el REPARTO necesita de WG3 para decidir dónde nace una criatura.
+///
+/// Va por parámetro y no dentro del driver por el mismo préstamo que separa `Wg3WorldCache` de
+/// `Wg3CollisionCache`: planificar una región pide la caché en MUTABLE, y el driver ya tiene la suya
+/// de colisión prestada mientras camina. `None` es WG2 y deja el reparto exactamente como estaba.
+pub(super) struct Wg3SpawnCtx<'a> {
+    pub worlds: &'a mut crate::world::wg3::world::Wg3WorldCache,
+    pub manifest: &'a crate::world::wg3::manifest::Wg3Manifest,
+    pub world_seed: u64,
+}
+
+/// El sitio donde nace un candidato del sorteo, con la geometría delante: `None` cuando ese hueco
+/// no se queda —el papel de su espacio no lo concentra, o no hay espacio ninguno ahí.
+///
+/// **La cota sale del ESPACIO, no de la capa.** Es la mitad del arreglo: el sorteo es puro por
+/// semilla y no puede saber a qué altura está el suelo, así que devolvía la de una capa de 4 m.
+fn wg3_spawn_point(
+    ctx: &mut Wg3SpawnCtx<'_>,
+    cx: i32,
+    cz: i32,
+    layer: u8,
+    index: usize,
+    pos: [f32; 3],
+) -> Option<[f32; 3]> {
+    let coord = crate::world::wg3::chunk::Wg3ChunkCoord::containing(pos[0], pos[2]);
+    let region = ctx.worlds.region_for(ctx.manifest, ctx.world_seed, coord);
+    // Copiados ANTES de soltar el préstamo: `region` sale de la caché en mutable y no puede seguir
+    // viva mientras se precalienta el ráster.
+    let space = region
+        .lowest_space_at_xz(pos[0], pos[2])
+        .map(|s| (s.style, s.floor_y_cm));
+    let (style, floor_y_cm) = space?;
+    if !crate::world::faceling_spawn::wg3_keeps_position(
+        ctx.world_seed,
+        cx,
+        cz,
+        layer,
+        index,
+        Some(style),
+    ) {
+        return None;
+    }
+    Some([pos[0], floor_y_cm as f32 / 100.0 + BODY_TOP_M, pos[2]])
+}
+
+/// Sólo la cota: el suelo del espacio de más abajo en esa vertical, sin decidir si el hueco se queda.
+/// Lo usan los miembros de una manada, cuya pertenencia ya se decidió con el hueco de cabeza.
+fn wg3_floor_point(ctx: &mut Wg3SpawnCtx<'_>, pos: [f32; 3]) -> Option<[f32; 3]> {
+    let coord = crate::world::wg3::chunk::Wg3ChunkCoord::containing(pos[0], pos[2]);
+    let region = ctx.worlds.region_for(ctx.manifest, ctx.world_seed, coord);
+    let floor_y_cm = region.lowest_space_at_xz(pos[0], pos[2])?.floor_y_cm;
+    Some([pos[0], floor_y_cm as f32 / 100.0 + BODY_TOP_M, pos[2]])
+}
+
 const FACELING_WAYPOINT_ARRIVE: f32 = 1.25;
 /// El mismo, en WG3. **Y por cuarta vez en esta migración: el número venía en CELDAS.**
 ///
@@ -2011,6 +2092,8 @@ impl ChildDriver {
         net: &mut NetworkManager,
         host_player_pos: Vec3,
         dt: f32,
+        // ADR-109 D5 — con qué se decide dónde nacen. `None` es WG2.
+        mut wg3: Option<Wg3SpawnCtx<'_>>,
     ) {
         self.population_sync_in -= dt;
         if self.population_sync_in > 0.0 {
@@ -2083,6 +2166,7 @@ impl ChildDriver {
                         cz,
                         layer,
                         self.density_scale,
+                        wg3.is_some(),
                         &mut drawn,
                     );
                     if drawn.is_empty() {
@@ -2110,8 +2194,40 @@ impl ChildDriver {
                     }) {
                         continue;
                     }
+                    // ADR-109 D5 — LA MANADA SE DECIDE ENTERA, no miembro a miembro. Con el filtro
+                    // por hueco de los adultos, una manada de 3-8 se quedaría en uno o dos y dejaría
+                    // de ser una manada: los roles de ADR-094 (cerco, presa, robo) no existen sin
+                    // ella. Así que la tirada de papel se hace UNA vez, con el hueco de cabeza, y
+                    // luego cada miembro sólo se pega al suelo de su espacio.
+                    if let Some(ctx) = &mut wg3 {
+                        let cabeza = drawn.first().copied().unwrap_or([0.0; 3]);
+                        if wg3_spawn_point(ctx, cx, cz, layer, 0, cabeza).is_none() {
+                            continue;
+                        }
+                    }
                     let mut members = Vec::with_capacity(drawn.len());
                     for pos in drawn.iter().copied() {
+                        let pos = match &mut wg3 {
+                            Some(ctx) => {
+                                // Aquí ya no se decide si se queda: sólo dónde. Un miembro cuyo hueco
+                                // cae en el vacío del plan se descarta, la manada sigue.
+                                let Some(p) = wg3_floor_point(ctx, pos) else {
+                                    continue;
+                                };
+                                if let Some(cache) = self.wg3.as_mut() {
+                                    let v = Vec3::from_array(p);
+                                    cache.prewarm_for_move(
+                                        ctx.worlds,
+                                        ctx.manifest,
+                                        ctx.world_seed,
+                                        v,
+                                        v,
+                                    );
+                                }
+                                p
+                            }
+                            None => pos,
+                        };
                         let id = net.spawn_faceling("Faceling_Child", pos, 2, self.wg3.as_ref());
                         let spawn_pos = net
                             .peers

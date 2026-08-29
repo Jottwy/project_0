@@ -29,6 +29,73 @@ pub const FACELING_ADULT_LAYER_DENSITY: [f32; 4] = [2.0, 0.0, 0.0, 0.0];
 /// and same reason as `phantom_spawn::PHANTOM_DRAW_SALT`.
 const FACELING_ADULT_DRAW_SALT: u64 = 0xFACE_1105_ADD1_7000;
 
+/// ADR-109 D5 — sorteo de la concentración en oficinas, ahora hueco a hueco.
+const FACELING_WG3_KEEP_SALT: u64 = 0xFACE_1109_0FF1_0000;
+
+/// ADR-109 D5 — con qué probabilidad se queda un hueco que cae en un espacio de OFICINA.
+///
+/// **No es un gusto: es lo que hace que la población no cambie al mudarse.** Medido, y por eso está
+/// aquí: en WG2 la oficina era el 4 % del mundo (la banda `TEMPLATE_OFFICE` del sorteo de plantillas),
+/// y en WG3 el papel de oficina —`style` 0, el brazo `_` de `fill::style_of`— cubre el **39 %** de los
+/// huecos sorteados. Quedarse con todos multiplicaba la población por 3,5 (255 frente a 72 en la
+/// sonda de 36 chunks), que es un cambio de balance que nadie pidió y que el jugador habría notado
+/// antes que la migración.
+///
+/// El 8:1 entre dentro y fuera de oficina sí se conserva: es lo que ADR-094 enmienda 5 dejó
+/// calibrado, y es la mitad de lo que hace que entrar en una oficina signifique algo.
+const FACELING_WG3_OFFICE_KEEP: f32 = 0.23;
+
+/// La cota con la que sale un candidato del sorteo.
+///
+/// Con WG2 es la de su capa. Con WG3 no hay cota que dar aquí —la geometría no se conoce en un
+/// sorteo puro por semilla— y se devuelve la del suelo base; quien llama la sustituye por la del
+/// espacio en el que cae. Un número que sabe que es provisional es mejor que uno de una capa de 4 m
+/// que parece bueno y no lo es.
+fn candidate_y(wg3: bool, layer: u8) -> f32 {
+    match wg3 {
+        true => crate::world::collision::PLAYER_BASE_Y,
+        false => grid_floor_y(layer) + crate::world::collision::PLAYER_BASE_Y,
+    }
+}
+
+/// ADR-109 D5 — ¿se queda este hueco, con el papel del espacio donde cae?
+///
+/// Es la enmienda 5 de ADR-094 traducida a WG3: en oficina se queda siempre, fuera una de cada ocho.
+/// Lo que cambia es la RESOLUCIÓN — WG2 respondía por chunk de 50 m porque no sabía qué había dentro;
+/// WG3 lo sabe espacio a espacio, así que un chunk mixto ya no es todo oficina o nada.
+///
+/// `style` 0 es el papel de oficina (`fill::style_of` la deja en el brazo `_`, junto con lo que no
+/// tiene número propio). Sin espacio —el hueco cae en el vacío del plan— no se queda nadie: ahí no
+/// hay suelo que pisar.
+///
+/// Determinista por (semilla, chunk, capa, índice del hueco): dos llamadas dan lo mismo, y subir
+/// `density_scale` no reubica a quien ya estaba.
+pub fn wg3_keeps_position(
+    world_seed: u64,
+    cx: i32,
+    cz: i32,
+    layer: u8,
+    index: usize,
+    style: Option<u8>,
+) -> bool {
+    let Some(style) = style else {
+        return false;
+    };
+    let keep = match style {
+        0 => FACELING_WG3_OFFICE_KEEP,
+        _ => FACELING_WG3_OFFICE_KEEP * FACELING_OUTSIDE_DENSITY_FACTOR,
+    };
+    let mut rng = StdRng::seed_from_u64(
+        chunk_seed_layer(
+            world_seed ^ FACELING_WG3_KEEP_SALT,
+            (cx, cz),
+            layer as ChunkLayer,
+        )
+        .wrapping_add(index as u64),
+    );
+    rng.gen::<f32>() < keep
+}
+
 /// Enmienda 5 — how much of the office density survives OUTSIDE an office chunk.
 ///
 /// One in eight. Low enough that an office is still unmistakably where they live (ADR-094 point 5's
@@ -53,6 +120,11 @@ pub fn draw_adults_into(
     cz: i32,
     layer: u8,
     density_scale: f32,
+    // ADR-109 D5 — el reparto se hace con WG3. Cambia DÓNDE se decide la concentración de oficina:
+    // aquí ya no, porque un chunk de WG3 tiene varios espacios con papeles distintos y una respuesta
+    // por chunk sería más basta que el mundo que describe. La decide `wg3_keeps_position`, hueco a
+    // hueco, con el papel del espacio en el que cae. El resultado esperado por chunk es el mismo.
+    wg3: bool,
     out: &mut Vec<[f32; 3]>,
 ) {
     out.clear();
@@ -62,10 +134,12 @@ pub fn draw_adults_into(
     // a corridor now costs a fraction of that, and the office is still where they live by a factor
     // of `FACELING_OUTSIDE_DENSITY_FACTOR`. Both identities survive; the world stops feeling
     // partitioned.
-    let in_office = zone_kind_for(world_seed, cx, cz, layer) == ZONE_OFFICE;
-    let zone_factor = match in_office {
+    let zone_factor = match wg3 {
         true => 1.0,
-        false => FACELING_OUTSIDE_DENSITY_FACTOR,
+        false => match zone_kind_for(world_seed, cx, cz, layer) == ZONE_OFFICE {
+            true => 1.0,
+            false => FACELING_OUTSIDE_DENSITY_FACTOR,
+        },
     };
     let expected = FACELING_ADULT_LAYER_DENSITY
         .get(layer as usize)
@@ -97,7 +171,11 @@ pub fn draw_adults_into(
             (gx as f32 + 0.5) * CELL_SIZE_M,
             // Player-pivot convention, same as `phantom_spawn::draw_into` and for the same
             // reason: a faceling is a peer, and every peer's relayed Y is floor + PLAYER_BASE_Y.
-            grid_floor_y(layer) + crate::world::collision::PLAYER_BASE_Y,
+            //
+            // ADR-109 D5 — con WG3 la cota NO sale de aquí: la capa mide 4 m y las plantas 3,32, así
+            // que este número sería falso en cuanto el suelo no esté a cero. Se deja el suelo del
+            // espacio, que lo pone quien llama con la geometría delante.
+            candidate_y(wg3, layer),
             (gz as f32 + 0.5) * CELL_SIZE_M,
         ]);
     }
@@ -113,7 +191,7 @@ pub fn draw_adults(
     density_scale: f32,
 ) -> Vec<[f32; 3]> {
     let mut out = Vec::new();
-    draw_adults_into(world_seed, cx, cz, layer, density_scale, &mut out);
+    draw_adults_into(world_seed, cx, cz, layer, density_scale, false, &mut out);
     out
 }
 
@@ -141,14 +219,18 @@ pub fn draw_child_pack_into(
     cz: i32,
     layer: u8,
     density_scale: f32,
+    // Igual que en los adultos, ver su doc.
+    wg3: bool,
     out: &mut Vec<[f32; 3]>,
 ) {
     out.clear();
     // Same office-dense / elsewhere-sparse split as the adults — see `draw_adults_into`.
-    let in_office = zone_kind_for(world_seed, cx, cz, layer) == ZONE_OFFICE;
-    let zone_factor = match in_office {
+    let zone_factor = match wg3 {
         true => 1.0,
-        false => FACELING_OUTSIDE_DENSITY_FACTOR,
+        false => match zone_kind_for(world_seed, cx, cz, layer) == ZONE_OFFICE {
+            true => 1.0,
+            false => FACELING_OUTSIDE_DENSITY_FACTOR,
+        },
     };
     let chance = FACELING_CHILD_PACK_LAYER_PROBABILITY
         .get(layer as usize)
@@ -180,7 +262,7 @@ pub fn draw_child_pack_into(
         let gz = cz * CHUNK_CELLS as i32 + cell_z;
         out.push([
             (gx as f32 + 0.5) * CELL_SIZE_M,
-            grid_floor_y(layer) + crate::world::collision::PLAYER_BASE_Y,
+            candidate_y(wg3, layer), // ver `draw_adults_into`
             (gz as f32 + 0.5) * CELL_SIZE_M,
         ]);
     }
@@ -196,7 +278,7 @@ pub fn draw_child_pack(
     density_scale: f32,
 ) -> Vec<[f32; 3]> {
     let mut out = Vec::new();
-    draw_child_pack_into(world_seed, cx, cz, layer, density_scale, &mut out);
+    draw_child_pack_into(world_seed, cx, cz, layer, density_scale, false, &mut out);
     out
 }
 

@@ -449,6 +449,27 @@ impl Wg3ServedWorld {
         &self.segments
     }
 
+    /// ADR-109 D5 — el espacio de MÁS ABAJO en esa vertical, sin saber la cota.
+    ///
+    /// Lo pide el reparto de criaturas: sortea un punto en XZ y no tiene cota que darle —la que traía
+    /// era la de una capa de WG2. La planta baja es la que hoy se puebla, así que el de suelo más bajo
+    /// es la respuesta; el día que el reparto sepa de plantas, esto se sustituye por `space_at`.
+    pub fn lowest_space_at_xz(&self, x: f32, z: f32) -> Option<&Wg3Segment> {
+        let x_cm = (x * 100.0).round() as i32;
+        let z_cm = (z * 100.0).round() as i32;
+        self.segments
+            .iter()
+            .filter(|s| {
+                x_cm >= s.x_cm
+                    && x_cm <= s.x_cm + s.size_x_cm
+                    && z_cm >= s.z_cm
+                    && z_cm <= s.z_cm + s.size_z_cm
+            })
+            // Empate por área como en `space_at`, y por lo mismo: que la respuesta no dependa del
+            // orden del vector, que no es el mismo en las dos partes.
+            .min_by_key(|s| (s.floor_y_cm, (s.size_x_cm as i64) * (s.size_z_cm as i64)))
+    }
+
     /// ADR-108 D6 — el ESPACIO que contiene ese punto del mundo, si alguno.
     ///
     /// La cota MANDA y no es un adorno: dos plantas se solapan en XZ, así que un test sólo
