@@ -10659,3 +10659,31 @@ sigue sonando razonable después de cambiar la unidad.
 Aparte: pin de cota en `advance_step` (con `grid_gen` la Y de una criatura era la de su capa y no
 cambiaba nunca; en WG3 el suelo sube y baja dentro de la planta) y `pick_puesto` deja de derivar la Y
 de la capa.
+
+### ADR-108 — Enmienda 3 (2026-08-29): la percepción del robapieles termina la mudanza
+
+Estado: **implementada**. La enmienda 1 mudó el MOVIMIENTO del robapieles y dejó su PERCEPCIÓN en
+`grid_gen`; se creyó menor porque el bicho ya andaba bien. La enmienda 2, al mudar los facelings,
+midió que no lo era: **de 611 parejas de puntos, 49 discrepan entre ver y pasar (8 %), todas «ve pero
+no pasa»**. Uno de cada doce chequeos de percepción del robapieles estaba respondiendo sobre el mundo
+equivocado, y el modo de fallo —cegarse al otro lado de un atrio— es exactamente el que un jugador
+lee como «la IA es tonta».
+
+Se muda `phantom.rs` a `wg3::nav::line_of_sight` en los cuatro sitios de VISTA: el `has_line` que
+sostiene la persecución (SPRINT), el alcance del golpe de SPRINT, el alcance de la emboscada, la
+detección por linterna, más el «desde ahí se te vería» de `pick_lurk_spot`. El PEEK de ADR-075 también
+es vista (su propio comentario ya decía «can I see the goal, not can my body get there»).
+
+Y dos que NO son vista y por eso van al predicado de paso, no al de rayo: el punto predicho de la
+búsqueda —la pregunta es a dónde pudo LLEGAR el jugador, no si se le ve— y `intercept_point`, que
+recibe ahora `Option<&Wg3CollisionCache>`. Este último era el más silencioso de todos: preguntándole a
+`grid_gen` en un mundo de WG3, donde el ráster tiene pared la rejilla vieja podía decir «libre», y la
+criatura salía a cortarte el paso a través de un muro.
+
+`pick_lurk_spot` gana además el pin de cota por la misma razón que `advance_step` en la enmienda 2:
+elegía el escondite a la altura desde la que buscaba, que en un atrio es aire. `BODY_TOP_M` pasa a
+`pub(super)` en vez de duplicarse.
+
+**Queda fuera, con nombre:** `contact_stance` sigue en `grid_gen` en los tres sitios del faceling y en
+los del robapieles. Degrada por `unwrap_or` al objetivo, así que el peor caso es apuntar al jugador en
+vez de a su postura de contacto —que es lo que hacía antes de ADR-082—, pero es deuda, no diseño.

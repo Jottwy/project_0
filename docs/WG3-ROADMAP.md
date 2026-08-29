@@ -70,7 +70,10 @@ transportable**, que es lo que se pidió. Buscar ahí un fallo de la migración 
 | Atmósfera por identidad (el AIRE) | 🔴 | todas las regiones tienen el mismo aire | 107 D5 = 103 |
 | Identidad de subnivel (Level 0.1…) | 🔴 | aprobado, cero código | 103 |
 | Plantas bajo la cota base | 🔴 | | 104 D5 |
-| **Fantasma, facelings, loot** | 🔴 | **siguen en WG2 — atraviesan lo que tú no** | 106 deuda |
+| **Fantasma (movimiento + vista)** | ✅ | **andado y validado en juego** | 108 |
+| **Facelings (adultos y niños)** | ✅ | **andados y validados en juego** | 108 enm. 1-3 |
+| Loot por papel | 🔴 | reparte por `zone_kind` de WG2 | 108 D4 |
+| Construcción y claims | 🔴 | sin empezar | 106 deuda |
 | Retirada de WG2 | 🔴 | el servidor sigue generándolo | sin ADR |
 
 ### Cifras del mundo servido, hoy
@@ -119,15 +122,19 @@ servicio 16 %, pasillo 11 %, callejón 10 %, nave 5 %, **espina 4 %**.
 **Los dos primeros de la lista de esta mañana están HECHOS y andados**: la fuga de luz (ADR-104
 enmienda 2) y el Frente B (ADR-106). Lo que queda, por valor:
 
-**1. Terminar la mudanza de autoridad.** Es la deuda que ADR-106 dejó con nombre y **la única que hoy
-se ve fea jugando**: el jugador resuelve contra WG3 y **el robapieles, los facelings, el spawn de
-objetos y el loot siguen en WG2**. Se ven criaturas atravesando paredes que tú no puedes cruzar, y
-loot que puede aparecer dentro de un macizo.
+**1. Terminar la mudanza de autoridad.** Es la deuda que ADR-106 dejó con nombre. **La IA ya está
+mudada entera** (ADR-108): el robapieles y los facelings —adultos y niños— navegan, ven y golpean
+contra el ráster, ambos validados en juego el 2026-08-29. Lo que queda es el reparto de objetos.
 
-- El **fantasma** es lo más barato que queda: un `match` más, la costura ya está.
-- Los **facelings** no pasan por `resolve_move_src` y necesitan trabajo propio.
 - El **loot** resuelve contra la rejilla vieja: hoy reparte por `zone_kind` de WG2 en un mundo de WG3.
   Eso es incoherente, **no invisible** — lo poco que se ve es la escasez pedida, no la migración.
+- **Construcción y claims** no se han tocado.
+- Tres lecciones de la mudanza de la IA, por si sirven para la del loot: (a) **ver no es pasar** —
+  `segment_is_clear` exige suelo bajo la recta, y como línea de visión falla el 8 % de las veces
+  (medido: 49 de 611 parejas, sonda `probe_sight_is_not_the_same_as_passage`); (b) las **capas de 4 m
+  de WG2 no alinean con las plantas de 3,32 m** de WG3, así que cualquier `world_pos_to_layer` que
+  compare DOS criaturas miente a rachas según la cota; (c) **la constante escrita en celdas** picó
+  cuatro veces —el comentario que la justifica sigue sonando razonable después de cambiar la unidad.
 
 **2. Identidad de subnivel (ADR-103).** Aprobado, cero código, y **desbloqueado por ADR-104**: los
 agujeros son el descenso que le faltaba al eje Y. La identidad se mueve en el AIRE —niebla, ambiente,
@@ -152,7 +159,7 @@ cuál manda antes de tocar ninguno.
 | Frente | Estado |
 |---|---|
 | **A — identidad visual por papel** | ✅ **HECHO.** `b5c6cfc3`, `2c0d5dce`, `a8de06c6`. Verificado EN JUEGO: los siete papeles se distinguen desde el fondo del tramo |
-| **B — WG3 como autoridad** | ✅ **HECHO Y ANDADO** para el jugador (ADR-106). Quedan el fantasma, los facelings y el loot |
+| **B — WG3 como autoridad** | ✅ **HECHO Y ANDADO** para el jugador (ADR-106) y para toda la IA (ADR-108). Queda el loot y la construcción |
 | **C — variedad de contenido** | Reencuadrado: ver §7, el catálogo de formas por coste |
 | **D — la rareza Backrooms** | ▶️ **DESAPARCADO.** Es ADR-103, aprobado por Joel, sin código |
 

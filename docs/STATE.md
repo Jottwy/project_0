@@ -2,6 +2,20 @@
 > Actualizado por /checkpoint al cierre de cada sesión. Leído al inicio de cada sesión.
 
 ## Última sesión
+- Fecha: 2026-08-29 tarde (**ADR-108 — la IA entera se muda a WorldGen3: robapieles, facelings adultos y niños**) — **`cargo test` 1131/1131, clippy `--all-targets -D warnings` y fmt limpios, release desplegado a `Builds/Backend/`. Cero wire.**
+
+0. **VALIDADO EN JUEGO POR JOEL, las dos especies.** Robapieles: *"ahora sí va mucho mejor"* tras seis fallos de navegación encadenados en playtest. Facelings: *"funcionan estupendamente, están bastante pulidos con el nuevo sistema"*. Es lo que cierra el Frente B para la IA — el estado vivo sigue en [`WG3-ROADMAP.md`](WG3-ROADMAP.md).
+
+1. **LOS SEIS FALLOS DEL ROBAPIELES, todos de la misma familia: un número que dejó de significar lo que su comentario dice.** El radio de llegada venía en celdas de WG2 (se saltaba las esquinas), la recta no medía el cuerpo (se clavaba en las esquinas), el cuerpo no tenía tolerancia de escalón (se clavaba a media escalera), el A* no llevaba la planta en la clave, y el radio de la ventana de navegación se midió con el de un JUGADOR. **La celda pasa de 2,5 m a 0,5 m al migrar: cualquier constante escrita en celdas cambia de tamaño ×5 sin que el comentario deje de sonar razonable.** Cuarta reincidencia contada.
+
+2. **DOS FALLOS QUE LA MUDANZA DEL ROBAPIELES NO DESTAPÓ, porque su percepción seguía en WG2 y los facelings perciben mucho más.** (a) **VER NO ES PASAR.** `segment_is_clear` pregunta si un CUERPO recorre la recta ANDANDO: exige suelo debajo. Como línea de visión ciega a la criatura al otro lado de un atrio y no distingue una barandilla. **Medido, no deducido: de 611 parejas, 49 discrepan (8 %), todas «ve pero no pasa»** — uno de cada doce chequeos de percepción habría sido falso. Sonda `probe_sight_is_not_the_same_as_passage`, se queda. Nace `wg3::nav::line_of_sight` (rayo fino; un chunk sin cargar NO bloquea, o el bicho se queda ciego mientras el mundo se genera). (b) **LAS CAPAS DE 4 m NO ALINEAN CON LAS PLANTAS DE 3,32 m.** 15 puertas preguntaban `world_pos_to_layer(otro.y) == mi_capa`: cada pocas plantas, dos criaturas en la MISMA caen a lados distintos del cajón y perseguir/golpear/ver/congelarse se cierran a la vez, a rachas según la cota. Se lee como «la IA es tonta», no como un fallo de sistema de coordenadas. Sustituido por media planta de tolerancia.
+
+3. **LA FORMA BESTIA CHOCABA CON EL TECHO DE LAS ESCALERAS.** `RealFormScale` 1,75 → 1,63 (2,90 m → **2,70 m**). El ×1,75 se dimensionó contra techo de PASILLO (3,3 m) y el intradós de una escalera da menos. **Sólo cliente**: `PHANTOM_BODY_RADIUS` no se toca. El avatar remoto no lleva override de escala, así que hereda — y no hay que re-hornearlo, que es el horneado que se lleva por delante los overrides hechos a mano.
+
+4. **PENDIENTE, con nombre.** El **loot por papel** (ADR-108 D4) y la **construcción/claims** son lo único de autoridad que sigue en WG2. La **retirada de WG2** va después de esos dos consumidores, no antes. Sin verificar aún: ADR-104 (e) reparto de tramos de escalera y (f) contrato de unión con atrios; ADR-103 (c) perfiles distinguibles; `Wg3CarvingTests` sigue sin ejecutarse nunca.
+
+---
+
 - Fecha: 2026-08-29 (**WorldGen3 — ADR-103, 104 y 105: la verticalidad se ANDA**, dos sesiones en paralelo unificadas a media tarde) — **20 commits, `b5c6cfc3` → `a9c39a56`. `cargo test` 1124/1124, clippy `--all-targets -D warnings` y fmt limpios, `CompileCheckClient` 0 errores en las cuatro asambleas. WIRE 49 → 50.**
 
 0. **LO PRIMERO: hay tres ADRs nuevos y el estado vivo de WG3 está en [`WG3-ROADMAP.md`](WG3-ROADMAP.md), no aquí.** Su cabecera se reescribió para decir qué está ANDADO (lo ha visto una persona), qué está MEDIDO (verde en el ráster, nadie lo ha visto) y qué NO EXISTE. Leer eso antes de tocar WG3.
