@@ -10724,3 +10724,41 @@ avisa de que los valores por defecto del código sólo aplican a un asset que nu
 `styleProfiles` nace en un asset que **sí** lo está, así que llega vacío — y vacío tiene que caer a los
 valores del código, no al perfil 0, que serviría el mismo perfil a los siete papeles y anularía la
 decisión entera en silencio.
+
+### ADR-108 — D6 (2026-08-29): construir y reclamar, con el papel del espacio
+
+Estado: **implementada**. Último consumidor de autoridad que seguía en WG2.
+
+**El problema no era que faltara: era que cada lado miraba un mapa distinto.** La puerta preguntaba por
+la HABITACIÓN TALLADA de ADR-081 enmienda 5 (`grid_gen::position_in_build_room`, 3 × 3 tiles) y el
+claim se identificaba por chunk, porque WG2 tallaba como mucho una habitación por chunk. En un mundo
+de WG3 no existe ninguna de las dos cosas: el cliente decía «aquí no se puede» en todas partes —su
+`BuildRoomRegistry` no recibe nada— mientras el host decía que sí en sitios sorteados sobre geometría
+que ya no está.
+
+**Se construye en los espacios que NO sostienen la circulación**: servicio, almacén y callejón sin
+salida (`style` 4 y 5). Fuera la espina, el pasillo y el cruce — construir ahí le corta el paso a todo
+el mundo, y eso es el griefing más barato que hay, así que la regla de «no bloqueante» que pedía Joel
+se escribe con el único dato que host y cliente comparten. Fuera también la nave, la oficina y la
+escalera; es una lista cerrada y ampliarla es una línea.
+
+**El claim es el ESPACIO: su esquina y su cota, en centímetros.** No hace falta ni un id nuevo ni un
+campo de cable. Y la cota entra en la identidad, al revés que en WG2 (donde se excluía la Y a
+propósito): con plantas, el mismo cuarto un piso más arriba tiene que ser otro claim, o reclamar abajo
+regalaría todo lo de encima.
+
+**Host y cliente responden con el MISMO dato** —los tramos que ya viajan por el cable, no el plan— para
+que la regla del host y el aviso del cliente no puedan desalinearse. Cero wire.
+
+**Y el hallazgo que el test destapó: LOS ESPACIOS SE SOLAPAN.** Medido (`probe_space_overlap`): **26
+pares de 47.895** en la región (0,0), y el caso típico es una escalera de dos plantas cruzando el
+volumen de una sala de arriba. «El primero que contenga el punto» es una respuesta que depende del
+orden del vector — y el cliente los recibe repartidos por chunk, o sea en otro orden que el servidor:
+la puerta habría contestado **dos cosas distintas a las dos partes**. La regla pasa a ser **el suelo
+más alto por debajo del punto**, empate por área (manda el más pequeño, que es el más específico). De
+310 centros de tramo, 2 resuelven a un espacio distinto del suyo, y eso ya es determinista.
+
+**Lo que NO toca.** La demolición no necesita nada: comprueba el `owner_id` de la pieza, que no depende
+del mundo. Y el aislamiento de las salas construibles es hoy el que el plan ya da (servicio y almacén
+cuelgan del fondo de una rama, el callejón tiene una sola conexión); **una guarda de aislamiento
+explícita —medir que reclamar una sala no puede cerrar un paso— queda pendiente y con nombre**.

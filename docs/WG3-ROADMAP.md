@@ -73,8 +73,8 @@ transportable**, que es lo que se pidió. Buscar ahí un fallo de la migración 
 | **Fantasma (movimiento + vista)** | ✅ | **andado y validado en juego** | 108 |
 | **Facelings (adultos y niños)** | ✅ | **andados y validados en juego** | 108 enm. 1-3 |
 | **Loot por papel** | 🟡 | **andado, sin ver en partida**; densidad intacta | 108 enm. 4 |
-| Construcción y claims | 🔴 | sin empezar | 106 deuda |
-| Retirada de WG2 | 🔴 | el servidor sigue generándolo | sin ADR |
+| **Construcción y claims** | 🟡 | **andado, sin ver en partida**; se construye en servicio/almacén/callejón | 108 D6 |
+| Retirada de WG2 | 🔴 | ya no la bloquea nadie; el servidor sigue generándolo | sin ADR |
 
 ### Cifras del mundo servido, hoy
 
@@ -130,7 +130,11 @@ contra el ráster, ambos validados en juego el 2026-08-29. Lo que queda es el re
   propósito: los siete papeles llevan el 0,04 de la prueba de escasez, y lo que el papel decide es QUÉ
   sale, no CUÁNTO. Falta verlo en partida y falta autorar `styleProfiles` en el asset, que es trabajo
   de contenido y hoy corre con los valores del código.
-- **Construcción y claims** son lo único de autoridad que sigue en WG2.
+- **Construcción y claims** ya van por el papel del espacio (ADR-108 D6): se construye en servicio,
+  almacén y callejón sin salida, y el claim es el espacio con su cota. Falta verlo en partida, y falta
+  la **guarda de aislamiento** que pidió Joel —medir que reclamar una sala no puede cerrar un paso—,
+  que hoy sólo está garantizada de rebote por cómo el plan cuelga esas salas.
+- **Ya no queda ningún consumidor de autoridad en WG2**, así que la retirada deja de estar bloqueada.
 - Tres lecciones de la mudanza de la IA, por si sirven para la del loot: (a) **ver no es pasar** —
   `segment_is_clear` exige suelo bajo la recta, y como línea de visión falla el 8 % de las veces
   (medido: 49 de 611 parejas, sonda `probe_sight_is_not_the_same_as_passage`); (b) las **capas de 4 m
