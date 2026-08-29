@@ -9433,3 +9433,115 @@ Andar el Frente A. Está pendiente de que Joel decida **quién** anda —él o l
 código: dos sesiones arrancando backend a la vez se levantan un servidor huérfano en la cara, y eso ya
 ha costado playtests en este proyecto. Lo que salga de ahí es la enmienda 2, y va aparte de ésta porque
 son dos hechos con fechas distintas.
+
+---
+
+## ADR-103 — Enmienda 2: el mecanismo SÍ da, la retención se levanta, y el canal ya está ocupado (2026-08-29)
+
+**Andado y verificado en juego.** Los siete papeles se distinguen, y se distinguen **desde el fondo del
+tramo**, que es lo que mira el jugador para decidir por dónde ir. Espina ámbar contra pasillo gris
+azulado a 20 m; servicio verde inequívoco; callejón pardo; nave azul oscuro; escalera por su rodapié
+naranja contra el verde del cuarto de servicio de al lado. **La retención de la enmienda 1 se levanta:
+el perfil de identidad no necesita materiales autorados y ADR-103 no se encarece.**
+
+### La predicción se cumplió, y por eso hubo que arreglar la paleta antes de andarla
+
+La enmienda 1 dejó escrito que espina y pasillo se separaban sólo en brillo y eran los que más riesgo
+tenían de no leerse. **Era cierto, y se demostró sin ojos.** Con la paleta original:
+
+| | Luminancia Rec.709 |
+|---|---:|
+| espina (estilo 1) | 1,040 |
+| pasillo (estilo 2) | 0,950 |
+| **señal entre los dos** | **9,5 %** |
+| dos paredes medidas en la MISMA captura | 49,0 y 63,5 |
+| **ruido que mete sólo la luz** | **29,5 %** |
+
+**El ruido de iluminación era 3,1 veces la señal del tinte.** Y peor sin mirar: pasillo contra oficina
+—que es el juego base sin tocar— eran **5,0 %**, seis veces por debajo del ruido, o sea indistinguibles
+por construcción. La paleta se rehízo por TONO antes de andar nada (`2c0d5dce`).
+
+**La regla general, que vale más que este ADR y ya está escrita en la cabecera de
+`Wg3StyleMaterials.cs`: un delta de albedo del 10 % no existe. Para distinguir dos cosas, tono o
+material, nunca claridad.** La luz sube y baja los tres canales a la vez sin invertir su orden, así que
+un cambio de tono sobrevive a una variación de brillo y un cambio de brillo no sobrevive a nada.
+
+### El reparto real del mundo servido, que cambia dos lecturas
+
+504 tramos en nueve chunks: **oficina 154 (31 %), escalera 117 (23 %), servicio 80 (16 %), pasillo 53,
+callejón 52, nave 27, espina 21 (4 %).**
+
+Dos cosas salen de ahí y ninguna es cosmética:
+
+- **El lienzo neutro es el 31 %, no la mitad.** La primera lectura decía 54 % de oficina y era un
+  artefacto: corría un exe anterior a `Stair => 6`, así que 117 tramos de escalera se leían como cero.
+  154 + 117 = 271 exacto, que es la firma del fallo. Aviso de método repetido: `Builds/Backend/` gana
+  sobre `target/release` y `cargo build --release` NO despliega — el log ya avisaba con «STALE BACKEND»
+  y aun así costó tres corridas leerlo.
+- **La espina es el 4 % del mundo.** El papel que existe para decir por dónde ir es el más raro que
+  hay. Ninguna paleta arregla eso: es REPARTO, y por tanto es del plan.
+
+### Y la consecuencia que sí cambia ADR-103: el tono ya está ocupado
+
+El papel se ha quedado con el eje de tono —ámbar, azul, azul frío, verde, pardo—, que es justo donde
+este ADR pensaba mover las identidades. **Los dos ejes no pueden ser el mismo**: un pasillo de Icy
+Rooms y una nave de Threshold tirarían del color en direcciones que se cancelan, y el jugador perdería
+la lectura de PAPEL —la que le dice por dónde ir— para ganar una de nivel, que le dice menos.
+
+**La identidad se muda al AIRE.** Papel = superficie, identidad = atmósfera. Tres mandos, y el orden
+importa porque no son equivalentes:
+
+1. **Niebla** (`RenderSettings.fog`, hoy apagada). La mejor: **se suma con la distancia en vez de
+   multiplicar el albedo cercano**, así que no compite con el tono del papel de cerca.
+2. **Ambiente** (`RenderSettings.ambientLight`, hoy (0,10 / 0,10 / 0,095) plano).
+3. **Color de plafón**, y va el último con mano corta: una luz muy teñida SÍ multiplica sobre el albedo
+   y se come el tono del papel. Además ya está ocupado por el look actual — el halo del callejón sale
+   naranja franco.
+
+### El presupuesto de niebla, con números y con dos techos
+
+Niebla Exp2: `f = exp(-(d·rho)²)`, y el contraste de tono que sobrevive a distancia **es** `f`.
+Partiendo del 68 % de separación entre espina y pasillo a boca de jarro:
+
+| rho | 10 m | 25 m | 40 m |
+|---:|---:|---:|---:|
+| 0,010 | 67,3 % | 63,9 % | 57,9 % |
+| 0,030 | 62,1 % | 38,7 % | 16,1 % |
+| 0,045 | 55,5 % | 19,2 % | 2,7 % |
+| 0,060 | 47,4 % | 7,2 % | 0,2 % |
+
+Contra un límite del ojo alrededor del 15 %: **rho ≤ 0,045 es el techo de cualquier perfil**, y a partir
+de 0,060 el fondo del pasillo queda ciego. **Y un segundo techo, rho ≤ 0,030, MIENTRAS la escalera
+dependa de su rodapié para encontrarse** — es el papel cuyo valor entero está en verse de lejos, y a
+25 m con 0,045 le queda el 28 % de su señal. Ese segundo techo se levanta el día que la escalera tenga
+otra señal que no viva del albedo a distancia; **un número con su condición de caducidad escrita se
+puede revisar, uno prudente sin ella se queda para siempre**.
+
+**Es un presupuesto compartido, no un valor.** Un perfil que quiera niebla espesa gasta de la misma
+cuenta que la legibilidad del papel — y, con 2 a 5 escaleras por región y unas 9 necesarias para que la
+mediana andando baje de 30 m, **también de la cuenta de «el jugador encuentra por dónde subir». Eso
+convierte la niebla de un perfil en una decisión de jugabilidad, no de estética.**
+
+Y el color de niebla **neutro por defecto**: la mezcla va HACIA el color de niebla, así que una niebla
+teñida no es un ajuste global sino un pulgar en la balanza a favor de los papeles de su tono.
+
+### Una excepción a D3 que hay que decir en voz alta
+
+`RenderSettings.fog` y `ambientLight` son **globales de escena**: no hay dos nieblas en pantalla a la
+vez. Con la identidad resuelta por región (D4, 150 m, frontera dura), cruzarla haría **saltar la niebla
+de golpe**, y eso no se lee como liminal sino como un fallo de carga. Así que:
+
+- **Geometría**: identidad por región, discreta, escalón duro. D4 sin cambios.
+- **Atmósfera**: identidad muestreada **en la posición del jugador**, continua, interpolada.
+
+Las dos salen del MISMO campo y sólo se diferencian en dónde se consulta y si se redondea, así que no
+es una excepción arbitraria. Y sigue siendo función pura de la posición: nada de historial, y dos
+jugadores en el mismo sitio ven lo mismo.
+
+### Deuda que esta enmienda deja
+
+- **La cuantización de la deuda anterior sigue en pie y ahora tiene más motivo**: la mezcla es continua
+  y el tinte se cachea por clave discreta.
+- **El 4 % de espina** es problema del reparto del plan, no del color, y no lo arregla nada de este ADR.
+- La verificación **(c)** del ADR —que los cuatro perfiles se distingan medidos— **sigue sin hacer**.
+  Lo verificado aquí es el MECANISMO, no los perfiles: nadie ha construido todavía una identidad.
