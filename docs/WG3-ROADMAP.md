@@ -13,10 +13,111 @@
 
 ---
 
-## Actualización 2026-08-29 — léela antes que nada de lo de abajo
+## ESTADO AL 2026-08-29 — esto manda sobre todo lo de abajo
 
-Cuatro cosas cambiaron en un día y dejan parte de este fichero desfasado. Lo de abajo **no se borra**
-porque sus medidas siguen siendo buenas; lo que cambia es el estado y el orden.
+> Las secciones 0 a 6 son de la era ADR-102 y **se conservan por sus medidas**, no por su orden: donde
+> contradigan a esta cabecera, manda ésta. La sección 7 es posterior y sigue vigente.
+
+### Qué es WG3 hoy, en cinco líneas
+
+El mundo servido sale del **PLAN**, no del compositor por bocas (ADR-100): `Wg3ServedWorld::plan_region`
+→ `plan::plan_building` → `fill::fill_building`. Regiones de 150 m, infinitas, con contrato en la junta
+(ADR-096). **Dos plantas** que se suben por escalera (ADR-102). Piezas autoradas con sus puertas
+excavadas (ADR-101, wire 49). Papel visible por tono (Frente A). Atrios de dos plantas, agujeros por los
+que se cae y macizos —pretiles y megapilares— (ADR-104 y ADR-105, wire 50).
+
+### Los tres estados en los que puede estar una cosa
+
+| | Qué significa |
+|---|---|
+| ✅ **ANDADO** | Una persona lo ha visto funcionando en `WorldGen3Live` |
+| 🟡 **MEDIDO** | Verde en el ráster del servidor, **nadie lo ha visto** |
+| 🔴 **NO EXISTE** | Escrito en un ADR y sin implementar |
+
+### Inventario
+
+| Cosa | Estado | Cifra | ADR |
+|---|---|---|---|
+| Mundo por regiones, junta cruzable | ✅ | 150 m, infinito | 096 |
+| Dos plantas + escalera | ✅ | 46/49 regiones, 2-5 escaleras | 102 |
+| Vanos excavados (catálogo encendido) | ✅ | 8/8/6/2 piezas por región | 101 |
+| Identidad visual por papel | ✅ | 7 papeles, se distinguen a 20 m | Frente A |
+| **Atrio de dos plantas** | ✅ | **11**, 6,39 m medidos en ráster | 104 D1-D2 |
+| **Agujero de forjado** | ✅ | **15**, caída de 3,32 m | 104 D4 |
+| Atrio abierto por arriba | ✅ | macizo alrededor 97 % → 0 % | 104 D3 |
+| **Pretiles** | 🟡 | 5, sólo en 2 atrios | 105 D5 |
+| **Megapilares** | 🟡 | 12 | 105 D5 |
+| Luz en rejilla y colgada | 🟡 | recién arreglada, sin andar | — |
+| Identidad de subnivel (Level 0.1…) | 🔴 | aprobado, cero código | 103 |
+| Plantas bajo la cota base | 🔴 | | 104 D5 |
+| **WG3 como autoridad** | 🔴 | **el techo de todo** | sin ADR |
+
+### Cifras del mundo servido, hoy
+
+| | (0,0) | (1,0) | (0,1) | (−1,2) |
+|---|---:|---:|---:|---:|
+| superficie andable | 109 % | 113 % | 113 % | 114 % |
+| mancha andable mayor | 99 % | 99 % | 99 % | 99 % |
+| atrios | 4 | 4 | 3 | **0** |
+| macizos | 5 | 7 | 5 | 0 |
+
+Reparto de papeles, 504 tramos medidos cliente contra servidor: oficina 31 %, **escalera 23 %**,
+servicio 16 %, pasillo 11 %, callejón 10 %, nave 5 %, **espina 4 %**.
+
+### Checklist de verificaciones que siguen SIN hacer
+
+- [ ] **ADR-104 (e)** — que el 23 % de tramos de escalera **baje** con la verticalidad nueva. Está
+      instrumentado (`probe_which_roles_a_client_actually_sees`) y **es la métrica que dice si estamos
+      sustituyendo verticalidad o sólo añadiéndola**.
+- [ ] **ADR-104 (f)** — contrato de junta con un atrio en la frontera de región.
+- [ ] **ADR-103 (c)** — que los cuatro perfiles de identidad se distingan medidos. No se puede hacer:
+      no hay ni un perfil construido.
+- [ ] **`Wg3CarvingTests`** — los 5 tests de ADR-101 compilan y **no se han ejecutado nunca**.
+- [ ] Pretil y megapilar **con ojos**: se anduvo un atrio y una caída, no un balcón.
+
+### Reglas medidas que no hay que volver a descubrir
+
+1. **Un delta de albedo del 10 % no existe.** Tono o material, nunca claridad — el ruido que mete sólo
+   la luz entre dos paredes del mismo fotograma es del **29,5 %**.
+2. **Forma libre en la malla, forma cara en la colisión, y el umbral son 50 cm.** Toda geometría más
+   fina que la celda cambia de significado, no de precisión.
+3. **WG3 sabe restar y le costó un ADR saber añadir.** Los vanos viajan desde ADR-101; los macizos
+   necesitaron wire 50. Antes de prometer geometría nueva, mirar por qué canal va a viajar.
+4. **La niebla es presupuesto compartido**, no un valor: gasta de la legibilidad del papel y de
+   encontrar por dónde subir. `rho ≤ 0,045`, y `≤ 0,030` mientras la escalera dependa de su rodapié.
+5. **Un canal nuevo hay que enseñárselo a las SONDAS.** Los macizos entraron y todas las sondas del
+   mundo servido siguieron construyendo el ráster sin ellos: la primera medida del peaje dio «sin
+   cambio» y era mentira. Una sonda ciega no da error, da un cero tranquilizador.
+6. **Una fórmula correcta para el caso que la motivó se vuelve un fallo visual al cambiar la forma del
+   espacio**, y ningún test lo coge porque ninguna métrica mira la luz.
+7. **Contar colocaciones no es medir el mundo**, y **un tope no es un resultado** — «hasta seis
+   escaleras» son 2-5 reales.
+
+### Hacia dónde vamos — el orden, y por qué
+
+**1. Fuga de luz entre plantas.** 🔴 Diseñado y sin escribir. La máscara sale de la cota **menos** la
+unión de los vanos de forjado, derivada en cliente, **cero wire**, con una celda de margen. Con atrios
+y agujeros la fuga es peor que nunca, y es lo que más se nota de lo barato que queda.
+
+**2. Frente B — WG3 como autoridad.** 🔴 **El techo de todo, y no se ha movido en toda la cadena
+103 → 105.** Hoy esto se anda en `WorldGen3Live`; en partida real subir una planta te CONGELA y por un
+agujero no te caes. Cada cosa que se apile encima de WG2 encarece la mudanza. Pide ADR propio y es el
+más grande que queda.
+
+**3. Identidad de subnivel (ADR-103).** Aprobado, cero código, y **desbloqueado por ADR-104**: los
+agujeros son el descenso que le faltaba al eje Y. La identidad se mueve en el AIRE —niebla, ambiente,
+color de plafón— porque el papel ya se quedó el tono.
+
+**4. Contenido y formas.** Sección 7. El cuello no es código: las huellas autoradas no coinciden con
+las que el plan pide, y hay histograma para autorar contra él.
+
+**Y una decisión pendiente que bloquea el orden:** el Frente C (que el plan se ajuste al catálogo) hace
+el mundo **más regular**, y ADR-103 lo hace **más raro**. Van en direcciones opuestas y hay que decidir
+cuál manda antes de tocar ninguno.
+
+---
+
+## Apéndice — lo que cambió el 2026-08-29 (histórico)
 
 | Frente | Estado |
 |---|---|
