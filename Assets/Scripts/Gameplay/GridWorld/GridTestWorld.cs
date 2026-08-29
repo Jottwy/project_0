@@ -27,6 +27,13 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         [Tooltip("-1 = all layers; 0..3 = only that layer")]
         public int onlyLayer = -1;
 
+        [Header("WorldGen3 (ADR-106)")]
+        [Tooltip("Materiales del mundo de WG3. Sin ellos el mundo se monta SIN pintar y se ve " +
+                 "blanco: son Assets/Materials/WorldGen3/Wg3_Floor, _Structure, _Ceiling y _Trim. " +
+                 "Sólo se usan cuando el backend arranca con BACKROOMS_WG3=1.")]
+        public BackroomsSurvival.WorldGen3.Wg3Materials wg3Materials =
+            new BackroomsSurvival.WorldGen3.Wg3Materials();
+
         [Header("Streaming")]
         [Tooltip("Chunks visible in each direction (1 = 3×3 ring)")]
         public int viewRadius = 1;
@@ -163,6 +170,29 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             // Fase 5A: per-layer visuals + lighting are driven by the streamer.
             _streamer.layerVisuals = ResolveLayerVisuals();
             _streamer.lighting = _lighting;
+
+            // ADR-106 — y el streamer de WG3 AL LADO, no en vez de. Los dos se auto-apagan con la
+            // misma bandera del saludo (`IPCClient.Wg3Enabled`), así que sólo uno trabaja: el de WG2
+            // sale de su Update cuando WG3 manda, y el de WG3 no monta nada cuando no.
+            //
+            // **Los dos y no uno elegido aquí, y el motivo es de TIEMPO**: en este momento el
+            // handshake puede no haber llegado todavía, así que preguntar la bandera ahora daría
+            // «WG3 apagado» en una sesión que sí lo tiene. Dejando que cada uno se pregunte por
+            // frame, el cambio ocurre solo en cuanto el backend contesta.
+            var wg3Go = new GameObject("Wg3ChunkStreamer");
+            wg3Go.transform.SetParent(transform, false);
+            var wg3 = wg3Go.AddComponent<BackroomsSurvival.WorldGen3.Wg3ChunkStreamer>();
+            wg3.viewer = player;
+            wg3.radius = viewRadius;
+            wg3.materials = wg3Materials;
+            if (wg3Materials == null || wg3Materials.floor == null)
+            {
+                Debug.LogWarning(
+                    "[WG3] GridTestWorld no tiene materiales de WorldGen3 asignados: si el backend " +
+                    "arranca con BACKROOMS_WG3=1, el mundo se montará SIN pintar. Asigna " +
+                    "Assets/Materials/WorldGen3/Wg3_Floor, _Structure, _Ceiling y _Trim en el " +
+                    "prefab GridTestWorld.");
+            }
 
             // Snapshot destruction zones AFTER rooms spawn, so room-borne zones are
             // included alongside any hand-placed scene zones. CollectZones scans the
