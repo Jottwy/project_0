@@ -85,7 +85,12 @@ const SALT_WELL: u32 = 0x9A17_0007;
 /// fallos —el forjado que hay que perforar, la geometría de abajo que atraviesa el suelo de arriba, la
 /// métrica que deja de significar lo mismo— y el de dos a tres no aporta ninguno nuevo. Subirlo es
 /// cambiar este número y volver a medir, no escribir código.
-pub const REGION_STOREYS: usize = 2;
+///
+/// **Diez desde 2026-08-29**: medido al subir (sonda `probe_ten_storeys_cost` en tests.rs) — el coste
+/// de plan+fill crece lineal con las plantas y el raster sigue siendo spans `i16` en cm (33,2 m de
+/// edificio contra un tope de ±327 m). El reparto de población sigue eligiendo el espacio más bajo,
+/// así que las plantas altas nacen sin criaturas: hueco conocido, no regresión.
+pub const REGION_STOREYS: usize = 10;
 
 /// Cuánto tiene que apartarse un corte del centro de una puerta de junta, en centímetros.
 ///
@@ -964,8 +969,15 @@ pub fn plan_building(
         // que se dibuja, se ilumina, cuesta y no se pisa, y como todo lo demás sale bien, ningún
         // contador se queja.
         //
-        // El hueco se abre en la planta de ABAJO, así que hay que tenerla a mano y mutable.
-        let dug = dig_wells(&mut out[n - 1], &plan, n - 1, seed);
+        // El hueco se abre en la planta de ABAJO, así que hay que tenerla a mano y mutable. Y los
+        // aterrizajes de los pozos que ya llegan a esa planta van protegidos: partirlos les rompería
+        // el rect a pozos ya cavados (ver `dig_wells`).
+        let landings: Vec<usize> = wells
+            .iter()
+            .filter(|w: &&StairWell| w.storey_below + 1 == n - 1)
+            .map(|w| w.space_above)
+            .collect();
+        let dug = dig_wells(&mut out[n - 1], &plan, n - 1, seed, &landings);
         if dug.is_empty() {
             break;
         }
@@ -1060,6 +1072,7 @@ fn dig_wells(
     above: &RegionPlan,
     storey_below: usize,
     seed: i32,
+    landings: &[usize],
 ) -> Vec<StairWell> {
     let steps = storey_steps();
     let run_cm = steps * STAIR_TREAD_CM;
@@ -1078,6 +1091,15 @@ fn dig_wells(
     let mut candidates: Vec<(u64, usize, usize, u8)> = Vec::new();
     for (i, s) in below.spaces.iter().enumerate() {
         if !s.role.is_built() || s.role.is_circulation() || s.rise_cm != 0 {
+            continue;
+        }
+        // **UN ATERRIZAJE NO SE PARTE, y esto sólo muerde con tres plantas o más.** `split_for_stair`
+        // encoge el rect del espacio elegido, y si ese espacio es el `space_above` de un pozo ya
+        // cavado desde la planta de abajo, la huella de aquel pozo se queda fuera de su aterrizaje:
+        // sales de una escalera dentro de la franja de la siguiente. Con dos plantas nunca hay
+        // segunda pasada, así que el barrido de 49 regiones a `STOREYS = 2` no podía verlo — salió
+        // en `(-1,-3)` al servir diez.
+        if landings.contains(&i) {
             continue;
         }
         // **POR CADA PUERTA, no sólo por la primera.** El lado por el que se entra fija el eje del

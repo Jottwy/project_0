@@ -5944,6 +5944,73 @@ fn every_upper_storey_has_a_stair_that_lands_somewhere() {
     }
 }
 
+/// **Diez plantas (2026-08-29): lo que se sirve tiene que ser coherente, no solo lo que miden los
+/// tests con su `STOREYS = 2` local.** El edificio sube "hasta donde se puede", así que pedir
+/// [`plan::REGION_STOREYS`] no garantiza esas plantas; lo que sí se exige es que lo que salga pase
+/// `problems()` en las 49 regiones y que subir de verdad sea la norma, no la excepción.
+#[test]
+fn the_served_storey_count_is_coherent_in_every_region() {
+    let mut floors = std::collections::BTreeMap::<usize, usize>::new();
+    for rz in -3..4 {
+        for rx in -3..4 {
+            let region = Wg3RegionCoord { x: rx, z: rz };
+            let bounds = region.bounds();
+            let gates = junction::gates_of_region(composer_seed(SERVED_SEED), rx, rz, bounds);
+            let b = plan::plan_building(
+                region.composer_seed(SERVED_SEED),
+                bounds,
+                &gates,
+                plan::REGION_STOREYS,
+            );
+            let problems = b.problems();
+            assert!(
+                problems.is_empty(),
+                "el edificio servido de ({rx},{rz}) no es coherente: {}",
+                problems.join("; ")
+            );
+            *floors.entry(b.storeys.len()).or_default() += 1;
+        }
+    }
+    println!("[wg3] plantas servidas por región: {floors:?}");
+    let multi: usize = floors.iter().filter(|(k, _)| **k > 1).map(|(_, v)| v).sum();
+    assert!(
+        multi * 2 >= 49,
+        "sólo {multi} de 49 regiones servidas levantaron más de una planta"
+    );
+}
+
+/// **Sonda de coste a diez plantas.** Imprime tiempo de plan y de plan+fill por región y el reparto
+/// de plantas levantadas, para decidir con números y no con miedo.
+#[test]
+#[ignore = "sonda: imprime, no exige"]
+fn probe_ten_storeys_cost() {
+    let m = real_manifest();
+    for (rx, rz) in AUDIT_REGIONS {
+        let region = Wg3RegionCoord { x: rx, z: rz };
+        let bounds = region.bounds();
+        let gates = junction::gates_of_region(composer_seed(SERVED_SEED), rx, rz, bounds);
+        let t0 = std::time::Instant::now();
+        let b = plan::plan_building(
+            region.composer_seed(SERVED_SEED),
+            bounds,
+            &gates,
+            plan::REGION_STOREYS,
+        );
+        let t_plan = t0.elapsed();
+        let t1 = std::time::Instant::now();
+        let filled = fill::fill_building(&b, &m);
+        let t_fill = t1.elapsed();
+        println!(
+            "[wg3] ({rx},{rz}) plantas {} pozos {} cajas {} — plan {:?} fill {:?}",
+            b.storeys.len(),
+            b.wells.len(),
+            filled.solids.len(),
+            t_plan,
+            t_fill,
+        );
+    }
+}
+
 #[test]
 #[ignore = "sonda: imprime, no exige"]
 fn probe_the_well_column() {
@@ -9368,4 +9435,58 @@ fn built_pieces_block_wg3_navigation() {
     // Y el caché del JUGADOR, que nunca recibe piezas, no cambia de comportamiento.
     let limpio = Wg3CollisionCache::new();
     assert!(!limpio.is_blocked_xz(cx, cz));
+}
+
+/// Sonda temporal: columna clavada de (0,1) tras subir a diez plantas.
+#[test]
+#[ignore = "sonda: imprime, no exige"]
+fn probe_stuck_stair_column() {
+    use crate::world::wg3::collision::Wg3CollisionCache;
+    use crate::world::wg3::world::Wg3WorldCache;
+    use crate::world::Vec3;
+    let m = real_manifest();
+    let mut worlds = Wg3WorldCache::default();
+    let mut cache = Wg3CollisionCache::new();
+    let p = Vec3::new(90.9, 5.5, 160.6);
+    cache.prewarm_for_move(&mut worlds, &m, SERVED_SEED, p, p);
+    for (dx, dz) in [(0.0, 0.0), (0.5, 0.0), (-0.5, 0.0), (0.0, 0.5), (0.0, -0.5)] {
+        let (x, z) = (90.9 + dx, 160.6 + dz);
+        let f = cache.floor_below_m(x, z, 3.32);
+        let h = f.and_then(|ff| cache.headroom_m(x, z, ff));
+        println!("[col] ({x:.2},{z:.2}) suelo {f:?} hueco {h:?}");
+    }
+    let raster = cache.raster_for(90.9, 160.6).expect("raster prewarmed");
+    println!(
+        "[col] spans en (90.9,160.6): {:?}",
+        raster.column_at(90.9, 160.6)
+    );
+    let region = Wg3RegionCoord { x: 0, z: 1 };
+    let bounds = region.bounds();
+    let gates = junction::gates_of_region(composer_seed(SERVED_SEED), 0, 1, bounds);
+    let b = plan::plan_building(
+        region.composer_seed(SERVED_SEED),
+        bounds,
+        &gates,
+        plan::REGION_STOREYS,
+    );
+    let filled = fill::fill_building(&b, &m);
+    let (px, pz) = (9090, 16060);
+    for s in &filled.solids {
+        if s.x_cm <= px && px < s.x_cm + s.size_x_cm && s.z_cm <= pz && pz < s.z_cm + s.size_z_cm {
+            println!("[col] SOLID {s:?}");
+        }
+    }
+    for s in &filled.segments {
+        if s.x_cm <= px && px < s.x_cm + s.size_x_cm && s.z_cm <= pz && pz < s.z_cm + s.size_z_cm {
+            println!(
+                "[col] SEG floor {} h {} style {}",
+                s.floor_y_cm, s.height_cm, s.style
+            );
+        }
+    }
+    for c in &filled.carves {
+        if c.x_cm <= px && px < c.x_cm + c.size_x_cm && c.z_cm <= pz && pz < c.z_cm + c.size_z_cm {
+            println!("[col] CARVE {c:?}");
+        }
+    }
 }

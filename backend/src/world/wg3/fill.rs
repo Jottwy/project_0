@@ -500,10 +500,38 @@ fn atrium_solids(building: &RegionBuilding) -> Vec<Wg3Solid> {
             }
             // Se reparten dejando un pilar de margen contra la pared: un pilar pegado al muro no
             // articula nada y sí estrecha el paso.
+            // **Y NUNCA SOBRE LA SALIDA DE UNA ESCALERA.** Una escalera puede aterrizar en una nave
+            // (`dig_wells` sólo pide un espacio construido y plano), y con tres plantas o más las
+            // naves intermedias SÍ reciben pilares — con dos nunca los tuvieron, porque este bucle
+            // exige planta encima, así que el barrido a `STOREYS = 2` no podía verlo. Salió en
+            // `(0,1)` al servir diez: un megapilar de 2 × 2 sentado encima del pozo, y el cuerpo
+            // clavado a media subida con 1,53 m de techo. El medio metro de margen es el cuerpo
+            // (radio 0,35) más holgura.
+            let landings: Vec<super::plan::PlanRect> = building
+                .wells
+                .iter()
+                .filter(|w| w.storey_below + 1 == n)
+                .map(|w| super::plan::PlanRect {
+                    min_x_cm: w.rect.min_x_cm - 50,
+                    min_z_cm: w.rect.min_z_cm - 50,
+                    max_x_cm: w.rect.max_x_cm + 50,
+                    max_z_cm: w.rect.max_z_cm + 50,
+                })
+                .collect();
             let mut px = r.min_x_cm + PILLAR_SPACING_CM;
             while px + PILLAR_SIDE_CM <= r.max_x_cm - PILLAR_SPACING_CM / 2 {
                 let mut pz = r.min_z_cm + PILLAR_SPACING_CM;
                 while pz + PILLAR_SIDE_CM <= r.max_z_cm - PILLAR_SPACING_CM / 2 {
+                    let pillar = super::plan::PlanRect {
+                        min_x_cm: px,
+                        min_z_cm: pz,
+                        max_x_cm: px + PILLAR_SIDE_CM,
+                        max_z_cm: pz + PILLAR_SIDE_CM,
+                    };
+                    if landings.iter().any(|l| l.overlaps(&pillar)) {
+                        pz += PILLAR_SPACING_CM;
+                        continue;
+                    }
                     out.push(Wg3Solid {
                         x_cm: px,
                         z_cm: pz,
