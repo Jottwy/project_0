@@ -8794,3 +8794,142 @@ fn an_entity_is_pinned_to_the_wg3_floor_and_a_player_is_not() {
     );
     println!("[entidad] {checked} regiones: la entidad se apoya, el jugador conserva su Y");
 }
+
+/// **¿SE BAJAN LAS ESCALERAS?** Visto jugando: el robapieles se queda pillado intentando bajar.
+///
+/// Subir y bajar NO son simétricos en esta navegación: el suelo de una celda sale de
+/// `floor_below(x, cota + escalón, z)`, que se queda con la superficie MÁS ALTA que no pase del
+/// escalón. Yendo hacia arriba eso es justo lo que se quiere; yendo hacia abajo puede devolver
+/// siempre la misma cota y dejar el grafo sin salida. Esta sonda intenta cada escalera en los dos
+/// sentidos y dice cuál de los dos falla.
+///
+/// `cargo test --manifest-path backend/Cargo.toml probe_stairs_in_both_directions -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn probe_stairs_in_both_directions() {
+    use crate::world::wg3::collision::Wg3CollisionCache;
+    use crate::world::wg3::nav;
+    use crate::world::wg3::world::Wg3WorldCache;
+    use crate::world::Vec3;
+
+    const PLAYER_BASE_Y: f32 = 1.8;
+    const STOREY_M: f32 = 3.32;
+
+    let m = real_manifest();
+    let (mut up_ok, mut up_fail, mut down_ok, mut down_fail) = (0, 0, 0, 0);
+
+    for (rx, rz) in AUDIT_REGIONS {
+        let b = building_of(rx, rz);
+        let mut worlds = Wg3WorldCache::default();
+        let mut cache = Wg3CollisionCache::new();
+
+        for well in &b.wells {
+            let (wx, wz) = well.rect.centre_m();
+            let below = &b.storeys[well.storey_below];
+            let base = below.spaces[well.space_below].floor_y_cm as f32 / 100.0;
+            let above = &b.storeys[well.storey_below + 1];
+            let up = &above.spaces[well.space_above];
+            let (ux, uz) = up.rect.centre_m();
+            let top = Vec3::new(ux, up.floor_y_cm as f32 / 100.0 + PLAYER_BASE_Y, uz);
+
+            cache.prewarm_for_move(&mut worlds, &m, SERVED_SEED, top, top);
+            let Some(mid_floor) = cache.floor_below_m(wx, wz, base + STOREY_M) else {
+                continue;
+            };
+            let mid = Vec3::new(wx, mid_floor + PLAYER_BASE_Y, wz);
+            cache.prewarm_for_move(&mut worlds, &m, SERVED_SEED, mid, top);
+
+            // ¿Son válidos los DOS extremos? Un `find_path` de cero pasos casi siempre es un
+            // origen que la propia navegación considera inandable, no un camino que no existe.
+            let top_floor = cache.floor_below_m(top.x, top.z, top.y - PLAYER_BASE_Y);
+            let top_walk = top_floor
+                .and_then(|f| nav::floor_at(&cache, top.x, top.z, f))
+                .is_some();
+            let mid_walk = nav::floor_at(&cache, mid.x, mid.z, mid_floor).is_some();
+            if !top_walk || !mid_walk {
+                println!(
+                    "[escalera] ({rx},{rz}) EXTREMO INANDABLE en ({wx:.1},{wz:.1}):                      arriba={top_walk} (suelo {top_floor:?}, esperado {:.2}) · medio={mid_walk}",
+                    top.y - PLAYER_BASE_Y
+                );
+            }
+
+            // Cuántas de las cuatro vecinas del origen son andables. Cero = isla de una celda, y
+            // entonces `find_path` no puede hacer nada por mucho que el destino exista.
+            let vecinas = |p: Vec3, floor: f32| -> usize {
+                let c = nav::cell_of(p.x, p.z);
+                [(1, 0), (-1, 0), (0, 1), (0, -1)]
+                    .iter()
+                    .filter(|(dx, dz)| {
+                        let (nx, nz) = nav::cell_centre(c.0 + dx, c.1 + dz);
+                        nav::floor_at(&cache, nx, nz, floor).is_some()
+                    })
+                    .count()
+            };
+            println!(
+                "[escalera] ({rx},{rz}) ({wx:.1},{wz:.1}) vecinas andables: arriba {} · medio {}",
+                top_floor.map(|f| vecinas(top, f)).unwrap_or(9),
+                vecinas(mid, mid_floor)
+            );
+
+            let mut path = Vec::new();
+
+            // SUBIR: del medio de la escalera al espacio de arriba.
+            let o_up = nav::find_path(&cache, mid, top, &mut path);
+            println!(
+                "[escalera-diag] ({rx},{rz}) SUBIR exp={} reached={} best={} pasos={}                  dist_celdas={}",
+                o_up.expansions,
+                o_up.reached,
+                o_up.best_effort,
+                path.len(),
+                (nav::cell_of(mid.x, mid.z).0 - nav::cell_of(top.x, top.z).0).abs()
+                    + (nav::cell_of(mid.x, mid.z).1 - nav::cell_of(top.x, top.z).1).abs()
+            );
+            let reached_up = path.iter().map(|p| p.y).fold(f32::MIN, f32::max) >= top.y - 0.5;
+            if reached_up {
+                up_ok += 1;
+            } else {
+                up_fail += 1;
+            }
+
+            // BAJAR: del espacio de arriba al medio de la escalera.
+            let o_dn = nav::find_path(&cache, top, mid, &mut path);
+            println!(
+                "[bajar] ({rx},{rz}) exp={} reached={} best={} pasos={} · candidatos bajo el                  rellano={}",
+                o_dn.expansions,
+                o_dn.reached,
+                o_dn.best_effort,
+                path.len(),
+                {
+                    let c = nav::cell_of(top.x, top.z);
+                    let f = top.y - PLAYER_BASE_Y;
+                    [(1, 0), (-1, 0), (0, 1), (0, -1)]
+                        .iter()
+                        .map(|(dx, dz)| {
+                            let (nx, nz) = nav::cell_centre(c.0 + dx, c.1 + dz);
+                            nav::floors_at(&cache, nx, nz, f).len()
+                        })
+                        .sum::<usize>()
+                }
+            );
+            let low = path.iter().map(|p| p.y).fold(f32::MAX, f32::min);
+            let reached_down = !path.is_empty() && low <= mid.y + 0.5;
+            if reached_down {
+                down_ok += 1;
+            } else {
+                down_fail += 1;
+                println!(
+                    "[escalera] ({rx},{rz}) NO BAJA en ({wx:.1},{wz:.1}): de y={:.2} a y={:.2}, \
+                     {} pasos, lo más bajo alcanzado y={:.2}",
+                    top.y,
+                    mid.y,
+                    path.len(),
+                    if path.is_empty() { top.y } else { low }
+                );
+            }
+        }
+    }
+
+    println!(
+        "[escalera] SUBIR {up_ok} ok / {up_fail} fallan · BAJAR {down_ok} ok / {down_fail} fallan"
+    );
+}

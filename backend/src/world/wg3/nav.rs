@@ -72,6 +72,17 @@ pub struct NavOutcome {
     pub expansions: usize,
 }
 
+/// Cuánta cota separa una celda del destino, en metros.
+fn floor_gap(key: CellKey, goal_floor: f32) -> f32 {
+    (key.2 as f32 / 100.0 - goal_floor).abs()
+}
+
+/// Cuánto puede desviarse la cota de llegada y seguir contando como haber llegado.
+///
+/// Medio metro: más que cualquier peldaño y muchísimo menos que una planta (3,32), así que distingue
+/// «he llegado» de «estoy justo debajo».
+const GOAL_FLOOR_TOLERANCE_M: f32 = 0.5;
+
 /// Un nodo de la frontera. El orden está invertido para que `BinaryHeap` —que es un montón de
 /// máximos— entregue el de menor coste.
 #[derive(PartialEq, Eq)]
@@ -103,6 +114,31 @@ type CellKey = (i32, i32, i32);
 /// `None` cuando no hay suelo, no cabe uno de pie, o hay algo estorbando. Las tres condiciones hacen
 /// falta y ninguna sobra: el suelo puede existir y tener el techo a un metro, o estar libre y tener un
 /// pilar dentro del radio del cuerpo.
+/// Las cotas a las que se puede pisar una celda viniendo de `from_floor`: **hasta dos**.
+///
+/// Una sola no basta, y ése fue el fallo que dejaba al robapieles subiendo escaleras y no bajándolas.
+/// El rellano y el primer peldaño comparten celda —huella de 60 cm, celda de 50— y
+/// [`Wg3CollisionCache::floor_below_m`] siempre devuelve el más alto de los dos, así que desde el
+/// rellano **nunca se ofrecía el peldaño de abajo**: el grafo era de un solo sentido.
+pub fn floors_at(cache: &Wg3CollisionCache, x: f32, z: f32, from_floor: f32) -> Vec<f32> {
+    let mut out = Vec::with_capacity(2);
+    if let Some(f) = floor_at(cache, x, z, from_floor) {
+        out.push(f);
+        // Y la de abajo, si la hay y está a un escalón. El tope importa: sin él, cualquier vecina
+        // ofrecería el suelo de la planta inferior y las criaturas se tirarían por los balcones.
+        let step = MAX_WALK_STEP_CM as f32 / 100.0;
+        if let Some(lower) = cache.floor_strictly_below_m(x, z, f) {
+            if f - lower <= step
+                && (from_floor - lower).abs() <= step
+                && cache.headroom_m(x, z, lower).is_some_and(|h| h >= BODY_M)
+            {
+                out.push(lower);
+            }
+        }
+    }
+    out
+}
+
 pub fn floor_at(cache: &Wg3CollisionCache, x: f32, z: f32, from_floor: f32) -> Option<f32> {
     // **Suelo CRUDO, no la cota del jugador.** `floor_y` conserva la de entrada cuando no encuentra
     // nada —correcto para moverse, porque no teletransporta— y eso hacía que un vacío se leyera como
@@ -139,7 +175,19 @@ pub fn find_path(
 
     let start_cell = cell_of(from.x, from.z);
     let goal_cell = cell_of(to.x, to.z);
-    let start_floor = from.y - BODY_M;
+    // **La cota de partida se PEGA al suelo real, no se cree la que llega.**
+    //
+    // Es el fallo que dejaba al robapieles clavado, y no daba error de ninguna clase: si la Y que trae
+    // no cae en el suelo de esa columna —porque se movió sobre una losa que aquí está recortada, o
+    // porque su FSM la calculó con otras cotas— la búsqueda arranca FLOTANDO, y entonces sus cuatro
+    // vecinas quedan a más de un escalón y **no hay ni una salida**. Medido: `exp=1`, cero pasos, con
+    // los vecinos perfectamente andables.
+    //
+    // Pegarla es lo mismo que hace el pin al suelo del resolutor de entidad, un nivel más arriba.
+    let start_floor = cache
+        .floor_below_m(from.x, from.z, from.y - BODY_M)
+        .unwrap_or(from.y - BODY_M);
+    let goal_floor = to.y - BODY_M;
 
     let window = (NAV_WINDOW_M / WG3_CELL_M) as i32;
     let in_window = |c: (i32, i32)| {
@@ -167,11 +215,18 @@ pub fn find_path(
         key: start_key,
     });
 
-    let mut best = (start_key, h(start_cell));
+    let mut best = (
+        start_key,
+        h(start_cell) + (floor_gap(start_key, goal_floor) / WG3_CELL_M) as i64,
+    );
     let mut found: Option<CellKey> = None;
 
     while let Some(Node { key, .. }) = open.pop() {
-        if (key.0, key.1) == goal_cell {
+        // **Llegar es coincidir en XZ Y EN COTA.** Con sólo XZ, pedir un punto de otra planta se da
+        // por alcanzado en cuanto se pasa por encima o por debajo: la criatura cree que llegó, se
+        // para, y se queda clavada al pie de la escalera. Visto jugando antes que en ningún número, y
+        // es el mismo error de fondo que la celda 2D — un destino sin cota no dice dónde.
+        if (key.0, key.1) == goal_cell && floor_gap(key, goal_floor) <= GOAL_FLOOR_TOLERANCE_M {
             found = Some(key);
             stats.reached = true;
             break;
@@ -181,7 +236,9 @@ pub fn find_path(
         }
         stats.expansions += 1;
 
-        let hk = h((key.0, key.1));
+        // El mejor parcial se mide en XZ **y en cota**: si no, quedarse justo debajo del destino
+        // puntúa como haber llegado, que es el mismo fallo por la puerta de atrás.
+        let hk = h((key.0, key.1)) + (floor_gap(key, goal_floor) / WG3_CELL_M) as i64;
         if hk < best.1 {
             best = (key, hk);
         }
@@ -194,25 +251,24 @@ pub fn find_path(
                 continue;
             }
             let (nx, nz) = cell_centre(nc.0, nc.1);
-            let Some(nfloor) = floor_at(cache, nx, nz, floor) else {
-                continue;
-            };
-            // **El enlace usa el mismo escalón que sube el jugador.** Es lo que hace que una escalera
-            // se pueda navegar y que el suelo de un atrio no conecte con su balcón.
-            if ((nfloor - floor).abs() * 100.0) as i32 > MAX_WALK_STEP_CM {
-                continue;
+            for nfloor in floors_at(cache, nx, nz, floor) {
+                // **El enlace usa el mismo escalón que sube el jugador.** Es lo que hace que una
+                // escalera se pueda navegar y que el suelo de un atrio no conecte con su balcón.
+                if ((nfloor - floor).abs() * 100.0) as i32 > MAX_WALK_STEP_CM {
+                    continue;
+                }
+                let nk: CellKey = (nc.0, nc.1, (nfloor * 100.0).round() as i32);
+                let ng = g + 1;
+                if cost.get(&nk).is_some_and(|&c| c <= ng) {
+                    continue;
+                }
+                cost.insert(nk, ng);
+                came.insert(nk, key);
+                open.push(Node {
+                    f: ng + h(nc),
+                    key: nk,
+                });
             }
-            let nk: CellKey = (nc.0, nc.1, (nfloor * 100.0).round() as i32);
-            let ng = g + 1;
-            if cost.get(&nk).is_some_and(|&c| c <= ng) {
-                continue;
-            }
-            cost.insert(nk, ng);
-            came.insert(nk, key);
-            open.push(Node {
-                f: ng + h(nc),
-                key: nk,
-            });
         }
     }
 

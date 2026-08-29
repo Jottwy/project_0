@@ -156,6 +156,16 @@ impl Wg3CollisionCache {
             .floor_below(x, from_floor + STEP_UP_M, z)
     }
 
+    /// La superficie pisable ESTRICTAMENTE por debajo de una cota. `None` si no hay.
+    ///
+    /// Hace falta para BAJAR. [`Self::floor_below_m`] se queda con la más alta que no pase del
+    /// escalón, y en una escalera el rellano y el primer peldaño comparten celda —la huella mide 60 cm
+    /// y la celda 50—, así que siempre devuelve el rellano: **el peldaño de abajo no se ofrece jamás y
+    /// el grafo sube pero no baja**. Con esta consulta, una vecina puede ofrecer las dos.
+    pub fn floor_strictly_below_m(&self, x: f32, z: f32, y: f32) -> Option<f32> {
+        self.raster_at(x, z)?.floor_below(x, y - 0.01, z)
+    }
+
     /// Hueco libre por encima del suelo de esta columna, en metros. `None` si no hay suelo.
     ///
     /// **Es la pregunta correcta para NAVEGAR, y `blocked_at` es la equivocada.** Aquélla barre una
