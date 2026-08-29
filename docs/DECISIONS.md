@@ -10571,3 +10571,48 @@ Hoy, con WG3, **no aparece un solo objeto**, y eso es más visible que cualquier
 - Las **tablas de loot hay que reautorarlas** por papel. Es trabajo de Joel, no de código.
 - Cuando esto acabe, **lo único que quedará de WG2 en el juego será su generación en el servidor** — y
   entonces sí se puede escribir el ADR de la retirada.
+
+---
+
+## ADR-108 — Enmienda 1: el loot NO estaba roto, y la cadena de deducciones que llevó a decir que sí (2026-08-29)
+
+### La corrección
+
+El cuerpo de este ADR dice que «hoy, con WG3, **no aparece un solo objeto**» y lo usa para justificar
+adelantar D4. **Es falso, y no había ningún fallo que arreglar.**
+
+`ChunkLootRoll` lo tiene escrito desde hace doce días: *«RECORTE 2026-08-17 (prueba de escasez):
+`itemCacheChance` de cada zona bajó ×10 y `carryableZoneChance` está a CERO en las 13»*. Con un chunk
+de 50 m y una probabilidad del 4-6 % por columna, eso es **un alijo por kilómetro andado**, y **cero
+transportables**. Que casi no se vea loot es exactamente lo que se pidió.
+
+### Lo que sigue siendo cierto de D4
+
+El reparto por papel **se mantiene aprobado**, pero por otra razón que la escrita: no es que el loot
+falte, es que hoy se reparte por el `zone_kind` de WG2 **en un mundo de WG3** — o sea por un mapa que
+ya no existe. Eso es **incoherente, no invisible**, y baja de prioridad: deja de ser el candidato a
+adelantarse y vuelve a su sitio detrás del robapieles y los facelings.
+
+### La cadena de deducciones falsas, porque el método importa más que el fallo
+
+Cuatro afirmaciones encadenadas, todas mías, todas equivocadas, y todas por deducir en vez de medir:
+
+1. **«El loot cuelga del pipeline de WG2 y por eso está ausente.»** No: `ZoneRegistry` se puebla cada
+   frame desde el estado IPC, y el backend sigue enviando zonas porque sigue generando WG2.
+2. **«La escena de juego es `BackroomsWithSTP`.»** No: es `STP_Showcase`. El error fue buscar en las
+   escenas el GUID del **script**, y **una instancia de prefab referencia el GUID del PREFAB**, no el
+   del script que lleva dentro. Con esa búsqueda, la escena de juego parecía no tener ni mundo ni
+   cliente IPC.
+3. **«Las cuatro puertas `"STP_Showcase"` son un campo que nadie puede poner.»** El diagnóstico de
+   forma era correcto —esos componentes se crean en runtime— pero **el valor era el bueno**. Se llegó a
+   escribir un `GameplaySceneGate` para arreglar algo que no estaba roto; revertido entero.
+4. **«El raycast de colocación no ve la geometría de WG3.»** No: `GeoLayers = { 0, 14, 15, 16 }`
+   incluye la capa 0, que es donde vive WG3.
+
+**Y el dato estaba en la memoria del proyecto desde el principio** —la dirección de escasez tipo DayZ,
+con el recorte ya implementado— sin consultarla. La medida barata era abrir la tabla de loot antes de
+abrir nada más.
+
+**La regla, y este proyecto ya la tenía escrita:** cuando algo «no aparece», medir qué produce el
+sistema **antes** de deducir por qué no lo produce. Tres de los cuatro errores de arriba se caen solos
+con una sola lectura del dato en vez de una cadena de inferencias sobre el código.

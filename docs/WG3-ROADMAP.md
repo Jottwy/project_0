@@ -30,11 +30,16 @@ que se cae y macizos —pretiles y megapilares— (ADR-104 y ADR-105, wire 50).
 
 | En WG3 | Sigue en WG2 |
 |---|---|
-| geometría · movimiento y colisión del jugador · spawn · materiales y papel · luz, zumbido y reverb | robapieles · facelings · **loot (hoy AUSENTE, no descolocado)** · construcción y claims · salas autoradas del editor · zonas y su ambiente · la generación de WG2 en el servidor |
+| geometría · movimiento y colisión del jugador · spawn · materiales y papel · luz, zumbido y reverb | robapieles · facelings · loot (se reparte por la zona de WG2, o sea por un mapa que ya no existe) · construcción y claims · salas autoradas del editor · zonas y su ambiente · la generación de WG2 en el servidor |
 
-**Lo que eso significa jugando:** el mundo se ve y se anda entero, pero está **vacío de objetos** y las
-criaturas se mueven por una geometría que ya no existe. Es el precio de haber mudado la autoridad antes
-que sus consumidores, y estaba previsto — no es un fallo que buscar.
+**Lo que eso significa jugando:** el mundo se ve y se anda entero, pero las criaturas se mueven por una
+geometría que ya no existe y el loot se reparte por las zonas del mundo viejo. Es el precio de haber
+mudado la autoridad antes que sus consumidores, y estaba previsto.
+
+**Y una corrección, porque este fichero llegó a afirmar lo contrario:** que casi no salga loot **no es
+una regresión de WG3**. `itemCacheChance` bajó ×10 y `carryableZoneChance` está a CERO en las trece
+zonas desde el recorte de escasez del 2026-08-17 — o sea **un alijo por kilómetro andado y ningún
+transportable**, que es lo que se pidió. Buscar ahí un fallo de la migración es perseguir un fantasma.
 
 ### Los tres estados en los que puede estar una cosa
 
@@ -121,7 +126,8 @@ loot que puede aparecer dentro de un macizo.
 
 - El **fantasma** es lo más barato que queda: un `match` más, la costura ya está.
 - Los **facelings** no pasan por `resolve_move_src` y necesitan trabajo propio.
-- El **loot** resuelve contra la rejilla vieja.
+- El **loot** resuelve contra la rejilla vieja: hoy reparte por `zone_kind` de WG2 en un mundo de WG3.
+  Eso es incoherente, **no invisible** — lo poco que se ve es la escasez pedida, no la migración.
 
 **2. Identidad de subnivel (ADR-103).** Aprobado, cero código, y **desbloqueado por ADR-104**: los
 agujeros son el descenso que le faltaba al eje Y. La identidad se mueve en el AIRE —niebla, ambiente,
