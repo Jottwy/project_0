@@ -142,32 +142,7 @@ namespace BackroomsSurvival.WorldGen3
 
             AddColliders(go, volumes, origin);
 
-            if (addLight)
-            {
-                // Un plafón cada pocos metros y no uno por tramo: un conector puede medir veinte
-                // metros, y un solo punto de luz en el centro deja los dos extremos a oscuras — que
-                // es justo donde está lo que hay que ver, la puerta a la que lleva.
-                float length = Mathf.Max(segment.SizeX, segment.SizeZ);
-                int lamps = Mathf.Clamp(Mathf.RoundToInt(length / 6f), 1, 6);
-                for (int i = 0; i < lamps; i++)
-                {
-                    float t = (i + 0.5f) / lamps;
-                    var lamp = new GameObject($"light_{i}");
-                    lamp.hideFlags = HideFlags.DontSave;
-                    lamp.transform.SetParent(go.transform, false);
-                    lamp.transform.localPosition = new Vector3(
-                        segment.SizeX > segment.SizeZ ? segment.SizeX * t : segment.SizeX * 0.5f,
-                        segment.Height - 0.2f,
-                        segment.SizeZ >= segment.SizeX ? segment.SizeZ * t : segment.SizeZ * 0.5f);
-
-                    var light = lamp.AddComponent<Light>();
-                    light.type = LightType.Point;
-                    light.range = 9f;
-                    light.intensity = 1.1f;
-                    light.color = new Color(1f, 0.96f, 0.78f);
-                    light.shadows = LightShadows.None;
-                }
-            }
+            if (addLight) AddSegmentLights(go, segment);
 
             return go;
         }
@@ -204,6 +179,66 @@ namespace BackroomsSurvival.WorldGen3
             {
                 if (Application.isPlaying) Object.Destroy(stray);
                 else Object.DestroyImmediate(stray);
+            }
+        }
+
+        /// <summary>
+        /// Los plafones de un tramo, en REJILLA y no en fila.
+        ///
+        /// # Lo que estaba mal, y se vio andando antes que en ningún número
+        ///
+        /// La versión anterior sacaba el número de lámparas de `Max(SizeX, SizeZ)` y las alineaba por
+        /// el eje largo: escrita para un conector, donde es correcta. **En una nave de 25 × 25 daba
+        /// cuatro plafones en fila por el centro y dejaba las cuatro esquinas negras**, y el síntoma
+        /// en pantalla era un techo con manchas oscuras enormes que parecían falta de geometría. El
+        /// lado corto no entraba en la cuenta ni para contar ni para colocar.
+        ///
+        /// Ahora la densidad sale de los DOS ejes por separado. Un pasillo largo y estrecho recibe
+        /// exactamente lo de antes —una fila— porque su lado corto pide una sola columna, así que
+        /// esto no cambia lo que ya estaba bien.
+        ///
+        /// # Y en un espacio alto los plafones CUELGAN
+        ///
+        /// Un atrio mide 6,40 m (ADR-104 D1) y el plafón iba a `Height - 0.2`, o sea a 6,20 m con el
+        /// mismo alcance de 9 m: casi todo el alcance se gasta antes de llegar al suelo. Colgarlos
+        /// deja el suelo iluminado igual que en una sala normal y el techo alto en penumbra, que en un
+        /// atrio es lo que se quiere.
+        ///
+        /// **No se toca ni el alcance, ni la intensidad, ni el color**: son valores que Joel validó
+        /// mirándolos en partida. Lo que cambia aquí es CUÁNTOS y DÓNDE.
+        /// </summary>
+        private static void AddSegmentLights(GameObject go, Wg3Segment segment)
+        {
+            // Un plafón cada seis metros por eje, que es el ritmo que ya tenía el conector.
+            const float Spacing = 6f;
+            // Tope por eje: con tramos de 25 m como mucho (MAX_SEGMENT_M) son 4 × 4.
+            const int MaxPerAxis = 4;
+            // A partir de aquí el techo es alto y el plafón pasa a colgar.
+            const float HangHeight = 3f;
+
+            int nx = Mathf.Clamp(Mathf.RoundToInt(segment.SizeX / Spacing), 1, MaxPerAxis);
+            int nz = Mathf.Clamp(Mathf.RoundToInt(segment.SizeZ / Spacing), 1, MaxPerAxis);
+            float y = Mathf.Min(segment.Height - 0.2f, HangHeight);
+
+            for (int ix = 0; ix < nx; ix++)
+            {
+                for (int iz = 0; iz < nz; iz++)
+                {
+                    var lamp = new GameObject($"light_{ix}_{iz}");
+                    lamp.hideFlags = HideFlags.DontSave;
+                    lamp.transform.SetParent(go.transform, false);
+                    lamp.transform.localPosition = new Vector3(
+                        segment.SizeX * (ix + 0.5f) / nx,
+                        y,
+                        segment.SizeZ * (iz + 0.5f) / nz);
+
+                    var light = lamp.AddComponent<Light>();
+                    light.type = LightType.Point;
+                    light.range = 9f;
+                    light.intensity = 1.1f;
+                    light.color = new Color(1f, 0.96f, 0.78f);
+                    light.shadows = LightShadows.None;
+                }
             }
         }
 
