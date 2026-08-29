@@ -29,6 +29,78 @@ namespace BackroomsSurvival.WorldGen3
     /// exactamente la fuga que se documentó en <c>VerticalShaftChunk</c>, donde `Clear()` destruía
     /// los hijos y nunca los recursos. Por eso <see cref="Clear"/> existe y por eso lleva la lista.
     /// </summary>
+    /// <summary>
+    /// La CAPA DE RENDER de cada planta, que es lo que impide que la luz de abajo atraviese el forjado.
+    ///
+    /// # El problema, medido
+    ///
+    /// Los plafones son puntuales SIN SOMBRA con alcance de hasta 21,75 m contra una losa de 12 cm, así
+    /// que la luz de la planta baja ilumina el suelo y las paredes de la de arriba a través del
+    /// forjado. Con atrios de 6,40 m (ADR-104) es peor que nunca. **No se arregla bajando alcance ni
+    /// intensidad: son valores validados en partida, y además el problema no es que sobre luz — es que
+    /// llega a donde no debe.**
+    ///
+    /// # La regla, y son dos frases asimétricas
+    ///
+    /// - **Una LUZ ilumina sólo la planta de su propio suelo.**
+    /// - **Una superficie pertenece a TODAS las plantas que su volumen atraviesa.**
+    ///
+    /// De ahí sale todo lo demás sin ningún caso especial. Un plafón de la planta baja no toca las
+    /// salas de arriba: fuga cerrada. Un atrio mide dos plantas, así que lleva las dos capas y **lo
+    /// iluminan los plafones de las dos** — que es exactamente lo que se quiere en un balcón que se
+    /// asoma a él. Y un pilar que cruza el atrio se ilumina desde arriba y desde abajo por lo mismo.
+    ///
+    /// **Esto es más simple que lo que ADR-104 D9 escribió** —«la cota menos la unión de los vanos de
+    /// forjado, con una celda de margen»— y consigue lo mismo sin analizar un solo vano: el volumen de
+    /// cada cosa ya dice qué plantas ocupa. Lo que la regla simple NO da son los haces de luz por un
+    /// agujero pequeño: la lámpara de arriba no alumbra la sala de abajo a través de él. Queda anotado
+    /// como deuda a propósito, y no como descuido.
+    /// </summary>
+    public static class Wg3StoreyLayers
+    {
+        /// <summary>Altura de planta, espejo de <c>plan::STOREY_HEIGHT_CM</c>. Si allí cambia, aquí
+        /// también: una planta contada mal reparte las capas mal y la fuga vuelve sin avisar.</summary>
+        public const float StoreyM = 3.32f;
+
+        /// <summary>URP define ocho capas de render. Por encima de la séptima planta se reutiliza la
+        /// última: un edificio de nueve pisos volvería a filtrar, y es mejor que filtre a que se
+        /// desborde el desplazamiento y la máscara salga en cero — sin capa, un objeto no lo ilumina
+        /// NADA y el síntoma es una sala completamente negra.</summary>
+        private const int MaxLayer = 7;
+
+        /// <summary>
+        /// La planta a la que pertenece una cota.
+        /// </summary>
+        /// <remarks>
+        /// **SUELO Y NO REDONDEO, y con redondeo esto no separaba nada.** La planta <c>s</c> ocupa
+        /// <c>[s·3,32, (s+1)·3,32)</c>, así que una sala normal de la baja llega a 3,08 y sigue siendo
+        /// de la planta 0. Redondeando, 3,08 / 3,32 = 0,93 da **1**: toda sala corriente habría
+        /// reclamado las dos plantas, todas las capas se habrían solapado y la fuga habría seguido
+        /// exactamente igual — con el código puesto, las máscaras asignadas y ningún error.
+        ///
+        /// El epsilon positivo es para el suelo de una planta alta: 3,32 / 3,32 puede dar 0,99999 en
+        /// <c>float</c> y caer una planta por debajo.
+        /// </remarks>
+        private static int StoreyOf(float y) =>
+            Mathf.Clamp(Mathf.FloorToInt(y / StoreyM + 0.001f), 0, MaxLayer);
+
+        /// <summary>La capa de una LUZ: sólo la planta de su suelo.</summary>
+        public static uint ForLight(float floorY) => 1u << StoreyOf(floorY);
+
+        /// <summary>Las capas de una SUPERFICIE: todas las que su volumen atraviesa.</summary>
+        public static uint ForSurface(float floorY, float height)
+        {
+            int lo = StoreyOf(floorY);
+            // Un epsilon por debajo del remate: una sala de 3,08 acaba en 3,08 y no debe reclamar la
+            // planta 1, cuyo suelo está en 3,32. Sin esto, toda sala normal pediría dos capas y la
+            // separación no separaría nada.
+            int hi = StoreyOf(floorY + Mathf.Max(height - 0.05f, 0f));
+            uint mask = 0u;
+            for (int i = lo; i <= hi; i++) mask |= 1u << i;
+            return mask == 0u ? 1u : mask;
+        }
+    }
+
     public static class Wg3SceneAssembler
     {
         /// <summary>Tolerancia bajo la cual un giro se considera nulo y el volumen puede compartir
@@ -98,6 +170,14 @@ namespace BackroomsSurvival.WorldGen3
                 AddColliders(go, volumes, origin);
 
                 if (addLights) AddCeilingLight(go, placement);
+
+                // La pieza autorada también entra en el reparto por plantas: si no, es lo único que
+                // sigue iluminándose y iluminando a través del forjado, y la fuga vuelve por la
+                // puerta del catálogo.
+                uint pieceMask = Wg3StoreyLayers.ForSurface(
+                    placement.originY, placement.piece.heightMeters);
+                foreach (Renderer pr in go.GetComponentsInChildren<Renderer>(true))
+                    pr.renderingLayerMask = pieceMask;
             }
         }
 
@@ -139,6 +219,10 @@ namespace BackroomsSurvival.WorldGen3
             // un almacén y una nave se dibujaban idénticos.
             Material[] mats = Wg3StyleMaterials.Resolve(materials, segment.style);
             if (mats != null) renderer.sharedMaterials = mats;
+            // Un atrio mide dos plantas, así que pide las dos capas y lo alumbran los plafones de
+            // arriba y los de abajo. Una sala normal pide una sola, y ahí muere la fuga.
+            renderer.renderingLayerMask =
+                Wg3StoreyLayers.ForSurface(segment.FloorY, segment.Height);
 
             AddColliders(go, volumes, origin);
 
@@ -238,6 +322,11 @@ namespace BackroomsSurvival.WorldGen3
                     light.intensity = 1.1f;
                     light.color = new Color(1f, 0.96f, 0.78f);
                     light.shadows = LightShadows.None;
+                    // SOLO su planta. Es la mitad de la regla que cierra la fuga, y la que no se
+                    // puede deducir mirando el objeto: un plafón parece inofensivo.
+                    // `Light.renderingLayerMask` es int y el del Renderer es uint: la conversión
+                    // es explícita a propósito en la API de Unity, no un descuido de aquí.
+                    light.renderingLayerMask = (int)Wg3StoreyLayers.ForLight(segment.FloorY);
                 }
             }
         }
@@ -291,6 +380,9 @@ namespace BackroomsSurvival.WorldGen3
             var renderer = go.AddComponent<MeshRenderer>();
             Material[] mats = Wg3StyleMaterials.Resolve(materials, solid.style);
             if (mats != null) renderer.sharedMaterials = mats;
+            // Un megapilar cruza el atrio de suelo a techo, así que lleva las dos plantas y se
+            // ilumina desde las dos. Un pretil vive en una sola.
+            renderer.renderingLayerMask = Wg3StoreyLayers.ForSurface(origin.y, sy);
 
             AddColliders(go, volumes, origin);
             return go;
@@ -347,6 +439,9 @@ namespace BackroomsSurvival.WorldGen3
             light.intensity = 1.6f;
             light.range = Mathf.Max(placement.SizeX, placement.SizeZ) * 0.75f + 6f;
             light.shadows = LightShadows.None;
+            // Sólo su planta, igual que el plafón de un tramo. Éste es el que más alcance tiene
+            // —hasta 21,75 m— así que es el que peor filtraba.
+            light.renderingLayerMask = (int)Wg3StoreyLayers.ForLight(root.transform.position.y);
         }
 
         /// <summary>Borra la escena montada Y las mallas que creó. Lo segundo es lo que se olvida.</summary>
