@@ -7,6 +7,16 @@ use super::phantom::*;
 // ejercitan sus internos (`AdultMover`, `AdultState`, las constantes de tuning).
 use super::faceling::*;
 
+/// ADR-108 D6 — WG3 apagado, que es el estado de todo backend de test: estas pruebas miden la puerta
+/// de construcción de WG2 y tienen que seguir midiendo exactamente eso.
+fn wg3_off() -> crate::world::wg3::config::Wg3Config {
+    crate::world::wg3::config::Wg3Config::disabled()
+}
+
+fn wg3_cache() -> crate::world::wg3::world::Wg3WorldCache {
+    crate::world::wg3::world::Wg3WorldCache::default()
+}
+
 /// Sin re-siembra, tras cargar una partida los cuatro asignadores arrancan en su base y el
 /// primer `place` reacuña un id que YA existe en el roster. Como `process_stp_demolish`
 /// resuelve por `position(|b| b.id == …)`, demoler la pieza nueva borra la VIEJA.
@@ -826,6 +836,8 @@ async fn report_inventory_updates_player_stp_inventory_with_hygiene() {
         &tx,
         &mut processed,
         0,
+        &wg3_off(),
+        &mut wg3_cache(),
     )
     .await;
 
@@ -856,6 +868,8 @@ async fn report_inventory_updates_player_stp_inventory_with_hygiene() {
         &tx,
         &mut processed,
         0,
+        &wg3_off(),
+        &mut wg3_cache(),
     )
     .await;
     assert_eq!(player.stp_inventory.len(), 1);
@@ -897,6 +911,8 @@ async fn report_inventory_with_container_and_slot_also_populates_inventory_v2() 
         &tx,
         &mut processed,
         0,
+        &wg3_off(),
+        &mut wg3_cache(),
     )
     .await;
 
@@ -941,6 +957,8 @@ async fn report_inventory_legacy_only_leaves_inventory_v2_empty() {
         &tx,
         &mut processed,
         0,
+        &wg3_off(),
+        &mut wg3_cache(),
     )
     .await;
 
@@ -5870,6 +5888,8 @@ fn claim_at(net: &mut NetworkManager, owner: u16, position: [f32; 3]) -> u32 {
         false,
         owner,
         net,
+        &wg3_off(),
+        &mut wg3_cache(),
     );
     net.stp_buildings
         .last()
@@ -5894,7 +5914,18 @@ async fn stp_place_outside_a_build_room_is_rejected() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let outside = open_world_spot(42);
 
-    process_stp_place(1, CLAIM_MARKER_DEF_ID, outside, 0.0, 0, false, 1, &mut net);
+    process_stp_place(
+        1,
+        CLAIM_MARKER_DEF_ID,
+        outside,
+        0.0,
+        0,
+        false,
+        1,
+        &mut net,
+        &wg3_off(),
+        &mut wg3_cache(),
+    );
 
     assert!(
         net.stp_buildings.is_empty(),
@@ -5908,7 +5939,18 @@ async fn stp_place_inside_a_build_room_is_accepted() {
     let inside = build_room_centre(42);
 
     claim_at(&mut net, 1, inside);
-    process_stp_place(1, 111, inside, 0.0, 0, false, 1, &mut net);
+    process_stp_place(
+        1,
+        111,
+        inside,
+        0.0,
+        0,
+        false,
+        1,
+        &mut net,
+        &wg3_off(),
+        &mut wg3_cache(),
+    );
 
     assert_eq!(placed_pieces(&net).len(), 1, "la habitación es construible");
 }
@@ -5922,10 +5964,32 @@ async fn a_place_rejected_outside_a_room_does_not_burn_its_place_id() {
     let outside = open_world_spot(42);
     let inside = build_room_centre(42);
 
-    process_stp_place(77, CLAIM_MARKER_DEF_ID, outside, 0.0, 0, false, 1, &mut net);
+    process_stp_place(
+        77,
+        CLAIM_MARKER_DEF_ID,
+        outside,
+        0.0,
+        0,
+        false,
+        1,
+        &mut net,
+        &wg3_off(),
+        &mut wg3_cache(),
+    );
     assert!(net.stp_buildings.is_empty());
 
-    process_stp_place(77, CLAIM_MARKER_DEF_ID, inside, 0.0, 0, false, 1, &mut net);
+    process_stp_place(
+        77,
+        CLAIM_MARKER_DEF_ID,
+        inside,
+        0.0,
+        0,
+        false,
+        1,
+        &mut net,
+        &wg3_off(),
+        &mut wg3_cache(),
+    );
 
     assert_eq!(
         net.stp_buildings.len(),
@@ -5946,14 +6010,36 @@ async fn the_room_gate_ignores_height() {
     let outside = open_world_spot(42);
     let high_outside = [outside[0], 12.0, outside[2]];
 
-    process_stp_place(1, 111, high_inside, 0.0, 0, false, 1, &mut net);
+    process_stp_place(
+        1,
+        111,
+        high_inside,
+        0.0,
+        0,
+        false,
+        1,
+        &mut net,
+        &wg3_off(),
+        &mut wg3_cache(),
+    );
     assert_eq!(
         placed_pieces(&net).len(),
         1,
         "altura dentro de la sala: acepta"
     );
 
-    process_stp_place(2, 111, high_outside, 0.0, 0, false, 1, &mut net);
+    process_stp_place(
+        2,
+        111,
+        high_outside,
+        0.0,
+        0,
+        false,
+        1,
+        &mut net,
+        &wg3_off(),
+        &mut wg3_cache(),
+    );
     assert_eq!(
         placed_pieces(&net).len(),
         1,
@@ -5968,13 +6054,35 @@ async fn only_the_marker_can_be_placed_in_an_unclaimed_room() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let inside = build_room_centre(42);
 
-    process_stp_place(1, 111, inside, 0.0, 0, false, 1, &mut net);
+    process_stp_place(
+        1,
+        111,
+        inside,
+        0.0,
+        0,
+        false,
+        1,
+        &mut net,
+        &wg3_off(),
+        &mut wg3_cache(),
+    );
     assert!(
         net.stp_buildings.is_empty(),
         "sin reclamar no entra una pieza normal"
     );
 
-    process_stp_place(2, CLAIM_MARKER_DEF_ID, inside, 0.0, 0, false, 1, &mut net);
+    process_stp_place(
+        2,
+        CLAIM_MARKER_DEF_ID,
+        inside,
+        0.0,
+        0,
+        false,
+        1,
+        &mut net,
+        &wg3_off(),
+        &mut wg3_cache(),
+    );
     assert_eq!(net.stp_buildings.len(), 1, "el marcador sí entra");
 }
 
@@ -5996,6 +6104,8 @@ async fn a_marker_cannot_be_planted_in_a_claimed_room() {
         false,
         2,
         &mut net,
+        &wg3_off(),
+        &mut wg3_cache(),
     );
     assert_eq!(net.stp_buildings.len(), 1, "no se reclama lo ya reclamado");
 
@@ -6009,6 +6119,8 @@ async fn a_marker_cannot_be_planted_in_a_claimed_room() {
         false,
         1,
         &mut net,
+        &wg3_off(),
+        &mut wg3_cache(),
     );
     assert_eq!(net.stp_buildings.len(), 1);
 }
@@ -6021,13 +6133,35 @@ async fn building_inside_another_players_claim_is_rejected() {
     claim_at(&mut net, 1, inside);
 
     let spot = [inside[0] + 2.0, inside[1], inside[2]];
-    process_stp_place(1, 111, spot, 0.0, 0, false, 2, &mut net);
+    process_stp_place(
+        1,
+        111,
+        spot,
+        0.0,
+        0,
+        false,
+        2,
+        &mut net,
+        &wg3_off(),
+        &mut wg3_cache(),
+    );
     assert!(
         placed_pieces(&net).is_empty(),
         "un jugador ajeno no construye en tu sala"
     );
 
-    process_stp_place(2, 111, spot, 0.0, 0, false, 1, &mut net);
+    process_stp_place(
+        2,
+        111,
+        spot,
+        0.0,
+        0,
+        false,
+        1,
+        &mut net,
+        &wg3_off(),
+        &mut wg3_cache(),
+    );
     assert_eq!(placed_pieces(&net).len(), 1, "el dueño sí construye");
 }
 
@@ -6049,7 +6183,18 @@ async fn stp_demolish_retires_the_piece_and_frees_its_pose_cell() {
     let rotation = 90.0;
     claim_at(&mut net, 1, position);
 
-    process_stp_place(1, 111, position, rotation, 0, true, 1, &mut net);
+    process_stp_place(
+        1,
+        111,
+        position,
+        rotation,
+        0,
+        true,
+        1,
+        &mut net,
+        &wg3_off(),
+        &mut wg3_cache(),
+    );
     assert_eq!(placed_pieces(&net).len(), 1);
     let id = placed_pieces(&net)[0];
     assert!(
@@ -6068,7 +6213,18 @@ async fn stp_demolish_retires_the_piece_and_frees_its_pose_cell() {
     );
 
     // The real proof: the same socket accepts a new piece again.
-    process_stp_place(2, 111, position, rotation, 0, true, 1, &mut net);
+    process_stp_place(
+        2,
+        111,
+        position,
+        rotation,
+        0,
+        true,
+        1,
+        &mut net,
+        &wg3_off(),
+        &mut wg3_cache(),
+    );
     assert_eq!(
         placed_pieces(&net).len(),
         1,
@@ -6085,8 +6241,30 @@ async fn stp_demolish_dedupes_under_retransmit() {
     let room = build_room_centre(42);
     let other = [room[0] + 4.0, room[1], room[2] + 4.0];
     claim_at(&mut net, 1, room);
-    process_stp_place(1, 111, room, 0.0, 0, false, 1, &mut net);
-    process_stp_place(2, 111, other, 0.0, 0, false, 1, &mut net);
+    process_stp_place(
+        1,
+        111,
+        room,
+        0.0,
+        0,
+        false,
+        1,
+        &mut net,
+        &wg3_off(),
+        &mut wg3_cache(),
+    );
+    process_stp_place(
+        2,
+        111,
+        other,
+        0.0,
+        0,
+        false,
+        1,
+        &mut net,
+        &wg3_off(),
+        &mut wg3_cache(),
+    );
     let first = placed_pieces(&net)[0];
 
     process_stp_demolish(900, first, 1, &mut net);
@@ -6106,7 +6284,18 @@ async fn stp_demolish_of_unknown_building_is_ignored() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let room = build_room_centre(42);
     claim_at(&mut net, 1, room);
-    process_stp_place(1, 111, room, 0.0, 0, false, 1, &mut net);
+    process_stp_place(
+        1,
+        111,
+        room,
+        0.0,
+        0,
+        false,
+        1,
+        &mut net,
+        &wg3_off(),
+        &mut wg3_cache(),
+    );
 
     // Two clients cancelling the same piece in one window: the loser finds it already gone.
     process_stp_demolish(901, 0xDEAD_BEEF, 1, &mut net);
@@ -6129,7 +6318,18 @@ async fn stp_demolish_by_a_stranger_is_denied() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let position = build_room_centre(42);
     claim_at(&mut net, 1, position);
-    process_stp_place(1, 111, position, 0.0, 0, true, 1, &mut net);
+    process_stp_place(
+        1,
+        111,
+        position,
+        0.0,
+        0,
+        true,
+        1,
+        &mut net,
+        &wg3_off(),
+        &mut wg3_cache(),
+    );
     let id = placed_pieces(&net)[0];
 
     // El peer 2 pide demoler lo del peer 1.
@@ -6160,7 +6360,18 @@ async fn stp_demolish_of_a_piece_without_owner_is_denied_to_everyone() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let position = build_room_centre(42);
     claim_at(&mut net, 1, position);
-    process_stp_place(1, 111, position, 0.0, 0, true, 1, &mut net);
+    process_stp_place(
+        1,
+        111,
+        position,
+        0.0,
+        0,
+        true,
+        1,
+        &mut net,
+        &wg3_off(),
+        &mut wg3_cache(),
+    );
 
     // Una pieza de save viejo: el campo no existía y serde la trae a 0.
     let id = placed_pieces(&net)[0];
@@ -6189,8 +6400,30 @@ async fn stp_demolish_of_a_standalone_piece_leaves_pose_cells_alone() {
     let position = build_room_centre(42);
     claim_at(&mut net, 1, position);
 
-    process_stp_place(1, 111, position, 0.0, 0, true, 1, &mut net); // group piece: claims the cell
-    process_stp_place(2, 222, position, 0.0, 0, false, 1, &mut net); // free piece: claims nothing
+    process_stp_place(
+        1,
+        111,
+        position,
+        0.0,
+        0,
+        true,
+        1,
+        &mut net,
+        &wg3_off(),
+        &mut wg3_cache(),
+    ); // group piece: claims the cell
+    process_stp_place(
+        2,
+        222,
+        position,
+        0.0,
+        0,
+        false,
+        1,
+        &mut net,
+        &wg3_off(),
+        &mut wg3_cache(),
+    ); // free piece: claims nothing
     let free_id = placed_pieces(&net)[1];
 
     process_stp_demolish(902, free_id, 1, &mut net);
@@ -6215,7 +6448,18 @@ async fn stp_demolish_of_the_bed_clears_the_respawn_point() {
 
     let bed_position = build_room_centre(42);
     claim_at(&mut net, 1, bed_position);
-    process_stp_place(1, BED_DEF_ID, bed_position, 0.0, 0, false, 1, &mut net);
+    process_stp_place(
+        1,
+        BED_DEF_ID,
+        bed_position,
+        0.0,
+        0,
+        false,
+        1,
+        &mut net,
+        &wg3_off(),
+        &mut wg3_cache(),
+    );
     let bed_id = placed_pieces(&net)[0];
     player.respawn_point = Some(Vec3::from_array(bed_position));
 
@@ -6235,6 +6479,8 @@ async fn stp_demolish_of_the_bed_clears_the_respawn_point() {
         &tx,
         &mut processed,
         0,
+        &wg3_off(),
+        &mut wg3_cache(),
     )
     .await;
 
@@ -6258,7 +6504,18 @@ async fn stp_demolish_of_another_bed_keeps_the_respawn_point() {
     let live_bed = build_room_centre(42);
     let doomed_bed = [live_bed[0] + 4.0, live_bed[1], live_bed[2] + 4.0];
     claim_at(&mut net, 1, doomed_bed);
-    process_stp_place(1, BED_DEF_ID, doomed_bed, 0.0, 0, false, 1, &mut net);
+    process_stp_place(
+        1,
+        BED_DEF_ID,
+        doomed_bed,
+        0.0,
+        0,
+        false,
+        1,
+        &mut net,
+        &wg3_off(),
+        &mut wg3_cache(),
+    );
     let doomed_id = placed_pieces(&net)[0];
     player.respawn_point = Some(Vec3::from_array(live_bed));
 
@@ -6278,6 +6535,8 @@ async fn stp_demolish_of_another_bed_keeps_the_respawn_point() {
         &tx,
         &mut processed,
         0,
+        &wg3_off(),
+        &mut wg3_cache(),
     )
     .await;
 
@@ -6340,6 +6599,8 @@ async fn host_departure_saves_the_player_and_announces_session_ended() {
         &mut processed,
         0,
         Some(path.as_path()),
+        &wg3_off(),
+        &mut wg3_cache(),
     )
     .await;
 
@@ -6395,6 +6656,8 @@ async fn a_non_host_peer_leaving_does_not_end_the_session() {
         &mut processed,
         0,
         Some(path.as_path()),
+        &wg3_off(),
+        &mut wg3_cache(),
     )
     .await;
 
@@ -6443,6 +6706,8 @@ async fn the_host_never_ends_its_own_session_when_a_peer_leaves() {
         &mut processed,
         0,
         None,
+        &wg3_off(),
+        &mut wg3_cache(),
     )
     .await;
 
@@ -6481,6 +6746,8 @@ async fn session_ended_carries_the_disconnect_reason() {
         &mut processed,
         0,
         None,
+        &wg3_off(),
+        &mut wg3_cache(),
     )
     .await;
 
@@ -11296,6 +11563,8 @@ async fn report_death_loot_subtracts_pending_theft_deduction_from_stale_snapshot
         &tx,
         &mut processed,
         0,
+        &wg3_off(),
+        &mut wg3_cache(),
     )
     .await;
 
@@ -11359,6 +11628,8 @@ async fn report_inventory_clears_pending_theft_deductions() {
         &tx,
         &mut processed,
         0,
+        &wg3_off(),
+        &mut wg3_cache(),
     )
     .await;
 
@@ -11405,6 +11676,8 @@ async fn steal_command_records_a_pending_theft_deduction() {
         &mut processed,
         0,
         None,
+        &wg3_off(),
+        &mut wg3_cache(),
     )
     .await;
 
@@ -11417,4 +11690,68 @@ async fn steal_command_records_a_pending_theft_deduction() {
         player.inventory_v2.is_empty(),
         "the mirror removal itself must still happen, same as before this fix"
     );
+}
+
+// ── ADR-108 D6 — construir con WG3 ───────────────────────────────────────────────────────────────
+
+fn wg3_seg(
+    style: u8,
+    x_cm: i32,
+    z_cm: i32,
+    floor_y_cm: i32,
+) -> crate::world::wg3::segment::Wg3Segment {
+    crate::world::wg3::segment::Wg3Segment {
+        x_cm,
+        z_cm,
+        size_x_cm: 400,
+        size_z_cm: 400,
+        floor_y_cm,
+        height_cm: 320,
+        openings: Vec::new(),
+        style,
+    }
+}
+
+/// Solo se construye en los espacios que NO sostienen la circulación. La espina, el pasillo y el
+/// cruce son la mitad de la lista a propósito: construir ahí es cortarle el paso a todo el mundo,
+/// que es el griefing más barato que hay.
+#[test]
+fn only_service_storage_and_dead_ends_are_buildable_in_wg3() {
+    // 0 oficina, 1 espina, 2 pasillo/cruce, 3 nave, 4 servicio/almacén, 5 callejón, 6 escalera.
+    for style in [0u8, 1, 2, 3, 6] {
+        let seg = wg3_seg(style, 0, 0, 0);
+        assert!(
+            !wg3_position_is_buildable(Some(&seg)),
+            "el papel {style} no debería ser construible"
+        );
+    }
+    for style in [4u8, 5] {
+        let seg = wg3_seg(style, 0, 0, 0);
+        assert!(
+            wg3_position_is_buildable(Some(&seg)),
+            "el papel {style} sí es construible"
+        );
+    }
+    assert!(
+        !wg3_position_is_buildable(None),
+        "sin espacio no hay nada que construir"
+    );
+}
+
+/// El claim es el ESPACIO, y la cota entra en su identidad: el mismo cuarto una planta más arriba es
+/// otro claim. Sin eso, reclamar abajo regalaría todo lo de encima.
+#[test]
+fn a_wg3_claim_is_one_space_and_the_storey_counts() {
+    let abajo = wg3_seg(4, 1000, 2000, 0);
+    let arriba = wg3_seg(4, 1000, 2000, 332);
+    let otro = wg3_seg(4, 1400, 2000, 0);
+
+    assert_eq!(claim_key_wg3(Some(&abajo)), claim_key_wg3(Some(&abajo)));
+    assert_ne!(
+        claim_key_wg3(Some(&abajo)),
+        claim_key_wg3(Some(&arriba)),
+        "misma huella, otra planta: otro claim"
+    );
+    assert_ne!(claim_key_wg3(Some(&abajo)), claim_key_wg3(Some(&otro)));
+    assert_eq!(claim_key_wg3(None), None, "sin espacio no hay claim");
 }

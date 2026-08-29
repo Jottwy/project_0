@@ -832,6 +832,8 @@ pub async fn run(
                         &to_clients,
                         &mut processed_interactions,
                         tick,
+                        &wg3,
+                        &mut wg3_world,
                     )
                     .await;
                 }
@@ -1314,6 +1316,8 @@ pub async fn run(
                 &mut processed_interactions,
                 tick,
                 player_save_path.as_deref(),
+                &wg3,
+                &mut wg3_world,
             )
             .await;
         }
@@ -2125,6 +2129,8 @@ pub async fn run(
                     &mut processed_interactions,
                     tick,
                     player_save_path.as_deref(),
+                    &wg3,
+                    &mut wg3_world,
                 )
                 .await;
             }
@@ -2147,6 +2153,8 @@ pub async fn run(
                     &mut processed_interactions,
                     tick,
                     player_save_path.as_deref(),
+                    &wg3,
+                    &mut wg3_world,
                 )
                 .await;
             }
@@ -2366,6 +2374,11 @@ async fn handle_network_event(
     // announcing the end of the session. `None` means no file was ever resolved (no identity, or
     // the lock was contested) — exactly the same gate every other save site in this loop uses.
     player_save_path: Option<&std::path::Path>,
+    // ADR-108 D6 — la puerta de construcción pregunta a WG3 qué sitio es éste. Se pasan por
+    // parámetro y no por un global a propósito: es la misma regla R3 que mantiene la composición
+    // fuera de un `OnceLock`.
+    wg3: &crate::world::wg3::config::Wg3Config,
+    wg3_world: &mut crate::world::wg3::world::Wg3WorldCache,
 ) {
     match event {
         NetworkEvent::PeerConnected { id, name } => {
@@ -2605,6 +2618,8 @@ async fn handle_network_event(
                     is_group,
                     requester_id,
                     net,
+                    wg3,
+                    wg3_world,
                 );
                 // Phase B3: relay immediately so the placer's replicated copy (with its group)
                 // arrives within ~RTT, closing the round-trip gap when chaining pieces.
@@ -3898,6 +3913,9 @@ async fn handle_action(
     to_clients: &broadcast::Sender<ServerMessage>,
     processed_interactions: &mut BoundedDedupeSet<(u16, u64)>,
     tick: u64,
+    // ADR-108 D6 — igual que en `handle_network_event`: el host coloca por aquí.
+    wg3: &crate::world::wg3::config::Wg3Config,
+    wg3_world: &mut crate::world::wg3::world::Wg3WorldCache,
 ) {
     match action.action_type.as_str() {
         // ADR-025 Slice B: the client reports REAL local damage (falls, hazards — its
@@ -4552,6 +4570,8 @@ async fn handle_action(
                     is_group,
                     requester_id,
                     net,
+                    wg3,
+                    wg3_world,
                 );
                 // Phase B3: relay immediately so the placer's replicated copy (with its group)
                 // arrives within ~RTT, closing the round-trip gap when chaining pieces.
@@ -5957,6 +5977,61 @@ pub(crate) const CLAIM_MARKER_DEF_ID: i32 = -1977919096; // pub(crate): ADR-089 
 ///
 /// Esto NO comprueba que la posición esté DENTRO de la habitación — de eso se encarga
 /// `position_is_buildable`, que corre siempre antes. Aquí solo se responde "¿de quién es este sitio?".
+/// ADR-108 D6 — con WG3 el claim ya no es un chunk sino el ESPACIO: su esquina y su cota, en
+/// centímetros, que es lo que lo identifica sin inventar ni un id ni un campo de cable. Sigue sin
+/// entrar la Y del jugador —entra la del SUELO del espacio—, así que el piso de arriba de tu sala es
+/// otro claim, que es justo lo que se quiere ahora que hay plantas.
+///
+/// `None` es «aquí no hay espacio»: terreno sin reclamar y sin reclamable, no un claim de nadie.
+fn claim_key_wg3(
+    space: Option<&crate::world::wg3::segment::Wg3Segment>,
+) -> Option<(i32, i32, i32)> {
+    space.map(|s| (s.x_cm, s.z_cm, s.floor_y_cm))
+}
+
+/// El espacio de WG3 que contiene `position`, en propiedad.
+///
+/// Se devuelve CLONADO y no prestado porque el préstamo saldría de la caché de regiones, que hay que
+/// tomar en mutable para poder planificarla: quedarse con la referencia dejaría la caché inmovilizada
+/// durante toda la puerta. Un tramo son cuatro enteros y sus bocas, y esto corre una vez por
+/// colocación, no por tick.
+fn wg3_space_at(
+    wg3: &crate::world::wg3::config::Wg3Config,
+    wg3_world: &mut crate::world::wg3::world::Wg3WorldCache,
+    world_seed: u64,
+    position: [f32; 3],
+) -> Option<crate::world::wg3::segment::Wg3Segment> {
+    let manifest = wg3.manifest()?;
+    if !wg3.is_enabled() {
+        return None;
+    }
+    let coord = crate::world::wg3::chunk::Wg3ChunkCoord::containing(position[0], position[2]);
+    let region = wg3_world.region_for(manifest, world_seed, coord);
+    region
+        .space_at(position[0], position[1], position[2])
+        .cloned()
+}
+
+/// Dueño del claim de WG3 que cubre `position`. Mismo derivado de siempre —los marcadores plantados
+/// son la tabla de claims— pero comparando ESPACIOS en vez de chunks.
+fn claim_owner_at_wg3(
+    buildings: &[crate::network::protocol::StpBuildingInfo],
+    wg3: &crate::world::wg3::config::Wg3Config,
+    wg3_world: &mut crate::world::wg3::world::Wg3WorldCache,
+    world_seed: u64,
+    position: [f32; 3],
+) -> Option<u16> {
+    let here = wg3_space_at(wg3, wg3_world, world_seed, position);
+    let key = claim_key_wg3(here.as_ref())?;
+    for b in buildings.iter().filter(|b| b.def_id == CLAIM_MARKER_DEF_ID) {
+        let there = wg3_space_at(wg3, wg3_world, world_seed, b.position);
+        if claim_key_wg3(there.as_ref()) == Some(key) {
+            return Some(b.owner_id);
+        }
+    }
+    None
+}
+
 fn claim_key(position: [f32; 3]) -> ChunkPos {
     world_to_chunk(Vec3::from_array(position))
 }
@@ -5991,6 +6066,19 @@ fn claim_owner_at(
 /// mismo resultado en todo peer y en cualquier momento — incluido antes de que el chunk se haya
 /// generado nunca. Y es LA MISMA función que decide dónde se talla la habitación, así que la regla
 /// no puede desalinearse de la geometría: si se mueve una, se mueve la otra.
+/// ADR-108 D6 — los papeles en los que SÍ se construye con WG3.
+///
+/// Son los espacios que cuelgan del mundo sin sostenerlo: servicio, almacén y callejón sin salida
+/// (`fill::style_of` 4 y 5). Fuera quedan la espina, el pasillo y el cruce —construir ahí es cortarle
+/// el paso a todo el mundo, que es el griefing más barato que hay— y también la nave, la oficina y la
+/// escalera. No es una lista de gustos: es la regla de «no bloqueante» escrita con el único dato que
+/// el cliente y el host comparten.
+const WG3_BUILDABLE_STYLES: [u8; 2] = [4, 5];
+
+fn wg3_position_is_buildable(space: Option<&crate::world::wg3::segment::Wg3Segment>) -> bool {
+    space.is_some_and(|s| WG3_BUILDABLE_STYLES.contains(&s.style))
+}
+
 fn position_is_buildable(world_seed: u64, position: [f32; 3]) -> bool {
     // ADR-093 E5: la reserva del Level 4 NUNCA es construible, sea lo que sea que diga el sorteo
     // de habitación construible para ese chunk — es una regla de ZONA por encima del sorteo, no
@@ -6018,6 +6106,10 @@ fn process_stp_place(
     is_group: bool,
     requester_id: crate::network::PeerId,
     net: &mut NetworkManager,
+    // ADR-108 D6 — con qué se contesta «¿qué sitio es éste?» cuando manda WG3. `None` en el
+    // manifiesto o WG3 apagado deja las dos puertas exactamente como estaban.
+    wg3: &crate::world::wg3::config::Wg3Config,
+    wg3_world: &mut crate::world::wg3::world::Wg3WorldCache,
 ) {
     // ADR-081 fase 1: la puerta de TERRITORIO va antes que cualquier otra cosa, incluido el dedup.
     // Antes de esto se podía construir en todo el mundo: esta función solo deduplicaba, y el único
@@ -6026,7 +6118,17 @@ fn process_stp_place(
     // El dedup se deja DETRÁS a propósito: un `place_id` rechazado por zona no debe consumir su
     // entrada en `processed_stp_places`, porque el rechazo no es un efecto que haya que proteger de
     // una retransmisión — repetirlo da exactamente el mismo rechazo.
-    if !position_is_buildable(net.world_seed, position) {
+    // ADR-108 D6 — con WG3 mandando, el sitio construible es un ESPACIO con papel de servicio,
+    // almacén o callejón. Se resuelve UNA vez y sirve para las dos puertas: la de territorio y la de
+    // propiedad tienen que hablar del mismo espacio o se puede reclamar uno y construir en otro.
+    let wg3_space = wg3_space_at(wg3, wg3_world, net.world_seed, position);
+    let wg3_on = wg3.is_enabled() && wg3.manifest().is_some();
+    let buildable = if wg3_on {
+        wg3_position_is_buildable(wg3_space.as_ref())
+    } else {
+        position_is_buildable(net.world_seed, position)
+    };
+    if !buildable {
         info!(
             "MPTRACE step=BP event=stp_place_denied_zone place_id={} def_id={} requester_id={} pos=({:.2},{:.2},{:.2}) rejected=true",
             place_id, def_id, requester_id, position[0], position[1], position[2]
@@ -6041,7 +6143,11 @@ fn process_stp_place(
     //  · cualquier otra pieza exige caer dentro de un claim y que ese claim sea TUYO.
     // Sin claim en la zona, entonces, lo único colocable es el marcador: toda pieza construida
     // tiene dueño desde el primer instante y no hay estructuras huérfanas.
-    let owner_here = claim_owner_at(&net.stp_buildings, position);
+    let owner_here = if wg3_on {
+        claim_owner_at_wg3(&net.stp_buildings, wg3, wg3_world, net.world_seed, position)
+    } else {
+        claim_owner_at(&net.stp_buildings, position)
+    };
     let allowed = if def_id == CLAIM_MARKER_DEF_ID {
         owner_here.is_none()
     } else {

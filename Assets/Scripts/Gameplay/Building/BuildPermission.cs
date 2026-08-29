@@ -65,6 +65,26 @@ namespace BackroomsSurvival.Gameplay.Building
         /// </summary>
         public static Verdict Explain(Vector3 worldPosition, int defId)
         {
+            // ADR-108 D6 — con WG3 mandando, el sitio construible es un ESPACIO con papel de
+            // servicio, almacén o callejón sin salida. La habitación tallada de WG2 no existe en
+            // este mundo, así que `BuildRoomRegistry` diría que no en todas partes mientras el host
+            // dice que sí en otras: dos reglas sobre dos mapas distintos.
+            if (Wg3Active(out var streamer))
+            {
+                if (!streamer.ChunkIsBuilt(worldPosition))
+                    return Verdict.ZoneUnknown;
+                if (!streamer.TryGetSpace(worldPosition, out Bounds box, out byte style) ||
+                    !IsBuildableStyle(style))
+                    return Verdict.ZoneNotBuildable;
+
+                ushort ownerWg3 = ClaimOwnerAtWg3(streamer, box);
+                if (defId == ClaimMarkerDefId)
+                    return ownerWg3 == 0 ? Verdict.Allowed : Verdict.AlreadyClaimed;
+                if (ownerWg3 == 0)
+                    return Verdict.Unclaimed;
+                return ownerWg3 == LocalPeerId() ? Verdict.Allowed : Verdict.ClaimedByOther;
+            }
+
             var (cx, cz) = ChunkOf(worldPosition);
             if (!ChunkKnown(cx, cz))
                 return Verdict.ZoneUnknown;
@@ -80,6 +100,57 @@ namespace BackroomsSurvival.Gameplay.Building
 
             return owner == LocalPeerId() ? Verdict.Allowed : Verdict.ClaimedByOther;
         }
+
+        /// <summary>
+        /// ADR-108 D6 — los papeles en los que SÍ se construye. Espejo de `WG3_BUILDABLE_STYLES`
+        /// (backend/src/game_loop.rs): servicio/almacén (4) y callejón sin salida (5), o sea los
+        /// espacios que cuelgan del mundo sin sostenerlo. La espina, el pasillo y el cruce quedan
+        /// fuera porque construir ahí le corta el paso a todos los demás.
+        /// </summary>
+        public static bool IsBuildableStyle(byte style) => style == 4 || style == 5;
+
+        /// <summary>El streamer de WG3 si este mundo es de WG3. `Wg3Enabled` lo dice el backend en el
+        /// saludo: misma fuente de verdad que usa el resto del cliente, no una bandera nueva.</summary>
+        private static bool Wg3Active(out BackroomsSurvival.WorldGen3.Wg3ChunkStreamer streamer)
+        {
+            streamer = null;
+            if (IPCClient.Instance is not { Wg3Enabled: true }) return false;
+            streamer = BackroomsSurvival.WorldGen3.Wg3ChunkStreamer.Active;
+            return streamer != null;
+        }
+
+        /// <summary>
+        /// Dueño del claim de WG3 que cubre ese espacio. Espejo de `claim_owner_at_wg3`: el claim es
+        /// el ESPACIO, y dos posiciones son del mismo claim si caen en la misma caja. La caja se
+        /// compara por su esquina en centímetros —lo mismo que compara el host— y no por igualdad de
+        /// `Bounds`, que es de floats.
+        /// </summary>
+        private static ushort ClaimOwnerAtWg3(
+            BackroomsSurvival.WorldGen3.Wg3ChunkStreamer streamer, Bounds box)
+        {
+            if (!IPCClient.TryGetInstance(out var ipc) || ipc.LatestState == null)
+                return 0;
+
+            var key = KeyOfBox(box);
+            var buildings = ipc.LatestState.stpBuildings;
+            for (int i = 0; i < buildings.Count; i++)
+            {
+                var b = buildings[i];
+                if (b.defId != ClaimMarkerDefId)
+                    continue;
+                var pos = new Vector3(b.position[0], b.position[1], b.position[2]);
+                if (!streamer.TryGetSpace(pos, out Bounds other, out _))
+                    continue;
+                if (KeyOfBox(other) == key)
+                    return b.ownerId;
+            }
+            return 0;
+        }
+
+        private static (int x, int z, int y) KeyOfBox(Bounds box) => (
+            Mathf.RoundToInt(box.min.x * 100f),
+            Mathf.RoundToInt(box.min.z * 100f),
+            Mathf.RoundToInt(box.min.y * 100f));
 
         /// <summary>
         /// Identidad del claim que cubre <paramref name="worldPosition"/>. Espejo de `claim_key`

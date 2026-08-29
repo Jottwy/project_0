@@ -384,13 +384,37 @@ namespace BackroomsSurvival.WorldGen3
             var coord = new Vector2Int(
                 Mathf.FloorToInt(world.x / ChunkSize), Mathf.FloorToInt(world.z / ChunkSize));
             if (!_spaces.TryGetValue(coord, out var spaces)) return false;
+            int best = PickSpace(spaces, world);
+            if (best < 0) return false;
+            style = spaces[best].style;
+            return true;
+        }
+
+        /// <summary>
+        /// EL SUELO MÁS ALTO POR DEBAJO DEL PUNTO, no el primero de la lista. Los espacios SÍ se
+        /// solapan —una escalera mide dos plantas y cruza el volumen de la sala de arriba— y aquí
+        /// llegan repartidos por chunk, o sea en otro orden que en el servidor. Sin una regla que no
+        /// dependa del orden, el aviso del cliente y la puerta del host contestarían cosas distintas.
+        /// Espejo de `Wg3ServedWorld::space_at`, empate por área incluido.
+        /// </summary>
+        private static int PickSpace(List<(Bounds box, byte style)> spaces, Vector3 world)
+        {
+            int best = -1;
             for (int i = 0; i < spaces.Count; i++)
             {
                 if (!spaces[i].box.Contains(world)) continue;
-                style = spaces[i].style;
-                return true;
+                if (best < 0)
+                {
+                    best = i;
+                    continue;
+                }
+                Bounds a = spaces[i].box, b = spaces[best].box;
+                if (a.min.y > b.min.y ||
+                    (Mathf.Approximately(a.min.y, b.min.y) &&
+                     a.size.x * a.size.z < b.size.x * b.size.z))
+                    best = i;
             }
-            return false;
+            return best;
         }
 
         /// <summary>
@@ -404,6 +428,23 @@ namespace BackroomsSurvival.WorldGen3
         public bool ChunkIsBuilt(Vector3 world) =>
             _built.ContainsKey(new Vector2Int(
                 Mathf.FloorToInt(world.x / ChunkSize), Mathf.FloorToInt(world.z / ChunkSize)));
+
+        /// <summary>Como <see cref="TryGetStyle"/>, pero devolviendo también la CAJA del espacio.
+        /// La caja es lo que identifica un espacio sin inventarle un id ni un campo de cable: es la
+        /// misma esquina y la misma cota con las que el host lo identifica.</summary>
+        public bool TryGetSpace(Vector3 world, out Bounds box, out byte style)
+        {
+            box = default;
+            style = 0;
+            var coord = new Vector2Int(
+                Mathf.FloorToInt(world.x / ChunkSize), Mathf.FloorToInt(world.z / ChunkSize));
+            if (!_spaces.TryGetValue(coord, out var spaces)) return false;
+            int best = PickSpace(spaces, world);
+            if (best < 0) return false;
+            box = spaces[best].box;
+            style = spaces[best].style;
+            return true;
+        }
 
         /// <summary>Algún espacio en esa vertical, IGNORANDO la cota. Con el chunk montado, un `false`
         /// aquí es definitivo: por ahí no se pasa a ninguna altura.</summary>

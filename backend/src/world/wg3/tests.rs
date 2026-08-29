@@ -9088,3 +9088,108 @@ fn probe_sight_is_not_the_same_as_passage() {
         "la vista nunca supera al paso: line_of_sight no está aportando nada"
     );
 }
+
+#[test]
+fn probe_space_overlap() {
+    let m = real_manifest();
+    let region = Wg3RegionCoord { x: 0, z: 0 };
+    let served = Wg3ServedWorld::plan_region(&m, SERVED_SEED, region);
+    let segs = served.segments();
+    let mut solapes = 0;
+    let mut total = 0;
+    let mut ejemplo = String::new();
+    for (i, a) in segs.iter().enumerate() {
+        for b in segs.iter().skip(i + 1) {
+            total += 1;
+            let xz = a.x_cm < b.x_cm + b.size_x_cm
+                && b.x_cm < a.x_cm + a.size_x_cm
+                && a.z_cm < b.z_cm + b.size_z_cm
+                && b.z_cm < a.z_cm + a.size_z_cm;
+            let y = a.floor_y_cm < b.floor_y_cm + b.height_cm
+                && b.floor_y_cm < a.floor_y_cm + a.height_cm;
+            if xz && y {
+                solapes += 1;
+                if ejemplo.is_empty() {
+                    ejemplo = format!(
+                        "a=({},{} {}x{} y{} h{} s{}) b=({},{} {}x{} y{} h{} s{})",
+                        a.x_cm,
+                        a.z_cm,
+                        a.size_x_cm,
+                        a.size_z_cm,
+                        a.floor_y_cm,
+                        a.height_cm,
+                        a.style,
+                        b.x_cm,
+                        b.z_cm,
+                        b.size_x_cm,
+                        b.size_z_cm,
+                        b.floor_y_cm,
+                        b.height_cm,
+                        b.style
+                    );
+                }
+            }
+        }
+    }
+    println!(
+        "PROBE overlap: tramos={} pares={total} solapan={solapes} {ejemplo}",
+        segs.len()
+    );
+}
+
+/// ADR-108 D6 — `space_at` contesta por PLANTA y sin depender del orden de la lista.
+///
+/// Los espacios SÍ se solapan (sonda `probe_space_overlap`: 26 pares en la región (0,0); el caso
+/// típico es una escalera de dos plantas cruzando el volumen de una sala de arriba), así que «el
+/// primero que contenga el punto» sería una respuesta que cambia con el orden del vector — y el
+/// cliente los recibe repartidos por chunk, o sea en otro orden. El invariante que se exige es el
+/// que sí es estable: de todos los que contienen el punto, el del SUELO MÁS ALTO.
+#[test]
+fn space_at_answers_by_storey_not_by_list_order() {
+    let m = real_manifest();
+    let region = Wg3RegionCoord { x: 0, z: 0 };
+    let served = Wg3ServedWorld::plan_region(&m, SERVED_SEED, region);
+
+    let mut comprobados = 0;
+    let mut resuelven_a_otro = 0;
+    for seg in served.segments() {
+        let x = (seg.x_cm + seg.size_x_cm / 2) as f32 / 100.0;
+        let z = (seg.z_cm + seg.size_z_cm / 2) as f32 / 100.0;
+        let y = (seg.floor_y_cm + 10) as f32 / 100.0;
+
+        let hit = served
+            .space_at(x, y, z)
+            .expect("el centro de un tramo cae dentro de algún espacio");
+
+        let x_cm = (x * 100.0).round() as i32;
+        let z_cm = (z * 100.0).round() as i32;
+        let y_cm = (y * 100.0).round() as i32;
+        assert!(
+            x_cm >= hit.x_cm
+                && x_cm <= hit.x_cm + hit.size_x_cm
+                && z_cm >= hit.z_cm
+                && z_cm <= hit.z_cm + hit.size_z_cm,
+            "el espacio devuelto tiene que contener el punto"
+        );
+        for otro in served.segments() {
+            let contiene = x_cm >= otro.x_cm
+                && x_cm <= otro.x_cm + otro.size_x_cm
+                && z_cm >= otro.z_cm
+                && z_cm <= otro.z_cm + otro.size_z_cm
+                && y_cm >= otro.floor_y_cm - 40
+                && y_cm <= otro.floor_y_cm + otro.height_cm;
+            assert!(
+                !contiene || otro.floor_y_cm <= hit.floor_y_cm,
+                "hay un espacio con el suelo más alto que también contiene el punto"
+            );
+        }
+
+        if (hit.x_cm, hit.z_cm, hit.floor_y_cm) != (seg.x_cm, seg.z_cm, seg.floor_y_cm) {
+            resuelven_a_otro += 1;
+        }
+        comprobados += 1;
+    }
+
+    assert!(comprobados > 0, "la región servida no tiene tramos");
+    println!("PROBE space_at: centros={comprobados} resuelven_a_otro={resuelven_a_otro}");
+}

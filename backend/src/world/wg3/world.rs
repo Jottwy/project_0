@@ -449,6 +449,42 @@ impl Wg3ServedWorld {
         &self.segments
     }
 
+    /// ADR-108 D6 — el ESPACIO que contiene ese punto del mundo, si alguno.
+    ///
+    /// La cota MANDA y no es un adorno: dos plantas se solapan en XZ, así que un test sólo
+    /// horizontal contestaría el de abajo la mitad de las veces. El margen de una losa por arriba
+    /// existe porque la posición que llega de una colocación es la del objeto sobre el suelo, no la
+    /// del suelo.
+    ///
+    /// Sobre TRAMOS y no sobre el plan a propósito: es exactamente el mismo dato que el cliente
+    /// recibe por el cable, así que la regla del host y el aviso del cliente no pueden desalinearse
+    /// —que es la propiedad que la puerta de construcción necesita y la única forma barata de
+    /// tenerla.
+    pub fn space_at(&self, x: f32, y: f32, z: f32) -> Option<&Wg3Segment> {
+        const HEAD_MARGIN_CM: i32 = 40;
+        let x_cm = (x * 100.0).round() as i32;
+        let z_cm = (z * 100.0).round() as i32;
+        let y_cm = (y * 100.0).round() as i32;
+        self.segments
+            .iter()
+            .filter(|s| {
+                x_cm >= s.x_cm
+                    && x_cm <= s.x_cm + s.size_x_cm
+                    && z_cm >= s.z_cm
+                    && z_cm <= s.z_cm + s.size_z_cm
+                    && y_cm >= s.floor_y_cm - HEAD_MARGIN_CM
+                    && y_cm <= s.floor_y_cm + s.height_cm
+            })
+            // EL SUELO MÁS ALTO POR DEBAJO DEL PUNTO, no el primero de la lista. Los espacios SÍ se
+            // solapan —medido: 26 pares de 47.895 en la región (0,0), y el caso típico es una
+            // escalera de dos plantas cruzando el volumen de una sala de arriba—, así que «el primero
+            // que contenga el punto» depende del orden del vector. Ese orden no es el mismo en el
+            // cliente, que los recibe repartidos por chunk, y la puerta de construcción quedaría
+            // contestando dos cosas distintas al host y al que la mira. Empate por área: manda el más
+            // pequeño, que es el más específico.
+            .min_by_key(|s| (-s.floor_y_cm, (s.size_x_cm as i64) * (s.size_z_cm as i64)))
+    }
+
     /// El chunk que dibuja una tramo: el que contiene su CENTRO, igual que una pieza.
     ///
     /// Y por la misma razón puede usarse la misma regla: el tope de 25 m de lado de tramo
