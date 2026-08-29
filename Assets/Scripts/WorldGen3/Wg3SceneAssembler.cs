@@ -134,7 +134,10 @@ namespace BackroomsSurvival.WorldGen3
 
             go.AddComponent<MeshFilter>().sharedMesh = mesh;
             var renderer = go.AddComponent<MeshRenderer>();
-            Material[] mats = materials != null ? materials.AsArray() : null;
+            // FRENTE A — el papel del espacio decide con qué se viste. `segment.style` llevaba
+            // viajando por el cable desde el wire 48 sin que lo leyera nadie, y por eso un pasillo,
+            // un almacén y una nave se dibujaban idénticos.
+            Material[] mats = Wg3StyleMaterials.Resolve(materials, segment.style);
             if (mats != null) renderer.sharedMaterials = mats;
 
             AddColliders(go, volumes, origin);

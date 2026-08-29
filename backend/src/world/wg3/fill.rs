@@ -1028,6 +1028,10 @@ fn style_of(role: SpaceRole) -> u8 {
         SpaceRole::Hall => 3,
         SpaceRole::Service | SpaceRole::Storage => 4,
         SpaceRole::DeadEnd => 5,
+        // Una escalera es el único sitio del mundo del que se sale por ARRIBA, y caía en el `_ => 0`
+        // de una oficina: el cliente no tenía forma de vestirla distinta y el jugador no tenía forma
+        // de encontrarla. Es el número que más falta hacía de los seis.
+        SpaceRole::Stair => 6,
         _ => 0,
     }
 }

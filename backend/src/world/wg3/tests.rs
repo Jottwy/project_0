@@ -6219,6 +6219,41 @@ fn a_second_storey_is_actually_reachable() {
     }
 }
 
+/// **La escalera se tiene que poder VESTIR distinta.** El byte `style` es lo único que el cliente
+/// recibe para saber qué papel juega un espacio, y `SpaceRole::Stair` caía en el `_ => 0` de una
+/// oficina: el único sitio del mundo del que se sale por arriba llegaba al cliente indistinguible de
+/// una sala cualquiera, y no había forma de encontrarlo salvo tropezándose.
+///
+/// El fallo no da rojo en ningún otro test —un mundo con las escaleras de color oficina se anda
+/// igual de bien—, así que se mide aquí: sobre los tramos SERVIDOS, no sobre la tabla.
+#[test]
+fn a_stair_reaches_the_client_dressed_as_a_stair() {
+    let m = real_manifest();
+    let mut seen = 0usize;
+    for (rx, rz) in AUDIT_REGIONS {
+        let b = building_of(rx, rz);
+        for w in &b.wells {
+            let filled = fill::fill_with(&b.storeys[w.storey_below], &m, false);
+            for s in filled.segments.iter().filter(|s| {
+                let (cx, cz) = (s.x_cm + s.size_x_cm / 2, s.z_cm + s.size_z_cm / 2);
+                w.rect.contains_point(cx, cz)
+            }) {
+                assert_eq!(
+                    s.style, 6,
+                    "({rx},{rz}): un tramo del hueco de escalera viaja con style {} — el cliente no \
+                     puede distinguirlo de una oficina",
+                    s.style
+                );
+                seen += 1;
+            }
+        }
+    }
+    assert!(
+        seen > 0,
+        "ninguna región de referencia sirvió un tramo de escalera"
+    );
+}
+
 /// **La escalera tiene que LLEGAR.** La última tira a la cota del suelo de arriba, ni un centímetro
 /// menos, y medido sobre la geometría y no sobre el plan.
 ///
