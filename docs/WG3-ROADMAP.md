@@ -13,6 +13,47 @@
 
 ---
 
+## Actualización 2026-08-29 — léela antes que nada de lo de abajo
+
+Cuatro cosas cambiaron en un día y dejan parte de este fichero desfasado. Lo de abajo **no se borra**
+porque sus medidas siguen siendo buenas; lo que cambia es el estado y el orden.
+
+| Frente | Estado |
+|---|---|
+| **A — identidad visual por papel** | ✅ **HECHO.** `b5c6cfc3`, `2c0d5dce`, `a8de06c6`. Verificado EN JUEGO: los siete papeles se distinguen desde el fondo del tramo |
+| **B — WG3 como autoridad** | 🔴 Sin empezar. **Sigue siendo el techo de todo lo demás** |
+| **C — variedad de contenido** | Reencuadrado: ver §7, el catálogo de formas por coste |
+| **D — la rareza Backrooms** | ▶️ **DESAPARCADO.** Es ADR-103, aprobado por Joel, sin código |
+
+**Y hay dos ADRs nuevos que no existían cuando se escribió este fichero:**
+
+- **ADR-103** — la identidad de subnivel (Level 0, 0.1, 0.2, 0.3) como **perfil de perillas** sobre un
+  campo de mezcla. Aprobado. Enmienda 2: el mecanismo del Frente A **sí da**, pero **el papel se quedó
+  el eje de tono**, así que la identidad se muda al AIRE — niebla, ambiente, color de plafón, en ese
+  orden y con presupuesto medido.
+- **ADR-104** — la verticalidad: salas a doble altura, atrios, agujeros por los que caer, megapilares,
+  y el edificio creciendo hacia abajo. PROPUESTA.
+
+**Tres reglas que salieron medidas y que no hay que volver a descubrir:**
+
+1. **Un delta de albedo del 10 % no existe.** Para distinguir dos cosas, tono o material, nunca
+   claridad — el ruido que mete sólo la luz entre dos paredes de la misma captura es del 29,5 %.
+2. **Forma libre en la malla, forma cara en la colisión, y el umbral son 50 cm.**
+3. **La niebla es presupuesto compartido**, no un valor: gasta de la legibilidad del papel y de
+   encontrar por dónde subir. `rho ≤ 0,045`, y `≤ 0,030` mientras la escalera dependa de su rodapié.
+
+**Reparto real del mundo servido** (504 tramos, medido en cliente contra servidor): oficina 31 %,
+**escalera 23 %**, servicio 16 %, pasillo 11 %, callejón 10 %, nave 5 %, **espina 4 %**. Las dos cifras
+en negrita son las que hay que vigilar: la espina es el papel que existe para decir por dónde ir y es el
+más raro del mundo, y el 23 % de escalera **debería BAJAR** si la verticalidad de ADR-104 sustituye
+escaleras en vez de sumarse a ellas.
+
+**Doblar la escalera está PARADO y medido**, por si vuelve la pregunta: `probe_stair_sites_if_doubled`
+(dentro de `a8de06c6`) dice que pasa de 252 a 339 espacios candidatos, **+35 %**, y que **lo que ata es
+el largo y no el ancho**. No se hace porque no era lo pedido.
+
+---
+
 ## 0. Dónde estamos (medido, no supuesto)
 
 El mundo servido de WG3 sale del **plan**, no del compositor por bocas: `Wg3ServedWorld::plan_region`
@@ -156,3 +197,54 @@ A porque cuesta poco y ataca lo único que Joel ha reportado dos veces («no sé
 sin él las dos plantas no existen en el juego real, y cuanto más contenido se acumule encima de WG2
 más cara será la mudanza. C y D mueven la textura del mundo y conviene tener el mundo de verdad antes
 de decidir cómo debe sentirse.
+
+---
+
+## 7. Features del mapa, ordenadas por coste real (2026-08-29)
+
+Esto es lo que sustituye al Frente C. Sale de ADR-104 D10, aprobado por Joel, y su valor es que **dice
+en qué escalón cae una idea antes de prometer nada**. La frontera la marca una sola cosa: WG3 dibuja
+**cajas alineadas a los ejes** y su colisión se **rasteriza a celdas de 50 cm**.
+
+### Escalón 1 — Gratis: son cajas y el relleno ya sabe emitirlas
+
+| Feature | Nota |
+|---|---|
+| **Megapilares** | Columnas que cruzan las dos plantas de un atrio. Es la mitad de la sensación de masa: un atrio vacío es un hueco, con pilares es masivo |
+| **Agujeros en el suelo** | ADR-104 D4. La conexión vertical más barata que existe: una escalera pide 12,6 m de sala, un agujero pide su huella |
+| **Mezzanines y entreplantas** | Un forjado parcial dentro de un atrio |
+| **Techos artesonados / casetones** | Relieve de techo. Cambia la lectura de una nave sin tocar el suelo |
+| **Rejillas y celosías** | Barras. Se ve a través y no se pasa — muy Backrooms, y es la misma caja repetida |
+| **Zócalos y escalonados** | Bancos corridos, plataformas, resaltes de pared |
+
+### Escalón 2 — Barato: decoración que el servidor no ve
+
+El servidor sólo necesita saber dónde está **el hueco**; la forma del marco no la mira nadie.
+
+Marcos de puerta, **medias lunas**, arcos, molduras, remates, dinteles, rodapiés. Todo esto es malla
+del cliente sobre una puerta que ya existe. **Es el mejor ratio sensación/coste de la lista** y no toca
+ni el plan ni el ráster.
+
+### Escalón 3 — Medio: formas libres como pieza AUTORADA
+
+Salas **redondas**, **triangulares**, poligonales, en diagonal. La malla se dibuja en el editor de salas
+y se hornea; la forma es libre. **El límite es que su colisión se rasteriza a 50 cm**: un círculo grande
+se siente redondo, uno pequeño se siente como una escalera de píxeles. Sirve para salas, **no para
+detalles**.
+
+⚠️ **Y hay un cuello que no es de dibujo:** hoy se colocan **de 5 a 14 piezas por región sobre unos 170
+espacios**, porque las huellas autoradas no coinciden con las que el plan pide. **Dibujar más piezas sin
+mirar antes el histograma de tamaños que ya imprime `probe_region_plan` las deja fuera igual de rápido.**
+Ese histograma es el primer paso de este escalón, no el último.
+
+### Escalón 4 — Hoy imposible: geometría no-caja GENERADA
+
+Un pasillo curvo que salga del plan. `PlanRect` es literalmente un rectángulo y la subdivisión BSP no
+sabe hacer otra cosa. **No es un ajuste, es otro sistema.** Si alguna vez se quiere, es su propio ADR y
+probablemente su propio rasterizador.
+
+### La regla, otra vez porque es la que se olvida
+
+**Forma libre en la malla, forma cara en la colisión, y el umbral son 50 cm.** Toda geometría de WG3
+más fina que la celda del ráster **cambia de significado, no de precisión**, al pasar al servidor. Ya
+costó una tarde con los peldaños de 30 cm (ADR-097 enmienda 1).
