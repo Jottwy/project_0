@@ -64,6 +64,20 @@ namespace BackroomsSurvival.Gameplay
                 //
                 // A diferencia del fantasma, esto NO se apaga en build: servir WG3 es una decisión
                 // de mundo, no una comodidad de depuración.
+                // ADR-109: el defecto de `NetworkInitializer` es ENCENDIDO, así que esta línea ya no
+                // enciende nada — sólo puede APAGAR. Y apagarlo hoy no devuelve «el mundo anterior»:
+                // con la etapa 1 de la retirada, WG2 ya no se genera ni se manda. Por eso el aviso:
+                // una escena que sirva un mundo muerto tiene que decirlo, no descubrirse jugando.
+                //
+                // Se conserva la escritura en los dos sentidos porque las escenas de prueba de WG2
+                // siguen queriendo apagarlo a propósito — lo que no puede es pasar en silencio.
+                if (!_enableWorldGen3 && ni.enableWorldGen3)
+                {
+                    Debug.LogWarning(
+                        "[GameBootstrap] Esta escena APAGA WorldGen3 (casilla 'Enable World Gen 3' " +
+                        "sin marcar). Desde ADR-109 el backend en WG2 no genera nada: si no es una " +
+                        "escena de prueba del mundo viejo, marca la casilla.");
+                }
                 ni.enableWorldGen3 = _enableWorldGen3;
 #if UNITY_EDITOR
                 ni.debugSpawnPhantom = _debugSpawnPhantom;

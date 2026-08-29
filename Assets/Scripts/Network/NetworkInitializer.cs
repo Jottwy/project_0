@@ -40,11 +40,27 @@ namespace BackroomsSurvival.Net
         /// port-passed-as-seed regression stays covered by a test.</summary>
         public int LastSelectedWorldSeed { get; private set; }
         /// <summary>ADR-095 — arranca el backend sirviendo mundo de WorldGen3 en vez de WG2.
-        /// Apagado por defecto: los dos mundos conviven hasta el borrado (D3), y el que se sirve
-        /// hoy en toda sesión normal sigue siendo WG2.</summary>
+        ///
+        /// <b>ENCENDIDO por defecto desde ADR-109.</b> Nació apagado porque los dos mundos convivían
+        /// y el servido en sesión normal era WG2; eso dejó de ser cierto cuando la mudanza cerró
+        /// —geometría, jugador, IA, loot, construcción y claims resuelven contra WG3— y WG2 dejó de
+        /// producirse: con la etapa 1 de la retirada, arrancar sin esta bandera no da «el mundo
+        /// anterior», da un mundo que ya nadie genera.
+        ///
+        /// El defecto importa porque <b>este componente no vive en ninguna escena</b>: lo crean en
+        /// runtime <c>AutoConnect</c>, <c>NetworkMenuBootstrap</c> y <c>JoinSessionUI</c>. El
+        /// interruptor por escena de <c>GameBootstrap</c> lo escribe DESPUÉS de crearlo, y eso
+        /// funciona al darle a Play dentro de la escena —el bootstrap corre antes de hostear— pero
+        /// NO cuando se pasa por el menú: ahí hostea <c>JoinSessionUI</c> y el backend ya se lanzó
+        /// con la bandera en false. Es el fallo que hacía que un build hecho desde el menú sirviera
+        /// el mundo viejo mientras el editor servía el nuevo, con la misma escena.
+        ///
+        /// Apagarlo sigue siendo posible y es lo que quieren las escenas de prueba de WG2: la
+        /// casilla de <c>GameBootstrap</c> escribe este campo en los dos sentidos.</summary>
         [Header("WorldGen3 (ADR-095)")]
-        [Tooltip("Arranca el backend con BACKROOMS_WG3=1. Exige haber exportado el manifiesto.")]
-        public bool enableWorldGen3;
+        [Tooltip("Arranca el backend con BACKROOMS_WG3=1. Exige haber exportado el manifiesto. " +
+                 "Encendido por defecto desde ADR-109: WG2 ya no se produce.")]
+        public bool enableWorldGen3 = true;
 
         public string LastSelectedIpcAddress { get; private set; } = "127.0.0.1";
         public string LastEffectiveRole { get; private set; } = "none";
