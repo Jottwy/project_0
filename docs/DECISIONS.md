@@ -9948,3 +9948,79 @@ precisión.**
   en el juego real mientras el movimiento lo resuelva WG2. **El Frente B sigue siendo el techo.**
 - `PARAPET_H_CM` y el lado mínimo de un megapilar **son propuestas sin medir**, como todo lo que entra
   aquí sin haberse andado.
+
+---
+
+## ADR-105 — Enmienda 1: implementado, ANDADO, y tres cosas que sólo se vieron jugando (2026-08-29)
+
+Tres commits: `0f525b2e` (el canal, inerte), `8aa56e05` (el cable, wire 49 → 50 con su espejo C# en el
+mismo commit) y `97b55f6a` (pretiles y megapilares). Suite 1124/1124, clippy `--all-targets -D
+warnings` y fmt limpios, `CompileCheckClient` 0 errores en las cuatro asambleas.
+
+**Y esto es lo primero de toda la cadena ADR-103 → 105 que ha visto una persona.** Joel lo anduvo en
+`WorldGen3Live` con el backend desplegado a v50: **se cayó por un agujero y aterrizó una planta más
+abajo.** Atrio, agujero y caída funcionan.
+
+### Lo medido
+
+| | |
+|---|---|
+| Macizos por región | 5 · 7 · 5 · 0 |
+| Pretiles | 2 · 3 · 0 · 0 |
+| Megapilares | 3 · 4 · 5 · 0 |
+| Peaje del ráster (D6) | andable 110/114/113/114 → **109/113/113/114**, mancha mayor 99 % |
+
+**El peaje que D6 avisaba es de ~1 punto, no de medio metro por borde como temía el aviso.** Estaba
+bien avisarlo y estaba mal el orden de magnitud: ahora está medido.
+
+### (1) Todas las sondas del mundo servido estaban CIEGAS a los macizos
+
+`probe_filled_plan` y las demás construían el ráster con `build_chunk_raster_with_carves`, que pasa
+lista vacía de macizos. **La primera medida del peaje dio «sin cambio» y era mentira**: no es que los
+macizos no costaran, es que el ráster medido no los tenía. Seis sitios pasan a
+`build_chunk_raster_full`.
+
+Regla que se lleva: **cuando un canal nuevo entra en el mundo servido, lo primero que hay que
+comprobar no es que funcione — es que las sondas lo VEAN.** Una sonda que mide un mundo sin la cosa
+nueva no da un error: da un cero tranquilizador.
+
+### (2) Casi ningún atrio es un balcón, y eso reencuadra ADR-104 D2
+
+Sólo salen **2, 3, 0 y 0 pretiles sobre 11 atrios**, y no es un fallo del emisor. `upper_bounds` hace
+que la planta alta ocupe menos que la región, así que **nueve de los once atrios son «gratis»
+precisamente porque no tienen NADA encima**: no hay suelo desde el que asomarse y un pretil ahí sería
+una valla flotando.
+
+**Los únicos atrios que son balcones de verdad son los dos que talló D2 de ADR-104.** Eso sube su
+valor muy por encima del «+2 atrios» con el que se reportó, y cambia dónde está la palanca: más
+balcones no se consiguen emitiendo más pretiles sino haciendo que más naves caigan BAJO la planta alta.
+
+### (3) La luz estaba escrita para pasillos, y se vio andando antes que en ningún número
+
+`Wg3SceneAssembler` sacaba el número de plafones de `Max(SizeX, SizeZ)` y los alineaba por el eje
+largo. Correcto en un conector, que es para lo que se escribió. **En una nave de 25 × 25 daba cuatro
+plafones en fila por el centro y dejaba las cuatro esquinas negras**, y en pantalla eso no se lee como
+falta de luz: se lee como falta de geometría. El lado corto no entraba en la cuenta ni para contar ni
+para colocar.
+
+Arreglado en `96a551f4` con densidad por los dos ejes, y con los plafones **colgando** a 3 m en los
+espacios altos —un atrio los tenía a 6,20 m con el mismo alcance de 9, o sea gastando casi todo antes
+de llegar al suelo—. **Sin tocar alcance, intensidad ni color, que son valores validados en partida:
+lo que cambia es cuántos y dónde.**
+
+Y la lección de método, que es la cara: **una fórmula correcta para el caso que la motivó se vuelve un
+fallo visual cuando cambia la forma del espacio**, y ningún test lo iba a coger porque ninguna métrica
+del sistema mira la luz.
+
+### Deuda que esta enmienda deja
+
+- **La fuga de luz entre plantas sigue entera**, y con atrios es peor: Rendering Layers sin empezar. La
+  regla ya está decidida —la máscara sale de la cota MENOS la unión de los vanos de forjado, derivada
+  en cliente, cero wire, con una celda de margen— y nadie la ha escrito.
+- `PARAPET_H_CM` y el lado del megapilar **siguen sin juzgarse con ojos**: se anduvo un atrio y una
+  caída, no un balcón.
+- Las verificaciones **(e)** de ADR-104 —que el 23 % de tramos de escalera baje— y **(f)** —contrato de
+  junta con atrios en la frontera— siguen sin hacer.
+- **Y el techo de siempre: WG3 no es autoridad.** Todo esto se anda en `WorldGen3Live`; en el juego
+  real subir una planta congela y por un agujero no se cae. El Frente B no se ha movido en toda la
+  cadena 103 → 105.
