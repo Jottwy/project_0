@@ -242,3 +242,59 @@ pub fn find_path(
     out.extend(chain);
     stats
 }
+
+/// ¿Se puede ir de `a` a `b` en línea recta, andando?
+///
+/// Muestrea la recta cada media celda y exige lo mismo en cada punto que exige la búsqueda: que haya
+/// suelo, que quepa uno de pie, y que el salto respecto al punto anterior sea el que sube un jugador.
+/// **La última condición es la que hace que esto sirva en un mundo con plantas**: sin ella, una recta
+/// que cruza por encima de un atrio pasaría por «libre» porque abajo hay suelo — a tres metros.
+pub fn segment_is_clear(cache: &Wg3CollisionCache, a: Vec3, b: Vec3) -> bool {
+    let dx = b.x - a.x;
+    let dz = b.z - a.z;
+    let dist = (dx * dx + dz * dz).sqrt();
+    if dist < 1e-3 {
+        return true;
+    }
+    let steps = (dist / (WG3_CELL_M * 0.5)).ceil() as i32;
+    let mut floor = a.y - BODY_M;
+    for i in 1..=steps {
+        let t = i as f32 / steps as f32;
+        let (x, z) = (a.x + dx * t, a.z + dz * t);
+        match floor_at(cache, x, z, floor) {
+            Some(f) => floor = f,
+            None => return false,
+        }
+    }
+    true
+}
+
+/// Quita los puntos intermedios que no hacen falta.
+///
+/// **Sin esto el camino sale robótico y no es un problema de estética.** Con celdas de medio metro,
+/// subir una escalera son sesenta y un puntos; una criatura que los siga uno a uno anda a tirones y se
+/// lee como un fallo de animación. Es el mismo trabajo que hace `string_pull` en `grid_gen`, con la
+/// comprobación de recta de aquí — que además de paredes mira COTAS, porque en este mundo dos puntos
+/// pueden verse y estar en plantas distintas.
+pub fn simplify(cache: &Wg3CollisionCache, path: &[Vec3], out: &mut Vec<Vec3>) {
+    out.clear();
+    if path.is_empty() {
+        return;
+    }
+    let mut anchor = path[0];
+    out.push(anchor);
+    let mut i = 1;
+    while i < path.len() {
+        // Se avanza mientras la recta desde el ancla siga siendo andable, y se fija el último que lo
+        // era. El punto final entra siempre.
+        let mut last_ok = i;
+        let mut j = i;
+        while j < path.len() && segment_is_clear(cache, anchor, path[j]) {
+            last_ok = j;
+            j += 1;
+        }
+        anchor = path[last_ok];
+        out.push(anchor);
+        i = last_ok + 1;
+    }
+}

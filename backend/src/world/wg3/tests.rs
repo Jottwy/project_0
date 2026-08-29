@@ -8485,3 +8485,80 @@ fn the_wg3_spawn_lands_on_something_you_can_stand_on() {
         "ninguna de las cuatro regiones dio un sitio de pie: el spawn de WG3 no sirve para nada"
     );
 }
+
+/// ADR-108 — **el suavizado no puede inventar un atajo por el aire.**
+///
+/// `simplify` quita puntos intermedios mientras la recta entre los que quedan sea andable, y en un
+/// mundo de una sola planta eso es sólo mirar paredes. Aquí no: dos puntos pueden verse y estar en
+/// plantas distintas, así que una recta que cruza por encima de un atrio pasaría por «libre» porque
+/// abajo hay suelo — a tres metros. Este test comprueba que el camino simplificado **sigue siendo
+/// andable de punta a punta**, tramo a tramo.
+#[test]
+fn a_simplified_path_is_still_walkable() {
+    use crate::world::wg3::collision::Wg3CollisionCache;
+    use crate::world::wg3::nav;
+    use crate::world::wg3::world::Wg3WorldCache;
+    use crate::world::Vec3;
+
+    const PLAYER_BASE_Y: f32 = 1.8;
+
+    let m = real_manifest();
+    let mut checked = 0usize;
+    let mut saved = 0usize;
+    let mut raw_total = 0usize;
+
+    for (rx, rz) in AUDIT_REGIONS {
+        let region = Wg3RegionCoord { x: rx, z: rz };
+        let (min_x, min_z, max_x, max_z) = region.bounds();
+        let mut worlds = Wg3WorldCache::default();
+        let mut cache = Wg3CollisionCache::new();
+
+        let from = Vec3::new((min_x + max_x) * 0.5, PLAYER_BASE_Y, (min_z + max_z) * 0.5);
+        cache.prewarm_for_move(&mut worlds, &m, SERVED_SEED, from, from);
+        let Some(start) = cache.standable_near(from) else {
+            continue;
+        };
+
+        // Un destino a veinte metros en cada sentido: alguno cae en sala y alguno en pared, que es
+        // justo la mezcla que interesa.
+        for (dx, dz) in [(20.0, 0.0), (-20.0, 0.0), (0.0, 20.0), (0.0, -20.0)] {
+            let to = Vec3::new(start.x + dx, start.y, start.z + dz);
+            cache.prewarm_for_move(&mut worlds, &m, SERVED_SEED, start, to);
+
+            let mut raw = Vec::new();
+            nav::find_path(&cache, start, to, &mut raw);
+            if raw.len() < 3 {
+                continue;
+            }
+            let mut simple = Vec::new();
+            nav::simplify(&cache, &raw, &mut simple);
+
+            raw_total += raw.len();
+            saved += raw.len() - simple.len();
+
+            let mut prev = start;
+            for (k, p) in simple.iter().enumerate() {
+                assert!(
+                    nav::segment_is_clear(&cache, prev, *p),
+                    "({rx},{rz}) el tramo {k} del camino simplificado no es andable: de \
+                     ({:.1},{:.2},{:.1}) a ({:.1},{:.2},{:.1}). El suavizado se ha inventado un \
+                     atajo, y en un mundo con plantas eso es cruzar por el aire",
+                    prev.x,
+                    prev.y,
+                    prev.z,
+                    p.x,
+                    p.y,
+                    p.z
+                );
+                prev = *p;
+            }
+            checked += 1;
+        }
+    }
+
+    assert!(
+        checked > 0,
+        "ningún camino que simplificar: el test no probó nada"
+    );
+    println!("[nav] {checked} caminos simplificados, {saved} puntos quitados de {raw_total}");
+}
