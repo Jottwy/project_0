@@ -891,3 +891,61 @@ fn purging_the_region_cache_never_touches_level_0() {
         "la purga de la reserva del Level 4 no debe tocar Level 0"
     );
 }
+
+/// ADR-109 etapa 1 — con WG3 mandando, `update_ownership` NO genera nada de WG2, pero SIGUE creando
+/// el chunk.
+///
+/// Las dos mitades importan y por eso van en el mismo test. Si dejara de crearlo, `world.chunks` se
+/// vaciaría — y ahí viven las entidades y los objetos tirados, además de las puertas del bucle que
+/// preguntan si está vacío. Si lo creara generándolo, no se habría retirado nada.
+#[test]
+fn wg3_authoritative_creates_empty_containers_instead_of_generating_wg2() {
+    let player_pos = Vec3::new(25.0, 0.0, 25.0); // chunk (0,0)
+
+    let mut wg2 = World::new(42);
+    wg2.update_ownership(player_pos, 1);
+    let generado = wg2
+        .chunks
+        .get(&key((0, 0)))
+        .expect("el mundo de WG2 crea su chunk");
+    assert!(
+        !generado.layout.cells.is_empty(),
+        "control: sin WG3, el chunk se genera con su rejilla"
+    );
+
+    let mut wg3 = World::new(42);
+    wg3.set_wg3_authoritative(true);
+    wg3.update_ownership(player_pos, 1);
+    let contenedor = wg3
+        .chunks
+        .get(&key((0, 0)))
+        .cloned()
+        .expect("el contenedor se sigue creando: ahí viven entidades y objetos");
+    assert_eq!(
+        contenedor.template_id, 0,
+        "con WG3 no se sortea plantilla de WG2"
+    );
+    assert!(contenedor.entities.is_empty(), "ni entidades de WG2");
+    assert!(
+        contenedor
+            .layout
+            .cells
+            .iter()
+            .all(|c| *c & crate::world::chunk::CELL_BLOCKED == 0),
+        "el contenedor no trae geometría: su rejilla es coherente y toda libre"
+    );
+    assert!(
+        wg3.visible_chunk_views().is_empty(),
+        "y no se manda ni una vista de WG2 por el cable"
+    );
+    assert!(
+        !wg2.visible_chunk_views().is_empty(),
+        "control: sin WG3 las vistas siguen viajando"
+    );
+    assert_eq!(contenedor.owner, Some(1), "y sigue teniendo dueño");
+    assert_eq!(
+        wg3.chunks.len(),
+        wg2.chunks.len(),
+        "el mismo radio de propiedad: lo que cambia es lo que hay DENTRO, no cuántos"
+    );
+}

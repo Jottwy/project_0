@@ -74,6 +74,37 @@ pub fn generate_initial_structures(world_seed: u64) -> Vec<StructureV0> {
     Level0Builder::new(world_seed).build()
 }
 
+/// ADR-109 etapa 1 — un chunk VACÍO que sigue siendo el contenedor.
+///
+/// Con WG3 mandando, la geometría de WG2 no la dibuja nadie ni la choca nadie, pero `world.chunks`
+/// **no es solo geometría**: es donde viven las entidades y los objetos tirados, y donde se apoyan
+/// las puertas que preguntan `!world.chunks.is_empty()`. Por eso la retirada no puede ser «no crear
+/// el chunk»: es crearlo sin generar nada dentro.
+///
+/// Lo que se ahorra: la generación por plantilla de cada columna del radio de propiedad —que corría
+/// a cada cruce de chunk— y su `layout_cells` en el cable, que viaja en cada WorldState por cada
+/// chunk visible y que en un mundo de WG3 nadie lee.
+pub fn empty_chunk_container(world_seed: u64, pos: ChunkPos, layer: ChunkLayer) -> Chunk {
+    Chunk {
+        pos,
+        layer,
+        state: ChunkState::Active {
+            stabilized: false,
+            anchored: false,
+        },
+        seed: chunk_seed_layer(world_seed, pos, layer),
+        owner: None,
+        entities: Vec::new(),
+        items: Vec::new(),
+        teleport_timer: 0.0,
+        template_id: 0,
+        rotation: 0,
+        mirrored: false,
+        has_workbench: false,
+        layout: crate::world::chunk::ChunkLayoutV1::default(),
+    }
+}
+
 pub fn generate_chunk(world_seed: u64, pos: ChunkPos) -> Chunk {
     generate_chunk_layer(world_seed, pos, 0)
 }

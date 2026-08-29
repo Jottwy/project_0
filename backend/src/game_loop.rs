@@ -449,6 +449,9 @@ pub async fn run(
 ) {
     let mut player = Player::new(net.local_id, &net.local_name);
     let mut world = World::new(net.world_seed);
+    // ADR-109 etapa 1 — con WG3 mandando, el servidor deja de generar WG2. Se dice una vez y aquí,
+    // que es donde ya se sabe si el manifiesto cargó: `is_enabled()` es encendido Y catálogo.
+    world.set_wg3_authoritative(wg3.is_enabled());
 
     // ADR-095 F4 — la composición de WG3, cacheada aquí y no en un global (R3). Perezosa a
     // propósito: un joiner no conoce `net.world_seed` hasta el HandshakeAck, así que componer ahora
@@ -647,13 +650,21 @@ pub async fn run(
             world.update_ownership(player.position, player.id);
         } else {
             world.update_ownership(player.position, player.id);
-            let res = resolve_safe_spawn(&mut world, preferred_spawn());
-            player.position = res.position;
+            // ADR-109 etapa 1 — con WG3 mandando NI SIQUIERA SE PREGUNTA a WG2. Antes se resolvía
+            // primero contra su rejilla y luego se corregía; ahora esa rejilla ya no se genera, así
+            // que `find_safe_spawn` no encontraría nada y `repair_starter_spawn` acabaría tallando
+            // una celda segura en un chunk vacío para tirarla dos líneas después.
+            if !wg3.is_enabled() {
+                let res = resolve_safe_spawn(&mut world, preferred_spawn());
+                player.position = res.position;
+            } else {
+                player.position = preferred_spawn();
+            }
             // ADR-106 — **y con WG3 mandando, el spawn de WG2 no vale.** Resuelve contra otra
             // rejilla, así que una celda que él da por buena puede tener macizo aquí; y con el
             // movimiento ya resuelto por el ráster, eso no deja al jugador flotando: lo deja
-            // ATASCADO. Si no hay nada habitable cerca **no se inventa un sitio** y se conserva el de
-            // WG2, que al menos es el comportamiento conocido.
+            // ATASCADO. Si no hay nada habitable cerca **no se inventa un sitio** y se conserva el
+            // punto preferido, que al menos es el comportamiento conocido.
             if let (Some(manifest), true) = (wg3.manifest(), wg3.is_enabled()) {
                 wg3_collision.prewarm_for_move(
                     &mut wg3_world,
@@ -1400,8 +1411,27 @@ pub async fn run(
         // La condición es la completitud del goteo: `WorldSyncEnd` recibido Y todos sus chunks
         // aplicados. El monolito deprecado la marca completa de una vez (`note_monolith`).
         if !spawn_resolved && net.real_peer_count() > 0 && net.world_sync_progress.is_complete() {
-            let res = resolve_safe_spawn(&mut world, preferred_spawn());
-            player.position = res.position;
+            // ADR-109 etapa 1 — el que se une va por el mismo camino que el anfitrión. Los chunks
+            // que le llegan por el goteo son contenedores vacíos con WG3 mandando, así que
+            // preguntarle a `resolve_safe_spawn` le daría la esquina del origen y a menudo dentro de
+            // un macizo.
+            match (wg3.manifest(), wg3.is_enabled()) {
+                (Some(manifest), true) => {
+                    let preferred = preferred_spawn();
+                    wg3_collision.prewarm_for_move(
+                        &mut wg3_world,
+                        manifest,
+                        net.world_seed,
+                        preferred,
+                        preferred,
+                    );
+                    player.position = wg3_collision.standable_near(preferred).unwrap_or(preferred);
+                }
+                _ => {
+                    let res = resolve_safe_spawn(&mut world, preferred_spawn());
+                    player.position = res.position;
+                }
+            }
             spawn_resolved = true;
         }
 

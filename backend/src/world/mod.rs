@@ -217,6 +217,13 @@ pub struct World {
     /// ADR-028: session-monotonic corpse id source (u32 keyed map, wraps — a session
     /// never approaches 2^32 deaths).
     next_corpse_id: u32,
+    /// ADR-109 etapa 1 — **con WG3 mandando, WG2 no se genera.** Lo pone el arranque desde la misma
+    /// configuración que enciende WG3, y no se deriva aquí porque el mundo no sabe de manifiestos.
+    ///
+    /// No apaga el mapa de chunks: apaga lo que se GENERA dentro de cada uno. Los chunks siguen
+    /// existiendo porque son el contenedor de entidades y objetos, y porque varias puertas del bucle
+    /// preguntan si está vacío.
+    wg3_authoritative: bool,
 }
 
 impl World {
@@ -233,7 +240,18 @@ impl World {
             world_graph: None,
             corpses: HashMap::new(),
             next_corpse_id: 1,
+            wg3_authoritative: false,
         }
+    }
+
+    /// ADR-109 etapa 1 — lo llama el arranque cuando WG3 está encendido Y tiene catálogo. Las dos
+    /// cosas o ninguna: es el mismo `is_enabled()` que decide si se sirve WG3, no una bandera nueva.
+    pub fn set_wg3_authoritative(&mut self, on: bool) {
+        self.wg3_authoritative = on;
+    }
+
+    pub fn wg3_authoritative(&self) -> bool {
+        self.wg3_authoritative
     }
 
     /// ADR-032: expose the corpse-id allocator so world persistence can save it and a loaded save
@@ -788,6 +806,32 @@ impl World {
         }
 
         let seed = self.seed;
+
+        // ADR-109 etapa 1 — CON WG3 MANDANDO, AQUÍ NO SE GENERA NADA DE WG2.
+        //
+        // Ni las plantillas de cada columna del radio de propiedad —que corrían a cada cruce de
+        // chunk— ni el escaparate V30A, que es geometría de WG2 colocada a mano cerca del origen y
+        // que en este mundo cae dentro de lo que WG3 haya planificado ahí. El chunk se sigue creando
+        // vacío porque es el contenedor de entidades y objetos.
+        if self.wg3_authoritative {
+            for pos in &needed_xz {
+                let key = layered_chunk_pos(*pos, 0);
+                if let Some(existing) = self.chunks.get_mut(&key) {
+                    existing.owner = Some(player_id);
+                } else {
+                    let mut c = generator::empty_chunk_container(seed, *pos, 0);
+                    c.owner = Some(player_id);
+                    self.chunks.insert(key, c);
+                    changed = true;
+                }
+            }
+            if changed {
+                self.revision = self.revision.wrapping_add(1);
+                self.view_cache = None;
+            }
+            return;
+        }
+
         // Restore deliberate V30A multi-layer showcase chunks that come back
         // into XZ range, from the pristine per-seed cache. The cache is built
         // at most once per seed — never re-run the full Level 0 generation
@@ -1397,6 +1441,16 @@ impl World {
     /// send reuses the cached views until the world actually changes, instead
     /// of repacking every layout and rebuilding volumetric grids each send.
     pub fn visible_chunk_views(&mut self) -> Vec<ChunkView> {
+        // ADR-109 etapa 1 — CON WG3 MANDANDO NO SE MANDA NINGUNA VISTA DE WG2.
+        //
+        // Es el otro coste de tener el mundo viejo encendido, y el mayor de los dos: cada vista lleva
+        // su `layout_cells` —una rejilla de 20 × 20— y van todas las columnas visibles en cada
+        // WorldState, a 10 Hz. Del lado del cliente no queda un solo consumidor: `ChunkRenderer` está
+        // apagado, `ZoneRegistry` sólo alimentaba ambiente, loot y construcción, y los tres se han
+        // mudado ya.
+        if self.wg3_authoritative {
+            return Vec::new();
+        }
         if let Some((rev, count, views)) = &self.view_cache {
             if *rev == self.revision && *count == self.chunks.len() {
                 return views.clone();
