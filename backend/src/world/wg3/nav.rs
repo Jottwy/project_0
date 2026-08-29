@@ -38,12 +38,6 @@ pub const NAV_MAX_EXPANSIONS: usize = 3_000;
 /// Alto del cuerpo que tiene que caber de pie. Mismo que usa la colisión.
 const BODY_M: f32 = 1.8;
 
-/// Radio del cuerpo que tiene que caber al andar en línea recta.
-///
-/// El mismo que usa la colisión del jugador: si la navegación fuera más estrecha, planearía rutas por
-/// huecos donde el cuerpo no cabe, y el resolutor las frenaría una por una.
-const BODY_RADIUS_M: f32 = 0.35;
-
 /// Cuánto se busca el suelo por encima de los pies, en metros. Espejo de la colisión: es lo que
 /// convierte una escalera en algo que se sube en vez de una pared de 25 cm.
 const STEP_UP_M: f32 = 0.30;
@@ -328,7 +322,7 @@ fn hugs_wall(cache: &Wg3CollisionCache, c: (i32, i32), floor: f32) -> usize {
 /// suelo, que quepa uno de pie, y que el salto respecto al punto anterior sea el que sube un jugador.
 /// **La última condición es la que hace que esto sirva en un mundo con plantas**: sin ella, una recta
 /// que cruza por encima de un atrio pasaría por «libre» porque abajo hay suelo — a tres metros.
-pub fn segment_is_clear(cache: &Wg3CollisionCache, a: Vec3, b: Vec3) -> bool {
+pub fn segment_is_clear(cache: &Wg3CollisionCache, a: Vec3, b: Vec3, radius: f32) -> bool {
     let dx = b.x - a.x;
     let dz = b.z - a.z;
     let dist = (dx * dx + dz * dz).sqrt();
@@ -343,7 +337,7 @@ pub fn segment_is_clear(cache: &Wg3CollisionCache, a: Vec3, b: Vec3) -> bool {
     // de radio y se come la pared. El suavizado entonces recorta la esquina, la criatura se lanza a la
     // diagonal, el resolutor la frena y ahí se queda — visto jugando, media espalda dentro del muro.
     // Es lo mismo que `segment_is_clear_for_body` de `grid_gen` hace desde ADR-082, y por lo mismo.
-    let (nx, nz) = (-dz / dist * BODY_RADIUS_M, dx / dist * BODY_RADIUS_M);
+    let (nx, nz) = (-dz / dist * radius, dx / dist * radius);
 
     for (ox, oz) in [(0.0, 0.0), (nx, nz), (-nx, -nz)] {
         let mut floor = a.y - BODY_M;
@@ -366,7 +360,13 @@ pub fn segment_is_clear(cache: &Wg3CollisionCache, a: Vec3, b: Vec3) -> bool {
 /// lee como un fallo de animación. Es el mismo trabajo que hace `string_pull` en `grid_gen`, con la
 /// comprobación de recta de aquí — que además de paredes mira COTAS, porque en este mundo dos puntos
 /// pueden verse y estar en plantas distintas.
-pub fn simplify(cache: &Wg3CollisionCache, from: Vec3, path: &[Vec3], out: &mut Vec<Vec3>) {
+pub fn simplify(
+    cache: &Wg3CollisionCache,
+    from: Vec3,
+    path: &[Vec3],
+    radius: f32,
+    out: &mut Vec<Vec3>,
+) {
     out.clear();
     if path.is_empty() {
         return;
@@ -382,7 +382,7 @@ pub fn simplify(cache: &Wg3CollisionCache, from: Vec3, path: &[Vec3], out: &mut 
         // era. El punto final entra siempre.
         let mut last_ok: Option<usize> = None;
         let mut j = i;
-        while j < path.len() && segment_is_clear(cache, anchor, path[j]) {
+        while j < path.len() && segment_is_clear(cache, anchor, path[j], radius) {
             last_ok = Some(j);
             j += 1;
         }

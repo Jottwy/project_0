@@ -162,8 +162,9 @@ impl Level0Collision {
         wg3: &crate::world::wg3::collision::Wg3CollisionCache,
         from: Vec3,
         desired: Vec3,
+        radius: f32,
     ) -> CollisionResolve {
-        resolve_move_src(&MoveSource::Wg3(wg3), from, desired, None)
+        resolve_move_src_radius(&MoveSource::Wg3(wg3), from, desired, None, radius)
     }
 
     pub fn is_blocked_at(world: &World, pos: Vec3, radius: f32) -> bool {
@@ -379,13 +380,31 @@ fn resolve_move_src(
     desired: Vec3,
     claimed_y: Option<f32>,
 ) -> CollisionResolve {
+    resolve_move_src_radius(src, from, desired, claimed_y, PLAYER_RADIUS)
+}
+
+/// Igual, con el ancho del cuerpo explícito.
+///
+/// **Existe porque una criatura no mide lo que mide un jugador.** ADR-040 le dio al robapieles un
+/// disco de 0,5 m —contra los 0,35 del jugador— justo porque «el punto está legalmente en una celda
+/// andable y el cuerpo visible no, y eso se lee como clipping». Resolver su movimiento con el radio
+/// del jugador le deja pasar por huecos donde su modelo no cabe, y desde fuera eso es exactamente lo
+/// que se ve: una criatura rozando y atravesando paredes.
+fn resolve_move_src_radius(
+    src: &MoveSource,
+    from: Vec3,
+    desired: Vec3,
+    claimed_y: Option<f32>,
+    radius: f32,
+) -> CollisionResolve {
+    let r = radius;
     let desired = Vec3::new(desired.x, from.y, desired.z);
-    if !src.blocked_at(desired, PLAYER_RADIUS) {
+    if !src.blocked_at(desired, r) {
         return resolve_with_y(src, desired, CollisionResultKind::Free, "free", claimed_y);
     }
 
     let x_only = Vec3::new(desired.x, from.y, from.z);
-    if !src.blocked_at(x_only, PLAYER_RADIUS) {
+    if !src.blocked_at(x_only, r) {
         return resolve_with_y(
             src,
             x_only,
@@ -396,7 +415,7 @@ fn resolve_move_src(
     }
 
     let z_only = Vec3::new(from.x, from.y, desired.z);
-    if !src.blocked_at(z_only, PLAYER_RADIUS) {
+    if !src.blocked_at(z_only, r) {
         return resolve_with_y(
             src,
             z_only,
@@ -408,7 +427,7 @@ fn resolve_move_src(
 
     // Fully blocked — stay put, but report what actually blocked the
     // desired move so the trace logs name the real obstruction.
-    let (chunk_pos, cell, flags, reason) = src.describe(desired, PLAYER_RADIUS);
+    let (chunk_pos, cell, flags, reason) = src.describe(desired, r);
     let mut position = from;
     if claimed_y.is_none() {
         // Entity path: historical floor pin.

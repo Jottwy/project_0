@@ -8531,7 +8531,7 @@ fn a_simplified_path_is_still_walkable() {
                 continue;
             }
             let mut simple = Vec::new();
-            nav::simplify(&cache, start, &raw, &mut simple);
+            nav::simplify(&cache, start, &raw, 0.35, &mut simple);
 
             raw_total += raw.len();
             saved += raw.len() - simple.len();
@@ -8541,7 +8541,7 @@ fn a_simplified_path_is_still_walkable() {
                 // El suavizado no puede ser PEOR que el camino crudo: si un tramo no cabe en recta,
                 // el punto tiene que ser uno que el A* ya diera por bueno celda a celda —o sea, el
                 // siguiente del camino crudo— y no un salto inventado más lejos.
-                if !nav::segment_is_clear(&cache, prev, *p) {
+                if !nav::segment_is_clear(&cache, prev, *p, 0.35) {
                     assert!(
                         raw.contains(p),
                         "({rx},{rz}) el tramo {k} no cabe en recta Y el punto no está en el camino                          crudo: eso es un atajo inventado, de ({:.1},{:.2},{:.1}) a                          ({:.1},{:.2},{:.1})",
@@ -8556,7 +8556,7 @@ fn a_simplified_path_is_still_walkable() {
                     continue;
                 }
                 assert!(
-                    nav::segment_is_clear(&cache, prev, *p),
+                    nav::segment_is_clear(&cache, prev, *p, 0.35),
                     "({rx},{rz}) el tramo {k} del camino simplificado no es andable: de \
                      ({:.1},{:.2},{:.1}) a ({:.1},{:.2},{:.1}). El suavizado se ha inventado un \
                      atajo, y en un mundo con plantas eso es cruzar por el aire",
@@ -8783,7 +8783,7 @@ fn an_entity_is_pinned_to_the_wg3_floor_and_a_player_is_not() {
         let wrong = Vec3::new(good.x, good.y + 0.5, good.z);
         let target = Vec3::new(good.x + 0.4, wrong.y, good.z);
 
-        let ent = Level0Collision::resolve_move_wg3_entity(&cache, wrong, target);
+        let ent = Level0Collision::resolve_move_wg3_entity(&cache, wrong, target, 0.35);
         assert!(
             (ent.position.y - good.y).abs() < 0.2,
             "({rx},{rz}) la entidad no se apoyó en el suelo de WG3: entró a {:.2} y salió a {:.2}, \
@@ -8996,7 +8996,7 @@ fn a_body_on_a_stair_can_move_forward() {
                 .iter()
                 .any(|(dx, dz)| {
                     let to = Vec3::new(from.x + dx, from.y, from.z + dz);
-                    let r = Level0Collision::resolve_move_wg3_entity(&cache, from, to);
+                    let r = Level0Collision::resolve_move_wg3_entity(&cache, from, to, 0.35);
                     r.position.distance_xz(from) > 0.05
                 });
             if any {
