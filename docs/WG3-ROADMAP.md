@@ -99,18 +99,26 @@ servicio 16 %, pasillo 11 %, callejón 10 %, nave 5 %, **espina 4 %**.
 
 ### Hacia dónde vamos — el orden, y por qué
 
-**1. Fuga de luz entre plantas.** 🔴 Diseñado y sin escribir. La máscara sale de la cota **menos** la
-unión de los vanos de forjado, derivada en cliente, **cero wire**, con una celda de margen. Con atrios
-y agujeros la fuga es peor que nunca, y es lo que más se nota de lo barato que queda.
+**Los dos primeros de la lista de esta mañana están HECHOS y andados**: la fuga de luz (ADR-104
+enmienda 2) y el Frente B (ADR-106). Lo que queda, por valor:
 
-**2. Frente B — WG3 como autoridad.** 🔴 **El techo de todo, y no se ha movido en toda la cadena
-103 → 105.** Hoy esto se anda en `WorldGen3Live`; en partida real subir una planta te CONGELA y por un
-agujero no te caes. Cada cosa que se apile encima de WG2 encarece la mudanza. Pide ADR propio y es el
-más grande que queda.
+**1. Terminar la mudanza de autoridad.** Es la deuda que ADR-106 dejó con nombre y **la única que hoy
+se ve fea jugando**: el jugador resuelve contra WG3 y **el robapieles, los facelings, el spawn de
+objetos y el loot siguen en WG2**. Se ven criaturas atravesando paredes que tú no puedes cruzar, y
+loot que puede aparecer dentro de un macizo.
 
-**3. Identidad de subnivel (ADR-103).** Aprobado, cero código, y **desbloqueado por ADR-104**: los
+- El **fantasma** es lo más barato que queda: un `match` más, la costura ya está.
+- Los **facelings** no pasan por `resolve_move_src` y necesitan trabajo propio.
+- El **loot** resuelve contra la rejilla vieja.
+
+**2. Identidad de subnivel (ADR-103).** Aprobado, cero código, y **desbloqueado por ADR-104**: los
 agujeros son el descenso que le faltaba al eje Y. La identidad se mueve en el AIRE —niebla, ambiente,
-color de plafón— porque el papel ya se quedó el tono.
+color de plafón— porque el papel ya se quedó el tono, y con presupuesto medido.
+
+**3. Retirar WG2.** El servidor lo sigue generando entero aunque nadie lo dibuje (`update_ownership`,
+el handler de `RequestChunk`). Es deliberado —ADR-106 D6 mueve la autoridad, no borra el otro mundo—
+pero cada día que siga ahí es trabajo doble. Pide ADR propio y va **después** del punto 1: retirar el
+mundo que todavía usan las criaturas las dejaría sin suelo.
 
 **4. Contenido y formas.** Sección 7. El cuello no es código: las huellas autoradas no coinciden con
 las que el plan pide, y hay histograma para autorar contra él.
