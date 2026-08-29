@@ -226,9 +226,13 @@ namespace BackroomsSurvival.WorldGen3
                     segment.openings[o] = new Wg3SegmentOpening(
                         wire.openings[o].side, wire.openings[o].offsetCm, wire.openings[o].widthCm);
 
+                // EL PAPEL VA EN EL NOMBRE. Sin esto no hay forma de contestar «qué papel tenía esa
+                // pared» mirando una captura o la jerarquía: el `style` se consume dentro del
+                // ensamblador y no queda rastro de él en la escena. Es una ceguera del arnés que se
+                // paga en cuanto hay que diagnosticar por qué dos espacios se ven igual.
                 Wg3SceneAssembler.AssembleSegment(
-                    segment, root.transform, materials, mine, $"seg_{i:D3}", spawnLights,
-                    chunk.carves);
+                    segment, root.transform, materials, mine, $"seg_{i:D3}_s{segment.style}",
+                    spawnLights, chunk.carves);
                 _builtSegments++;
             }
 

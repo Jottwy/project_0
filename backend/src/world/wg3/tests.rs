@@ -6219,6 +6219,57 @@ fn a_second_storey_is_actually_reachable() {
     }
 }
 
+/// SONDA — **qué papel sirve cada chunk, y cuántos de ellos ve un cliente con radio 1.**
+///
+/// Sale de una sesión real: nueve chunks montados, 504 tramos, y **ni uno solo de escalera**. La
+/// pregunta que contesta es si eso es un fallo de emisión o el tamaño de la ventana — nueve chunks
+/// son 150 × 150 m, exactamente una región, pero centrados en el jugador reparten esa ventana entre
+/// CUATRO regiones y de cada una se ve un cuarto.
+#[test]
+#[ignore]
+fn probe_which_roles_a_client_actually_sees() {
+    let m = real_manifest();
+    // La semilla de la sesión en vivo (`Wg3LiveBootstrap`), no la de los tests: el reparto de
+    // papeles depende de la semilla y comparar dos mundos distintos no contesta nada.
+    const LIVE_SEED: u64 = 42;
+
+    let mut worlds: std::collections::HashMap<Wg3RegionCoord, _> = std::collections::HashMap::new();
+    let mut seen: std::collections::BTreeMap<u8, usize> = std::collections::BTreeMap::new();
+    let mut per_region: std::collections::BTreeMap<(i32, i32), usize> =
+        std::collections::BTreeMap::new();
+
+    // EXACTAMENTE los doce chunks que montó el cliente en la sesión medida. Comparar contra otro
+    // conjunto no contesta nada: dos ventanas distintas dan repartos distintos.
+    for cz in -2..=1 {
+        for cx in -1..=1 {
+            let coord = chunk::Wg3ChunkCoord { x: cx, z: cz };
+            let region = Wg3RegionCoord::of_chunk(coord);
+            let world = worlds
+                .entry(region)
+                .or_insert_with(|| Wg3ServedWorld::plan_region(&m, LIVE_SEED, region));
+            let segs = world.segments_for_chunk(coord);
+            let stairs = segs.iter().filter(|s| s.style == 6).count();
+            println!(
+                "[wg3] chunk ({cx},{cz}): {} tramos, {stairs} de escalera",
+                segs.len()
+            );
+            for s in segs {
+                *seen.entry(s.style).or_default() += 1;
+            }
+        }
+    }
+
+    // Y el mundo COMPLETO de cada una de esas cuatro regiones, para separar «no se emite» de «no
+    // cae dentro de la ventana».
+    for (region, world) in &worlds {
+        let stairs = world.segments().iter().filter(|s| s.style == 6).count();
+        per_region.insert((region.x, region.z), stairs);
+    }
+
+    println!("[wg3] semilla {LIVE_SEED}, radio 1 (9 chunks): papeles vistos {seen:?}");
+    println!("[wg3] tramos de ESCALERA por región completa: {per_region:?}");
+}
+
 /// **La escalera se tiene que poder VESTIR distinta.** El byte `style` es lo único que el cliente
 /// recibe para saber qué papel juega un espacio, y `SpaceRole::Stair` caía en el `_ => 0` de una
 /// oficina: el único sitio del mundo del que se sale por arriba llegaba al cliente indistinguible de
@@ -7533,6 +7584,130 @@ fn dump_region_plans() {
             p.spaces.len(),
             p.links.len(),
             p.components()
+        );
+    }
+}
+
+/// E0 de «doblar la escalera»: ¿cuántos sitios GANA una escalera de ida y vuelta?
+///
+/// **Mide la puerta de HUELLA de `dig_wells`, y sólo ésa** (`plan.rs`, el `continue` de
+/// `run < run_cm + GOOD_WALL_CM || across < STAIR_WIDTH_CM`). Los filtros que van después —que ninguna
+/// puerta caiga dentro de la franja, que el espacio de arriba contenga el hueco recortado— NO se
+/// aplican aquí, así que **estas cifras son una COTA SUPERIOR del número de sitios, no el número de
+/// escaleras**. Lo que la sonda compara es válido igualmente porque omite los mismos filtros en las
+/// tres variantes: si la huella doblada no ensancha la puerta, nada de lo que viene después lo va a
+/// ensanchar.
+///
+/// Las tres variantes, con la aritmética a la vista:
+/// - **recta**, la de hoy: 15 tiras × 60 = 900 de tiro, y el espacio tiene que dar 900 + 360 = **1260**
+///   de largo por **360** de ancho.
+/// - **doblada estrecha**: dos tramos de 8 y 7 tiras, así que 8 × 60 = 480 de tiro más 150 de rellano
+///   = 630, y el espacio pide 630 + 360 = **990** de largo. El ancho son dos tramos de 180 más una
+///   celda del ráster de separación: **410**.
+/// - **doblada ancha**: igual de larga, pero con tramos de 240 —la anchura de una puerta— y la misma
+///   separación: **530** de ancho.
+///
+/// Las dos anchuras están porque el número que decide no es el largo sino cuál de los dos ata, y con
+/// una sola cifra no se ve. La separación de una celda no es holgura: el ráster es conservador y sin
+/// ella la frontera entre los dos tramos se maciza a la cota del más alto.
+///
+/// `cargo test --manifest-path backend/Cargo.toml probe_stair_sites_if_doubled -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn probe_stair_sites_if_doubled() {
+    /// Copia local de `plan::side_of_point_in`, que es privada del módulo. Son cuatro comparaciones
+    /// contra los bordes del rect con la misma tolerancia; se copia en vez de abrir la visibilidad de
+    /// producción para una medida.
+    fn side_of(r: &super::plan::PlanRect, x_cm: i32, z_cm: i32) -> Option<u8> {
+        const EPS: i32 = 2;
+        if (r.max_z_cm - z_cm).abs() <= EPS {
+            return Some(0);
+        }
+        if (r.max_x_cm - x_cm).abs() <= EPS {
+            return Some(1);
+        }
+        if (r.min_z_cm - z_cm).abs() <= EPS {
+            return Some(2);
+        }
+        if (r.min_x_cm - x_cm).abs() <= EPS {
+            return Some(3);
+        }
+        None
+    }
+
+    // (nombre, largo mínimo del espacio, ancho mínimo del espacio)
+    const VARIANTS: [(&str, i32, i32); 3] = [
+        ("recta (hoy)   ", 1260, 360),
+        ("doblada 410   ", 990, 410),
+        ("doblada 530   ", 990, 530),
+    ];
+
+    let m = real_manifest();
+    let mut totals = [(0usize, 0usize); VARIANTS.len()];
+
+    for (rx, rz) in AUDIT_REGIONS {
+        let p = plan_of(&m, rx, rz);
+
+        // Las puertas de cada espacio, igual que las junta `dig_wells`: enlaces interiores y puertas
+        // de junta con la región vecina.
+        let mut doors: Vec<Vec<(i32, i32)>> = vec![Vec::new(); p.spaces.len()];
+        for l in &p.links {
+            doors[l.a].push((l.at_x_cm, l.at_z_cm));
+            doors[l.b].push((l.at_x_cm, l.at_z_cm));
+        }
+        for g in &p.gates {
+            doors[g.space].push((g.x_cm, g.z_cm));
+        }
+
+        println!(
+            "[escalera] región ({rx},{rz}) — {} espacios",
+            p.spaces.len()
+        );
+
+        for (v, (name, min_run, min_across)) in VARIANTS.iter().enumerate() {
+            let mut spaces = 0usize;
+            let mut pairs = 0usize;
+
+            for (i, s) in p.spaces.iter().enumerate() {
+                if !s.role.is_built() || s.role.is_circulation() || s.rise_cm != 0 {
+                    continue;
+                }
+                let mut any = false;
+                for side in doors[i]
+                    .iter()
+                    .filter_map(|&(dx, dz)| side_of(&s.rect, dx, dz))
+                    .collect::<Vec<_>>()
+                {
+                    // El tiro corre perpendicular a la pared de la puerta, igual que en `dig_wells`.
+                    let (run, across) = if side.is_multiple_of(2) {
+                        (s.rect.depth_cm(), s.rect.width_cm())
+                    } else {
+                        (s.rect.width_cm(), s.rect.depth_cm())
+                    };
+                    if run >= *min_run && across >= *min_across {
+                        pairs += 1;
+                        any = true;
+                    }
+                }
+                if any {
+                    spaces += 1;
+                }
+            }
+
+            totals[v].0 += spaces;
+            totals[v].1 += pairs;
+            println!("    {name} {spaces:3} espacios · {pairs:3} pares (espacio, puerta)");
+        }
+    }
+
+    println!(
+        "[escalera] TOTAL sobre las {} regiones:",
+        AUDIT_REGIONS.len()
+    );
+    for (v, (name, _, _)) in VARIANTS.iter().enumerate() {
+        println!(
+            "    {name} {:3} espacios · {:3} pares",
+            totals[v].0, totals[v].1
         );
     }
 }
