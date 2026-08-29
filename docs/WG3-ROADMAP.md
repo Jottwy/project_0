@@ -26,11 +26,21 @@ El mundo servido sale del **PLAN**, no del compositor por bocas (ADR-100): `Wg3S
 excavadas (ADR-101, wire 49). Papel visible por tono (Frente A). Atrios de dos plantas, agujeros por los
 que se cae y macizos —pretiles y megapilares— (ADR-104 y ADR-105, wire 50).
 
+### Nivel de migración: 5 subsistemas de 12
+
+| En WG3 | Sigue en WG2 |
+|---|---|
+| geometría · movimiento y colisión del jugador · spawn · materiales y papel · luz, zumbido y reverb | robapieles · facelings · **loot (hoy AUSENTE, no descolocado)** · construcción y claims · salas autoradas del editor · zonas y su ambiente · la generación de WG2 en el servidor |
+
+**Lo que eso significa jugando:** el mundo se ve y se anda entero, pero está **vacío de objetos** y las
+criaturas se mueven por una geometría que ya no existe. Es el precio de haber mudado la autoridad antes
+que sus consumidores, y estaba previsto — no es un fallo que buscar.
+
 ### Los tres estados en los que puede estar una cosa
 
 | | Qué significa |
 |---|---|
-| ✅ **ANDADO** | Una persona lo ha visto funcionando en `WorldGen3Live` |
+| ✅ **ANDADO** | Una persona lo ha visto funcionando — desde ADR-106, en la partida real |
 | 🟡 **MEDIDO** | Verde en el ráster del servidor, **nadie lo ha visto** |
 | 🔴 **NO EXISTE** | Escrito en un ADR y sin implementar |
 
