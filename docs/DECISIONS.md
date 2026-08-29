@@ -10024,3 +10024,46 @@ del sistema mira la luz.
 - **Y el techo de siempre: WG3 no es autoridad.** Todo esto se anda en `WorldGen3Live`; en el juego
   real subir una planta congela y por un agujero no se cae. El Frente B no se ha movido en toda la
   cadena 103 → 105.
+
+---
+
+## ADR-104 — Enmienda 2: la fuga de luz, cerrada con una regla MÁS SIMPLE que la que D9 escribió (2026-08-29)
+
+`ccb8d083`. Cero wire, cero cambios en el pipeline, `CompileCheckClient` 0 errores.
+
+### Lo que D9 decía, y por qué no hizo falta
+
+D9 escribió: *«la máscara sale de la cota MENOS la unión de los vanos de forjado»*, derivada en cliente
+y con una celda de margen. **No se ha implementado eso**, y conviene decirlo aquí antes que descubrirlo
+leyendo el código: la regla puesta es otra, más corta, y consigue lo mismo sin mirar un solo vano.
+
+> - Una **LUZ** ilumina sólo la planta de su propio suelo.
+> - Una **SUPERFICIE** pertenece a todas las plantas que su volumen atraviesa.
+
+De ahí sale todo sin casos especiales. El plafón de la baja no alcanza las salas de arriba: fuga
+cerrada. Un atrio mide dos plantas, así que **lleva las dos capas y lo alumbran los plafones de arriba
+y los de abajo** —lo que se quiere en un balcón asomado a él— y un megapilar que lo cruza, igual. **El
+volumen de cada cosa ya dice qué plantas ocupa**; el vano no aportaba información que la geometría no
+tuviera.
+
+Lo que la regla simple NO da, y se acepta a propósito: **los haces de luz por un agujero pequeño**. La
+lámpara de arriba no alumbra la sala de abajo a través de él. Si algún día se quiere, ahí sí hace falta
+la unión de vanos que D9 describía.
+
+Comprobado antes de escribir nada, que era la condición que D9 ponía y no se daba por hecha: URP 17.0.4
+en **Forward+** (`m_RenderingMode: 2`), `m_SupportsLightLayers: 1`, ocho capas definidas. Techo real:
+**siete plantas**; por encima se reutiliza la última y la fuga volvería.
+
+### El fallo que casi entra, y es la parte que vale la pena leer
+
+La primera versión sacaba la planta con `RoundToInt`. **Una sala normal de la planta baja llega a
+3,08, y 3,08 / 3,32 = 0,93 redondea a 1.**
+
+Con eso, **toda sala corriente habría reclamado las dos plantas**, todas las capas se habrían solapado
+y la fuga habría seguido exactamente igual — con el código puesto, las máscaras asignadas, cero
+errores y cero tests en rojo. La planta `s` ocupa `[s·3,32, (s+1)·3,32)`, así que es **suelo y no
+redondeo**, y hay un epsilon positivo porque `3,32 / 3,32` puede dar `0,99999` en `f32`.
+
+La lección general, que ya apareció dos veces esta misma sesión con otra ropa: **un cambio que se
+aplica correctamente a un dato mal calculado no falla, funciona al vacío.** No hay métrica en este
+sistema que mire la luz, así que sólo lo cazaba hacer la cuenta a mano antes de commitear.
