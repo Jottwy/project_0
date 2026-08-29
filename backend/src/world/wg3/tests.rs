@@ -8042,3 +8042,94 @@ fn from_the_upper_storey_the_atrium_is_open() {
     );
     println!("[atrio-abierto] {checked} atrios abiertos por arriba");
 }
+
+/// ADR-104 D4 — **por un agujero se CAE una planta entera**, y eso se mide en el ráster o no se sabe.
+///
+/// El fallo que este test existe para cazar no es «no hay agujero»: es **el agujero a medias**. Entre
+/// dos plantas hay DOS losas —el techo de abajo y el suelo de arriba, espalda contra espalda—, así que
+/// llevarse sólo una deja un hueco por el que se ve y no se pasa: dibujado perfecto, todos los
+/// contadores en verde, y el jugador rebotando contra un techo invisible.
+///
+/// Se mide con `floor_below` desde la altura de los ojos de la planta alta, en el centro de cada
+/// espacio construido de arriba. Si hay agujero, el suelo que devuelve está una planta más abajo.
+#[test]
+fn a_hole_drops_you_a_whole_storey() {
+    const EYE_M: f32 = 1.6;
+    /// Cuánto tiene que bajar para contar como agujero de planta: una planta menos margen de losa.
+    const MIN_DROP_M: f32 = 2.5;
+
+    let m = real_manifest();
+    let mut holes = 0usize;
+
+    for (rx, rz) in AUDIT_REGIONS {
+        let b = building_of(rx, rz);
+        let region = Wg3RegionCoord { x: rx, z: rz };
+        let (min_x, min_z, _, _) = region.bounds();
+        let served = Wg3ServedWorld::plan_region(&m, SERVED_SEED, region);
+
+        let side = REGION_CHUNKS as usize;
+        let base = chunk::Wg3ChunkCoord::containing(min_x + 1.0, min_z + 1.0);
+        let mut rasters = Vec::with_capacity(side * side);
+        for cz in 0..side {
+            for cx in 0..side {
+                let coord = chunk::Wg3ChunkCoord {
+                    x: base.x + cx as i32,
+                    z: base.z + cz as i32,
+                };
+                rasters.push(chunk::build_chunk_raster_with_carves(
+                    &m,
+                    &served.placements_touching_chunk(&m, coord),
+                    &served.segments_touching_chunk(coord),
+                    &served.carves_touching_chunk(coord),
+                    coord,
+                ));
+            }
+        }
+        let raster_at = |x: f32, z: f32| -> Option<&Wg3Raster> {
+            let coord = chunk::Wg3ChunkCoord::containing(x, z);
+            let (dx, dz) = (coord.x - base.x, coord.z - base.z);
+            if dx < 0 || dz < 0 || dx as usize >= side || dz as usize >= side {
+                return None;
+            }
+            rasters.get(dz as usize * side + dx as usize)
+        };
+
+        // Sólo las plantas ALTAS: la baja no tiene forjado que perforar.
+        for storey in b.storeys.iter().skip(1) {
+            for s in &storey.spaces {
+                if !s.role.is_built() {
+                    continue;
+                }
+                let (cx, cz) = s.rect.centre_m();
+                let floor_m = s.floor_y_cm as f32 / 100.0;
+                let Some(raster) = raster_at(cx, cz) else {
+                    continue;
+                };
+                let Some(found) = raster.floor_below(cx, floor_m + EYE_M, cz) else {
+                    continue;
+                };
+                let drop = floor_m - found;
+                if drop >= MIN_DROP_M {
+                    println!(
+                        "[agujero] ({rx},{rz}) espacio de {:.0} m² — se cae {drop:.2} m, del suelo \
+                         {floor_m:.2} al {found:.2}",
+                        s.rect.area_m2()
+                    );
+                    holes += 1;
+                }
+            }
+        }
+    }
+
+    // **El umbral no es cero, y esa es la diferencia entre un test y un adorno.** Verificado
+    // desactivando `hole_carves`: quedan **1**, que es un pozo de escalera cuyo centro de espacio cae
+    // encima. Con `> 0` la mutación pasaba. Ocho deja margen a que el sorteo se mueva y sigue estando
+    // muy por debajo de los 15 que produce el emisor.
+    assert!(
+        holes >= 8,
+        "sólo {holes} agujeros que bajen una planta en cuatro regiones, y sin emitir ninguno ya sale \
+         1 por los pozos de escalera: o no se están emitiendo, o el vano se queda a medias y el techo \
+         de abajo sigue ahí — un agujero por el que se ve y no se pasa"
+    );
+    println!("[agujero] {holes} agujeros que bajan una planta entera");
+}

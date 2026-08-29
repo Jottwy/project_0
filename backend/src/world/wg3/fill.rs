@@ -225,6 +225,105 @@ pub fn fill_building(building: &RegionBuilding, manifest: &Wg3Manifest) -> Fille
         out.absorb(fill(plan, manifest));
     }
     out.carves.extend(atrium_carves(building));
+    out.carves.extend(hole_carves(building));
+    out
+}
+
+/// Lado de un agujero de forjado, en centímetros.
+///
+/// **Cuatro celdas del ráster, y el número sale de ahí y no del gusto.** Con dos celdas el
+/// rasterizado conservador puede cerrarlo —toda celda que una caja TOQUE queda maciza—, y entonces el
+/// agujero se dibuja y no se cae por él, que es la clase de fallo que este sistema ya ha pagado tres
+/// veces. Con cuatro sobran dos celdas limpias en el centro pase lo que pase en los bordes.
+const HOLE_SIDE_CM: i32 = 200;
+
+/// Cada cuánto un espacio de una planta alta se lleva un agujero.
+///
+/// Bajo a propósito: un agujero es una trampa sin aviso mientras no haya pretil (ver ADR-104
+/// enmienda 1), así que la primera versión pone pocos y se mira. Subirlo es cambiar este número.
+const HOLE_CHANCE: f32 = 0.10;
+
+/// Sal del sorteo de agujeros.
+const SALT_HOLE: u32 = 0xA9_04_01;
+
+/// ADR-104 D4 — **un hueco sin escalera dentro es un AGUJERO**, y es la conexión vertical más barata
+/// que existe.
+///
+/// Una escalera recta pide 12,6 m de sala y por eso sólo hay de 2 a 5 sitios por región donde cabe.
+/// Un agujero pide dos metros. Es de un solo sentido, y eso no es un defecto: es lo que se pidió.
+///
+/// # Por qué la banda vertical empieza DOS losas por debajo
+///
+/// Entre dos plantas hay **dos** losas y no una —el techo de abajo en `[308, 320]` y el suelo de
+/// arriba en `[320, 332]`, espalda contra espalda—, que es lo mismo que ya obligó a restar dos en
+/// `cap_headroom_under` y en [`ATRIUM_CLEAR_CM`]. Llevarse sólo el suelo de arriba dejaría el techo de
+/// abajo entero: un agujero por el que se ve y no se pasa, dibujado perfecto y con todos los
+/// contadores en verde.
+///
+/// # Y por qué esto no contradice [`CARVE_FLOOR_GUARD_CM`]
+///
+/// Esa guarda existe para que **un vano de PUERTA** no se lleve la losa sobre la que se anda. Aquí
+/// llevársela es el objetivo, y la guarda no vive en `raster::carve_box` sino en quien lo llama, así
+/// que no hay que romper nada: hay que no aplicarla.
+fn hole_carves(building: &RegionBuilding) -> Vec<Wg3Carve> {
+    let mut out = Vec::new();
+    if building.storeys.len() < 2 {
+        return out;
+    }
+
+    for n in 1..building.storeys.len() {
+        for s in &building.storeys[n].spaces {
+            // Nunca en circulación: un agujero en la espina es la trampa que no se puede esquivar
+            // porque es el único sitio por donde se pasa. Y nunca en una escalera ni en un espacio
+            // hundido, que ya tienen su propia geometría vertical.
+            if !s.role.is_built()
+                || s.role.is_circulation()
+                || s.role == SpaceRole::Stair
+                || s.rise_cm != 0
+            {
+                continue;
+            }
+            // Tiene que caber con margen: un agujero pegado a la pared no se ve hasta pisarlo.
+            if s.rect.width_cm() < HOLE_SIDE_CM * 3 || s.rect.depth_cm() < HOLE_SIDE_CM * 3 {
+                continue;
+            }
+
+            let (cx, cz) = s.rect.centre_m();
+            let mut st = super::hash::stream_at(0, cx, cz, SALT_HOLE);
+            if st.next01() >= HOLE_CHANCE {
+                continue;
+            }
+
+            // **Y debajo tiene que haber SUELO CONSTRUIDO.** Un agujero sobre un vacío intencionado no
+            // es un agujero de dos plantas: es una caída al forjado de más abajo o a nada, y desde
+            // arriba se ve igual. Se comprueba contra la planta de debajo, que es lo único que este
+            // módulo puede consultar sin que una planta aprenda de otra.
+            let hx = s.rect.min_x_cm + (s.rect.width_cm() - HOLE_SIDE_CM) / 2;
+            let hz = s.rect.min_z_cm + (s.rect.depth_cm() - HOLE_SIDE_CM) / 2;
+            let hole = super::plan::PlanRect {
+                min_x_cm: hx,
+                min_z_cm: hz,
+                max_x_cm: hx + HOLE_SIDE_CM,
+                max_z_cm: hz + HOLE_SIDE_CM,
+            };
+            let lands_on_floor = building.storeys[n - 1]
+                .spaces
+                .iter()
+                .any(|t| t.role.is_built() && t.role != SpaceRole::Stair && t.rect.overlaps(&hole));
+            if !lands_on_floor {
+                continue;
+            }
+
+            out.push(Wg3Carve {
+                x_cm: hx,
+                z_cm: hz,
+                size_x_cm: HOLE_SIDE_CM,
+                size_z_cm: HOLE_SIDE_CM,
+                bottom_y_cm: s.floor_y_cm - 2 * SLAB_THICKNESS_CM,
+                top_y_cm: s.floor_y_cm + CARVE_FLOOR_GUARD_CM,
+            });
+        }
+    }
     out
 }
 
