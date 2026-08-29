@@ -23,6 +23,25 @@ namespace BackroomsSurvival.WorldGen3
     /// valores que Joel ya miró— y se diferencia sin inventar arte. Cuando existan materiales
     /// autorados, entran por esta misma función y el tinte pasa a ser el caso por defecto.
     ///
+    /// # POR QUÉ LOS PAPELES SE SEPARAN POR TONO Y NO POR BRILLO
+    ///
+    /// La primera versión los separaba por claridad —la espina más clara que el pasillo, y así— y
+    /// **estaba por debajo del suelo de ruido**. Medido sobre una captura real de la sesión en vivo:
+    /// dos paredes del mismo fotograma se separan un **29,5 %** de luminancia sólo por dónde cae el
+    /// plafón, mientras que espina contra pasillo se separaban un **9,5 %** por diseño, y pasillo
+    /// contra oficina un **5,0 %**. Una diferencia tres veces menor que la que ya produce la luz
+    /// sobre el mismo material no se lee como «otro sitio»: se lee como sombra.
+    ///
+    /// El tono sobrevive a eso y el brillo no, y la razón es la que hace que la regla se pueda
+    /// aplicar sin volver a medir: **una lámpara sube o baja los tres canales a la vez, así que no
+    /// invierte su orden**. Un verde por encima del rojo y del azul —el servicio— sigue siendo verde
+    /// a plena luz y en penumbra. Por eso la única pareja que se separa por brillo es nave contra
+    /// pasillo, y sólo porque además no se confunden nunca: uno mide diez metros de ancho y el otro
+    /// dos.
+    ///
+    /// Consecuencia para quien añada papeles o ejes: **un delta de albedo del 10 % no existe**. Si
+    /// hay que distinguir dos cosas, se mueven en tono o en material, nunca en claridad.
+    ///
     /// FUGAS: las variantes se crean en tiempo de ejecución. Se cachean por estilo y son 4 × 7 como
     /// mucho para toda la sesión — NO se destruyen al podar un chunk, porque las comparten todos los
     /// que sigan montados. <see cref="ClearCache"/> existe para el editor, que regenera el mundo sin
@@ -41,23 +60,27 @@ namespace BackroomsSurvival.WorldGen3
         {
             switch (style)
             {
-                // La espina es el eje de la región: más clara y más cálida que todo lo demás, que es
-                // lo que hace que se lea como «por aquí se va a alguna parte».
-                case 1: return Make(1.08f, 1.04f, 0.92f, 1.10f, 1.06f, 0.94f);
-                // Pasillo y cruce: un punto por debajo de la espina. La diferencia importa entre
-                // ellos dos, no contra el resto — sin ella todo corredor es el mismo corredor.
-                case 2: return Make(0.96f, 0.95f, 0.92f, 0.98f, 0.97f, 0.93f);
-                // Nave: hormigón frío. Es el espacio grande, y el azul lo separa del amarillo de la
-                // circulación sin sacarlo de la paleta.
-                case 3: return Make(0.88f, 0.92f, 0.98f, 0.86f, 0.90f, 0.97f);
-                // Servicio y almacén: verdoso sucio, el trasero de la escena.
-                case 4: return Make(0.82f, 0.88f, 0.78f, 0.80f, 0.86f, 0.76f);
-                // Callejón: apagado y pardo. La mitad de lo que hace que un sitio se recorra con
-                // inquietud es que se note que no lleva a ningún lado.
-                case 5: return Make(0.74f, 0.68f, 0.58f, 0.76f, 0.70f, 0.60f);
+                // La espina es el eje de la región: ámbar franco, el más cálido de los seis. Se lee
+                // como «por aquí se va a alguna parte» y es el opuesto exacto del pasillo.
+                case 1: return Make(1.12f, 1.02f, 0.78f, 1.14f, 1.03f, 0.79f);
+                // Pasillo y cruce: FRÍO, y ahí está el trabajo. Separarlo de la espina por brillo no
+                // funcionaba —ver la nota de arriba—, así que se separa por el lado contrario del
+                // tono: la espina tira a ámbar y el pasillo a azul, y entre los dos hay un 30 % de
+                // azul-contra-rojo que ninguna lámpara puede fabricar.
+                case 2: return Make(0.90f, 0.97f, 1.06f, 0.92f, 0.98f, 1.07f);
+                // Nave: hormigón frío y OSCURO. Comparte el frío del pasillo —los dos son azules— y
+                // se separa de él por brillo, que es la única vez que eso vale: una nave y un pasillo
+                // no se confunden nunca porque uno mide diez metros de ancho y el otro dos.
+                case 3: return Make(0.76f, 0.84f, 1.00f, 0.74f, 0.82f, 0.99f);
+                // Servicio y almacén: verde enfermo. El verde por encima del rojo Y del azul es un
+                // orden de canales que no produce ninguna luz de la escena, todas cálidas.
+                case 4: return Make(0.80f, 0.94f, 0.72f, 0.78f, 0.92f, 0.70f);
+                // Callejón: pardo rojizo y apagado. Cálido como la espina pero con el verde hundido,
+                // que es lo que lo separa de ella: un ámbar sin verde es marrón.
+                case 5: return Make(0.96f, 0.70f, 0.52f, 0.94f, 0.68f, 0.50f);
                 // ESCALERA. El único sitio del que se sale por arriba, y hasta hoy se vestía de
-                // oficina. Estructura clara y decoración anaranjada: el rodapié hace de señal, que es
-                // lo que se ve desde la otra punta de un pasillo.
+                // oficina. Estructura neutra fría y decoración FRANCAMENTE anaranjada: el rodapié
+                // hace de señal, y una señal se lee por lo que contrasta contra lo que la rodea.
                 case 6: return MakeStair();
                 // Oficina y cualquier número que el servidor añada mañana: el juego base, sin tocar.
                 default: return Make(1f, 1f, 1f, 1f, 1f, 1f);
@@ -77,10 +100,10 @@ namespace BackroomsSurvival.WorldGen3
         {
             return new Tint
             {
-                floor = new Color(0.92f, 0.90f, 0.86f, 1f),
-                structure = new Color(1.02f, 1.00f, 0.96f, 1f),
-                ceiling = new Color(0.96f, 0.95f, 0.92f, 1f),
-                decoration = new Color(1.10f, 0.62f, 0.34f, 1f),
+                floor = new Color(0.90f, 0.94f, 0.98f, 1f),
+                structure = new Color(0.98f, 1.00f, 1.04f, 1f),
+                ceiling = new Color(0.94f, 0.96f, 1.00f, 1f),
+                decoration = new Color(1.20f, 0.58f, 0.26f, 1f),
             };
         }
 
