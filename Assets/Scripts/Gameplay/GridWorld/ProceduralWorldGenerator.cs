@@ -253,6 +253,17 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         private void Update()
         {
             if (playerTransform == null) return;
+            // ADR-106 — **con WG3 mandando, WG2 no dibuja.** Desde que la colisión la resuelve el
+            // ráster de WG3, tener los dos mundos montados a la vez es el peor caso posible: se ve la
+            // geometría de WG2 y se choca contra la de WG3, o sea paredes que se atraviesan y aire
+            // que para. No es un fallo sutil, es injugable.
+            //
+            // Va como GUARDA en tiempo de ejecución y no quitando el componente de la escena: así
+            // cualquier escena sirve para los dos mundos y no hay un `.unity` que mantener por
+            // duplicado. `Wg3Enabled` lo dice el backend en el saludo, que es la misma fuente que ya
+            // usa `Wg3ChunkStreamer` para encenderse — una sola verdad y no dos banderas que se
+            // pueden contradecir.
+            if (BackroomsSurvival.Net.IPCClient.Instance is { Wg3Enabled: true }) return;
             int cx = Mathf.FloorToInt(playerTransform.position.x / Side);
             int cz = Mathf.FloorToInt(playerTransform.position.z / Side);
 

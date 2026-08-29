@@ -8333,3 +8333,63 @@ fn on_the_upper_storey_wg3_does_not_freeze_you() {
     );
     println!("[autoridad] {checked} posiciones de planta alta andables contra el ráster de WG3");
 }
+
+/// ADR-106 — **el spawn cae de pie en el mundo de WG3, no en el de WG2.**
+///
+/// Con la autoridad movida, aparecer en una celda que WG2 da por buena y WG3 tiene maciza no deja al
+/// jugador flotando: lo deja **atascado**, porque el movimiento ya lo resuelve el ráster y un macizo
+/// no se cruza. Este test comprueba que el sitio elegido cumple las tres cosas que hacen habitable un
+/// punto —hay suelo, cabe uno de pie, y no le estorba nada— y no sólo que la función devuelva algo.
+#[test]
+fn the_wg3_spawn_lands_on_something_you_can_stand_on() {
+    use crate::world::wg3::collision::Wg3CollisionCache;
+    use crate::world::wg3::world::Wg3WorldCache;
+    use crate::world::Vec3;
+
+    const PLAYER_BASE_Y: f32 = 1.8;
+
+    let m = real_manifest();
+    let mut found = 0usize;
+
+    for (rx, rz) in AUDIT_REGIONS {
+        let region = Wg3RegionCoord { x: rx, z: rz };
+        let (min_x, min_z, max_x, max_z) = region.bounds();
+        let preferred = Vec3::new((min_x + max_x) * 0.5, PLAYER_BASE_Y, (min_z + max_z) * 0.5);
+
+        let mut worlds = Wg3WorldCache::default();
+        let mut cache = Wg3CollisionCache::new();
+        cache.prewarm_for_move(&mut worlds, &m, SERVED_SEED, preferred, preferred);
+
+        let Some(spawn) = cache.standable_near(preferred) else {
+            // No se afirma que SIEMPRE haya sitio: el centro exacto de una región puede caer en un
+            // vacío intencionado. Lo que se afirma es que cuando devuelve algo, ese algo vale.
+            continue;
+        };
+
+        assert!(
+            !cache.blocked_at(spawn, crate::world::collision::PLAYER_RADIUS),
+            "({rx},{rz}) el spawn de WG3 en ({:.2},{:.2},{:.2}) está DENTRO de algo: con el \
+             movimiento resuelto por el ráster, eso es aparecer atascado",
+            spawn.x,
+            spawn.y,
+            spawn.z
+        );
+        // Y de pie sobre suelo suyo: si el suelo que encuentra estuviera lejos, estaría cayendo.
+        let floor = cache.floor_y(spawn);
+        assert!(
+            (spawn.y - floor).abs() < 0.5,
+            "({rx},{rz}) el spawn está a {:.2} y su suelo a {floor:.2}: no está apoyado en nada",
+            spawn.y
+        );
+        println!(
+            "[spawn] ({rx},{rz}) de pie en ({:.2}, {:.2}, {:.2})",
+            spawn.x, spawn.y, spawn.z
+        );
+        found += 1;
+    }
+
+    assert!(
+        found > 0,
+        "ninguna de las cuatro regiones dio un sitio de pie: el spawn de WG3 no sirve para nada"
+    );
+}

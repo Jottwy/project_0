@@ -651,6 +651,37 @@ pub async fn run(
             world.update_ownership(player.position, player.id);
             let res = resolve_safe_spawn(&mut world, preferred_spawn());
             player.position = res.position;
+            // ADR-106 — **y con WG3 mandando, el spawn de WG2 no vale.** Resuelve contra otra
+            // rejilla, así que una celda que él da por buena puede tener macizo aquí; y con el
+            // movimiento ya resuelto por el ráster, eso no deja al jugador flotando: lo deja
+            // ATASCADO. Si no hay nada habitable cerca **no se inventa un sitio** y se conserva el de
+            // WG2, que al menos es el comportamiento conocido.
+            if let (Some(manifest), true) = (wg3.manifest(), wg3.is_enabled()) {
+                wg3_collision.prewarm_for_move(
+                    &mut wg3_world,
+                    manifest,
+                    net.world_seed,
+                    player.position,
+                    player.position,
+                );
+                match wg3_collision.standable_near(player.position) {
+                    Some(p) => {
+                        info!(
+                            "[wg3] spawn reubicado por ADR-106: ({:.2},{:.2},{:.2}) ->                              ({:.2},{:.2},{:.2})",
+                            player.position.x,
+                            player.position.y,
+                            player.position.z,
+                            p.x,
+                            p.y,
+                            p.z
+                        );
+                        player.position = p;
+                    }
+                    None => log::warn!(
+                        "[wg3] sin sitio de pie a menos de 24 m del spawn — se conserva el de WG2,                          y el jugador puede aparecer atascado"
+                    ),
+                }
+            }
             spawn_resolved = true;
             // Reload ownership around the validated spawn so the streamed radius is
             // centred on where the player actually stands.

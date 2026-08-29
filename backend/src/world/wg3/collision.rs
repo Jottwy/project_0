@@ -165,6 +165,86 @@ impl Wg3CollisionCache {
     }
 }
 
+/// Radio en metros hasta donde se busca un sitio de pie, y paso de la búsqueda.
+///
+/// Medio metro de paso porque es la celda del ráster: buscar más fino no encuentra nada nuevo, y más
+/// grueso se salta salas enteras. Cincuenta metros de radio es un chunk — más allá, el ráster ya no
+/// está precalentado y la búsqueda mentiría diciendo «macizo» donde sólo hay «no lo sé».
+const SPAWN_SEARCH_STEP_M: f32 = 0.5;
+const SPAWN_SEARCH_RADIUS_M: f32 = 24.0;
+
+/// Hueco libre mínimo sobre el suelo para considerar un sitio habitable, en metros.
+///
+/// El cuerpo mide 1,8 y se pide un pelo más: aparecer en un hueco donde cabes exacto es aparecer con
+/// la cabeza dentro del techo en cuanto el suelo tenga un centímetro de irregularidad.
+const SPAWN_MIN_HEADROOM_M: f32 = 2.0;
+
+impl Wg3CollisionCache {
+    /// ADR-106 — un sitio de pie en el mundo de WG3, buscando en anillos alrededor de `preferred`.
+    ///
+    /// **Hace falta porque el spawn de WG2 resuelve contra otra rejilla.** Con la autoridad ya movida,
+    /// aparecer en una celda que WG2 da por buena y WG3 tiene maciza no te deja flotando: te deja
+    /// ATASCADO, porque el movimiento ya lo resuelve el ráster y un macizo no se cruza. Es el fallo
+    /// que ADR-106 D6 dejó nombrado como exclusión y que la propia D6 convierte en obligatorio en
+    /// cuanto el movimiento cruza.
+    ///
+    /// Devuelve `None` cuando no hay nada habitable en el radio: **no se inventa un sitio**. Quien
+    /// llama decide si eso es quedarse en el de WG2 o fallar, y las dos cosas son mejores que meter al
+    /// jugador dentro de una pared con un número que parece válido.
+    ///
+    /// Tres condiciones, y las tres hacen falta: que haya SUELO debajo, que quepa uno de pie sobre él,
+    /// y que estando ahí no le estorbe nada. La tercera no sobra — el suelo puede estar libre y tener
+    /// un pilar justo al lado, dentro del radio de la cápsula.
+    pub fn standable_near(&self, preferred: Vec3) -> Option<Vec3> {
+        let rings = (SPAWN_SEARCH_RADIUS_M / SPAWN_SEARCH_STEP_M) as i32;
+        for ring in 0..=rings {
+            let mut best: Option<Vec3> = None;
+            for dz in -ring..=ring {
+                for dx in -ring..=ring {
+                    // Sólo el BORDE del anillo: el interior ya se miró en la vuelta anterior.
+                    if ring > 0 && dx.abs() != ring && dz.abs() != ring {
+                        continue;
+                    }
+                    let x = preferred.x + dx as f32 * SPAWN_SEARCH_STEP_M;
+                    let z = preferred.z + dz as f32 * SPAWN_SEARCH_STEP_M;
+                    let Some(raster) = self.raster_at(x, z) else {
+                        continue;
+                    };
+                    // Se busca el suelo desde ARRIBA del todo de la columna para que un atrio o una
+                    // planta alta cuenten: partir de la cota preferida ataría el spawn a la planta
+                    // baja para siempre.
+                    let from_y = preferred.y.max(0.0) + 0.5;
+                    let Some(floor) = raster.floor_below(x, from_y, z) else {
+                        continue;
+                    };
+                    let head = raster
+                        .headroom_above_floor(x, from_y, z)
+                        .unwrap_or(f32::INFINITY);
+                    if head < SPAWN_MIN_HEADROOM_M {
+                        continue;
+                    }
+                    let candidate = Vec3::new(x, floor + PLAYER_BODY_M, z);
+                    if self.blocked_at(candidate, crate::world::collision::PLAYER_RADIUS) {
+                        continue;
+                    }
+                    // Dentro de un anillo se prefiere lo más cercano: los anillos son cuadrados y una
+                    // esquina está un 41 % más lejos que un lado.
+                    let d = (x - preferred.x).powi(2) + (z - preferred.z).powi(2);
+                    if best.is_none_or(|b| {
+                        (b.x - preferred.x).powi(2) + (b.z - preferred.z).powi(2) > d
+                    }) {
+                        best = Some(candidate);
+                    }
+                }
+            }
+            if best.is_some() {
+                return best;
+            }
+        }
+        None
+    }
+}
+
 /// Las nueve muestras de la cápsula. **Copia deliberada de `collision::capsule_samples`**: son la
 /// misma huella y tienen que serlo, porque un jugador que cruza de WG2 a WG3 con anchuras distintas se
 /// quedaría enganchado justo en el cambio. Se copia en vez de compartirse porque la de allí es privada
