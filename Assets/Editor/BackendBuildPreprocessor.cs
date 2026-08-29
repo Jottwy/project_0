@@ -167,13 +167,24 @@ namespace BackroomsSurvival.Editor
             {
                 File.Copy(built, dest, true);
             }
-            catch (IOException e)
+            catch (IOException first)
             {
-                // Almost always a live server still holding the file. Say so, because the raw
-                // "process cannot access the file" message sends people looking at permissions.
-                error = $"Could not write {dest}: {e.Message}. A backrooms_server may still be " +
-                        "running — check Get-Process backrooms_server and stop it.";
-                return false;
+                // Almost always a live server still holding the file — it has costado dos builds ya.
+                // En vez de mandar al humano a `Get-Process`, se mata el huérfano y se reintenta UNA
+                // vez. Si el segundo intento también falla, el mensaje vuelve a ser el de antes.
+                IOException shown = first;
+                bool recovered = false;
+                if (KillProcessesHolding(dest))
+                {
+                    recovered = TryCopyWithRetry(built, dest, out IOException second);
+                    if (!recovered && second != null) shown = second;
+                }
+                if (!recovered)
+                {
+                    error = $"Could not write {dest}: {shown.Message}. A backrooms_server may still " +
+                            "be running — check Get-Process backrooms_server and stop it.";
+                    return false;
+                }
             }
 
             if (new FileInfo(dest).Length != new FileInfo(built).Length)
@@ -182,6 +193,97 @@ namespace BackroomsSurvival.Editor
                 return false;
             }
             return true;
+        }
+
+        /// <summary>
+        /// Mata los <c>backrooms_server</c> que están corriendo EXACTAMENTE el binario desplegado,
+        /// que son los únicos que pueden estar bloqueándolo. Devuelve true si mató alguno.
+        ///
+        /// Se compara la ruta de la imagen y no el nombre del proceso a propósito: un servidor
+        /// lanzado desde <c>backend/target/release/</c> o desde una build vieja se llama igual y no
+        /// tiene nada que ver con este fichero. Matar por nombre se llevaría por delante la sesión
+        /// de otro que no molesta.
+        ///
+        /// Nunca en silencio: cada muerte se registra con su PID. Un preprocesador que mata procesos
+        /// sin decirlo es peor que el fallo que arregla.
+        /// </summary>
+        private static bool KillProcessesHolding(string dest)
+        {
+            string target;
+            try
+            {
+                target = Path.GetFullPath(dest);
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+
+            bool killedAny = false;
+            foreach (Process p in Process.GetProcessesByName(Path.GetFileNameWithoutExtension(ExecutableName)))
+            {
+                using (p)
+                {
+                    string path;
+                    try
+                    {
+                        // MainModule tira Win32Exception si el proceso es de otro usuario o murió
+                        // entre la enumeración y esta línea. Sin ruta no se mata: a ciegas, no.
+                        path = p.MainModule?.FileName;
+                    }
+                    catch (Exception)
+                    {
+                        continue;
+                    }
+
+                    if (string.IsNullOrEmpty(path) ||
+                        !string.Equals(Path.GetFullPath(path), target, StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    try
+                    {
+                        int pid = p.Id;
+                        p.Kill();
+                        p.WaitForExit(5000);
+                        killedAny = true;
+                        Debug.LogWarning(
+                            $"[BackendBuildPreprocessor] Killed orphan {ExecutableName} (PID {pid}) " +
+                            "that was holding the deploy target. If you had a session running, it is gone.");
+                    }
+                    catch (Exception e)
+                    {
+                        Debug.LogWarning(
+                            $"[BackendBuildPreprocessor] Could not kill PID {p.Id}: {e.Message}");
+                    }
+                }
+            }
+            return killedAny;
+        }
+
+        /// <summary>
+        /// Copia reintentando durante ~2 s. Windows suelta el handle DESPUÉS de que el proceso
+        /// muera, no a la vez, así que un único intento inmediato tras el kill falla a rachas — y
+        /// ese fallo intermitente sería peor de diagnosticar que el bloqueo original.
+        /// </summary>
+        private static bool TryCopyWithRetry(string built, string dest, out IOException last)
+        {
+            last = null;
+            for (int attempt = 0; attempt < 10; attempt++)
+            {
+                try
+                {
+                    File.Copy(built, dest, true);
+                    return true;
+                }
+                catch (IOException e)
+                {
+                    last = e;
+                    System.Threading.Thread.Sleep(200);
+                }
+            }
+            return false;
         }
 
         private static string Tail(string text, int max) =>
