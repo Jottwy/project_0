@@ -235,6 +235,7 @@ pub fn fill_building(building: &RegionBuilding, manifest: &Wg3Manifest) -> Fille
     }
     out.carves.extend(atrium_carves(building));
     out.carves.extend(hole_carves(building));
+    out.solids.extend(atrium_solids(building));
     out
 }
 
@@ -361,6 +362,166 @@ fn hole_carves(building: &RegionBuilding) -> Vec<Wg3Carve> {
 /// tiene dónde declararla: emitirla pediría campo nuevo, o sea bump de wire y ADR. Restar sabe hacerlo
 /// el sistema; añadir un muro bajo, no. Queda como enmienda, y mientras tanto el borde de un atrio es
 /// un sitio del que se cae — que es la mitad de lo que se pidió.
+/// Altura de un pretil, en centímetros.
+///
+/// **A la altura del pecho: tiene que parar sin tapar.** Un pretil bajo no se lee como protección y
+/// uno alto convierte el balcón en una pared, que es exactamente lo que ADR-104 D3 vino a quitar.
+const PARAPET_H_CM: i32 = 110;
+
+/// Grosor de un pretil, en centímetros.
+///
+/// **Y aquí el ráster cobra su peaje, que es el aviso de ADR-105 D6.** Veinte centímetros macizan la
+/// celda de cincuenta que tocan, así que un pretil se come medio metro de suelo andable a cada lado
+/// del borde. Es el precio de que exista, y hay que medirlo y no suponerlo.
+const PARAPET_T_CM: i32 = 20;
+
+/// Tramo máximo de un macizo, en centímetros.
+///
+/// Muy por debajo del chunk (50 m) a propósito: un macizo se dibuja en el chunk de su CENTRO, así que
+/// cuanto más largo, más lejos de su geometría puede caer el objeto que lo monta. Partirlo no cuesta
+/// nada y mantiene cada trozo cerca de donde se ve.
+const MAX_SOLID_CM: i32 = 2000;
+
+/// Lado de un megapilar, en centímetros.
+///
+/// **Dos metros, y por lo mismo que un agujero mide dos:** cuatro celdas del ráster. Un pilar fino
+/// sale caro en colisión —el rasterizado conservador maciza toda celda que toque— y pequeño en la
+/// vista, que es el peor cambio posible. Por eso son MEGApilares.
+const PILLAR_SIDE_CM: i32 = 200;
+
+/// Separación entre megapilares, de centro a centro.
+const PILLAR_SPACING_CM: i32 = 1000;
+
+/// Superficie mínima de un atrio para que lleve pilares, en m².
+///
+/// Por debajo de esto los pilares no articulan el espacio: lo llenan.
+const PILLAR_MIN_AREA_M2: f32 = 300.0;
+
+/// ADR-105 D5 — **los dos casos con nombre: el PRETIL de un balcón y el MEGAPILAR de un atrio.**
+///
+/// La tabla de casos de ADR-105 es cerrada a propósito: un canal que acepta cajas arbitrarias es, sin
+/// acotar, un segundo sistema de geometría sin disciplina, y quitar eso fue el motivo entero de
+/// ADR-100. Añadir un caso aquí es una enmienda al ADR, no una tarde.
+///
+/// # Por qué el pretil va por FUERA del rectángulo del atrio
+///
+/// El suelo de la planta alta empieza donde acaba el hueco, así que el pretil se apoya en el primer
+/// palmo de ese suelo y no en el aire. Y cae dentro de la banda que el vano de atrio dejó limpia —lo
+/// que es correcto y no accidental: **los macizos son inmunes a los vanos** (D2), así que el mismo
+/// medio metro que quitó la pared es donde ahora se pone la barandilla.
+///
+/// # Y sólo donde hay suelo al lado
+///
+/// Un pretil en un lado del atrio que da al vacío es una valla flotando. Se comprueba lado a lado
+/// contra los espacios construidos de la planta de arriba.
+fn atrium_solids(building: &RegionBuilding) -> Vec<Wg3Solid> {
+    let mut out = Vec::new();
+
+    for (n, plan) in building.storeys.iter().enumerate() {
+        let above = match building.storeys.get(n + 1) {
+            Some(a) => a,
+            None => continue,
+        };
+        for s in plan.spaces.iter().filter(|s| is_atrium(s)) {
+            let style = style_of(s.role);
+            let r = s.rect;
+            let deck_y = s.floor_y_cm + STOREY_HEIGHT_CM;
+
+            // ---- PRETILES, lado a lado ----
+            for side in 0..4u8 {
+                // La franja de suelo que habría al otro lado del borde. Media celda basta: lo que se
+                // pregunta es si hay planta ahí, no cuánta.
+                let probe = match side {
+                    0 => super::plan::PlanRect {
+                        min_x_cm: r.min_x_cm,
+                        min_z_cm: r.max_z_cm,
+                        max_x_cm: r.max_x_cm,
+                        max_z_cm: r.max_z_cm + 50,
+                    },
+                    1 => super::plan::PlanRect {
+                        min_x_cm: r.max_x_cm,
+                        min_z_cm: r.min_z_cm,
+                        max_x_cm: r.max_x_cm + 50,
+                        max_z_cm: r.max_z_cm,
+                    },
+                    2 => super::plan::PlanRect {
+                        min_x_cm: r.min_x_cm,
+                        min_z_cm: r.min_z_cm - 50,
+                        max_x_cm: r.max_x_cm,
+                        max_z_cm: r.min_z_cm,
+                    },
+                    _ => super::plan::PlanRect {
+                        min_x_cm: r.min_x_cm - 50,
+                        min_z_cm: r.min_z_cm,
+                        max_x_cm: r.min_x_cm,
+                        max_z_cm: r.max_z_cm,
+                    },
+                };
+                if !above
+                    .spaces
+                    .iter()
+                    .any(|t| t.role.is_built() && t.rect.overlaps(&probe))
+                {
+                    continue;
+                }
+
+                // El pretil ocupa el borde entero del lado, partido en tramos manejables.
+                let along_x = side.is_multiple_of(2);
+                let (from, to) = if along_x {
+                    (r.min_x_cm, r.max_x_cm)
+                } else {
+                    (r.min_z_cm, r.max_z_cm)
+                };
+                let mut at = from;
+                while at < to {
+                    let end = (at + MAX_SOLID_CM).min(to);
+                    let (x, z, sx, sz) = match side {
+                        0 => (at, r.max_z_cm, end - at, PARAPET_T_CM),
+                        1 => (r.max_x_cm, at, PARAPET_T_CM, end - at),
+                        2 => (at, r.min_z_cm - PARAPET_T_CM, end - at, PARAPET_T_CM),
+                        _ => (r.min_x_cm - PARAPET_T_CM, at, PARAPET_T_CM, end - at),
+                    };
+                    out.push(Wg3Solid {
+                        x_cm: x,
+                        z_cm: z,
+                        size_x_cm: sx,
+                        size_z_cm: sz,
+                        bottom_y_cm: deck_y,
+                        top_y_cm: deck_y + PARAPET_H_CM,
+                        style,
+                    });
+                    at = end;
+                }
+            }
+
+            // ---- MEGAPILARES ----
+            if r.area_m2() < PILLAR_MIN_AREA_M2 {
+                continue;
+            }
+            // Se reparten dejando un pilar de margen contra la pared: un pilar pegado al muro no
+            // articula nada y sí estrecha el paso.
+            let mut px = r.min_x_cm + PILLAR_SPACING_CM;
+            while px + PILLAR_SIDE_CM <= r.max_x_cm - PILLAR_SPACING_CM / 2 {
+                let mut pz = r.min_z_cm + PILLAR_SPACING_CM;
+                while pz + PILLAR_SIDE_CM <= r.max_z_cm - PILLAR_SPACING_CM / 2 {
+                    out.push(Wg3Solid {
+                        x_cm: px,
+                        z_cm: pz,
+                        size_x_cm: PILLAR_SIDE_CM,
+                        size_z_cm: PILLAR_SIDE_CM,
+                        bottom_y_cm: s.floor_y_cm,
+                        top_y_cm: s.floor_y_cm + ATRIUM_CLEAR_CM,
+                        style,
+                    });
+                    pz += PILLAR_SPACING_CM;
+                }
+                px += PILLAR_SPACING_CM;
+            }
+        }
+    }
+    out
+}
+
 fn atrium_carves(building: &RegionBuilding) -> Vec<Wg3Carve> {
     let mut out = Vec::new();
     let grow = (CARVE_DEPTH_M * CM_PER_M) as i32;

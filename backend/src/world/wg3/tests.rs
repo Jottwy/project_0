@@ -5974,11 +5974,12 @@ fn probe_the_well_column() {
         while t < hi as f32 / 100.0 + 1.5 {
             let (x, z) = if along_x { (t, cz) } else { (cx, t) };
             let coord = chunk::Wg3ChunkCoord::containing(x, z);
-            let r = chunk::build_chunk_raster_with_carves(
+            let r = chunk::build_chunk_raster_full(
                 &m,
                 &served.placements_touching_chunk(&m, coord),
                 &served.segments_touching_chunk(coord),
                 &served.carves_touching_chunk(coord),
+                &served.solids_touching_chunk(coord),
                 coord,
             );
             let col = r.column_at(x, z);
@@ -6105,11 +6106,12 @@ fn a_second_storey_is_actually_reachable() {
                     x: base.x + cx as i32,
                     z: base.z + cz as i32,
                 };
-                rasters.push(chunk::build_chunk_raster_with_carves(
+                rasters.push(chunk::build_chunk_raster_full(
                     &m,
                     &served.placements_touching_chunk(&m, coord),
                     &served.segments_touching_chunk(coord),
                     &served.carves_touching_chunk(coord),
+                    &served.solids_touching_chunk(coord),
                     coord,
                 ));
             }
@@ -7001,11 +7003,12 @@ fn probe_filled_plan() {
                     x: base.x + cx as i32,
                     z: base.z + cz as i32,
                 };
-                rasters.push(chunk::build_chunk_raster_with_carves(
+                rasters.push(chunk::build_chunk_raster_full(
                     &m,
                     &served.placements_touching_chunk(&m, coord),
                     &served.segments_touching_chunk(coord),
                     &served.carves_touching_chunk(coord),
+                    &served.solids_touching_chunk(coord),
                     coord,
                 ));
             }
@@ -7841,11 +7844,12 @@ fn an_atrium_is_two_storeys_tall_in_the_raster() {
                     x: base.x + cx as i32,
                     z: base.z + cz as i32,
                 };
-                rasters.push(chunk::build_chunk_raster_with_carves(
+                rasters.push(chunk::build_chunk_raster_full(
                     &m,
                     &served.placements_touching_chunk(&m, coord),
                     &served.segments_touching_chunk(coord),
                     &served.carves_touching_chunk(coord),
+                    &served.solids_touching_chunk(coord),
                     coord,
                 ));
             }
@@ -7958,11 +7962,12 @@ fn from_the_upper_storey_the_atrium_is_open() {
                     x: base.x + cx as i32,
                     z: base.z + cz as i32,
                 };
-                rasters.push(chunk::build_chunk_raster_with_carves(
+                rasters.push(chunk::build_chunk_raster_full(
                     &m,
                     &served.placements_touching_chunk(&m, coord),
                     &served.segments_touching_chunk(coord),
                     &served.carves_touching_chunk(coord),
+                    &served.solids_touching_chunk(coord),
                     coord,
                 ));
             }
@@ -8076,11 +8081,12 @@ fn a_hole_drops_you_a_whole_storey() {
                     x: base.x + cx as i32,
                     z: base.z + cz as i32,
                 };
-                rasters.push(chunk::build_chunk_raster_with_carves(
+                rasters.push(chunk::build_chunk_raster_full(
                     &m,
                     &served.placements_touching_chunk(&m, coord),
                     &served.segments_touching_chunk(coord),
                     &served.carves_touching_chunk(coord),
+                    &served.solids_touching_chunk(coord),
                     coord,
                 ));
             }
@@ -8132,4 +8138,125 @@ fn a_hole_drops_you_a_whole_storey() {
          de abajo sigue ahí — un agujero por el que se ve y no se pasa"
     );
     println!("[agujero] {holes} agujeros que bajan una planta entera");
+}
+
+/// ADR-105 verificaciones (a) y (b) — **todo macizo emitido EXISTE en el ráster, y ningún vano se lo
+/// come.**
+///
+/// Las dos con una sola medida, y por eso está escrito así: si los vanos se aplicaran después de los
+/// macizos —el orden ingenuo—, el pretil de un atrio desaparecería, porque el vano de atrio de
+/// ADR-104 cubre su huella ensanchada medio metro, o sea exactamente el borde donde va. **El síntoma
+/// sería «el pretil no sale», sin un solo error en ninguna parte.** Aquí sale como un macizo que se
+/// emitió y que el ráster no tiene.
+///
+/// Y se comprueba además que un pretil **no llega al techo**: una barandilla que tapa es una pared, y
+/// entonces el atrio vuelve a ser el pozo sellado que ADR-104 D3 quitó.
+#[test]
+fn every_solid_survives_into_the_raster() {
+    let m = real_manifest();
+    let mut checked = 0usize;
+    let mut parapets = 0usize;
+    let mut pillars = 0usize;
+
+    for (rx, rz) in AUDIT_REGIONS {
+        let region = Wg3RegionCoord { x: rx, z: rz };
+        let (min_x, min_z, _, _) = region.bounds();
+        let served = Wg3ServedWorld::plan_region(&m, SERVED_SEED, region);
+
+        let side = REGION_CHUNKS as usize;
+        let base = chunk::Wg3ChunkCoord::containing(min_x + 1.0, min_z + 1.0);
+        for cz in 0..side {
+            for cx in 0..side {
+                let coord = chunk::Wg3ChunkCoord {
+                    x: base.x + cx as i32,
+                    z: base.z + cz as i32,
+                };
+                let solids = served.solids_touching_chunk(coord);
+                if solids.is_empty() {
+                    continue;
+                }
+                let raster = chunk::build_chunk_raster_full(
+                    &m,
+                    &served.placements_touching_chunk(&m, coord),
+                    &served.segments_touching_chunk(coord),
+                    &served.carves_touching_chunk(coord),
+                    &solids,
+                    coord,
+                );
+
+                for s in &solids {
+                    let (cx_m, cz_m) = s.centre();
+                    // Sólo los que caen DENTRO de este chunk se pueden preguntar a su ráster: uno que
+                    // lo toca por el borde tiene su centro en el vecino.
+                    let (bx0, bz0, bx1, bz1) = coord.bounds();
+                    if cx_m < bx0 || cx_m >= bx1 || cz_m < bz0 || cz_m >= bz1 {
+                        continue;
+                    }
+                    let mid = (s.bottom_y_cm + s.top_y_cm) as f32 / 200.0;
+                    assert!(
+                        raster.is_solid_at(cx_m, mid, cz_m),
+                        "el macizo de ({cx_m:.2}, {cz_m:.2}) entre {} y {} cm se emitió y el ráster \
+                         no lo tiene: o no se estampa, o un vano se lo ha comido — que es el orden \
+                         invertido de ADR-105 D2",
+                        s.bottom_y_cm,
+                        s.top_y_cm
+                    );
+                    checked += 1;
+
+                    // Un pretil es bajo y largo; un pilar, alto y cuadrado. No hace falta un campo
+                    // para distinguirlos: la forma ya lo dice, y así el dato no puede mentir.
+                    let h = s.top_y_cm - s.bottom_y_cm;
+                    if h <= 200 {
+                        parapets += 1;
+                        // Por encima del pretil hay que VER. Medio metro más arriba de su remate.
+                        let over = s.top_y_cm as f32 / 100.0 + 0.5;
+                        assert!(
+                            !raster.is_solid_at(cx_m, over, cz_m),
+                            "el pretil de ({cx_m:.2}, {cz_m:.2}) sigue siendo macizo {over:.2} m \
+                             arriba: eso no es una barandilla, es una pared, y el atrio vuelve a \
+                             estar sellado"
+                        );
+                    } else {
+                        pillars += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    assert!(
+        checked > 0,
+        "ninguna región emitió un macizo, así que este test no ha probado nada"
+    );
+    println!("[macizo] {checked} verificados en el ráster: {parapets} pretiles, {pillars} pilares");
+}
+
+/// Cuántos macizos emite el plan, por región y por tipo. Sin afirmar nada: es la cifra que dice si
+/// los pretiles cubren los bordes que deberían o si la comprobación de «hay suelo al lado» está
+/// descartando de más.
+#[test]
+#[ignore]
+fn probe_how_many_solids() {
+    let m = real_manifest();
+    for (rx, rz) in AUDIT_REGIONS {
+        let b = building_of(rx, rz);
+        let f = fill::fill_building(&b, &m);
+        let parapets = f
+            .solids
+            .iter()
+            .filter(|s| s.top_y_cm - s.bottom_y_cm <= 200)
+            .count();
+        let pillars = f.solids.len() - parapets;
+        let atria = b
+            .storeys
+            .iter()
+            .flat_map(|p| p.spaces.iter())
+            .filter(|s| s.void_above && s.role == SpaceRole::Hall)
+            .count();
+        println!(
+            "[macizo] ({rx},{rz}) — {} macizos: {parapets} pretiles y {pillars} pilares sobre \
+             {atria} atrios",
+            f.solids.len()
+        );
+    }
 }
