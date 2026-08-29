@@ -7802,3 +7802,117 @@ fn probe_how_many_atria() {
         "[atrio] TOTAL — {t_atria} atrios · {t_halls} naves · {t_void_above} con vacío encima"
     );
 }
+
+/// ADR-104, verificaciones (a) y (b) — **un atrio mide dos plantas EN EL RÁSTER, y encima no hay losa
+/// fantasma.**
+///
+/// Las dos con una sola medida, y por eso está escrito así: `headroom_above_floor` devuelve el hueco
+/// entre el suelo y lo primero macizo que hay encima. Si el forjado siguiera ahí —dibujado o no—, el
+/// hueco saldría en los 3,08 m de una planta y no en los 6,40 de dos. **Un techo invisible a media
+/// altura es el fallo clásico de este sistema y no sale en una captura**; aquí sale.
+///
+/// Se mide sobre el mundo SERVIDO, que es lo que resuelve el movimiento, y no sobre el relleno —
+/// medir uno para hablar del otro es el error de método que ya costó tres conclusiones falsas.
+#[test]
+fn an_atrium_is_two_storeys_tall_in_the_raster() {
+    /// Lo que tiene que medir un atrio, con margen para la conservadora del ráster: dos plantas menos
+    /// dos losas son 6,40 m, y una planta sola son 3,08. Cualquier valor por debajo de esto significa
+    /// que hay forjado donde no debería.
+    const ATRIUM_MIN_M: f32 = 6.0;
+    /// Cuánto hay que meterse desde el borde del rectángulo para no estar midiendo su pared.
+    const INSET_M: f32 = 1.5;
+    const STEP_M: f32 = 0.5;
+
+    let m = real_manifest();
+    let mut checked = 0usize;
+
+    for (rx, rz) in AUDIT_REGIONS {
+        let b = building_of(rx, rz);
+        let region = Wg3RegionCoord { x: rx, z: rz };
+        let (min_x, min_z, _, _) = region.bounds();
+        let served = Wg3ServedWorld::plan_region(&m, SERVED_SEED, region);
+
+        let side = REGION_CHUNKS as usize;
+        let base = chunk::Wg3ChunkCoord::containing(min_x + 1.0, min_z + 1.0);
+        let mut rasters = Vec::with_capacity(side * side);
+        for cz in 0..side {
+            for cx in 0..side {
+                let coord = chunk::Wg3ChunkCoord {
+                    x: base.x + cx as i32,
+                    z: base.z + cz as i32,
+                };
+                rasters.push(chunk::build_chunk_raster_with_carves(
+                    &m,
+                    &served.placements_touching_chunk(&m, coord),
+                    &served.segments_touching_chunk(coord),
+                    &served.carves_touching_chunk(coord),
+                    coord,
+                ));
+            }
+        }
+        let raster_at = |x: f32, z: f32| -> Option<&Wg3Raster> {
+            let coord = chunk::Wg3ChunkCoord::containing(x, z);
+            let (dx, dz) = (coord.x - base.x, coord.z - base.z);
+            if dx < 0 || dz < 0 || dx as usize >= side || dz as usize >= side {
+                return None;
+            }
+            rasters.get(dz as usize * side + dx as usize)
+        };
+
+        for storey in &b.storeys {
+            for s in &storey.spaces {
+                if !(s.void_above && s.role == SpaceRole::Hall) {
+                    continue;
+                }
+                let r = s.rect;
+                let floor_m = s.floor_y_cm as f32 / 100.0;
+                let probe_y = floor_m + 0.5;
+
+                // El MÁXIMO y no la media: un atrio lleva contenido dentro —pilares, piezas
+                // autoradas— y una celda debajo de una caja mide lo que mide esa caja. Lo que este
+                // test afirma es que el hueco de dos plantas EXISTE, no que ocupe toda la huella.
+                let mut best = 0.0f32;
+                let mut samples = 0usize;
+                let (x0, x1) = (r.min_x_cm as f32 / 100.0, r.max_x_cm as f32 / 100.0);
+                let (z0, z1) = (r.min_z_cm as f32 / 100.0, r.max_z_cm as f32 / 100.0);
+                let mut x = x0 + INSET_M;
+                while x < x1 - INSET_M {
+                    let mut z = z0 + INSET_M;
+                    while z < z1 - INSET_M {
+                        if let Some(raster) = raster_at(x, z) {
+                            if let Some(h) = raster.headroom_above_floor(x, probe_y, z) {
+                                best = best.max(h);
+                                samples += 1;
+                            }
+                        }
+                        z += STEP_M;
+                    }
+                    x += STEP_M;
+                }
+
+                if samples == 0 {
+                    continue;
+                }
+                println!(
+                    "[atrio-ráster] ({rx},{rz}) nave de {:.0} m² — hueco máximo {best:.2} m \
+                     ({samples} celdas)",
+                    r.area_m2()
+                );
+                assert!(
+                    best >= ATRIUM_MIN_M,
+                    "({rx},{rz}) un atrio de {:.0} m² mide {best:.2} m de hueco y tendría que medir \
+                     {ATRIUM_MIN_M}: o el techo se quedó a la altura de una planta, o hay losa de \
+                     forjado encima que nadie ve",
+                    r.area_m2()
+                );
+                checked += 1;
+            }
+        }
+    }
+
+    assert!(
+        checked > 0,
+        "ninguna región produjo un atrio, así que este test no ha probado nada"
+    );
+    println!("[atrio-ráster] {checked} atrios verificados a dos plantas");
+}
