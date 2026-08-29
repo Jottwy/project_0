@@ -199,7 +199,7 @@ namespace BackroomsSurvival.WorldGen3
                 var single = new Wg3World();
                 single.placements.Add(placement);
                 Wg3SceneAssembler.Assemble(
-                    single, root.transform, materials, mine, spawnLights, chunk.carves);
+                    single, root.transform, EffectiveMaterials(), mine, spawnLights, chunk.carves);
 
                 _builtPieces++;
 
@@ -248,7 +248,7 @@ namespace BackroomsSurvival.WorldGen3
                 // ensamblador y no queda rastro de él en la escena. Es una ceguera del arnés que se
                 // paga en cuanto hay que diagnosticar por qué dos espacios se ven igual.
                 Wg3SceneAssembler.AssembleSegment(
-                    segment, root.transform, materials, mine, $"seg_{i:D3}_s{segment.style}",
+                    segment, root.transform, EffectiveMaterials(), mine, $"seg_{i:D3}_s{segment.style}",
                     spawnLights, chunk.carves, LampMaterial(), hum);
                 if (ambience != null)
                 {
@@ -270,7 +270,7 @@ namespace BackroomsSurvival.WorldGen3
             {
                 var solid = chunk.solids[i];
                 Wg3SceneAssembler.AssembleSolid(
-                    solid, root.transform, materials, mine, $"solid_{i:D3}_s{solid.style}");
+                    solid, root.transform, EffectiveMaterials(), mine, $"solid_{i:D3}_s{solid.style}");
                 _builtSolids++;
             }
 
@@ -288,21 +288,62 @@ namespace BackroomsSurvival.WorldGen3
             ReportOnce();
         }
 
-        /// <summary>ADR-107 D2 — el material emisivo de la luminaria, construido UNA vez desde la
-        /// config de ambiente. Sin config no hay lámpara visible, y eso es preferible a inventar un
-        /// material: una luminaria del color equivocado se lee como un fallo de arte.</summary>
-        private Material LampMaterial()
+        /// <summary>
+        /// El juego de materiales de WG2 para esta capa, construido UNA vez.
+        ///
+        /// Se guarda entero y no sólo la lámpara: `Build` fabrica los seis, y quedarse con uno era
+        /// tirar cinco a cada llamada. De aquí salen la luminaria (ADR-107 D2) y el respaldo de abajo.
+        /// </summary>
+        private BackroomsSurvival.Gameplay.GridWorld.LayerVisualMaterials Wg2Set()
         {
             if (ambience == null) return null;
-            if (_lampMaterial == null)
-            {
-                _lampMaterial = BackroomsSurvival.Gameplay.GridWorld.LayerVisualMaterials
-                    .Build(ambience).lamp;
-            }
-            return _lampMaterial;
+            _wg2Set ??= BackroomsSurvival.Gameplay.GridWorld.LayerVisualMaterials.Build(ambience);
+            return _wg2Set;
         }
 
-        private Material _lampMaterial;
+        /// <summary>ADR-107 D2 — el material emisivo de la luminaria.</summary>
+        private Material LampMaterial() => Wg2Set()?.lamp;
+
+        /// <summary>
+        /// Los materiales con los que se pinta, con **RESPALDO a los de WG2**.
+        ///
+        /// Sin esto, un `GridTestWorld` al que nadie le haya arrastrado los cuatro materiales de WG3
+        /// monta el mundo **sin material**, y en URP eso es MAGENTA. Un mundo entero en rosa no se lee
+        /// como «falta configurar»: se lee como que el generador nuevo está roto, y ése es un
+        /// diagnóstico caro por un campo vacío.
+        ///
+        /// Cayendo a los de WG2 el mundo sale pintado con el aspecto de siempre —que es peor que el
+        /// propio, pero es *un mundo*— y el aviso de la consola sigue diciendo qué asignar.
+        ///
+        /// **La instancia se cachea, y eso NO es una optimización**: `Wg3StyleMaterials.Resolve`
+        /// invalida su caché entera cuando le llega otro juego base, así que devolver un objeto nuevo
+        /// en cada llamada reconstruiría todas las variantes de tinte en cada tramo.
+        /// </summary>
+        private Wg3Materials EffectiveMaterials()
+        {
+            if (materials?.floor != null) return materials;
+            if (_fallback != null) return _fallback;
+
+            var set = Wg2Set();
+            if (set == null) return materials;
+            _fallback = new Wg3Materials
+            {
+                floor = set.floor,
+                // La pared de WG2 hace de estructura: es el mismo papel en el otro mundo.
+                structure = set.wall,
+                ceiling = set.ceiling,
+                // Y la decoración cae al material de prop, que es lo más parecido a un remate.
+                decoration = set.prop,
+            };
+            Debug.LogWarning(
+                "[WG3] sin materiales propios asignados: se dibuja con los de WG2 para no salir en " +
+                "magenta. Asigna Assets/Materials/WorldGen3/Wg3_Floor, _Structure, _Ceiling y _Trim " +
+                "en el prefab GridTestWorld para ver el aspecto de verdad.");
+            return _fallback;
+        }
+
+        private BackroomsSurvival.Gameplay.GridWorld.LayerVisualMaterials _wg2Set;
+        private Wg3Materials _fallback;
         private int _builtLamps;
 
         /// <summary>ADR-107 D4 — las salas de WG3 con su reverb ya calculado, para saber en cuál está
@@ -393,7 +434,7 @@ namespace BackroomsSurvival.WorldGen3
 
             Debug.Log($"[WG3] streamer: {_builtChunks} chunks con geometría y {_emptyChunks} vacíos; " +
                       $"{_builtPieces} piezas, {_builtSegments} tramos, {_builtSolids} macizos y {_builtLamps} lamparas con zumbido montados. materiales " +
-                      $"{(materials?.floor != null ? "asignados" : "SIN ASIGNAR — se dibujaría en rosa o invisible")}; " +
+                      $"{(materials?.floor != null ? "propios" : "de WG2 por respaldo — los propios sin asignar")}; " +
                       $"radio {radius}.", this);
         }
 
