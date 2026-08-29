@@ -112,12 +112,23 @@ impl Wg3CollisionCache {
     /// que ahora sí se puede generar — antes `update_ownership` sólo hacía la capa 0 y subir una
     /// planta dejaba al jugador contra un chunk que nunca iba a existir.
     pub fn blocked_at(&self, pos: Vec3, radius: f32) -> bool {
-        let feet = pos.y - PLAYER_BODY_M;
+        // **El cuerpo empieza UN ESCALÓN por encima de los pies, y sin eso una escalera no se sube.**
+        //
+        // Un peldaño mide 25,5 cm de contrahuella, o sea que el siguiente cae DENTRO del cuerpo: la
+        // muestra que aterriza sobre él dice «bloqueado» y el movimiento se resuelve como `Blocked`.
+        // Y sólo pasa a veces, porque depende de en qué parte de la huella de 60 cm se esté cuando se
+        // pregunta — que es exactamente el síntoma que se vio jugando: el robapieles clavado a mitad
+        // de escalera, unas veces sí y otras no.
+        //
+        // Es lo mismo que hace cualquier `CharacterController` con su `stepOffset`, y el cliente ya lo
+        // hace con 0,275: sin esta tolerancia el servidor frenaba donde el cliente pasaba, y esa
+        // discrepancia se siente como un tirón sin causa.
+        let feet = pos.y - PLAYER_BODY_M + STEP_UP_M;
         for (x, z) in capsule_samples(pos, radius) {
             let Some(raster) = self.raster_at(x, z) else {
                 return true;
             };
-            if raster.blocked_standing_at(x, feet, z, PLAYER_BODY_M) {
+            if raster.blocked_standing_at(x, feet, z, PLAYER_BODY_M - STEP_UP_M) {
                 return true;
             }
         }

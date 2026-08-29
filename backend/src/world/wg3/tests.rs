@@ -8950,3 +8950,73 @@ fn probe_stairs_in_both_directions() {
         "[escalera] SUBIR {up_ok} ok / {up_fail} fallan · BAJAR {down_ok} ok / {down_fail} fallan"
     );
 }
+
+/// **UN CUERPO SOBRE UNA ESCALERA PUEDE AVANZAR.**
+///
+/// Era el fallo que quedaba después de que la navegación ya encontrara la ruta: había camino y la
+/// criatura no se movía. `blocked_at` medía el cuerpo desde los PIES, y la contrahuella de 25,5 cm
+/// mete el peldaño siguiente DENTRO del cuerpo — así que la muestra que cae sobre él declara
+/// bloqueado y el movimiento sale `Blocked`. Sólo a veces, porque depende de en qué parte de la
+/// huella de 60 cm se pregunte: exactamente el «se clava a mitad de escalera» que se vio jugando.
+///
+/// Con la tolerancia de un escalón —lo que hace cualquier `CharacterController` con su `stepOffset`,
+/// y lo que el cliente ya hacía con 0,275— el cuerpo empieza por encima de lo que puede pisar.
+#[test]
+fn a_body_on_a_stair_can_move_forward() {
+    use crate::world::collision::{Level0Collision, PLAYER_RADIUS};
+    use crate::world::wg3::collision::Wg3CollisionCache;
+    use crate::world::wg3::world::Wg3WorldCache;
+    use crate::world::Vec3;
+
+    const PLAYER_BASE_Y: f32 = 1.8;
+    const STOREY_M: f32 = 3.32;
+
+    let m = real_manifest();
+    let (mut moved, mut stuck) = (0usize, 0usize);
+
+    for (rx, rz) in AUDIT_REGIONS {
+        let b = building_of(rx, rz);
+        let mut worlds = Wg3WorldCache::default();
+        let mut cache = Wg3CollisionCache::new();
+
+        for well in &b.wells {
+            let (wx, wz) = well.rect.centre_m();
+            let base =
+                b.storeys[well.storey_below].spaces[well.space_below].floor_y_cm as f32 / 100.0;
+            let probe = Vec3::new(wx, base + STOREY_M + PLAYER_BASE_Y, wz);
+            cache.prewarm_for_move(&mut worlds, &m, SERVED_SEED, probe, probe);
+            let Some(floor) = cache.floor_below_m(wx, wz, base + STOREY_M) else {
+                continue;
+            };
+            let from = Vec3::new(wx, floor + PLAYER_BASE_Y, wz);
+
+            // Medio metro en cada sentido: la escalera corre por uno de los dos ejes, así que al
+            // menos una de las cuatro tiene que poder darse. Si NINGUNA se puede, está clavado.
+            let any = [(0.5, 0.0), (-0.5, 0.0), (0.0, 0.5), (0.0, -0.5)]
+                .iter()
+                .any(|(dx, dz)| {
+                    let to = Vec3::new(from.x + dx, from.y, from.z + dz);
+                    let r = Level0Collision::resolve_move_wg3_entity(&cache, from, to);
+                    r.position.distance_xz(from) > 0.05
+                });
+            if any {
+                moved += 1;
+            } else {
+                stuck += 1;
+                println!(
+                    "[escalón] ({rx},{rz}) CLAVADO en ({wx:.1},{wz:.1}) a y={:.2}: ninguna de las \
+                     cuatro direcciones se puede dar",
+                    from.y
+                );
+            }
+            let _ = PLAYER_RADIUS;
+        }
+    }
+
+    println!("[escalón] {moved} escaleras donde el cuerpo avanza · {stuck} clavadas");
+    assert!(
+        stuck == 0,
+        "{stuck} escaleras dejan a un cuerpo clavado a media subida: el peldaño siguiente cae dentro \
+         del cuerpo y ninguna dirección se puede dar"
+    );
+}
