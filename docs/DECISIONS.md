@@ -10829,3 +10829,29 @@ de spawn del robapieles y de los facelings sigue siendo puro por semilla sobre `
 mueven, ven y golpean con WG3, pero **el sitio donde aparecen sigue eligiéndolo el mundo viejo**. No lo
 destapó esta etapa —lleva ahí desde ADR-108— pero es lo siguiente que hay que mirar, y es más barato
 que cualquier cosa de D2.
+
+### D4 — El SITIO donde nace una criatura (implementada, 2026-08-29)
+
+Lo de arriba, hecho. Joel lo eligió antes que D2 por lo mismo que dice el párrafo: se ve jugando y es
+barato.
+
+`spawn_phantom` y `spawn_faceling` hacían dos cosas de WG2: `resolve_spawn_near` para el sitio y
+`grid_floor_y(world_pos_to_layer(y))` para la cota. **La cota era la peor de las dos**: devuelve la de
+una capa de 4 m —o sea CERO para la capa 0— en un mundo cuyas plantas miden 3,32 y cuyos suelos suben y
+bajan. Y el sitio tampoco: una celda que WG2 da por buena puede tener macizo aquí, y con el movimiento
+ya resuelto por el ráster eso no deja a la criatura flotando, la deja **atascada** — el mismo fallo que
+ADR-106 arregló para el jugador, con un año menos de vida.
+
+Las dos las decide ahora `standable_near`, el mismo resolutor del spawn del jugador: suelo debajo,
+hueco para estar de pie, y nada que estorbe estando ahí. Si no hay sitio **no se inventa uno**: se deja
+el candidato y se avisa por el log.
+
+**Medido, no deducido:** de los 18 sitios que sortea el reparto de facelings en 3 × 3 chunks de la
+región (0,0), el ráster **corrige 10 —más de la mitad—** con un desplazamiento máximo de 3,00 m. La
+sonda se queda (`creature_spawn_height_comes_from_the_raster_not_from_the_wg2_layer`), y su aserción es
+que corrija *alguno*: si dejara de corregir, este cambio habría dejado de hacer nada.
+
+**Y queda con nombre lo que NO cambia: el REPARTO sigue hablando de WG2.** Cuántas salen y dónde se
+concentran lo decide `zone_kind_for` (la banda `ZONE_OFFICE` de ADR-094 enm. 5), y la cota candidata
+sale de la capa — así que **hoy no nacen facelings en las plantas altas**. Eso es contenido y balance,
+no un fallo de coordenadas, y pide su propia decisión.

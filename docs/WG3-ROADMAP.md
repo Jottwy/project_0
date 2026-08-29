@@ -75,7 +75,7 @@ transportable**, que es lo que se pidió. Buscar ahí un fallo de la migración 
 | **Loot por papel** | 🟡 | **andado, sin ver en partida**; densidad intacta | 108 enm. 4 |
 | **Construcción y claims** | 🟡 | **andado, sin ver en partida**; se construye en servicio/almacén/callejón | 108 D6 |
 | **Retirada de WG2** | 🟡 | **etapa 1 hecha: ya no se genera ni se manda**; borrar el código lo bloquea el contenido | 109 |
-| Spawn de criaturas | 🔴 | **se mueven con WG3, pero NACEN donde diga WG2** | 109 |
+| **Spawn de criaturas** | 🟡 | **el SITIO ya sale del ráster** (10 de 18 corregidos); el REPARTO sigue en WG2 | 109 D4 |
 | Level 4 y salas autoradas en WG3 | 🔴 | sólo existen en WG2; bloquean el borrado | 109 D2 |
 
 ### Cifras del mundo servido, hoy
@@ -139,8 +139,11 @@ contra el ráster, ambos validados en juego el 2026-08-29. Lo que queda es el re
 - **Ya no queda ningún consumidor de autoridad en WG2.** La retirada arrancó (ADR-109): con WG3
   mandando ya no se genera el mundo viejo ni viajan sus vistas. **Borrar el código está bloqueado por
   contenido**: el Level 4 y las salas autoradas existen sólo en WG2, y el borrado se las lleva.
-- Y una que no estaba en ninguna lista: **las criaturas se mueven con WG3 pero NACEN donde diga WG2**
-  — el sorteo de spawn sigue siendo puro por semilla sobre `grid_gen`.
+- Y una que no estaba en ninguna lista y ya está medio cerrada: las criaturas se movían con WG3 y
+  **nacían donde dijera WG2**. El SITIO ya lo decide `standable_near` (ADR-109 D4; medido: de 18
+  sorteos, el ráster corrige 10, hasta 3 m). Sigue en WG2 el **reparto**: cuántas salen y dónde se
+  concentran lo decide `zone_kind_for`, y la cota candidata sale de la capa — **hoy no nacen facelings
+  en las plantas altas**.
 - Tres lecciones de la mudanza de la IA, por si sirven para la del loot: (a) **ver no es pasar** —
   `segment_is_clear` exige suelo bajo la recta, y como línea de visión falla el 8 % de las veces
   (medido: 49 de 611 parejas, sonda `probe_sight_is_not_the_same_as_passage`); (b) las **capas de 4 m
