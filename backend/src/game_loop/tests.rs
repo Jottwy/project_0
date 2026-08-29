@@ -7390,7 +7390,7 @@ fn intercept_leads_a_runner_and_ignores_a_standing_target() {
     let from = Vec3::new(10.0, 1.8, 10.0);
     let tpos = Vec3::new(20.0, 1.8, 10.0);
     // Corre hacia +Z a 5 m/s.
-    let p = intercept_point(&mut cache, 0, from, tpos, (0.0, 5.0), 7.29)
+    let p = intercept_point(&mut cache, None, 0, from, tpos, (0.0, 5.0), 7.29)
         .expect("un corredor se intercepta");
     assert!(
         p.z > tpos.z + 1.0,
@@ -7405,12 +7405,12 @@ fn intercept_leads_a_runner_and_ignores_a_standing_target() {
 
     // Quieto (o casi): nada que cortar.
     assert_eq!(
-        intercept_point(&mut cache, 0, from, tpos, (0.0, 0.4), 7.29),
+        intercept_point(&mut cache, None, 0, from, tpos, (0.0, 0.4), 7.29),
         None
     );
     // Y si la criatura no puede ganarle, tampoco: perseguir es lo único que queda.
     assert_eq!(
-        intercept_point(&mut cache, 0, from, tpos, (0.0, 5.0), 4.0),
+        intercept_point(&mut cache, None, 0, from, tpos, (0.0, 5.0), 4.0),
         None
     );
 }
@@ -7445,7 +7445,7 @@ fn intercept_refuses_a_point_behind_a_wall() {
     let tpos = cell(8, 4); // a una celda del final del pasillo…
                            // …corriendo hacia +X a 5 m/s: en 2 s estaría 10 m dentro de la pared.
     assert_eq!(
-        intercept_point(&mut cache, 0, from, tpos, (5.0, 0.0), 7.29),
+        intercept_point(&mut cache, None, 0, from, tpos, (5.0, 0.0), 7.29),
         None,
         "el punto proyectado cae tras la pared: se cae al contacto"
     );

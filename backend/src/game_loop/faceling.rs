@@ -1702,7 +1702,7 @@ const FACELING_REPLAN_STRIDE: u64 = 11;
 /// How close counts as having reached a waypoint. Same as the robapieles'.
 /// Del suelo a la Y que se guarda de una criatura. Las posiciones de este juego no son los pies:
 /// `resolve_move` mide el cuerpo hacia abajo desde ellas, así que pinar al suelo es sumarle esto.
-const BODY_TOP_M: f32 = 1.8;
+pub(super) const BODY_TOP_M: f32 = 1.8;
 
 const FACELING_WAYPOINT_ARRIVE: f32 = 1.25;
 /// El mismo, en WG3. **Y por cuarta vez en esta migración: el número venía en CELDAS.**
@@ -3613,6 +3613,7 @@ impl ChildDriver {
                             let retreat_vel = (-vel.0, -vel.1);
                             intercept_point(
                                 &mut self.grid_cache,
+                                self.wg3.as_ref(),
                                 layer,
                                 from,
                                 target,

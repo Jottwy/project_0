@@ -1189,6 +1189,7 @@ pub(super) fn chorus_delay_fraction(key: u64) -> f32 {
 /// player and the contact stance (ADR-082); feeding them this point would hand out reach for free.
 pub(super) fn intercept_point(
     cache: &mut crate::world::grid_gen::GridGenChunkCache,
+    wg3: Option<&crate::world::wg3::collision::Wg3CollisionCache>,
     layer: u8,
     from: Vec3,
     tpos: Vec3,
@@ -1208,7 +1209,20 @@ pub(super) fn intercept_point(
     }
     // Only a place the TARGET can actually reach counts: the thin line from them to the point. A
     // runner heading into a wall is about to turn, and guessing which way is not interception.
-    if !crate::world::grid_gen::segment_is_clear(cache, layer, tpos, p) {
+    //
+    // ADR-108 enm. 3 — con WG3 la pregunta se le hace al ráster. Preguntándosela a `grid_gen` se
+    // respondía sobre OTRO mundo: donde el ráster tiene pared, la rejilla vieja podía decir «libre»
+    // y el bicho salía a cortarle el paso a través de un muro.
+    let reachable = match wg3 {
+        Some(w) => crate::world::wg3::nav::segment_is_clear(
+            w,
+            tpos,
+            p,
+            crate::world::grid_gen::PHANTOM_BODY_RADIUS,
+        ),
+        None => crate::world::grid_gen::segment_is_clear(cache, layer, tpos, p),
+    };
+    if !reachable {
         return None;
     }
     Some(p)
@@ -3023,12 +3037,8 @@ impl PhantomDriver {
                 exact.y,
                 exact.z + dir.1 * speed * lead_seconds,
             );
-            if crate::world::grid_gen::segment_is_clear(
-                &mut self.grid_cache,
-                layer,
-                exact,
-                predicted,
-            ) {
+            // Andable para el JUGADOR, no visible desde aquí: la pregunta es a dónde pudo LLEGAR.
+            if self.straight_is_clear(layer, exact, predicted) {
                 let m = &mut self.movers[i];
                 m.last_known_player_pos = Some(predicted);
                 m.search_fallback = Some(exact);
@@ -3099,7 +3109,7 @@ impl PhantomDriver {
         if !self.movers[i].peeked_this_search
             && dist_to_goal > PHANTOM_SEARCH_ARRIVE
             && dist_to_goal <= PHANTOM_PEEK_TRIGGER_DISTANCE
-            && !crate::world::grid_gen::segment_is_clear(&mut self.grid_cache, layer, from, goal)
+            && !self.can_see(layer, from, goal)
         {
             self.movers[i].peeked_this_search = true;
             self.movers[i].peek_for =
@@ -3480,6 +3490,7 @@ impl PhantomDriver {
         let press_to = match ctx.target_vels.get(&tid).copied() {
             Some(vel) => intercept_point(
                 &mut self.grid_cache,
+                self.wg3.as_ref(),
                 layer,
                 from,
                 tpos,
@@ -3931,12 +3942,7 @@ impl PhantomDriver {
                     && dist <= PHANTOM_LIGHT_DETECT_RADIUS
                     && target_has_light_on(ctx.net, tid, ctx.host_light_on)
                     && in_view_cone(self.movers[i].heading, from, tpos)
-                    && crate::world::grid_gen::segment_is_clear(
-                        &mut self.grid_cache,
-                        layer,
-                        from,
-                        tpos,
-                    );
+                    && self.can_see(layer, from, tpos);
                 if light {
                     info!(
                         "MPTRACE step=PH_LIGHT event=phantom_sees_your_light phantom_id={} target_id={} dist={:.1}",
@@ -4200,8 +4206,7 @@ impl PhantomDriver {
             crate::world::grid_gen::PHANTOM_BODY_RADIUS,
         );
         let line_to = contact.unwrap_or(tpos);
-        let has_line =
-            crate::world::grid_gen::segment_is_clear(&mut self.grid_cache, layer, from, line_to);
+        let has_line = self.can_see(layer, from, line_to);
         if has_line {
             self.movers[i].sprint_blind_for = 0.0;
         } else {
@@ -4256,6 +4261,7 @@ impl PhantomDriver {
         let nav_goal = match ctx.target_vels.get(&tid).copied() {
             Some(vel) => intercept_point(
                 &mut self.grid_cache,
+                self.wg3.as_ref(),
                 layer,
                 from,
                 tpos,
@@ -4303,8 +4309,7 @@ impl PhantomDriver {
         // the "sigue sin atacar cuando te pegas a una pared" of the play-test. Measuring the
         // distance against the stance instead would have been the wrong fix in the other direction:
         // it would hand out free reach. So: `dist` stays yours, the line stops where the body can.
-        let in_reach = dist < PHANTOM_ATTACK_REACH
-            && crate::world::grid_gen::segment_is_clear(&mut self.grid_cache, layer, from, line_to);
+        let in_reach = dist < PHANTOM_ATTACK_REACH && self.can_see(layer, from, line_to);
         // ADR-080 point 3 — THE SWING THAT DOES NOT LAND MAKES A SOUND. Being at arm's length
         // while the blow is locked out (recovering from the previous one) was completely silent:
         // the claw that grazed you registered as nothing at all. Its own short cooldown, because
@@ -4479,13 +4484,7 @@ impl PhantomDriver {
             crate::world::grid_gen::PHANTOM_BODY_RADIUS,
         )
         .unwrap_or(tpos);
-        let in_reach = dist < PHANTOM_ATTACK_REACH
-            && crate::world::grid_gen::segment_is_clear(
-                &mut self.grid_cache,
-                layer,
-                from,
-                ambush_line_to,
-            );
+        let in_reach = dist < PHANTOM_ATTACK_REACH && self.can_see(layer, from, ambush_line_to);
         if in_reach {
             let dx = tpos.x - from.x;
             let dz = tpos.z - from.z;
@@ -4656,6 +4655,20 @@ impl PhantomDriver {
         }
     }
 
+    /// ADR-108 enm. 3 — ¿HAY VISIÓN? Que no es lo mismo que «¿se puede ir andando?».
+    ///
+    /// `segment_is_clear` responde si un CUERPO recorre la recta a pie: exige suelo debajo. Como
+    /// línea de visión eso es doblemente falso — ciega al bicho al otro lado de un atrio (ve, pero
+    /// no puede andar por el aire) y no distingue una barandilla. En WG3 se midió: de 611 parejas,
+    /// 49 discrepan (8 %), todas «ve pero no pasa». Uno de cada doce chequeos de percepción.
+    /// La sonda es `probe_sight_is_not_the_same_as_passage`.
+    fn can_see(&mut self, layer: u8, a: Vec3, b: Vec3) -> bool {
+        match &self.wg3 {
+            Some(cache) => crate::world::wg3::nav::line_of_sight(cache, a, b),
+            None => crate::world::grid_gen::segment_is_clear(&mut self.grid_cache, layer, a, b),
+        }
+    }
+
     /// Igual, cuando sólo interesa a dónde se llegó.
     fn resolve_pos(&mut self, layer: u8, from: Vec3, desired: Vec3) -> Vec3 {
         self.resolve_ex(layer, from, desired).pos
@@ -4808,26 +4821,45 @@ impl PhantomDriver {
     /// creatures giving up in the same room do not pick the same corner), three radii each. `None`
     /// when the geometry offers nothing — then it gives up for real, as before.
     pub(super) fn pick_lurk_spot(&mut self, i: usize, from: Vec3, layer: u8) -> Option<Vec3> {
-        use crate::world::grid_gen::{is_walkable_grid_gen, segment_is_clear};
+        use super::faceling::BODY_TOP_M;
         let last_seen = self.movers[i].last_known_player_pos?;
         let id = self.movers[i].id;
         let base = (id as f32 * 0.618_034).fract() * std::f32::consts::TAU;
         for k in 0..8 {
             let bearing = base + k as f32 * std::f32::consts::FRAC_PI_4;
             for r in [16.0, PHANTOM_LURK_MIN_DISTANCE, PHANTOM_LURK_MAX_DISTANCE] {
-                let p = Vec3::new(
+                let mut p = Vec3::new(
                     from.x + bearing.sin() * r,
                     from.y,
                     from.z + bearing.cos() * r,
                 );
-                if !is_walkable_grid_gen(&mut self.grid_cache, p, layer) {
-                    continue;
+                // ADR-108 enm. 3 — con WG3 el sitio se PISA sobre el ráster: `floor_at` hace de
+                // andable y de cota a la vez. Sin ese pinchazo el escondite se elegía a la altura
+                // desde la que se buscaba, que en un atrio es aire.
+                match &self.wg3 {
+                    Some(cache) => {
+                        let Some(floor) =
+                            crate::world::wg3::nav::floor_at(cache, p.x, p.z, from.y - BODY_TOP_M)
+                        else {
+                            continue;
+                        };
+                        p.y = floor + BODY_TOP_M;
+                    }
+                    None => {
+                        if !crate::world::grid_gen::is_walkable_grid_gen(
+                            &mut self.grid_cache,
+                            p,
+                            layer,
+                        ) {
+                            continue;
+                        }
+                    }
                 }
                 // Reachable for the body from here, and hidden from the last sighting.
                 if !self.straight_is_clear(layer, from, p) {
                     continue;
                 }
-                if segment_is_clear(&mut self.grid_cache, layer, p, last_seen) {
+                if self.can_see(layer, p, last_seen) {
                     continue; // you could see it from there: not a hiding place
                 }
                 return Some(p);
