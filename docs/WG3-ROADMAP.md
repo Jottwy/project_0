@@ -72,7 +72,7 @@ transportable**, que es lo que se pidió. Buscar ahí un fallo de la migración 
 | Plantas bajo la cota base | 🔴 | | 104 D5 |
 | **Fantasma (movimiento + vista)** | ✅ | **andado y validado en juego** | 108 |
 | **Facelings (adultos y niños)** | ✅ | **andados y validados en juego** | 108 enm. 1-3 |
-| Loot por papel | 🔴 | reparte por `zone_kind` de WG2 | 108 D4 |
+| **Loot por papel** | 🟡 | **andado, sin ver en partida**; densidad intacta | 108 enm. 4 |
 | Construcción y claims | 🔴 | sin empezar | 106 deuda |
 | Retirada de WG2 | 🔴 | el servidor sigue generándolo | sin ADR |
 
@@ -126,9 +126,11 @@ enmienda 2) y el Frente B (ADR-106). Lo que queda, por valor:
 mudada entera** (ADR-108): el robapieles y los facelings —adultos y niños— navegan, ven y golpean
 contra el ráster, ambos validados en juego el 2026-08-29. Lo que queda es el reparto de objetos.
 
-- El **loot** resuelve contra la rejilla vieja: hoy reparte por `zone_kind` de WG2 en un mundo de WG3.
-  Eso es incoherente, **no invisible** — lo poco que se ve es la escasez pedida, no la migración.
-- **Construcción y claims** no se han tocado.
+- El **loot** ya reparte por el PAPEL del espacio (ADR-108 enm. 4). La densidad no se tocó a
+  propósito: los siete papeles llevan el 0,04 de la prueba de escasez, y lo que el papel decide es QUÉ
+  sale, no CUÁNTO. Falta verlo en partida y falta autorar `styleProfiles` en el asset, que es trabajo
+  de contenido y hoy corre con los valores del código.
+- **Construcción y claims** son lo único de autoridad que sigue en WG2.
 - Tres lecciones de la mudanza de la IA, por si sirven para la del loot: (a) **ver no es pasar** —
   `segment_is_clear` exige suelo bajo la recta, y como línea de visión falla el 8 % de las veces
   (medido: 49 de 611 parejas, sonda `probe_sight_is_not_the_same_as_passage`); (b) las **capas de 4 m
@@ -159,7 +161,7 @@ cuál manda antes de tocar ninguno.
 | Frente | Estado |
 |---|---|
 | **A — identidad visual por papel** | ✅ **HECHO.** `b5c6cfc3`, `2c0d5dce`, `a8de06c6`. Verificado EN JUEGO: los siete papeles se distinguen desde el fondo del tramo |
-| **B — WG3 como autoridad** | ✅ **HECHO Y ANDADO** para el jugador (ADR-106) y para toda la IA (ADR-108). Queda el loot y la construcción |
+| **B — WG3 como autoridad** | ✅ **HECHO Y ANDADO** para el jugador (ADR-106) y para toda la IA (ADR-108). El loot ya reparte por papel, sin ver en partida. Queda la construcción |
 | **C — variedad de contenido** | Reencuadrado: ver §7, el catálogo de formas por coste |
 | **D — la rareza Backrooms** | ▶️ **DESAPARCADO.** Es ADR-103, aprobado por Joel, sin código |
 

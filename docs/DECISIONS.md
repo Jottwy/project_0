@@ -10687,3 +10687,40 @@ elegía el escondite a la altura desde la que buscaba, que en un atrio es aire. 
 **Queda fuera, con nombre:** `contact_stance` sigue en `grid_gen` en los tres sitios del faceling y en
 los del robapieles. Degrada por `unwrap_or` al objetivo, así que el peor caso es apuntar al jugador en
 vez de a su postura de contacto —que es lo que hacía antes de ADR-082—, pero es deuda, no diseño.
+
+### ADR-108 — Enmienda 4 (2026-08-29): D4 implementado, y la densidad NO se toca
+
+Estado: **implementada**. El reparto por papel que D4 aprobó, con dos precisiones que sólo aparecen al
+escribirlo.
+
+**El sorteo cambia de forma en una cosa: el centro de la caché se sortea PRIMERO.** Hay que saber
+dónde cae para poder preguntar qué sitio es antes de decidir si la hay. Invierte el orden del flujo de
+números respecto a `RollItems`, así que la misma semilla reparte distinto; no hay nada persistido que
+eso rompa. Se pregunta por el CENTRO y no por cada hueco: todos caen dentro de `CacheClusterRadius`, o
+sea casi siempre en el mismo espacio, y una sola pregunta deja el sorteo independiente del orden en que
+se coloquen luego.
+
+**La densidad no cambia, y es deliberado.** Los siete papeles llevan el `itemCacheChance` = 0,04 de la
+prueba de escasez del 2026-08-17 —mirada en partida— y `carryableZoneChance` sigue a cero. Lo que el
+papel decide aquí es QUÉ sale, no CUÁNTO. Única excepción: la **escalera a cero**, porque nadie deja
+nada en una escalera. Medido con arnés dotnet sobre 20.000 columnas por papel: **0,0520 objetos por
+columna hoy contra 0,0535**, que es el ruido de haber reordenado el flujo de números, no un cambio de
+balance. Ajustar densidad por papel es autorado y se hace en el asset.
+
+**Dos casos que sólo se ven pensando en juego, y los dos son de terminación:**
+
+1. **Una columna cuyo centro cae en el vacío del plan no se sellaba nunca.** WG2 siempre tenía zona;
+   WG3 deja huecos. Sin distinguir «todavía no» de «aquí no hay nada», esa columna se re-sortea en cada
+   barrido para siempre. Con el chunk montado y sin nada en esa vertical **a ninguna cota**, la
+   respuesta ya es definitiva y se sella. Si hay espacio pero en otra planta, se espera: el jugador
+   puede subir.
+2. **Con WG3 no hay mapa de paredes que mirar, y el rayo solo no basta.** El rayo sale de DENTRO del
+   muro, y un rayo que nace dentro de un collider no lo toca —cara trasera—, así que aterriza en el
+   suelo de debajo y el objeto queda emparedado. Se prueba el SITIO: una esfera de 20 cm sobre el punto
+   de suelo. Si no cabe, se reintenta como cualquier otro hueco en muro.
+
+**Y una trampa de serialización que este proyecto ya conocía al revés:** el tooltip de `profiles`
+avisa de que los valores por defecto del código sólo aplican a un asset que nunca se ha serializado.
+`styleProfiles` nace en un asset que **sí** lo está, así que llega vacío — y vacío tiene que caer a los
+valores del código, no al perfil 0, que serviría el mismo perfil a los siete papeles y anularía la
+decisión entera en silencio.
