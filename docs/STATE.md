@@ -18,7 +18,11 @@
 
 6. **PENDIENTE, y el orden lo eligió Joel.** El borrado del código de `grid_gen` (294 referencias fuera, 12.124 líneas dentro) **está bloqueado por CONTENIDO**: el Level 4 y las salas autoradas (ADR-083/084/085) existen sólo en WG2 y el borrado se las lleva. Decisión aparcada a propósito. Más: el **reparto** de facelings sigue en WG2 —`zone_kind_for` decide cuántas y dónde, y la cota candidata sale de la capa, así que **hoy no nacen facelings en plantas altas**—; `contact_stance` sigue en `grid_gen`; falta la **guarda de aislamiento** contra griefing; y falta autorar `styleProfiles` en el asset.
 
-7. **NO TOCAR (validado humano, 2026-08-29).** La escasez del loot y el sitio donde nacen las criaturas: Joel los jugó y los dio por buenos.
+7. **EL REPARTO DE FACELINGS, TAMBIÉN MUDADO Y VALIDADO** (ADR-109 D5, commits `3e5a202d` y `1a61f7c6`; suite 1138/1138). La concentración en oficinas la decide ahora el PAPEL del espacio hueco a hueco, no la zona del chunk. **Casi se cuela un cambio de balance del 350 %**: la oficina era el 4 % del mundo en WG2 y el papel de oficina cubre el **39 %** en WG3, así que quedarse con todos daba **255 facelings donde WG2 dejaba 72**; calibrado a **71**. La manada de niños se decide ENTERA (con el filtro por hueco se habría quedado en uno o dos, y sin manada no hay cerco ni robo). Y de paso arregló un fallo que D4 dejó vivo: el precalentado sólo cubría a las criaturas YA vivas, así que `standable_near` no tenía ráster en un sitio recién sorteado y el snap no hacía nada — **funcionaba en la sonda y no en el bucle**.
+
+8. ⚠️ **AVISO DE PROCESO, y ya estaba escrito.** Al calibrar la constante usé `Set-Content` de PowerShell sobre un fuente con acentos y lo dejó doblemente codificado, con BOM. Detectado, revertido (leer, `encode('cp1252')`, `decode('utf-8')`) y verificado a cero. **La regla es real y no una precaución teórica: en fuentes, sólo `Edit` o Python con encoding explícito.**
+
+9. **NO TOCAR (validado humano, 2026-08-29).** La escasez del loot, el sitio donde nacen las criaturas y el reparto de facelings: Joel los jugó y los dio por buenos.
 
 ---
 
