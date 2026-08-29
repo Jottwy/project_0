@@ -203,6 +203,51 @@ namespace BackroomsSurvival.Net
         }
     }
 
+    /// <summary>
+    /// ADR-105 — un MACIZO: materia que se AÑADE. Espejo de <c>ipc::Wg3SolidWire</c>.
+    ///
+    /// **Es el hermano simétrico de <see cref="Wg3CarveMsg"/>**: la misma caja, en los mismos
+    /// centímetros enteros, y uno resta donde el otro suma. Existe porque WG3 sabía quitar materia y
+    /// no sabía ponerla suelta: un tramo trae suelo, techo y cuatro paredes, así que un pilar hecho
+    /// de tramo dejaría dos losas coplanares con las del atrio — el z-fighting que costó 456 pares.
+    ///
+    /// **Y no se le excava** (ADR-105 D2). El vano de un atrio cubre su huella ensanchada medio
+    /// metro, o sea justo donde va un pretil: aplicando los vanos a los macizos, cada pretil
+    /// desaparecería y no habría error en ninguna parte.
+    /// </summary>
+    public struct Wg3SolidMsg
+    {
+        public int xCm;
+        public int zCm;
+        public int sizeXCm;
+        public int sizeZCm;
+        public int bottomYCm;
+        public int topYCm;
+
+        /// <summary>Aspecto, igual que en el tramo: lo consume <c>Wg3StyleMaterials.Resolve</c>. Sin
+        /// él un pretil se lee como un objeto pegado y no como la sala a la que pertenece.</summary>
+        public byte style;
+
+        public static Wg3SolidMsg Parse(MsgPackReader r)
+        {
+            var s = new Wg3SolidMsg();
+            int n = r.ReadMapHeader();
+            for (int i = 0; i < n; i++)
+            {
+                var k = r.ReadKey();
+                if (MsgPackReader.Is(k, "x_cm")) s.xCm = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "z_cm")) s.zCm = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "size_x_cm")) s.sizeXCm = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "size_z_cm")) s.sizeZCm = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "bottom_y_cm")) s.bottomYCm = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "top_y_cm")) s.topYCm = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "style")) s.style = (byte)r.ReadInt();
+                else r.Skip();
+            }
+            return s;
+        }
+    }
+
     public class Wg3ChunkMsg
     {
         public int cx;
@@ -223,6 +268,16 @@ namespace BackroomsSurvival.Net
         /// caja da lo mismo que restarla una.
         /// </summary>
         public readonly List<Wg3CarveMsg> carves = new List<Wg3CarveMsg>();
+
+        /// <summary>
+        /// ADR-105 — los macizos de los que este chunk es DUEÑO, por su centro.
+        ///
+        /// Al revés que los vanos, y a propósito: un macizo se DIBUJA, y este lado monta un
+        /// GameObject por chunk sin deduplicar, así que recibirlo en los dos chunks que toca lo
+        /// pintaría dos veces con la colisión duplicada. El ráster del servidor sí usa todos los que
+        /// tocan, porque un pilar a caballo de la frontera bloquea a los dos lados.
+        /// </summary>
+        public readonly List<Wg3SolidMsg> solids = new List<Wg3SolidMsg>();
 
         public static Wg3ChunkMsg Parse(MsgPackReader r, int remainingPairs)
         {
@@ -246,6 +301,11 @@ namespace BackroomsSurvival.Net
                 {
                     int c = r.ReadArrayHeader();
                     for (int j = 0; j < c; j++) m.carves.Add(Wg3CarveMsg.Parse(r));
+                }
+                else if (MsgPackReader.Is(k, "solids"))
+                {
+                    int c = r.ReadArrayHeader();
+                    for (int j = 0; j < c; j++) m.solids.Add(Wg3SolidMsg.Parse(r));
                 }
                 else r.Skip();
             }

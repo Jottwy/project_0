@@ -207,6 +207,60 @@ namespace BackroomsSurvival.WorldGen3
             }
         }
 
+        /// <summary>
+        /// ADR-105 — monta un MACIZO: una caja llena, con su malla, su colisión y su estilo.
+        ///
+        /// **Y a ésta NO se le aplican los vanos, que es la regla D2 y el fallo que más fácil sería
+        /// reintroducir aquí.** El vano de un atrio cubre su huella ensanchada medio metro, o sea
+        /// exactamente donde va un pretil: pasar <c>carves</c> por aquí haría desaparecer cada pretil
+        /// emitido, y el síntoma sería «el pretil no sale» sin un solo error en ninguna parte.
+        ///
+        /// Sin luz propia: un pilar no ilumina, y un pretil tampoco. La luz es del espacio.
+        /// </summary>
+        public static GameObject AssembleSolid(BackroomsSurvival.Net.Wg3SolidMsg solid,
+            Transform parent, Wg3Materials materials, List<Mesh> createdMeshes, string name)
+        {
+            if (parent == null) return null;
+
+            float sx = solid.sizeXCm / 100f;
+            float sz = solid.sizeZCm / 100f;
+            float sy = (solid.topYCm - solid.bottomYCm) / 100f;
+            if (sx <= 0f || sz <= 0f || sy <= 0f) return null;
+
+            var origin = new Vector3(solid.xCm / 100f, solid.bottomYCm / 100f, solid.zCm / 100f);
+
+            // Una sola caja, y por eso este canal existe: un tramo habría traído además su losa de
+            // suelo y la de techo, coplanares con las del atrio.
+            var volumes = new List<Wg3Volume>(1)
+            {
+                new Wg3Volume
+                {
+                    center = new Vector3(sx * 0.5f, sy * 0.5f, sz * 0.5f),
+                    size = new Vector3(sx, sy, sz),
+                    yawDegrees = 0f,
+                    kind = Wg3VolumeKind.Pillar,
+                }
+            };
+
+            var go = new GameObject(name);
+            go.hideFlags = HideFlags.DontSave;
+            go.transform.SetParent(parent, false);
+            go.transform.position = origin;
+
+            Mesh mesh = Wg3MeshBuilder.Build(volumes, origin);
+            mesh.name = $"wg3_{name}";
+            mesh.hideFlags = HideFlags.DontSave;
+            createdMeshes?.Add(mesh);
+
+            go.AddComponent<MeshFilter>().sharedMesh = mesh;
+            var renderer = go.AddComponent<MeshRenderer>();
+            Material[] mats = Wg3StyleMaterials.Resolve(materials, solid.style);
+            if (mats != null) renderer.sharedMaterials = mats;
+
+            AddColliders(go, volumes, origin);
+            return go;
+        }
+
         private static void AddColliders(GameObject root, List<Wg3Volume> volumes, Vector3 origin)
         {
             for (int v = 0; v < volumes.Count; v++)

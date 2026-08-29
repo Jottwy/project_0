@@ -236,6 +236,16 @@ namespace BackroomsSurvival.WorldGen3
                 _builtSegments++;
             }
 
+            // ADR-105 — los MACIZOS, y van sin `chunk.carves` a propósito (D2). Pasarles los vanos
+            // haría desaparecer cada pretil, porque el vano de un atrio cubre justo su borde.
+            for (int i = 0; i < chunk.solids.Count; i++)
+            {
+                var solid = chunk.solids[i];
+                Wg3SceneAssembler.AssembleSolid(
+                    solid, root.transform, materials, mine, $"solid_{i:D3}_s{solid.style}");
+                _builtSolids++;
+            }
+
             ReportOnce();
         }
 
@@ -250,6 +260,7 @@ namespace BackroomsSurvival.WorldGen3
         private int _builtChunks;
         private int _builtPieces;
         private int _builtSegments;
+        private int _builtSolids;
         private bool _reported;
 
         /// <summary>
@@ -268,7 +279,7 @@ namespace BackroomsSurvival.WorldGen3
             _reported = true;
 
             Debug.Log($"[WG3] streamer: {_builtChunks} chunks con geometría y {_emptyChunks} vacíos; " +
-                      $"{_builtPieces} piezas y {_builtSegments} tramos generados montados. materiales " +
+                      $"{_builtPieces} piezas, {_builtSegments} tramos y {_builtSolids} macizos montados. materiales " +
                       $"{(materials?.floor != null ? "asignados" : "SIN ASIGNAR — se dibujaría en rosa o invisible")}; " +
                       $"radio {radius}.", this);
         }

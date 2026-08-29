@@ -335,6 +335,30 @@ pub struct Wg3CarveWire {
     pub top_y_cm: i32,
 }
 
+/// ADR-105 — un MACIZO: materia que se AÑADE, y a la que los vanos no tocan.
+///
+/// **Espejo exacto de [`Wg3CarveWire`] más un `style`**, y la simetría es la decisión: uno resta y el
+/// otro suma sobre la misma caja, en los mismos centímetros enteros. Existe porque WG3 sabía quitar
+/// materia y no sabía ponerla suelta: un tramo no puede ser macizo —`Wg3Segment::problems` lo
+/// prohíbe— y una pieza de catálogo sirve para un pilar concreto pero no para un pretil, que mide lo
+/// que mida el borde de cada atrio.
+///
+/// **El orden importa y no viaja: los macizos se estampan DESPUÉS de excavar** (ADR-105 D2). El vano
+/// de atrio de ADR-104 cubre justo donde va un pretil, así que restando después de sumar el pretil
+/// desaparecería sin un solo error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Wg3SolidWire {
+    pub x_cm: i32,
+    pub z_cm: i32,
+    pub size_x_cm: i32,
+    pub size_z_cm: i32,
+    pub bottom_y_cm: i32,
+    pub top_y_cm: i32,
+    /// Aspecto, como en el tramo. Sin él un pretil se lee como un objeto pegado y no como la
+    /// arquitectura de la sala a la que pertenece.
+    pub style: u8,
+}
+
 /// ADR-095 — lo que WG3 entrega por chunk.
 ///
 /// Sin `layer`: con columnas de tramos (D2) la capa deja de existir como restricción, así que un
@@ -366,6 +390,17 @@ pub struct Wg3ChunkView {
     /// restarla una. La idempotencia es otra razón para que viaje la caja y no una referencia.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub carves: Vec<Wg3CarveWire>,
+
+    /// ADR-105 — los MACIZOS de los que este chunk es DUEÑO, por su centro.
+    ///
+    /// **Y aquí sí manda la regla del centro, al revés que en los vanos**, porque un macizo se
+    /// DIBUJA: el cliente monta un `GameObject` por chunk y no deduplica, así que mandarlo en los dos
+    /// que toca lo pinta dos veces con la colisión duplicada. El ráster del servidor sí usa todos los
+    /// que TOCAN el chunk, porque un pilar a caballo de la frontera bloquea a los dos lados. La
+    /// asimetría es la misma que la de las piezas desde ADR-095, y es la que más veces se ha roto
+    /// sola en este sistema.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub solids: Vec<Wg3SolidWire>,
 }
 
 /// ADR-078 — lo que el backend entrega a Unity por cada trozo de trazo ajeno. Es
@@ -1309,6 +1344,19 @@ mod tests {
                 bottom_y_cm: 5,
                 top_y_cm: 320,
             }],
+            // ADR-105 — y el macizo, que es el que más fácil se pierde en silencio: si su clave se
+            // renombra, el cliente no monta ni un pretil y el mundo se ve exactamente igual que
+            // antes de que existieran. `style` a 3 y no a 0 por el mismo motivo que la cota de la
+            // colocación: cero es el valor al que cae el parser cuando se salta una clave.
+            solids: vec![Wg3SolidWire {
+                x_cm: 900,
+                z_cm: -60,
+                size_x_cm: 150,
+                size_z_cm: 20,
+                bottom_y_cm: 332,
+                top_y_cm: 442,
+                style: 3,
+            }],
         }))
         .unwrap();
 
@@ -1333,6 +1381,9 @@ mod tests {
             "openings",
             "side",
             "offset_cm",
+            "solids",
+            "bottom_y_cm",
+            "top_y_cm",
             "width_cm",
             "carves",
             "bottom_y_cm",
