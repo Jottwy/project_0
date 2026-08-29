@@ -8334,6 +8334,98 @@ fn on_the_upper_storey_wg3_does_not_freeze_you() {
     println!("[autoridad] {checked} posiciones de planta alta andables contra el ráster de WG3");
 }
 
+/// ADR-108 verificaciones (a) y (d) — **una criatura SUBE una escalera de WG3**, y lo que cuesta
+/// preguntarlo se mide antes de enchufarlo.
+///
+/// Es la prueba de D2: la celda de navegación lleva su cota y las vecinas se enlazan por el mismo
+/// escalón que sube el jugador. Con una celda 2D —la de `grid_gen`— esto es imposible: una escalera
+/// pisa la misma XZ a diez cotas, así que o se ve como una columna maciza o se cruza por el aire.
+///
+/// La medida de coste no es adorno: sin grafo horneado, cada expansión paga contra el ráster, y si eso
+/// no cabe en un tick hay que saberlo **antes** de que lo llame el robapieles y no después.
+#[test]
+fn a_creature_can_climb_a_wg3_stair() {
+    use crate::world::wg3::collision::Wg3CollisionCache;
+    use crate::world::wg3::nav;
+    use crate::world::wg3::world::Wg3WorldCache;
+    use crate::world::Vec3;
+
+    const PLAYER_BASE_Y: f32 = 1.8;
+    const STOREY_M: f32 = 3.32;
+
+    let m = real_manifest();
+    let mut climbed = 0usize;
+    let mut worst_expansions = 0usize;
+
+    for (rx, rz) in AUDIT_REGIONS {
+        let b = building_of(rx, rz);
+        let region = Wg3RegionCoord { x: rx, z: rz };
+        let mut worlds = Wg3WorldCache::default();
+        let mut cache = Wg3CollisionCache::new();
+        let _ = region;
+
+        for well in &b.wells {
+            // El pie de la escalera: el centro del hueco, en la planta de abajo.
+            let (wx, wz) = well.rect.centre_m();
+            let below = &b.storeys[well.storey_below];
+            let base = below.spaces[well.space_below].floor_y_cm as f32 / 100.0;
+            // Y la salida: el CENTRO DEL ESPACIO DE ARRIBA, no la misma XZ. Con el mismo XZ la celda
+            // de destino es la de origen y la búsqueda termina antes de empezar — un destino de dos
+            // coordenadas no puede decir «una planta más arriba».
+            let above = &b.storeys[well.storey_below + 1];
+            let up = &above.spaces[well.space_above];
+            let (ux, uz) = up.rect.centre_m();
+            let to = Vec3::new(ux, up.floor_y_cm as f32 / 100.0 + PLAYER_BASE_Y, uz);
+
+            cache.prewarm_for_move(&mut worlds, &m, SERVED_SEED, to, to);
+
+            // **El pie de la escalera no está en el centro del hueco.** Ahí el tiro ya va por la
+            // mitad, a metro y medio, así que a la cota de la planta baja no hay nada en lo que
+            // apoyarse. Se busca el suelo que REALMENTE haya en esa vertical, empezando por arriba.
+            let Some(start_floor) = cache.floor_below_m(wx, wz, base + STOREY_M) else {
+                continue;
+            };
+            let from = Vec3::new(wx, start_floor + PLAYER_BASE_Y, wz);
+            cache.prewarm_for_move(&mut worlds, &m, SERVED_SEED, from, to);
+
+            let mut path = Vec::new();
+            let outcome = nav::find_path(&cache, from, to, &mut path);
+            worst_expansions = worst_expansions.max(outcome.expansions);
+            if path.is_empty() {
+                continue;
+            }
+
+            // Lo que se afirma no es que llegue al punto exacto —eso depende de dónde caiga el
+            // rellano— sino que **el camino ALCANZA la cota de la planta de arriba**. Sin cota en la
+            // celda, la altura del camino no se movería nunca de la de partida.
+            let top = path.iter().map(|p| p.y).fold(f32::MIN, f32::max);
+            let gained = top - from.y;
+            if top >= to.y - 0.5 {
+                climbed += 1;
+                println!(
+                    "[nav] ({rx},{rz}) escalera en ({wx:.1},{wz:.1}) — sube {gained:.2} m en \
+                     {} pasos, {} expansiones",
+                    path.len(),
+                    outcome.expansions
+                );
+            }
+            if climbed >= 6 {
+                break;
+            }
+        }
+    }
+
+    println!(
+        "[nav] peor caso {worst_expansions} expansiones (tope {})",
+        nav::NAV_MAX_EXPANSIONS
+    );
+    assert!(
+        climbed > 0,
+        "ninguna escalera de WG3 se pudo subir navegando: la celda de navegación no está viendo el \
+         cambio de cota, que es exactamente lo que ADR-108 D2 existe para resolver"
+    );
+}
+
 /// ADR-106 — **el spawn cae de pie en el mundo de WG3, no en el de WG2.**
 ///
 /// Con la autoridad movida, aparecer en una celda que WG2 da por buena y WG3 tiene maciza no deja al

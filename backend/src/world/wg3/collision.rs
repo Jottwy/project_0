@@ -144,6 +144,30 @@ impl Wg3CollisionCache {
         }
     }
 
+    /// La cota del suelo pisable, **o `None` si no hay ninguno**.
+    ///
+    /// Existe porque [`Self::floor_y`] conserva la cota de entrada cuando no encuentra suelo —lo que
+    /// es correcto para el movimiento, que no debe teletransportar a nadie— y eso deja a quien
+    /// pregunta sin forma de distinguir «el suelo está justo aquí» de «aquí no hay suelo». Para
+    /// navegar, esa diferencia es la que separa una sala de un vacío: sin ella, un agujero de ADR-104
+    /// se recorre como si fuera pasillo.
+    pub fn floor_below_m(&self, x: f32, z: f32, from_floor: f32) -> Option<f32> {
+        self.raster_at(x, z)?
+            .floor_below(x, from_floor + STEP_UP_M, z)
+    }
+
+    /// Hueco libre por encima del suelo de esta columna, en metros. `None` si no hay suelo.
+    ///
+    /// **Es la pregunta correcta para NAVEGAR, y `blocked_at` es la equivocada.** Aquélla barre una
+    /// cápsula de radio 35 cm, y en una escalera esa cápsula siempre invade el peldaño de al lado —
+    /// que está 25 cm más alto y por tanto dentro del cuerpo—, así que **ninguna escalera pasaría
+    /// jamás el filtro**. La altura libre mide la COLUMNA: en un peldaño son los 3,80 m que hay hasta
+    /// el techo del hueco, que es lo que de verdad decide si ahí cabe alguien de pie.
+    pub fn headroom_m(&self, x: f32, z: f32, from_floor: f32) -> Option<f32> {
+        self.raster_at(x, z)?
+            .headroom_above_floor(x, from_floor + STEP_UP_M, z)
+    }
+
     /// Qué bloqueó, para la traza. WG3 no tiene celdas ni banderas: las devuelve a cero y nombra el
     /// motivo, que es lo único que aquí puede ser cierto.
     pub fn describe(
