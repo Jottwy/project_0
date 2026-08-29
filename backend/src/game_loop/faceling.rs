@@ -206,6 +206,8 @@ pub(super) struct AdultMover {
 
 pub(super) struct AdultDriver {
     pub(super) grid_cache: GridGenChunkCache,
+    /// ADR-108 — el ráster de WG3, cuando WG3 manda. `None` en el camino de siempre.
+    pub(super) wg3: Option<crate::world::wg3::collision::Wg3CollisionCache>,
     pub(super) movers: Vec<AdultMover>,
     pub(super) density_scale: f32,
     population_sync_in: f32,
@@ -238,19 +240,59 @@ pub(super) fn pos_in_chunk(pos: Vec3, chunk: (i32, i32)) -> bool {
     pos.x >= x0 && pos.x < x1 && pos.z >= z0 && pos.z < z1
 }
 
+/// ADR-108 — ¿está el otro a mi altura? El sustituto de `world_pos_to_layer(x) == layer` con WG3.
+///
+/// La capa de `grid_gen` es un cajón de 4 m y la planta de WG3 mide 3,32: los cajones NO alinean con
+/// las plantas. Dos criaturas en la misma planta caen a los dos lados de una frontera de 4 m cada
+/// pocas plantas, y entonces todas estas puertas —perseguir, golpear, ver, congelarse— se cierran sin
+/// que nada en pantalla lo explique. Peor aún, se cierran a rachas, según la cota, que es la clase de
+/// fallo que se atribuye a la IA y no al sistema de cotas.
+///
+/// Con WG3 no hay cajón: se mide la diferencia de cota contra media planta. Menos que una planta,
+/// para que nadie pegue a través de un forjado, y más que cualquier escalón o rampa, para que subirse
+/// a un peldaño no te haga invisible.
+fn same_level(wg3: bool, layer: u8, self_y: f32, other_y: f32) -> bool {
+    const HALF_STOREY_M: f32 = crate::world::wg3::plan::STOREY_HEIGHT_CM as f32 / 100.0 * 0.5;
+    match wg3 {
+        true => (other_y - self_y).abs() <= HALF_STOREY_M,
+        false => world_pos_to_layer(other_y) == layer,
+    }
+}
+
 /// Picks a walkable "puesto" inside `chunk` — plain uniform sampling, not
 /// `phantom.rs::pick_lurk_spot`'s deterministic bearings: nothing here needs to be re-derived
 /// (unlike a hiding spot, an office desk has no observer to stay consistent for), so a few random
 /// tries and a `None` on bad luck (retried next reconcile) is simpler and just as correct.
-fn pick_puesto(cache: &mut GridGenChunkCache, chunk: (i32, i32), layer: u8) -> Option<Vec3> {
+///
+/// ADR-108 — con WG3 la cota NO se deriva de la capa. `grid_floor_y(layer)` es la de una planta de
+/// `grid_gen`, plana y a 4 m de intervalo; en WG3 el suelo sube y baja dentro de la propia planta y
+/// las plantas están a 3,32 m. Un puesto con la Y de la capa cae dentro de la losa o a metro y medio
+/// del suelo, y el que va a él se atasca al llegar. Se sale del ráster, partiendo de la cota que ya
+/// tiene quien pregunta — que es como se busca todo lo demás en WG3.
+fn pick_puesto(
+    cache: &mut GridGenChunkCache,
+    wg3: Option<&crate::world::wg3::collision::Wg3CollisionCache>,
+    chunk: (i32, i32),
+    layer: u8,
+    ref_y: f32,
+) -> Option<Vec3> {
     let (x0, x1, z0, z1) = chunk_bounds(chunk);
     let y = crate::world::grid_gen::grid_floor_y(layer) + crate::world::collision::PLAYER_BASE_Y;
     for _ in 0..12 {
         let x = x0 + rand::random::<f32>() * (x1 - x0);
         let z = z0 + rand::random::<f32>() * (z1 - z0);
-        let candidate = Vec3::new(x, y, z);
-        if is_walkable_grid_gen(cache, candidate, layer) {
-            return Some(candidate);
+        match wg3 {
+            Some(w) => {
+                if let Some(floor) = crate::world::wg3::nav::floor_at(w, x, z, ref_y - BODY_TOP_M) {
+                    return Some(Vec3::new(x, floor + BODY_TOP_M, z));
+                }
+            }
+            None => {
+                let candidate = Vec3::new(x, y, z);
+                if is_walkable_grid_gen(cache, candidate, layer) {
+                    return Some(candidate);
+                }
+            }
         }
     }
     None
@@ -259,6 +301,8 @@ fn pick_puesto(cache: &mut GridGenChunkCache, chunk: (i32, i32), layer: u8) -> O
 impl AdultDriver {
     pub(super) fn new(world_seed: u64) -> Self {
         Self {
+            // ADR-108 — lo enciende el bucle cuando WG3 manda.
+            wg3: None,
             grid_cache: GridGenChunkCache::with_rules(
                 world_seed,
                 crate::world::zone_density::rules_for,
@@ -405,6 +449,34 @@ impl AdultDriver {
         }
     }
 
+    /// ADR-108 — ¿se puede pisar aquí? Mismo dispatch que el robapieles.
+    ///
+    /// La de WG3 pregunta por la ALTURA LIBRE de la columna y no por una cápsula: en una escalera el
+    /// barrido invade el peldaño de al lado —25 cm más alto, o sea dentro del cuerpo— y ninguna se
+    /// podría subir. Es el mismo fallo que costó media tarde con el robapieles, heredado ya resuelto.
+    fn walkable(&mut self, pos: Vec3, layer: u8) -> bool {
+        match &self.wg3 {
+            Some(cache) => {
+                let floor = pos.y - 1.8;
+                crate::world::wg3::nav::floor_at(cache, pos.x, pos.z, floor).is_some()
+            }
+            None => is_walkable_grid_gen(&mut self.grid_cache, pos, layer),
+        }
+    }
+
+    /// ADR-108 — ¿se puede ir en línea recta? Con el ancho del cuerpo, que es lo que evita que se
+    /// clave en las esquinas.
+    fn straight_is_clear(&mut self, layer: u8, a: Vec3, b: Vec3) -> bool {
+        match &self.wg3 {
+            Some(cache) => {
+                crate::world::wg3::nav::segment_is_clear(cache, a, b, PHANTOM_BODY_RADIUS)
+            }
+            None => {
+                segment_is_clear_for_body(&mut self.grid_cache, layer, a, b, PHANTOM_BODY_RADIUS)
+            }
+        }
+    }
+
     /// One entity tick for every active adult. No perception cone, no sound, no light (ADR-094
     /// point 2: "no perciben crouch, luz ni ruido") — the only two inputs are "is anyone within
     /// `FACELING_REGARD_RADIUS`" (this method) and "did anyone hit me" (`apply_damage`, called
@@ -417,6 +489,7 @@ impl AdultDriver {
         dt: f32,
         host_player_pos: Vec3,
     ) -> &[PhantomAttack] {
+        let wg3_on = self.wg3.is_some();
         self.attacks.clear();
         let players: Vec<Vec3> = std::iter::once(host_player_pos)
             .chain(
@@ -442,7 +515,8 @@ impl AdultDriver {
             };
             let here = Vec3::from_array(peer.position);
             if players.iter().any(|p| {
-                world_pos_to_layer(p.y) == m.layer && p.distance_xz(here) <= FACELING_REGARD_RADIUS
+                same_level(wg3_on, m.layer, here.y, p.y)
+                    && p.distance_xz(here) <= FACELING_REGARD_RADIUS
             }) {
                 regarded.insert(m.home_chunk);
             }
@@ -554,13 +628,7 @@ impl AdultDriver {
 
         self.movers[i].nav_age += dt;
 
-        if segment_is_clear_for_body(
-            &mut self.grid_cache,
-            layer,
-            from,
-            target,
-            PHANTOM_BODY_RADIUS,
-        ) {
+        if self.straight_is_clear(layer, from, target) {
             self.movers[i].nav_waypoints.clear();
             self.movers[i].nav_cursor = 0;
             self.movers[i].nav_goal = None;
@@ -590,7 +658,36 @@ impl AdultDriver {
                 &mut cells,
             );
             let mut waypoints = std::mem::take(&mut self.movers[i].nav_waypoints);
-            string_pull(&mut self.grid_cache, layer, from.y, &cells, &mut waypoints);
+            // ADR-108 — con WG3 mandando, la ruta y el suavizado salen de SU navegación. Devuelve
+            // posiciones de mundo, así que no hace falta la conversión de celdas de `string_pull`, y
+            // `simplify` comprueba la recta con COTA y con el ancho del cuerpo.
+            if let Some(cache) = self.wg3.take() {
+                let mut raw = Vec::new();
+                crate::world::wg3::nav::find_path(&cache, from, target, &mut raw);
+                crate::world::wg3::nav::simplify(
+                    &cache,
+                    from,
+                    &raw,
+                    PHANTOM_BODY_RADIUS,
+                    &mut waypoints,
+                );
+                self.wg3 = Some(cache);
+            } else {
+                if let Some(cache) = self.wg3.take() {
+                    let mut raw = Vec::new();
+                    crate::world::wg3::nav::find_path(&cache, from, target, &mut raw);
+                    crate::world::wg3::nav::simplify(
+                        &cache,
+                        from,
+                        &raw,
+                        PHANTOM_BODY_RADIUS,
+                        &mut waypoints,
+                    );
+                    self.wg3 = Some(cache);
+                } else {
+                    string_pull(&mut self.grid_cache, layer, from.y, &cells, &mut waypoints);
+                }
+            }
             self.nav_cells = cells;
             self.nav_scratch = scratch;
             self.movers[i].nav_waypoints = waypoints;
@@ -602,7 +699,14 @@ impl AdultDriver {
         loop {
             let m = &self.movers[i];
             match m.nav_waypoints.get(m.nav_cursor) {
-                Some(wp) if from.distance_xz(*wp) <= FACELING_WAYPOINT_ARRIVE => {
+                Some(wp)
+                    if from.distance_xz(*wp)
+                        <= if self.wg3.is_some() {
+                            FACELING_WAYPOINT_ARRIVE_WG3
+                        } else {
+                            FACELING_WAYPOINT_ARRIVE
+                        } =>
+                {
                     self.movers[i].nav_cursor += 1;
                 }
                 _ => break,
@@ -625,6 +729,7 @@ impl AdultDriver {
         players: &[Vec3],
         regarded: &HashSet<(i32, i32)>,
     ) {
+        let wg3_on = self.wg3.is_some();
         let id = self.movers[i].id;
         let Some(peer) = net.peers.get(&id) else {
             return;
@@ -655,7 +760,7 @@ impl AdultDriver {
                     }
                 });
                 let in_range = target_pos.is_some_and(|target| {
-                    world_pos_to_layer(target.y) == layer
+                    same_level(wg3_on, layer, from.y, target.y)
                         && target.distance_xz(from) <= FACELING_REGARD_RADIUS
                 });
                 // Refreshed while close (ADR-094: "sin verlo" — a fight that stays in your face
@@ -693,9 +798,9 @@ impl AdultDriver {
                             PHANTOM_BODY_RADIUS,
                         )
                         .unwrap_or(*target);
-                        world_pos_to_layer(target.y) == layer
+                        same_level(wg3_on, layer, from.y, target.y)
                             && target.distance_xz(from) <= FACELING_ADULT_ATTACK_REACH
-                            && segment_is_clear(&mut self.grid_cache, layer, from, line_to)
+                            && self.straight_is_clear(layer, from, line_to)
                     }),
                 };
                 if let (Some(target), Some(victim)) = (strike_target, self.movers[i].enforce_target)
@@ -731,12 +836,13 @@ impl AdultDriver {
                         + rand::random::<f32>() * (FACELING_COMMUTE_MAX_S - FACELING_COMMUTE_MIN_S);
                     "idle"
                 } else if let Some(target) =
-                    target_pos.filter(|target| world_pos_to_layer(target.y) == layer)
+                    target_pos.filter(|target| same_level(wg3_on, layer, from.y, target.y))
                 {
                     let raw_heading = self.route_heading(i, layer, from, target, dt);
                     let wedged = self.movers[i].nav_blocked > 0;
                     let step = advance_step(
                         &mut self.grid_cache,
+                        self.wg3.as_ref(),
                         layer,
                         from,
                         raw_heading,
@@ -747,8 +853,7 @@ impl AdultDriver {
                     // Hitting the boundary or a wall just holds position — still converging as
                     // far as it is allowed to.
                     if pos_in_chunk(step.next, home)
-                        && (step.next_ok
-                            || is_walkable_grid_gen(&mut self.grid_cache, step.next, layer))
+                        && (step.next_ok || self.walkable(step.next, layer))
                     {
                         self.note_step(i, StepOutcome::from(true, step.straight_ok));
                         self.movers[i].heading = step.heading;
@@ -774,7 +879,7 @@ impl AdultDriver {
                         + rand::random::<f32>() * (FACELING_COMMUTE_MAX_S - FACELING_COMMUTE_MIN_S);
                 } else if let Some(target) = players
                     .iter()
-                    .filter(|p| world_pos_to_layer(p.y) == layer)
+                    .filter(|p| same_level(wg3_on, layer, from.y, p.y))
                     .min_by(|a, b| a.distance_xz(from).total_cmp(&b.distance_xz(from)))
                 {
                     self.movers[i].heading = (target.x - from.x).atan2(target.z - from.z);
@@ -784,7 +889,8 @@ impl AdultDriver {
             AdultState::Working => {
                 self.movers[i].state_timer -= dt;
                 if self.movers[i].state_timer <= 0.0 {
-                    match pick_puesto(&mut self.grid_cache, home, layer) {
+                    match pick_puesto(&mut self.grid_cache, self.wg3.as_ref(), home, layer, from.y)
+                    {
                         Some(target) => {
                             self.movers[i].commute_target = target;
                             self.movers[i].state = AdultState::Commute;
@@ -819,6 +925,7 @@ impl AdultDriver {
                     let wedged = self.movers[i].nav_blocked > 0;
                     let step = advance_step(
                         &mut self.grid_cache,
+                        self.wg3.as_ref(),
                         layer,
                         from,
                         raw_heading,
@@ -831,8 +938,7 @@ impl AdultDriver {
                     // exactly like `steer_around_walls`' own whisker deflection already does for
                     // the robapieles. The watchdog above is what stops that from being forever.
                     if pos_in_chunk(step.next, home)
-                        && (step.next_ok
-                            || is_walkable_grid_gen(&mut self.grid_cache, step.next, layer))
+                        && (step.next_ok || self.walkable(step.next, layer))
                     {
                         self.note_step(i, StepOutcome::from(true, step.straight_ok));
                         self.movers[i].heading = step.heading;
@@ -1329,6 +1435,8 @@ pub(super) struct ChildPack {
 
 pub(super) struct ChildDriver {
     pub(super) grid_cache: GridGenChunkCache,
+    /// ADR-108 — el ráster de WG3, cuando WG3 manda. `None` en el camino de siempre.
+    pub(super) wg3: Option<crate::world::wg3::collision::Wg3CollisionCache>,
     pub(super) packs: Vec<ChildPack>,
     pub(super) density_scale: f32,
     population_sync_in: f32,
@@ -1357,6 +1465,7 @@ pub(super) struct ChildDriver {
 /// rather than a single chunk's bounds.
 fn pick_roam_point(
     cache: &mut GridGenChunkCache,
+    wg3: Option<&crate::world::wg3::collision::Wg3CollisionCache>,
     center: Vec3,
     radius: f32,
     layer: u8,
@@ -1369,8 +1478,24 @@ fn pick_roam_point(
             center.y,
             center.z + angle.cos() * r,
         );
-        if is_walkable_grid_gen(cache, candidate, layer) {
-            return Some(candidate);
+        // La cota de aquí sí es de fiar —`center` es una posición real y el paseo no cambia de
+        // planta— pero el suelo bajo ella no tiene por qué estar a la misma altura.
+        match wg3 {
+            Some(w) => {
+                if let Some(floor) = crate::world::wg3::nav::floor_at(
+                    w,
+                    candidate.x,
+                    candidate.z,
+                    center.y - BODY_TOP_M,
+                ) {
+                    return Some(Vec3::new(candidate.x, floor + BODY_TOP_M, candidate.z));
+                }
+            }
+            None => {
+                if is_walkable_grid_gen(cache, candidate, layer) {
+                    return Some(candidate);
+                }
+            }
         }
     }
     None
@@ -1426,9 +1551,9 @@ fn push_direction(from: Vec3, tpos: Vec3, heading: f32) -> (f32, f32) {
 /// player never sees a number, they just learn that looking is what slows them down.
 ///
 /// Same-layer only, like every other perception check here.
-fn child_gear_speed(from: Vec3, players: &[(PeerId, Vec3, f32)], layer: u8) -> f32 {
+fn child_gear_speed(wg3_on: bool, from: Vec3, players: &[(PeerId, Vec3, f32)], layer: u8) -> f32 {
     let watched = players.iter().any(|&(_, ppos, pyaw)| {
-        world_pos_to_layer(ppos.y) == layer
+        same_level(wg3_on, layer, from.y, ppos.y)
             && player_is_looking_at_within(ppos, pyaw, from, PHANTOM_STATUE_RELEASE_HALF_FOV)
     });
     match watched {
@@ -1488,6 +1613,7 @@ struct Step {
 
 fn advance_step(
     cache: &mut GridGenChunkCache,
+    wg3: Option<&crate::world::wg3::collision::Wg3CollisionCache>,
     layer: u8,
     from: Vec3,
     raw_heading: f32,
@@ -1499,7 +1625,29 @@ fn advance_step(
         from.y,
         from.z + raw_heading.cos() * step,
     );
-    let straight_ok = is_walkable_grid_gen(cache, straight, layer);
+    // ADR-108 — con WG3 mandando se pregunta a su ráster, y por la ALTURA LIBRE de la columna: una
+    // cápsula invade el peldaño de al lado y ninguna escalera se podría subir.
+    //
+    // Y de paso el PIN DE COTA. Con `grid_gen` la Y de una criatura era la de su capa y no cambiaba
+    // nunca, así que este `advance_step` copiaba `from.y` sin más. En WG3 el suelo sube y baja por
+    // dentro de la planta —escaleras, rampas, el borde de un atrio—, y una criatura que conserve su
+    // Y anda a media altura del peldaño y acaba dentro de la losa. La cota sale del ráster, que es
+    // lo mismo que hace el pin de entidad del resolutor un nivel más arriba.
+    let pinned = |p: Vec3| -> Option<Vec3> {
+        let floor = crate::world::wg3::nav::floor_at(wg3?, p.x, p.z, p.y - BODY_TOP_M)?;
+        Some(Vec3::new(p.x, floor + BODY_TOP_M, p.z))
+    };
+    let straight = match wg3 {
+        Some(_) => pinned(straight).unwrap_or(straight),
+        None => straight,
+    };
+    let straight_ok = match wg3 {
+        Some(w) => {
+            crate::world::wg3::nav::floor_at(w, straight.x, straight.z, straight.y - BODY_TOP_M)
+                .is_some()
+        }
+        None => is_walkable_grid_gen(cache, straight, layer),
+    };
     if !wedged && straight_ok {
         return Step {
             next: straight,
@@ -1508,13 +1656,31 @@ fn advance_step(
             straight_ok: true,
         };
     }
-    let heading = steer_around_walls(cache, layer, from, raw_heading);
-    Step {
-        next: Vec3::new(
-            from.x + heading.sin() * step,
-            from.y,
-            from.z + heading.cos() * step,
+    let heading = match wg3 {
+        Some(w) => crate::world::wg3::nav::steer_around_walls(
+            w,
+            from,
+            raw_heading,
+            &crate::world::wg3::nav::Whiskers {
+                radius: PHANTOM_BODY_RADIUS,
+                whisker_len: crate::world::grid_gen::PHANTOM_WHISKER_LENGTH,
+                wall_margin: crate::world::grid_gen::PHANTOM_WALL_MARGIN,
+                nudge_deg: crate::world::grid_gen::PHANTOM_WALL_NUDGE_DEG,
+                angles_deg: &crate::world::grid_gen::PHANTOM_WHISKER_ANGLES_DEG,
+            },
         ),
+        None => steer_around_walls(cache, layer, from, raw_heading),
+    };
+    let deflected = Vec3::new(
+        from.x + heading.sin() * step,
+        from.y,
+        from.z + heading.cos() * step,
+    );
+    Step {
+        next: match wg3 {
+            Some(_) => pinned(deflected).unwrap_or(deflected),
+            None => deflected,
+        },
         heading,
         next_ok: false,
         straight_ok,
@@ -1534,7 +1700,17 @@ const FACELING_REPLAN_GOAL_DRIFT: f32 = 4.0;
 /// stride would let 21 searches land in one 100 ms slot.
 const FACELING_REPLAN_STRIDE: u64 = 11;
 /// How close counts as having reached a waypoint. Same as the robapieles'.
+/// Del suelo a la Y que se guarda de una criatura. Las posiciones de este juego no son los pies:
+/// `resolve_move` mide el cuerpo hacia abajo desde ellas, así que pinar al suelo es sumarle esto.
+const BODY_TOP_M: f32 = 1.8;
+
 const FACELING_WAYPOINT_ARRIVE: f32 = 1.25;
+/// El mismo, en WG3. **Y por cuarta vez en esta migración: el número venía en CELDAS.**
+///
+/// 1,25 m es «media celda» de las de 2,5 m de `grid_gen`. La de WG3 mide 0,5, así que ese radio son
+/// dos celdas y media: la criatura da por alcanzados varios waypoints de golpe, se salta la esquina y
+/// se lanza contra la pared. Se copió aquí desde el robapieles con un «same as», y con él el fallo.
+const FACELING_WAYPOINT_ARRIVE_WG3: f32 = 0.60;
 
 /// Enmienda 8 — THE WEDGE GATE, and the reason it is not optional.
 ///
@@ -1809,6 +1985,8 @@ pub(super) fn assign_roles(members: &mut [ChildMover]) {
 impl ChildDriver {
     pub(super) fn new(world_seed: u64) -> Self {
         Self {
+            // ADR-108 — lo enciende el bucle cuando WG3 manda.
+            wg3: None,
             grid_cache: GridGenChunkCache::with_rules(
                 world_seed,
                 crate::world::zone_density::rules_for,
@@ -2223,6 +2401,47 @@ impl ChildDriver {
         self.packs.retain(|p| !p.members.is_empty());
     }
 
+    /// ADR-108 — ¿se puede pisar aquí? Mismo dispatch que el robapieles.
+    ///
+    /// La de WG3 pregunta por la ALTURA LIBRE de la columna y no por una cápsula: en una escalera el
+    /// barrido invade el peldaño de al lado —25 cm más alto, o sea dentro del cuerpo— y ninguna se
+    /// podría subir. Es el mismo fallo que costó media tarde con el robapieles, heredado ya resuelto.
+    fn walkable(&mut self, pos: Vec3, layer: u8) -> bool {
+        match &self.wg3 {
+            Some(cache) => {
+                let floor = pos.y - 1.8;
+                crate::world::wg3::nav::floor_at(cache, pos.x, pos.z, floor).is_some()
+            }
+            None => is_walkable_grid_gen(&mut self.grid_cache, pos, layer),
+        }
+    }
+
+    /// ADR-108 — ¿hay línea de VISIÓN? Distinto de `straight_is_clear`, que pregunta por el paso.
+    ///
+    /// Aquí importa la diferencia más que en ninguna otra parte: si la percepción usara el test de
+    /// andar, un niño dejaría de verte al otro lado de un atrio —donde no hay suelo— y te vería a
+    /// través de una barandilla. Y sin dispatch es peor todavía: con WG3 mandando, `grid_gen` sigue
+    /// contestando por SU mundo, así que las paredes que tapan no son las que se ven en pantalla.
+    fn can_see(&mut self, layer: u8, a: Vec3, b: Vec3) -> bool {
+        match &self.wg3 {
+            Some(cache) => crate::world::wg3::nav::line_of_sight(cache, a, b),
+            None => segment_is_clear(&mut self.grid_cache, layer, a, b),
+        }
+    }
+
+    /// ADR-108 — ¿se puede ir en línea recta? Con el ancho del cuerpo, que es lo que evita que se
+    /// clave en las esquinas.
+    fn straight_is_clear(&mut self, layer: u8, a: Vec3, b: Vec3) -> bool {
+        match &self.wg3 {
+            Some(cache) => {
+                crate::world::wg3::nav::segment_is_clear(cache, a, b, PHANTOM_BODY_RADIUS)
+            }
+            None => {
+                segment_is_clear_for_body(&mut self.grid_cache, layer, a, b, PHANTOM_BODY_RADIUS)
+            }
+        }
+    }
+
     /// E2c: returns the `Press` blows staged this tick — same channel as `AdultDriver::step`'s.
     pub(super) fn step(
         &mut self,
@@ -2328,13 +2547,7 @@ impl ChildDriver {
         // LINE OF TRAVEL FIRST. A pathfinder must never come between a creature and somewhere it
         // can already walk straight to — and now that only wedged movers get here, the check is
         // also what lets one notice it has come free.
-        if segment_is_clear_for_body(
-            &mut self.grid_cache,
-            layer,
-            from,
-            target,
-            PHANTOM_BODY_RADIUS,
-        ) {
+        if self.straight_is_clear(layer, from, target) {
             let m = &mut self.packs[pi].members[mi];
             m.nav_waypoints.clear();
             m.nav_cursor = 0;
@@ -2381,7 +2594,20 @@ impl ChildDriver {
                 &mut cells,
             );
             let mut waypoints = std::mem::take(&mut self.packs[pi].members[mi].nav_waypoints);
-            string_pull(&mut self.grid_cache, layer, from.y, &cells, &mut waypoints);
+            if let Some(cache) = self.wg3.take() {
+                let mut raw = Vec::new();
+                crate::world::wg3::nav::find_path(&cache, from, target, &mut raw);
+                crate::world::wg3::nav::simplify(
+                    &cache,
+                    from,
+                    &raw,
+                    PHANTOM_BODY_RADIUS,
+                    &mut waypoints,
+                );
+                self.wg3 = Some(cache);
+            } else {
+                string_pull(&mut self.grid_cache, layer, from.y, &cells, &mut waypoints);
+            }
             // Every buffer goes back where it came from: ADR-040's "cero asignaciones por
             // búsqueda" is an invariant of this call, not an accident of it.
             self.nav_cells = cells;
@@ -2398,7 +2624,14 @@ impl ChildDriver {
         loop {
             let m = &self.packs[pi].members[mi];
             match m.nav_waypoints.get(m.nav_cursor) {
-                Some(wp) if from.distance_xz(*wp) <= FACELING_WAYPOINT_ARRIVE => {
+                Some(wp)
+                    if from.distance_xz(*wp)
+                        <= if self.wg3.is_some() {
+                            FACELING_WAYPOINT_ARRIVE_WG3
+                        } else {
+                            FACELING_WAYPOINT_ARRIVE
+                        } =>
+                {
                     self.packs[pi].members[mi].nav_cursor += 1;
                 }
                 _ => break,
@@ -2683,6 +2916,7 @@ impl ChildDriver {
         dt: f32,
         players: &[(PeerId, Vec3, f32)],
     ) {
+        let wg3_on = self.wg3.is_some();
         // A straggler does not hunt. ADR-094 point 3 makes the lone child harmless BY DESIGN
         // ("el peligro es la geometría del cerco, nunca el niño suelto") — letting a `Flee` pack
         // fall back into `PackStalk` on sight would quietly turn every survivor into a solo
@@ -2705,7 +2939,7 @@ impl ChildDriver {
         let mut spotted: Option<(PeerId, Vec3, bool)> = None;
         'search: for (from, heading) in eyes {
             for &(pid, ppos, _) in players {
-                if world_pos_to_layer(ppos.y) != layer {
+                if !same_level(wg3_on, layer, from.y, ppos.y) {
                     continue;
                 }
                 // ── SIGHT, and it now needs a LINE ──
@@ -2717,9 +2951,7 @@ impl ChildDriver {
                 // of pathfinder was ever going to fix it, because the goal was unreachable rather
                 // than badly routed. Enmienda 10 already made this exact call for the freeze
                 // ("que no haya wallhack"); the detection was the half that got left behind.
-                if child_can_see(from, heading, ppos)
-                    && segment_is_clear(&mut self.grid_cache, layer, from, ppos)
-                {
+                if child_can_see(from, heading, ppos) && self.can_see(layer, from, ppos) {
                     spotted = Some((pid, ppos, true));
                     break 'search;
                 }
@@ -2810,6 +3042,7 @@ impl ChildDriver {
         net: &NetworkManager,
         players: &[(PeerId, Vec3, f32)],
     ) {
+        let wg3_on = self.wg3.is_some();
         if self.packs[pi].state != ChildState::PackStalk {
             return;
         }
@@ -2871,7 +3104,7 @@ impl ChildDriver {
 
             let mut now = false;
             for &(_, ppos, pyaw) in players {
-                if world_pos_to_layer(ppos.y) != layer {
+                if !same_level(wg3_on, layer, mpos.y, ppos.y) {
                     continue;
                 }
                 if !player_is_looking_at_within(ppos, pyaw, mpos, half_fov) {
@@ -2892,7 +3125,7 @@ impl ChildDriver {
                 //
                 // Checked AFTER the cone on purpose: the cone is two multiplies and this is a
                 // grid raycast, so only the children you are actually pointing at pay for it.
-                if !segment_is_clear(&mut self.grid_cache, layer, ppos, mpos) {
+                if !self.can_see(layer, ppos, mpos) {
                     continue;
                 }
                 now = true;
@@ -2910,6 +3143,7 @@ impl ChildDriver {
         dt: f32,
         players: &[(PeerId, Vec3, f32)],
     ) {
+        let wg3_on = self.wg3.is_some();
         let id = self.packs[pi].members[mi].id;
         let Some(peer) = net.peers.get(&id) else {
             return;
@@ -2965,7 +3199,7 @@ impl ChildDriver {
             hx /= to_nest;
             hz /= to_nest;
             for &(_, ppos, _) in players {
-                if world_pos_to_layer(ppos.y) != layer {
+                if !same_level(wg3_on, layer, from.y, ppos.y) {
                     continue;
                 }
                 let dx = from.x - ppos.x;
@@ -2997,6 +3231,7 @@ impl ChildDriver {
             let wedged = self.packs[pi].members[mi].nav_blocked > 0;
             let step = advance_step(
                 &mut self.grid_cache,
+                self.wg3.as_ref(),
                 layer,
                 from,
                 raw_heading,
@@ -3006,7 +3241,7 @@ impl ChildDriver {
             let heading = step.heading;
             // No patrol leash while bolting: it is running TO the anchor, so it can only end up
             // further inside its own territory.
-            if step.next_ok || is_walkable_grid_gen(&mut self.grid_cache, step.next, layer) {
+            if step.next_ok || self.walkable(step.next, layer) {
                 self.note_step(pi, mi, StepOutcome::from(true, step.straight_ok));
                 self.packs[pi].members[mi].heading = heading;
                 if let Some(peer) = net.peers.get_mut(&id) {
@@ -3065,19 +3300,25 @@ impl ChildDriver {
                 }
 
                 let raw_heading = (anchor.x - from.x).atan2(anchor.z - from.z);
-                let heading = steer_around_walls(&mut self.grid_cache, layer, from, raw_heading);
-                let step = FACELING_CHILD_FLEE_SPEED * dt;
-                let next = Vec3::new(
-                    from.x + heading.sin() * step,
-                    from.y,
-                    from.z + heading.cos() * step,
+                // ADR-108 — por `advance_step` y no a mano. Esta rama abría en claro lo mismo que él
+                // hace —bigotes, andabilidad, y ahora el pin de cota— y una copia a mano es una copia
+                // que se queda en WG2 el día que se toca la otra.
+                let step = advance_step(
+                    &mut self.grid_cache,
+                    self.wg3.as_ref(),
+                    layer,
+                    from,
+                    raw_heading,
+                    FACELING_CHILD_FLEE_SPEED * dt,
+                    true,
                 );
+                let heading = step.heading;
                 // No patrol leash here, unlike `PackRoam`: this is a run TOWARD the anchor, so it
                 // can only ever end up further inside the territory, never out of it.
-                let (pos, anim) = match is_walkable_grid_gen(&mut self.grid_cache, next, layer) {
+                let (pos, anim) = match step.next_ok {
                     true => {
                         self.packs[pi].members[mi].heading = heading;
-                        (next, "walk_slow")
+                        (step.next, "walk_slow")
                     }
                     false => (from, "idle"),
                 };
@@ -3107,7 +3348,7 @@ impl ChildDriver {
                 });
                 if let Some((victim, tpos, tyaw)) = live_target {
                     let dist = tpos.distance_xz(from);
-                    let same_layer = world_pos_to_layer(tpos.y) == layer;
+                    let same_layer = same_level(wg3_on, layer, from.y, tpos.y);
                     let facing_away = !player_is_looking_at(tpos, tyaw, from);
                     // ADR-082 piece 1(b), ported: to the CONTACT STANCE, not to you — see the
                     // adult's own strike test. Backed into a wall you were untouchable by the whole
@@ -3121,8 +3362,7 @@ impl ChildDriver {
                         PHANTOM_BODY_RADIUS,
                     )
                     .unwrap_or(tpos);
-                    let clear =
-                        same_layer && segment_is_clear(&mut self.grid_cache, layer, from, line_to);
+                    let clear = same_layer && self.straight_is_clear(layer, from, line_to);
                     let dx = tpos.x - from.x;
                     let dz = tpos.z - from.z;
 
@@ -3254,9 +3494,9 @@ impl ChildDriver {
                             PHANTOM_BODY_RADIUS,
                         )
                         .unwrap_or(tpos);
-                        if world_pos_to_layer(tpos.y) == layer
+                        if same_level(wg3_on, layer, from.y, tpos.y)
                             && tpos.distance_xz(from) <= FACELING_CHILD_ATTACK_REACH
-                            && segment_is_clear(&mut self.grid_cache, layer, from, line_to)
+                            && self.straight_is_clear(layer, from, line_to)
                         {
                             // The SAME predicate that switches the freeze off — see
                             // `cerco_is_closed`'s own doc for why the two must not drift apart.
@@ -3403,10 +3643,12 @@ impl ChildDriver {
                 // goes around the corner instead of into it.
                 let raw_heading = self.route_heading(pi, mi, layer, from, goal, dt);
                 // ±10% by temperament, so a pack does not advance as one rigid line.
-                let advance = child_gear_speed(from, players, layer) * (0.9 + nerve * 0.2) * dt;
+                let advance =
+                    child_gear_speed(wg3_on, from, players, layer) * (0.9 + nerve * 0.2) * dt;
                 let wedged = self.packs[pi].members[mi].nav_blocked > 0;
                 let step = advance_step(
                     &mut self.grid_cache,
+                    self.wg3.as_ref(),
                     layer,
                     from,
                     raw_heading,
@@ -3414,7 +3656,7 @@ impl ChildDriver {
                     wedged,
                 );
                 let heading = step.heading;
-                if step.next_ok || is_walkable_grid_gen(&mut self.grid_cache, step.next, layer) {
+                if step.next_ok || self.walkable(step.next, layer) {
                     self.note_step(pi, mi, StepOutcome::from(true, step.straight_ok));
                     self.packs[pi].members[mi].heading = heading;
                     if let Some(peer) = net.peers.get_mut(&id) {
@@ -3439,6 +3681,7 @@ impl ChildDriver {
                     if self.packs[pi].members[mi].state_timer <= 0.0 {
                         match pick_roam_point(
                             &mut self.grid_cache,
+                            self.wg3.as_ref(),
                             anchor,
                             FACELING_CHILD_PATROL_RADIUS_M,
                             layer,
@@ -3470,6 +3713,7 @@ impl ChildDriver {
                 if self.packs[pi].members[mi].progress.note(from, target, dt) {
                     match pick_roam_point(
                         &mut self.grid_cache,
+                        self.wg3.as_ref(),
                         anchor,
                         FACELING_CHILD_PATROL_RADIUS_M,
                         layer,
@@ -3499,6 +3743,7 @@ impl ChildDriver {
                 let wedged = self.packs[pi].members[mi].nav_blocked > 0;
                 let step = advance_step(
                     &mut self.grid_cache,
+                    self.wg3.as_ref(),
                     layer,
                     from,
                     raw_heading,
@@ -3509,8 +3754,7 @@ impl ChildDriver {
                 // that would leave the patrol circle, or land somewhere solid, just does not
                 // happen — hold and re-steer next tick.
                 if step.next.distance_xz(anchor) <= FACELING_CHILD_PATROL_RADIUS_M
-                    && (step.next_ok
-                        || is_walkable_grid_gen(&mut self.grid_cache, step.next, layer))
+                    && (step.next_ok || self.walkable(step.next, layer))
                 {
                     self.note_step(pi, mi, StepOutcome::from(true, step.straight_ok));
                     self.packs[pi].members[mi].heading = step.heading;

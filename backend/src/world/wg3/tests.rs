@@ -9020,3 +9020,71 @@ fn a_body_on_a_stair_can_move_forward() {
          del cuerpo y ninguna dirección se puede dar"
     );
 }
+
+/// ADR-108 — la vista NO es el paso. Mide cuántas veces se separan, porque si nunca se separaran
+/// `line_of_sight` sobraría y bastaría con `segment_is_clear`.
+///
+/// Los dos casos que busca, y son opuestos:
+///   - VE PERO NO PASA: la recta está despejada a la altura del ojo y no hay suelo debajo, o hay un
+///     escalón que corta el paso. Un atrio, una barandilla. Con el test de andar la criatura te
+///     pierde de vista con el hueco delante.
+///   - PASA PERO NO VE: suelo continuo con algo bajo por encima — un dintel, un forjado a media
+///     cota. Raro, pero si aparece, andar como sustituto de ver regala wallhack.
+#[test]
+fn probe_sight_is_not_the_same_as_passage() {
+    use crate::world::wg3::collision::Wg3CollisionCache;
+    use crate::world::wg3::nav;
+    use crate::world::wg3::world::Wg3WorldCache;
+    use crate::world::Vec3;
+
+    const EYE_M: f32 = 1.8;
+    const RANGE_M: f32 = 12.0;
+
+    let m = real_manifest();
+    let (mut ve_no_pasa, mut pasa_no_ve, mut iguales) = (0usize, 0usize, 0usize);
+
+    for (rx, rz) in AUDIT_REGIONS {
+        let region = Wg3RegionCoord { x: rx, z: rz };
+        let (min_x, min_z, _, _) = region.bounds();
+        let mut worlds = Wg3WorldCache::default();
+        let mut cache = Wg3CollisionCache::new();
+        let centre = Vec3::new(min_x + 75.0, EYE_M, min_z + 75.0);
+        cache.prewarm_for_move(&mut worlds, &m, SERVED_SEED, centre, centre);
+
+        // Parejas a lo largo de una rejilla gruesa: caras, y lo que se mide es la proporción.
+        for iz in 0..10 {
+            for ix in 0..10 {
+                let x = min_x + 55.0 + ix as f32 * 4.0;
+                let z = min_z + 55.0 + iz as f32 * 4.0;
+                let Some(floor) = cache.floor_below_m(x, z, 0.0) else {
+                    continue;
+                };
+                let a = Vec3::new(x, floor + EYE_M, z);
+                for (dx, dz) in [(RANGE_M, 0.0), (0.0, RANGE_M), (RANGE_M, RANGE_M)] {
+                    let (bx, bz) = (x + dx, z + dz);
+                    let Some(bfloor) = cache.floor_below_m(bx, bz, 0.0) else {
+                        continue;
+                    };
+                    let b = Vec3::new(bx, bfloor + EYE_M, bz);
+                    let sight = nav::line_of_sight(&cache, a, b);
+                    let walk = nav::segment_is_clear(&cache, a, b, 0.5);
+                    match (sight, walk) {
+                        (true, false) => ve_no_pasa += 1,
+                        (false, true) => pasa_no_ve += 1,
+                        _ => iguales += 1,
+                    }
+                }
+            }
+        }
+    }
+
+    println!(
+        "PROBE sight_vs_passage: ve_no_pasa={ve_no_pasa} pasa_no_ve={pasa_no_ve} iguales={iguales}"
+    );
+    // La única afirmación que se sostiene sola: los dos tests se separan de verdad. Un cero aquí
+    // querría decir que uno de los dos está mintiendo, y esta sonda existe para verlo.
+    assert!(
+        ve_no_pasa > 0,
+        "la vista nunca supera al paso: line_of_sight no está aportando nada"
+    );
+}

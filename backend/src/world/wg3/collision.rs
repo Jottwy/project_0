@@ -101,6 +101,12 @@ impl Wg3CollisionCache {
         }
     }
 
+    /// Como `raster_at`, pero para quien está fuera del módulo: `line_of_sight` necesita preguntar
+    /// por un PUNTO y no por un cuerpo, y esta es la única puerta al ráster crudo.
+    pub fn raster_for(&self, x: f32, z: f32) -> Option<&Wg3Raster> {
+        self.raster_at(x, z)
+    }
+
     fn raster_at(&self, x: f32, z: f32) -> Option<&Wg3Raster> {
         self.rasters.get(&Wg3ChunkCoord::containing(x, z))
     }

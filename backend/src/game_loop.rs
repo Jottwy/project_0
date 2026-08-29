@@ -1567,6 +1567,44 @@ pub async fn run(
                 // ADR-094 E1a/E1b: same 1 Hz reconcile shape as the robapieles', own driver, own
                 // grid cache — walks/reconciles the office adults; `apply_damage` (PvP branch)
                 // is the only other entry point.
+                // ADR-108 — y lo mismo para los facelings, adultos y niños. Cada especie tiene su
+                // propio caché por lo mismo que tiene el suyo de `grid_gen`: son tres poblaciones con
+                // radios de actividad distintos, y compartir uno haría que la poda de una vaciara el
+                // conjunto de trabajo de las otras.
+                if let (Some(manifest), true) = (wg3.manifest(), wg3.is_enabled()) {
+                    for (cache_slot, positions) in [
+                        (
+                            &mut adult_driver.wg3,
+                            adult_driver.movers.iter().map(|m| m.id).collect::<Vec<_>>(),
+                        ),
+                        (
+                            &mut child_driver.wg3,
+                            child_driver
+                                .packs
+                                .iter()
+                                .flat_map(|p| p.members.iter().map(|c| c.id))
+                                .collect::<Vec<_>>(),
+                        ),
+                    ] {
+                        let mut cache = cache_slot.take().unwrap_or_default();
+                        for id in positions {
+                            let here = net
+                                .peers
+                                .get(&id)
+                                .map(|p| Vec3::from_array(p.position))
+                                .unwrap_or(player.position);
+                            cache.prewarm_for_move(
+                                &mut wg3_world,
+                                manifest,
+                                net.world_seed,
+                                here,
+                                player.position,
+                            );
+                        }
+                        *cache_slot = Some(cache);
+                    }
+                }
+
                 adult_driver.sync_population(&mut net, player.position, entity_dt);
                 // ADR-094 E1c: the adults' own blows, copied out for the same reason the
                 // robapieles' are — the driver has to be free again before the routing loop below.

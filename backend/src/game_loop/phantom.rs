@@ -4612,49 +4612,26 @@ impl PhantomDriver {
     /// La forma se copia entera de `grid_gen::steer_around_walls` —mismo orden de sondas, mismos
     /// ángulos, mismo empujón— y sólo cambia a quién se pregunta. Copiarla y no compartirla duele,
     /// pero la de allí está atada a su caché y a su capa; el día que WG2 se retire, ésta se queda.
-    fn steer_around_walls_wg3(&mut self, layer: u8, from: Vec3, heading: f32) -> f32 {
+    fn steer_around_walls_wg3(&mut self, _layer: u8, from: Vec3, heading: f32) -> f32 {
         use crate::world::grid_gen::{
-            PHANTOM_WALL_MARGIN, PHANTOM_WALL_NUDGE_DEG, PHANTOM_WHISKER_ANGLES_DEG,
-            PHANTOM_WHISKER_LENGTH,
+            PHANTOM_BODY_RADIUS, PHANTOM_WALL_MARGIN, PHANTOM_WALL_NUDGE_DEG,
+            PHANTOM_WHISKER_ANGLES_DEG, PHANTOM_WHISKER_LENGTH,
         };
-        const BODY_RADIUS: f32 = 0.35;
-
-        let probe = |me: &mut Self, angle: f32, length: f32| {
-            let to = Vec3::new(
-                from.x + angle.sin() * length,
-                from.y,
-                from.z + angle.cos() * length,
-            );
-            me.straight_is_clear(layer, from, to)
+        let Some(cache) = &self.wg3 else {
+            return heading;
         };
-
-        // El caso común —un pasillo abierto— cuesta esta sonda y devuelve el rumbo sin tocar.
-        if probe(self, heading, PHANTOM_WHISKER_LENGTH) {
-            let side = BODY_RADIUS + PHANTOM_WALL_MARGIN;
-            let left = probe(self, heading - std::f32::consts::FRAC_PI_2, side);
-            let right = probe(self, heading + std::f32::consts::FRAC_PI_2, side);
-            let nudge = PHANTOM_WALL_NUDGE_DEG.to_radians();
-            return match (left, right) {
-                (false, true) => (heading + nudge).rem_euclid(std::f32::consts::TAU),
-                (true, false) => (heading - nudge).rem_euclid(std::f32::consts::TAU),
-                // Los dos lados apretados —un pasillo— o los dos libres: se mantiene la línea.
-                // Empujar dentro de un pasillo la haría zigzaguear por todos los corredores.
-                _ => heading,
-            };
-        }
-
-        // Con algo delante, el hueco más cercano: desviación más corta primero, alternando lados para
-        // que un obstáculo simétrico no se resuelva siempre igual.
-        for degrees in PHANTOM_WHISKER_ANGLES_DEG {
-            let rad = degrees.to_radians();
-            for signed in [rad, -rad] {
-                let candidate = (heading + signed).rem_euclid(std::f32::consts::TAU);
-                if probe(self, candidate, PHANTOM_WHISKER_LENGTH) {
-                    return candidate;
-                }
-            }
-        }
-        heading
+        crate::world::wg3::nav::steer_around_walls(
+            cache,
+            from,
+            heading,
+            &crate::world::wg3::nav::Whiskers {
+                radius: PHANTOM_BODY_RADIUS,
+                whisker_len: PHANTOM_WHISKER_LENGTH,
+                wall_margin: PHANTOM_WALL_MARGIN,
+                nudge_deg: PHANTOM_WALL_NUDGE_DEG,
+                angles_deg: &PHANTOM_WHISKER_ANGLES_DEG,
+            },
+        )
     }
 
     /// ADR-108 — ¿se puede ir en línea recta, andando? Mismo dispatch que el movimiento.

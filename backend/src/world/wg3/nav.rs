@@ -396,3 +396,127 @@ pub fn simplify(
         i = take + 1;
     }
 }
+
+/// ADR-108 — la LÍNEA DE VISIÓN de WG3. **No es `segment_is_clear`, y confundirlas es el fallo que
+/// esta función existe para no cometer.**
+///
+/// `segment_is_clear` pregunta si un CUERPO puede recorrer la recta ANDANDO: quiere suelo bajo cada
+/// muestra y altura libre encima. Sirve para moverse y no sirve para ver, porque por encima de un
+/// atrio no hay suelo y la respuesta sería «no se ve» con el hueco delante de los ojos — y al revés,
+/// una barandilla de 90 cm corta el paso y no corta la mirada.
+///
+/// Esto es un rayo y sólo un rayo: se muestrea la recta entre dos cotas de ojo y se pregunta por el
+/// punto. Un chunk que no está cargado NO tapa: al contrario que en el movimiento, fallar hacia
+/// «sólido» aquí ciega a la criatura mientras el mundo se genera, y una que no ve no persigue —
+/// mientras que una que ve de más sólo se equivoca durante un tick.
+///
+/// La cota es la del ojo, `y - 0.2` desde la Y guardada: la mirada sale de la cabeza y no de la
+/// cintura, y con un rayo a media altura una mesa tapa a un jugador de pie.
+pub fn line_of_sight(cache: &Wg3CollisionCache, a: Vec3, b: Vec3) -> bool {
+    const EYE_DROP_M: f32 = 0.2;
+    let (a, b) = (
+        Vec3::new(a.x, a.y - EYE_DROP_M, a.z),
+        Vec3::new(b.x, b.y - EYE_DROP_M, b.z),
+    );
+    let dist = ((b.x - a.x).powi(2) + (b.y - a.y).powi(2) + (b.z - a.z).powi(2)).sqrt();
+    if dist <= f32::EPSILON {
+        return true;
+    }
+    // Media celda por muestra. Menos no añade nada —la celda es la unidad del ráster— y más deja
+    // pasar la mirada por una pared de una sola celda vista de canto.
+    let steps = (dist / (super::raster::WG3_CELL_M * 0.5)).ceil().max(1.0) as i32;
+    for i in 0..=steps {
+        let t = i as f32 / steps as f32;
+        let (x, y, z) = (
+            a.x + (b.x - a.x) * t,
+            a.y + (b.y - a.y) * t,
+            a.z + (b.z - a.z) * t,
+        );
+        let Some(raster) = cache.raster_for(x, z) else {
+            continue;
+        };
+        if raster.is_solid_at(x, y, z) {
+            return false;
+        }
+    }
+    true
+}
+
+/// ADR-082 en el mundo de WG3 — los BIGOTES: apartarse de la pared antes de rozarla, y buscar el
+/// hueco más cercano cuando hay algo delante.
+///
+/// **Vive aquí y no en cada criatura porque lo usan las dos.** El robapieles lo tenía copiado y los
+/// facelings iban a ser una tercera copia; tres copias del mismo filtro divergen, y la divergencia se
+/// ve como que una criatura esquiva y la otra no.
+///
+/// La forma es la de `grid_gen::steer_around_walls` —mismo orden de sondas, mismos ángulos, mismo
+/// empujón— y sólo cambia a quién se le pregunta. Se copia y no se comparte porque la de allí está
+/// atada a su caché y a su capa; el día que WG2 se retire, ésta se queda.
+///
+/// El reglaje va en esta estructura y no suelto en la firma porque son CINCO números del mismo tema
+/// —la forma de los bigotes— y cada especie trae los suyos: pasarlos sueltos invita a cruzarlos.
+pub struct Whiskers<'a> {
+    /// Medio ancho del cuerpo. El del robapieles NO es el del jugador (ver ADR-108).
+    pub radius: f32,
+    /// Cuánto mira hacia delante.
+    pub whisker_len: f32,
+    /// Holgura que se le pide a los lados, sumada al radio.
+    pub wall_margin: f32,
+    /// Grados que se aparta cuando un solo lado está apretado.
+    pub nudge_deg: f32,
+    /// Desviaciones a probar, de menor a mayor, cuando hay algo delante.
+    pub angles_deg: &'a [f32],
+}
+
+pub fn steer_around_walls(
+    cache: &Wg3CollisionCache,
+    from: Vec3,
+    heading: f32,
+    w: &Whiskers<'_>,
+) -> f32 {
+    let Whiskers {
+        radius,
+        whisker_len,
+        wall_margin,
+        nudge_deg,
+        angles_deg,
+    } = *w;
+    let probe = |angle: f32, length: f32| {
+        let to = Vec3::new(
+            from.x + angle.sin() * length,
+            from.y,
+            from.z + angle.cos() * length,
+        );
+        segment_is_clear(cache, from, to, radius)
+    };
+
+    // El caso común —un pasillo abierto— cuesta esta sonda y devuelve el rumbo sin tocar.
+    if probe(heading, whisker_len) {
+        let side = radius + wall_margin;
+        let left = probe(heading - std::f32::consts::FRAC_PI_2, side);
+        let right = probe(heading + std::f32::consts::FRAC_PI_2, side);
+        let nudge = nudge_deg.to_radians();
+        return match (left, right) {
+            (false, true) => (heading + nudge).rem_euclid(std::f32::consts::TAU),
+            (true, false) => (heading - nudge).rem_euclid(std::f32::consts::TAU),
+            // Los dos lados apretados —un pasillo— o los dos libres: se mantiene la línea. Empujar
+            // dentro de un pasillo la haría zigzaguear por todos los corredores del juego.
+            _ => heading,
+        };
+    }
+
+    // Con algo delante, el hueco más cercano: desviación más corta primero, alternando lados para que
+    // un obstáculo simétrico no se resuelva siempre igual.
+    for degrees in angles_deg {
+        let rad = degrees.to_radians();
+        for signed in [rad, -rad] {
+            let candidate = (heading + signed).rem_euclid(std::f32::consts::TAU);
+            if probe(candidate, whisker_len) {
+                return candidate;
+            }
+        }
+    }
+    // Cercada por todos los bigotes: se mantiene el rumbo y que lo resuelvan el resolutor y el
+    // detector de atasco. Girar hacia una dirección TAMBIÉN bloqueada sólo añadiría temblor.
+    heading
+}
