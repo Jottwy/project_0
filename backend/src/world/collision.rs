@@ -146,6 +146,26 @@ impl Level0Collision {
         resolve_move_src(&MoveSource::Wg3(wg3), from, desired, Some(desired.y))
     }
 
+    /// ADR-108 — igual, pero para una entidad SIN pantalla: el robapieles.
+    ///
+    /// **La diferencia es `claimed_y`, y usar la de arriba por error deja a la criatura congelada.**
+    /// La del jugador acepta la Y que le llega porque viene de un cliente que está simulando su propio
+    /// cuerpo; una entidad no tiene cliente, y su Y sale de su propia máquina de estados, que la
+    /// calculó con las cotas de WG2 (`grid_floor_y(layer) + PLAYER_BASE_Y`). Conservada tal cual en un
+    /// mundo de WG3, esa Y no cae en ningún suelo de este mundo: si los pies quedan dentro del
+    /// forjado, `blocked_standing_at` dice que sí y el movimiento se resuelve como `Blocked` — o sea
+    /// **quieta, en sitios donde el jugador pasa sin enterarse**.
+    ///
+    /// Con `None` se aplica el pin al suelo, que es exactamente lo que hace el camino de entidad de
+    /// `grid_gen` desde ADR-016 y por el mismo motivo.
+    pub fn resolve_move_wg3_entity(
+        wg3: &crate::world::wg3::collision::Wg3CollisionCache,
+        from: Vec3,
+        desired: Vec3,
+    ) -> CollisionResolve {
+        resolve_move_src(&MoveSource::Wg3(wg3), from, desired, None)
+    }
+
     pub fn is_blocked_at(world: &World, pos: Vec3, radius: f32) -> bool {
         is_blocked_at(world, pos, radius)
     }

@@ -8562,3 +8562,235 @@ fn a_simplified_path_is_still_walkable() {
     );
     println!("[nav] {checked} caminos simplificados, {saved} puntos quitados de {raw_total}");
 }
+
+/// **DÓNDE NO PASA LA IA Y SÍ PASA EL JUGADOR.**
+///
+/// El síntoma reportado jugando es que el robapieles no cruza algunos pasillos ni algunos huecos. Las
+/// dos preguntas —«¿cabe el jugador?» y «¿es andable para navegar?»— salen de primitivas distintas
+/// del mismo ráster, así que pueden discrepar sin que nada falle. Esta sonda cuenta la discrepancia y
+/// dice POR QUÉ: sin suelo, sin altura libre, o suelo a un escalón imposible.
+///
+/// `cargo test --manifest-path backend/Cargo.toml probe_where_nav_disagrees -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn probe_where_nav_disagrees_with_the_player() {
+    use crate::world::wg3::collision::Wg3CollisionCache;
+    use crate::world::wg3::nav;
+    use crate::world::wg3::world::Wg3WorldCache;
+    use crate::world::Vec3;
+
+    const PLAYER_BASE_Y: f32 = 1.8;
+    const STEP: f32 = 0.5;
+
+    let m = real_manifest();
+
+    for (rx, rz) in AUDIT_REGIONS {
+        let region = Wg3RegionCoord { x: rx, z: rz };
+        let (min_x, min_z, _, _) = region.bounds();
+        let mut worlds = Wg3WorldCache::default();
+        let mut cache = Wg3CollisionCache::new();
+
+        // Un chunk entero, precalentado alrededor de su centro.
+        let centre = Vec3::new(min_x + 75.0, PLAYER_BASE_Y, min_z + 75.0);
+        cache.prewarm_for_move(&mut worlds, &m, SERVED_SEED, centre, centre);
+
+        let (mut player_ok, mut nav_ok) = (0usize, 0usize);
+        let (mut sin_suelo, mut sin_altura) = (0usize, 0usize);
+
+        let cells = (50.0 / STEP) as i32;
+        for iz in 0..cells {
+            for ix in 0..cells {
+                let x = min_x + 50.0 + ix as f32 * STEP + STEP * 0.5;
+                let z = min_z + 50.0 + iz as f32 * STEP + STEP * 0.5;
+                let Some(floor) = cache.floor_below_m(x, z, 0.0) else {
+                    continue;
+                };
+                // El jugador puede estar aquí si no le estorba nada de pie.
+                let stand = Vec3::new(x, floor + PLAYER_BASE_Y, z);
+                if cache.blocked_at(stand, crate::world::collision::PLAYER_RADIUS) {
+                    continue;
+                }
+                player_ok += 1;
+
+                match nav::floor_at(&cache, x, z, floor) {
+                    Some(_) => nav_ok += 1,
+                    None => {
+                        if cache.floor_below_m(x, z, floor).is_none() {
+                            sin_suelo += 1;
+                        } else {
+                            sin_altura += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        let lost = player_ok.saturating_sub(nav_ok);
+        let pct = if player_ok > 0 {
+            lost as f32 * 100.0 / player_ok as f32
+        } else {
+            0.0
+        };
+        println!(
+            "[nav-diff] ({rx},{rz}) jugador {player_ok} celdas · navegación {nav_ok} · \
+             PIERDE {lost} ({pct:.1} %) — sin suelo {sin_suelo}, sin altura libre {sin_altura}"
+        );
+    }
+}
+
+/// **¿SE PARTE EL GRAFO?** Inundación desde un punto de pie, con la regla de vecindad de la
+/// navegación, contra el total de celdas que el jugador puede pisar.
+///
+/// La sonda anterior dice que ANDABILIDAD no es el problema: jugador y navegación ven las mismas
+/// celdas. Si aun así la IA no cruza un pasillo, el fallo está en el ENLACE — el salto de cota que
+/// separa dos vecinas — o en la ventana de búsqueda. Esto separa las dos cosas: la inundación no tiene
+/// ventana ni tope, así que lo que no alcance es culpa del enlace y de nada más.
+///
+/// `cargo test --manifest-path backend/Cargo.toml probe_is_the_nav_graph_connected -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn probe_is_the_nav_graph_connected() {
+    use crate::world::wg3::collision::Wg3CollisionCache;
+    use crate::world::wg3::nav;
+    use crate::world::wg3::world::Wg3WorldCache;
+    use crate::world::Vec3;
+    use std::collections::HashSet;
+
+    const PLAYER_BASE_Y: f32 = 1.8;
+    const STEP: f32 = 0.5;
+
+    let m = real_manifest();
+
+    for (rx, rz) in AUDIT_REGIONS {
+        let region = Wg3RegionCoord { x: rx, z: rz };
+        let (min_x, min_z, _, _) = region.bounds();
+        let mut worlds = Wg3WorldCache::default();
+        let mut cache = Wg3CollisionCache::new();
+        let centre = Vec3::new(min_x + 75.0, PLAYER_BASE_Y, min_z + 75.0);
+        cache.prewarm_for_move(&mut worlds, &m, SERVED_SEED, centre, centre);
+
+        // Todas las celdas pisables del chunk central, y de paso una para arrancar.
+        let mut walkable: HashSet<(i32, i32)> = HashSet::new();
+        let mut seed_cell: Option<(i32, i32, f32)> = None;
+        let cells = (50.0 / STEP) as i32;
+        for iz in 0..cells {
+            for ix in 0..cells {
+                let x = min_x + 50.0 + ix as f32 * STEP + STEP * 0.5;
+                let z = min_z + 50.0 + iz as f32 * STEP + STEP * 0.5;
+                let Some(floor) = cache.floor_below_m(x, z, 0.0) else {
+                    continue;
+                };
+                if nav::floor_at(&cache, x, z, floor).is_none() {
+                    continue;
+                }
+                let c = nav::cell_of(x, z);
+                walkable.insert(c);
+                if seed_cell.is_none() {
+                    seed_cell = Some((c.0, c.1, floor));
+                }
+            }
+        }
+        let Some((sx, sz, sfloor)) = seed_cell else {
+            continue;
+        };
+
+        // Inundación con la MISMA regla de vecindad que usa la búsqueda.
+        let mut seen: HashSet<(i32, i32, i32)> = HashSet::new();
+        let mut stack = vec![(sx, sz, (sfloor * 100.0).round() as i32)];
+        seen.insert(stack[0]);
+        let mut reached: HashSet<(i32, i32)> = HashSet::new();
+        while let Some((cx, cz, cf)) = stack.pop() {
+            reached.insert((cx, cz));
+            let floor = cf as f32 / 100.0;
+            for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let nc = (cx + dx, cz + dz);
+                let (nx, nz) = nav::cell_centre(nc.0, nc.1);
+                let Some(nf) = nav::floor_at(&cache, nx, nz, floor) else {
+                    continue;
+                };
+                if ((nf - floor).abs() * 100.0) as i32 > crate::world::wg3::plan::MAX_WALK_STEP_CM {
+                    continue;
+                }
+                let k = (nc.0, nc.1, (nf * 100.0).round() as i32);
+                if seen.insert(k) {
+                    stack.push(k);
+                }
+            }
+        }
+
+        let inside: usize = reached.iter().filter(|c| walkable.contains(c)).count();
+        let pct = inside as f32 * 100.0 / walkable.len().max(1) as f32;
+        println!(
+            "[nav-conn] ({rx},{rz}) pisables {} · alcanzadas desde una {} ({pct:.1} %)",
+            walkable.len(),
+            inside
+        );
+    }
+}
+
+/// ADR-108 — **una entidad se APOYA en el suelo de WG3; el jugador conserva el suyo.**
+///
+/// El robapieles calcula su Y con las cotas de WG2 (`grid_floor_y(layer) + PLAYER_BASE_Y`). En un
+/// mundo de WG3 esa Y no cae en ningún suelo: si los pies quedan dentro del forjado,
+/// `blocked_standing_at` dice que sí y el movimiento sale `Blocked` — la criatura se queda quieta
+/// justo donde el jugador pasa sin enterarse. Ése fue el síntoma reportado jugando: «en algunos
+/// pasillos no pasa».
+///
+/// La diferencia entre las dos puertas es `claimed_y`, y este test la fija para que nadie las vuelva
+/// a confundir.
+#[test]
+fn an_entity_is_pinned_to_the_wg3_floor_and_a_player_is_not() {
+    use crate::world::collision::Level0Collision;
+    use crate::world::wg3::collision::Wg3CollisionCache;
+    use crate::world::wg3::world::Wg3WorldCache;
+    use crate::world::Vec3;
+
+    const PLAYER_BASE_Y: f32 = 1.8;
+
+    let m = real_manifest();
+    let mut checked = 0usize;
+
+    for (rx, rz) in AUDIT_REGIONS {
+        let region = Wg3RegionCoord { x: rx, z: rz };
+        let (min_x, min_z, max_x, max_z) = region.bounds();
+        let mut worlds = Wg3WorldCache::default();
+        let mut cache = Wg3CollisionCache::new();
+        let centre = Vec3::new((min_x + max_x) * 0.5, PLAYER_BASE_Y, (min_z + max_z) * 0.5);
+        cache.prewarm_for_move(&mut worlds, &m, SERVED_SEED, centre, centre);
+        let Some(good) = cache.standable_near(centre) else {
+            continue;
+        };
+
+        // Una Y equivocada: medio metro por encima de la buena, como la que traería una entidad
+        // grounded contra otro mundo.
+        let wrong = Vec3::new(good.x, good.y + 0.5, good.z);
+        let target = Vec3::new(good.x + 0.4, wrong.y, good.z);
+
+        let ent = Level0Collision::resolve_move_wg3_entity(&cache, wrong, target);
+        assert!(
+            (ent.position.y - good.y).abs() < 0.2,
+            "({rx},{rz}) la entidad no se apoyó en el suelo de WG3: entró a {:.2} y salió a {:.2}, \
+             y el suelo está a {:.2}. Sin el pin, sus pies quedan dentro del forjado y se congela",
+            wrong.y,
+            ent.position.y,
+            good.y
+        );
+
+        // Y el jugador NO se pega: su Y viene del cliente, que simula su propio cuerpo.
+        let ply = Level0Collision::resolve_move_wg3(&cache, wrong, target);
+        assert!(
+            (ply.position.y - wrong.y).abs() < 0.01,
+            "({rx},{rz}) al jugador se le movió la Y: entró a {:.2} y salió a {:.2}. Eso es el \
+             tirón sin causa que ADR-026 parte 3 existe para evitar",
+            wrong.y,
+            ply.position.y
+        );
+        checked += 1;
+    }
+
+    assert!(
+        checked > 0,
+        "ninguna región dio un sitio de pie: el test no probó nada"
+    );
+    println!("[entidad] {checked} regiones: la entidad se apoya, el jugador conserva su Y");
+}

@@ -4546,7 +4546,11 @@ impl PhantomDriver {
     ) -> crate::world::grid_gen::MoveResult {
         match &self.wg3 {
             Some(cache) => {
-                let r = crate::world::collision::Level0Collision::resolve_move_wg3(
+                // **La puerta de ENTIDAD, no la del jugador.** La del jugador conserva la Y que le
+                // llega, y la del robapieles la calcula su FSM con las cotas de WG2: en un mundo de
+                // WG3 esa Y no cae en ningún suelo, los pies acaban dentro del forjado y la criatura
+                // se queda quieta justo donde el jugador pasa sin enterarse.
+                let r = crate::world::collision::Level0Collision::resolve_move_wg3_entity(
                     cache, from, desired,
                 );
                 use crate::world::collision::CollisionResultKind as K;
