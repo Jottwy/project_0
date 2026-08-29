@@ -727,7 +727,8 @@ struct Node {
 /// como restricción y no como sugerencia: son el único punto del plan que NO se decide aquí, porque
 /// ya está acordado con alguien que no puede consultarse.
 pub fn plan_region(seed: i32, bounds: (f32, f32, f32, f32), gates: &[Wg3Gate]) -> RegionPlan {
-    plan_storey(seed, bounds, gates, 0, true)
+    // Una planta suelta no tiene edificio encima que le pida atrios.
+    plan_storey(seed, bounds, gates, 0, true, &[])
 }
 
 /// **UNA PLANTA.** Lo mismo que [`plan_region`], pero a la cota que se le diga.
@@ -750,6 +751,7 @@ pub fn plan_storey(
     gates: &[Wg3Gate],
     base_y_cm: i32,
     may_sink: bool,
+    atria_below: &[PlanRect],
 ) -> RegionPlan {
     let root = PlanRect {
         min_x_cm: (bounds.0 * CM_PER_M).round() as i32,
@@ -780,6 +782,9 @@ pub fn plan_storey(
     planner.subdivide();
     planner.emit_leaves();
     planner.assign_void();
+    // ADR-104 D2 — y JUSTO AQUÍ, entre el vacío sorteado y el grafo. Antes no hay papeles que mirar;
+    // después habría que deshacer enlaces ya tejidos, que es cómo se fabrican espacios sellados.
+    planner.carve_atria(atria_below);
     // Las puertas ANTES de enlazar: una puerta acordada con la vecina no se negocia, así que el
     // espacio que la abre no puede ser vacío y tiene que estar dentro del edificio. Decidirlo después
     // obligaría a rehacer el grafo.
@@ -917,7 +922,8 @@ pub fn plan_building(
     storeys: usize,
 ) -> RegionBuilding {
     // La planta baja SÍ se hunde: debajo de ella no hay nada que perforar.
-    let mut out = vec![plan_storey(seed, bounds, gates, 0, true)];
+    // La planta baja no tiene nada debajo, así que no hay atrios que abrirle a nadie.
+    let mut out = vec![plan_storey(seed, bounds, gates, 0, true, &[])];
     let mut wells = Vec::new();
 
     for n in 1..storeys.max(1) {
@@ -931,12 +937,24 @@ pub fn plan_building(
         // planta exigiría que la región de al lado tuviera planta ahí y a la misma cota, que es un
         // acuerdo que hoy nadie negocia. Cruzar de región se hace por abajo.
         // Sin hundir: encima de la planta baja, el suelo de una terraza sería el techo de abajo.
+        // ADR-104 D2 — **la única consulta que la planta de arriba le hace a la de abajo, y va en un
+        // solo sentido.** Es lo que rompe la premisa de ADR-102 («ninguna planta sabe que hay otra»),
+        // así que se acota a esto: las huellas de sus naves, nada más. Quien coordina sigue siendo el
+        // EDIFICIO, igual que con `dig_wells` y `cap_headroom_under`; `RegionPlan` sigue sin aprender
+        // una tercera coordenada.
+        let atria: Vec<PlanRect> = out[n - 1]
+            .spaces
+            .iter()
+            .filter(|s| s.role == SpaceRole::Hall)
+            .map(|s| s.rect)
+            .collect();
         let plan = plan_storey(
             storey_seed(seed, n),
             up,
             &[],
             n as i32 * STOREY_HEIGHT_CM,
             false,
+            &atria,
         );
         // **EL EDIFICIO SUBE SÓLO HASTA DONDE SE PUEDE SUBIR.** El hueco pide que COINCIDAN dos
         // geometrías planificadas por separado —un espacio de abajo que quepa entero dentro de uno
@@ -1834,6 +1852,49 @@ impl Planner {
             };
             let mut st = hash::stream_at(self.seed, cx, cz, SALT_VOID);
             if st.next01() < chance {
+                self.spaces[i].role = SpaceRole::Void;
+            }
+        }
+    }
+
+    /// ADR-104 D2 — **el vacío se BUSCA encima de una nave, no se tolera donde caiga.**
+    ///
+    /// Sin esto un atrio es casualidad: hay que acertar a que el sorteo de [`Self::assign_void`]
+    /// ponga hueco justo sobre una nave de abajo. Medido antes de escribir esta función, cuatro
+    /// regiones de referencia: **9 atrios sobre 26 naves, con 311 espacios con vacío encima.** O sea
+    /// que vacío sobra y lo que falta es la COINCIDENCIA — que es lo que se arregla aquí, y por eso
+    /// no hace falta subir ninguna probabilidad.
+    ///
+    /// # Todo o nada, y no es escrúpulo
+    ///
+    /// `PlannedSpace::void_above` sólo vale cuando **ningún** espacio construido de arriba pisa la
+    /// nave. Vaciar tres de los cuatro que la cubren no da tres cuartos de atrio: da cero, y encima
+    /// deja tres agujeros en la planta alta a cambio de nada. Así que cada nave se toma entera o se
+    /// descarta entera.
+    ///
+    /// # Y no se vacía circulación, por el mismo motivo que `assign_void`
+    ///
+    /// Un agujero en la espina parte la planta alta en dos. Si la huella de una nave toca cualquier
+    /// banda de circulación, esa nave no puede ser atrio — se descarta antes de tocar nada, y no se
+    /// intenta a medias.
+    fn carve_atria(&mut self, atria_below: &[PlanRect]) {
+        for target in atria_below {
+            let covering: Vec<usize> = (0..self.spaces.len())
+                .filter(|&i| self.spaces[i].rect.overlaps(target))
+                .collect();
+
+            // Nadie encima: la nave ya es atrio sin ayuda, y contarla aquí sería contarla dos veces.
+            if covering.is_empty() {
+                continue;
+            }
+            // Un solo espacio de circulación encima basta para descartar la nave entera.
+            if covering.iter().any(|&i| {
+                let r = self.spaces[i].role;
+                r.is_circulation() || r == SpaceRole::Spine
+            }) {
+                continue;
+            }
+            for i in covering {
                 self.spaces[i].role = SpaceRole::Void;
             }
         }

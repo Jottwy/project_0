@@ -7758,9 +7758,40 @@ fn probe_how_many_atria() {
             }
         }
 
+        // POR QUÉ una nave no llega a atrio. `carve_atria` descarta la nave ENTERA si cualquier
+        // espacio de arriba que la pise es circulación, así que hay tres desenlaces y conviene
+        // separarlos: sin nadie encima (atrio gratis), tallada, o vetada por circulación.
+        let mut free = 0usize;
+        let mut carved = 0usize;
+        let mut vetoed = 0usize;
+        for n in 0..b.storeys.len().saturating_sub(1) {
+            let (below, above) = (&b.storeys[n], &b.storeys[n + 1]);
+            for s in below.spaces.iter().filter(|s| s.role == SpaceRole::Hall) {
+                let covering: Vec<&plan::PlannedSpace> = above
+                    .spaces
+                    .iter()
+                    .filter(|t| t.rect.overlaps(&s.rect))
+                    .collect();
+                if covering.is_empty() {
+                    free += 1;
+                } else if covering
+                    .iter()
+                    .any(|t| t.role.is_circulation() || t.role == SpaceRole::Spine)
+                {
+                    vetoed += 1;
+                } else {
+                    carved += 1;
+                }
+            }
+        }
+
         println!(
             "[atrio] ({rx},{rz}) — {atria} atrios ({atrium_area:.0} m²) · {halls} naves · \
              {void_above} espacios con vacío encima"
+        );
+        println!(
+            "         naves bajo la planta alta: {free} sin nadie encima · {carved} talladas · \
+             {vetoed} VETADAS por circulación"
         );
         t_atria += atria;
         t_halls += halls;
