@@ -458,6 +458,12 @@ pub async fn run(
     // rehace sola si la semilla cambia debajo.
     let mut wg3_world = crate::world::wg3::world::Wg3WorldCache::default();
 
+    // ADR-106 — el ráster de colisión de WG3, cacheado por chunk y precalentado antes de cada
+    // movimiento. Vive aquí y no en un global por lo mismo que la composición (R3), y aparte de
+    // `wg3_world` porque el precalentado necesita la región en préstamo MUTABLE y el resolve
+    // necesita el ráster en INMUTABLE: son dos cachés porque son dos préstamos.
+    let mut wg3_collision = crate::world::wg3::collision::Wg3CollisionCache::new();
+
     // ADR-032: host-only world persistence. Load BEFORE generating/spawning so a persisted seed
     // (and player position) win. Non-host backends never load/save — world state isn't
     // authoritative there (joiners adopt the host's world via WorldSync).
@@ -1431,6 +1437,22 @@ pub async fn run(
             // overwrite the just-restored one with wherever the client was BEFORE it received
             // the snap.
             if !player.stats.is_dead() && !movement_suppressed(tick, movement_suppressed_until) {
+                // ADR-106 — con WG3 encendido, el movimiento se resuelve contra SU ráster. El
+                // precalentado va aquí y no dentro porque necesita la caché de regiones en préstamo
+                // mutable, y a partir de él el resolve es lectura pura.
+                let wg3_authority = match wg3.manifest() {
+                    Some(manifest) if wg3.is_enabled() => {
+                        wg3_collision.prewarm_for_move(
+                            &mut wg3_world,
+                            manifest,
+                            net.world_seed,
+                            player.position,
+                            Vec3::from_array(received_input.position),
+                        );
+                        Some(&wg3_collision)
+                    }
+                    _ => None,
+                };
                 let seq = apply_movement(
                     &mut player,
                     &received_input,
@@ -1438,6 +1460,7 @@ pub async fn run(
                     &world,
                     tick,
                     dev_god_traversal,
+                    wg3_authority,
                 );
                 last_accepted_input_seq = seq;
                 authoritative_velocity = Vec3::from_array(received_input.velocity);
@@ -3646,9 +3669,10 @@ fn apply_movement(
     world: &World,
     tick: u64,
     god_traversal: bool,
+    wg3: Option<&crate::world::wg3::collision::Wg3CollisionCache>,
 ) -> u32 {
     player.rotation = input.look[1].rem_euclid(360.0); // yaw is INPUT (ADR-009 §8)
-    apply_client_authoritative_move(player, input, dt, world, tick, god_traversal)
+    apply_client_authoritative_move(player, input, dt, world, tick, god_traversal, wg3)
 }
 
 /// ADR-021: clamp the client-reported camera pitch to [−90, 90]° and quantize to 1°
@@ -3675,6 +3699,7 @@ fn apply_client_authoritative_move(
     world: &World,
     _tick: u64,
     god_traversal: bool,
+    wg3: Option<&crate::world::wg3::collision::Wg3CollisionCache>,
 ) -> u32 {
     // Run-drain stamina from the reported move-state (2 == run).
     if input.move_state == 2 {
@@ -3694,7 +3719,14 @@ fn apply_client_authoritative_move(
     // Collision: verify the claimed position doesn't intersect static geometry.
     // resolve_move slides/clamps against the level; the resolved point is the
     // authoritative pose echoed back to the client.
-    let resolved = Level0Collision::resolve_move(world, player.position, claimed);
+    // ADR-106 — la ÚNICA bifurcación de autoridad, y es de proceso y no de posición: `Wg3Config` se
+    // lee una vez al arrancar (ADR-095 D3). No hay mundo mixto a propósito — la frontera entre dos
+    // sistemas de colisión es exactamente donde un jugador se queda enganchado sin que nada lo
+    // explique.
+    let resolved = match wg3 {
+        Some(cache) => Level0Collision::resolve_move_wg3(cache, player.position, claimed),
+        None => Level0Collision::resolve_move(world, player.position, claimed),
+    };
 
     // TEMP DIAG (rubber-banding trigger-rate audit; REMOVE after diagnosis): count resolve_move
     // invocations/sec and how many resolve as Blocked (pressed against a wall), to test whether

@@ -8260,3 +8260,76 @@ fn probe_how_many_solids() {
         );
     }
 }
+
+/// ADR-106 verificaciones (a) y (b) — **en la planta alta ya NO se bloquea, y el suelo que se
+/// encuentra es el suyo.**
+///
+/// Éste es el fallo que el ADR existe para quitar, y hoy es reproducible: la capa salía de la Y
+/// (`layer_from_player_y`, capas de 4 m), `update_ownership` sólo generaba la capa 0, un chunk ausente
+/// bloquea, y el resultado era `Blocked` → `position = from`. **Subir una planta te congelaba.**
+///
+/// Se mide contra el ráster de WG3 —el que este ADR pone a mandar— y no contra la rejilla de WG2, que
+/// es la que no sabe que hay una planta arriba.
+#[test]
+fn on_the_upper_storey_wg3_does_not_freeze_you() {
+    use crate::world::wg3::collision::Wg3CollisionCache;
+    use crate::world::wg3::world::Wg3WorldCache;
+    use crate::world::Vec3;
+
+    /// Cota a la que reporta el transform de un jugador de pie sobre un suelo a cero.
+    const PLAYER_BASE_Y: f32 = 1.8;
+    const STOREY_M: f32 = 3.32;
+
+    let m = real_manifest();
+    let mut checked = 0usize;
+
+    for (rx, rz) in AUDIT_REGIONS {
+        let b = building_of(rx, rz);
+        // La planta ALTA: es la que congelaba. Sin ella no hay nada que probar.
+        let Some(upper) = b.storeys.get(1) else {
+            continue;
+        };
+        let mut worlds = Wg3WorldCache::default();
+        let mut cache = Wg3CollisionCache::new();
+
+        for space in upper.spaces.iter().filter(|s| {
+            s.role.is_built()
+                && s.rise_cm == 0
+                && s.rect.width_cm() > 600
+                && s.rect.depth_cm() > 600
+        }) {
+            let (cx, cz) = space.rect.centre_m();
+            let feet = space.floor_y_cm as f32 / 100.0;
+            let pos = Vec3::new(cx, feet + PLAYER_BASE_Y, cz);
+
+            cache.prewarm_for_move(&mut worlds, &m, SERVED_SEED, pos, pos);
+
+            // De pie en el centro de una sala de la planta alta no estorba nada. Si estorba puede ser
+            // contenido legítimo, así que no se afirma nada de ese caso.
+            if cache.blocked_at(pos, 0.35) {
+                continue;
+            }
+
+            // Y el suelo que encuentra es el de SU planta, no el de la baja. Si cayera abajo, el
+            // jugador atravesaría el forjado — el fallo espejo del congelado.
+            let y = cache.floor_y(pos);
+            let drop = pos.y - y;
+            assert!(
+                drop.abs() < STOREY_M * 0.5,
+                "({rx},{rz}) en la planta alta a y={:.2} el suelo sale a {y:.2}: se cae {drop:.2} m, \
+                 o sea que el ráster no ve el forjado de su planta",
+                pos.y
+            );
+            checked += 1;
+            if checked >= 12 {
+                break;
+            }
+        }
+    }
+
+    assert!(
+        checked > 0,
+        "ninguna región dio un sitio de pie en la planta alta: el test no ha probado nada"
+    );
+    println!("[autoridad] {checked} posiciones de planta alta andables contra el ráster de WG3");
+}

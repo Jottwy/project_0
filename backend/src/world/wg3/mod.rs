@@ -8,6 +8,8 @@
 //! fichero de `grid_gen`.
 
 pub mod chunk;
+/// ADR-106 — la fuente de colisión de WG3.
+pub mod collision;
 pub mod compose;
 pub mod config;
 /// ADR-100 — el relleno: convertir un plan en geometría, sin que la geometría decida nada.

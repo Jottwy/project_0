@@ -130,6 +130,22 @@ impl Level0Collision {
         )
     }
 
+    /// ADR-106 — movimiento resuelto contra el RÁSTER DE WG3.
+    ///
+    /// Misma lógica de deslizamiento que el camino de WG2 —probar el movimiento entero, luego sólo X,
+    /// luego sólo Z— porque es lo que el jugador siente al rozar una pared, y dos copias de eso
+    /// divergen sin que ningún test lo note. Lo único que cambia es a quién se le pregunta.
+    ///
+    /// El caché tiene que venir ya PRECALENTADO (`Wg3CollisionCache::prewarm_for_move`): a partir de
+    /// aquí el resolve es lectura pura, que es lo que permite que la fuente sea inmutable.
+    pub fn resolve_move_wg3(
+        wg3: &crate::world::wg3::collision::Wg3CollisionCache,
+        from: Vec3,
+        desired: Vec3,
+    ) -> CollisionResolve {
+        resolve_move_src(&MoveSource::Wg3(wg3), from, desired, Some(desired.y))
+    }
+
     pub fn is_blocked_at(world: &World, pos: Vec3, radius: f32) -> bool {
         is_blocked_at(world, pos, radius)
     }
@@ -195,6 +211,8 @@ impl<'a> LayoutSource<'a> {
 enum MoveSource<'a> {
     /// El camino histórico: layouts de WG2, por capa.
     Grid(LayoutSource<'a>),
+    /// ADR-106 — el ráster de WG3, sin capas y continuo en Y.
+    Wg3(&'a crate::world::wg3::collision::Wg3CollisionCache),
 }
 
 impl<'a> MoveSource<'a> {
@@ -202,6 +220,7 @@ impl<'a> MoveSource<'a> {
     fn blocked_at(&self, pos: Vec3, radius: f32) -> bool {
         match self {
             MoveSource::Grid(src) => is_blocked_at_src(src, pos, radius),
+            MoveSource::Wg3(wg3) => wg3.blocked_at(pos, radius),
         }
     }
 
@@ -209,6 +228,7 @@ impl<'a> MoveSource<'a> {
     fn floor_y(&self, pos: Vec3) -> f32 {
         match self {
             MoveSource::Grid(src) => floor_player_y_src(src, pos),
+            MoveSource::Wg3(wg3) => wg3.floor_y(pos),
         }
     }
 
@@ -216,6 +236,7 @@ impl<'a> MoveSource<'a> {
     fn describe(&self, pos: Vec3, radius: f32) -> ((i32, i32), (usize, usize), u16, &'static str) {
         match self {
             MoveSource::Grid(src) => describe_block(src, pos, radius),
+            MoveSource::Wg3(wg3) => wg3.describe(pos, radius),
         }
     }
 
@@ -231,6 +252,10 @@ impl<'a> MoveSource<'a> {
                     (cell, layout.cell_flags(cell.0, cell.1))
                 })
                 .unwrap_or(((0, 0), 0)),
+            // WG3 no tiene celdas ni banderas. Cero no es un valor por defecto perezoso: es que la
+            // pregunta no existe en este mundo, y devolver algo inventado haría que una traza de WG3
+            // se leyera como una de WG2 y se buscara el fallo en el sitio equivocado.
+            MoveSource::Wg3(_) => ((0, 0), 0),
         }
     }
 }

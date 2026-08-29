@@ -296,6 +296,8 @@ fn restore_snap_window_blocks_the_stale_client_position_then_admits_it_after_exp
             &world,
             hydrate_tick,
             true,
+            // ADR-106 — sin fuente de WG3: exactamente el camino de WG2 de siempre.
+            None,
         );
     }
     assert_eq!(
@@ -306,7 +308,15 @@ fn restore_snap_window_blocks_the_stale_client_position_then_admits_it_after_exp
     // Mitad de la ventana.
     let mid_tick = hydrate_tick + 10;
     if !movement_suppressed(mid_tick, suppressed_until) {
-        apply_movement(&mut player, &stale_client_input, dt, &world, mid_tick, true);
+        apply_movement(
+            &mut player,
+            &stale_client_input,
+            dt,
+            &world,
+            mid_tick,
+            true,
+            None,
+        );
     }
     assert_eq!(
         player.position, hydrated_position,
@@ -323,6 +333,7 @@ fn restore_snap_window_blocks_the_stale_client_position_then_admits_it_after_exp
             &world,
             after_tick,
             true,
+            None,
         );
     }
     assert_eq!(
@@ -354,7 +365,7 @@ fn only_the_run_move_state_drains_stamina() {
             input_seq: 1,
             ..Default::default()
         };
-        apply_movement(&mut player, &input, dt, &world, 1, true);
+        apply_movement(&mut player, &input, dt, &world, 1, true, None);
         assert_eq!(
             player.stats.stamina, full,
             "move_state={state} no debe drenar stamina"
@@ -370,7 +381,7 @@ fn only_the_run_move_state_drains_stamina() {
         input_seq: 1,
         ..Default::default()
     };
-    apply_movement(&mut player, &input, dt, &world, 1, true);
+    apply_movement(&mut player, &input, dt, &world, 1, true, None);
     let drained = full - player.stats.stamina;
     assert!(
         (drained - RUN_STAMINA_DRAIN * dt).abs() < 1e-4,
