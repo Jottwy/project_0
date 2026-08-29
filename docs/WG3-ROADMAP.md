@@ -75,7 +75,7 @@ transportable**, que es lo que se pidió. Buscar ahí un fallo de la migración 
 | **Loot por papel** | ✅ | **validado en partida** (2026-08-29); densidad intacta | 108 enm. 4 |
 | **Construcción y claims** | ✅ | **validado en partida** (2026-08-29); se construye en servicio/almacén/callejón | 108 D6 |
 | **Retirada de WG2** | 🟡 | **etapa 1 hecha y validada en partida**; borrar el código lo bloquea el contenido | 109 |
-| **Spawn de criaturas** | 🟡 | **el SITIO sale del ráster y está validado**; el REPARTO sigue en WG2 | 109 D4 |
+| **Spawn de criaturas** | 🟡 | **sitio y reparto ya son de WG3**; falta poblar las plantas altas | 109 D4-D5 |
 | Level 4 y salas autoradas en WG3 | 🔴 | sólo existen en WG2; bloquean el borrado | 109 D2 |
 
 ### Cifras del mundo servido, hoy
@@ -141,9 +141,11 @@ contra el ráster, ambos validados en juego el 2026-08-29. Lo que queda es el re
   contenido**: el Level 4 y las salas autoradas existen sólo en WG2, y el borrado se las lleva.
 - Y una que no estaba en ninguna lista y ya está medio cerrada: las criaturas se movían con WG3 y
   **nacían donde dijera WG2**. El SITIO ya lo decide `standable_near` (ADR-109 D4; medido: de 18
-  sorteos, el ráster corrige 10, hasta 3 m). Sigue en WG2 el **reparto**: cuántas salen y dónde se
-  concentran lo decide `zone_kind_for`, y la cota candidata sale de la capa — **hoy no nacen facelings
-  en las plantas altas**.
+  sorteos, el ráster corrige 10, hasta 3 m), y el **reparto** también (D5): la concentración en
+  oficinas la decide el papel del espacio, hueco a hueco, en vez de la zona del chunk. Casi se cuela
+  un cambio de balance del 350 % —la oficina era el 4 % del mundo en WG2 y el papel de oficina cubre
+  el 39 % en WG3—, calibrado a 71 facelings frente a los 72 de antes. **Sigue pendiente poblar las
+  plantas altas**: la cota que se elige es la del espacio de más abajo, y eso es contenido.
 - Tres lecciones de la mudanza de la IA, por si sirven para la del loot: (a) **ver no es pasar** —
   `segment_is_clear` exige suelo bajo la recta, y como línea de visión falla el 8 % de las veces
   (medido: 49 de 611 parejas, sonda `probe_sight_is_not_the_same_as_passage`); (b) las **capas de 4 m

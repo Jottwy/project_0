@@ -10855,3 +10855,38 @@ que corrija *alguno*: si dejara de corregir, este cambio habría dejado de hacer
 concentran lo decide `zone_kind_for` (la banda `ZONE_OFFICE` de ADR-094 enm. 5), y la cota candidata
 sale de la capa — así que **hoy no nacen facelings en las plantas altas**. Eso es contenido y balance,
 no un fallo de coordenadas, y pide su propia decisión.
+
+### D5 — El REPARTO de facelings (implementada, 2026-08-29)
+
+Lo que D4 dejó fuera, hecho. Era lo último del sistema que seguía preguntándole a WG2.
+
+**Qué cambia de sitio.** La concentración en oficinas la decidía `zone_kind_for`: una respuesta por
+CHUNK de 50 m, porque WG2 no sabía qué había dentro. La decide ahora el **papel del espacio donde cae
+cada hueco** (`wg3_keeps_position`), que es más fino y es la misma idea que ya usan el loot y la
+construcción. La cota candidata sale del espacio y no de `grid_floor_y(layer)`.
+
+**Y arregla un fallo real que dejó D4.** `standable_near` no tenía ráster que mirar en un sitio
+recién sorteado: el precalentado sólo cubría a las criaturas YA vivas, así que con la caché vacía
+devolvía `None` y el snap no hacía nada. La D4 funcionaba en la sonda —que precalienta a mano— y no en
+el bucle. Ahora se precalienta en el sitio, con el mismo contexto que resuelve el papel.
+
+**LA MEDIDA MANDA, y aquí casi se cuela un cambio de balance del 350 %.** En WG2 la oficina era el
+**4 %** del mundo (la banda `TEMPLATE_OFFICE` del sorteo de plantillas). En WG3 el papel de oficina
+—`style` 0, el brazo `_` de `fill::style_of`, donde `Office` cae junto con todo lo que no tiene número
+propio— cubre el **39 %** de los huecos sorteados. Quedarse con todos daba **255 facelings donde WG2
+dejaba 72**. `FACELING_WG3_OFFICE_KEEP` = 0,23 sale de calibrar contra la sonda: **71 frente a 72**. El
+**8:1** entre dentro y fuera de oficina se conserva intacto — es lo que ADR-094 enmienda 5 dejó
+calibrado y la mitad de lo que hace que entrar en una oficina signifique algo.
+
+**La manada de niños se decide ENTERA.** Con el filtro por hueco de los adultos, una manada de 3-8 se
+quedaría en uno o dos y dejaría de ser una manada: el cerco, la presa y el robo de ADR-094 no existen
+sin ella. La tirada de papel se hace una vez, con el hueco de cabeza; cada miembro sólo se pega al
+suelo del suyo.
+
+**La sonda se queda con una aserción de BANDA** (±25 % de la población de WG2). Sin ella,
+`FACELING_WG3_OFFICE_KEEP` se puede tocar sin enterarse de que multiplica los facelings del mundo — que
+es exactamente lo que este ADR estuvo a punto de hacer.
+
+**Sigue pendiente:** las plantas altas. La cota que se elige es la del espacio **de más abajo** en esa
+vertical, así que el reparto sigue siendo de planta baja. Poblar las de arriba es una decisión de
+contenido —cuánta gente vive arriba— y no un arreglo de coordenadas.
