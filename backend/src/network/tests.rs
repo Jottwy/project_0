@@ -53,6 +53,7 @@ async fn joiner_adopts_the_hosts_phantom_density_scale_and_it_changes_the_draw()
         (0, 0),
         0,
         host.phantom_density_scale,
+        false,
         &mut host_drawn,
     );
     let mut joiner_drawn = Vec::new();
@@ -61,6 +62,7 @@ async fn joiner_adopts_the_hosts_phantom_density_scale_and_it_changes_the_draw()
         (0, 0),
         0,
         joiner.phantom_density_scale,
+        false,
         &mut joiner_drawn,
     );
     assert_eq!(
@@ -77,6 +79,7 @@ async fn joiner_adopts_the_hosts_phantom_density_scale_and_it_changes_the_draw()
         (0, 0),
         0,
         1.0,
+        false,
         &mut joiner_drawn_with_own_value,
     );
     assert_ne!(
@@ -2297,5 +2300,1075 @@ async fn handshake_is_rejected_on_room_manifest_mismatch() {
     assert!(
         !host.peers.values().any(|p| p.addr == newcomer),
         "el rechazado no puede quedar registrado"
+    );
+}
+
+// ─── El silencio: un handshake que nadie contesta ──────────────────────────────────────────
+//
+// Auditoría de conectividad (2026-08-30). `ConnectRejected` cubría el rechazo EXPLÍCITO (session
+// full, versión de wire, pool de salas): llega un `Disconnect` y hay paquete que interpretar.
+// Sobre UDP el modo de fallo dominante no es ése — es el SILENCIO: IP equivocada, puerto
+// equivocado, host apagado, firewall entrante bloqueando, NAT sin redirección. Ese camino no
+// existía: `retry_pending_connection` reenviaba el mismo handshake muerto cada segundo durante
+// toda la partida y nadie se enteraba nunca, mientras el backend del joiner le servía a Unity un
+// mundo local en solitario. Reproducido con el binario real contra 192.0.2.1 (TEST-NET-1):
+// attempt=12 a los 12 s, cero errores, `build_world_state` sirviendo con remote_players=0.
+
+/// Simula un intento que arrancó hace `by` sin tocar el reloj real.
+fn age_pending_connect(net: &mut NetworkManager, by: Duration) {
+    net.pending_connect_started_at = Instant::now().checked_sub(by);
+}
+
+#[tokio::test]
+async fn silent_handshake_gives_up_after_the_connect_budget() {
+    let mut joiner = NetworkManager::bind(0, 2, 42, false).await.unwrap();
+    let dead_host: SocketAddr = "192.0.2.1:7778".parse().unwrap();
+    joiner.initiate_connection(dead_host).await;
+    age_pending_connect(&mut joiner, CONNECT_TIMEOUT + Duration::from_secs(1));
+
+    joiner.retry_pending_connection().await;
+    let events = joiner.process_incoming().await;
+
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            NetworkEvent::ConnectTimedOut { addr, attempts, .. }
+                if *addr == dead_host && *attempts >= 1
+        )),
+        "un handshake sin respuesta tiene que rendirse con diagnostico, no reintentar para siempre: {events:?}"
+    );
+    assert_eq!(
+        joiner.pending_connect_addr, None,
+        "tras el veredicto no puede quedar un intento vivo reenviando"
+    );
+}
+
+#[tokio::test]
+async fn connect_budget_does_not_expire_early() {
+    let mut joiner = NetworkManager::bind(0, 2, 42, false).await.unwrap();
+    let host: SocketAddr = "127.0.0.1:9601".parse().unwrap();
+    joiner.initiate_connection(host).await;
+    // Dentro del presupuesto por un margen holgado: el host tarda ~1-2 s en generar el mundo
+    // antes de leer datagramas, y rendirse ahí seria romper el join legitimo simultaneo.
+    age_pending_connect(&mut joiner, CONNECT_TIMEOUT / 3);
+
+    joiner.retry_pending_connection().await;
+    let events = joiner.process_incoming().await;
+
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, NetworkEvent::ConnectTimedOut { .. })),
+        "dentro del presupuesto se sigue insistiendo, no se abandona: {events:?}"
+    );
+    assert_eq!(
+        joiner.pending_connect_addr,
+        Some(host),
+        "el intento sigue vivo mientras quede presupuesto"
+    );
+}
+
+#[tokio::test]
+async fn the_host_never_times_out_its_own_listen() {
+    // El host no "conecta" a nadie: escucha. Un presupuesto que se le aplicara mataria la sesion
+    // de quien hostea en solitario esperando a que llegue alguien.
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    host.pending_connect_addr = Some("127.0.0.1:9602".parse().unwrap());
+    age_pending_connect(&mut host, CONNECT_TIMEOUT * 10);
+
+    host.retry_pending_connection().await;
+    let events = host.process_incoming().await;
+
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, NetworkEvent::ConnectTimedOut { .. })),
+        "el host no tiene intento de conexion que pueda agotarse: {events:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_completed_handshake_stops_the_connect_budget() {
+    // El caso que NO puede romperse: se entro dentro de plazo y luego pasa el tiempo. Sin limpiar
+    // el marcador, un jugador dentro de la partida recibiria un "nadie contesto" a los 15 s.
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let mut joiner = NetworkManager::bind(0, 2, 42, false).await.unwrap();
+    let host_addr = loopback_addr(&host);
+
+    joiner.initiate_connection(host_addr).await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    host.process_incoming().await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let joined = joiner.process_incoming().await;
+
+    assert!(
+        joined
+            .iter()
+            .any(|e| matches!(e, NetworkEvent::PeerConnected { .. })),
+        "el handshake de control tenia que completarse: {joined:?}"
+    );
+    assert_eq!(
+        joiner.pending_connect_started_at, None,
+        "entrar tiene que parar el reloj del presupuesto"
+    );
+
+    age_pending_connect(&mut joiner, CONNECT_TIMEOUT * 10);
+    joiner.retry_pending_connection().await;
+    let after = joiner.process_incoming().await;
+    assert!(
+        !after
+            .iter()
+            .any(|e| matches!(e, NetworkEvent::ConnectTimedOut { .. })),
+        "quien ya esta en la sesion no puede recibir un timeout de conexion: {after:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_explicit_rejection_wins_over_the_timeout() {
+    // Los dos veredictos son excluyentes: si el host dijo POR QUE, ese motivo es el que tiene que
+    // leer el jugador. Sin limpiar el marcador, el presupuesto seguia corriendo y a los 15 s
+    // encima del "session full" real caia un "nadie contesto" que lo contradecia.
+    let mut joiner = NetworkManager::bind(0, 2, 42, false).await.unwrap();
+    let host_addr: SocketAddr = "127.0.0.1:9603".parse().unwrap();
+    joiner.initiate_connection(host_addr).await;
+
+    let rejection = IncomingPacket {
+        addr: host_addr,
+        header: PacketHeader::new(protocol::PacketType::Disconnect as u16, 1, 0, 0),
+        payload: PacketPayload::Disconnect {
+            reason: "session full".into(),
+        },
+    };
+    joiner.handle_packet(rejection).await;
+
+    assert_eq!(joiner.pending_connect_started_at, None);
+
+    age_pending_connect(&mut joiner, CONNECT_TIMEOUT * 10);
+    joiner.retry_pending_connection().await;
+    let events = joiner.process_incoming().await;
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, NetworkEvent::ConnectTimedOut { .. })),
+        "un rechazo explicito no puede quedar tapado por un timeout posterior: {events:?}"
+    );
+}
+
+// ─── Bind: la interfaz, no solo el puerto ──────────────────────────────────────────────────
+
+#[tokio::test]
+async fn the_p2p_socket_binds_every_interface_not_just_loopback() {
+    // Es la propiedad que hace posible el LAN: escuchando en 127.0.0.1 el host funcionaria en su
+    // propia maquina y seria invisible desde cualquier otra, y el sintoma —"a mi me va, a mi
+    // amigo no"— no senala al bind por ningun lado. Se comprueba la direccion REAL del socket,
+    // no la cadena que se le paso a `bind`.
+    let net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let addr = net.local_addr();
+
+    assert!(
+        addr.ip().is_unspecified(),
+        "el socket P2P tiene que escuchar en 0.0.0.0 para que el LAN llegue, no en {}",
+        addr.ip()
+    );
+    assert_ne!(addr.port(), 0, "el puerto efectivo tiene que ser real");
+}
+
+#[tokio::test]
+async fn the_requested_port_is_the_port_that_gets_bound() {
+    // "El puerto configurable se respeta": lo que se teclea en la UI viaja como NET_PORT y tiene
+    // que ser el que acabe en el socket. Un desvio silencioso aqui manda al joiner remoto a un
+    // puerto donde ya no escucha nadie.
+    // La sonda es un socket de `std`, no un `NetworkManager`: soltar un manager NO cierra su
+    // socket — `receive_loop` se queda con un clon del `Arc` — y el puerto seguiria ocupado.
+    // El de `std` se cierra al soltarse, y UDP no tiene TIME_WAIT que retrase el reuso.
+    let free_port = {
+        let probe = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        probe.local_addr().unwrap().port()
+    };
+
+    let net = NetworkManager::bind(free_port, 1, 42, true).await.unwrap();
+    assert_eq!(
+        net.local_addr().port(),
+        free_port,
+        "el puerto pedido y el puerto escuchado tienen que ser el mismo"
+    );
+}
+
+#[tokio::test]
+async fn an_occupied_port_fails_loudly_instead_of_binding_somewhere_else() {
+    // El backend NO busca puerto libre por su cuenta: si el que le dan esta ocupado, tiene que
+    // fallar. Elegir otro en silencio es como un host acaba escuchando en un puerto que nadie
+    // sabe, y `main` lo convierte en un `expect` visible en el log en vez de una sesion fantasma.
+    let holder = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let taken = holder.local_addr().port();
+
+    let second = NetworkManager::bind(taken, 2, 42, true).await;
+    assert!(
+        second.is_err(),
+        "un puerto ya ocupado tiene que dar error de bind, no reubicarse en silencio"
+    );
+}
+
+// ─── Liveness: el latido y la dirección a la que va ────────────────────────────────────────
+//
+// Auditoría de heartbeat (2026-08-30). Síntoma físico entre dos PC de la misma LAN: handshake
+// correcto, sesión establecida, y ~5 s después expulsión por HEARTBEAT TIMEOUT. En una sola
+// máquina no ocurría nunca.
+//
+// Causa: `build_peer_list` anunciaba la entrada PROPIA del emisor con `net.local_addr()`, que es
+// la dirección del socket — y el socket hace bind en `0.0.0.0`. Quien adopta esa dirección como
+// endpoint de un peer se manda a sí mismo lo que cree estar mandando al otro, porque `0.0.0.0`
+// como destino significa "esta máquina". Con los dos procesos en el mismo PC el datagrama llega
+// igual y el defecto es invisible; con un cable de por medio, el otro extremo deja de recibir y
+// reapa por silencio. Nada de la red está roto: el latido sale hacia el sitio equivocado.
+
+/// Envejece el último visto de un peer sin tocar el reloj real.
+fn age_last_seen(net: &mut NetworkManager, id: PeerId, by: Duration) {
+    let peer = net.peers.get_mut(&id).expect("peer registrado");
+    peer.last_heartbeat = Instant::now().checked_sub(by).expect("instante válido");
+}
+
+#[tokio::test]
+async fn the_roster_never_advertises_an_unroutable_endpoint() {
+    // La mitad emisora. `net.local_addr()` de un socket en 0.0.0.0 NO es la dirección de nadie, y
+    // era lo que viajaba.
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let real_addr: SocketAddr = "127.0.0.1:9810".parse().unwrap();
+    host.peers
+        .insert(2, peer::PeerConnection::new(2, "Real".into(), real_addr));
+    let player = crate::player::Player::new(host.local_id, "Host");
+
+    let list = sync::build_peer_list(&host, &player);
+
+    let own = list
+        .iter()
+        .find(|p| p.id == host.local_id)
+        .expect("el emisor va en su propio roster");
+    let parsed: SocketAddr = own.addr.parse().expect("addr parseable");
+    assert!(
+        !sync::is_routable_peer_addr(&parsed),
+        "la entrada propia no puede anunciar un endpoint adoptable: {}",
+        own.addr
+    );
+
+    let real = list.iter().find(|p| p.id == 2).expect("el peer real va");
+    assert_eq!(
+        real.addr, "127.0.0.1:9810",
+        "el peer real sí viaja con su dirección de verdad — esto NO se toca"
+    );
+}
+
+#[tokio::test]
+async fn a_roster_entry_with_an_unroutable_addr_is_never_registered() {
+    // La mitad receptora, que es la que de verdad protege: un build viejo sigue anunciando
+    // `0.0.0.0:<puerto>` y no puede envenenar a uno nuevo.
+    let mut joiner = NetworkManager::bind(0, 2, 42, false).await.unwrap();
+    let host_addr: SocketAddr = "127.0.0.1:9811".parse().unwrap();
+
+    let roster = IncomingPacket {
+        addr: host_addr,
+        header: PacketHeader::new(protocol::PacketType::PeerList as u16, 1, 0, 0),
+        payload: PacketPayload::PeerList {
+            peers: vec![
+                protocol::PeerInfo {
+                    id: 1,
+                    name: "Host".into(),
+                    addr: "0.0.0.0:7778".into(),
+                    position: [0.0, 1.8, 0.0],
+                    relay_only: false,
+                },
+                protocol::PeerInfo {
+                    id: 7,
+                    name: "PuertoCero".into(),
+                    addr: "192.168.1.40:0".into(),
+                    position: [0.0, 1.8, 0.0],
+                    relay_only: false,
+                },
+                protocol::PeerInfo {
+                    id: 8,
+                    name: "Bueno".into(),
+                    addr: "192.168.1.41:7779".into(),
+                    position: [0.0, 1.8, 0.0],
+                    relay_only: false,
+                },
+            ],
+        },
+    };
+    joiner.handle_packet(roster).await;
+
+    assert!(
+        !joiner.peers.contains_key(&1),
+        "0.0.0.0 significa 'esta máquina' al enviar: registrarlo es mandarse los latidos a uno mismo"
+    );
+    assert!(
+        !joiner.peers.contains_key(&7),
+        "el puerto 0 tampoco es el endpoint de nadie"
+    );
+    assert_eq!(
+        joiner.peers.get(&8).map(|p| p.addr.to_string()),
+        Some("192.168.1.41:7779".to_string()),
+        "y una dirección buena sí tiene que registrarse — el filtro no puede comerse el caso sano"
+    );
+}
+
+#[tokio::test]
+async fn a_roster_can_never_overwrite_the_host_endpoint_learned_from_the_handshake() {
+    // El caso EXACTO del fallo físico, con dos sockets de verdad: el joiner entra, el host le
+    // manda su roster, y la dirección por la que el joiner alcanza al host tiene que seguir
+    // siendo la del handshake. Si el roster la pisa, el siguiente latido no sale de la máquina.
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let mut joiner = NetworkManager::bind(0, 2, 42, false).await.unwrap();
+    let host_addr = loopback_addr(&host);
+
+    joiner.initiate_connection(host_addr).await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    host.process_incoming().await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    joiner.process_incoming().await;
+
+    let learned = joiner
+        .peers
+        .get(&1)
+        .map(|p| p.addr)
+        .expect("el host queda registrado por el HandshakeAck");
+    assert!(sync::is_routable_peer_addr(&learned));
+
+    // El host emite su roster, tal cual lo hace al terminar el world sync.
+    let host_player = crate::player::Player::new(host.local_id, "Host");
+    let roster = PacketPayload::PeerList {
+        peers: sync::build_peer_list(&host, &host_player),
+    };
+    host.broadcast_unreliable(&roster).await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    joiner.process_incoming().await;
+
+    assert_eq!(
+        joiner.peers.get(&1).map(|p| p.addr),
+        Some(learned),
+        "el roster no puede cambiar por dónde se alcanza al host"
+    );
+}
+
+#[tokio::test]
+async fn a_live_heartbeat_actually_reaches_the_host_and_refreshes_its_last_seen() {
+    // Prueba de extremo a extremo del latido sobre sockets reales: sale, llega, y mueve
+    // `last_heartbeat` en el receptor. Cubre A (nunca sale), B (sale y no llega) y C (llega y no
+    // actualiza) de una vez, porque las tres se ven igual desde fuera.
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let mut joiner = NetworkManager::bind(0, 2, 42, false).await.unwrap();
+    let host_addr = loopback_addr(&host);
+
+    joiner.initiate_connection(host_addr).await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    host.process_incoming().await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    joiner.process_incoming().await;
+    let joiner_id = joiner.local_id;
+
+    // Se envejece al joiner en el host hasta el borde del umbral y se comprueba que UN latido lo
+    // devuelve a cero. Sin el refresco, el siguiente `check_timeouts` lo expulsaría.
+    age_last_seen(
+        &mut host,
+        joiner_id,
+        peer::HEARTBEAT_TIMEOUT - Duration::from_millis(200),
+    );
+    assert!(
+        host.peers[&joiner_id].last_heartbeat.elapsed() > Duration::from_secs(4),
+        "el peer tiene que estar al borde para que la prueba signifique algo"
+    );
+
+    joiner.send_heartbeats().await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    host.process_incoming().await;
+
+    assert!(
+        host.peers[&joiner_id].last_heartbeat.elapsed() < Duration::from_millis(500),
+        "el latido llegó y tiene que haber reseteado el último visto"
+    );
+    assert!(
+        host.check_timeouts().is_empty(),
+        "y con el último visto fresco nadie puede ser expulsado"
+    );
+    assert!(host.peers.contains_key(&joiner_id));
+}
+
+#[tokio::test]
+async fn an_active_peer_is_never_reaped_by_the_liveness_scan() {
+    // Falso positivo: el escaneo corre a 1 Hz sobre un umbral de 5 s. Un peer recién visto no
+    // puede caer por un error de comparación ni de unidades.
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    host.peers.insert(
+        2,
+        peer::PeerConnection::new(2, "Vivo".into(), "127.0.0.1:9812".parse().unwrap()),
+    );
+
+    for _ in 0..8 {
+        host.peers.get_mut(&2).unwrap().record_heartbeat();
+        age_last_seen(&mut host, 2, Duration::from_millis(900));
+        assert!(
+            host.check_timeouts().is_empty(),
+            "900 ms de silencio están MUY dentro del umbral de 5 s"
+        );
+    }
+    assert!(host.peers.contains_key(&2));
+}
+
+#[tokio::test]
+async fn real_silence_past_the_threshold_does_reap_the_peer() {
+    // Control positivo: el mecanismo tiene que seguir matando lo que de verdad está muerto. Sin
+    // esto, "arreglar" los falsos positivos podría haber apagado la detección entera.
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    host.peers.insert(
+        2,
+        peer::PeerConnection::new(2, "Muerto".into(), "127.0.0.1:9813".parse().unwrap()),
+    );
+
+    age_last_seen(
+        &mut host,
+        2,
+        peer::HEARTBEAT_TIMEOUT + Duration::from_millis(100),
+    );
+    let events = host.check_timeouts();
+
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            NetworkEvent::PeerDisconnected { id: 2, reason } if reason == "heartbeat timeout"
+        )),
+        "un peer realmente callado tiene que caer, y con ese motivo exacto: {events:?}"
+    );
+    assert!(!host.peers.contains_key(&2));
+}
+
+#[tokio::test]
+async fn a_peer_stranded_on_an_unroutable_addr_is_never_a_heartbeat_destination() {
+    // Última línea: aunque un futuro camino escribiera `peer.addr` sin pasar por el filtro del
+    // roster, la ronda de latidos no puede dirigirse a "esta máquina" creyendo que va al otro.
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    host.peers.insert(
+        2,
+        peer::PeerConnection::new(2, "Envenenado".into(), "0.0.0.0:7778".parse().unwrap()),
+    );
+    host.peers.insert(
+        3,
+        peer::PeerConnection::new(3, "Sano".into(), "192.168.1.41:7779".parse().unwrap()),
+    );
+
+    let dests = host.broadcast_destinations();
+    let ids: Vec<PeerId> = dests.iter().map(|(id, _)| *id).collect();
+
+    assert!(!ids.contains(&2), "0.0.0.0 no es destino de nadie");
+    assert!(
+        ids.contains(&3),
+        "y el peer sano sigue recibiendo su latido"
+    );
+}
+
+// ─── El goteo inicial de mundo, sobre sockets reales ───────────────────────────────────────
+//
+// Auditoría de la vía reliable (2026-08-30). Fallo físico entre dos PC: handshake correcto,
+// `session_joined` correcto, latidos correctos, y a los ~6 s de entrar
+// `reliable retransmit exhausted (3 reliable + 0 deferred packets lost)`.
+//
+// Lo medido con instrumentación RELTRACE en localhost: `send_world_sync` emitía 32
+// `RELIABLE_SENT` SEGUIDOS —la ventana entera, ~35 KB— dentro de un solo tick y sin una sola
+// cesión, más 18 aparcados. `broadcast_chunk_states` manda EXACTAMENTE las mismas cargas y sí
+// cede entre páginas, con un comentario que registra la medida que lo obligó (a partir de ~56
+// páginas seguidas se perdía al menos una por ronda al desbordar el buffer de recepción). El
+// goteo no tenía esa cesión. Y como cada reintento reproducía la misma ráfaga, los mismos
+// paquetes volvían a caer hasta agotar `MAX_RETRIES`.
+//
+// Descartado con medida, no por argumento: el datagrama mayor de todo el goteo son 1205 bytes
+// contra 1472 de MTU de Ethernet, así que no había fragmentación (`MTUPROBE ... oversized=0`).
+
+/// Un mundo con `n` chunks reales, que es lo que hace grande al goteo.
+fn world_with_chunks(n: i32) -> crate::world::World {
+    let mut world = crate::world::World::new(42);
+    for i in 0..n {
+        world.ensure_chunk((i % 8, i / 8));
+    }
+    world
+}
+
+/// Deja correr al par host↔joiner: cada vuelta drena recepción en los dos lados y barre
+/// retransmisiones en el host, igual que hace el bucle de juego.
+async fn pump_pair(
+    host: &mut NetworkManager,
+    joiner: &mut NetworkManager,
+    rounds: usize,
+) -> Vec<NetworkEvent> {
+    let mut events = Vec::new();
+    for _ in 0..rounds {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        // El seguimiento de completitud lo alimenta el bucle de juego, no `process_incoming`;
+        // aquí se hace lo mismo que hace él, para no medir el goteo contra un contador que nadie
+        // está moviendo.
+        for e in joiner.process_incoming().await {
+            match e {
+                NetworkEvent::WorldSyncChunkReceived {
+                    world_revision,
+                    data,
+                } => joiner
+                    .world_sync_progress
+                    .note_chunk(world_revision, data.pos, data.layer),
+                NetworkEvent::WorldSyncEndReceived {
+                    world_revision,
+                    chunk_count,
+                } => joiner
+                    .world_sync_progress
+                    .note_end(world_revision, chunk_count),
+                _ => {}
+            }
+        }
+        host.process_incoming().await;
+        events.extend(host.process_retransmits().await);
+    }
+    events
+}
+
+async fn connected_pair() -> (NetworkManager, NetworkManager) {
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let mut joiner = NetworkManager::bind(0, 2, 42, false).await.unwrap();
+    let host_addr = loopback_addr(&host);
+    joiner.initiate_connection(host_addr).await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    host.process_incoming().await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    joiner.process_incoming().await;
+    assert!(
+        host.peers.contains_key(&2) && joiner.peers.contains_key(&1),
+        "el par tiene que quedar conectado antes de medir el goteo"
+    );
+    (host, joiner)
+}
+
+#[tokio::test]
+async fn a_large_initial_world_sync_never_exhausts_max_retries() {
+    // La prueba que faltaba: goteo grande de verdad (60 chunks, por encima de los 49 del mundo
+    // que rompió en físico), entregado entero, con el peer VIVO al final.
+    let (mut host, mut joiner) = connected_pair().await;
+    let world = world_with_chunks(60);
+    let player = crate::player::Player::new(1, "Host");
+
+    sync::send_world_sync(&mut host, 2, &world, &player).await;
+    let events = pump_pair(&mut host, &mut joiner, 60).await;
+
+    assert!(
+        !events.iter().any(|e| matches!(
+            e,
+            NetworkEvent::PeerDisconnected { reason, .. } if reason == "reliable retransmit exhausted"
+        )),
+        "el goteo inicial no puede matar al peer al que se lo estás mandando: {events:?}"
+    );
+    assert!(
+        host.peers.contains_key(&2),
+        "y el peer tiene que seguir en la sesión después de sincronizar"
+    );
+
+    let peer = &host.peers[&2];
+    assert!(
+        peer.reliable_queue.is_empty(),
+        "todo el goteo tenía que quedar confirmado; quedan {} sin ACK",
+        peer.reliable_queue.len()
+    );
+    assert!(
+        peer.deferred_reliable.is_empty(),
+        "y la cola diferida tenía que drenar entera; quedan {}",
+        peer.deferred_reliable.len()
+    );
+}
+
+#[tokio::test]
+async fn the_whole_world_actually_lands_on_the_joiner() {
+    // Fiabilidad y orden intactos: ceder no puede costar un chunk. Se comprueba contra el
+    // seguimiento de completitud del receptor, que es quien decide si el mundo llegó entero.
+    let (mut host, mut joiner) = connected_pair().await;
+    let chunks = 60;
+    let world = world_with_chunks(chunks);
+    let player = crate::player::Player::new(1, "Host");
+
+    sync::send_world_sync(&mut host, 2, &world, &player).await;
+    pump_pair(&mut host, &mut joiner, 60).await;
+
+    assert!(
+        joiner.world_sync_progress.is_complete(),
+        "el goteo tiene que completarse en el receptor, no solo salir del emisor"
+    );
+}
+
+#[tokio::test]
+async fn the_world_sync_burst_yields_instead_of_filling_the_window_in_one_go() {
+    // La propiedad que de verdad se corrigió, medida en vez de argumentada: cuántos paquetes
+    // salen SIN que nada más pueda correr entre medias.
+    //
+    // Un contador dentro de una tarea concurrente cuenta las oportunidades de ejecución que el
+    // goteo cede. Sin las cesiones el goteo entero cabe entre dos puntos de espera y el contador
+    // se queda en cero; con ellas, el runtime intercala — que es exactamente lo que permite al
+    // bucle de recepción drenar el socket y a los ACK volver.
+    let (mut host, mut joiner) = connected_pair().await;
+    let world = world_with_chunks(60);
+    let player = crate::player::Player::new(1, "Host");
+
+    let ticks = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let ticks_bg = ticks.clone();
+    let bg = tokio::spawn(async move {
+        for _ in 0..10_000 {
+            ticks_bg.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            tokio::task::yield_now().await;
+        }
+    });
+
+    sync::send_world_sync(&mut host, 2, &world, &player).await;
+    let interleaved = ticks.load(std::sync::atomic::Ordering::Relaxed);
+    bg.abort();
+
+    assert!(
+        interleaved >= 32,
+        "el goteo tiene que ceder al menos una vez por paquete de la ventana; solo cedió {interleaved} veces"
+    );
+
+    // Y el goteo sigue entregando lo mismo pese a ceder.
+    pump_pair(&mut host, &mut joiner, 60).await;
+    assert!(joiner.world_sync_progress.is_complete());
+}
+
+#[tokio::test]
+async fn a_retransmit_wave_is_not_re_sent_as_one_unbroken_burst() {
+    // El segundo punto de ráfaga, y el que convierte una pérdida puntual en cinco seguidas: los
+    // paquetes de una misma ráfaga reciben su plazo de reenvío en el mismo instante, así que
+    // vencen juntos. Sin cesión, la ola de reenvío es idéntica a la ráfaga que los perdió.
+    let (mut host, _joiner) = connected_pair().await;
+    let world = world_with_chunks(40);
+    let player = crate::player::Player::new(1, "Host");
+
+    // Se emite el goteo y NO se drena al receptor: nadie confirma, así que todo vence a la vez.
+    sync::send_world_sync(&mut host, 2, &world, &player).await;
+    let in_flight = host.peers[&2].reliable_queue.len();
+    assert!(in_flight > 1, "hace falta más de un paquete en vuelo");
+    tokio::time::sleep(Duration::from_millis(260)).await;
+
+    let ticks = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let ticks_bg = ticks.clone();
+    let bg = tokio::spawn(async move {
+        for _ in 0..10_000 {
+            ticks_bg.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            tokio::task::yield_now().await;
+        }
+    });
+    host.process_retransmits().await;
+    let interleaved = ticks.load(std::sync::atomic::Ordering::Relaxed);
+    bg.abort();
+
+    assert!(
+        interleaved >= in_flight,
+        "la ola de reenvío tiene que ceder entre paquetes; {in_flight} reenvíos y solo {interleaved} cesiones"
+    );
+}
+
+#[tokio::test]
+async fn the_reliable_window_is_still_respected_after_the_fix() {
+    // Control: ceder no puede haber relajado el backpressure. La ventana sigue siendo 32 y lo
+    // que no cabe sigue APARCÁNDOSE (nunca descartándose), que es el contrato de ADR-060.
+    let (mut host, _joiner) = connected_pair().await;
+    let world = world_with_chunks(60);
+    let player = crate::player::Player::new(1, "Host");
+
+    sync::send_world_sync(&mut host, 2, &world, &player).await;
+
+    let peer = &host.peers[&2];
+    assert_eq!(
+        peer.reliable_queue.len(),
+        reliability::WINDOW_SIZE,
+        "en vuelo tiene que haber exactamente la ventana, ni uno más"
+    );
+    // El total esperado se DERIVA de la paginación, no se escribe a mano. La versión anterior
+    // fijaba 61 (60 chunks + End) porque entonces un chunk era siempre un paquete; desde la
+    // auditoría de MTU un chunk denso viaja en varias páginas, así que ese número codificaba una
+    // suposición que la paginación invalida a propósito. Lo que se comprueba —que no se descarta
+    // nada— es lo mismo; lo que cambia es de dónde sale el número.
+    let expected: usize = world
+        .chunks
+        .values()
+        .map(|c| sync::chunk_to_sync_pages(c, world.revision).len())
+        .sum::<usize>()
+        + 1; // + WorldSyncEnd
+    assert!(
+        expected > world.chunks.len(),
+        "setup: este mundo tiene que tener algún chunk paginado o el test no prueba nada"
+    );
+    assert_eq!(
+        peer.reliable_queue.len() + peer.deferred_reliable.len(),
+        expected,
+        "todas las páginas + End: nada puede haberse descartado por el camino"
+    );
+}
+
+// ─── El techo de transporte, y la paginación que lo hace cumplir ───────────────────────────
+//
+// Auditoría de MTU (2026-08-30). Medido en la sesión física de 9 min: 31.004 datagramas por
+// encima de 1472 B, máximo 1881 B, y los ÚNICOS 4 reenvíos de toda la sesión fueron los 4
+// datagramas oversized — ninguno por debajo del límite se perdió. Los fiables oversized eran
+// todos `type=0x36` (`WorldSyncChunk`).
+//
+// Reparto de bytes medido de un chunk real: cabecera fija (con `layout`) 754 B, ~87 B por
+// entidad. Por eso la unidad de división son las listas y no la cabecera: repetirla en cada
+// página cuesta menos que cualquier esquema que la separase, y hace cada página autosuficiente,
+// que es lo que permite aplicarlas fuera de orden.
+
+fn dense_chunk_world(entities_per_chunk: usize) -> crate::world::World {
+    let mut world = crate::world::World::new(42);
+    for i in 0..6 {
+        let chunk = world.ensure_chunk((i % 3, i / 3));
+        // Entidades sintéticas SOBRE un chunk real: lo que desborda el datagrama es la lista, y
+        // la sesión física llegó a ~13 entidades en un chunk.
+        for n in 0..entities_per_chunk {
+            let e = crate::world::entity::Entity::new(
+                (i as u32) * 1000 + n as u32,
+                crate::world::entity::EntityType::Lurker,
+                crate::utils::Vec3::new(n as f32, 1.8, i as f32),
+            );
+            chunk.entities.push(e);
+        }
+    }
+    world
+}
+
+fn encoded_bytes(data: &protocol::ChunkSyncData) -> usize {
+    let payload = PacketPayload::WorldSyncChunk {
+        world_revision: 1,
+        data: data.clone(),
+    };
+    let header = PacketHeader::new(payload.type_code(), 1, 1, 0);
+    protocol::encode_packet(&header, &payload).len()
+}
+
+#[test]
+fn no_world_sync_page_can_exceed_the_transport_budget() {
+    // La invariante central. 40 entidades por chunk es ~3x lo peor visto en físico.
+    let world = dense_chunk_world(40);
+    for chunk in world.chunks.values() {
+        let pages = sync::chunk_to_sync_pages(chunk, 1);
+        assert!(!pages.is_empty(), "siempre al menos una página");
+        for page in &pages {
+            let bytes = encoded_bytes(page);
+            assert!(
+                bytes <= protocol::SAFE_DATAGRAM_BYTES,
+                "una página de WorldSync no puede fragmentar: {bytes} B > {} B",
+                protocol::SAFE_DATAGRAM_BYTES
+            );
+        }
+    }
+}
+
+#[test]
+fn a_chunk_that_already_fits_still_travels_as_a_single_page() {
+    // Control: la paginación no puede encarecer el caso común. Un chunk normal sigue siendo un
+    // solo datagrama, sin cabeceras repetidas ni ensamblado en el receptor.
+    let world = dense_chunk_world(0);
+    for chunk in world.chunks.values() {
+        let pages = sync::chunk_to_sync_pages(chunk, 1);
+        assert_eq!(pages.len(), 1, "un chunk que cabe no se parte");
+        assert_eq!(pages[0].page, 0);
+        assert_eq!(pages[0].page_count, 1);
+    }
+}
+
+#[test]
+fn paging_loses_nothing_and_keeps_order() {
+    // Fiabilidad: partir y reunir tiene que devolver EXACTAMENTE lo que había, en el mismo orden.
+    let world = dense_chunk_world(40);
+    for chunk in world.chunks.values() {
+        let original = sync::chunk_to_sync_data(chunk);
+        let pages = sync::chunk_to_sync_pages(chunk, 1);
+        assert!(pages.len() > 1, "setup: este chunk tiene que partirse");
+
+        let mut asm = sync::ChunkPageAssembler::default();
+        let mut merged = None;
+        for page in &pages {
+            if let Some(done) = asm.offer(1, page.clone()) {
+                merged = Some(done);
+            }
+        }
+        let merged = merged.expect("con todas las páginas tiene que ensamblar");
+
+        let ids: Vec<u32> = merged.entities.iter().map(|e| e.id).collect();
+        let want: Vec<u32> = original.entities.iter().map(|e| e.id).collect();
+        assert_eq!(ids, want, "ni se pierde ni se reordena una entidad");
+        assert_eq!(merged.items.len(), original.items.len());
+        assert_eq!(merged.pos, original.pos);
+        assert_eq!(merged.layer, original.layer);
+        assert_eq!(merged.layout.cells, original.layout.cells);
+    }
+}
+
+#[test]
+fn pages_assemble_out_of_order_and_survive_duplicates() {
+    // La razón ENTERA de ensamblar en vez de aplicar página a página: la capa reliable es
+    // at-least-once y SIN orden. Si la 1 adelanta a la 0, o la 0 llega dos veces tras un ACK
+    // perdido, el resultado tiene que ser el mismo.
+    let world = dense_chunk_world(40);
+    let chunk = world.chunks.values().next().expect("hay chunks");
+    let original = sync::chunk_to_sync_data(chunk);
+    let mut pages = sync::chunk_to_sync_pages(chunk, 1);
+    assert!(pages.len() > 1);
+
+    pages.reverse(); // orden invertido
+    let mut asm = sync::ChunkPageAssembler::default();
+    let mut merged = None;
+    // La primera se entrega DOS veces: duplicado real de una retransmisión.
+    let dup = pages[0].clone();
+    for page in std::iter::once(dup).chain(pages.iter().cloned()) {
+        if let Some(done) = asm.offer(1, page) {
+            merged = Some(done);
+        }
+    }
+    let merged = merged.expect("desordenado y con duplicado tiene que ensamblar igual");
+    let ids: Vec<u32> = merged.entities.iter().map(|e| e.id).collect();
+    let want: Vec<u32> = original.entities.iter().map(|e| e.id).collect();
+    assert_eq!(
+        ids, want,
+        "el orden lo fija el índice de página, no la llegada"
+    );
+    assert_eq!(asm.pending_len(), 0, "no puede quedar nada aparcado");
+}
+
+#[test]
+fn an_incomplete_chunk_is_never_applied() {
+    // Pérdida silenciosa: con una página en vuelo, el ensamblador NO debe entregar nada. Aplicar
+    // lo que hay dejaría el chunk con la mitad de sus entidades y sin forma de saberlo.
+    let world = dense_chunk_world(40);
+    let chunk = world.chunks.values().next().expect("hay chunks");
+    let pages = sync::chunk_to_sync_pages(chunk, 1);
+    assert!(pages.len() > 1);
+
+    let mut asm = sync::ChunkPageAssembler::default();
+    for page in pages.iter().take(pages.len() - 1) {
+        assert!(
+            asm.offer(1, page.clone()).is_none(),
+            "sin la última página no se entrega nada"
+        );
+    }
+    assert_eq!(asm.pending_len(), 1, "queda exactamente un chunk aparcado");
+}
+
+#[test]
+fn a_superseded_revision_does_not_pollute_the_new_one() {
+    // Una revisión nueva invalida el goteo anterior: sus rezagados no pueden mezclarse con el
+    // nuevo ni quedarse en memoria para toda la sesión.
+    let world = dense_chunk_world(40);
+    let chunk = world.chunks.values().next().expect("hay chunks");
+    let pages = sync::chunk_to_sync_pages(chunk, 1);
+
+    let mut asm = sync::ChunkPageAssembler::default();
+    asm.offer(1, pages[0].clone());
+    assert_eq!(asm.pending_len(), 1);
+
+    asm.drop_stale(2);
+    assert_eq!(
+        asm.pending_len(),
+        0,
+        "lo aparcado de una revisión vieja se tira"
+    );
+}
+
+#[tokio::test]
+async fn a_real_world_sync_puts_nothing_oversized_on_the_wire() {
+    // Extremo a extremo sobre sockets reales: se sincroniza un mundo denso ENTERO y se comprueba
+    // que el emisor no produjo un solo datagrama fiable por encima del techo. Es la diferencia
+    // entre "las páginas miden bien" y "lo que sale por el socket mide bien".
+    let (mut host, mut joiner) = connected_pair().await;
+    let world = dense_chunk_world(40);
+    let player = crate::player::Player::new(1, "Host");
+
+    sync::send_world_sync(&mut host, 2, &world, &player).await;
+    let events = pump_pair(&mut host, &mut joiner, 80).await;
+
+    assert_eq!(
+        host.oversized_reliable_count(),
+        0,
+        "ningún datagrama fiable puede superar {} B",
+        protocol::SAFE_DATAGRAM_BYTES
+    );
+    assert!(
+        !events.iter().any(|e| matches!(
+            e,
+            NetworkEvent::PeerDisconnected { reason, .. } if reason == "reliable retransmit exhausted"
+        )),
+        "y el goteo no puede matar al peer: {events:?}"
+    );
+    assert!(
+        joiner.world_sync_progress.is_complete(),
+        "el mundo tiene que llegar completo pese a ir paginado"
+    );
+}
+
+#[test]
+fn a_lost_page_cannot_leak_memory_forever() {
+    // La fuga que introduce la propia paginación: una página perdida deja su parcial aparcado y
+    // nadie lo reclama —la revisión no cambia y el goteo siguiente estrena claves nuevas—. Se
+    // acota con desalojo del más viejo, igual que `BoundedDedupeSet`.
+    let world = dense_chunk_world(40);
+    let chunk = world.chunks.values().next().expect("hay chunks");
+    let pages = sync::chunk_to_sync_pages(chunk, 1);
+    assert!(pages.len() > 1, "setup: hace falta un chunk partido");
+
+    let mut asm = sync::ChunkPageAssembler::default();
+    // 500 chunks distintos, de cada uno solo la primera página: ninguno completa jamás.
+    for n in 0..500i32 {
+        let mut partial = pages[0].clone();
+        partial.pos = [n, n];
+        assert!(asm.offer(1, partial).is_none());
+    }
+
+    assert!(
+        asm.pending_len() <= 128,
+        "lo aparcado tiene que estar acotado; hay {}",
+        asm.pending_len()
+    );
+}
+
+#[test]
+fn the_cap_never_drops_a_chunk_that_is_still_completing() {
+    // Control: el desalojo no puede comerse un chunk que SÍ está llegando. Se completa uno
+    // mientras otros 300 parciales entran y salen por el tope.
+    let world = dense_chunk_world(40);
+    let chunk = world.chunks.values().next().expect("hay chunks");
+    let pages = sync::chunk_to_sync_pages(chunk, 1);
+
+    let mut asm = sync::ChunkPageAssembler::default();
+    for page in pages.iter().take(pages.len() - 1) {
+        assert!(asm.offer(1, page.clone()).is_none());
+    }
+    // Ruido por debajo del tope: el chunk real sigue siendo de los más recientes.
+    for n in 0..100i32 {
+        let mut partial = pages[0].clone();
+        partial.pos = [1000 + n, 1000 + n];
+        asm.offer(1, partial);
+    }
+    let last = pages.last().expect("hay páginas").clone();
+    assert!(
+        asm.offer(1, last).is_some(),
+        "el chunk que estaba completándose no puede haber sido desalojado"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// B — La topología es una ESTRELLA, y los destinos tienen que decirlo
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Peer de mentira con una dirección enrutable distinta por id, para poder distinguir destinos.
+fn fake_peer(id: PeerId, last_octet: u8) -> PeerConnection {
+    PeerConnection::new(
+        id,
+        format!("peer{id}"),
+        format!("192.168.1.{last_octet}:7778").parse().unwrap(),
+    )
+}
+
+/// **EL TEST QUE REPRODUCE EL DEFECTO.** `broadcast_destinations` devolvía TODOS los peers
+/// registrados sin mirar el rol, y un joiner registra a los otros joiners **con la dirección real
+/// que el host le reporta** en `PeerList` (`handlers.rs:219-221`, `PeerInfo.addr`). Resultado: con
+/// 3+ jugadores, cada joiner emitía su pose también DIRECTAMENTE a los demás joiners.
+///
+/// Eso no es la arquitectura: ADR-015 dice estrella, el host reemite. Y entre redes distintas esos
+/// datagramas los tira el NAT — el juego seguía funcionando por la estrella, pero cada rebote
+/// vuelve en Windows como `WSAECONNRESET (10054)` sobre el socket del emisor, que es exactamente
+/// el mecanismo que ADR-043 midió en 1.073.132 líneas de un solo playtest.
+#[tokio::test]
+async fn a_joiner_only_broadcasts_to_the_host() {
+    let mut joiner = NetworkManager::bind(0, 7, 42, false).await.unwrap();
+    joiner.peers.insert(1, fake_peer(1, 40));
+    joiner.host_peer_id = Some(1);
+    joiner.peers.insert(9, fake_peer(9, 41));
+
+    let dests: Vec<PeerId> = joiner
+        .broadcast_destinations()
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
+
+    assert_eq!(
+        dests,
+        vec![1],
+        "un joiner sólo habla con el host; el peer 9 es otro joiner y no es asunto suyo"
+    );
+}
+
+/// La otra mitad de la estrella: el host sí habla con todos. Si el filtro se aplicara a los dos
+/// roles, los joiners dejarían de recibir nada y el arreglo sería peor que el defecto.
+#[tokio::test]
+async fn the_host_broadcasts_to_every_real_peer() {
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    host.peers.insert(2, fake_peer(2, 41));
+    host.peers.insert(3, fake_peer(3, 42));
+
+    let mut dests: Vec<PeerId> = host
+        .broadcast_destinations()
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
+    dests.sort_unstable();
+
+    assert_eq!(dests, vec![2, 3], "el host reemite a todos: es la estrella");
+}
+
+/// Un roster viejo no puede abrir rutas directas. Aunque el host haya reportado la dirección real
+/// de otro joiner —y lo hace, `PeerInfo` lleva `addr`—, registrarla no la convierte en un destino.
+#[tokio::test]
+async fn a_stale_roster_cannot_create_a_direct_joiner_to_joiner_route() {
+    let mut joiner = NetworkManager::bind(0, 7, 42, false).await.unwrap();
+    joiner.peers.insert(1, fake_peer(1, 40));
+    joiner.host_peer_id = Some(1);
+
+    // Lo que haría el manejador de PeerList con el roster del host.
+    for (id, octet) in [(2u16, 41u8), (3, 42), (4, 43)] {
+        joiner.peers.insert(id, fake_peer(id, octet));
+    }
+
+    let dests: Vec<PeerId> = joiner
+        .broadcast_destinations()
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
+
+    assert_eq!(dests, vec![1], "cuatro peers en el roster, un solo destino");
+}
+
+/// Tres jugadores es donde el defecto se hacía alcanzable: con uno solo, el único peer del joiner
+/// ES el host y no había nada que distinguir.
+#[tokio::test]
+async fn three_players_produce_no_peer_to_peer_traffic() {
+    let mut a = NetworkManager::bind(0, 2, 42, false).await.unwrap();
+    a.peers.insert(1, fake_peer(1, 40));
+    a.host_peer_id = Some(1);
+    a.peers.insert(3, fake_peer(3, 42)); // el otro joiner, B
+
+    let mut b = NetworkManager::bind(0, 3, 42, false).await.unwrap();
+    b.peers.insert(1, fake_peer(1, 40));
+    b.host_peer_id = Some(1);
+    b.peers.insert(2, fake_peer(2, 41)); // el otro joiner, A
+
+    for (label, net) in [("A", &a), ("B", &b)] {
+        let dests: Vec<PeerId> = net
+            .broadcast_destinations()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(dests, vec![1], "el joiner {label} no debe emitir a su par");
+    }
+}
+
+/// Un joiner que todavía no ha completado el handshake no tiene `host_peer_id`, y entonces no
+/// tiene a quién difundir. Es correcto que no salga nada: emitir a ciegas a lo que hubiera en el
+/// mapa es justo la ruta que este trabajo cierra.
+#[tokio::test]
+async fn a_joiner_without_a_known_host_broadcasts_nowhere() {
+    let mut joiner = NetworkManager::bind(0, 7, 42, false).await.unwrap();
+    joiner.peers.insert(9, fake_peer(9, 41));
+    assert!(joiner.host_peer_id.is_none());
+
+    assert!(
+        joiner.broadcast_destinations().is_empty(),
+        "sin host conocido no hay destino legítimo"
     );
 }

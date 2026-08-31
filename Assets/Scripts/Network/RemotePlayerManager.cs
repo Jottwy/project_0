@@ -94,6 +94,30 @@ namespace BackroomsSurvival.Net
             return string.Join(",", remotePlayers.ConvertAll(r => r.id.ToString()));
         }
 
+        /// <summary>
+        /// Si una entrada de `world_state.remote_players` debe tener proxy. **Siempre sí**, y el
+        /// parámetro del id local se conserva sólo para que el nombre diga qué NO se hace.
+        ///
+        /// **El backend es la autoridad sobre quién es remoto.** `build_world_state`
+        /// (`game_loop.rs:7185`) recorre `net.peers`, y un nodo nunca se registra a sí mismo como
+        /// peer: `allocate_peer_id` evita `self.local_id` y el manejador de `PeerList` hace
+        /// `if info.id == self.local_id { continue }`. La lista que llega por IPC **ya excluye al
+        /// local**.
+        ///
+        /// Aquí había un segundo filtro contra `NetworkInitializer.LastSelectedNetId`, y no podía
+        /// aportar nada correcto — sólo quitar. Ese campo guarda el id que Unity **propuso** por
+        /// `NET_ID`; el de verdad lo **asigna el host** (`allocate_peer_id`) y lo adopta el backend
+        /// del joiner (`self.local_id = assigned_id`), **sin que nada se lo cuente a Unity**:
+        /// `WorldState` no tiene ningún campo con el id local. Cuando el propuesto y el asignado
+        /// difieren y el propuesto coincide con el de un peer real, ese peer **desaparecía en
+        /// silencio**. El valor por defecto de `NetworkInitializer.netId` es **1**, que es el id
+        /// del host — de ahí el síntoma reportado: «el host es invisible para los joiners» mientras
+        /// los joiners se veían entre sí.
+        ///
+        /// Regresión: `RemotePlayerRosterTests`.
+        /// </summary>
+        public static bool ShouldTrackRemote(int remoteId, int unitySelfId) => true;
+
         public void UpdateFromWorldState(List<RemotePlayerMsg> remotePlayers)
         {
             if (remotePlayers == null)
@@ -122,7 +146,7 @@ namespace BackroomsSurvival.Net
                 if (rp == null)
                     continue;
 
-                if (selfId > 0 && rp.id == selfId)
+                if (!ShouldTrackRemote(rp.id, selfId))
                 {
                     if (logProxy)
                         Debug.Log($"[RemotePlayerManager] ignored local id={rp.id}");

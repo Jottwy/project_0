@@ -5,12 +5,67 @@
 
 use std::net::SocketAddr;
 
-use log::warn;
+use log::{info, warn};
 
 use super::protocol::{encode_packet, PacketHeader, PacketPayload};
 use super::{reliability, NetworkManager, PeerId};
 
+/// Carga útil UDP máxima que cabe en una trama Ethernet sin fragmentar: 1500 de MTU − 20 de
+/// cabecera IPv4 − 8 de cabecera UDP. Por encima de esto el datagrama viaja en trozos y la
+/// pérdida de UNO cualquiera lo pierde entero.
+pub const ETHERNET_SAFE_PAYLOAD: usize = 1472;
+
 impl NetworkManager {
+    /// MTUPROBE: contabiliza el tamaño de salida y avisa, como mucho una vez por segundo, del
+    /// mayor datagrama sobredimensionado visto. No decide nada — solo hace visible una propiedad
+    /// que hasta ahora no aparecía en ningún log.
+    fn note_datagram_size(&self, len: usize, kind: &str, addr: SocketAddr) {
+        use std::sync::atomic::Ordering;
+        // El máximo se sigue SIEMPRE, no solo por encima del umbral: "ninguno pasó de 1472" y
+        // "el mayor midió 1460" son la misma línea de log en el primer caso y datos muy
+        // distintos para decidir. Sin el máximo real no se puede saber cuánto margen queda.
+        self.max_datagram_bytes.fetch_max(len, Ordering::Relaxed);
+        if len > ETHERNET_SAFE_PAYLOAD {
+            self.oversized_datagrams.fetch_add(1, Ordering::Relaxed);
+        }
+
+        let now_ms = self.session_start.elapsed().as_millis() as u64;
+        let last = self.last_mtu_warn_ms.load(Ordering::Relaxed);
+        if now_ms.saturating_sub(last) < 1000 {
+            return;
+        }
+        if self
+            .last_mtu_warn_ms
+            .compare_exchange(last, now_ms, Ordering::Relaxed, Ordering::Relaxed)
+            .is_err()
+        {
+            return;
+        }
+        let oversized = self.oversized_datagrams.load(Ordering::Relaxed);
+        let max_seen = self.max_datagram_bytes.load(Ordering::Relaxed);
+        if oversized > 0 {
+            warn!(
+                "MTUPROBE event=oversized_datagram self_id={} kind={} dest={} bytes={} safe_max={} total_oversized={} max_seen={}",
+                self.local_id, kind, addr, len, ETHERNET_SAFE_PAYLOAD, oversized, max_seen
+            );
+        } else {
+            info!(
+                "MTUPROBE event=datagram_size_watermark self_id={} last_kind={} last_bytes={} safe_max={} max_seen={} oversized=0",
+                self.local_id, kind, len, ETHERNET_SAFE_PAYLOAD, max_seen
+            );
+        }
+    }
+
+    /// Qué etiquetas de `send_datagram` viajan por la vía fiable. Lista explícita y no un
+    /// `!= "unreliable"`: añadir un camino nuevo debe obligar a decidir a qué lado pertenece, no
+    /// heredar una respuesta por descarte.
+    fn is_reliable_kind(kind: &str) -> bool {
+        matches!(
+            kind,
+            "reliable" | "deferred_reliable" | "retransmit" | "broadcast_reliable"
+        )
+    }
+
     // ─── Send methods ───
 
     /// Send an unreliable packet to a specific peer.
@@ -112,6 +167,28 @@ impl NetworkManager {
             // ADR-079: relay_only is the receiver-side twin of the phantom mark — same inert
             // addr, same H10 poison if addressed. Both are filtered here.
             .filter(|p| !self.is_phantom(p.id) && !p.relay_only)
+            // Auditoría de heartbeat (2026-08-30): última línea. Una dirección sin especificar
+            // significa "esta máquina" al enviar, así que un peer registrado en ella recibiría
+            // sus propios latidos y el peer REAL ninguno. `is_routable_peer_addr` ya lo impide en
+            // el registro; esto lo hace imposible también para cualquier futuro camino que
+            // escriba `peer.addr` sin pasar por allí.
+            .filter(|p| super::sync::is_routable_peer_addr(&p.addr))
+            // B (2026-08-31) — LA TOPOLOGÍA ES UNA ESTRELLA, Y AQUÍ NO LO ERA.
+            //
+            // Un joiner registra a los OTROS joiners con la dirección real que el host le reporta
+            // en `PeerList` (`handlers.rs:219-221`; `PeerInfo` lleva `addr`). Sin este filtro,
+            // todo lo que pasa por `broadcast_unreliable` —su propia pose, la primera— salía
+            // también DIRECTAMENTE a cada uno de ellos. Eso contradice ADR-015, que dice que el
+            // host reemite, y sólo era alcanzable con 3+ jugadores: con uno solo, el único peer
+            // del joiner ES el host y no había nada que distinguir.
+            //
+            // Coste real, no teórico: entre redes distintas nadie ha perforado nada, así que el
+            // NAT tira esos datagramas y en Windows cada rebote vuelve como `WSAECONNRESET`
+            // (10054) SOBRE EL SOCKET del emisor — el mismo mecanismo que ADR-043 midió en
+            // 1.073.132 líneas en un solo playtest con direcciones inertes.
+            //
+            // El host no se filtra: reemitir a todos es precisamente su papel.
+            .filter(|p| self.is_host || Some(p.id) == self.host_peer_id)
             .map(|p| (p.id, p.addr))
             .collect()
     }
@@ -247,15 +324,32 @@ impl NetworkManager {
         let addr = peer.addr;
 
         if !peer.can_queue_reliable() || !peer.deferred_reliable.is_empty() {
+            let bytes = data.len();
             if let Some(peer) = self.peers.get_mut(&peer_id) {
                 peer.defer_reliable(seq, data);
+                log::info!(
+                    "RELTRACE event=RELIABLE_DEFERRED self_id={} peer_id={peer_id} seq={seq} type=0x{:02X} bytes={bytes} in_flight={} deferred={}",
+                    self.local_id,
+                    payload.type_code(),
+                    peer.reliable_queue.len(),
+                    peer.deferred_reliable.len()
+                );
             }
             return;
         }
 
+        let bytes = data.len();
         self.send_datagram(&data, addr, "reliable").await;
         if let Some(peer) = self.peers.get_mut(&peer_id) {
             peer.queue_reliable(seq, data);
+            log::info!(
+                "RELTRACE event=RELIABLE_SENT self_id={} peer_id={peer_id} seq={seq} type=0x{:02X} bytes={bytes} in_flight={} window={} deferred={}",
+                self.local_id,
+                payload.type_code(),
+                peer.reliable_queue.len(),
+                reliability::WINDOW_SIZE,
+                peer.deferred_reliable.len()
+            );
         }
     }
 
@@ -300,6 +394,31 @@ impl NetworkManager {
     ///
     /// Takes `&self` (several broadcast paths are `&self`), hence the atomic throttle.
     pub(super) async fn send_datagram(&self, data: &[u8], addr: SocketAddr, kind: &str) {
+        // MTUPROBE — un datagrama por encima de la MTU de Ethernet se fragmenta en IP, y perder UN
+        // fragmento pierde el datagrama ENTERO. En loopback la MTU es de 64 KB, así que esto no
+        // duele jamás en localhost y sí en cuanto hay un cable de por medio: es la asimetría exacta
+        // "en mi máquina va, con mi amigo no". Se cuenta aquí, en el único punto de salida.
+        self.note_datagram_size(data.len(), kind, addr);
+        // La invariante, aplicada donde no se puede esquivar: los caminos FIABLES no pueden
+        // fragmentar. Un no-fiable sobredimensionado se pierde y se auto-cura al siguiente envío;
+        // uno fiable se reenvía cinco veces con el MISMO tamaño, vuelve a perderse las cinco, y
+        // termina expulsando al peer. Se grita en vez de descartar: el emisor tiene un defecto que
+        // hay que arreglar, y silenciarlo aquí lo escondería.
+        if data.len() > crate::network::protocol::SAFE_DATAGRAM_BYTES
+            && Self::is_reliable_kind(kind)
+        {
+            self.oversized_reliable
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            warn!(
+                "MTUPROBE event=reliable_datagram_over_budget self_id={} kind={} dest={} bytes={} budget={}",
+                self.local_id,
+                kind,
+                addr,
+                data.len(),
+                crate::network::protocol::SAFE_DATAGRAM_BYTES
+            );
+        }
+
         let Err(e) = self.socket.send_to(data, addr).await else {
             return;
         };

@@ -1,0 +1,244 @@
+# Networking Invariants
+
+Reglas que el sistema **debe** cumplir siempre. Cada una está escrita para poder convertirse
+directamente en un test, y la columna «Fijada por» dice cuál lo hace hoy. Una entrada sin test es
+deuda declarada, no una regla de adorno.
+
+Verificado el 2026-08-30 contra `cargo test` (1189 pass), `clippy --all-targets -D warnings` y
+`fmt --check` limpios.
+
+---
+
+## I1 — Transporte: ningún datagrama fiable fragmenta
+
+> Ningún datagrama emitido por un camino **fiable** puede superar `SAFE_DATAGRAM_BYTES` (1200 B).
+
+Caminos fiables: `reliable`, `deferred_reliable`, `retransmit`, `broadcast_reliable`
+(`NetworkManager::is_reliable_kind`).
+
+**Por qué 1200 y no 1472.** 1472 es MTU Ethernet menos cabeceras IP+UDP: el mejor caso. PPPoE da
+1492 (→1464) y una VPN menos. 1200 es el mínimo garantizado que adopta QUIC, y es el único número
+defendible sin sondear la red de cada jugador.
+
+**Por qué solo los fiables.** Un no-fiable sobredimensionado se pierde y se auto-cura al siguiente
+envío. Uno fiable se reenvía cinco veces **con el mismo tamaño**, se pierde las cinco, y agota
+`MAX_RETRIES` — expulsando al peer.
+
+| Fijada por |
+|---|
+| `no_world_sync_page_can_exceed_the_transport_budget` |
+| `a_real_world_sync_puts_nothing_oversized_on_the_wire` (sockets reales, contador `oversized_reliable_count`) |
+
+**Limitación conocida:** los caminos NO fiables (`broadcast_unreliable`, `unreliable_to`,
+`relay_as`) **siguen pudiendo superar 1200 B**. Medido en físico: 31.004 datagramas oversized por
+sesión, máx. 1881 B, mayoría `broadcast_unreliable` (`ChunkState` + roster). Ver «Riesgos» abajo.
+
+---
+
+## I2 — WorldSync: se aplica completo o no se aplica
+
+> Un chunk paginado **nunca** se aplica a medias, y reunir sus páginas devuelve exactamente el
+> mismo contenido y orden que el chunk original.
+
+La capa reliable es **at-least-once y sin orden**: la página 1 puede adelantar a la 0, y cualquiera
+puede llegar duplicada. Por eso `ChunkPageAssembler` no entrega nada hasta tenerlas todas — el
+mismo patrón que `RosterAssembler` (ADR-060).
+
+| Fijada por |
+|---|
+| `paging_loses_nothing_and_keeps_order` |
+| `pages_assemble_out_of_order_and_survive_duplicates` |
+| `an_incomplete_chunk_is_never_applied` |
+| `a_superseded_revision_does_not_pollute_the_new_one` |
+| `the_whole_world_actually_lands_on_the_joiner` |
+
+---
+
+## I3 — Ninguna emisión en lote monopoliza el bucle
+
+> Todo emisor que produzca más de un datagrama seguido debe ceder (`yield_now`) entre ellos.
+
+Sin esto, `send_world_sync` sacaba los 32 de la ventana —~35 KB— sin una sola oportunidad de
+ejecución para nadie: medido, **0 cesiones**. El receptor no podía drenar su socket ni devolver
+ACKs, y cada reintento reproducía la misma ráfaga hasta agotar `MAX_RETRIES` (~6 s tras entrar).
+
+Puntos obligados: `send_world_sync`, `pump_deferred_reliable`, `process_retransmits`,
+`broadcast_chunk_states`.
+
+| Fijada por |
+|---|
+| `the_world_sync_burst_yields_instead_of_filling_the_window_in_one_go` |
+| `a_retransmit_wave_is_not_re_sent_as_one_unbroken_burst` |
+| `a_large_initial_world_sync_never_exhausts_max_retries` |
+
+---
+
+## I4 — La ventana fiable se respeta y nada se descarta en silencio
+
+> En vuelo hay como mucho `WINDOW_SIZE` (32). Lo que no cabe se **aparca**, nunca se tira.
+
+| Fijada por | `the_reliable_window_is_still_respected_after_the_fix` |
+|---|---|
+
+---
+
+## I5 — Un endpoint no enrutable nunca se convierte en destino
+
+> Ni `0.0.0.0` ni el puerto 0 pueden registrarse como dirección de un peer ni recibir un datagrama.
+
+`0.0.0.0` **como destino significa «esta máquina»**: adoptarlo hace que los latidos se manden a uno
+mismo y el peer real deje de recibir — invisible en una sola máquina, mortal con dos.
+
+| Fijada por |
+|---|
+| `the_roster_never_advertises_an_unroutable_endpoint` |
+| `a_roster_entry_with_an_unroutable_addr_is_never_registered` |
+| `a_peer_stranded_on_an_unroutable_addr_is_never_a_heartbeat_destination` |
+
+---
+
+## I6 — El roster no puede pisar lo aprendido en el handshake
+
+> La dirección por la que se alcanza al host la fija el `HandshakeAck`. Ningún roster posterior
+> puede cambiarla.
+
+| Fijada por | `a_roster_can_never_overwrite_the_host_endpoint_learned_from_the_handshake` (sockets reales) |
+|---|---|
+
+---
+
+## I7 — Ningún intento de conexión es infinito
+
+> Un joiner insiste como mucho `CONNECT_TIMEOUT` (15 s) y después **cierra con un motivo
+> accionable**. Nunca reintenta en silencio.
+
+| Fijada por |
+|---|
+| `silent_handshake_gives_up_after_the_connect_budget` |
+| `connect_budget_does_not_expire_early` |
+| `the_host_never_times_out_its_own_listen` |
+| `a_completed_handshake_stops_the_connect_budget` |
+| `an_explicit_rejection_wins_over_the_timeout` |
+| `a_silent_connect_timeout_ends_the_session_with_an_actionable_reason` |
+
+---
+
+## I8 — «Conectado» significa sesión, no tubería
+
+> Para un **Joiner**, `IPCClient.IsConnected` **no** es sesión. Hace falta `session_joined`, que su
+> backend emite solo al registrar al host tras el `HandshakeAck`.
+> Para **Host/autosolo** el IPC local sí es la sesión: su propio backend es el servidor.
+
+| Fijada por |
+|---|
+| `HostDoesNotWaitForAHandshakeItNeverSends` (EditMode) |
+| `JoinerIsNotConnectedUntilTheHandshakeCompletes` (EditMode) |
+| `SessionJoinedOpensTheGate`, `AnUnrelatedEventDoesNotOpenTheGate` (EditMode) |
+| `a_joiner_announces_session_joined_when_it_registers_the_host` |
+| `session_joined_is_only_for_the_joiners_own_entry` |
+
+---
+
+## I9 — Liveness: un peer activo nunca es expulsado
+
+> `HEARTBEAT_TIMEOUT` = 5 s frente a una cadencia de latido de 1 s. Cualquier paquete entrante
+> refresca `last_heartbeat`, no solo el `Heartbeat`.
+
+| Fijada por |
+|---|
+| `a_live_heartbeat_actually_reaches_the_host_and_refreshes_its_last_seen` (sockets reales) |
+| `an_active_peer_is_never_reaped_by_the_liveness_scan` |
+| `real_silence_past_the_threshold_does_reap_the_peer` (control positivo) |
+
+---
+
+## I10 — Bind: el P2P escucha en todas las interfaces, el IPC solo en local
+
+> El socket P2P hace bind en `0.0.0.0` (si no, el LAN es imposible). El IPC hace bind en
+> `127.0.0.1` (canal privado sin autenticación; exponerlo no arregla nada de LAN).
+> El puerto pedido es el puerto escuchado: un puerto ocupado **falla ruidosamente**, no se reubica.
+
+| Fijada por |
+|---|
+| `the_p2p_socket_binds_every_interface_not_just_loopback` |
+| `the_requested_port_is_the_port_that_gets_bound` |
+| `an_occupied_port_fails_loudly_instead_of_binding_somewhere_else` |
+
+---
+
+## I11 — El wire tiene una sola versión, y las dos mitades la comparten
+
+> `ipc::server::WIRE_SCHEMA_VERSION` (Rust) y `WireSchema.Expected` (C#) son iguales, siempre, en
+> el mismo commit. Cualquier cambio de wire las sube y añade entrada en
+> `docs/systems/ipc-wire-schema.md`.
+
+| Fijada por | `the_csharp_mirror_declares_the_same_wire_schema_version` |
+|---|---|
+
+Versión actual: **52**.
+
+---
+
+## I12 — La topología es una ESTRELLA, y los destinos lo dicen
+
+Un joiner sólo direcciona al host. El host direcciona a todos. **Ningún joiner emite gameplay
+directamente a otro joiner.**
+
+**Síntoma que lo destapó:** ninguno visible en partida — el juego funcionaba, porque el relay del
+host (ADR-015) llevaba igualmente los datos. El coste era invisible y real: tráfico duplicado y, en
+Windows, un `WSAECONNRESET (10054)` **sobre el socket del emisor** por cada datagrama que el NAT del
+otro joiner tiraba. Mismo mecanismo que ADR-043 midió en 1.073.132 líneas en una sola sesión.
+
+**Causa raíz:** `broadcast_destinations` devolvía todos los peers registrados sin mirar el rol, y un
+joiner **registra a los otros joiners con su dirección real** — el host se la reporta en `PeerList`
+(`handlers.rs:219-221`; `PeerInfo` lleva `addr`, y ese campo existe porque el host sí lo necesita).
+
+**Sólo alcanzable con 3+ jugadores.** Con uno solo, el único peer del joiner ES el host y no había
+nada que distinguir. Por eso nunca apareció: no se ha jugado nunca a tres.
+
+**Impone:** `send.rs:broadcast_destinations` → `.filter(|p| self.is_host || Some(p.id) == self.host_peer_id)`.
+`host_peer_id` ya existía (ADR-056) y lo fija el `HandshakeAck` (`handlers.rs:1096`); no hizo falta
+estado nuevo.
+
+**Prueba:** `a_joiner_only_broadcasts_to_the_host` (el que reproducía el fallo: daba `[1, 9]`),
+`the_host_broadcasts_to_every_real_peer`, `a_stale_roster_cannot_create_a_direct_joiner_to_joiner_route`,
+`three_players_produce_no_peer_to_peer_traffic`, `a_joiner_without_a_known_host_broadcasts_nowhere`.
+
+**Trade-off:** un joiner sin `host_peer_id` (handshake sin completar) no difunde a nadie. Es
+deliberado — emitir a ciegas a lo que hubiera en el mapa es la ruta que esto cierra.
+
+## I13 — Sólo el backend decide quién es un jugador remoto
+
+Unity **pinta todo lo que llega en `world_state.remote_players`** y no vuelve a filtrar por
+identidad.
+
+**Síntoma:** «el host es invisible para los joiners», mientras los joiners se veían entre sí. La
+asimetría era la pista y despistó: parecía de red y no lo era.
+
+**Causa raíz, en cuatro pasos verificados:** Unity **propone** un id por `NET_ID` y lo guarda en
+`LastSelectedNetId` (`NetworkInitializer.cs:989`); el host **asigna** el de verdad
+(`handlers.rs:1221`) y el backend del joiner lo adopta (`self.local_id = assigned_id`,
+`handlers.rs:1071`); **nada se lo cuenta a Unity** — `WorldState` (`ipc/mod.rs:570`) no tiene ningún
+campo con el id local; y Unity filtraba `remote_players` contra ese valor obsoleto. Como el backend
+construye la lista recorriendo `net.peers` (`game_loop.rs:7185`) y **un nodo nunca se registra a sí
+mismo**, esa lista ya venía sin el local: el segundo filtro no podía aportar nada correcto, sólo
+quitar. El valor por defecto de `NetworkInitializer.netId` es **1**, que es el id del host.
+
+**Impone:** `RemotePlayerManager.ShouldTrackRemote`, que ahora es `true` y lleva el porqué escrito.
+
+**Prueba:** `RemotePlayerRosterTests` — 8 casos; 5 fallaban antes del cambio, incluido
+`TheHostIsRenderedEvenIfOurStaleSelfIdCollidesWithIts`.
+
+**Limitación anotada, NO arreglada:** `LastSelectedNetId` sigue siendo el id *propuesto* y lo leen
+otros cinco sitios (`RemotePvpHitbox`, `StpBuildMaterialWatcher`, `StpBuildingPlacementWatcher`,
+`NetworkHarvestableInstance`, `IPCClient:603`). Comparten la misma fuente de error. Arreglarlo de
+raíz es llevar el id asignado por el IPC, y eso es **cambio de wire + ADR**.
+
+## Riesgos abiertos (invariantes que NO existen todavía)
+
+| # | Hueco | Evidencia |
+|---|---|---|
+| R1 | Los caminos **no fiables** pueden superar 1200 B | 31.004 oversized/sesión, máx. 1881 B; 824 muestras `broadcast_unreliable`, 366 `unreliable_to`, 13 `relay_as` |
+| R2 | Paginar `ChunkState` (no fiable) daría chunks **parcialmente** aplicados si se pierde una página, en vez de la pérdida total actual. Requiere decidir cuál de los dos males se prefiere | análisis, sin medir |
+| R3 | Ciclo de vida de peers sin invariante propia: no hay test que garantice que no quedan peers fantasma tras N conexiones/desconexiones | host con 22 peers y 5 ids reales al final de una sesión de 20 min con varios clientes — **no confirmado como fuga** |
+| R4 | La paginación de WorldSync está validada por test, no por una partida real que la ejerza: los mundos probados en físico no tenían chunks lo bastante densos | `chunk_page_buffered = 0` en la corrida de dos procesos |
