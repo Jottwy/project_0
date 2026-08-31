@@ -25,9 +25,12 @@ namespace BackroomsSurvival.UI
             var ui = FindFirstObjectByType<JoinSessionUI>();
             if (ui != null)
             {
-                // Panel already exists (e.g. button clicked twice) — just bring it back.
+                // Panel already exists (e.g. button clicked twice, o se vuelve del juego al menú)
+                // — se reabre en estado de partida. `ShowMenu` a secas sólo lo hacía visible y lo
+                // dejaba con el PanelState de la sesión anterior; si esa terminó en `Connected`,
+                // el panel salía sin los botones de Host y Join. Ver ShowConnectMenu.
                 ui.SetGameplayScene(_gameplayScene);
-                ui.ShowMenu("Choose Host or Join");
+                ui.ShowConnectMenu();
                 return;
             }
 

@@ -142,19 +142,42 @@ namespace BackroomsSurvival.Net
         public delegate void SprayDraftHandler(SprayDraftMsg draft);
         private readonly List<SprayDraftHandler> _sprayDraftListeners = new List<SprayDraftHandler>();
 
-        public void AddEventListener(GameEventHandler handler) { lock (_eventListeners) _eventListeners.Add(handler); }
+        /// <summary>
+        /// Suscripción SIN duplicados. Es una regla, no una comodidad: este cliente sobrevive a la
+        /// sesión (el hilo y el singleton siguen vivos entre una y otra para que la siguiente
+        /// pueda reutilizarlos), así que cualquier suscriptor que se re-suscriba sin quitarse
+        /// primero deja DOS entradas y su callback corre dos veces por evento durante el resto de
+        /// la vida del proceso. Con eventos idempotentes no se nota; con `session_ended` sí.
+        ///
+        /// `Remove` sigue quitando UNA sola entrada, que es lo correcto ahora que no puede haber
+        /// dos. Pública y estática para que la suite EditMode pruebe la regla sin instanciar un
+        /// MonoBehaviour que en modo edición se llevaría por delante un DontDestroyOnLoad.
+        /// </summary>
+        public static bool AddUnique<T>(List<T> list, T handler) where T : Delegate
+        {
+            if (list == null || handler == null) return false;
+            if (list.Contains(handler)) return false;
+            list.Add(handler);
+            return true;
+        }
+
+        /// <summary>Suscriptores de eventos vivos. Instrumentación: es lo que demuestra que una
+        /// sesión nueva no hereda los callbacks de la anterior.</summary>
+        public int EventListenerCount { get { lock (_eventListeners) return _eventListeners.Count; } }
+
+        public void AddEventListener(GameEventHandler handler) { lock (_eventListeners) AddUnique(_eventListeners, handler); }
         public void RemoveEventListener(GameEventHandler handler) { lock (_eventListeners) _eventListeners.Remove(handler); }
-        public void AddStateListener(WorldStateHandler handler) { lock (_stateListeners) _stateListeners.Add(handler); }
+        public void AddStateListener(WorldStateHandler handler) { lock (_stateListeners) AddUnique(_stateListeners, handler); }
         public void RemoveStateListener(WorldStateHandler handler) { lock (_stateListeners) _stateListeners.Remove(handler); }
-        public void AddMovementDeltaListener(MovementDeltaHandler handler) { lock (_deltaListeners) _deltaListeners.Add(handler); }
+        public void AddMovementDeltaListener(MovementDeltaHandler handler) { lock (_deltaListeners) AddUnique(_deltaListeners, handler); }
         public void RemoveMovementDeltaListener(MovementDeltaHandler handler) { lock (_deltaListeners) _deltaListeners.Remove(handler); }
-        public void AddChunkDataListener(ChunkDataHandler handler) { lock (_chunkDataListeners) _chunkDataListeners.Add(handler); }
+        public void AddChunkDataListener(ChunkDataHandler handler) { lock (_chunkDataListeners) AddUnique(_chunkDataListeners, handler); }
         public void RemoveChunkDataListener(ChunkDataHandler handler) { lock (_chunkDataListeners) _chunkDataListeners.Remove(handler); }
-        public void AddSprayListener(SprayHandler handler) { lock (_sprayListeners) _sprayListeners.Add(handler); }
+        public void AddSprayListener(SprayHandler handler) { lock (_sprayListeners) AddUnique(_sprayListeners, handler); }
         public void RemoveSprayListener(SprayHandler handler) { lock (_sprayListeners) _sprayListeners.Remove(handler); }
-        public void AddSprayDraftListener(SprayDraftHandler handler) { lock (_sprayDraftListeners) _sprayDraftListeners.Add(handler); }
+        public void AddSprayDraftListener(SprayDraftHandler handler) { lock (_sprayDraftListeners) AddUnique(_sprayDraftListeners, handler); }
         public void RemoveSprayDraftListener(SprayDraftHandler handler) { lock (_sprayDraftListeners) _sprayDraftListeners.Remove(handler); }
-        public void AddWg3ChunkListener(Wg3ChunkHandler handler) { lock (_wg3ChunkListeners) _wg3ChunkListeners.Add(handler); }
+        public void AddWg3ChunkListener(Wg3ChunkHandler handler) { lock (_wg3ChunkListeners) AddUnique(_wg3ChunkListeners, handler); }
         public void RemoveWg3ChunkListener(Wg3ChunkHandler handler) { lock (_wg3ChunkListeners) _wg3ChunkListeners.Remove(handler); }
 
         /// <summary>

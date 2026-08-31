@@ -120,6 +120,35 @@ namespace BackroomsSurvival.UI
             _steamInviteButton.onClick.AddListener(OnSteamInviteClicked);
             _steamInviteButton.gameObject.SetActive(SteamLobbyManager.IsAvailable);
 
+            // Fila de recuperacion: [Retry] [Back to menu]. Oculta salvo en Failed/Disconnected
+            // (ver SetControlsVisible). Sin ella, un timeout dejaba al jugador con el mensaje de
+            // error y ninguna accion: reintentar obligaba a reescribir ip y puerto, y volver al
+            // menu no tenia boton ninguno.
+            var recoveryRow = new GameObject("RecoveryRow");
+            recoveryRow.transform.SetParent(_panel.transform, false);
+            var recoveryRt = recoveryRow.AddComponent<RectTransform>();
+            recoveryRt.sizeDelta = new Vector2(InputWidth, ButtonHeight);
+
+            var recoveryLayout = recoveryRow.AddComponent<HorizontalLayoutGroup>();
+            recoveryLayout.childAlignment = TextAnchor.MiddleCenter;
+            recoveryLayout.spacing = 16f;
+            recoveryLayout.childControlWidth = false;
+            recoveryLayout.childControlHeight = false;
+            recoveryLayout.childForceExpandWidth = false;
+            recoveryLayout.childForceExpandHeight = false;
+
+            _retryButton = CreateButton(recoveryRow.transform, "RetryBtn", "Retry",
+                new Color(0.20f, 0.40f, 0.70f));
+            RegisterButtonCallbacks(_retryButton);
+            _retryButton.onClick.AddListener(OnRetryClicked);
+            _retryButton.gameObject.SetActive(false);
+
+            _backButton = CreateButton(recoveryRow.transform, "BackBtn", "Back to menu",
+                new Color(0.35f, 0.35f, 0.38f));
+            RegisterButtonCallbacks(_backButton);
+            _backButton.onClick.AddListener(OnBackToMenuClicked);
+            _backButton.gameObject.SetActive(false);
+
             // Disconnect button (hidden initially)
             _disconnectButton = CreateButton(_panel.transform, "DisconnectBtn", "Disconnect",
                 new Color(0.60f, 0.20f, 0.20f));

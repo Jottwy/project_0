@@ -7,7 +7,8 @@ using UnityEngine.SceneManagement;
 namespace BackroomsSurvival.Net
 {
     /// <summary>
-    /// ADR-056 — ends the session when the host goes away.
+    /// ADR-056 — ends the session when the host goes away, y desde la tanda de ciclo de vida
+    /// (2026-08-30) el DUENO del teardown de sesion, venga de donde venga.
     ///
     /// The backend raises `session_ended` when the peer that left was the host. There is no host
     /// migration, so what remains is a world that cannot advance: chunk displacement is gated on
@@ -20,11 +21,21 @@ namespace BackroomsSurvival.Net
     /// scene) and STP's LevelManager.CloseCurrentGame (goes back to the menu, but never touches
     /// the network). CloseCurrentGame is called as public vendor API — nothing under
     /// Assets/PolymindGames/ is edited.
+    ///
+    /// LA TERCERA MITAD, que faltaba: el vendor tiene su PROPIO camino de vuelta al menu.
+    /// <c>PauseMenu.QuitToMenu()</c> llama a <c>LevelManager.CloseCurrentGame</c> a pelo, sin
+    /// pasar por nada de red. Salir al menu por ahi dejaba el backend VIVO (el backend no se
+    /// mata solo al caerse el IPC: su rama de `local_disconnect_rx` guarda y sigue), el IPC
+    /// conectado a el, y `JoinSessionUI._loadingGameplay` en true para siempre - con lo que el
+    /// siguiente Join no cargaba escena ninguna. No se puede editar el vendor, asi que el
+    /// enganche es <see cref="SceneManager.activeSceneChanged"/>: si la escena cambia y habia una
+    /// sesion viva, el teardown corre igual.
     /// </summary>
     [DefaultExecutionOrder(-50)]
     public sealed class SessionEndHandler : MonoBehaviour
     {
         private const string SessionEndedEvent = "session_ended";
+        private const string SessionJoinedEvent = "session_joined";
 
         [SerializeField]
         [Tooltip("Menu scene to return to when the session ends. Must be in Build Settings.")]
@@ -33,25 +44,107 @@ namespace BackroomsSurvival.Net
         private IPCClient _ipc;
         private bool _ending;
 
+        private static SessionEndHandler _instance;
+
+        private void Awake()
+        {
+            if (_instance == null) _instance = this;
+            SceneManager.activeSceneChanged += OnActiveSceneChanged;
+        }
+
         private void Update()
         {
             // The IPCClient singleton is created by whichever bootstrap runs first, so this
-            // subscribes on the first frame it exists rather than assuming an ordering.
-            if (_ipc != null) return;
-            if (!IPCClient.TryGetInstance(out var ipc)) return;
+            // subscribes on the first frame it exists rather than assuming an ordering. Y se
+            // RE-suscribe si la instancia cambia (mismo criterio que
+            // `JoinSessionUI.EnsureSessionEventSubscription`): antes se quedaba pegado a la
+            // primera para siempre, asi que un IPCClient recreado dejaba el fin de sesion sin
+            // oyente y la sesion no se podia terminar nunca.
+            IPCClient.TryGetInstance(out var ipc);
+            if (ReferenceEquals(_ipc, ipc)) return;
 
+            if (_ipc != null) _ipc.RemoveEventListener(OnGameEvent);
             _ipc = ipc;
-            _ipc.AddEventListener(OnGameEvent);
+            if (_ipc != null) _ipc.AddEventListener(OnGameEvent);
         }
 
         private void OnDestroy()
         {
+            SceneManager.activeSceneChanged -= OnActiveSceneChanged;
             if (_ipc != null)
                 _ipc.RemoveEventListener(OnGameEvent);
+            if (_instance == this) _instance = null;
+        }
+
+        // ─── El enganche de escena ───────────────────────────────────────────────────────────
+        //
+        // Dos preguntas distintas, las dos contestadas por el MISMO evento porque las dos son
+        // "la escena activa cambio y la sesion tiene que enterarse":
+        //
+        //   1. Connected -> InGame. La escena de juego termino de cargar. Es lo que hace que el
+        //      cursor pase a politica de partida y que sepamos, despues, de que escena salimos.
+        //   2. InGame -> se fue. Cualquier cambio de escena estando dentro del mundo y sin
+        //      teardown en marcha es una salida: el `Quit to Menu` del vendor, un LoadScene de
+        //      un arnes, lo que sea. No se compara contra el NOMBRE del menu a proposito - el
+        //      `SerializedScene` del PauseMenu del vendor es un campo suyo y puede no coincidir
+        //      con `_mainMenuScene`; lo que sabemos seguro es de que escena saliamos.
+        private void OnActiveSceneChanged(Scene previous, Scene next)
+        {
+            var state = SessionState.Current;
+
+            if (state.Phase == SessionPhase.Connected)
+            {
+                if (state.NotifyEnteredWorld(next.name))
+                    Debug.Log($"[SessionEndHandler] Sesion dentro del mundo (escena '{next.name}')");
+                return;
+            }
+
+            if (state.Phase == SessionPhase.InGame && next.name != state.WorldScene)
+            {
+                Debug.LogWarning(
+                    $"[SessionEndHandler] Se abandono la escena de juego '{state.WorldScene}' -> " +
+                    $"'{next.name}' sin pasar por el teardown de red. Se limpia la sesion aqui.");
+                // El menu ya se esta cargando, asi que NO se pide otra carga de escena, y no se
+                // pinta "Sesion terminada": salir al menu es voluntario y el menu del juego ya es
+                // la UI. Lo que si tiene que pasar es TODO lo demas: matar el backend, parar el
+                // IPC, cerrar el lobby, rearmar el panel y soltar el cursor.
+                LeaveSession("left to menu", showPanel: false, returnToMenu: false);
+            }
+        }
+
+        // ─── Entradas ────────────────────────────────────────────────────────────────────────
+
+        /// <summary>
+        /// Punto de entrada UNICO para "abandona la sesion", desde cualquier sitio y sin
+        /// necesitar la referencia al componente. Idempotente: la segunda llamada seguida no
+        /// hace nada, porque la que manda es
+        /// <see cref="SessionStateMachine.RequestLeave"/> y esa ya no acepta.
+        /// </summary>
+        public static void LeaveCurrentSession(string reason, bool showPanel)
+        {
+            if (_instance != null)
+            {
+                _instance.LeaveSession(reason, showPanel, returnToMenu: true);
+                return;
+            }
+
+            // Sin componente (escenas de prueba, arneses): el teardown de red igual tiene que
+            // correr. Lo unico que se pierde es la vuelta al menu, que no existe sin LevelManager.
+            Debug.LogWarning("[SessionEndHandler] No hay instancia; teardown de red sin vuelta al menu.");
+            TeardownNetworkResources(reason, showPanel, returnToMenu: false, mainMenuScene: null);
         }
 
         private void OnGameEvent(GameEventMsg ev)
         {
+            if (ev.eventType == SessionJoinedEvent)
+            {
+                // La confirmacion de que el backend local registro al host. Es la UNICA cosa que
+                // convierte a un joiner en "conectado"; se aplica aqui, sobre la maquina, para
+                // que no haya dos copias del gate.
+                SessionState.Current.NotifySessionJoined();
+                return;
+            }
+
             if (ev.eventType != SessionEndedEvent) return;
 
             // The backend keeps emitting world state until Unity kills it, and the event can be
@@ -73,7 +166,7 @@ namespace BackroomsSurvival.Net
             // and re-arm so a later session_ended can retry instead of stranding the player.
             try
             {
-                EndSession();
+                LeaveSession(reason, showPanel: true, returnToMenu: true);
             }
             catch (Exception e)
             {
@@ -132,17 +225,51 @@ namespace BackroomsSurvival.Net
             }
         }
 
-        private void EndSession()
+        private void LeaveSession(string reason, bool showPanel, bool returnToMenu)
         {
-            // Steps 1-3 are independent, and the whole point of this handler is to not leave the
-            // player in a dead world: one of them throwing must not skip the ones after it, least
-            // of all the return to the menu. Each is logged on failure and execution continues;
-            // step 4 stays unguarded on purpose, so OnGameEvent's catch re-arms the latch.
+            _ending = true;
+            TeardownNetworkResources(reason, showPanel, returnToMenu, _mainMenuScene);
+            if (SessionState.Phase != SessionPhase.Disconnecting)
+                _ending = false; // el teardown corrio entero: rearmado para la siguiente sesion
+        }
+
+        /// <summary>
+        /// EL teardown. Un solo sitio, un solo orden, y el gate de idempotencia al principio.
+        ///
+        /// El orden importa y no es arbitrario:
+        ///  1. `RequestLeave` primero. Es el gate: si devuelve false no habia sesion viva (o ya
+        ///     hay un teardown en marcha) y no se toca NADA. Es lo que hace que "Leave dos veces"
+        ///     sea inofensivo, y lo que impide que el `session_ended` duplicado (paquete de
+        ///     despedida Y timeout de latido) mate una sesion que ya fue reemplazada.
+        ///  2. Matar el backend CON el IPC todavia arriba: `Shutdown()` manda `save_and_shutdown`
+        ///     por esa conexion y espera una salida limpia antes de recurrir a `Kill()`. Parar el
+        ///     IPC antes costaria el guardado.
+        ///  3. Aparcar el IPC. El puerto del backend esta muerto; sin esto el bucle de reconexion
+        ///     lo marca el resto de la vida del proceso. NO `IPCClient.Shutdown()`, que se lleva
+        ///     el singleton y el hilo: el cliente tiene que seguir reutilizable
+        ///     (`ConfigureEndpoint` levanta la pausa en la siguiente sesion).
+        ///  4. Cerrar el lobby de Steam, que publica un ip:puerto que acaba de morir.
+        ///  5. Rearmar el panel. SOLO campos: destruirlo dejaria que el siguiente
+        ///     `ShowConnectPanel` construyera una instancia nueva cuyo `Start()` repite el
+        ///     auto-connect de SESSION_MODE/CONNECT_TO, en bucle.
+        ///  6. Soltar el cursor. Pase lo que pase y haya panel o no: es la garantia de
+        ///     "el cursor queda restaurado al volver al menu".
+        ///  7. Cerrar la maquina. A partir de aqui `CanStart` vuelve a ser true.
+        /// </summary>
+        private static void TeardownNetworkResources(string reason, bool showPanel, bool returnToMenu, string mainMenuScene)
+        {
+            if (!SessionState.Current.RequestLeave(reason))
+            {
+                Debug.Log(
+                    $"[SessionEndHandler] Leave ignorado (fase {SessionState.Phase}): no hay sesion " +
+                    "viva que abandonar. Es idempotente a proposito.");
+                return;
+            }
+
+            Debug.LogWarning($"[SessionEndHandler] Teardown de sesion (motivo={reason})");
+
             Step("backend shutdown", () =>
             {
-                // 1. Kill the backend first, while the IPC connection is still up: Shutdown() sends
-                //    save_and_shutdown over it and waits for a clean exit before falling back to
-                //    Kill(). Pausing reconnect before this would cost the graceful save.
                 var init = NetworkInitializer.Instance;
                 if (init != null)
                     init.Shutdown();
@@ -152,30 +279,43 @@ namespace BackroomsSurvival.Net
 
             Step("IPC reconnect pause", () =>
             {
-                // 2. Park the IPC client. The backend's port is dead; without this the reconnect
-                //    loop dials it for the rest of the process's life. NOT IPCClient.Shutdown(),
-                //    which would clear the singleton and stop the thread — the client has to stay
-                //    reusable for a second session (ConfigureEndpoint lifts the pause).
-                if (_ipc != null)
-                    _ipc.PauseReconnect();
+                if (IPCClient.TryGetInstance(out var ipc) && ipc != null)
+                    ipc.PauseReconnect();
             });
+
+            // El ORDEN importa, y costó una sesión de diagnóstico. `LeaveLobby` cierra el lobby de
+            // Steam pero vacía `_hostedLobby` por su cuenta y sin log, así que si corre primero el
+            // conductor ve `IsPublishing == false`, su `Withdraw()` no llega a ejecutarse,
+            // `WithdrawCount` no sube y en el log no queda constancia de que el anuncio se retiró
+            // (tres `Lobby created` y cero `anuncio retirado` en la misma sesión). Retirar por el
+            // publicador PRIMERO deja el rastro y mantiene la invariante I14 sobre la puerta que
+            // de verdad se usa; `LeaveLobby` después sigue haciendo falta, porque además suelta el
+            // lobby AJENO en el que se entró por invitación. Las dos son idempotentes.
+            Step("steam announcement", UI.ServerBrowserBootstrap.WithdrawAnnouncement);
+            Step("steam lobby", () => SteamLobbyManager.Instance?.LeaveLobby());
 
             Step("connect panel reset", () =>
             {
-                // 3. Reset the connect panel's latched state. Fields only — destroying it or its
-                //    GameObject would let a later ShowConnectPanel build a fresh instance whose
-                //    Start() re-runs the SESSION_MODE/CONNECT_TO auto-connect, looping forever.
                 var ui = FindFirstObjectByType<JoinSessionUI>();
                 if (ui != null)
                     ui.ResetForNewSession();
             });
 
-            // 4. Back to the menu, through STP's own loader so its game-state teardown runs.
-            //    Skipped when we are already there (nothing to close) — the panel is enough.
-            if (SceneManager.GetActiveScene().name == _mainMenuScene)
+            Step("cursor", SessionCursor.ReleaseToMenu);
+
+            SessionState.Current.NotifyLeaveComplete(keepReason: showPanel);
+
+            if (!returnToMenu || string.IsNullOrEmpty(mainMenuScene))
+                return;
+
+            Step("return to menu", () => ReturnToMenu(mainMenuScene));
+        }
+
+        private static void ReturnToMenu(string mainMenuScene)
+        {
+            if (SceneManager.GetActiveScene().name == mainMenuScene)
             {
                 Debug.Log("[SessionEndHandler] Already in the menu scene — nothing to unload");
-                _ending = false;
                 return;
             }
 
@@ -183,18 +323,14 @@ namespace BackroomsSurvival.Net
             if (level == null)
             {
                 Debug.LogError("[SessionEndHandler] No LevelManager — cannot return to the menu");
-                _ending = false;
                 return;
             }
 
-            if (!level.CloseCurrentGame(_mainMenuScene))
-            {
-                // Only fails while a load/save is already in flight. Re-arm so the next
-                // session_ended (or the heartbeat-timeout one that follows a lost goodbye) can
-                // retry, instead of stranding the player in the dead world.
-                Debug.LogWarning("[SessionEndHandler] LevelManager busy — will retry on the next event");
-                _ending = false;
-            }
+            // Only fails while a load/save is already in flight. La sesion ya esta limpia a estas
+            // alturas, asi que un false aqui deja al jugador en un mundo muerto pero SIN sesion
+            // fantasma; el panel (showPanel) explica por que.
+            if (!level.CloseCurrentGame(mainMenuScene))
+                Debug.LogWarning("[SessionEndHandler] LevelManager ocupado: no se pudo volver al menu ahora.");
         }
     }
 }

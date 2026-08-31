@@ -25,6 +25,20 @@ namespace BackroomsSurvival.Net
         public int joinerNetPortOffset = 1;
         public float startupTimeout = 10f;
 
+        /// <summary>
+        /// Techo de cliente para el handshake de un joiner, POR ENCIMA del autoritativo.
+        ///
+        /// Quien acota de verdad la espera es el backend con su `CONNECT_TIMEOUT` (15 s), que
+        /// contesta con `session_ended` y un motivo redactado. Esto no lo sustituye ni lo tapa:
+        /// solo cubre el hueco en el que ese aviso NO puede llegar - el proceso backend murio,
+        /// o el IPC se cayo, despues de conectar y antes de confirmar la sesion. Sin esto el
+        /// panel se queda en "Joining..." para siempre, que es el sintoma que este trabajo mata.
+        ///
+        /// Se registra como BACKSTOP en el log, con ese nombre, para que nunca se confunda con
+        /// un diagnostico real.
+        /// </summary>
+        public float joinerHandshakeTimeout = 25f;
+
         [Header("Debug")]
         [Tooltip("Spawn the robapieles (phantom peer) on the host for play-testing. Injects DEBUG_SPAWN_PHANTOM=1 into the backend env. Host-only; no effect on joiners.")]
         public bool debugSpawnPhantom = false;
@@ -74,6 +88,36 @@ namespace BackroomsSurvival.Net
         private Process _backendProcess;
         private float _startupTimer;
         private bool _waitingForBackend;
+        private float _handshakeTimer;
+
+        /// <summary>
+        /// Generacion del lanzamiento al que pertenece <see cref="_backendProcess"/>. Se copia
+        /// de <see cref="SessionStateMachine.Generation"/> en cada lanzamiento y se captura en el
+        /// callback <c>Exited</c>.
+        ///
+        /// El callback llega en un hilo del pool, puede llegar TARDE y no trae identidad: el
+        /// backend de la sesion 1 avisa de su muerte cuando la sesion 2 ya esta arriba, y sin
+        /// esta comparacion apagaba `IsBackendReady` y escribia "Backend exited" en el
+        /// StatusMessage de la sesion NUEVA. Es la mitad Unity de la invariante "un backend
+        /// anterior nunca puede dar ordenes a la sesion nueva".
+        /// </summary>
+        private int _backendGeneration = -1;
+
+        /// <summary>Procesos backend lanzados por este proceso de Unity. Instrumentacion: la
+        /// unica forma de demostrar "no queda backend huerfano" es contar los dos lados.</summary>
+        public static int BackendLaunchCount { get; private set; }
+        /// <summary>Procesos backend terminados por este proceso de Unity.</summary>
+        public static int BackendTerminateCount { get; private set; }
+        /// <summary>Backends lanzados y aun no terminados. Invariante: 0 o 1, nunca mas.</summary>
+        public static int LiveBackendCount => BackendLaunchCount - BackendTerminateCount;
+
+        /// <summary>
+        /// Un callback tardio del proceso se aplica SOLO si es de la generacion en curso.
+        /// Pura y publica para que la suite EditMode recorra la regla sin lanzar un proceso -
+        /// mismo criterio que <see cref="BuildChildEnvironment"/>.
+        /// </summary>
+        public static bool ShouldApplyBackendExit(int eventGeneration, int currentGeneration)
+            => eventGeneration == currentGeneration;
 
         private static NetworkInitializer _instance;
         public static NetworkInitializer Instance => _instance;
@@ -139,6 +183,19 @@ namespace BackroomsSurvival.Net
 
         private void StartAsHost(string playerName, int worldSeed, bool autoSolo, int? requestedHostListenPort)
         {
+            // EL EMBUDO. Los seis caminos que arrancan un host (menu, Steam, autosolo,
+            // SESSION_MODE=host, AutoConnect, arnes de pruebas) pasan por aqui, asi que el gate
+            // se pone una vez y no seis. Un segundo Host durante un Joining se RECHAZA en vez de
+            // lanzar un segundo backend contra el primero.
+            if (!SessionState.Current.RequestStart(Role.Host))
+            {
+                Debug.LogWarning(
+                    $"[NetworkInitializer] Host ignorado: ya hay sesion en fase {SessionState.Phase}. " +
+                    "Sal de la actual antes de arrancar otra.");
+                return;
+            }
+            TerminateLeftoverBackend("arranque de host");
+
             CurrentRole = Role.Host;
             StatusMessage = "Starting backend...";
             LastSelectedWorldSeed = worldSeed;
@@ -201,6 +258,18 @@ namespace BackroomsSurvival.Net
 
         public void StartAsJoiner(string serverIP, int serverNetPort, string playerName)
         {
+            // Mismo embudo que el host: ver el comentario en StartAsHost. Cubre el doble clic en
+            // Join, el Join durante un Joining y el auto-join de Steam llegando encima de uno
+            // manual.
+            if (!SessionState.Current.RequestStart(Role.Joiner))
+            {
+                Debug.LogWarning(
+                    $"[NetworkInitializer] Join ignorado: ya hay sesion en fase {SessionState.Phase}. " +
+                    "Sal de la actual antes de arrancar otra.");
+                return;
+            }
+            TerminateLeftoverBackend("arranque de joiner");
+
             CurrentRole = Role.Joiner;
             StatusMessage = "Starting backend (joiner)...";
             Debug.Log($"[NetworkInitializer] user input hostIp={serverIP}, hostPort={serverNetPort}");
@@ -314,6 +383,7 @@ namespace BackroomsSurvival.Net
                 // Fail loudly: never silently continue with an unverifiable backend.
                 Debug.LogError("[NetworkInitializer] MPTRACE step=RUBIK event=unity_backend_exe_path path=UNRESOLVED status=fail_loud");
                 Debug.LogError("[NetworkInitializer] Backend executable not found. Build or copy backrooms_server.exe.");
+                SessionState.Current.NotifyFailed("backend executable not found");
                 return false;
             }
 
@@ -343,14 +413,25 @@ namespace BackroomsSurvival.Net
 
             try
             {
-                // A previous handle (e.g. a caller that launches again without going through
-                // KillBackend/Shutdown first) would otherwise leak its native handle here —
-                // Dispose() only releases OUR wrapper, it does not touch whatever OS process it
-                // pointed at.
-                _backendProcess?.Dispose();
+                // Llegados aqui `_backendProcess` tiene que ser null: TerminateLeftoverBackend lo
+                // dejo asi al principio de StartAsHost/StartAsJoiner. El `Dispose` de antes solo
+                // soltaba NUESTRO envoltorio y dejaba el proceso vivo - un huerfano por cada
+                // relanzamiento. Se avisa a gritos si la invariante se rompe en vez de repetir el
+                // Dispose silencioso.
+                if (_backendProcess != null)
+                {
+                    Debug.LogError("[NetworkInitializer] INVARIANTE ROTA: se lanza un backend con otro " +
+                                   "todavia registrado. Se termina el anterior para no dejar huerfanos.");
+                    KillBackend();
+                }
+
                 _backendProcess = Process.Start(psi);
+                BackendLaunchCount++;
+                _backendGeneration = SessionState.Current.Generation;
+                int launchGeneration = _backendGeneration;
                 _backendProcess.EnableRaisingEvents = true;
-                _backendProcess.Exited += OnBackendExited;
+                _backendProcess.Exited += (s, e) => OnBackendExited(launchGeneration);
+                OpenBackendLogFile(_backendProcess.Id, env);
 
                 _backendProcess.OutputDataReceived += (s, e) =>
                 {
@@ -371,6 +452,7 @@ namespace BackroomsSurvival.Net
                 // This initializer ALWAYS spawns a fresh backend (on a free IPC
                 // port if 7777 is busy) and connects to it — never to a stale one.
                 Debug.Log($"[NetworkInitializer] MPTRACE step=RUBIK event=unity_backend_launch_mode mode=launched_new_backend pid={_backendProcess.Id} exe={exePath} ipc_port={LastSelectedIpcPort}");
+                SessionState.Current.NotifyBackendLaunched();
                 return true;
             }
             catch (Exception e)
@@ -378,6 +460,7 @@ namespace BackroomsSurvival.Net
                 StatusMessage = $"Error: {e.Message}";
                 Debug.LogError("[NetworkInitializer] backend launch failed");
                 Debug.LogError($"[NetworkInitializer] Failed to start backend: {e}");
+                SessionState.Current.NotifyFailed($"backend launch failed: {e.Message}");
                 return false;
             }
         }
@@ -412,15 +495,29 @@ namespace BackroomsSurvival.Net
 
         private void Update()
         {
-            if (!_waitingForBackend) return;
+            if (_waitingForBackend)
+                UpdateBackendStartup();
 
+            UpdateJoinerHandshakeBackstop();
+            WatchBackendLiveness();
+        }
+
+        private void UpdateBackendStartup()
+        {
             _startupTimer += Time.unscaledDeltaTime;
 
             if (IPCClient.TryGetInstance(out var ipc) && ipc.IsConnected)
             {
                 _waitingForBackend = false;
                 IsBackendReady = true;
-                StatusMessage = "Connected";
+                // El IPC arriba NO es "Connected" para un joiner: su backend local acepta ese TCP
+                // aunque el host no exista. La fase la decide la maquina, que para un joiner se
+                // queda en Connecting hasta `session_joined`; el texto tiene que decir lo mismo o
+                // vuelve el fallo entero por la puerta de la UI.
+                bool isJoiner = CurrentRole == Role.Joiner;
+                SessionState.Current.NotifyIpcConnected();
+                StatusMessage = isJoiner ? $"Contacting host {LastConnectTo}..." : "Connected";
+                _handshakeTimer = 0f;
                 Debug.Log("[NetworkInitializer] Backend is ready, IPC connected");
                 Debug.Log($"[NetworkInitializer] MPTRACE step=RUBIK event=unity_ipc_port_connected ipc_address={LastSelectedIpcAddress} ipc_port={LastSelectedIpcPort} launch_mode=launched_new_backend");
                 return;
@@ -429,8 +526,10 @@ namespace BackroomsSurvival.Net
             if (_backendProcess != null && _backendProcess.HasExited)
             {
                 _waitingForBackend = false;
-                StatusMessage = $"Error: backend exited with code {_backendProcess.ExitCode}";
-                Debug.LogError($"[NetworkInitializer] Backend died during startup (exit code {_backendProcess.ExitCode})");
+                int code = SafeExitCode();
+                StatusMessage = $"Error: backend exited with code {code}";
+                Debug.LogError($"[NetworkInitializer] Backend died during startup (exit code {code})");
+                SessionState.Current.NotifyFailed($"backend exited with code {code}");
                 return;
             }
 
@@ -439,11 +538,78 @@ namespace BackroomsSurvival.Net
                 _waitingForBackend = false;
                 StatusMessage = "Timeout: backend did not respond";
                 Debug.LogWarning("[NetworkInitializer] Backend startup timed out");
+                SessionState.Current.NotifyFailed("backend did not respond");
             }
             else
             {
                 StatusMessage = $"Connecting... ({_startupTimer:0.0}s)";
             }
+        }
+
+        /// <summary>
+        /// Backstop del handshake del joiner. Ver <see cref="joinerHandshakeTimeout"/>: quien
+        /// acota de verdad es el `CONNECT_TIMEOUT` del backend, y esto solo cubre el caso en que
+        /// su aviso NO puede llegar.
+        /// </summary>
+        private void UpdateJoinerHandshakeBackstop()
+        {
+            if (CurrentRole != Role.Joiner) return;
+            if (SessionState.Phase != SessionPhase.Connecting) { _handshakeTimer = 0f; return; }
+
+            _handshakeTimer += Time.unscaledDeltaTime;
+            if (_handshakeTimer <= joinerHandshakeTimeout) return;
+
+            _handshakeTimer = 0f;
+            StatusMessage = $"Timeout: no session confirmation from {LastConnectTo}";
+            Debug.LogError(
+                "[NetworkInitializer] BACKSTOP: el backend local no confirmo `session_joined` y " +
+                $"tampoco mando `session_ended` en {joinerHandshakeTimeout:0}s. Su CONNECT_TIMEOUT " +
+                "es de 15 s, asi que este camino significa que el aviso autoritativo se perdio " +
+                "(proceso muerto o IPC caido). Mira el log del backend antes de culpar al timeout.");
+            SessionState.Current.NotifyFailed($"no session confirmation from {LastConnectTo}");
+        }
+
+        /// <summary>
+        /// El backend puede morir DESPUES de que el IPC conectara y antes de que la sesion se
+        /// establezca (o en mitad de la partida). Sin esto, ese caso no lo detectaba nadie: el
+        /// gate de arranque ya habia soltado `_waitingForBackend` y el panel se quedaba en
+        /// "Joining..." para siempre - "un backend muerto no puede dejar la UI bloqueada".
+        /// </summary>
+        private float _livenessTimer;
+        /// Cada medio segundo, no cada frame: `Process.HasExited` es una llamada al SO
+        /// (GetExitCodeProcess) y esto corre durante toda la partida. Medio segundo de retraso en
+        /// detectar un backend muerto no lo nota nadie; 60 P/Invoke por segundo, en un profiler sí.
+        private const float LivenessCheckSeconds = 0.5f;
+
+        private void WatchBackendLiveness()
+        {
+            if (_backendProcess == null) return;
+            if (!SessionStateMachine.IsLive(SessionState.Phase)) return;
+
+            _livenessTimer += Time.unscaledDeltaTime;
+            if (_livenessTimer < LivenessCheckSeconds) return;
+            _livenessTimer = 0f;
+
+            bool exited;
+            try { exited = _backendProcess.HasExited; }
+            catch { return; }
+            if (!exited) return;
+
+            int code = SafeExitCode();
+            string reason = $"backend exited with code {code}";
+            Debug.LogError($"[NetworkInitializer] {reason} (sesion viva en fase {SessionState.Phase})");
+            IsBackendReady = false;
+            _waitingForBackend = false;
+            StatusMessage = $"Error: {reason}";
+
+            if (!SessionState.Current.NotifyFailed(reason))
+                SessionEndHandler.LeaveCurrentSession(reason, showPanel: true);
+        }
+
+        private int SafeExitCode()
+        {
+            try { return _backendProcess?.ExitCode ?? -1; }
+            catch { return -1; }
         }
 
         /// <summary>
@@ -892,8 +1058,80 @@ namespace BackroomsSurvival.Net
         public static readonly bool VerboseBackendLog =
             Environment.GetEnvironmentVariable("BACKROOMS_VERBOSE_LOG") == "1";
 
+        // ─── El log del backend, en un fichero ────────────────────────────────────────────────
+        //
+        // El backend escribe a stdout/stderr y Unity lo recibe línea a línea, pero el espejo a la
+        // consola está FILTRADO: INFO y DEBUG se tiran salvo con `BACKROOMS_VERBOSE_LOG=1` (que el
+        // 2026-08-13 dejó un Editor.log de 8 GB y mató al editor). Resultado: toda la traza de red
+        // a nivel INFO —handshake, registro de peers, latidos, márgenes de liveness— NO QUEDABA EN
+        // NINGÚN SITIO. Dos comentarios de este mismo archivo prometían un `Builds/PlaytestLogs/`
+        // desde el 2026-08-24 y nadie lo escribía; comprobado otra vez el 2026-08-30, tampoco
+        // existía el directorio.
+        //
+        // Esto lo escribe. SIN filtrar (el filtro es solo del espejo en consola) y sin stack traces
+        // de Unity, que era lo que pesaba. Un fallo de conectividad a posteriori se diagnostica
+        // leyendo este fichero, que es justo lo que no se podía hacer.
+        private static readonly object _backendLogLock = new object();
+        private static System.IO.StreamWriter _backendLogWriter;
+        /// <summary>Ruta del log de esta sesión del backend, o cadena vacía si no se pudo abrir.</summary>
+        public static string BackendLogPath { get; private set; } = "";
+
+        private void OpenBackendLogFile(int pid, IDictionary<string, string> env)
+        {
+            CloseBackendLogFile();
+            try
+            {
+                string dir = Path.Combine(ResolveProjectRoot(Application.dataPath), "Builds", "PlaytestLogs");
+                Directory.CreateDirectory(dir);
+                string role = LastEffectiveRole;
+                string stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+                string path = Path.Combine(dir, $"backend_{role}_{stamp}_pid{pid}.log");
+
+                var writer = new System.IO.StreamWriter(path, append: false) { AutoFlush = true };
+                // AutoFlush por línea a propósito: el caso que hay que diagnosticar es justo aquel
+                // en el que el proceso muere, y un buffer sin volcar se lleva por delante las
+                // últimas líneas — las únicas que importan.
+                writer.WriteLine($"# backend session role={role} pid={pid} started={DateTime.Now:O}");
+                foreach (var kvp in env)
+                    writer.WriteLine($"# env {kvp.Key}={kvp.Value}");
+
+                lock (_backendLogLock)
+                    _backendLogWriter = writer;
+
+                BackendLogPath = path;
+                Debug.Log($"[NetworkInitializer] Backend log -> {path}");
+            }
+            catch (Exception e)
+            {
+                BackendLogPath = "";
+                // Nunca fatal: sin log el juego funciona igual, solo se diagnostica peor.
+                Debug.LogWarning($"[NetworkInitializer] No se pudo abrir el log del backend: {e.Message}");
+            }
+        }
+
+        private static void CloseBackendLogFile()
+        {
+            lock (_backendLogLock)
+            {
+                if (_backendLogWriter == null) return;
+                try { _backendLogWriter.Dispose(); } catch { }
+                _backendLogWriter = null;
+            }
+        }
+
         private static void LogBackendLine(string line, bool fromStdErr)
         {
+            // Al fichero SIEMPRE y sin filtrar, antes que nada: es el único rastro completo.
+            // stdout y stderr llegan por hilos distintos, de ahí el lock.
+            lock (_backendLogLock)
+            {
+                if (_backendLogWriter != null)
+                {
+                    try { _backendLogWriter.WriteLine(line); }
+                    catch { _backendLogWriter = null; } // un fallo de E/S no puede tumbar la sesión
+                }
+            }
+
             if (ContainsLogLevel(line, "ERROR"))
             {
                 Debug.LogError($"[Backend] {line}");
@@ -942,23 +1180,63 @@ namespace BackroomsSurvival.Net
             return line.IndexOf(level, StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
-        private void OnBackendExited(object sender, EventArgs e)
+        /// <summary>
+        /// Llega en un HILO DEL POOL, no en el de Unity, y puede llegar tarde: el backend de la
+        /// sesion anterior avisa de su muerte cuando la nueva ya esta arriba. Por eso lo primero
+        /// que hace es comparar generaciones - sin eso, la muerte de un backend viejo apagaba
+        /// `IsBackendReady` y sobrescribia el `StatusMessage` de la sesion NUEVA.
+        ///
+        /// Solo toca campos y `Debug.Log` (ambos validos fuera del hilo principal); nada de API
+        /// de Unity.
+        /// </summary>
+        private void OnBackendExited(int launchGeneration)
         {
-            int exitCode = -1;
-            try { exitCode = _backendProcess?.ExitCode ?? -1; } catch { }
-            Debug.LogWarning($"[NetworkInitializer] Backend process exited (code={exitCode})");
+            if (!ShouldApplyBackendExit(launchGeneration, _backendGeneration))
+            {
+                Debug.Log(
+                    $"[NetworkInitializer] Exited de un backend viejo (gen={launchGeneration}, " +
+                    $"actual={_backendGeneration}) IGNORADO: no puede tocar la sesion en curso.");
+                return;
+            }
+
+            Debug.LogWarning("[NetworkInitializer] Backend process exited");
             IsBackendReady = false;
             _waitingForBackend = false;
-            StatusMessage = $"Backend exited (code={exitCode})";
+            StatusMessage = "Backend exited";
+            // El proceso murió: cerrar el fichero para que su cola quede en disco. El siguiente
+            // lanzamiento abre uno nuevo — un log por sesión de backend, no uno acumulado.
+            CloseBackendLogFile();
         }
 
+        /// <summary>
+        /// Mata el backend y borra el estado de sesion de ESTE componente. Idempotente: llamarlo
+        /// dos veces no vuelve a matar nada (KillBackend sale solo si no hay proceso) y no deja
+        /// un estado invalido.
+        /// </summary>
         public void Shutdown()
         {
             _waitingForBackend = false;
+            _handshakeTimer = 0f;
             IsBackendReady = false;
             KillBackend();
             CurrentRole = Role.None;
             StatusMessage = "";
+            LastConnectTo = "<none>";
+        }
+
+        /// <summary>
+        /// Restos de una sesion anterior que nadie limpio (el `Quit to Menu` del vendor era el
+        /// caso real: cargaba el menu sin pasar por ningun teardown de red). Se termina ANTES de
+        /// configurar el endpoint de la sesion nueva, porque `KillBackend` pide el guardado por
+        /// el IPC y hacerlo despues se lo mandaria al puerto NUEVO.
+        /// </summary>
+        private void TerminateLeftoverBackend(string why)
+        {
+            if (_backendProcess == null) return;
+            Debug.LogWarning(
+                $"[NetworkInitializer] Backend de una sesion anterior seguia vivo al {why}; " +
+                "se termina para no dejar un huerfano ocupando puertos.");
+            KillBackend();
         }
 
         // ADR-032: ask the backend to persist the world NOW (before we kill it). Best-effort — if
@@ -1050,6 +1328,9 @@ namespace BackroomsSurvival.Net
             {
                 try { _backendProcess.Dispose(); } catch { }
                 _backendProcess = null;
+                _backendGeneration = -1;
+                BackendTerminateCount++;
+                CloseBackendLogFile();
             }
         }
 

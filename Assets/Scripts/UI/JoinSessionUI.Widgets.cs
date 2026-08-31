@@ -3,10 +3,6 @@ using System.Collections;
 using BackroomsSurvival.Net;
 using PolymindGames;
 using UnityEngine;
-using UnityEngine.EventSystems;
-#if ENABLE_INPUT_SYSTEM
-using UnityEngine.InputSystem.UI;
-#endif
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
 
@@ -17,47 +13,6 @@ namespace BackroomsSurvival.UI
     // estado y red.
     public sealed partial class JoinSessionUI
     {
-        public static void EnsureEventSystem()
-        {
-            var existing = EventSystem.current ?? UnityEngine.Object.FindFirstObjectByType<EventSystem>();
-            if (existing != null)
-            {
-                Debug.Log($"[JoinSessionUI] EventSystem found: {existing.name}");
-                EnsureInputModule(existing.gameObject);
-                return;
-            }
-
-            // SCENE-SCOPED on purpose (was DontDestroyOnLoad): a DDOL EventSystem created in
-            // MainMenu (which has none baked) survived into STP_Showcase, whose BAKED EventSystem
-            // then coexisted with it → Unity's "multiple EventSystems" warning spam every frame
-            // and a fragile input setup. Scenes that lack a baked EventSystem still get one here
-            // (EnsureEventSystem runs again per scene); scenes that have one keep theirs alone.
-            var go = new GameObject("EventSystem");
-            go.AddComponent<EventSystem>();
-            EnsureInputModule(go);
-            Debug.Log("[JoinSessionUI] EventSystem created (scene-scoped)");
-        }
-
-        private static void EnsureInputModule(GameObject go)
-        {
-#if ENABLE_INPUT_SYSTEM
-            if (go.GetComponent<InputSystemUIInputModule>() != null)
-                return;
-
-            foreach (var module in go.GetComponents<BaseInputModule>())
-                UnityEngine.Object.Destroy(module);
-
-            go.AddComponent<InputSystemUIInputModule>();
-            Debug.Log("[JoinSessionUI] EventSystem using InputSystemUIInputModule");
-#else
-            if (go.GetComponent<BaseInputModule>() != null)
-                return;
-
-            go.AddComponent<StandaloneInputModule>();
-            Debug.Log("[JoinSessionUI] EventSystem using StandaloneInputModule");
-#endif
-        }
-
         private static Text CreateLabel(Transform parent, string name, string text,
             int fontSize, FontStyle style, Color color, float width, float height)
         {
