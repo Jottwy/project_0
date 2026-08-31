@@ -77,16 +77,44 @@ postura. Dos maneras:
 
 Recomendación: (a), y es una decisión de diseño de juego, no técnica.
 
-## D5 — Poblar las plantas altas (pendiente, ya anotado)
+## D5 — Poblar las plantas altas (✅ HECHO Y MEDIDO — ADR-110 D3, 2026-08-30)
 
-El reparto de facelings elige siempre el espacio MÁS BAJO de la columna.
-Con 4+ plantas, las altas nacen vacías de criaturas (el loot sí sube: va
-por espacio). Va junto con la máscara de luz entre plantas (Rendering
-Layers, sin empezar).
+**Estado: 🟡 MEDIDO.** Verde en sondas y suite; **nadie lo ha visto en partida**, así que en los tres
+estados de WG3-ROADMAP no es ✅ todavía.
 
-## Orden propuesto
+Se hizo en cinco tandas (T2, T1, T3, T4, T5) — detalle y evidencia en
+[`PLAN-PLANTAS-ALTAS.md`](PLAN-PLANTAS-ALTAS.md). Suite 1154/1154, clippy `--all-targets -D warnings`
+y fmt limpios, **cero wire**.
 
-1. D1 (decidir a/b) — es lo que convierte "10 en la constante" en 10 reales.
-2. D5 — poblar lo que D1 abra.
-3. D3 — vacíos y caídas (el efecto "mirar abajo y ver el abismo" necesita D1).
-4. D2 rampas escalonadas + D4 conductos (independientes, baratos).
+| | antes | ahora |
+|---|---|---|
+| Plantas altas pobladas (4 regiones) | **0 de 13** | **6 de 13**, las 13 alcanzables |
+| Población planta baja (25 regiones) | 60 | **60 — intacta** |
+| Población plantas altas (25 regiones) | 0 | **34** |
+| Retirada al subir de planta | desaloja en 3 de 5 | no desaloja |
+
+**El enunciado de esta sección era incompleto y conviene decirlo**, porque es la lección: se creía
+que el fallo era «el reparto elige el espacio MÁS BAJO de la columna». Eso era cierto y era la mitad
+pequeña. La grande: el reparto indexaba la densidad por la **capa de 4 m de WG2**, que con plantas de
+3,32 da capa 1 —densidad CERO— ya en la segunda planta, y satura a 3 de la cuarta en adelante. O sea
+que el síntoma real no era «las altas nacen vacías» sino **«subir una planta vaciaba el mundo de
+criaturas»**. Lo destapó T0 midiendo antes de tocar nada.
+
+Guardas que se respetaron y siguen verdes: la banda de **±25 %** sobre la población de la planta baja
+(ADR-109 D5) y el **8:1** dentro/fuera de oficina (ADR-094 enm. 5).
+
+**Lo que queda abierto de aquí:** la **planta −1** (113 tramos bajo la cota 0 en las cuatro regiones)
+queda excluida del reparto a propósito, porque ADR-104 D5 da las plantas bajo rasante como no
+implementadas y poblarlas sería inventarse una decisión de diseño. Y sigue pendiente la **máscara de
+luz entre plantas** (Rendering Layers, sin empezar), que no la toca ninguna de estas tandas.
+
+## Orden propuesto — REVISADO por ADR-110 (2026-08-30)
+
+1. **D5 — poblar las plantas altas.** Sube a lo primero: D1 ya está hecho
+   (torres, hasta 6 plantas servidas), así que hay plantas vacías HOY.
+2. D3 — vacíos y caídas: es rareza y perspectiva, la dirección que ADR-110
+   D2 acaba de elegir.
+3. D2 rampas escalonadas + D4 conductos (independientes, baratos). D4 suma
+   perspectiva —mirar desde un conducto— por muy poco.
+
+Orden anterior (D1 → D5 → D3 → D2/D4), superado: D1 se resolvió con torres.

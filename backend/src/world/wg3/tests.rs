@@ -9377,7 +9377,13 @@ fn probe_faceling_draw_under_wg3() {
                 wg3_sorteados += 1;
                 let coord = crate::world::wg3::chunk::Wg3ChunkCoord::containing(pos[0], pos[2]);
                 let region = worlds.region_for(&m, SERVED_SEED, coord);
-                let style = region.lowest_space_at_xz(pos[0], pos[2]).map(|s| s.style);
+                // ADR-110 D3 / T1 — la PLANTA BAJA explícitamente, que es lo que esta banda
+                // vigila. `lowest_space_at_xz` contestaba el espacio más bajo de la vertical, y en
+                // las que bajan de la cota 0 ése es un peldaño de la planta −1: medía una planta que
+                // el reparto ya no puebla.
+                let style = region
+                    .space_on_storey_at_xz(pos[0], pos[2], 0)
+                    .map(|s| s.style);
                 match style {
                     None => wg3_sin_espacio += 1,
                     Some(0) => wg3_oficina += 1,
@@ -9511,5 +9517,849 @@ fn probe_stuck_stair_column() {
         if c.x_cm <= px && px < c.x_cm + c.size_x_cm && c.z_cm <= pz && pz < c.z_cm + c.size_z_cm {
             println!("[col] CARVE {c:?}");
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// T0 de PLAN-PLANTAS-ALTAS.md — LA SONDA DE POBLACIÓN POR PLANTA
+//
+// Mide, no arregla. Su trabajo es decir si la hipótesis del plan es cierta ANTES de que nadie
+// toque producción: que el reparto de población indexa por la CAPA de 4 m de WG2 y que por eso
+// una planta de WG3 por encima de la baja nace sin criaturas.
+//
+// Nada de aquí exige un resultado sobre la población: si estas sondas asertaran el estado ACTUAL,
+// arreglar el fallo las pondría rojas y el arreglo parecería la regresión. Lo único que se exige
+// es que la sonda no esté ciega (que haya mundo que medir), que es la lección 5 de WG3-ROADMAP.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Escala de reparto con la que corre el bucle de verdad (`AdultDriver::new`, `ChildDriver::new`).
+const T0_DENSITY_SCALE: f32 = 1.0;
+
+/// Espejo de `collision::PLAYER_BASE_Y`. Duplicado a propósito, misma razón que `PLAYER_RADIUS`.
+const T0_PLAYER_BASE_Y: f32 = 1.8;
+
+/// Lo que mide la sonda para UNA planta de UNA región.
+#[derive(Debug, Clone, Copy)]
+struct T0StoreyRow {
+    storey: i32,
+    floor_y_cm: i32,
+    spaces: usize,
+    /// De ésos, los que están exactamente en la cota de la planta (suelo, no peldaño).
+    spaces_flat: usize,
+    player_y: f32,
+    layer: u8,
+    adults_drawn: usize,
+    adults_kept: usize,
+    packs_drawn: usize,
+    pack_members: usize,
+}
+
+/// El sitio donde estaría un jugador de pie en el suelo de esa planta.
+fn t0_player_y(floor_y_cm: i32) -> f32 {
+    floor_y_cm as f32 / 100.0 + T0_PLAYER_BASE_Y
+}
+
+/// Los chunks de WG2 que cubren una región de WG3. Los dos miden 50 m de lado, así que una región
+/// de 150 m son exactamente 3 x 3 chunks — pero se calcula y no se escribe, que es lo que hace que
+/// la sonda siga siendo cierta si alguna de las dos medidas cambia.
+fn t0_wg2_chunks_of_region(rx: i32, rz: i32) -> Vec<(i32, i32)> {
+    let chunk_m = crate::world::grid_gen::CELL_SIZE_M * crate::world::grid_gen::CHUNK_CELLS as f32;
+    let (min_x, min_z, max_x, max_z) = Wg3RegionCoord { x: rx, z: rz }.bounds();
+    let cx0 = (min_x / chunk_m).floor() as i32;
+    let cx1 = ((max_x - 0.01) / chunk_m).floor() as i32;
+    let cz0 = (min_z / chunk_m).floor() as i32;
+    let cz1 = ((max_z - 0.01) / chunk_m).floor() as i32;
+    let mut out = Vec::new();
+    for cx in cx0..=cx1 {
+        for cz in cz0..=cz1 {
+            out.push((cx, cz));
+        }
+    }
+    out
+}
+
+/// **T0 (a) — LA TABLA: planta por planta, qué se despierta.**
+///
+/// Replica el camino EXACTO de `AdultDriver::sync_population` y `ChildDriver::sync_population` con
+/// el jugador de pie en el suelo de cada planta:
+///
+/// 1. `layer = world_pos_to_layer(p.y)` — la capa de 4 m de WG2, que es lo que hoy indexa todo.
+/// 2. `draw_adults_into(.., layer, ..)` / `draw_child_pack_into(.., layer, ..)`.
+/// 3. Por cada hueco, el papel de su espacio y `wg3_keeps_position`, como hace `wg3_spawn_point`.
+///
+/// Lo que NO replica, y por qué no hace falta: el radio de activación y la distancia mínima. Ambos
+/// filtran POR DISTANCIA a un jugador, y aquí el jugador se coloca dentro de la región que se mide;
+/// si el sorteo da cero, ningún radio lo va a subir.
+#[test]
+#[ignore = "sonda: imprime, no exige"]
+fn probe_population_by_storey() {
+    use crate::world::faceling_spawn::{
+        draw_adults_into, draw_child_pack_into, wg3_keeps_position,
+    };
+    use crate::world::grid_gen::world_pos_to_layer;
+
+    let m = real_manifest();
+    let mut all_rows: Vec<(i32, i32, Vec<T0StoreyRow>)> = Vec::new();
+
+    for (rx, rz) in AUDIT_REGIONS {
+        let region = Wg3ServedWorld::plan_region(&m, SERVED_SEED, Wg3RegionCoord { x: rx, z: rz });
+
+        // **AGRUPAR POR PLANTA, NO POR COTA — y la diferencia no es cosmética.** La primera versión
+        // de esta sonda agrupó por `floor_y_cm` distinto y dio 32 «plantas» en la región (-1,2), con
+        // cotas de 25, 51 y 76 cm. No son plantas: son los PELDAÑOS de las escaleras y las celdas de
+        // los conectores que suben (ADR-098 enm. 1 encendió `climb`, con contrahuellas de 18-26 cm).
+        // Contarlas como plantas habría inflado ×10 el número de plantas del mundo justo en la sonda
+        // que existe para decidir CUÁNTA gente vive en cada una.
+        //
+        // La planta de un tramo es su cota dividida por la altura de planta: un peldaño a 306 cm
+        // pertenece a la planta 0, que es de donde sale su escalera.
+        let storey_h = crate::world::wg3::plan::STOREY_HEIGHT_CM;
+        let mut by_storey: std::collections::BTreeMap<i32, (usize, usize)> = Default::default();
+        for s in region.segments() {
+            let e = by_storey
+                .entry(s.floor_y_cm.div_euclid(storey_h))
+                .or_default();
+            e.0 += 1;
+            // Los tramos que están EXACTAMENTE en la cota de la planta: el suelo de verdad, sin
+            // peldaños. Es el número que hay que mirar para repartir población.
+            if s.floor_y_cm.rem_euclid(storey_h) == 0 {
+                e.1 += 1;
+            }
+        }
+
+        let chunks = t0_wg2_chunks_of_region(rx, rz);
+        let mut rows = Vec::new();
+        let mut drawn = Vec::new();
+
+        for (storey_idx, (spaces, spaces_flat)) in by_storey.iter() {
+            let storey = *storey_idx;
+            let spaces = *spaces;
+            let spaces_flat = *spaces_flat;
+            let floor_y_cm = storey * storey_h;
+            let player_y = t0_player_y(floor_y_cm);
+            // Se sigue publicando la capa de WG2 porque es la columna que explica el fallo, pero
+            // **el eje del sorteo es la PLANTA** desde T2, igual que en producción
+            // (`wg3_player_storey`). Medir con la capa daría una población que el juego no reparte:
+            // el eje entra en la semilla, así que no es sólo la densidad lo que cambia.
+            let layer = world_pos_to_layer(player_y);
+            // Y por debajo de cero no se reparte, que es lo que decidió T2 mientras no haya política.
+            let Ok(axis) = u8::try_from(storey) else {
+                rows.push(T0StoreyRow {
+                    storey,
+                    floor_y_cm,
+                    spaces,
+                    spaces_flat,
+                    player_y,
+                    layer,
+                    adults_drawn: 0,
+                    adults_kept: 0,
+                    packs_drawn: 0,
+                    pack_members: 0,
+                });
+                continue;
+            };
+
+            let mut adults_drawn = 0usize;
+            let mut adults_kept = 0usize;
+            let mut packs_drawn = 0usize;
+            let mut pack_members = 0usize;
+
+            for (cx, cz) in &chunks {
+                draw_adults_into(
+                    SERVED_SEED,
+                    *cx,
+                    *cz,
+                    axis,
+                    T0_DENSITY_SCALE,
+                    true,
+                    &mut drawn,
+                );
+                adults_drawn += drawn.len();
+                for (index, pos) in drawn.iter().copied().enumerate() {
+                    // Igual que `wg3_spawn_point`: el papel sale del espacio donde cae el hueco, y
+                    // desde T1 ese espacio es el de LA PLANTA que se sortea, no el de más abajo. Un
+                    // hueco cuya vertical no llega a esa planta no se queda con nadie.
+                    let style = region
+                        .space_on_storey_at_xz(pos[0], pos[2], storey)
+                        .map(|s| s.style);
+                    if wg3_keeps_position(SERVED_SEED, *cx, *cz, axis, index, style) {
+                        adults_kept += 1;
+                    }
+                }
+
+                draw_child_pack_into(
+                    SERVED_SEED,
+                    *cx,
+                    *cz,
+                    axis,
+                    T0_DENSITY_SCALE,
+                    true,
+                    &mut drawn,
+                );
+                // LA MANADA SE DECIDE ENTERA, con el hueco de CABEZA, igual que producción
+                // (ADR-109 D5 + T1): si la cabeza no tiene espacio en esta planta o su papel no la
+                // concentra, no hay manada. Sin este filtro la sonda contaba manadas que el juego
+                // nunca llega a soltar.
+                if let Some(cabeza) = drawn.first().copied() {
+                    let style = region
+                        .space_on_storey_at_xz(cabeza[0], cabeza[2], storey)
+                        .map(|s| s.style);
+                    if style.is_some() && wg3_keeps_position(SERVED_SEED, *cx, *cz, axis, 0, style)
+                    {
+                        packs_drawn += 1;
+                        pack_members += drawn.len();
+                    }
+                }
+            }
+
+            rows.push(T0StoreyRow {
+                storey,
+                floor_y_cm,
+                spaces,
+                spaces_flat,
+                player_y,
+                layer,
+                adults_drawn,
+                adults_kept,
+                packs_drawn,
+                pack_members,
+            });
+        }
+
+        println!(
+            "\n[T0] REGION ({rx},{rz}) - {} plantas servidas",
+            rows.len()
+        );
+        println!("[T0] planta cota_cm espacios en_cota jugador_y capa_WG2 sorteados quedan manadas miembros");
+        for r in &rows {
+            println!(
+                "[T0]   {:>4} {:>7} {:>8} {:>8} {:>9.2} {:>8} {:>9} {:>6} {:>7} {:>8}",
+                r.storey,
+                r.floor_y_cm,
+                r.spaces,
+                r.spaces_flat,
+                r.player_y,
+                r.layer,
+                r.adults_drawn,
+                r.adults_kept,
+                r.packs_drawn,
+                r.pack_members,
+            );
+        }
+        all_rows.push((rx, rz, rows));
+    }
+
+    // ── El veredicto, impreso para que no haya que deducirlo de la tabla ──
+    println!("\n[T0] ====== VEREDICTO ======");
+    let mut poblada_baja = 0usize;
+    let mut vacias_arriba = 0usize;
+    let mut pobladas_arriba = 0usize;
+    let mut espacios_arriba = 0usize;
+    let mut bajo_cota = 0usize;
+    let mut espacios_bajo_cota = 0usize;
+    for (_rx, _rz, rows) in &all_rows {
+        for r in rows {
+            match r.storey.cmp(&0) {
+                std::cmp::Ordering::Equal => {
+                    if r.adults_kept > 0 {
+                        poblada_baja += 1;
+                    }
+                }
+                // POR ENCIMA de la planta baja: lo que este plan viene a poblar.
+                std::cmp::Ordering::Greater => {
+                    espacios_arriba += r.spaces;
+                    match r.adults_kept + r.pack_members {
+                        0 => vacias_arriba += 1,
+                        _ => pobladas_arriba += 1,
+                    }
+                }
+                // POR DEBAJO. Se cuenta aparte y no como «poblada»: una Y negativa satura a capa 0
+                // al convertirse a `u8`, así que estas filas repiten la población de la planta baja
+                // en vez de tener una propia. Meterlas en el mismo saco diría «hay plantas altas
+                // pobladas» cuando no hay ninguna.
+                std::cmp::Ordering::Less => {
+                    bajo_cota += 1;
+                    espacios_bajo_cota += r.spaces;
+                }
+            }
+        }
+    }
+    println!(
+        "[T0] plantas bajas con poblacion: {poblada_baja} de {}",
+        all_rows.len()
+    );
+    println!(
+        "[T0] plantas POR ENCIMA de la baja: {vacias_arriba} vacias, {pobladas_arriba} pobladas"
+    );
+    println!("[T0] espacios servidos por encima de la baja: {espacios_arriba}");
+    println!(
+        "[T0] plantas por DEBAJO de cota 0: {bajo_cota} ({espacios_bajo_cota} tramos) - ver nota"
+    );
+
+    // Lo ÚNICO que se exige: que haya mundo que medir. Sin esto, un cero de arriba podría ser
+    // "no hay plantas altas" en vez de "las plantas altas están vacías", y son cosas distintas.
+    let total_storeys: usize = all_rows.iter().map(|(_, _, r)| r.len()).sum();
+    assert!(
+        total_storeys > AUDIT_REGIONS.len(),
+        "ninguna region audita mas de una planta: la sonda no tiene nada que medir"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// T2 de PLAN-PLANTAS-ALTAS.md — EL EJE DE PLANTA, Y QUE NO COLAPSE NI SE TRAGUE LAS COTAS NEGATIVAS
+//
+// Estos SÍ exigen. Son el gate de T2: cada uno fija una de las formas en las que la capa de 4 m de
+// WG2 mentía sobre un mundo de plantas de 3,32.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// **La planta N es la planta N.** El caso base, y el que la capa de WG2 fallaba desde la 1.
+#[test]
+fn every_storey_maps_to_itself_and_not_to_a_wg2_layer() {
+    use crate::world::grid_gen::world_pos_to_layer;
+    use crate::world::wg3::plan::{storey_of_floor_cm, REGION_STOREYS, STOREY_HEIGHT_CM};
+
+    for storey in 0..REGION_STOREYS as i32 {
+        let floor_y_cm = storey * STOREY_HEIGHT_CM;
+        assert_eq!(
+            storey_of_floor_cm(floor_y_cm),
+            storey,
+            "la planta {storey} (cota {floor_y_cm} cm) no se clasifica en si misma"
+        );
+    }
+
+    // Y la prueba de que esto NO es lo que hacia el eje viejo: con la capa de WG2, un jugador de pie
+    // en la planta 1 daba capa 1 —densidad cero— y de la planta 4 en adelante todas colapsaban en la
+    // capa 3. Si algun dia `world_pos_to_layer` dejara de hacer esto, este test lo dira y la
+    // migracion podra simplificarse.
+    let layer_of_storey =
+        |s: i32| world_pos_to_layer(s as f32 * STOREY_HEIGHT_CM as f32 / 100.0 + 1.8);
+    assert_ne!(
+        layer_of_storey(1),
+        0,
+        "la capa de WG2 ya no confunde la planta 1: revisar si este eje sigue haciendo falta"
+    );
+    assert_eq!(
+        (layer_of_storey(4), layer_of_storey(9)),
+        (3, 3),
+        "la capa de WG2 ha dejado de saturar: el motivo de este eje ha cambiado"
+    );
+}
+
+/// **Las plantas altas NO colapsan.** Cuatro plantas distintas, cuatro respuestas distintas — que es
+/// exactamente lo que la saturacion a `u8` de la capa de WG2 impedia de la planta 4 en adelante.
+#[test]
+fn upper_storeys_stay_distinct_instead_of_collapsing() {
+    use crate::world::wg3::plan::{storey_of_floor_cm, REGION_STOREYS, STOREY_HEIGHT_CM};
+
+    let seen: std::collections::BTreeSet<i32> = (0..REGION_STOREYS as i32)
+        .map(|s| storey_of_floor_cm(s * STOREY_HEIGHT_CM))
+        .collect();
+    assert_eq!(
+        seen.len(),
+        REGION_STOREYS,
+        "{} plantas distintas colapsan en {} valores",
+        REGION_STOREYS,
+        seen.len()
+    );
+}
+
+/// **Una cota negativa NO es la planta 0.** El fallo que T0 destapó: `(y / 4.0) as u8` satura a 0 con
+/// Y negativa, así que un jugador a −1,52 m se clasificaba en la planta baja y heredaba su población.
+/// Hay 113 tramos por debajo de cero en las cuatro regiones auditadas, así que no es hipotético.
+#[test]
+fn geometry_below_zero_is_not_the_ground_floor() {
+    use crate::world::grid_gen::world_pos_to_layer;
+    use crate::world::wg3::plan::{storey_of_floor_cm, STOREY_HEIGHT_CM};
+
+    for cota in [-1, -12, -60, -STOREY_HEIGHT_CM, -2 * STOREY_HEIGHT_CM] {
+        assert!(
+            storey_of_floor_cm(cota) < 0,
+            "la cota {cota} cm se clasifica en la planta {} y deberia ser negativa",
+            storey_of_floor_cm(cota)
+        );
+    }
+
+    // El eje viejo, en cambio, las metia en la planta baja. Es la razon por la que la sonda de T0
+    // dijo «4 plantas altas pobladas» cuando las pobladas eran cero.
+    assert_eq!(
+        world_pos_to_layer(-1.52),
+        0,
+        "si la capa de WG2 ya no satura en negativo, revisar la nota de T0"
+    );
+}
+
+/// **Y el que cierra el gate: una cota negativa queda FUERA del reparto, no dentro de la planta 0.**
+///
+/// Se mide sobre el mundo servido y no sobre una maqueta: la region (0,0) tiene tramos por debajo de
+/// cero de verdad (peldaños y conectores que bajan), y lo que se exige es que ninguno de ellos se
+/// clasifique en una planta que reciba poblacion.
+#[test]
+fn no_served_segment_below_zero_lands_on_a_populated_storey() {
+    use crate::world::wg3::plan::storey_of_floor_cm;
+
+    let m = real_manifest();
+    let mut bajo_cero = 0usize;
+    for (rx, rz) in AUDIT_REGIONS {
+        let region = Wg3ServedWorld::plan_region(&m, SERVED_SEED, Wg3RegionCoord { x: rx, z: rz });
+        for s in region.segments() {
+            if s.floor_y_cm < 0 {
+                bajo_cero += 1;
+                assert!(
+                    storey_of_floor_cm(s.floor_y_cm) < 0,
+                    "({rx},{rz}): un tramo a {} cm se clasifica en la planta {}, que si recibe poblacion",
+                    s.floor_y_cm,
+                    storey_of_floor_cm(s.floor_y_cm)
+                );
+            }
+        }
+    }
+    // Que la sonda no este ciega: si el mundo dejara de tener geometria bajo cero, este test pasaria
+    // sin comprobar nada y habria que enterarse.
+    assert!(
+        bajo_cero > 0,
+        "ninguna region servida tiene geometria bajo la cota 0: este test ya no mide nada"
+    );
+}
+
+/// **T0 (b) — LA TABLA DE VERDAD DE `world_pos_to_layer` CONTRA LAS PLANTAS DE WG3.**
+///
+/// Aísla el mecanismo: qué capa de WG2 le toca a un jugador de pie en cada planta de WG3, y qué
+/// densidad tiene esa capa en las tablas que gobiernan el sorteo. Es la sonda que dice si la causa
+/// es ésta o hay que buscar en otro sitio.
+#[test]
+#[ignore = "sonda: imprime, no exige"]
+fn probe_wg3_storey_to_wg2_layer() {
+    use crate::world::faceling_spawn::{
+        FACELING_ADULT_LAYER_DENSITY, FACELING_CHILD_PACK_LAYER_PROBABILITY,
+    };
+    use crate::world::grid_gen::world_pos_to_layer;
+    use crate::world::phantom_spawn::PHANTOM_LAYER_DENSITY;
+
+    println!(
+        "\n[T0] planta cota_m jugador_y capa_WG2 densidad_adultos prob_manada densidad_robapieles"
+    );
+    let mut primera_muda: Option<usize> = None;
+    for storey in 0..crate::world::wg3::plan::REGION_STOREYS {
+        let floor_y_cm = storey as i32 * crate::world::wg3::plan::STOREY_HEIGHT_CM;
+        let player_y = t0_player_y(floor_y_cm);
+        let layer = world_pos_to_layer(player_y);
+        let adult = FACELING_ADULT_LAYER_DENSITY
+            .get(layer as usize)
+            .copied()
+            .unwrap_or(0.0);
+        let pack = FACELING_CHILD_PACK_LAYER_PROBABILITY
+            .get(layer as usize)
+            .copied()
+            .unwrap_or(0.0);
+        let phantom = PHANTOM_LAYER_DENSITY
+            .get(layer as usize)
+            .copied()
+            .unwrap_or(0.0);
+        println!(
+            "[T0]   {:>4} {:>6.2} {:>9.2} {:>8} {:>16.2} {:>11.2} {:>19.2}",
+            storey,
+            floor_y_cm as f32 / 100.0,
+            player_y,
+            layer,
+            adult,
+            pack,
+            phantom
+        );
+        if adult == 0.0 && primera_muda.is_none() {
+            primera_muda = Some(storey);
+        }
+    }
+    match primera_muda {
+        Some(s) => println!(
+            "[T0] == PRIMERA PLANTA MUDA: la {s}. De ahi para arriba el sorteo devuelve cero antes de mirar el mundo."
+        ),
+        None => println!("[T0] == ninguna planta queda muda por la capa."),
+    }
+}
+
+/// **T0 (c) — ¿LA RETIRADA POR CAPA DESALOJA AL SUBIR DE PLANTA?**
+///
+/// `AdultDriver::sync_population` retira con `world_pos_to_layer(p.y) != m.layer` y `ChildDriver`
+/// con `!= pack.layer`. Si dos plantas de WG3 caen en capas distintas, subir una planta hace que
+/// TODO lo que estaba activo en la de abajo deje de estarlo — que es un síntoma distinto de "arriba
+/// no nace nadie" y que se nota más, porque vacía lo que ya estabas viendo.
+#[test]
+#[ignore = "sonda: imprime, no exige"]
+fn probe_storey_change_evicts_by_layer() {
+    use crate::world::grid_gen::world_pos_to_layer;
+
+    let storeys = 6usize;
+    println!("\n[T0] subir de planta N a N+1: cambia la capa y desaloja lo de la planta N?");
+    let mut desalojos = 0usize;
+    for storey in 0..storeys.saturating_sub(1) {
+        let here = world_pos_to_layer(t0_player_y(
+            storey as i32 * crate::world::wg3::plan::STOREY_HEIGHT_CM,
+        ));
+        let up = world_pos_to_layer(t0_player_y(
+            (storey + 1) as i32 * crate::world::wg3::plan::STOREY_HEIGHT_CM,
+        ));
+        let evicts = here != up;
+        if evicts {
+            desalojos += 1;
+        }
+        println!(
+            "[T0]   planta {storey} (capa {here}) -> planta {} (capa {up}): {}",
+            storey + 1,
+            match evicts {
+                true => "DESALOJA lo de la planta de abajo",
+                false => "conserva",
+            }
+        );
+    }
+    println!(
+        "[T0] == transiciones que desalojan: {desalojos} de {}",
+        storeys - 1
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// T1 de PLAN-PLANTAS-ALTAS.md — LOS ESPACIOS DE WG3 COMO AUTORIDAD DEL REPARTO
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// **Una consulta por planta devuelve espacios de ESA planta y de ninguna otra.**
+///
+/// Es lo que `lowest_space_at_xz` no podía dar y por lo que el reparto nacía siempre abajo.
+#[test]
+fn a_storey_query_never_mixes_spaces_from_other_storeys() {
+    use crate::world::wg3::plan::storey_of_floor_cm;
+
+    let m = real_manifest();
+    let mut comprobados = 0usize;
+    for (rx, rz) in AUDIT_REGIONS {
+        let region = Wg3ServedWorld::plan_region(&m, SERVED_SEED, Wg3RegionCoord { x: rx, z: rz });
+        // Centros de tramos reales: puntos que sabemos que caen dentro de algo.
+        for seg in region.segments().iter().take(120) {
+            let x = (seg.x_cm + seg.size_x_cm / 2) as f32 / 100.0;
+            let z = (seg.z_cm + seg.size_z_cm / 2) as f32 / 100.0;
+            for storey in -1..5i32 {
+                if let Some(s) = region.space_on_storey_at_xz(x, z, storey) {
+                    assert_eq!(
+                        storey_of_floor_cm(s.floor_y_cm),
+                        storey,
+                        "({rx},{rz}) pidiendo la planta {storey} contesta un espacio a {} cm",
+                        s.floor_y_cm
+                    );
+                    comprobados += 1;
+                }
+            }
+        }
+    }
+    assert!(comprobados > 0, "ninguna consulta resolvio un espacio");
+}
+
+/// **Ni espacios fantasma ni espacios perdidos**: `spaces_at_xz` devuelve exactamente los tramos que
+/// contienen el punto, ordenados de abajo arriba, y su primero es el que daba `lowest_space_at_xz`.
+#[test]
+fn spaces_at_xz_is_ordered_and_agrees_with_the_lowest() {
+    let m = real_manifest();
+    let mut con_varias = 0usize;
+    for (rx, rz) in AUDIT_REGIONS {
+        let region = Wg3ServedWorld::plan_region(&m, SERVED_SEED, Wg3RegionCoord { x: rx, z: rz });
+        for seg in region.segments().iter().take(150) {
+            let x = (seg.x_cm + seg.size_x_cm / 2) as f32 / 100.0;
+            let z = (seg.z_cm + seg.size_z_cm / 2) as f32 / 100.0;
+            let all = region.spaces_at_xz(x, z);
+            assert!(
+                !all.is_empty(),
+                "({rx},{rz}) el centro de un tramo no resuelve ni un espacio"
+            );
+            // Orden por cota, de abajo arriba.
+            for w in all.windows(2) {
+                assert!(
+                    w[0].floor_y_cm <= w[1].floor_y_cm,
+                    "({rx},{rz}) spaces_at_xz devuelve las cotas desordenadas"
+                );
+            }
+            // Sin fantasmas: todo lo devuelto contiene de verdad el punto.
+            let x_cm = (x * 100.0).round() as i32;
+            let z_cm = (z * 100.0).round() as i32;
+            for s in &all {
+                assert!(
+                    x_cm >= s.x_cm
+                        && x_cm <= s.x_cm + s.size_x_cm
+                        && z_cm >= s.z_cm
+                        && z_cm <= s.z_cm + s.size_z_cm,
+                    "({rx},{rz}) spaces_at_xz devuelve un espacio que no contiene el punto"
+                );
+            }
+            // Y el primero es el mismo que contestaba la funcion vieja.
+            if let Some(low) = region.lowest_space_at_xz(x, z) {
+                assert_eq!(
+                    all[0].floor_y_cm, low.floor_y_cm,
+                    "({rx},{rz}) el primero de spaces_at_xz no es el mas bajo"
+                );
+            }
+            if all.len() > 1 {
+                con_varias += 1;
+            }
+        }
+    }
+    // Si ninguna vertical tuviera mas de un espacio, este test no estaria midiendo un mundo apilado.
+    assert!(
+        con_varias > 0,
+        "ninguna vertical tiene mas de un espacio: no hay plantas que distinguir"
+    );
+}
+
+/// **Las plantas altas tienen espacios utilizables donde de verdad existen.** No basta con que la
+/// consulta sea correcta: si el mundo servido no ofreciera espacio en las plantas altas, el reparto
+/// de T3 no tendria donde poner a nadie y el problema seria otro.
+#[test]
+fn upper_storeys_offer_usable_spaces_where_they_exist() {
+    use crate::world::wg3::plan::storey_of_floor_cm;
+
+    let m = real_manifest();
+    for (rx, rz) in AUDIT_REGIONS {
+        let region = Wg3ServedWorld::plan_region(&m, SERVED_SEED, Wg3RegionCoord { x: rx, z: rz });
+        let mut por_planta: std::collections::BTreeMap<i32, usize> = Default::default();
+        for s in region.segments() {
+            *por_planta
+                .entry(storey_of_floor_cm(s.floor_y_cm))
+                .or_default() += 1;
+        }
+        // Toda planta por encima de la baja que exista tiene que poder resolverse por consulta.
+        for (storey, count) in por_planta.iter().filter(|(s, _)| **s > 0) {
+            let seg = region
+                .segments()
+                .iter()
+                .find(|s| storey_of_floor_cm(s.floor_y_cm) == *storey)
+                .expect("la planta se conto a partir de sus tramos");
+            let x = (seg.x_cm + seg.size_x_cm / 2) as f32 / 100.0;
+            let z = (seg.z_cm + seg.size_z_cm / 2) as f32 / 100.0;
+            assert!(
+                region.space_on_storey_at_xz(x, z, *storey).is_some(),
+                "({rx},{rz}) la planta {storey} tiene {count} tramos y no resuelve ni uno"
+            );
+        }
+    }
+}
+
+/// **T3 de PLAN-PLANTAS-ALTAS.md — DE DÓNDE SALE EL VACÍO DE LAS PLANTAS ALTAS.**
+///
+/// Con T2 (eje de planta) y T1 (espacio de esa planta) puestos, arriba sigue sin nacer casi nadie.
+/// Esta sonda separa las TRES causas posibles para no calibrar a ciegas:
+///
+/// 1. **Cobertura** — cuántos de los huecos sorteados tienen espacio EN esa planta. El edificio se
+///    estrecha al subir (ADR-102 D3), así que la planta 4 ocupa una fracción de la huella de la 0.
+/// 2. **Papel** — de los que sí tienen espacio, cuántos caen en oficina (`style` 0).
+/// 3. **El filtro de concentración** — cuántos sobreviven a `FACELING_WG3_OFFICE_KEEP`, que se
+///    calibró contra una planta baja y contra un mundo de UNA planta poblada.
+#[test]
+#[ignore = "sonda: imprime, no exige"]
+fn probe_storey_coverage_and_population() {
+    use crate::world::faceling_spawn::{draw_adults_into, wg3_keeps_position};
+    use crate::world::wg3::plan::storey_of_floor_cm;
+
+    let m = real_manifest();
+    println!(
+        "\n[T3] planta  sorteados  con_espacio  cobertura  oficina  quedan  esperado_por_region"
+    );
+    let mut tot_por_planta: std::collections::BTreeMap<i32, (usize, usize, usize, usize)> =
+        Default::default();
+
+    // **Muestra ancha a propósito.** Con las cuatro regiones de auditoría, una planta con el 8 % de
+    // cobertura espera 1,1 adultos y sacar CERO no distingue «vacía por pequeña» de «vacía por un
+    // fallo». 25 regiones dan cuentas con las que se puede DECIDIR el modelo de densidad en vez de
+    // adivinarlo — que es para lo que existe esta sonda.
+    const T3_REGIONS: usize = 25;
+    let regiones: Vec<(i32, i32)> = (0..5).flat_map(|x| (0..5).map(move |z| (x, z))).collect();
+    for (rx, rz) in regiones.iter().copied() {
+        let region = Wg3ServedWorld::plan_region(&m, SERVED_SEED, Wg3RegionCoord { x: rx, z: rz });
+        let mut plantas: std::collections::BTreeSet<i32> = Default::default();
+        for s in region.segments() {
+            plantas.insert(storey_of_floor_cm(s.floor_y_cm));
+        }
+        let chunks = t0_wg2_chunks_of_region(rx, rz);
+        let mut drawn = Vec::new();
+
+        for storey in plantas.iter().copied().filter(|s| *s >= 0) {
+            let axis = storey as u8;
+            let (mut sorteados, mut con_espacio, mut oficina, mut quedan) = (0, 0, 0, 0);
+            for (cx, cz) in &chunks {
+                draw_adults_into(
+                    SERVED_SEED,
+                    *cx,
+                    *cz,
+                    axis,
+                    T0_DENSITY_SCALE,
+                    true,
+                    &mut drawn,
+                );
+                for (index, pos) in drawn.iter().copied().enumerate() {
+                    sorteados += 1;
+                    let style = region
+                        .space_on_storey_at_xz(pos[0], pos[2], storey)
+                        .map(|s| s.style);
+                    if style.is_some() {
+                        con_espacio += 1;
+                    }
+                    if style == Some(0) {
+                        oficina += 1;
+                    }
+                    if wg3_keeps_position(SERVED_SEED, *cx, *cz, axis, index, style) {
+                        quedan += 1;
+                    }
+                }
+            }
+            let e = tot_por_planta.entry(storey).or_default();
+            e.0 += sorteados;
+            e.1 += con_espacio;
+            e.2 += oficina;
+            e.3 += quedan;
+        }
+    }
+
+    for (storey, (sorteados, con_espacio, oficina, quedan)) in &tot_por_planta {
+        let cobertura = match sorteados {
+            0 => 0.0,
+            n => *con_espacio as f32 / *n as f32 * 100.0,
+        };
+        println!(
+            "[T3]   {:>4}  {:>9}  {:>11}  {:>8.1}%  {:>7}  {:>6}  {:>19.2}",
+            storey,
+            sorteados,
+            con_espacio,
+            cobertura,
+            oficina,
+            quedan,
+            *quedan as f32 / T3_REGIONS as f32
+        );
+    }
+    let total: usize = tot_por_planta.values().map(|v| v.3).sum();
+    let baja = tot_por_planta.get(&0).map(|v| v.3).unwrap_or(0);
+    println!(
+        "[T3] == total {total} en {T3_REGIONS} regiones · planta baja {baja} · plantas altas {}",
+        total - baja
+    );
+}
+
+/// **EL GATE DE T3 — la distribución vertical, con las tres formas de romperla vigiladas.**
+///
+/// La banda de ±25 % de ADR-109 D5 vigila la PLANTA BAJA contra WG2 y sigue haciéndolo
+/// (`probe_faceling_draw_under_wg3`). Lo que no vigilaba nadie es lo que T3 decidió: que las plantas
+/// altas se pueblen, que no se saturen, y que la baja no se vacíe para conseguirlo.
+#[test]
+fn the_vertical_population_is_intentional() {
+    use crate::world::faceling_spawn::{draw_adults_into, wg3_keeps_position};
+    use crate::world::wg3::plan::storey_of_floor_cm;
+
+    let m = real_manifest();
+    // Misma muestra ancha que la sonda que decidió el modelo: con cuatro regiones, una planta alta
+    // saca cuentas de un dígito y el ruido del sorteo pesa más que el modelo.
+    let regiones: Vec<(i32, i32)> = (0..5).flat_map(|x| (0..5).map(move |z| (x, z))).collect();
+    let mut por_planta: std::collections::BTreeMap<i32, usize> = Default::default();
+    let mut drawn = Vec::new();
+
+    for (rx, rz) in regiones.iter().copied() {
+        let region = Wg3ServedWorld::plan_region(&m, SERVED_SEED, Wg3RegionCoord { x: rx, z: rz });
+        let mut plantas: std::collections::BTreeSet<i32> = Default::default();
+        for s in region.segments() {
+            plantas.insert(storey_of_floor_cm(s.floor_y_cm));
+        }
+        for storey in plantas.iter().copied().filter(|s| *s >= 0) {
+            let axis = storey as u8;
+            for (cx, cz) in t0_wg2_chunks_of_region(rx, rz) {
+                draw_adults_into(SERVED_SEED, cx, cz, axis, 1.0, true, &mut drawn);
+                for (index, pos) in drawn.iter().copied().enumerate() {
+                    let style = region
+                        .space_on_storey_at_xz(pos[0], pos[2], storey)
+                        .map(|s| s.style);
+                    if wg3_keeps_position(SERVED_SEED, cx, cz, axis, index, style) {
+                        *por_planta.entry(storey).or_default() += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    let baja = por_planta.get(&0).copied().unwrap_or(0);
+    let altas: usize = por_planta
+        .iter()
+        .filter(|(s, _)| **s > 0)
+        .map(|(_, n)| n)
+        .sum();
+    let bajo_cero: usize = por_planta
+        .iter()
+        .filter(|(s, _)| **s < 0)
+        .map(|(_, n)| n)
+        .sum();
+
+    // 1. La planta baja NO se sacrifica. Es la mitad de la decisión de T3 y la que se rompe sola si
+    //    alguien busca simetría vertical bajando la densidad base.
+    assert!(
+        baja >= 40,
+        "la planta baja se ha quedado en {baja} sobre 25 regiones: se esta vaciando para poblar arriba"
+    );
+
+    // 2. Las plantas altas SÍ se pueblan. Es lo que T0 midió a cero y lo que T2+T1 vienen a arreglar.
+    assert!(
+        altas > 0,
+        "ninguna planta por encima de la baja recibe poblacion: T2/T1 han dejado de hacer efecto"
+    );
+
+    // 3. Y NO se saturan. El edificio se estrecha al subir, asi que la suma de todo lo que hay
+    //    arriba tiene que seguir siendo menor que la planta baja sola. Si esto se invierte, el mundo
+    //    tiene mas gente en las torres que en la calle y el reparto ha dejado de seguir la geometria.
+    assert!(
+        altas < baja,
+        "las plantas altas suman {altas} contra {baja} de la baja: el reparto vertical esta saturado"
+    );
+
+    // 4. Y bajo la cota 0 no nace nadie, que es lo que T2 dejo explicitamente fuera.
+    assert_eq!(
+        bajo_cero, 0,
+        "han nacido {bajo_cero} criaturas bajo la cota 0, que no tiene politica de poblacion"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// T4 de PLAN-PLANTAS-ALTAS.md — EL ROBAPIELES, QUE NO ES UNA COPIA DEL FACELING
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// **El robapieles puede nacer en las plantas válidas, y su cuenta NO se compara contra una banda.**
+///
+/// Es UNO, no una población: lo que hay que exigirle es que siga existiendo por encima de la planta
+/// baja, no que su censo case con WG2. La densidad plana de T3 aplicada a su propia constante.
+#[test]
+fn the_phantom_draw_reaches_upper_storeys() {
+    use crate::world::phantom_spawn::{block_of, draw_into};
+
+    let mut por_planta: std::collections::BTreeMap<u8, usize> = Default::default();
+    let mut drawn = Vec::new();
+    let (bx1, bz1) = block_of(600.0, 600.0);
+    for storey in 0..5u8 {
+        for bx in 0..=bx1 {
+            for bz in 0..=bz1 {
+                draw_into(SERVED_SEED, (bx, bz), storey, 1.0, true, &mut drawn);
+                *por_planta.entry(storey).or_default() += drawn.len();
+            }
+        }
+    }
+    for storey in 0..5u8 {
+        let n = por_planta.get(&storey).copied().unwrap_or(0);
+        assert!(
+            n > 0,
+            "la planta {storey} no sortea ni un robapieles: el eje sigue siendo la capa de WG2"
+        );
+    }
+    // Y con WG2 la tabla vieja sigue mandando, intacta: capas 1-3 a cero (ADR-043 D-TABLA).
+    for layer in 1..4u8 {
+        let mut wg2 = Vec::new();
+        let mut total = 0usize;
+        for bx in 0..=bx1 {
+            for bz in 0..=bz1 {
+                draw_into(SERVED_SEED, (bx, bz), layer, 1.0, false, &mut wg2);
+                total += wg2.len();
+            }
+        }
+        assert_eq!(
+            total, 0,
+            "la capa {layer} de WG2 se ha poblado: su semantica tenia que quedar intacta"
+        );
     }
 }

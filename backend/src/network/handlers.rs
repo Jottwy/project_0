@@ -6,7 +6,7 @@
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
-use log::{info, warn};
+use log::{debug, info, warn};
 
 use super::peer::PeerConnection;
 use super::protocol::{PacketPayload, PeerInfo, SessionConfig};
@@ -41,7 +41,14 @@ impl NetworkManager {
             .iter()
             .any(|(id, p)| *id != sender_id && p.addr == pkt.addr);
         let mut log_last_seen_update = false;
+        // HBTRACE: el hueco REAL entre este paquete y el anterior de ese mismo peer, medido antes
+        // de refrescar. Es el número que decide si se llega o no a los 5 s, y hasta ahora la traza
+        // imprimía `last_seen_ms=0` fijo — el único valor que jamás puede diagnosticar nada.
+        let mut gap_ms: u128 = 0;
+        let mut hb_known_peer = false;
         if let Some(peer) = self.peers.get_mut(&sender_id) {
+            hb_known_peer = true;
+            gap_ms = peer.last_heartbeat.elapsed().as_millis();
             if !relayed_from_other_peer {
                 peer.addr = pkt.addr;
             }
@@ -57,9 +64,35 @@ impl NetworkManager {
                 log_last_seen_update = true;
             }
         }
+        // HBTRACE: el latido explícito, separado del refresco genérico. Sin esta línea un
+        // `Heartbeat` que llega y uno que no se distinguen solo por ausencia, y la ausencia
+        // también la produce un peer que simplemente no está registrado con ese `sender_id`.
+        if matches!(pkt.payload, PacketPayload::Heartbeat) {
+            if hb_known_peer {
+                info!(
+                    "HBTRACE event=HEARTBEAT_RECEIVED self_id={} peer_id={} from={} gap_ms={}",
+                    self.local_id, sender_id, pkt.addr, gap_ms
+                );
+            } else {
+                warn!(
+                    "HBTRACE event=HEARTBEAT_RECEIVED_FROM_UNKNOWN self_id={} sender_id={} from={} registered_ids={:?}",
+                    self.local_id,
+                    sender_id,
+                    pkt.addr,
+                    self.peer_ids()
+                );
+            }
+        }
         if log_last_seen_update {
+            // Bajo el mismo throttle de 1/s que la traza de al lado: `record_heartbeat` corre en
+            // CADA paquete entrante (10-60 Hz con poses y chunks), y sin acotarlo esta línea sería
+            // el nuevo suelo de ruido del log en vez de la evidencia que se viene a leer.
             info!(
-                "MPTRACE step=N event=peer_last_seen_update reason=packet_received self_id={} peer_id={} endpoint={} addr_adopted={} last_seen_ms=0 peer_count={} remote_players_ids={:?}",
+                "HBTRACE event=LAST_SEEN_UPDATED self_id={} peer_id={} from={} packet_type=0x{:02X} gap_ms={}",
+                self.local_id, sender_id, pkt.addr, pkt.header.packet_type, gap_ms
+            );
+            info!(
+                "MPTRACE step=N event=peer_last_seen_update reason=packet_received self_id={} peer_id={} endpoint={} addr_adopted={} last_seen_ms={gap_ms} peer_count={} remote_players_ids={:?}",
                 self.local_id,
                 sender_id,
                 pkt.addr,
@@ -171,6 +204,10 @@ impl NetworkManager {
                         self.local_id, pkt.addr, reason
                     );
                     self.pending_connect_addr = None;
+                    // El intento ya tiene veredicto: sin esto el presupuesto de
+                    // `CONNECT_TIMEOUT` seguiría corriendo y emitiría un segundo motivo
+                    // ("nadie contestó") encima del real ("session full").
+                    self.pending_connect_started_at = None;
                     Some(NetworkEvent::ConnectRejected { reason })
                 } else {
                     None
@@ -217,6 +254,19 @@ impl NetworkManager {
                         let anim = peer.animation.clone();
                         peer.update_player_state(info.position, rot, anim);
                     } else if let Ok(addr) = info.addr.parse::<SocketAddr>() {
+                        // Auditoría de heartbeat (2026-08-30): la dirección tiene que ser de
+                        // ALGUIEN. Una sin especificar (`0.0.0.0`) significa "esta máquina" al
+                        // enviar: adoptarla convierte cada latido dirigido a ese peer en un
+                        // latido a uno mismo, y el peer real deja de recibir nada — expulsión
+                        // por heartbeat timeout con la red intacta. Inofensivo en una sola
+                        // máquina, mortal en cuanto hay dos.
+                        if !super::sync::is_routable_peer_addr(&addr) {
+                            warn!(
+                                "HBTRACE event=ROSTER_ADDR_REJECTED self_id={} peer_id={} advertised_addr={} reason=unroutable",
+                                self.local_id, info.id, info.addr
+                            );
+                            continue;
+                        }
                         let mut conn = PeerConnection::new(info.id, info.name.clone(), addr);
                         conn.update_player_state(info.position, 0.0, "idle".into());
                         self.peers.insert(info.id, conn);
@@ -637,10 +687,27 @@ impl NetworkManager {
             PacketPayload::WorldSyncChunk {
                 world_revision,
                 data,
-            } => Some(NetworkEvent::WorldSyncChunkReceived {
-                world_revision,
-                data,
-            }),
+            } => {
+                // Auditoría de MTU: un chunk denso viaja en páginas. NO se aplica ninguna hasta
+                // tenerlas todas — la capa reliable no garantiza orden, así que aplicar por
+                // separado dejaría el chunk a medias cuando la página 1 adelanta a la 0.
+                let pages = data.page_count;
+                self.chunk_pages
+                    .offer(world_revision, data)
+                    .map(|merged| NetworkEvent::WorldSyncChunkReceived {
+                        world_revision,
+                        data: merged,
+                    })
+                    .or_else(|| {
+                        debug!(
+                            "MTUPROBE event=chunk_page_buffered self_id={} pages={} pending_chunks={}",
+                            self.local_id,
+                            pages,
+                            self.chunk_pages.pending_len()
+                        );
+                        None
+                    })
+            }
 
             PacketPayload::WorldSyncEnd {
                 world_revision,
@@ -708,8 +775,23 @@ impl NetworkManager {
             }),
 
             PacketPayload::Ack { acked_sequence } => {
+                // RELTRACE: `matched=false` es señal, no ruido — significa un ACK para algo que
+                // ya no está en la ventana (duplicado tras un reenvío, o llegado tarde). Sin
+                // esta línea, "el ACK no vuelve" y "el ACK vuelve y no encuentra su paquete" se
+                // ven exactamente igual desde fuera, y llevan a arreglos opuestos.
+                let self_id = self.local_id;
                 if let Some(peer) = self.peers.get_mut(&sender_id) {
-                    peer.process_ack(acked_sequence);
+                    let matched = peer.process_ack(acked_sequence);
+                    let in_flight = peer.reliable_queue.len();
+                    let deferred = peer.deferred_reliable.len();
+                    info!(
+                        "RELTRACE event=ACK_RECEIVED self_id={self_id} peer_id={sender_id} seq={acked_sequence} matched={matched} in_flight={in_flight} deferred={deferred}"
+                    );
+                } else {
+                    warn!(
+                        "RELTRACE event=ACK_FROM_UNKNOWN self_id={self_id} sender_id={sender_id} seq={acked_sequence} from={}",
+                        pkt.addr
+                    );
                 }
                 None
             }
@@ -1000,6 +1082,10 @@ impl NetworkManager {
         }
         self.phantom_density_scale = phantom_density_scale;
         self.pending_connect_addr = None;
+        // Entramos: el presupuesto de `CONNECT_TIMEOUT` deja de correr aquí. El guard de
+        // `retry_pending_connection` (`!self.peers.is_empty()`) ya cubriría esto, pero dejar el
+        // marcador puesto haría que un futuro lector creyera que hay un intento vivo.
+        self.pending_connect_started_at = None;
 
         // Add the host as a peer.
         let host_peer = PeerConnection::new(sender_id, "Host".to_string(), from_addr);

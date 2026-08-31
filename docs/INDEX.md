@@ -22,12 +22,29 @@
   estamos medido, fixes de E0 con archivo:línea, gates por etapa, calendario contra hitos y qué
   da Steam de verdad. Empieza aquí antes de cualquier trabajo de red orientado a capacidad.
 
+## Navegador de servidores
+- [SERVER_BROWSER.md](SERVER_BROWSER.md) — el navegador de servidores (2026-08-31): **discovery y
+  publishing por Steam** (`SteamLobbyDirectory` / `SteamLobbyPublisher` sobre
+  `SteamMatchmaking.LobbyList`), el anuncio del host gobernado por la FASE, filtro/orden/TTL, botón
+  *Buscar partida* y entrada por el ÚNICO camino de conexión — con el Host/Join por IP intacto.
+  **§14 es la sección nueva y la que hay que leer primero**: hasta el 2026-08-31 **Steam nunca
+  había inicializado** en este proyecto (faltaba el nativo `steam_api64.dll`), y el App ID ya no
+  está en el código de red sino en `SteamAppConfig` (entorno → `steam_appid.txt` → constante;
+  DEV 480 / PROD 5072740). §12 es el procedimiento de playtest de 12 pasos, **0 ejecutados**.
+  Cero wire, cero cambios en el protocolo.
+
 ## Salas autoradas
 - [ROOMS-ROADMAP.md](ROOMS-ROADMAP.md) — plan de trabajo del sistema de salas (2026-08-20), escrito
   para ejecutarse tal cual: qué está hecho y verificado, qué se puede tocar sin ADR y qué no, el
   techo del sistema, y las trampas que ya costaron tiempo. Empieza aquí antes de tocar salas.
 
 ## WorldGen3 (el mundo procedural)
+- [PLAN-PLANTAS-ALTAS.md](PLAN-PLANTAS-ALTAS.md) — plan de tandas para poblar las plantas altas
+  (ADR-110 D3). Seis tandas, cero wire, y una hipótesis que T0 mide antes de tocar nada: que el eje
+  de población siga siendo la CAPA de 4 m de WG2 vaciaría el mundo de criaturas ya en la segunda
+  planta.
+- [VERTICALITY-ROADMAP.md](VERTICALITY-ROADMAP.md) — geometrías verticales de WG3: tope de plantas
+  (torres, hecho), rampas, vacíos y caídas, conductos de ventilación, y poblar las plantas altas.
 - [WG3-ROADMAP.md](WG3-ROADMAP.md) — plan de trabajo de WorldGen3 (2026-08-28), escrito al cerrar
   ADR-102. Dónde estamos medido, lo que NO hay que volver a tocar, y los cuatro frentes que quedan
   —identidad visual, WG3 como autoridad, variedad de catálogo y la rareza Backrooms— ordenados con su
@@ -83,11 +100,28 @@
 - [STRUCTURES.md](STRUCTURES.md)
 - [REMOTEPLAYERS_GATE.md](REMOTEPLAYERS_GATE.md)
 
-> Los tres siguientes llevan `CURRENT` en el nombre pero están **congelados en 2026-06-08**. Se
+- [NETWORK_ARCHITECTURE_CURRENT.md](NETWORK_ARCHITECTURE_CURRENT.md) — transporte y roles.
+  **Ya no está congelado**: su cabecera dice que se revisó end-to-end el 2026-08-30 contra el
+  código y contra el binario en ejecución, durante la auditoría de conectividad Host/Join.
+
+> Los dos siguientes llevan `CURRENT` en el nombre pero están **congelados en 2026-06-08**. Se
 > mantienen porque su análisis sigue siendo útil; su inventario de ficheros y su estado NO lo son.
-- [NETWORK_ARCHITECTURE_CURRENT.md](NETWORK_ARCHITECTURE_CURRENT.md)
 - [STABILITY_AUDIT_CURRENT.md](STABILITY_AUDIT_CURRENT.md)
 - [ARCHITECTURE_RISK_REVIEW.md](ARCHITECTURE_RISK_REVIEW.md)
+
+## Ciclo de vida de sesión (Unity)
+- [architecture/NETWORKING_AND_SESSION_ARCHITECTURE.md](architecture/NETWORKING_AND_SESSION_ARCHITECTURE.md)
+  — puerta de entrada: qué contesta cada documento, las cinco causas raíz que arregló la tanda T6
+  (2026-08-30) y la frontera con el vendor. El transporte NO se repite aquí. **§14** añade Steam
+  como tercer canal (sólo metadatos), las tres puertas de entrada que desembocan en el mismo
+  `StartAsJoiner`, y la convivencia IP/Steam.
+- [architecture/SESSION_LIFECYCLE.md](architecture/SESSION_LIFECYCLE.md) — las ocho fases, el grafo
+  de transiciones, quién es dueño de qué, el teardown en orden, la política de cursor, la tabla de
+  errores y el procedimiento manual de verificación (§11).
+- [architecture/SESSION_INVARIANTS.md](architecture/SESSION_INVARIANTS.md) — las **quince**
+  invariantes, cada una con **quién la impone** y **qué la prueba**. Léelo antes de tocar conexión,
+  menú o cursor. I14 (una sesión que termina no deja anuncio en Steam, ni siquiera si termina
+  mientras Steam creaba el lobby) e I15 (Steam caído nunca bloquea la sesión) son de 2026-08-31.
 
 ## Documentos publicados (Artifacts)
 - [web/README.md](web/README.md) — mapa de los seis documentos publicados en claude.ai: URL, fichero fuente y estado. Contiene la regla de sincronización del Compendio (`web/compendio.html`), que comprime a los otros cuatro y hay que republicar en su URL cuando cualquiera cambie.

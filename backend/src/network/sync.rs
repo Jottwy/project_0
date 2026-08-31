@@ -15,7 +15,7 @@ use crate::utils::{world_to_chunk, Vec3};
 use crate::world::chunk::{Chunk, ChunkState};
 use crate::world::World;
 
-use log::info;
+use log::{info, warn};
 
 use super::protocol::{
     encode_packet, AnchorInfo, ChunkSyncData, EntitySyncData, ItemSyncData, PacketHeader,
@@ -70,6 +70,211 @@ pub fn chunk_to_sync_data(chunk: &Chunk) -> ChunkSyncData {
                 position: i.position.to_array(),
             })
             .collect(),
+        // Una sola página por defecto. `chunk_to_sync_pages` reetiqueta cuando parte.
+        page: 0,
+        page_count: 1,
+    }
+}
+
+/// Parte un chunk en las páginas que hagan falta para que NINGÚN datagrama supere
+/// `SAFE_DATAGRAM_BYTES`. Devuelve siempre al menos una.
+///
+/// El límite se comprueba CODIFICANDO, no estimando: el tamaño depende de `layout` (que varía por
+/// chunk) y de cadenas de longitud variable dentro de cada entidad e ítem (`entity_type`, `state`,
+/// `item_type`). Una estimación por conteo se desviaría justo en los chunks densos, que son
+/// exactamente los que rompen. Esto corre una vez por join, no por tick.
+///
+/// La cabecera se repite en cada página. Medido: 754 B de cabecera contra ~87 B por entidad, así
+/// que repetirla cuesta menos que cualquier esquema que la separase, y hace cada página
+/// AUTOSUFICIENTE — que es lo que permite aplicarlas en cualquier orden, como exige una capa
+/// reliable at-least-once y sin orden.
+pub fn chunk_to_sync_pages(chunk: &Chunk, world_revision: u64) -> Vec<ChunkSyncData> {
+    let full = chunk_to_sync_data(chunk);
+    if encoded_len(&full, world_revision) <= crate::network::protocol::SAFE_DATAGRAM_BYTES {
+        return vec![full];
+    }
+
+    // La cabecera sola no cabe: partir las listas no puede salvarlo. Se emite igual y el guard de
+    // `send_reliable_queued` lo denuncia — callarlo sería perder el chunk en silencio, que es peor
+    // que un datagrama fragmentado. Solo puede ocurrir si `layout` crece más allá de lo medido.
+    let mut probe = full.clone();
+    probe.entities.clear();
+    probe.items.clear();
+    if encoded_len(&probe, world_revision) > crate::network::protocol::SAFE_DATAGRAM_BYTES {
+        warn!(
+            "MTUPROBE event=chunk_header_exceeds_budget chunk=({},{}) layer={} bare_bytes={} budget={}",
+            full.pos[0],
+            full.pos[1],
+            full.layer,
+            encoded_len(&probe, world_revision),
+            crate::network::protocol::SAFE_DATAGRAM_BYTES
+        );
+        return vec![full];
+    }
+
+    let mut pages: Vec<ChunkSyncData> = Vec::new();
+    let mut entities = full.entities.clone();
+    let mut items = full.items.clone();
+    entities.reverse(); // se consumen con pop(), así se conserva el orden original
+    items.reverse();
+
+    while !entities.is_empty() || !items.is_empty() || pages.is_empty() {
+        let mut page = probe.clone();
+        // Llenado voraz, verificando tras cada añadido: en cuanto uno se pasa, se devuelve a la
+        // cola y la página se cierra. Nunca se emite una página que no se haya medido.
+        while let Some(e) = entities.pop() {
+            page.entities.push(e);
+            if encoded_len(&page, world_revision) > crate::network::protocol::SAFE_DATAGRAM_BYTES {
+                let back = page.entities.pop().expect("acabamos de meterlo");
+                entities.push(back);
+                break;
+            }
+        }
+        while let Some(i) = items.pop() {
+            page.items.push(i);
+            if encoded_len(&page, world_revision) > crate::network::protocol::SAFE_DATAGRAM_BYTES {
+                let back = page.items.pop().expect("acabamos de meterlo");
+                items.push(back);
+                break;
+            }
+        }
+        // Una página vacía con cosas pendientes significaría que un solo elemento no cabe ni con
+        // la cabecera: se fuerza para no entrar en bucle infinito, y el guard de emisión lo grita.
+        if page.entities.is_empty() && page.items.is_empty() {
+            if let Some(e) = entities.pop() {
+                page.entities.push(e);
+            } else if let Some(i) = items.pop() {
+                page.items.push(i);
+            }
+        }
+        pages.push(page);
+        if entities.is_empty() && items.is_empty() {
+            break;
+        }
+    }
+
+    let total = pages.len() as u16;
+    for (idx, page) in pages.iter_mut().enumerate() {
+        page.page = idx as u16;
+        page.page_count = total;
+    }
+    pages
+}
+
+/// Bytes que ocuparía este `ChunkSyncData` EN EL CABLE, cabecera de paquete incluida. Se mide
+/// contra el mismo `encode_packet` que usa el envío para que no puedan divergir.
+fn encoded_len(data: &ChunkSyncData, world_revision: u64) -> usize {
+    let payload = PacketPayload::WorldSyncChunk {
+        world_revision,
+        data: data.clone(),
+    };
+    let header = PacketHeader::new(payload.type_code(), 0, 1, 0);
+    crate::network::protocol::encode_packet(&header, &payload).len()
+}
+
+/// Ensamblador de las páginas de UN chunk del goteo de mundo (auditoría de MTU, 2026-08-30).
+///
+/// Existe porque la capa reliable es **at-least-once y SIN orden**: la página 1 puede llegar antes
+/// que la 0, y cualquiera puede llegar duplicada tras un ACK perdido. Con eso, "la página 0 limpia
+/// y las demás añaden" pierde datos en cuanto el orden se invierte. La única regla que sobrevive a
+/// reordenación y duplicados es no aplicar NADA hasta tener el juego completo, que es exactamente
+/// lo que ADR-060 ya decidió para los rosters (`RosterAssembler`). Mismo patrón, misma razón.
+///
+/// Clave `(revision, pos, layer)`: una revisión nueva del mundo invalida el ensamblado a medias de
+/// la anterior — su goteo quedó superseded y sus rezagados no deben mezclarse con el nuevo.
+#[derive(Debug, Default)]
+pub struct ChunkPageAssembler {
+    pending: std::collections::HashMap<(u64, [i32; 2], i8), PendingChunk>,
+    /// Orden de llegada de las claves, para poder desalojar la más vieja al desbordar. Misma
+    /// forma que `BoundedDedupeSet`, y por la misma razón.
+    order: std::collections::VecDeque<(u64, [i32; 2], i8)>,
+}
+
+/// Tope de chunks a medio ensamblar. Sin él, una página perdida deja su parcial en memoria PARA
+/// SIEMPRE: nadie la reclama, la revisión no cambia, y el goteo siguiente estrena claves nuevas.
+/// Es una fuga que introduce la propia paginación, así que se acota aquí y no se deja anotada.
+///
+/// 128 es holgado frente a lo que puede haber en vuelo de verdad: un goteo completo son los chunks
+/// del mundo (49-64 medidos) y solo los PARTIDOS ocupan sitio. Desalojar el más viejo es correcto
+/// porque un parcial que ya no recibe páginas no va a completarse nunca; la retransmisión fiable
+/// lo repone entero si el emisor sigue insistiendo.
+const PENDING_CHUNK_CAP: usize = 128;
+
+#[derive(Debug)]
+struct PendingChunk {
+    page_count: u16,
+    /// Páginas recibidas, por índice. `HashMap` y no `Vec` porque llegan desordenadas y
+    /// duplicadas: insertar por índice hace el dedupe gratis.
+    pages: std::collections::HashMap<u16, ChunkSyncData>,
+}
+
+impl ChunkPageAssembler {
+    /// Entrega una página. Devuelve el chunk COMPLETO —con sus listas reunidas en el orden de
+    /// página— la primera vez que se completa, y `None` mientras falte alguna.
+    ///
+    /// Un chunk de una sola página (`page_count <= 1`) sale tal cual, sin tocar el mapa: es el
+    /// caso común y no debe pagar ninguna estructura.
+    pub fn offer(&mut self, world_revision: u64, data: ChunkSyncData) -> Option<ChunkSyncData> {
+        if data.page_count <= 1 {
+            return Some(data);
+        }
+
+        let key = (world_revision, data.pos, data.layer);
+        let page_count = data.page_count;
+        if !self.pending.contains_key(&key) {
+            self.order.push_back(key);
+            while self.order.len() > PENDING_CHUNK_CAP {
+                if let Some(oldest) = self.order.pop_front() {
+                    self.pending.remove(&oldest);
+                }
+            }
+        }
+        let entry = self.pending.entry(key).or_insert_with(|| PendingChunk {
+            page_count,
+            pages: std::collections::HashMap::with_capacity(page_count as usize),
+        });
+
+        // Un emisor que cambia de opinión sobre el número de páginas dentro de la MISMA revisión
+        // no puede pasar: sería mezclar dos particiones distintas del mismo chunk.
+        if entry.page_count != page_count {
+            entry.page_count = page_count;
+            entry.pages.clear();
+        }
+
+        entry.pages.insert(data.page, data);
+        if entry.pages.len() < entry.page_count as usize {
+            return None;
+        }
+
+        let done = self.pending.remove(&key).expect("acabamos de verlo");
+        self.order.retain(|k| *k != key);
+        let mut ordered: Vec<(u16, ChunkSyncData)> = done.pages.into_iter().collect();
+        ordered.sort_by_key(|(idx, _)| *idx);
+
+        // La cabecera sale de la página 0: todas la repiten idéntica, pero fijar cuál manda deja
+        // el resultado determinista aunque alguna vez dejaran de serlo.
+        let mut merged = ordered[0].1.clone();
+        merged.entities.clear();
+        merged.items.clear();
+        for (_, page) in &ordered {
+            merged.entities.extend(page.entities.iter().cloned());
+            merged.items.extend(page.items.iter().cloned());
+        }
+        merged.page = 0;
+        merged.page_count = 1;
+        Some(merged)
+    }
+
+    /// Descarta lo aparcado de revisiones anteriores a `world_revision`. Sin esto, un goteo
+    /// superseded a medias se quedaría en memoria para toda la sesión.
+    pub fn drop_stale(&mut self, world_revision: u64) {
+        self.pending.retain(|(rev, _, _), _| *rev >= world_revision);
+        self.order.retain(|(rev, _, _)| *rev >= world_revision);
+    }
+
+    /// Cuántos chunks hay a medio ensamblar. Para trazas y tests.
+    pub fn pending_len(&self) -> usize {
+        self.pending.len()
     }
 }
 
@@ -90,11 +295,43 @@ pub fn build_session_config(world: &World) -> SessionConfig {
 /// lo vio. ADR-079: la entrada VIAJA marcada `relay_only` con addr placeholder; el receptor la
 /// registra con su propia addr inerte y TODA la superficie de envío la excluye. El receptor debe
 /// CONOCER al fantasma sin poder DIRIGIRSE a él.
+/// Lo que viaja en `PeerInfo::addr` cuando NO hay dirección utilizable que anunciar: la entrada
+/// propia del emisor (su socket vive en `0.0.0.0`, que no es una dirección de nadie) y las
+/// entradas `relay_only` de ADR-079. El receptor lo rechaza por contrato — ver
+/// `is_routable_peer_addr`.
+pub const UNROUTABLE_ADDR_PLACEHOLDER: &str = "0.0.0.0:0";
+
+/// ¿Se puede REGISTRAR un peer en esta dirección? Filtro del receptor, gemelo del placeholder de
+/// arriba y la mitad que de verdad protege: rechaza lo que no puede ser el endpoint de nadie —
+/// dirección sin especificar (`0.0.0.0`, `::`) o puerto 0.
+///
+/// Existe porque el daño no lo hace anunciar una dirección mala, lo hace ADOPTARLA: quien la
+/// adopta se manda a sí mismo todo lo que creía estar mandando al otro, y desde fuera se ve como
+/// un peer que se calla. Con esto, un roster de un build viejo —que sigue anunciando
+/// `0.0.0.0:<puerto>`— tampoco puede envenenar a un build nuevo.
+pub fn is_routable_peer_addr(addr: &std::net::SocketAddr) -> bool {
+    !addr.ip().is_unspecified() && addr.port() != 0
+}
+
 pub fn build_peer_list(net: &NetworkManager, local_player: &Player) -> Vec<PeerInfo> {
     let mut peers = vec![PeerInfo {
         id: net.local_id,
         name: local_player.name.clone(),
-        addr: net.local_addr().to_string(),
+        // Auditoría de heartbeat (2026-08-30): AQUÍ IBA `net.local_addr()`, que es la dirección
+        // del SOCKET — y el socket hace bind en `0.0.0.0`. O sea que el host se anunciaba a sí
+        // mismo en el roster como `0.0.0.0:7778`.
+        //
+        // `0.0.0.0` como DESTINO significa "esta máquina". En una sola máquina el datagrama
+        // llega igual, así que el defecto es invisible en localhost; con dos PC de por medio, el
+        // que adopte esa dirección se manda los latidos A SÍ MISMO y el host deja de recibir
+        // nada suyo — expulsión por HEARTBEAT TIMEOUT ~5 s después de entrar, sin nada roto en
+        // la red. Exactamente la asimetría "en local va, en LAN no".
+        //
+        // No hay dirección correcta que poner: un socket en `0.0.0.0` no tiene UNA dirección, la
+        // tiene por interfaz y por ruta hacia cada destino. Y no hace falta ninguna — el receptor
+        // de este roster conoce al emisor por la dirección de origen del propio datagrama. Viaja
+        // el mismo placeholder que ADR-079 ya usa para `relay_only`, y el receptor lo rechaza.
+        addr: UNROUTABLE_ADDR_PLACEHOLDER.to_string(),
         position: local_player.position.to_array(),
         relay_only: false,
     }];
@@ -106,7 +343,7 @@ pub fn build_peer_list(net: &NetworkManager, local_player: &Player) -> Vec<PeerI
             // ADR-079: la addr real de un relay_only es la inerte local y no pinta nada en el
             // wire — viaja un placeholder que el receptor ignora por contrato.
             addr: if relay_only {
-                "0.0.0.0:0".to_string()
+                UNROUTABLE_ADDR_PLACEHOLDER.to_string()
             } else {
                 peer.addr.to_string()
             },
@@ -985,11 +1222,30 @@ pub async fn send_world_sync(
     );
 
     for chunk in world.chunks.values() {
-        let payload = PacketPayload::WorldSyncChunk {
-            world_revision: world.revision,
-            data: chunk_to_sync_data(chunk),
-        };
-        net.send_reliable_queued(peer_id, &payload).await;
+        // Auditoría de MTU: un chunk denso no cabe en un datagrama seguro, así que viaja en
+        // páginas. Cada una es autosuficiente (repite la cabecera) y se aplica en cualquier orden.
+        for page in chunk_to_sync_pages(chunk, world.revision) {
+            let payload = PacketPayload::WorldSyncChunk {
+                world_revision: world.revision,
+                data: page,
+            };
+            net.send_reliable_queued(peer_id, &payload).await;
+        }
+        // Ceder entre paquetes — el MISMO mecanismo que `broadcast_chunk_states` ya aplica a
+        // estas mismas cargas, por la misma razón medida allí (a partir de ~56 páginas seguidas
+        // se perdía al menos una por ronda al desbordar el buffer de recepción de ~64 KB).
+        //
+        // Este camino no lo tenía, y es el que peor lo necesita: la ventana admite 32 de golpe,
+        // así que el goteo salía como ~35 KB en una ráfaga ININTERRUMPIDA dentro de un solo tick,
+        // justo cuando el receptor está generando su mundo. Medido en localhost: 32 `RELIABLE_SENT`
+        // seguidos y 18 aparcados, sin una sola cesión entre ellos. En loopback el receptor drena
+        // al instante y no se nota; por un enlace real la ráfaga se pierde a trozos, y como cada
+        // reintento REPRODUCE la misma ráfaga, los mismos paquetes vuelven a caer hasta agotar
+        // `MAX_RETRIES` — la desconexión `reliable retransmit exhausted` a los ~6 s de entrar.
+        //
+        // Ceder no cambia ni el orden, ni la ventana, ni la fiabilidad, ni el protocolo: solo deja
+        // correr al bucle de recepción y a los ACK entre paquete y paquete.
+        tokio::task::yield_now().await;
     }
     let end = PacketPayload::WorldSyncEnd {
         world_revision: world.revision,
@@ -1846,6 +2102,8 @@ mod chunk_broadcast_tests {
             teleport_timer: 0.0,
             entities: vec![],
             items: vec![],
+            page: 0,
+            page_count: 1,
         };
         let now = std::time::Instant::now();
         let hash = roster::content_hash(std::slice::from_ref(&data));

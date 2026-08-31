@@ -721,3 +721,85 @@ restringirlo a las piezas sería una divergencia deliberada entre lo que se ve y
 
 `WireSchema.Expected` (C#) a 49 en el mismo commit — lo vigila
 `the_csharp_mirror_declares_the_same_wire_schema_version`, que ya lo cazó al escribir esto.
+
+## v50 — SIN ENTRADA, y queda dicho
+
+Igual que v47 y v48: el bump se hizo sin anotarlo aquí. Se registra el hueco en vez de rellenarlo a
+posteriori — reconstruir de memoria una entrada de changelog es exactamente cómo un changelog empieza
+a mentir.
+
+## v51 — `session_joined`: el aviso de que un joiner ENTRÓ (auditoría de conectividad, 2026-08-30)
+
+**No cambia la forma de ningún mensaje.** Lo que se añade es un `event_type` nuevo en el bus de texto
+libre que ya transporta `session_ended` y `player_joined`:
+
+```
+GameEvent { event_type: "session_joined", data: { host_id, self_id, world_seed } }
+```
+
+Lo emite el backend del JOINER, una sola vez, al registrar al host tras el `HandshakeAck`
+(`game_loop.rs`, rama `PeerConnected` con `net.host_peer_id == Some(id)`). El host nunca lo emite —
+no se une a nada—, y otro compañero entrando tampoco lo dispara.
+
+**Por qué existe.** `IPCClient.IsConnected` significa "Unity habló con SU PROPIO backend por TCP en
+127.0.0.1". Para un Host eso ES la sesión; para un Joiner no prueba nada, porque su backend local
+acepta ese TCP y le sirve un mundo exista o no el host. `JoinSessionUI` usaba lo segundo como si
+fuera lo primero: un Join a una IP inalcanzable pasaba a "Connected", cargaba la escena de juego y
+metía al jugador en un mundo local en solitario —sin geometría WG3— mientras el backend reenviaba el
+handshake muerto cada segundo, en silencio, para siempre. Reproducido con el binario real contra
+192.0.2.1: once handshakes sin respuesta y cero avisos. Este evento es el único dato por el que Unity
+puede distinguir "me uní" de "mi propio backend aceptó mi TCP".
+
+**Por qué NO es un `ServerMessage` propio.** No añade forma: es un `event_type` sobre un sobre que ya
+existe, y un mensaje nuevo obligaría a tocar el enum, su parser en C# y la paridad de
+`IPCMessagesParityTests` para transportar tres enteros. El bus de eventos existe precisamente para
+esto.
+
+**Entonces, ¿por qué el bump?** Porque desde ahora un Unity nuevo DEPENDE de que su backend emita
+esto: con un `backrooms_server.exe` viejo bajo `Builds/Backend/`, el joiner se quedaría en "Joining…"
+sin que nadie pudiera decir por qué — la misma clase de fallo mudo que esta auditoría vino a matar.
+El bump convierte ese desfase de despliegue en el rechazo inmediato y con nombres de
+`WireSchema.MismatchReason`. Es el uso para el que la puerta de ADR-061 se puso.
+
+Acompaña un cambio de comportamiento P2P que no viaja como campo: el handshake del joiner pasa a
+tener presupuesto (`network::CONNECT_TIMEOUT`, 15 s) y, agotado, emite `session_ended` con un motivo
+que nombra destino, intentos y las causas reales (host apagado, IP/puerto equivocados, firewall).
+Antes reintentaba indefinidamente sin decir nada.
+
+`WireSchema.Expected` (C#) a 51 en el mismo commit — lo vigila
+`the_csharp_mirror_declares_the_same_wire_schema_version`.
+
+## v52 — paginación de `WorldSyncChunk` contra la MTU (auditoría de transporte, 2026-08-30)
+
+**`ChunkSyncData.page: u16` y `ChunkSyncData.page_count: u16`**, aditivos y con `serde(default)`:
+un emisor anterior manda una sola página con las listas enteras, que decodifica como
+`page=0, page_count=1` — exactamente lo que era.
+
+**Por qué existe.** Medido en una sesión física de 9 min: **31.004 datagramas por encima de los
+1472 B de MTU Ethernet, máximo 1881 B**. Los ÚNICOS 4 reenvíos de toda la sesión fueron esos 4
+datagramas oversized; ninguno por debajo del límite se perdió. Los fiables oversized eran todos
+`type=0x36` (`WorldSyncChunk`). Un datagrama fragmentado se pierde entero si se pierde un fragmento,
+y por la vía fiable se reenvía cinco veces con el MISMO tamaño hasta agotar `MAX_RETRIES`.
+
+**Por qué se paginan las LISTAS y no otra cosa.** Reparto de bytes medido de un chunk real:
+cabecera fija (con `layout`) **754 B**, y **~87 B por entidad**. `entities`/`items` son las únicas
+partes sin cota, así que son la unidad de división. Cada página **repite la cabecera** — más barato
+que cualquier esquema que la separase, y hace la página autosuficiente.
+
+**Por qué autosuficiente importa.** La capa reliable es at-least-once y SIN orden: la página 1
+puede adelantar a la 0 y cualquiera puede llegar duplicada. Por eso el receptor **no aplica nada**
+hasta tenerlas todas (`ChunkPageAssembler`), en vez de "la 0 limpia y las demás añaden" — que
+pierde datos en cuanto el orden se invierte. Es el mismo patrón que ADR-060 ya usa para los
+rosters, no un protocolo nuevo.
+
+El corte se decide **codificando**, no estimando: el tamaño depende de `layout` y de cadenas de
+longitud variable dentro de cada entidad, y una estimación por conteo se desviaría justo en los
+chunks densos, que son los que rompen.
+
+Techo nuevo: **`protocol::SAFE_DATAGRAM_BYTES = 1200`**, el mínimo garantizado que adopta QUIC —
+no 1472, que es el mejor caso de Ethernet y ya falla con PPPoE (1464) o VPN. `MAX_PACKET_SIZE`
+(65535) se queda como tope de DECODIFICACIÓN: aceptar de más es tolerancia, emitir de más es
+fragmentación.
+
+`WireSchema.Expected` (C#) a 52 en el mismo commit — lo vigila
+`the_csharp_mirror_declares_the_same_wire_schema_version`.

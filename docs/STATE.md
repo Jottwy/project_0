@@ -2,6 +2,196 @@
 > Actualizado por /checkpoint al cierre de cada sesión. Leído al inicio de cada sesión.
 
 ## Última sesión
+- Fecha: 2026-08-31, 4.ª tanda (**ALPHA-1 NETWORKING: A y B resueltos con ciclo rojo→verde; C, D y E PARADOS en decisiones que no improviso**) — **`cargo test` 1196/1196, clippy `--all-targets -D warnings` y fmt limpios. Suite EditMode 954/969 (los 14 rojos ajenos + el flaky conocido). CERO WIRE.**
+
+0. **A — «el host es invisible para los joiners» NO ERA DE RED.** Cadena verificada: Unity **propone** un id por `NET_ID` (`LastSelectedNetId`), el host **asigna** el de verdad (`allocate_peer_id`), el backend del joiner lo adopta (`self.local_id = assigned_id`) y **nada se lo cuenta a Unity** — `WorldState` no tiene campo con el id local. Unity filtraba `remote_players` contra el valor obsoleto; y como el backend construye esa lista recorriendo `net.peers`, que **nunca contiene al local**, ese segundo filtro no podía aportar nada correcto, sólo quitar. El default de `NetworkInitializer.netId` es **1**, el id del host: por eso desaparecía el host y no los demás. **Fix mínimo: se quita el filtro.** 5 de 8 tests fallaban antes; 8/8 después.
+
+1. **B — la estrella no era una estrella.** `broadcast_destinations` devolvía TODOS los peers sin mirar el rol, y un joiner **registra a los otros joiners con su dirección real** (el host se la da en `PeerList`). Con 3+ jugadores cada joiner emitía su pose también directamente a sus pares. El juego funcionaba igual —el relay del host la llevaba— pero duplicaba tráfico y, en Windows, cada datagrama que el NAT del par tiraba volvía como `10054` **sobre el socket del emisor**. Filtro por `host_peer_id`, que **ya existía** (ADR-056): cero estado nuevo. Test rojo previo: daba `[1, 9]`. 5 tests nuevos.
+
+2. **Sólo alcanzable a tres.** Con un solo joiner, su único peer ES el host. Por eso nunca se vio: **no se ha jugado nunca a tres**.
+
+3. **C (MTU) — auditado, NO implementado, y por una razón.** La infraestructura ya está: `SAFE_DATAGRAM_BYTES = 1200` (elegido sobre 1472 a propósito: PPPoE da 1464 y una VPN menos), **un único punto de salida** (`send_datagram`), MTUPROBE contando, y los caminos FIABLES ya gritan al pasarse. Lo que falta son los **no fiables** (R1: 31.004 oversized/sesión, máx. 1881 B). Y ahí hay una decisión que no me corresponde: **R2 — paginar `ChunkState` cambia «pierdo el chunk entero» por «aplico el chunk a medias»**. Son dos males distintos y hay que elegir; improvisarlo sería peor que dejarlo.
+
+4. **D (IP pública / UPnP) — bloqueo arquitectónico, documentado y no improvisado.** Ver el informe: CGNAT no tiene solución con este transporte, y eso no es configuración.
+
+5. **E y la prueba física a tres máquinas: no ejecutadas.** No tengo tres máquinas en redes distintas; A y B están probados por tests, no en partida.
+
+6. **Documentación**: `NETWORKING_INVARIANTS.md` I12 (estrella) e I13 (sólo el backend decide quién es remoto), cada una con síntoma, causa raíz, quién la impone, qué la prueba y sus límites.
+
+7. **Deuda anotada, NO tocada**: `LastSelectedNetId` sigue siendo el id *propuesto* y lo leen otros cinco sitios (`RemotePvpHitbox`, `StpBuildMaterialWatcher`, `StpBuildingPlacementWatcher`, `NetworkHarvestableInstance`, `IPCClient:603`) con el mismo error de origen. Arreglarlo de raíz es llevar el id asignado por IPC: **wire + ADR**.
+
+---
+
+- Fecha: 2026-08-31, 3.ª tanda (**preparada la subida a SteamPipe del Playtest; el App ID lo dice ahora Steam, no una constante**) — **Suite EditMode real 947/961 (31/31 de `SteamAppConfig`; los mismos 14 rojos ajenos). `CompileCheckClient` 0 errores. Build rehecho y verificado. CERO RUST, CERO WIRE. NADA SUBIDO TODAVÍA: falta el login humano.**
+
+0. **Tres apps, no dos.** Juego `5072740`, **Playtest `5200320`** (app aparte, depot `5200321`), Spacewar `480`. El build que iba a subirse compilaba su default a **480** (es Development), así que habría sido un playtest que **no se identifica como el playtest**: sin lobby, sin invitaciones, sin navegador. Detectado antes de subir 2,18 GB.
+
+1. **El arreglo NO es otra constante.** `SteamAppConfig` gana un escalón: la variable **`SteamAppId` que pone el propio cliente de Steam al lanzar el proceso**, entre `BS_STEAM_APPID` (que sigue mandando, para poder forzar 480) y `steam_appid.txt`. Es la respuesta más autorizada a «¿qué app soy?»: no se deduce, la dice quien nos arrancó. **El mismo binario vale para las tres apps sin recompilar**, y `5200320` no aparece en ninguna constante de resolución — `PlaytestAppId` existe sólo para poner nombre al número en el log. Una constante por app habría obligado a un build por app y a acordarse de cuál es cuál.
+
+2. **VDF listos y con el «no publicar» por construcción**: `tools/steam/app_build_5200320.vdf` y `depot_build_5200321.vdf`. **La ausencia de `SetLive` no es un olvido**: sin esa clave el build queda registrado en Steamworks sin asignar a ninguna rama. Añadirla activaría el playtest.
+
+3. **Tres exclusiones del depot, cada una con motivo.** (a) `steam_appid.txt` — Valve dice que no se envíe, y aquí es **activo**: `SteamAppConfig` lo lee, así que un `480` dentro del paquete ganaría a lo que Steam dijera y arruinaría el playtest en la máquina de cada tester. (b) `Builds\` — 10 logs de backend de las pruebas de esta noche, 6,5 MB, con rutas absolutas de la máquina y nombres de persona de Steam. (c) `*_BurstDebugInformation_DoNotShip` — lo nombra Unity.
+
+4. **ContentBuilder oficial** extraído del SDK a `J:\SteamBuild\` (**fuera del repo**); `steamcmd` autoactualizado, exit 0, sin credenciales.
+
+5. **Verificado que el código nuevo VIAJA en el build**: `BackroomsSurvival.dll` del 01:57 contiene `SteamAppId`, `LobbyEndpointPolicy`, `LocalAddressProbe` y `WithdrawAnnouncement`. (Ojo con la sonda: los literales de cadena están en UTF-16 y los nombres de tipo en UTF-8; buscar con una sola codificación da falsos negativos.)
+
+6. **SUBIDO. `BuildID 25027542`**, manifest del depot `810281909723404086`, **712 ficheros / 2,12 GB / 2713 chunks**, exit 0 (02:09). El login lo hizo Joel (pide contraseña y Steam Guard); a partir de ahí la sesión cacheada bastó y no hubo que tocar ningún secreto. **Sin rama asignada**: comprobado a posteriori que no hay ni una coincidencia de `SetLive`, `Setting build live` ni `branch` en toda la salida. Ensayo con `Preview 1` antes de subir (`tools/steam/app_build_5200320_preview.vdf`, fichero aparte a propósito: un `Preview 1` olvidado dentro del real es una subida que parece haber funcionado y no subió nada). De `*_BurstDebugInformation_DoNotShip` sobrevive la carpeta vacía; el fichero de dentro no.
+
+7. ⚠️ **TRAMPA DEL MÉTODO, y casi doy por buena una comprobación falsa.** En PowerShell, `Select-String -SimpleMatch` con el patrón pasado por `[regex]::Escape` busca literalmente `steam_appid\.txt` — que no existe en ningún manifiesto. **Da cero coincidencias SIEMPRE**, así que una exclusión rota y una correcta se ven idénticas; lo cacé porque los ficheros OBLIGATORIOS también salían a cero. O `-SimpleMatch` sin escapar, o regex con escape; nunca las dos. Regla vieja otra vez: **una comprobación que sólo puede salir verde no comprueba nada** — hay que meterle un caso que TENGA que salir rojo.
+
+8. **NO verificado desde aquí**: que Steamworks enseñe el build en su panel. Exige entrar en partner.steamgames.com con la cuenta; la evidencia local es la línea de éxito de SteamPipe con su BuildID.
+
+9. **Documentación**: `SERVER_BROWSER.md` §16 nueva (las tres apps, los VDF, las exclusiones con su motivo, el procedimiento y la subida ejecutada con sus números) y §14.2 reescrita a cuatro escalones.
+
+---
+
+- Fecha: 2026-08-31, 2.ª tanda (**el `10054` del Join era un SÍNTOMA; se publicaba `127.0.0.1` como endpoint remoto**) — **Suite EditMode real 937/951 (215/215 de lobby/browser/Steam, con 25 tests nuevos; los mismos 14 rojos ajenos). `CompileCheckClient` 0 errores. CERO RUST, CERO WIRE.**
+
+0. **`10054` NO ES UNA CAUSA, y probarlo fue el trabajo.** En Windows, `recvfrom` sobre UDP devuelve `WSAECONNRESET (10054)` cuando un datagrama **que enviaste tú** rebotó como ICMP *port unreachable*. Reproducido con dos sondas contra esta máquina: a `127.0.0.1:7778` con host vivo → **timeout sin error** y el backend lo registró (`NETPROBE event=datagram_received … bytes=14`); a un puerto muerto → **el mismo 10054**. Uno por reintento de handshake: el joiner registró 9-10, que es exactamente lo que dice la UI («tras 10 intentos en 15 s»). Buscar la causa en el transporte era perder el tiempo.
+
+1. **El flujo del Join no transforma nada, y eso también hubo que probarlo.** Cadena completa con los logs del intento fallido: Steam anunció `connect=127.0.0.1:7778` → navegador pidió `127.0.0.1:7778` → `Launch config … CONNECT_TO=127.0.0.1:7778` → `# env CONNECT_TO=127.0.0.1:7778`. Y el joiner arrancó bien: `UDP bound on 0.0.0.0:7779`, IPC 7778, **sin colisión** con el host (UDP 7778 / TCP 7777). `LobbyJoinRouter → TryBeginSteamJoin → StartAsJoiner` queda descartado entero.
+
+2. **Dos causas distintas, y hay que separarlas.** (A) **El lobby anunciado ya no tenía host**: el último `backrooms_server` murió a las 00:59:09, los dos Joins fueron a las 01:04:28 y 01:04:56, y el siguiente host no arrancó hasta las 01:05:43. Eso produjo *esos* 10054. (B) **Se publicaba `127.0.0.1`**: en la misma máquina funciona por casualidad —el backend hace bind en `0.0.0.0`, que cubre loopback— pero **en otra máquina significa esa otra máquina**, así que el Join no falla, va a otro sitio. B no había mordido todavía porque nunca se había llegado a un Join entre PCs.
+
+3. **El arreglo: `LobbyEndpointPolicy` (puro) + `LocalAddressProbe`.** Manda lo que el humano escribió si sirve (puede ser una IP pública con reenvío de puertos); si no, la dirección de la interfaz de la **ruta por defecto** (`Connect` UDP a una dirección de documentación RFC 5737 — no transmite nada, sólo obliga al sistema a elegir interfaz); y **si no hay ninguna defendible NO se anuncia la partida**. Publicar un endpoint malo cuesta 15 s al que lo elige; no publicar no cuesta nada.
+
+4. **«La primera IPv4 que no sea loopback» habría sido otro fallo.** Esta máquina tiene **diez** IPv4: la buena (`192.168.1.40`, Ethernet/DHCP), dos de VPN (`10.5.0.2` NordLynx, `26.213.115.149` Radmin) y **seis APIPA `169.254.x.x`**. Una APIPA le falla al joiner igual de silencioso que loopback. Verificado en esta máquina: la sonda de ruta por defecto devuelve `192.168.1.40`; el respaldo por nombre de host devolvía primero la de Radmin. **Riesgo anotado**: con una VPN enrutando se publicaría la de la VPN.
+
+5. **Mismo PC sigue funcionando**: publicar `192.168.1.40` en vez de `127.0.0.1` no rompe el Join local, porque el backend escucha en `0.0.0.0` y el sistema cortocircuita a loopback una dirección propia.
+
+6. **Una corrección a mí mismo.** Al ver *3 `Lobby created` y 0 `anuncio retirado`* pensé en fuga de lobby. **No lo era**: `SessionEndHandler` retira por `SteamLobbyManager.LeaveLobby()`, que hace `Leave()` y vacía `_hostedLobby` **sin log**. El lobby sí moría. Pero como `LeaveLobby` corría primero, el conductor veía `IsPublishing == false`, su `Withdraw()` nunca se ejecutaba y **I14 no cubría la puerta que de verdad se usa**. Arreglado invirtiendo el orden (`WithdrawAnnouncement()` antes de `LeaveLobby()`) en las dos rutas de teardown; las dos son idempotentes y `LeaveLobby` sigue haciendo falta porque además suelta el lobby AJENO de una invitación.
+
+7. **Documentación**: `SERVER_BROWSER.md` §15 nueva (qué es un 10054, la cadena auditada, las dos causas, el arreglo y el agujero de observabilidad) y §6 reescrita; `SESSION_INVARIANTS.md` I14b nueva y I14 ampliada con el orden del teardown.
+
+8. **PENDIENTE**: sigue sin verse un Join completo. Lo que falta es exactamente lo mismo que antes —pasos 5-12 de `SERVER_BROWSER.md` §12— más una comprobación nueva y barata: que el log del host diga ahora `Endpoint anunciado 192.168.1.40:7778` en vez de loopback.
+
+---
+
+- Fecha: 2026-08-31 (**STEAM ARRANCA POR PRIMERA VEZ. Dos fallos encadenados en el nativo, App ID sacado del código de red, y dos fugas de lobby fantasma**) — **Suite EditMode real 912/926 (los 190 de lobby/browser/Steam VERDES; los 14 rojos son ajenos). `CompileCheckClient` 0 errores. Build hecho. `Steam initialized app_id=480 name=Jottwy6901 steam_id=…` MEDIDO en el ejecutable. CERO RUST, CERO WIRE. Nadie ha pulsado todavía *Buscar partida*.**
+
+0. **EL CAMINO ENTERO ESTABA MUERTO Y EL LOG LO DECÍA.** Del `Player.log` del ejecutable real, y también del anterior: `SteamClient.Init(480) failed: steam_api64 assembly:<unknown assembly>`. Eso es un `DllNotFoundException`, no «Steam cerrado». El binding **managed** de Facepunch estaba en `Assets/Plugins` desde el principio; el **nativo** `steam_api64.dll` del SDK **no** — `redistributable_bin/` era una carpeta VACÍA. Consecuencia: **Steam no ha inicializado nunca, ni en el Editor ni en ningún build**. El lobby, las invitaciones y el navegador de servidores son código correcto que jamás se ha ejecutado. El invite «que ya funcionaba» tampoco.
+
+1. **Por qué se leyó mal durante semanas:** el `catch` era uno solo y el mensaje era `"Steam unavailable"` + `LogWarning`. Un fallo de fichero ausente y un cliente de Steam apagado salían idénticos. Ahora `DllNotFoundException` va por su rama, con `LogError`, nombrando el fichero y **las dos rutas** donde tiene que estar. Regla de la casa que esto vuelve a pagar: **un mensaje de error que agrupa dos causas distintas hace que se investigue la barata**.
+
+2. **SEGUNDO FALLO, encadenado: el nativo MÁS NUEVO tampoco vale.** Puesto el SDK 1.65, el `DllNotFoundException` desapareció y salió `EntryPointNotFoundException: SteamAPI_SteamApps_v008` — el nativo carga, pero exporta `_v009` y el binding managed pide `_v008`. Leyendo los 32 accessors que `Facepunch.Steamworks.Win64.dll` referencia (`SteamTimeline_v004` ⇒ SDK ≥ 1.60, `SteamUGC_v020`) sale **SDK 1.61**, que ya estaba en la máquina y aparece **byte a byte idéntico** (`sha256:670D654A…`, 319 584 B) en tres juegos de editores distintos: es el redistribuible de Valve sin tocar. **Regla nueva: al actualizar el binding managed hay que poner el nativo de la versión que ESE binding espera; coger el SDK más reciente es un fallo, no una precaución.** `TryInitSteam` tiene ahora `catch` propio para `EntryPointNotFoundException` que apunta al número de SDK en vez de mandar a mirar el cliente de Steam, que no tenía nada que ver. El nativo se comitea: sin él, un clon limpio o la otra máquina vuelven al mismo agujero sin avisar.
+
+3. **`SteamAppIdBuildPostprocessor` FALLA EL BUILD si el nativo no llegó** a `<exe>_Data/Plugins/x86_64/`, y escribe `steam_appid.txt` junto al exe. Misma disciplina que `BackendBuildPostprocessor` y por lo mismo: un player que no puede hablar con Steam es peor que un build que no sale, porque el fallo se descubre en el playtest a dos PCs.
+
+4. **El App ID sale del código de red** (decisión de Joel, tres preguntas). `SteamAppConfig`: `DevAppId = 480`, `ProductionAppId = 5072740`, y tres escalones — `BS_STEAM_APPID` → `steam_appid.txt` junto al exe → constante compilada (DEV en Editor/Development, **PROD en release**). Leer `steam_appid.txt` **no** es redundante: Steam lee ESE MISMO fichero, así que es lo único que garantiza que el fichero y el argumento de `Init` no discrepen — y si discrepan, Steam rechaza el Init sin decir por qué. Un valor degenerado en un escalón CAE al siguiente, no gana ni bloquea. `tools/dev/SetBuildSteamAppId.ps1` cambia el id de un build hecho, sin recompilar.
+
+5. **Fuga de lobby fantasma, y no es teórica.** La retirada por fase preguntaba `IsPublishing`, y hay ~2 s en los que `Publish` ya se llamó y todavía devuelve false porque Steam sigue creando el lobby. Terminar la sesión ahí no disparaba retirada, la creación aterrizaba después y dejaba en Steam un lobby **público, joinable, apuntando a un endpoint muerto y sin dueño** hasta cerrar el proceso. Tapada por los dos lados porque son dos objetos y cualquiera puede llegar primero: `HostAnnouncementDriver._publishPending` (retira también «lo que se estaba intentando») y `SteamLobbyManager._lobbyEpoch` (una creación que aterriza tras el teardown se CIERRA en vez de adoptarse). Un `bool` no bastaba: la pregunta no es «¿hay teardown?» sino «¿de qué sesión es esto?» — el mismo patrón que `Generation`. Nueva invariante **I14**.
+
+6. **Un `FindFirstObjectByType` por frame de partida.** `ResolveHostEndpoint` lo usaba para llegar a `JoinSessionUI`, que es `DontDestroyOnLoad` y ya tiene instancia estática. Sustituido por `JoinSessionUI.CurrentServerIP`.
+
+7. **La arquitectura del navegador estaba entera y no se ha tocado.** Filtro `bs_game`, 0-resultados como estado normal, timeout de 12 s, cancelación de respuestas obsoletas, gate contra `SessionState.Current.CanStart`, puerta única `TryBeginSteamJoin` → `StartAsJoiner`, retirada idempotente por fase. Lo que faltaba era que Steam existiera.
+
+8. **EJECUTADO, con evidencia.** (a) **Suite EditMode real de Unity**: 926 tests, 912 pasan, 14 fallan; **190/190 de lobby/browser/Steam en verde**, incluidos los 21 casos de `SteamAppConfigTests` y las 4 regresiones de fantasma. Los 14 rojos son ajenos y preexistentes (7 `NetworkInitializerTests` —fichero reescrito por otra sesión—, 2 `StorageRackDisplayTests`, 4 Wg3, 1 audio). Resultados en `%LOCALLOW%/JottwyGames/Playtest 0.0.1.0/TestResults.xml`. (b) **Build de desarrollo** en `Builds/Build_steam`, `result=Succeeded`, y el postprocesador confirmó las dos cosas: `steam_appid.txt = 480 (development=True)` y `steam_api64.dll presente en …_Data\Plugins\x86_64\`. (c) **Steam inicializa en el ejecutable real**: `Steam initialized app_id=480 (Spacewar / desarrollo) name=Jottwy6901 steam_id=76561198405611247`, sin una sola excepción ni divergencia de claves, y 0 backends huérfanos después.
+
+9. **PENDIENTE, con nombre.** (a) **Nadie ha pulsado *Buscar partida* ni ha visto publicarse un lobby.** Que Steam arranque NO prueba que `CreateLobbyAsync` ni `LobbyList.RequestAsync` contesten: son llamadas distintas y ninguna se ha ejecutado contra Steam de verdad. **Los pasos 5 y 6 de `SERVER_BROWSER.md` §12 se hacen con UNA sola máquina** y son el siguiente corte. (b) Del 7 al 12 hacen falta dos PCs. (c) El lobby de Steam admite 8 miembros y se anuncia `bs_max = 50`: no se contradicen (entrar por el navegador NO entra en el lobby) pero **las invitaciones sí**, y a partir de 8 el overlay deja de admitir. (d) El nativo sale de un juego instalado, no de una descarga oficial del SDK 1.61: es el mismo fichero (tres editores, hash idéntico), pero conviene sustituirlo por el del SDK cuando se baje.
+
+10. **Documentación:** `SERVER_BROWSER.md` §14 nueva (inicialización, App ID, las cuatro condiciones para que Steam arranque) + §3 con la ventana de creación a medias + §12 reescrito como procedimiento de 12 pasos con **0 ejecutados**; `SESSION_INVARIANTS.md` I14 e I15; `SESSION_LIFECYCLE.md` §12; `NETWORKING_AND_SESSION_ARCHITECTURE.md` §14 (Steam como tercer canal, sólo metadatos; las tres puertas que acaban en el mismo `StartAsJoiner`); `INDEX.md`.
+
+---
+
+- Fecha: 2026-08-30, 5.ª tanda (**T6 — ciclo de vida de sesión: salir al menú no desmontaba NADA, y por eso no se podía volver a entrar**) — **`cargo test` 1189/1189, clippy `--all-targets -D warnings` y fmt limpios. CERO RUST, CERO WIRE. 22 tests EditMode nuevos que NO se han ejecutado (editor abierto). Sin andar en partida.**
+
+0. **EL CAMINO QUE MÁS SE USA NO PASABA POR NINGÚN SITIO NUESTRO.** `PauseMenu.QuitToMenu()` del vendor llama a `LevelManager.CloseCurrentGame` **y ya está**: no mata el backend, no para el IPC, no rearma el panel, no suelta el cursor. Todo el trabajo de fin de sesión (ADR-056) colgaba del evento `session_ended` del backend, que en una salida voluntaria **no se emite jamás**. Cuatro síntomas distintos, una sola causa.
+
+1. **La cadena entera, en orden.** Salir al menú dejaba (a) el backend vivo con su TCP y su UDP; (b) el IPC hablándole; (c) `JoinSessionUI._loadingGameplay` latcheado en `true` **para siempre**, así que el siguiente Join no cargaba escena ninguna; (d) el panel reabierto con el `PanelState` en `Connected` —que es la única rama del `switch` que NO toca `SetControlsVisible`— o sea **visible y sin botones de Host ni Join**. Ése era el callejón sin salida que se veía; los otros tres eran invisibles.
+
+2. **El huérfano está MEDIDO, no deducido** (`tools/dev/ReproOrphanBackend.ps1`, binario real y sin Unity): cerrado el IPC, 5 s después el proceso sigue vivo, `sigue escuchando TCP 127.0.0.1:17777` y `sigue ocupando UDP 0.0.0.0:17778`. Es correcto que el backend no se apague solo (`local_disconnect_rx` guarda y sigue: una recompilación del editor rebota esa conexión y no es motivo para matar la partida) — lo que faltaba era que **alguien lo matara**. Y como `SelectLaunchConfig` busca puerto libre cuando el suyo está ocupado, la sesión siguiente arrancaba **sin un solo error**: el síntoma no era un fallo, era un proceso de más por vuelta y un joiner que teclea 7778 aterrizando en el backend de la partida ANTERIOR.
+
+3. **Segunda fuga, misma familia:** `LaunchBackendProcess` hacía `_backendProcess?.Dispose()` — y su propio comentario ya avisaba de que eso suelta NUESTRO envoltorio y deja el proceso vivo. Un huérfano por relanzamiento. Ahora `TerminateLeftoverBackend` va como primer efecto de `StartAsHost`/`StartAsJoiner`, y **antes de `ConfigureIpcClient`**: `KillBackend` pide el guardado POR EL IPC, así que matarlo después se lo mandaría al puerto nuevo.
+
+4. **No había una FASE; había tres opiniones.** `NetworkInitializer` decía «conectado» = `IPCClient.IsConnected`, `JoinSessionUI` = un latch `_wasConnected` más el TEXTO de `StatusMessage`, y `SessionEndHandler` = un `bool _ending`. Ninguna de las tres distingue «salida voluntaria» de «el host se cayó», ni «teardown en marcha» de «este aviso es de otra sesión». Ahora la fase la lleva **una sola cosa**, `SessionState.Current` (`SessionStateMachine`, pura, sin `UnityEngine`), y el resto **lee**: ocho fases, embudo único de arranque, embudo único de teardown, y toda transición idempotente (la segunda devuelve `false` y no toca nada).
+
+5. **Los callbacks tardíos no traían identidad.** `Process.Exited` del backend de la sesión 1 llega en un hilo del pool cuando la 2 ya está arriba, y apagaba su `IsBackendReady` y le sobrescribía el `StatusMessage`. Un `bool` no lo arregla —el problema no es «hay teardown», es «esto es de OTRA sesión»—: se compara `Generation`, que sube en cada `RequestStart` y en nada más.
+
+6. **El ratón: no faltaba un `Cursor.lockState = None`, sobraban dueños.** Cinco sitios lo escribían sin acuerdo y ganaba el último, que dependía del orden de destrucción de la escena. El que rompía era `HideMenu()`, que capturaba **siempre**, también al ocultar el panel estando en el menú. La regla entera está ahora en una función pura, `SessionCursor.ShouldLock(menuVisible, phase)`. **Durante la partida el cursor sigue siendo del vendor** (`GameMode`, `UIInput`, `InventoryInspectionManager`) — esto no se lo disputa, solo manda en las transiciones, que es donde no mandaba nadie.
+
+7. **Un timeout de join decía «Session ended», y no por descuido.** El camino real de un timeout **no** pasa por `NotifyFailed`: el backend agota `CONNECT_TIMEOUT` (15 s) y manda `session_ended`, que entra por el teardown normal. Hacía falta un segundo bit, `WasEstablished`, para partir el final en «no se pudo conectar» (nunca entró) y «la sesión terminó» (entró y se perdió). Con él, y con [Retry] y [Back to menu] —que no existían—, un timeout ya es recuperable sin reescribir la IP.
+
+8. **Backstop, no timeout de adorno.** Quien acota la espera es el backend. El único timeout de cliente (25 s) está POR ENCIMA de los 15 autoritativos, cubre solo el hueco en que ese aviso no puede llegar (proceso muerto, IPC caído) y **se registra con la palabra `BACKSTOP`** para que nunca se confunda con un diagnóstico. Su pareja es `WatchBackendLiveness`, que vigila el proceso cada 0,5 s **mientras la fase esté viva**, no solo durante el arranque: ahí estaba el «Joining…» eterno.
+
+9. **PENDIENTE, con nombre.** (a) **Nada de esto se ha andado en partida** — 🟡, no ✅; lo probado son las REGLAS, y el cableado (que `activeSceneChanged` dispare con el Quit to Menu, que `Process.Exited` llegue) pide el procedimiento manual de `SESSION_LIFECYCLE.md` §11. (b) **Los 22 tests EditMode no se han ejecutado**: `Temp/UnityLockfile` tomado desde las 15:14; compilan a 0 errores, hay que lanzarlos desde el Test Runner. (c) `PlayerController` sigue escribiendo el cursor (`Start` y Escape) — está deprecado por ADR-009 y vive en escenas legacy; es el único competidor que queda. (d) Si se quiere dejar constancia formal de que la autoridad de la fase pasa a `SessionStateMachine`, eso es una **enmienda a ADR-056** y no se ha escrito.
+
+10. **Documentación:** `docs/architecture/SESSION_LIFECYCLE.md` (fases, grafo, dueños, teardown en orden, cursor, errores, §11 procedimiento manual), `docs/architecture/SESSION_INVARIANTS.md` (13 invariantes, cada una con **quién la impone** y **qué la prueba** — una invariante sin ejecutor es un deseo) y `docs/architecture/NETWORKING_AND_SESSION_ARCHITECTURE.md` (puerta de entrada; **enlaza** a `NETWORK_ARCHITECTURE_CURRENT.md` en vez de duplicar transporte). Sondas nuevas: `tools/dev/CheckOrphanBackends.ps1` y `tools/dev/ReproOrphanBackend.ps1`.
+
+11. ⚠️ **AVISO DE PROCESO: dos sesiones escribiendo el mismo árbol a la vez.** El sweep de `CompileCheckClient.sh` salió ROJO con 45 errores, todos en `Assets/Scripts/UI/ServerBrowser*` y `Assets/Scripts/Lobbies/*` — partials a medio escribir por la sesión del navegador de servidores, que corría en paralelo. Excluyéndolos, este trabajo da **0 errores**. Las dos tandas se cruzaron limpiamente (su `JoinSessionLobbyJoinSink` ya consume `SessionState.Current.CanStart`), pero **el gate de compilación no distingue de quién es el rojo**: si dos sesiones van a la vez, un verde ajeno no vale y un rojo ajeno tampoco condena.
+
+---
+
+- Fecha: 2026-08-30, 4.ª tanda (**AUDITORÍA de población vertical: T2-T5 estaban incompletas, tres defectos con causa raíz distinta**) — **`cargo test` 1159/1159, clippy `-D warnings` y fmt limpios. CERO WIRE. Sin andar en partida.**
+
+0. **LOS VERDES MENTÍAN, y el motivo importa.** Los tests de T2-T5 comprobaban funciones sueltas —`storey_of_floor_cm`, `spaces_at_xz`, el sorteo— y todas eran correctas por separado. Ninguno ejecutaba `sync_population` ENTERO, que es donde estaba el fallo.
+
+1. **Defecto A — el sitio de nacimiento ignoraba la planta.** `standable_near` busca en anillos de 24 m y resuelve el suelo con `floor_below`, que **sólo sabe bajar**: una criatura sorteada para la planta 2 aterrizaba en la 0 con `layer = 2` en su ficha. Medido: 3 de 49, y 3 de 13 con el jugador en la planta 2. Arreglado con `standable_near_bounded(.., same_storey)`, que compara el **índice de planta** y no una distancia — con margen en metros, un peldaño a 5,14 m entra en el suelo de la planta 2 y pertenece a la 1.
+
+2. **Defecto B — dos predicados para la misma pregunta.** El despertar clasificaba por planta DISCRETA y la retirada por `same_level`, que es Y CONTINUA y existe para otra cosa (ADR-108: ver, perseguir, pegar). Discrepan en **6 de 14** peldaños. Ahora la retirada usa `belongs_to_player_storey` y **reutiliza la misma resolución** que el despertar, calculada una vez por reconcile.
+
+3. **Defecto C, el que explica todo — jugador y criatura usaban REGLAS DISTINTAS.** La planta del jugador salía de `space_at` (el espacio que CONTIENE el cuerpo) y la de la criatura, del SUELO QUE PISA. En un peldaño a 306 cm el jugador daba planta **1** y una criatura en ese mismo peldaño, planta **0**. Ahora las dos salen del suelo bajo los pies. **El margen tiene que ser menor que una contrahuella**: empezó en 40 cm (el `HEAD_MARGIN_CM` de `space_at`) y seguía fallando, porque el suelo de arriba está a 26 cm; está en 5.
+
+4. **Medido en el pipeline real** (`sync_population` entero, cuatro regiones): todas las plantas pobladas, **0 criaturas en planta distinta de la asignada** en las cuatro, planta −1 excluida, y **cero rotación con el jugador quieto** (antes 1 retirada por planta).
+
+5. **Dos correcciones a mí mismo.** (a) No hay churn infinito: la criatura mal colocada se retira una vez y no vuelve, porque su chunk sigue en `taken` por sus hermanas — el síntoma es «aparece y desaparece delante de ti», y su plaza del cap se pierde. (b) **Los `PeerId` se reciclan dentro del mismo tick**, así que contar nacidos/retirados por id no distingue «se quedó» de «murió y nació otro»; la identidad estable es la POSICIÓN.
+
+6. **Hallazgo ajeno a este plan, anotado y NO tocado:** ADR-094 despierta la oficina entera, y como el chunk mide 50 m y el radio de activación 70, algunos miembros nacen a más de los 100 m del radio de desactivación y se retiran al tick siguiente. Medido: 2 criaturas a 101,8 m y 108,9 m. Es preexistente.
+
+7. **PENDIENTE**: nada de esto se ha andado en partida (🟡 MEDIDO); la planta −1 sigue sin política; T6 no ejecutada.
+
+---
+
+- Fecha: 2026-08-30, 3.ª tanda (**PLAN-PLANTAS-ALTAS T2/T1/T3/T4/T5: las plantas altas se pueblan**) — **`cargo test` 1154/1154, clippy `--all-targets -D warnings` y fmt limpios. CERO WIRE. Sin andar en partida.**
+
+0. **DE 0 A 6.** En las cuatro regiones auditadas había **13 plantas por encima de la baja y las 13 vacías**; ahora las 13 son alcanzables por el reparto y **6 tienen población**. Sobre 25 regiones: planta baja **60 (intacta)**, plantas altas **34**. La banda de ±25 % contra WG2 sigue verde (68 contra 72) — **la planta baja no se tocó**.
+
+1. **T2 — el eje.** `wg3::plan::storey_of_floor_cm` con `div_euclid`, y `wg3_player_storey` resolviendo por ESPACIO. La retirada **reutiliza `same_level`** (ADR-108), que era el sustituto que ya existía y al que sólo le faltaba este consumidor: subir de planta desalojaba en **3 de 5** transiciones.
+
+2. **T1 — los espacios.** `spaces_at_xz` y `space_on_storey_at_xz`. Y la mitad que faltaba: `wg3_spawn_point`/`wg3_floor_point` seguían en `lowest_space_at_xz`, así que **con el eje ya arreglado el reparto apuntaba arriba y nacía abajo**.
+
+3. **T3 — densidad PLANA, y la caída sale de la COBERTURA.** Cobertura medida 85,8 / 40,7 / 21,8 / 14,5 / 7,4 % por planta; la tasa de aceptación por espacio disponible se mantiene entre el 7 y el 17 % en todas. O sea: misma densidad por metro cuadrado construido, y la pirámide la hace el edificio al estrecharse (ADR-102 D3). Un multiplicador decreciente encima habría contado el estrechamiento dos veces.
+
+4. **T4 — el robapieles, y un fallo que sólo tenía él.** Constante de densidad propia para no mezclar métricas. Y **Level 4 ya no se consulta con WG3 mandando**: la reserva vive en la CAPA 0 de WG2, así que pasarle la PLANTA 0 de WG3 hacía que `level4_spot_is_usable` filtrara contra una geometría que el mundo servido no contiene (ADR-109 no genera WG2; ADR-110 D1 no porta el Level 4). Habría dejado esa zona sin un solo robapieles.
+
+5. **T5 — el cap era un sesgo de coordenada.** `FACELING_ACTIVE_CAP` se gastaba dentro de `for cx { for cz {`, así que lo que quedaba fuera era **lo último del recorrido**. Se adopta el patrón que **el robapieles ya usaba** (`PhantomCandidate` ordenado por distancia): ahora hay `AdultCandidate` y `PackCandidate`, con el CHUNK como unidad para respetar «la oficina despierta entera» (ADR-094). **Probado desactivando el `sort`**: sin él, el chunk a 6,4 m —el más cercano— no despertaba.
+
+6. **PENDIENTE con nombre**: (a) **nada de esto se ha andado** — 🟡 MEDIDO, no ✅; (b) la **planta −1** (113 tramos bajo cota 0) queda excluida a propósito porque no hay política, decisión de diseño abierta; (c) la planta 4 sale a cero por tamaño (7,4 % de cobertura), que es contenido y no un fallo; (d) **T6 no se ha ejecutado**.
+
+7. ⚠️ **AVISO DE PROCESO.** Al repasar las sondas tras T5, `run-t0-probes.ps1` escribió con el mismo nombre del mismo día y **se llevó por delante el fichero de medidas de T0**. Las cifras estaban documentadas en `PLAN-PLANTAS-ALTAS.md`, así que no se perdió la línea base, pero el fichero sí. El script acepta ya `-Label`. La regla vieja otra vez: **un artefacto de medida sin identidad propia se sobrescribe solo**.
+
+---
+
+- Fecha: 2026-08-30, 2.ª tanda (**T0 de PLAN-PLANTAS-ALTAS: la hipótesis se confirma y aparecen dos cosas que no estaban en ningún inventario**) — **cero código de producción. Tres sondas `#[ignore]` nuevas en `world/wg3/tests.rs` + `tools/run-t0-probes.ps1`. `cargo test` 1140/1140, clippy `-D warnings` y fmt limpios.**
+
+0. **CONFIRMADA.** El reparto de población indexa por la CAPA de 4 m de WG2 y **la primera planta muda es la 1** — la segunda planta, la que se anda desde ADR-102. Densidad `0.00` para adultos, manadas y robapieles. En las cuatro regiones auditadas: **13 plantas por encima de la baja, las 13 vacías, 932 espacios servidos sin una sola criatura.**
+
+1. **Y la retirada también desaloja**: `world_pos_to_layer(p.y) != pack.layer` cambia de valor en **3 de 5** transiciones de planta, así que subir vacía además lo que ya estabas viendo abajo. Arreglar sólo el sorteo no bastaría.
+
+2. **El mecanismo NO era el que el plan escribió.** Hay dos `world_pos_to_layer`; el reparto usa la de `grid_gen/collision.rs:285`, que **trunca y no resta `PLAYER_BASE_Y`**, y **satura a 3**: las plantas 4 a 9 comparten capa. La otra (`collision.rs:552`) redondea y sí resta. Misma conclusión, distinto camino — y el que hay que sustituir es el de `grid_gen`.
+
+3. **HALLAZGO: hay geometría BAJO la cota 0.** Una planta −1 en las cuatro regiones, 113 tramos. WG3-ROADMAP da eso como 🔴 NO EXISTE (ADR-104 D5). No es un edificio hacia abajo —son peldaños y conectores que bajan, ninguno apoyado en −332— pero es pisable y servido. Con un fallo latente: `(y / 4.0) as u8` **satura a 0 con `y` negativa**, así que un jugador a −1,52 m se clasifica igual que uno en la planta baja.
+
+4. **La sonda se equivocó primero y se arregló**: agrupar tramos por cota distinta daba **32 «plantas»** en (−1,2) —eran peldaños de escalera y celdas de conector con `climb` encendido (ADR-098 enm. 1)—. Agrupa ahora por `div_euclid(STOREY_HEIGHT_CM)`. Sin eso, T3 habría repartido población sobre un mundo de 32 plantas que no existe.
+
+5. **Lo que cambia del plan**: **T2 pasa a ser lo primero que toca código** y T1 deja de bloquearla —el sorteo devuelve cero antes de preguntar por ningún espacio, así que `spaces_at_xz` no arregla nada solo—. T2 se traga además la retirada. Y hay que decidir qué se hace con la planta −1, que hoy «se puebla» por un desbordamiento y no por una decisión.
+
+---
+
+- Fecha: 2026-08-30 (**sesión de DECISIONES, cero código: ADR-110**) — **sin commits de código. Se escribe ADR-110 en `DECISIONS.md` y se ponen al día `WG3-ROADMAP.md` y `VERTICALITY-ROADMAP.md`.**
+
+0. **Level 4 y salas autoradas: NO se portan** (D1). Se pierden a sabiendas; cuando toque, sistema nuevo **desde cero** y distinto del pensado entonces, con su ADR. **La etapa 3 de ADR-109 —borrar `grid_gen`— queda DESBLOQUEADA.**
+
+1. **Se resuelve el empate que bloqueaba el orden: manda ADR-103, la RAREZA** (D2). Joel pide más sensación Backrooms, más perspectiva y **más variedad en el mundo actual**. **C2 (ajustar el plan al catálogo) DESCARTADO** por regularizar el mundo. C1 (autorar contra el histograma de `probe_region_plan`) sobrevive: puebla el catálogo sin tocar el plan. Las perillas de rareza (`WEIRD_SPREAD`, `TARGET_AREA_M2` al alza, `VOID_CHANCE_WEIRD`, `clear_height_cm`) entran al frente, cada una con medida antes y después.
+
+2. **Tres trabajos aprobados** (D3, D4, D5): poblar las plantas altas —hay hasta 6 plantas vacías desde las torres—, la guarda de aislamiento anti-griefing en claims (regla de servidor, «reclamar no puede cerrar un paso», con sonda de conectividad), y autorar `styleProfiles` y piezas contra el histograma.
+
+3. **Orden vigente**: plantas altas → guarda de claims → ADR-103 y perillas de rareza → autorado (en paralelo) → borrado de WG2 etapa 3.
+
+4. **Ninguno tiene código todavía.** Los tres primeros tocan sistema núcleo (worldgen y autoridad de claims): piden plan antes de código, regla 4.
+
+---
+
 - Fecha: 2026-08-29 noche, 2.ª tanda (**verticalidad: diez plantas servidas, torres y aterrizaje por unión — VERTICALITY-ROADMAP D1**) — **4 commits, `359bf5fe` → `98428ce4`, pusheados a origin. `cargo test` 1140/1140, clippy `-D warnings` y fmt limpios. Cero wire. Release desplegado y VALIDADO EN PARTIDA por Joel (bloqueo por piezas, plantas nuevas, torres).**
 
 0. **BLOQUEO POR PIEZAS CONSTRUIDAS** (`359bf5fe`): un muro levantado por un jugador ya corta la navegación WG3 del robapieles (`Wg3CollisionCache.blocked` consultado en `nav::floor_at`). Playtest: lo rodea. Piezas cortan PASO, no VISTA; los facelings nunca las respetaron (tampoco en WG2).

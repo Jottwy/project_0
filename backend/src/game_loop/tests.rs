@@ -1189,7 +1189,7 @@ async fn replan_stagger_spreads_the_searches_of_a_populated_world() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let mut driver = population_driver(42, 8);
     let here = Vec3::new(0.0, stand_on(0), 0.0);
-    driver.sync_population(&mut net, here, 0.1);
+    driver.sync_population(&mut net, here, 0.1, None);
     let n = driver.movers.len();
     assert!(n >= 2, "need a crowd to stagger, got {n}");
 
@@ -1458,7 +1458,7 @@ async fn population_wakes_phantoms_near_a_player_and_none_when_alone_far_away() 
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let mut driver = population_driver(42, 8);
 
-    driver.sync_population(&mut net, Vec3::new(0.0, stand_on(0), 0.0), 0.1);
+    driver.sync_population(&mut net, Vec3::new(0.0, stand_on(0), 0.0), 0.1, None);
     let near_spawn = driver.movers.len();
     assert!(
         near_spawn > 0,
@@ -1487,7 +1487,7 @@ async fn population_ignores_blocks_on_another_layer() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let mut driver = population_driver(42, 8);
 
-    driver.sync_population(&mut net, Vec3::new(0.0, stand_on(1), 0.0), 0.1);
+    driver.sync_population(&mut net, Vec3::new(0.0, stand_on(1), 0.0), 0.1, None);
 
     assert!(
         driver.movers.is_empty(),
@@ -1497,7 +1497,7 @@ async fn population_ignores_blocks_on_another_layer() {
     // Control: the very same XZ on layer 0 does wake some, so the assert above is the layer
     // filter working and not simply an empty neighbourhood.
     let mut driver0 = population_driver(42, 8);
-    driver0.sync_population(&mut net, Vec3::new(0.0, stand_on(0), 0.0), 0.1);
+    driver0.sync_population(&mut net, Vec3::new(0.0, stand_on(0), 0.0), 0.1, None);
     assert!(!driver0.movers.is_empty(), "control: layer 0 must populate");
 }
 
@@ -1507,7 +1507,7 @@ async fn population_never_exceeds_the_active_cap() {
     let mut driver = population_driver(42, 1);
 
     for _ in 0..5 {
-        driver.sync_population(&mut net, Vec3::new(0.0, stand_on(0), 0.0), 1.0);
+        driver.sync_population(&mut net, Vec3::new(0.0, stand_on(0), 0.0), 1.0, None);
     }
 
     assert!(
@@ -1525,10 +1525,10 @@ async fn a_settled_block_is_not_spawned_twice() {
     let mut driver = population_driver(42, 8);
     let here = Vec3::new(0.0, stand_on(0), 0.0);
 
-    driver.sync_population(&mut net, here, 0.1);
+    driver.sync_population(&mut net, here, 0.1, None);
     let first = driver.movers.len();
     for _ in 0..4 {
-        driver.sync_population(&mut net, here, 1.0);
+        driver.sync_population(&mut net, here, 1.0, None);
     }
 
     assert_eq!(
@@ -1550,7 +1550,7 @@ async fn walking_away_puts_a_wanderer_away_but_never_a_pursuer() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let mut driver = population_driver(42, 8);
     let here = Vec3::new(0.0, stand_on(0), 0.0);
-    driver.sync_population(&mut net, here, 0.1);
+    driver.sync_population(&mut net, here, 0.1, None);
     assert!(driver.movers.len() >= 2, "need at least two to compare");
 
     // One keeps wandering, one is on your heels.
@@ -1561,7 +1561,7 @@ async fn walking_away_puts_a_wanderer_away_but_never_a_pursuer() {
 
     // The player leaves — far past the deactivation radius.
     let far = Vec3::new(5_000.0, stand_on(0), 5_000.0);
-    driver.sync_population(&mut net, far, 1.0);
+    driver.sync_population(&mut net, far, 1.0, None);
 
     assert!(
         !driver.movers.iter().any(|m| m.id == wanderer),
@@ -1584,7 +1584,7 @@ async fn hysteresis_stops_a_phantom_blinking_at_the_boundary() {
     // flickering in and out at the edge of view distance.
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let mut driver = population_driver(42, 8);
-    driver.sync_population(&mut net, Vec3::new(0.0, stand_on(0), 0.0), 0.1);
+    driver.sync_population(&mut net, Vec3::new(0.0, stand_on(0), 0.0), 0.1, None);
     assert!(!driver.movers.is_empty());
 
     // Measure the band against ONE specific creature: standing `band` metres from the origin
@@ -1599,7 +1599,7 @@ async fn hysteresis_stops_a_phantom_blinking_at_the_boundary() {
         "test setup is not inside the dead band"
     );
 
-    driver.sync_population(&mut net, loiter, 1.0);
+    driver.sync_population(&mut net, loiter, 1.0, None);
 
     assert!(
         driver.movers.iter().any(|m| m.id == watched),
@@ -3687,7 +3687,7 @@ async fn a_distant_shot_wakes_a_sleeper_that_no_player_is_near() {
     // A rifle, far beyond PHANTOM_ACTIVATE_RADIUS (150 m).
     net.pending_noises
         .push(([400.0, stand_on(0), 400.0], 500.0));
-    driver.wake_for_noises(&mut net);
+    driver.wake_for_noises(&mut net, None);
 
     assert!(
         !driver.movers.is_empty(),
@@ -3719,7 +3719,7 @@ async fn waking_by_noise_still_respects_the_global_cap() {
         net.pending_noises
             .push(([400.0 + i as f32 * 50.0, stand_on(0), 400.0], 500.0));
     }
-    driver.wake_for_noises(&mut net);
+    driver.wake_for_noises(&mut net, None);
 
     assert!(
         driver.movers.len() <= 1,
@@ -4783,7 +4783,7 @@ async fn nothing_ever_wakes_up_in_your_face() {
             let before: std::collections::HashSet<PeerId> =
                 driver.movers.iter().map(|m| m.id).collect();
             driver.population_sync_in = 0.0; // force a reconcile on this arrival
-            driver.sync_population(&mut net, here, 0.1);
+            driver.sync_population(&mut net, here, 0.1, None);
 
             for m in driver.movers.iter().filter(|m| !before.contains(&m.id)) {
                 let Some(peer) = net.peers.get(&m.id) else {
@@ -11759,4 +11759,1070 @@ fn a_wg3_claim_is_one_space_and_the_storey_counts() {
     );
     assert_ne!(claim_key_wg3(Some(&abajo)), claim_key_wg3(Some(&otro)));
     assert_eq!(claim_key_wg3(None), None, "sin espacio no hay claim");
+}
+
+// ── ADR-110 D3 / T2 — LA RETIRADA NO PUEDE CONFUNDIR PLANTAS ──
+
+/// **Subir de planta no retira a las criaturas de la planta en la que sigues.**
+///
+/// La retirada preguntaba `world_pos_to_layer(p.y) != m.layer`, con capas de 4 m sobre plantas de
+/// 3,32: medido en T0, la capa cambia en 3 de cada 5 transiciones de planta, asi que al subir se
+/// desalojaba lo de abajo aunque el jugador no se hubiera movido en XZ. Ahora la pregunta la
+/// contesta `same_level`, que con WG3 compara cotas contra media planta.
+#[test]
+fn changing_storey_does_not_evict_creatures_on_the_storey_you_are_on() {
+    use crate::game_loop::faceling::same_level;
+    use crate::world::wg3::plan::STOREY_HEIGHT_CM;
+
+    let storey_y = |s: i32| s as f32 * STOREY_HEIGHT_CM as f32 / 100.0 + 1.8;
+
+    // Una criatura y un jugador EN LA MISMA planta siguen juntos, planta a planta. El `layer` que se
+    // pasa es el viejo y con WG3 se ignora a proposito: si volviera a mandar, este test caeria.
+    for s in 0..6i32 {
+        assert!(
+            same_level(true, 0, storey_y(s), storey_y(s)),
+            "planta {s}: la criatura y el jugador estan en la misma planta y no se reconocen"
+        );
+    }
+
+    // Y plantas distintas siguen siendo distintas — que es la otra mitad: nadie pega a traves de un
+    // forjado.
+    for s in 0..5i32 {
+        assert!(
+            !same_level(true, 0, storey_y(s), storey_y(s + 1)),
+            "las plantas {s} y {} se confunden como la misma",
+            s + 1
+        );
+    }
+
+    // El caso concreto que fallaba: planta 0 -> planta 1 cruza una frontera de capa de WG2. Con el
+    // eje viejo, la criatura de la planta 0 se retiraba; el jugador de la planta 1 no la ve, pero la
+    // de SU planta si tiene que seguir viva.
+    assert!(
+        crate::world::grid_gen::world_pos_to_layer(storey_y(0))
+            != crate::world::grid_gen::world_pos_to_layer(storey_y(1)),
+        "esta transicion ya no cruza frontera de capa: el test ha dejado de medir su caso"
+    );
+    assert!(
+        same_level(true, 0, storey_y(1), storey_y(1)),
+        "subiendo a la planta 1, lo que vive en la planta 1 tiene que seguir activo"
+    );
+}
+
+/// Un peldaño no te saca de tu planta. La escalera sube en contrahuellas de 18-26 cm y media planta
+/// de tolerancia (`same_level`) tiene que tragarselas enteras, o subir dos escalones te volveria
+/// invisible para lo que tienes al lado.
+#[test]
+fn a_stair_tread_does_not_change_your_level() {
+    use crate::game_loop::faceling::same_level;
+
+    let floor = 1.8f32;
+    for tread_cm in [18, 24, 26, 51, 76, 102] {
+        let on_tread = floor + tread_cm as f32 / 100.0;
+        assert!(
+            same_level(true, 0, floor, on_tread),
+            "subido {tread_cm} cm de escalera, la criatura del pie deja de estar a mi altura"
+        );
+    }
+}
+
+/// **El robapieles no se evapora al cambiar de planta.** Su retirada comparaba la capa de la
+/// criatura contra la del jugador; con plantas de 3,32 sobre cajones de 4 eso lo borraba al cruzar
+/// una frontera. Y aqui duele mas que en los facelings: no adelgaza una poblacion, deja el mundo sin
+/// su amenaza.
+#[test]
+fn the_phantom_is_not_retired_by_crossing_a_wg2_layer_boundary() {
+    use crate::game_loop::faceling::same_level;
+    use crate::world::grid_gen::world_pos_to_layer;
+    use crate::world::wg3::plan::STOREY_HEIGHT_CM;
+
+    let storey_y = |s: i32| s as f32 * STOREY_HEIGHT_CM as f32 / 100.0 + 1.8;
+    let mut cruces = 0;
+    for s in 0..6i32 {
+        // Criatura y jugador en la MISMA planta: nunca se retira.
+        assert!(
+            same_level(true, 0, storey_y(s), storey_y(s)),
+            "planta {s}: el robapieles se retira estando el jugador en su misma planta"
+        );
+        if s > 0 && world_pos_to_layer(storey_y(s)) != world_pos_to_layer(storey_y(s - 1)) {
+            cruces += 1;
+        }
+    }
+    assert!(
+        cruces > 0,
+        "ninguna planta cruza frontera de capa: el test no esta midiendo su caso"
+    );
+}
+
+// ── ADR-110 D3 / T5 — EL CAP NO PUEDE SER UN SESGO DE COORDENADA ──
+
+/// **El cap se gasta por CERCANÍA, no por orden de recorrido.**
+///
+/// El reparto recorría `for cx { for cz { ... } }` y poblaba dentro del bucle, cortando al llegar a
+/// `FACELING_ACTIVE_CAP`. Lo que se quedaba fuera no era lo más lejano sino **lo último del
+/// recorrido** — el chunk de mayor `cz`. Con el cap saturado, el jugador vería un lado poblado y el
+/// otro vacío sin nada que lo explicase.
+///
+/// El test reconstruye el orden que DEBERÍA salir —los mismos candidatos que ve producción, con la
+/// misma distancia con la que los mide— y exige que lo que despertó sea un **prefijo** de esa lista
+/// ordenada. Es la comprobación exacta y no una aproximación por centros de chunk: producción mide
+/// contra el hueco sorteado más cercano, no contra el centro geométrico.
+#[tokio::test]
+async fn the_active_cap_is_spent_by_distance_not_by_loop_order() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let mut driver = AdultDriver::new(net.world_seed);
+    // Denso a propósito: el objetivo es SATURAR el cap, que es cuando el sesgo existe. Sin
+    // saturarlo, cualquier orden da el mismo resultado y el test no mediría nada.
+    driver.density_scale = 40.0;
+
+    let here = Vec3::new(500.0, stand_on(0), 500.0);
+
+    // ── El orden esperado, calculado con las MISMAS reglas que el reparto ──
+    let cell = crate::world::grid_gen::CELL_SIZE_M * crate::world::grid_gen::CHUNK_CELLS as f32;
+    let cx0 = ((here.x - FACELING_ACTIVATE_RADIUS) / cell).floor() as i32;
+    let cx1 = ((here.x + FACELING_ACTIVATE_RADIUS) / cell).floor() as i32;
+    let cz0 = ((here.z - FACELING_ACTIVATE_RADIUS) / cell).floor() as i32;
+    let cz1 = ((here.z + FACELING_ACTIVATE_RADIUS) / cell).floor() as i32;
+    let mut esperados: Vec<(f32, (i32, i32))> = Vec::new();
+    let mut drawn = Vec::new();
+    for cx in cx0..=cx1 {
+        for cz in cz0..=cz1 {
+            crate::world::faceling_spawn::draw_adults_into(
+                net.world_seed,
+                cx,
+                cz,
+                0,
+                driver.density_scale,
+                false,
+                &mut drawn,
+            );
+            if drawn.is_empty() {
+                continue;
+            }
+            let closest = drawn
+                .iter()
+                .map(|pos| here.distance_xz(Vec3::from_array(*pos)))
+                .fold(f32::INFINITY, f32::min);
+            if closest > FACELING_ACTIVATE_RADIUS {
+                continue;
+            }
+            if here.distance_xz(Vec3::from_array(drawn[0])) < FACELING_MIN_SPAWN_DISTANCE {
+                continue;
+            }
+            esperados.push((closest, (cx, cz)));
+        }
+    }
+    esperados.sort_by(|a, b| a.0.total_cmp(&b.0));
+    assert!(
+        esperados.len() > 1,
+        "solo {} chunk candidato: sin competencia por el cap no hay sesgo que medir",
+        esperados.len()
+    );
+
+    driver.population_sync_in = 0.0;
+    driver.sync_population(&mut net, here, 0.1, None);
+    assert!(
+        driver.movers.len() >= FACELING_ACTIVE_CAP,
+        "el cap no se ha saturado ({} de {FACELING_ACTIVE_CAP}): el test no esta midiendo el sesgo",
+        driver.movers.len()
+    );
+
+    let despiertos: std::collections::HashSet<(i32, i32)> =
+        driver.movers.iter().map(|m| m.home_chunk).collect();
+    assert!(
+        despiertos.len() < esperados.len(),
+        "han despertado todos los chunks candidatos: el cap no ha dejado a nadie fuera y el test          no distingue el orden"
+    );
+
+    // LA PROPIEDAD: lo despertado es un PREFIJO de la lista ordenada por cercania. Con el bucle
+    // viejo, el prefijo lo marcaba `cx`/`cz` y este assert cae.
+    for (i, (d, chunk)) in esperados.iter().enumerate() {
+        let deberia = i < despiertos.len();
+        let esta = despiertos.contains(chunk);
+        assert_eq!(
+            esta, deberia,
+            "el chunk {chunk:?} esta a {d:.1} m (puesto {i} por cercania) y {}: el cap se esta              gastando por orden de bucle y no por distancia",
+            match esta {
+                true => "desperto pese a no entrar en el cap",
+                false => "no desperto aunque le tocaba",
+            }
+        );
+    }
+}
+
+/// El cap se sigue RESPETANDO. Ordenar por cercanía no puede convertirse en una excusa para pasarse.
+#[tokio::test]
+async fn the_active_cap_is_still_a_cap() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let mut driver = AdultDriver::new(net.world_seed);
+    driver.density_scale = 40.0;
+
+    for gx in 0..4i32 {
+        let here = Vec3::new(300.0 + gx as f32 * 41.0, stand_on(0), 300.0);
+        driver.population_sync_in = 0.0;
+        driver.sync_population(&mut net, here, 0.1, None);
+        assert!(
+            driver.movers.len() <= FACELING_ACTIVE_CAP,
+            "hay {} adultos activos contra un cap de {FACELING_ACTIVE_CAP}",
+            driver.movers.len()
+        );
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// AUDITORÍA DE POBLACIÓN VERTICAL — el pipeline REAL, no funciones sueltas
+//
+// Las sondas de T0-T5 medían el sorteo llamando a `draw_adults_into` a mano. Esto ejecuta
+// `AdultDriver::sync_population` ENTERO con WG3 encendido: sorteo, papel, cota, snap del ráster,
+// spawn y retirada. Es la diferencia entre medir una función y medir el juego.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+fn audit_manifest() -> crate::world::wg3::manifest::Wg3Manifest {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("Assets")
+        .join("StreamingAssets")
+        .join("wg3_manifest.json");
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("no se pudo leer {}: {e}", path.display()));
+    crate::world::wg3::manifest::parse_manifest(&text).expect("manifiesto no valido")
+}
+
+const AUDIT_SEED: u64 = 0xDEAD_BEEF_0000_002A;
+
+/// La cota de pie de un jugador en la planta `s` de WG3.
+fn wg3_stand_on(storey: i32) -> f32 {
+    storey as f32 * crate::world::wg3::plan::STOREY_HEIGHT_CM as f32 / 100.0
+        + crate::world::collision::PLAYER_BASE_Y
+}
+
+/// Un punto de una región donde la planta `storey` existe de verdad, con su cota real.
+fn a_spot_on_storey(
+    worlds: &mut crate::world::wg3::world::Wg3WorldCache,
+    m: &crate::world::wg3::manifest::Wg3Manifest,
+    region: (i32, i32),
+    storey: i32,
+) -> Option<Vec3> {
+    use crate::world::wg3::plan::storey_of_floor_cm;
+    let coord = crate::world::wg3::world::Wg3RegionCoord {
+        x: region.0,
+        z: region.1,
+    };
+    let served = crate::world::wg3::world::Wg3ServedWorld::plan_region(m, AUDIT_SEED, coord);
+    let _ = worlds;
+    // El tramo MAS GRANDE de esa planta: el sitio con mas margen para que el snap no se escape.
+    let seg = served
+        .segments()
+        .iter()
+        .filter(|s| storey_of_floor_cm(s.floor_y_cm) == storey)
+        .max_by_key(|s| (s.size_x_cm as i64) * (s.size_z_cm as i64))?;
+    Some(Vec3::new(
+        (seg.x_cm + seg.size_x_cm / 2) as f32 / 100.0,
+        seg.floor_y_cm as f32 / 100.0 + crate::world::collision::PLAYER_BASE_Y,
+        (seg.z_cm + seg.size_z_cm / 2) as f32 / 100.0,
+    ))
+}
+
+/// **AUDITORÍA 4 — ¿coincide el storey ASIGNADO con el storey FÍSICO de la criatura?**
+///
+/// `wg3_spawn_point` devuelve la cota del espacio de la planta sorteada, pero `spawn_faceling`
+/// la pasa por `standable_near`, que busca `floor_below` en ANILLOS de XZ y **sólo sabe bajar**.
+/// Si el XZ vecino no tiene suelo en esa planta, la criatura aterriza en una planta INFERIOR
+/// conservando `m.layer` de la planta alta.
+#[tokio::test]
+#[ignore = "auditoria: imprime el pipeline real"]
+async fn audit_assigned_storey_matches_physical_storey() {
+    use crate::world::wg3::plan::storey_of_floor_cm;
+
+    let m = audit_manifest();
+    let mut net = NetworkManager::bind(0, 1, AUDIT_SEED, true).await.unwrap();
+    net.world_seed = AUDIT_SEED;
+    let mut worlds = wg3_cache();
+
+    println!("\n[AUD] storey_asignado  storey_fisico  criaturas  DESAJUSTES");
+    let mut total = 0usize;
+    let mut desajustes = 0usize;
+
+    for storey in 0..5i32 {
+        let Some(here) = a_spot_on_storey(&mut worlds, &m, (0, 0), storey) else {
+            println!("[AUD]   planta {storey}: la region (0,0) no la tiene");
+            continue;
+        };
+        let mut driver = AdultDriver::new(net.world_seed);
+        driver.density_scale = 8.0;
+        driver.wg3 = Some(crate::world::wg3::collision::Wg3CollisionCache::new());
+        driver.population_sync_in = 0.0;
+        driver.sync_population(
+            &mut net,
+            here,
+            0.1,
+            Some(crate::game_loop::faceling::Wg3SpawnCtx {
+                worlds: &mut worlds,
+                manifest: &m,
+                world_seed: AUDIT_SEED,
+            }),
+        );
+
+        let mut mal = 0usize;
+        let n = driver.movers.len();
+        for mv in &driver.movers {
+            let Some(peer) = net.peers.get(&mv.id) else {
+                continue;
+            };
+            let y = peer.position[1];
+            // El storey FISICO: de la cota de sus pies.
+            let fisico = storey_of_floor_cm(
+                ((y - crate::world::collision::PLAYER_BASE_Y) * 100.0).round() as i32,
+            );
+            if fisico != mv.layer as i32 {
+                mal += 1;
+            }
+        }
+        total += n;
+        desajustes += mal;
+        println!(
+            "[AUD]   planta {storey}: {n} criaturas, {mal} en otra planta (jugador y={:.2})",
+            here.y
+        );
+        for mv in driver.movers.iter().take(3) {
+            if let Some(peer) = net.peers.get(&mv.id) {
+                println!(
+                    "[AUD]      asignada={} fisica={} y={:.2}",
+                    mv.layer,
+                    storey_of_floor_cm(
+                        ((peer.position[1] - crate::world::collision::PLAYER_BASE_Y) * 100.0)
+                            .round() as i32
+                    ),
+                    peer.position[1]
+                );
+            }
+        }
+    }
+    println!("[AUD] == total {total} criaturas, {desajustes} con storey asignado != fisico");
+}
+
+/// **AUDITORÍA 5 — ¿hay CHURN de población con el jugador quieto?**
+///
+/// Si una criatura nace en una planta distinta de la asignada, la retirada —que mira su Y REAL—
+/// la considera de otra planta y la retira. Y como `taken` se lleva por `home_chunk`, al quedar
+/// libre ese chunk vuelve a sortearse igual: spawn, retirada, spawn, retirada, a 1 Hz.
+///
+/// El jugador NO se mueve. Cualquier rotación de población aquí es churn puro.
+#[tokio::test]
+#[ignore = "auditoria: imprime el pipeline real"]
+async fn audit_population_churn_with_a_stationary_player() {
+    let m = audit_manifest();
+    let mut net = NetworkManager::bind(0, 1, AUDIT_SEED, true).await.unwrap();
+    net.world_seed = AUDIT_SEED;
+    let mut worlds = wg3_cache();
+
+    println!("\n[AUD] planta  tick  vivos  nacidos  retirados");
+    for storey in 0..4i32 {
+        let Some(here) = a_spot_on_storey(&mut worlds, &m, (0, 0), storey) else {
+            continue;
+        };
+        let mut driver = AdultDriver::new(net.world_seed);
+        driver.density_scale = 8.0;
+        driver.wg3 = Some(crate::world::wg3::collision::Wg3CollisionCache::new());
+
+        let mut previos: std::collections::HashSet<PeerId> = Default::default();
+        let (mut nac_tot, mut ret_tot) = (0usize, 0usize);
+        for tick in 0..6 {
+            driver.population_sync_in = 0.0;
+            driver.sync_population(
+                &mut net,
+                here,
+                0.1,
+                Some(crate::game_loop::faceling::Wg3SpawnCtx {
+                    worlds: &mut worlds,
+                    manifest: &m,
+                    world_seed: AUDIT_SEED,
+                }),
+            );
+            let ahora: std::collections::HashSet<PeerId> =
+                driver.movers.iter().map(|mv| mv.id).collect();
+            let nacidos = ahora.difference(&previos).count();
+            let retirados = previos.difference(&ahora).count();
+            if tick > 0 {
+                nac_tot += nacidos;
+                ret_tot += retirados;
+            }
+            println!(
+                "[AUD]   {storey}     {tick}    {:>3}     {nacidos:>3}       {retirados:>3}",
+                ahora.len()
+            );
+            previos = ahora;
+        }
+        println!("[AUD]   planta {storey}: tras el primer tick, {nac_tot} nacimientos y {ret_tot} retiradas con el jugador QUIETO");
+    }
+}
+
+/// **AUDITORÍA 5b — el recorrido vertical: 0 → 1 → 2 → 3 → 0.**
+///
+/// Lo que el jugador hace de verdad. En cada transición: quién se mantiene, quién se retira, quién
+/// nace. Un mundo sano no puede vaciarse por cruzar una frontera de 3,32 m.
+#[tokio::test]
+#[ignore = "auditoria: imprime el pipeline real"]
+async fn audit_vertical_traversal() {
+    let m = audit_manifest();
+    let mut net = NetworkManager::bind(0, 1, AUDIT_SEED, true).await.unwrap();
+    net.world_seed = AUDIT_SEED;
+    let mut worlds = wg3_cache();
+
+    // **UNA SOLA VERTICAL.** La primera version de esta sonda pedia «el mayor tramo de cada planta»,
+    // que esta en un XZ distinto por planta: el jugador se movia tambien en horizontal y las
+    // retiradas se confundian con las de alejarse. Aqui se busca una columna XZ que tenga suelo en
+    // 0, 1, 2 y 3, y el jugador SOLO sube y baja.
+    let coord = crate::world::wg3::world::Wg3RegionCoord { x: 0, z: 0 };
+    let served = crate::world::wg3::world::Wg3ServedWorld::plan_region(&m, AUDIT_SEED, coord);
+    let mut columna: Option<(f32, f32)> = None;
+    for seg in served.segments() {
+        let x = (seg.x_cm + seg.size_x_cm / 2) as f32 / 100.0;
+        let z = (seg.z_cm + seg.size_z_cm / 2) as f32 / 100.0;
+        let plantas: std::collections::BTreeSet<i32> = served
+            .spaces_at_xz(x, z)
+            .iter()
+            .map(|s| crate::world::wg3::plan::storey_of_floor_cm(s.floor_y_cm))
+            .collect();
+        if [0, 1, 2, 3].iter().all(|n| plantas.contains(n)) {
+            columna = Some((x, z));
+            break;
+        }
+    }
+    let Some((x, z)) = columna else {
+        println!("[AUD] no hay ninguna vertical con las plantas 0-3 en la region (0,0)");
+        return;
+    };
+    println!("[AUD] vertical elegida: x={x:.1} z={z:.1}");
+    let paradas: Vec<(i32, Vec3)> = [0, 1, 2, 3, 0]
+        .iter()
+        .map(|s| (*s, Vec3::new(x, wg3_stand_on(*s), z)))
+        .collect();
+
+    let mut driver = AdultDriver::new(net.world_seed);
+    driver.density_scale = 8.0;
+    driver.wg3 = Some(crate::world::wg3::collision::Wg3CollisionCache::new());
+
+    println!("\n[AUD] paso  planta  y      vivos  nacidos  retirados  mantenidos");
+    let mut previos: std::collections::HashSet<PeerId> = Default::default();
+    for (i, (storey, here)) in paradas.iter().enumerate() {
+        driver.population_sync_in = 0.0;
+        driver.sync_population(
+            &mut net,
+            *here,
+            0.1,
+            Some(crate::game_loop::faceling::Wg3SpawnCtx {
+                worlds: &mut worlds,
+                manifest: &m,
+                world_seed: AUDIT_SEED,
+            }),
+        );
+        let ahora: std::collections::HashSet<PeerId> =
+            driver.movers.iter().map(|mv| mv.id).collect();
+        // Reparto de cotas de los vivos: dice si «mantenido» significa «sigue donde debe» o «se ha
+        // quedado colgado de otra planta».
+        let mut por_cota: std::collections::BTreeMap<i32, usize> = Default::default();
+        let mut asignadas: std::collections::BTreeMap<u8, usize> = Default::default();
+        for mv in &driver.movers {
+            *asignadas.entry(mv.layer).or_default() += 1;
+            if let Some(peer) = net.peers.get(&mv.id) {
+                *por_cota
+                    .entry(crate::world::wg3::plan::storey_of_floor_cm(
+                        ((peer.position[1] - crate::world::collision::PLAYER_BASE_Y) * 100.0)
+                            .round() as i32,
+                    ))
+                    .or_default() += 1;
+            }
+        }
+        println!(
+            "[AUD]   {i}      {storey}    {:>5.2}   {:>3}     {:>3}       {:>3}        {:>3}   fisicas={por_cota:?} asignadas={asignadas:?}",
+            here.y,
+            ahora.len(),
+            ahora.difference(&previos).count(),
+            previos.difference(&ahora).count(),
+            ahora.intersection(&previos).count()
+        );
+        previos = ahora;
+    }
+}
+
+/// **REGRESIÓN — lo que el reparto puebla, la retirada tiene que conservarlo.**
+///
+/// El despertar clasifica al jugador en una planta DISCRETA (el espacio que pisa). T2 puso la
+/// retirada a usar `same_level`, una distancia CONTINUA de media planta pensada para otra cosa —ver,
+/// perseguir y pegar (ADR-108)—. No son el mismo predicado y **discrepan en 6 de los 14 peldaños**
+/// de la región (0,0): de 178 a 306 cm el sorteo dice «estás en la planta 0» y `same_level` dice que
+/// no estás a la altura del suelo de la planta 0.
+///
+/// **El escenario se CONSTRUYE en vez de esperarse del sorteo**, y esa es la diferencia entre un
+/// test con dientes y uno decorativo: cerca de una escalera las criaturas nacen EN los peldaños, a
+/// la altura del jugador, así que el sorteo real casi nunca produce el caso. Aquí se pone a mano una
+/// criatura de la planta 0 sobre el suelo de la planta 0, con el jugador subido a un peldaño de esa
+/// misma planta y a menos del radio de desactivación. Es exactamente el faceling que estás mirando
+/// desde la escalera.
+#[tokio::test]
+async fn what_the_draw_populates_the_retirement_must_keep() {
+    use crate::world::wg3::plan::{storey_of_floor_cm, STOREY_HEIGHT_CM};
+
+    let m = audit_manifest();
+    let mut net = NetworkManager::bind(0, 1, AUDIT_SEED, true).await.unwrap();
+    net.world_seed = AUDIT_SEED;
+    let mut worlds = wg3_cache();
+
+    let coord = crate::world::wg3::world::Wg3RegionCoord { x: 0, z: 0 };
+    let served = crate::world::wg3::world::Wg3ServedWorld::plan_region(&m, AUDIT_SEED, coord);
+
+    // Un peldaño ALTO de la planta 0: donde los dos predicados discrepan.
+    let alto = served
+        .segments()
+        .iter()
+        .filter(|s| {
+            s.floor_y_cm > 0
+                && s.floor_y_cm.rem_euclid(STOREY_HEIGHT_CM) != 0
+                && storey_of_floor_cm(s.floor_y_cm) == 0
+                && (s.floor_y_cm as f32 / 100.0) > 1.66
+        })
+        .max_by_key(|s| s.floor_y_cm)
+        .expect("la region (0,0) no tiene un peldano alto en la planta 0");
+    let here = Vec3::new(
+        (alto.x_cm + alto.size_x_cm / 2) as f32 / 100.0,
+        alto.floor_y_cm as f32 / 100.0 + crate::world::collision::PLAYER_BASE_Y,
+        (alto.z_cm + alto.size_z_cm / 2) as f32 / 100.0,
+    );
+
+    // Una criatura de la MISMA planta, sobre el suelo canonico de la planta 0, cerca en XZ.
+    let cerca = Vec3::new(
+        here.x + 6.0,
+        crate::world::collision::PLAYER_BASE_Y,
+        here.z + 6.0,
+    );
+    let cell = crate::world::grid_gen::CELL_SIZE_M * crate::world::grid_gen::CHUNK_CELLS as f32;
+    let id = net.insert_faceling_peer("Faceling", cerca.to_array(), 1);
+
+    let mut driver = AdultDriver::new(net.world_seed);
+    driver.density_scale = 0.0; // sin sorteo: solo se mide la RETIRADA
+    driver.wg3 = Some(crate::world::wg3::collision::Wg3CollisionCache::new());
+    driver.movers.push(AdultMover {
+        id,
+        home_chunk: (
+            (cerca.x / cell).floor() as i32,
+            (cerca.z / cell).floor() as i32,
+        ),
+        layer: 0,
+        state: AdultState::Working,
+        heading: 0.0,
+        commute_target: cerca,
+        state_timer: 999.0,
+        health: 10,
+        enforce_target: None,
+        strike_recover: 0.0,
+        progress: ProgressWatch::new(),
+        nav_waypoints: Vec::new(),
+        nav_cursor: 0,
+        nav_goal: None,
+        nav_age: 0.0,
+        nav_blocked: 0,
+    });
+
+    driver.population_sync_in = 0.0;
+    driver.sync_population(
+        &mut net,
+        here,
+        0.1,
+        Some(crate::game_loop::faceling::Wg3SpawnCtx {
+            worlds: &mut worlds,
+            manifest: &m,
+            world_seed: AUDIT_SEED,
+        }),
+    );
+
+    assert_eq!(
+        driver.movers.len(),
+        1,
+        "el jugador esta en un peldano de la planta 0 (cota {} cm, y={:.2}) y la criatura de la \
+         planta 0 que tiene a 8 m se ha retirado: el predicado de retirada no es el del reparto",
+        alto.floor_y_cm,
+        here.y
+    );
+}
+
+/// **REGRESIÓN — el storey asignado tiene que ser el storey FÍSICO.**
+///
+/// `standable_near` busca en anillos de 24 m y resuelve el suelo con `floor_below`, que sólo sabe
+/// bajar: una criatura sorteada para la planta 2 aterrizaba en la 0 conservando `layer = 2`. Medido
+/// antes del arreglo: 3 de 49 criaturas, y 3 de 13 con el jugador en la planta 2. La consecuencia no
+/// era una cifra: nacían donde el jugador no está, la retirada las mataba al tick siguiente y su
+/// plaza del cap se perdía.
+#[tokio::test]
+async fn every_creature_is_physically_on_the_storey_it_was_assigned() {
+    use crate::world::wg3::plan::storey_of_floor_cm;
+
+    let m = audit_manifest();
+    let mut net = NetworkManager::bind(0, 1, AUDIT_SEED, true).await.unwrap();
+    net.world_seed = AUDIT_SEED;
+    let mut worlds = wg3_cache();
+
+    let mut comprobadas = 0usize;
+    let mut mal = Vec::new();
+    for storey in 0..5i32 {
+        let Some(here) = a_spot_on_storey(&mut worlds, &m, (0, 0), storey) else {
+            continue;
+        };
+        let mut driver = AdultDriver::new(net.world_seed);
+        driver.density_scale = 8.0;
+        driver.wg3 = Some(crate::world::wg3::collision::Wg3CollisionCache::new());
+        driver.population_sync_in = 0.0;
+        driver.sync_population(
+            &mut net,
+            here,
+            0.1,
+            Some(crate::game_loop::faceling::Wg3SpawnCtx {
+                worlds: &mut worlds,
+                manifest: &m,
+                world_seed: AUDIT_SEED,
+            }),
+        );
+        for mv in &driver.movers {
+            let Some(peer) = net.peers.get(&mv.id) else {
+                continue;
+            };
+            comprobadas += 1;
+            let fisico = storey_of_floor_cm(
+                ((peer.position[1] - crate::world::collision::PLAYER_BASE_Y) * 100.0).round()
+                    as i32,
+            );
+            if fisico != mv.layer as i32 {
+                mal.push((mv.layer, fisico, peer.position[1]));
+            }
+        }
+    }
+    assert!(
+        comprobadas > 20,
+        "solo {comprobadas} criaturas comprobadas: la muestra no cubre el caso"
+    );
+    assert!(
+        mal.is_empty(),
+        "{} de {comprobadas} criaturas estan en una planta distinta de la asignada \
+         (asignada, fisica, y): {mal:?}",
+        mal.len()
+    );
+}
+
+/// **REGRESIÓN — con el jugador QUIETO no puede rotar la población.**
+///
+/// Una criatura colocada en la planta equivocada se retiraba al reconcile siguiente y su chunk no
+/// volvía a sortearse (lo bloqueaban sus hermanas vivas): aparecía delante del jugador y desaparecía
+/// un segundo después, para siempre. Medido antes del arreglo: 1 retirada en las plantas 1 y 2 sin
+/// que el jugador se moviera.
+#[tokio::test]
+async fn a_stationary_player_sees_no_population_churn() {
+    let m = audit_manifest();
+    let mut net = NetworkManager::bind(0, 1, AUDIT_SEED, true).await.unwrap();
+    net.world_seed = AUDIT_SEED;
+    let mut worlds = wg3_cache();
+
+    for storey in 0..4i32 {
+        let Some(here) = a_spot_on_storey(&mut worlds, &m, (0, 0), storey) else {
+            continue;
+        };
+        let mut driver = AdultDriver::new(net.world_seed);
+        driver.density_scale = 8.0;
+        driver.wg3 = Some(crate::world::wg3::collision::Wg3CollisionCache::new());
+
+        let mut anterior = 0usize;
+        for tick in 0..5 {
+            driver.population_sync_in = 0.0;
+            driver.sync_population(
+                &mut net,
+                here,
+                0.1,
+                Some(crate::game_loop::faceling::Wg3SpawnCtx {
+                    worlds: &mut worlds,
+                    manifest: &m,
+                    world_seed: AUDIT_SEED,
+                }),
+            );
+            let ahora = driver.movers.len();
+            if tick > 0 {
+                assert_eq!(
+                    ahora, anterior,
+                    "planta {storey}: la poblacion pasa de {anterior} a {ahora} en el tick {tick} \
+                     con el jugador QUIETO"
+                );
+            }
+            anterior = ahora;
+        }
+        assert!(
+            anterior > 0,
+            "planta {storey}: no se puebla nada, el test no mide churn"
+        );
+    }
+}
+
+/// **AUDITORÍA 6/9/11 — el pipeline REAL, planta a planta y región a región.**
+///
+/// Espacios servidos, población pedida por el sorteo, candidatos que sobreviven al papel y al
+/// espacio, y criaturas realmente vivas tras `sync_population`. En VARIAS regiones, porque que
+/// funcione en una y falle en otra es no estar arreglado.
+#[tokio::test]
+#[ignore = "auditoria: imprime el pipeline real"]
+async fn audit_population_pipeline_by_storey_and_region() {
+    use crate::world::wg3::plan::storey_of_floor_cm;
+
+    let m = audit_manifest();
+    let mut net = NetworkManager::bind(0, 1, AUDIT_SEED, true).await.unwrap();
+    net.world_seed = AUDIT_SEED;
+    let mut worlds = wg3_cache();
+
+    println!("\n[PIPE] region  planta  espacios  vivos  planta_fisica_distinta");
+    for region in [(0, 0), (1, 0), (0, 1), (-1, 2)] {
+        let coord = crate::world::wg3::world::Wg3RegionCoord {
+            x: region.0,
+            z: region.1,
+        };
+        let served = crate::world::wg3::world::Wg3ServedWorld::plan_region(&m, AUDIT_SEED, coord);
+        let mut espacios: std::collections::BTreeMap<i32, usize> = Default::default();
+        for seg in served.segments() {
+            *espacios
+                .entry(storey_of_floor_cm(seg.floor_y_cm))
+                .or_default() += 1;
+        }
+
+        for (storey, n_esp) in espacios.iter() {
+            if *storey < 0 {
+                println!(
+                    "[PIPE]  {region:?}    {storey:>3}   {n_esp:>7}      -   (bajo cota 0: fuera del reparto)"
+                );
+                continue;
+            }
+            let Some(here) = a_spot_on_storey(&mut worlds, &m, region, *storey) else {
+                continue;
+            };
+            let mut driver = AdultDriver::new(net.world_seed);
+            driver.density_scale = 8.0;
+            driver.wg3 = Some(crate::world::wg3::collision::Wg3CollisionCache::new());
+            driver.population_sync_in = 0.0;
+            driver.sync_population(
+                &mut net,
+                here,
+                0.1,
+                Some(crate::game_loop::faceling::Wg3SpawnCtx {
+                    worlds: &mut worlds,
+                    manifest: &m,
+                    world_seed: AUDIT_SEED,
+                }),
+            );
+            let mal = driver
+                .movers
+                .iter()
+                .filter_map(|mv| net.peers.get(&mv.id).map(|pe| (mv.layer, pe.position[1])))
+                .filter(|(layer, y)| {
+                    storey_of_floor_cm(
+                        ((y - crate::world::collision::PLAYER_BASE_Y) * 100.0).round() as i32,
+                    ) != *layer as i32
+                })
+                .count();
+            println!(
+                "[PIPE]  {region:?}    {storey:>3}   {n_esp:>7}  {:>5}   {mal:>3}",
+                driver.movers.len()
+            );
+        }
+    }
+}
+
+/// **AUDITORÍA 8 — ¿puede la planta baja monopolizar el cap?**
+///
+/// El reparto sortea SOLO la planta del jugador (ADR-043 D-ACTIVACIÓN: «the player's OWN layer
+/// only»), así que la planta 0 no compite con la 3 por las mismas plazas. Esto lo demuestra: con el
+/// jugador arriba, el cap se gasta arriba.
+#[tokio::test]
+async fn the_ground_floor_cannot_monopolise_the_cap_of_an_upper_storey() {
+    use crate::world::wg3::plan::storey_of_floor_cm;
+
+    let m = audit_manifest();
+    let mut net = NetworkManager::bind(0, 1, AUDIT_SEED, true).await.unwrap();
+    net.world_seed = AUDIT_SEED;
+    let mut worlds = wg3_cache();
+
+    let mut probadas = 0usize;
+    for storey in 1..4i32 {
+        let Some(here) = a_spot_on_storey(&mut worlds, &m, (0, 0), storey) else {
+            continue;
+        };
+        let mut driver = AdultDriver::new(net.world_seed);
+        // Densidad alta: si la planta baja pudiera robar plazas, aqui es donde se veria.
+        driver.density_scale = 40.0;
+        driver.wg3 = Some(crate::world::wg3::collision::Wg3CollisionCache::new());
+        driver.population_sync_in = 0.0;
+        driver.sync_population(
+            &mut net,
+            here,
+            0.1,
+            Some(crate::game_loop::faceling::Wg3SpawnCtx {
+                worlds: &mut worlds,
+                manifest: &m,
+                world_seed: AUDIT_SEED,
+            }),
+        );
+        assert!(
+            !driver.movers.is_empty(),
+            "planta {storey}: el cap no ha dejado nacer a nadie estando el jugador ahi"
+        );
+        let de_abajo = driver
+            .movers
+            .iter()
+            .filter_map(|mv| net.peers.get(&mv.id).map(|pe| pe.position[1]))
+            .filter(|y| {
+                storey_of_floor_cm(
+                    ((y - crate::world::collision::PLAYER_BASE_Y) * 100.0).round() as i32,
+                ) < storey
+            })
+            .count();
+        assert_eq!(
+            de_abajo, 0,
+            "planta {storey}: {de_abajo} criaturas de plantas inferiores ocupan el cap de esta"
+        );
+        probadas += 1;
+    }
+    assert!(probadas >= 2, "solo {probadas} plantas altas probadas");
+}
+
+/// **AUDITORÍA 10 — el robapieles, por el pipeline real.**
+///
+/// No se hereda de los facelings: tiene su propio sorteo (bloques de 200 m), su propio cap y su
+/// propio camino de Level 4. Lo que se exige aqui es lo mismo: que aparezca en las plantas altas y
+/// que su planta asignada sea la fisica.
+#[tokio::test]
+async fn the_phantom_populates_upper_storeys_on_the_right_floor() {
+    use crate::world::wg3::plan::storey_of_floor_cm;
+
+    let m = audit_manifest();
+    let mut net = NetworkManager::bind(0, 1, AUDIT_SEED, true).await.unwrap();
+    net.world_seed = AUDIT_SEED;
+    let mut worlds = wg3_cache();
+
+    let mut con_poblacion = 0usize;
+    let mut mal = Vec::new();
+    for storey in 0..4i32 {
+        let Some(here) = a_spot_on_storey(&mut worlds, &m, (0, 0), storey) else {
+            continue;
+        };
+        let mut driver = population_driver(net.world_seed, 24);
+        driver.density_scale = 40.0;
+        driver.wg3 = Some(crate::world::wg3::collision::Wg3CollisionCache::new());
+        driver.sync_population(
+            &mut net,
+            here,
+            0.1,
+            Some(crate::game_loop::faceling::Wg3SpawnCtx {
+                worlds: &mut worlds,
+                manifest: &m,
+                world_seed: AUDIT_SEED,
+            }),
+        );
+        if !driver.movers.is_empty() {
+            con_poblacion += 1;
+        }
+        for mv in &driver.movers {
+            let (Some(anchor), Some(peer)) = (mv.anchor, net.peers.get(&mv.id)) else {
+                continue;
+            };
+            let fisico = storey_of_floor_cm(
+                ((peer.position[1] - crate::world::collision::PLAYER_BASE_Y) * 100.0).round()
+                    as i32,
+            );
+            if fisico != anchor.1 as i32 {
+                mal.push((storey, anchor.1, fisico, peer.position[1]));
+            }
+        }
+    }
+    assert!(
+        con_poblacion >= 2,
+        "el robapieles solo aparece en {con_poblacion} plantas: sigue atado a la capa de WG2"
+    );
+    assert!(
+        mal.is_empty(),
+        "robapieles en una planta distinta de la asignada (planta_jugador, asignada, fisica, y): \
+         {mal:?}"
+    );
+}
+
+// ─── El aviso que Unity necesitaba para no entrar antes de tiempo ──────────────────────────
+//
+// Auditoria de conectividad (2026-08-30). Unity daba por "conectado" el IPC con su PROPIO
+// backend, que en un joiner esta arriba tanto si el host existe como si no: un join a una IP
+// inalcanzable cargaba la escena de juego y metia al jugador en un mundo local en solitario.
+// Estos dos eventos son los unicos por los que Unity puede saber la verdad.
+
+/// Registrar AL HOST es el instante en que un joiner tiene sesion. Antes de esto no habia ninguna
+/// senal por IPC que lo distinguiera de "mi backend acepto mi TCP".
+#[tokio::test]
+async fn a_joiner_announces_session_joined_when_it_registers_the_host() {
+    let mut net = NetworkManager::bind(0, 0, 42, false).await.unwrap();
+    let mut world = World::new(42);
+    let mut player = Player::new(7, "Joiner");
+    let (tx, mut rx) = broadcast::channel(16);
+    let mut processed: BoundedDedupeSet<(u16, u64)> = BoundedDedupeSet::with_capacity(DEDUPE_CAP);
+
+    let host_id = 1;
+    net.host_peer_id = Some(host_id);
+
+    let mut adult_driver = AdultDriver::new(net.world_seed);
+    let mut child_driver = ChildDriver::new(net.world_seed);
+    handle_network_event(
+        NetworkEvent::PeerConnected {
+            id: host_id,
+            name: "Host".into(),
+        },
+        &mut player,
+        &mut world,
+        &mut net,
+        &mut adult_driver,
+        &mut child_driver,
+        &tx,
+        &tx,
+        &mut processed,
+        0,
+        None,
+        &wg3_off(),
+        &mut wg3_cache(),
+    )
+    .await;
+
+    let events = drain_event_types(&mut rx);
+    assert!(
+        events.iter().any(|e| e == "session_joined"),
+        "entrar en la sesion tiene que anunciarse, o Unity no puede esperar al handshake: {events:?}"
+    );
+}
+
+/// Control negativo doble: el HOST no se une a nada (su backend ES el servidor), y para un joiner
+/// cualquier OTRO peer que entra es un compañero, no su propia entrada. Sin estas dos ramas la
+/// senal se dispararia en cuanto llegara alguien y volveria a valer para nada.
+#[tokio::test]
+async fn session_joined_is_only_for_the_joiners_own_entry() {
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let mut world = World::new(42);
+    let mut player = Player::new(1, "Host");
+    let (tx, mut rx) = broadcast::channel(16);
+    let mut processed: BoundedDedupeSet<(u16, u64)> = BoundedDedupeSet::with_capacity(DEDUPE_CAP);
+    let mut adult_driver = AdultDriver::new(host.world_seed);
+    let mut child_driver = ChildDriver::new(host.world_seed);
+
+    handle_network_event(
+        NetworkEvent::PeerConnected {
+            id: 2,
+            name: "Alguien".into(),
+        },
+        &mut player,
+        &mut world,
+        &mut host,
+        &mut adult_driver,
+        &mut child_driver,
+        &tx,
+        &tx,
+        &mut processed,
+        0,
+        None,
+        &wg3_off(),
+        &mut wg3_cache(),
+    )
+    .await;
+
+    let host_events = drain_event_types(&mut rx);
+    assert!(
+        !host_events.iter().any(|e| e == "session_joined"),
+        "el host no se une a ninguna sesion ajena: {host_events:?}"
+    );
+
+    let mut joiner = NetworkManager::bind(0, 3, 42, false).await.unwrap();
+    joiner.host_peer_id = Some(1);
+    let (tx2, mut rx2) = broadcast::channel(16);
+    handle_network_event(
+        NetworkEvent::PeerConnected {
+            id: 4,
+            name: "OtroJoiner".into(),
+        },
+        &mut player,
+        &mut world,
+        &mut joiner,
+        &mut adult_driver,
+        &mut child_driver,
+        &tx2,
+        &tx2,
+        &mut processed,
+        0,
+        None,
+        &wg3_off(),
+        &mut wg3_cache(),
+    )
+    .await;
+
+    let peer_events = drain_event_types(&mut rx2);
+    assert!(
+        !peer_events.iter().any(|e| e == "session_joined"),
+        "otro compañero entrando no es mi propia entrada: {peer_events:?}"
+    );
+}
+
+/// El silencio tiene que terminar en un motivo LEGIBLE, no en un reintento eterno. El texto se
+/// comprueba de verdad porque es el unico sitio donde el jugador ve por que fallo: si dice
+/// "Disconnected" a secas, el fallo vuelve a ser indiagnosticable desde la UI.
+#[tokio::test]
+async fn a_silent_connect_timeout_ends_the_session_with_an_actionable_reason() {
+    let mut net = NetworkManager::bind(0, 2, 42, false).await.unwrap();
+    let mut world = World::new(42);
+    let mut player = Player::new(2, "Joiner");
+    let (tx, mut rx) = broadcast::channel(16);
+    let mut processed: BoundedDedupeSet<(u16, u64)> = BoundedDedupeSet::with_capacity(DEDUPE_CAP);
+    let mut adult_driver = AdultDriver::new(net.world_seed);
+    let mut child_driver = ChildDriver::new(net.world_seed);
+
+    handle_network_event(
+        NetworkEvent::ConnectTimedOut {
+            addr: "192.168.1.40:7778".parse().unwrap(),
+            attempts: 15,
+            elapsed_ms: 15_000,
+        },
+        &mut player,
+        &mut world,
+        &mut net,
+        &mut adult_driver,
+        &mut child_driver,
+        &tx,
+        &tx,
+        &mut processed,
+        0,
+        None,
+        &wg3_off(),
+        &mut wg3_cache(),
+    )
+    .await;
+
+    let mut reason = String::new();
+    while let Ok(msg) = rx.try_recv() {
+        if let ServerMessage::Event(ev) = msg {
+            if ev.event_type == "session_ended" {
+                reason = ev
+                    .data
+                    .get("reason")
+                    .and_then(|r| r.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+            }
+        }
+    }
+
+    assert!(
+        !reason.is_empty(),
+        "un intento agotado tiene que cerrar la sesion, no dejar el panel en Joining para siempre"
+    );
+    assert!(
+        reason.contains("192.168.1.40:7778"),
+        "el motivo tiene que decir A DONDE se estuvo llamando: {reason}"
+    );
+    assert!(
+        reason.contains("firewall"),
+        "y nombrar la causa mas frecuente para que se pueda actuar: {reason}"
+    );
 }

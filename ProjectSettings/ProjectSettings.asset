@@ -13,7 +13,7 @@ PlayerSettings:
   useOnDemandResources: 0
   accelerometerFrequency: 60
   companyName: JottwyGames
-  productName: BackroomsSurvivalMMO
+  productName: Playtest 0.0.1.0
   defaultCursor: {fileID: 2800000, guid: 7a89e963858b2714388c5dfca1c537ad, type: 3}
   cursorHotspot: {x: 0, y: 0}
   m_SplashScreenBackgroundColor: {r: 1, g: 1, b: 1, a: 1}
@@ -142,7 +142,7 @@ PlayerSettings:
   loadStoreDebugModeEnabled: 0
   visionOSBundleVersion: 1.0
   tvOSBundleVersion: 1.0
-  bundleVersion: 0.0.0.8c
+  bundleVersion: 0.0.1.0c
   preloadedAssets:
   - {fileID: -944628639613478452, guid: 5ea1c83b524748b45b21b996e2b1f0e0, type: 3}
   - {fileID: 11400000, guid: 2ed49337353089548bf42d1e2d8caa75, type: 2}

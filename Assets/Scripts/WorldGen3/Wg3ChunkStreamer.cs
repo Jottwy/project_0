@@ -35,6 +35,12 @@ namespace BackroomsSurvival.WorldGen3
 
         public bool spawnLights = true;
 
+        [Tooltip("Sólo las Light a menos de esta distancia del jugador están encendidas; el resto " +
+                 "se apaga (la luminaria emisiva sigue viéndose). Con ~400 tramos en radio 1 las " +
+                 "puntuales realtime superan el tope de 256 visibles de Forward+ y el clustering " +
+                 "las paga todas cada frame. 0 o negativo = sin culling.")]
+        public float lightCullDistance = 30f;
+
         [Tooltip("ADR-107 — de dónde salen el material de la luminaria y el volumen del zumbido. " +
                  "Es el marcador de posición del perfil Threshold mientras ADR-103 no tenga código " +
                  "(ADR-107 D5): lo pone GridTestWorld con su visual de capa 0.")]
@@ -55,6 +61,12 @@ namespace BackroomsSurvival.WorldGen3
         /// </summary>
         private readonly Dictionary<Vector2Int, List<Mesh>> _meshes =
             new Dictionary<Vector2Int, List<Mesh>>();
+        /// <summary>Las Light de cada chunk, recogidas UNA vez al montarlo, para el culling por
+        /// distancia. Mismo ciclo de vida que <see cref="_meshes"/>: la lista muere con el chunk.
+        /// Se cachean porque un GetComponentsInChildren por refresco sobre cientos de objetos es
+        /// justo el coste que el culling quiere evitar.</summary>
+        private readonly Dictionary<Vector2Int, List<Light>> _lights =
+            new Dictionary<Vector2Int, List<Light>>();
         private List<Wg3Piece> _catalog;
         private float _nextRefresh;
         private bool _digestChecked;
@@ -114,6 +126,45 @@ namespace BackroomsSurvival.WorldGen3
                 }
 
             Prune(centre);
+            CullLights(eye.position);
+        }
+
+        /// <summary>El punto desde el que se mide el culling de luces AHORA, sin esperar al
+        /// refresco: lo usa el montaje de un chunk recién llegado. Nulo sin viewer ni cámara.</summary>
+        private Vector3? CullEye()
+        {
+            Transform eye = viewer != null ? viewer : (Camera.main != null ? Camera.main.transform : null);
+            return eye != null ? eye.position : (Vector3?)null;
+        }
+
+        /// <summary>
+        /// Enciende sólo las Light a menos de <see cref="lightCullDistance"/> del jugador.
+        ///
+        /// Corre en el refresco de medio segundo, no por frame: a paso de jugador medio segundo son
+        /// un par de metros, y el margen sobre el alcance de 6 m de un plafón ya los absorbe. La
+        /// luminaria emisiva no se toca — de lejos el techo se ve igual, sólo deja de ILUMINAR.
+        /// </summary>
+        private void CullLights(Vector3 eye)
+        {
+            if (lightCullDistance <= 0f) return;
+            foreach (KeyValuePair<Vector2Int, List<Light>> kv in _lights)
+                CullChunkLights(kv.Value, eye);
+        }
+
+        private void CullChunkLights(List<Light> lights, Vector3? eye)
+        {
+            if (eye == null || lightCullDistance <= 0f) return;
+            float cullSqr = lightCullDistance * lightCullDistance;
+            for (int i = 0; i < lights.Count; i++)
+            {
+                Light l = lights[i];
+                if (l == null) continue;
+                bool want = (l.transform.position - eye.Value).sqrMagnitude <= cullSqr;
+                // El guard no es cosmético: asignar `enabled` dispara el registro/baja de la luz en
+                // el render pipeline aunque el valor no cambie, y esto pasa por cientos de luces
+                // cada medio segundo.
+                if (l.enabled != want) l.enabled = want;
+            }
         }
 
         /// <summary>
@@ -150,6 +201,7 @@ namespace BackroomsSurvival.WorldGen3
             if (_built.TryGetValue(coord, out GameObject existing) && existing != null)
                 Destroy(existing);
             DestroyMeshesOf(coord);
+            _lights.Remove(coord); // sus Light mueren con el GameObject; la lista no debe sobrevivirlas
 
             // Una lista vacía es un resultado VÁLIDO: un chunk donde no cae ninguna pieza. Se
             // registra igualmente para no volver a pedirlo — sin esto, todo hueco del mundo se
@@ -296,6 +348,13 @@ namespace BackroomsSurvival.WorldGen3
                     hum.flickerHz, hum.flickerPhase, ambience, 0);
                 _builtLamps += hum.positions.Count;
             }
+
+            // Recogidas AQUÍ y culled en el acto, no en el próximo refresco: medio segundo con todas
+            // las luces del chunk recién montado encendidas es un pico de cientos de puntuales justo
+            // en el frame que ya paga el montaje.
+            var lights = new List<Light>(root.GetComponentsInChildren<Light>(true));
+            _lights[coord] = lights;
+            CullChunkLights(lights, CullEye());
 
             ReportOnce();
         }
@@ -578,6 +637,7 @@ namespace BackroomsSurvival.WorldGen3
             {
                 _rooms.Remove(coord);
                 _spaces.Remove(coord);
+                _lights.Remove(coord);
                 if (_built[coord] != null) Destroy(_built[coord]);
                 DestroyMeshesOf(coord);
                 _built.Remove(coord);
@@ -591,6 +651,7 @@ namespace BackroomsSurvival.WorldGen3
                 if (kv.Value != null) Destroy(kv.Value);
             _built.Clear();
             _requested.Clear();
+            _lights.Clear();
             // El papel se va con el mundo: sobrevivir a un `ClearAll` es el bug que ya tuvo
             // `ZoneRegistry` —contestar sobre el mundo anterior tras reconectar a otro.
             _spaces.Clear();

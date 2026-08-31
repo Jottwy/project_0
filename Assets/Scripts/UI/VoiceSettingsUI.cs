@@ -1,7 +1,6 @@
 using System.Collections.Generic;
 using BackroomsSurvival.Net;
 using UnityEngine;
-using UnityEngine.EventSystems;
 using UnityEngine.InputSystem;
 using UnityEngine.UI;
 
@@ -64,7 +63,7 @@ namespace BackroomsSurvival.UI
 
         private void Start()
         {
-            EnsureEventSystem();
+            UiEventSystem.Ensure();
             BuildOverlay();
             SetVisible(false);
         }
@@ -262,12 +261,6 @@ namespace BackroomsSurvival.UI
         }
 
         // ── Construcción ─────────────────────────────────────────────────────────
-
-        private static void EnsureEventSystem()
-        {
-            if (FindFirstObjectByType<EventSystem>() == null)
-                new GameObject("EventSystem", typeof(EventSystem), typeof(StandaloneInputModule));
-        }
 
         private void BuildOverlay()
         {

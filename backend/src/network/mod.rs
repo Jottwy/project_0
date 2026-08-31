@@ -54,6 +54,17 @@ pub(crate) const INERT_PEER_ADDR: std::net::SocketAddr = std::net::SocketAddr::V
     std::net::SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 1),
 );
 
+/// Cuánto insiste un joiner con su handshake antes de declarar el intento muerto
+/// (`NetworkEvent::ConnectTimedOut`). Presupuesto de PARED, no cuenta de reintentos: lo que le
+/// importa al jugador es cuántos segundos lleva mirando "Joining…", y el ritmo de reenvío
+/// (1 s, `retry_pending_connection`) es un detalle que puede cambiar sin mover este número.
+///
+/// 15 s sale de medir el peor caso legítimo: el host tarda ~1-2 s en generar el mundo antes de
+/// que su bucle empiece a leer datagramas, así que un join lanzado A LA VEZ que el host tiene
+/// que sobrevivir a esa ventana con holgura de un orden de magnitud. Por abajo el límite es la
+/// paciencia: más de ~20 s y el jugador ya ha decidido que el juego está colgado.
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+
 /// F0.5 (E0, ADR-073): tope de los nueve sets de dedupe de peticiones que se migraron. ADR-029 ya
 /// exigía poda para los suyos de PvP; el resto se quedó sin ella y crecía durante TODA la sesión —
 /// una fuga lenta pero real (cada pickup, drop, colocación, demolición, cosecha y pintada de la
@@ -301,6 +312,9 @@ pub struct NetworkManager {
     /// El gate de spawn del joiner consulta `is_complete()`; el host nunca la toca (resuelve
     /// su spawn en el bootstrap, antes del loop).
     pub world_sync_progress: sync::WorldSyncProgress,
+    /// Auditoría de MTU: reúne las páginas de un chunk del goteo antes de aplicarlo. Vive aquí,
+    /// junto a `world_sync_progress`, porque es estado del MISMO goteo y muere con él.
+    pub chunk_pages: sync::ChunkPageAssembler,
     /// ADR-060 (d), joiner-only: reensamblado de los cinco rosters paginados. Un roster solo se
     /// aplica cuando su generación está completa — aplicar media lista BORRARÍA la otra mitad de
     /// los objetos del joiner, que es peor que esperar los 100 ms a la ronda siguiente.
@@ -386,6 +400,14 @@ pub struct NetworkManager {
     /// failing at the broadcast cadence, and the point is to make it visible, not to become the
     /// new noise floor.
     last_send_error_log_ms: std::sync::atomic::AtomicU64,
+    /// MTUPROBE (auditoría de heartbeat, 2026-08-30). Atómicos y no campos normales por lo mismo
+    /// que `last_send_error_log_ms`: los toca `send_datagram`, que es `&self`.
+    oversized_datagrams: std::sync::atomic::AtomicU64,
+    /// Solo los FIABLES por encima del techo. Separado del total porque son los únicos que no se
+    /// auto-curan, y por tanto los únicos sobre los que hay una invariante que un test puede fijar.
+    oversized_reliable: std::sync::atomic::AtomicU64,
+    max_datagram_bytes: std::sync::atomic::AtomicUsize,
+    last_mtu_warn_ms: std::sync::atomic::AtomicU64,
     /// Igual que el de arriba, para la traza de `ChunkStateReceived`. Hace falta un throttle REAL
     /// (una línea por segundo) y no el `elapsed % 1000 < 120` que usan las trazas de pose: aquél
     /// deja pasar una VENTANA de 120 ms, y a ~820 chunks/s eso son ~60 líneas por segundo, no una
@@ -421,9 +443,15 @@ pub struct NetworkManager {
     global_sequence: u32,
     pub local_name: String,
     pending_connect_addr: Option<SocketAddr>,
+    /// Cuándo se pidió la conexión. Marca el arranque del presupuesto de `CONNECT_TIMEOUT` —
+    /// sin esto no hay forma de distinguir "llevo un segundo intentando" de "llevo diez
+    /// minutos", que es justo lo que hacía indistinguible un join en curso de uno muerto.
+    pending_connect_started_at: Option<Instant>,
     last_handshake_sent_at: Option<Instant>,
     handshake_attempts: u32,
     last_keepalive_trace_at: HashMap<PeerId, Instant>,
+    /// RELTRACE: última foto de la cola reliable emitida por peer (throttle 1/s).
+    last_reliable_queue_log_at: HashMap<PeerId, Instant>,
     last_transform_trace_at: HashMap<PeerId, Instant>,
 }
 
@@ -490,6 +518,7 @@ impl NetworkManager {
             processed_corpse_results: BoundedDedupeSet::with_capacity(DEDUPE_CAP),
             level4: crate::world::level4_layout::Level4RegionState::default(),
             world_sync_progress: sync::WorldSyncProgress::default(),
+            chunk_pages: sync::ChunkPageAssembler::default(),
             roster_assemblers: RosterAssemblers::default(),
             next_corpse_request_id: 1,
             processed_pvp_hits: BoundedDedupeSet::with_capacity(512),
@@ -508,6 +537,10 @@ impl NetworkManager {
             incoming_rx: rx,
             session_start: Instant::now(),
             last_send_error_log_ms: std::sync::atomic::AtomicU64::new(0),
+            oversized_datagrams: std::sync::atomic::AtomicU64::new(0),
+            oversized_reliable: std::sync::atomic::AtomicU64::new(0),
+            max_datagram_bytes: std::sync::atomic::AtomicUsize::new(0),
+            last_mtu_warn_ms: std::sync::atomic::AtomicU64::new(0),
             last_chunk_state_log_ms: std::sync::atomic::AtomicU64::new(0),
             last_pickup_at: None,
             next_peer_id: if is_host { 2 } else { 0 },
@@ -518,11 +551,20 @@ impl NetworkManager {
             global_sequence: 0,
             local_name: format!("Player{local_id}"),
             pending_connect_addr: None,
+            pending_connect_started_at: None,
             last_handshake_sent_at: None,
             handshake_attempts: 0,
             last_keepalive_trace_at: HashMap::new(),
+            last_reliable_queue_log_at: HashMap::new(),
             last_transform_trace_at: HashMap::new(),
         })
+    }
+
+    /// Cuántos datagramas FIABLES han salido por encima de `SAFE_DATAGRAM_BYTES`. La invariante
+    /// de transporte se comprueba contra esto, no contra el log.
+    pub fn oversized_reliable_count(&self) -> u64 {
+        self.oversized_reliable
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub fn local_addr(&self) -> SocketAddr {
@@ -546,7 +588,13 @@ impl NetworkManager {
     /// Initiate a connection to a remote peer (joiner → host).
     pub async fn initiate_connection(&mut self, addr: SocketAddr) {
         self.pending_connect_addr = Some(addr);
+        self.pending_connect_started_at = Some(Instant::now());
         self.handshake_attempts = 0;
+        info!(
+            "NETPROBE event=connect_attempt_started target={addr} timeout_ms={} self_id={}",
+            CONNECT_TIMEOUT.as_millis(),
+            self.local_id
+        );
         self.send_handshake(addr).await;
     }
 
@@ -590,6 +638,35 @@ impl NetworkManager {
             return;
         };
 
+        // El presupuesto. Un rechazo explícito llega como `Disconnect` y ya tenía camino
+        // (`ConnectRejected`); el SILENCIO no tenía ninguno, y es el modo de fallo dominante
+        // sobre UDP. Sin este corte el bucle reenvía el mismo handshake muerto cada segundo
+        // durante toda la partida mientras Unity —que da por "conectado" el IPC con su PROPIO
+        // backend— mete al jugador en un mundo local en solitario sin un solo error.
+        if let Some(started) = self.pending_connect_started_at {
+            let elapsed = started.elapsed();
+            if elapsed >= CONNECT_TIMEOUT {
+                let attempts = self.handshake_attempts;
+                let elapsed_ms = elapsed.as_millis() as u64;
+                self.pending_connect_addr = None;
+                self.pending_connect_started_at = None;
+                warn!(
+                    "NETPROBE event=connect_attempt_timed_out target={addr} attempts={attempts} elapsed_ms={elapsed_ms} self_id={}",
+                    self.local_id
+                );
+                warn!(
+                    "MPTRACE step=A3 event=joiner_connect_timed_out self_id={} endpoint={addr} attempts={attempts} elapsed_ms={elapsed_ms}",
+                    self.local_id
+                );
+                self.push_pending_event(NetworkEvent::ConnectTimedOut {
+                    addr,
+                    attempts,
+                    elapsed_ms,
+                });
+                return;
+            }
+        }
+
         let should_retry = self
             .last_handshake_sent_at
             .map(|sent| sent.elapsed() >= Duration::from_secs(1))
@@ -627,6 +704,21 @@ impl NetworkManager {
     /// Send heartbeats to all peers.
     pub async fn send_heartbeats(&self) {
         let payload = PacketPayload::Heartbeat;
+        // HBTRACE: qué destinos entran REALMENTE en la ronda. `broadcast_destinations` filtra
+        // fantasmas y `relay_only`, así que un peer real ausente de esta línea es un peer al que
+        // nunca se le manda latido — indistinguible desde fuera de "se lo mandé y se perdió".
+        let dests = self.broadcast_destinations();
+        info!(
+            "HBTRACE event=HEARTBEAT_SENT self_id={} peers=[{}] peer_count={} registered_ids={:?}",
+            self.local_id,
+            dests
+                .iter()
+                .map(|(id, addr)| format!("{id}@{addr}"))
+                .collect::<Vec<_>>()
+                .join(","),
+            dests.len(),
+            self.peer_ids()
+        );
         self.broadcast_unreliable(&payload).await;
     }
 
@@ -644,11 +736,29 @@ impl NetworkManager {
 
         if !timed_out.is_empty() || peer_count_before > 0 {
             info!(
-                "MPTRACE step=O event=peer_cleanup_scan self_id={} peer_count_before={} peer_count_after=<pending> removed_ids={:?} threshold_ms=5000 peer_ids_before={:?}",
+                "MPTRACE step=O event=peer_cleanup_scan self_id={} peer_count_before={} peer_count_after=<pending> removed_ids={:?} threshold_ms={} peer_ids_before={:?}",
                 self.local_id,
                 peer_count_before,
                 timed_out,
+                peer::HEARTBEAT_TIMEOUT.as_millis(),
                 ids_before
+            );
+        }
+
+        // HBTRACE: cuánto le queda a CADA peer vivo. Es la línea que distingue "el latido llega y
+        // el margen respira" de "el margen se está agotando y el siguiente hueco lo mata", que
+        // desde fuera se ven igual hasta el instante de la expulsión.
+        for peer in self.peers.values() {
+            info!(
+                "HBTRACE event=LIVENESS_SCAN self_id={} peer_id={} endpoint={} last_seen_ms_ago={} threshold_ms={} margin_ms={}",
+                self.local_id,
+                peer.id,
+                peer.addr,
+                peer.last_heartbeat.elapsed().as_millis(),
+                peer::HEARTBEAT_TIMEOUT.as_millis(),
+                peer::HEARTBEAT_TIMEOUT
+                    .saturating_sub(peer.last_heartbeat.elapsed())
+                    .as_millis()
             );
         }
 
@@ -656,6 +766,21 @@ impl NetworkManager {
             if let Some(peer) = self.peers.remove(&id) {
                 self.purge_peer_state(id);
                 info!("Peer {} ({}) timed out", peer.name, peer.addr);
+                warn!(
+                    "HBTRACE event=HEARTBEAT_TIMEOUT self_id={} peer_id={} endpoint={} last_seen_ms_ago={} threshold_ms={}",
+                    self.local_id,
+                    id,
+                    peer.addr,
+                    peer.last_heartbeat.elapsed().as_millis(),
+                    peer::HEARTBEAT_TIMEOUT.as_millis()
+                );
+                warn!(
+                    "HBTRACE event=PEER_DISCONNECTED self_id={} peer_id={} endpoint={} reason=heartbeat_timeout peer_count_after={}",
+                    self.local_id,
+                    id,
+                    peer.addr,
+                    self.peers.len()
+                );
                 info!(
                     "MPTRACE step=L event=peer_removed reason=heartbeat_timeout self_id={} peer_id={} endpoint={} peer_count_before={} peer_count_after={} remote_players_ids={:?}",
                     self.local_id,
@@ -687,6 +812,20 @@ impl NetworkManager {
     /// `true` como mucho una vez por segundo — throttle REAL, con el mismo compare_exchange que
     /// usa `send_datagram` para su log de fallos. Existe porque el broadcast de chunks llega a
     /// ~820/s y su traza tiene que ser legible, no el nuevo suelo de ruido.
+    /// Throttle 1/s POR PEER para la foto de la cola reliable. Mismo patrón que
+    /// `should_log_chunk_state`, pero con estado por peer: con varios joiners una sola marca
+    /// global dejaría a todos menos a uno sin traza justo cuando hace falta comparar.
+    fn should_log_reliable_queue(&mut self, peer_id: PeerId) -> bool {
+        let now = Instant::now();
+        match self.last_reliable_queue_log_at.get(&peer_id) {
+            Some(last) if last.elapsed() < Duration::from_secs(1) => false,
+            _ => {
+                self.last_reliable_queue_log_at.insert(peer_id, now);
+                true
+            }
+        }
+    }
+
     pub fn should_log_chunk_state(&self) -> bool {
         use std::sync::atomic::Ordering;
         let now_ms = self.session_start.elapsed().as_millis() as u64;
@@ -724,6 +863,10 @@ impl NetworkManager {
                 if let Some(peer) = self.peers.get_mut(&pid) {
                     peer.queue_reliable(pkt.sequence, pkt.data);
                 }
+                // Misma cesión que en `send_world_sync`: cuando los ACK abren la ventana de golpe,
+                // este bucle la vuelve a llenar entera sin respirar — la ráfaga reaparecería aquí
+                // aunque el emisor original la hubiera evitado.
+                tokio::task::yield_now().await;
             }
         }
     }
@@ -757,9 +900,55 @@ impl NetworkManager {
                 None => None,
             };
             if let Some((addr, retransmits)) = pending {
-                for data in retransmits {
+                for (seq, retries, data) in retransmits {
                     debug!("Retransmitting {} bytes to {}", data.len(), addr);
+                    // RELTRACE: un reenvío es SIEMPRE una pérdida ya ocurrida. Con la secuencia y
+                    // el intento, el log distingue el paquete que se pierde siempre (misma seq
+                    // subiendo de intento) del goteo de pérdidas repartidas.
+                    warn!(
+                        "RELTRACE event=RETRANSMIT self_id={} peer_id={} seq={} attempt={}/{} bytes={} dest={}",
+                        self.local_id,
+                        pid,
+                        seq,
+                        retries,
+                        reliability::MAX_RETRIES,
+                        data.len(),
+                        addr
+                    );
                     self.send_datagram(&data, addr, "retransmit").await;
+                    // La cesión que MÁS importa. Los 32 de una ráfaga reciben su plazo de reenvío
+                    // en el mismo instante, así que vencen juntos y sin esto se reenviarían como
+                    // otra ráfaga idéntica a la que los perdió. Es lo que convierte una pérdida
+                    // puntual en cinco pérdidas seguidas del mismo paquete y termina agotando
+                    // `MAX_RETRIES` — sin que se reintente ni una vez de más.
+                    tokio::task::yield_now().await;
+                }
+            }
+            // RELTRACE: foto de la cola tras el barrido, como mucho 1/s por peer. Los datos se
+            // copian ANTES de consultar el throttle: éste toma `&mut self` y el peer sigue
+            // prestado inmutable.
+            let snapshot = self.peers.get(&pid).and_then(|peer| {
+                if peer.reliable_queue.is_empty() && peer.deferred_reliable.is_empty() {
+                    None
+                } else {
+                    Some((
+                        peer.reliable_queue.len(),
+                        peer.deferred_reliable.len(),
+                        peer.oldest_unacked_age_ms().unwrap_or(0),
+                    ))
+                }
+            });
+            if let Some((in_flight, deferred, oldest_ms)) = snapshot {
+                if self.should_log_reliable_queue(pid) {
+                    info!(
+                        "RELTRACE event=RELIABLE_QUEUE self_id={} peer_id={} in_flight={} window={} deferred={} oldest_unacked_ms={}",
+                        self.local_id,
+                        pid,
+                        in_flight,
+                        reliability::WINDOW_SIZE,
+                        deferred,
+                        oldest_ms
+                    );
                 }
             }
         }

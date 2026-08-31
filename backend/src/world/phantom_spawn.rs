@@ -76,19 +76,36 @@ pub fn block_of(x: f32, z: f32) -> (i32, i32) {
 /// `NetworkManager::spawn_phantom`'s job (it already runs `resolve_spawn_near` with the ADR-033
 /// resolver). Doing it here would make the draw depend on generated geometry, and a pure hash is
 /// the only version cheap enough to run over every nearby block every second.
+/// **ADR-110 D3 / T4 — LA DENSIDAD DE ROBAPIELES DE UNA PLANTA DE WG3.**
+///
+/// Constante propia y no la de los facelings **a propósito**: son dos poblaciones con caps, radios y
+/// fantasías distintas, y compartir la cifra haría imposible saber cuál de los dos cambios movió una
+/// medida. Aquí se aplica el mismo razonamiento que T3 dejó medido —peso plano por planta, y la
+/// caída sale de que el edificio se estrecha— pero la métrica que la vigila es otra: el robapieles
+/// no es una población que se compare contra una banda, es UNO, y lo que hay que exigirle es que
+/// siga existiendo y siga encontrándote.
+fn wg3_storey_phantom_density(_storey: u8) -> f32 {
+    PHANTOM_LAYER_DENSITY[0]
+}
+
 pub fn draw_into(
     world_seed: u64,
     block: (i32, i32),
-    layer: u8,
+    // ADR-110 D3 / T4 — el EJE: capa de 4 m de WG2, o PLANTA de 332 cm de WG3 según `wg3`. Ver
+    // `faceling_spawn::draw_adults_into`, que lleva la misma división y por el mismo motivo.
+    axis: u8,
     density_scale: f32,
+    wg3: bool,
     out: &mut Vec<[f32; 3]>,
 ) {
     out.clear();
-    let expected = PHANTOM_LAYER_DENSITY
-        .get(layer as usize)
-        .copied()
-        .unwrap_or(0.0)
-        * density_scale.max(0.0);
+    let expected = match wg3 {
+        true => wg3_storey_phantom_density(axis),
+        false => PHANTOM_LAYER_DENSITY
+            .get(axis as usize)
+            .copied()
+            .unwrap_or(0.0),
+    } * density_scale.max(0.0);
     // Cheap out before touching the RNG at all: at density 0 (every layer but 0 today) this is the
     // entire cost of asking, which is what makes scanning the neighbourhood affordable.
     if expected <= 0.0 {
@@ -98,7 +115,7 @@ pub fn draw_into(
     let mut rng = StdRng::seed_from_u64(chunk_seed_layer(
         world_seed ^ PHANTOM_DRAW_SALT,
         block,
-        layer as ChunkLayer,
+        axis as ChunkLayer,
     ));
     // The COUNT is settled first and the positions after, so raising `density_scale` adds creatures
     // without MOVING the ones that were already there — a load test that relocated the whole world
@@ -123,7 +140,13 @@ pub fn draw_into(
             // `floor + PLAYER_BASE_Y` and the client subtracts it because the avatar pivot is at
             // the feet. Reporting the bare floor would put the creature's waist in the ground, and
             // `world_pos_to_layer` would still round to the right layer, so nothing would flag it.
-            grid_floor_y(layer) + crate::world::collision::PLAYER_BASE_Y,
+            // ADR-110 D3 / T4 — con WG3 esta cota es provisional y quien llama la sustituye por la
+            // del ESPACIO de la planta, igual que en los facelings (ADR-109 D5): `grid_floor_y` es
+            // el paso de 4 m de WG2 y mentiría en cuanto el suelo no esté a cero.
+            match wg3 {
+                true => crate::world::collision::PLAYER_BASE_Y,
+                false => grid_floor_y(axis) + crate::world::collision::PLAYER_BASE_Y,
+            },
             (gz as f32 + 0.5) * CELL_SIZE_M,
         ]);
     }
@@ -137,7 +160,7 @@ pub fn draw_all(
     density_scale: f32,
 ) -> Vec<[f32; 3]> {
     let mut out = Vec::new();
-    draw_into(world_seed, block, layer, density_scale, &mut out);
+    draw_into(world_seed, block, layer, density_scale, false, &mut out);
     out
 }
 

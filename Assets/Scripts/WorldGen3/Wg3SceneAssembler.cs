@@ -311,10 +311,14 @@ namespace BackroomsSurvival.WorldGen3
         private static void AddSegmentLights(GameObject go, Wg3Segment segment,
             Material lampMaterial, Wg3HumBatch hum)
         {
-            // Un plafón cada seis metros por eje, que es el ritmo que ya tenía el conector.
-            const float Spacing = 6f;
-            // Tope por eje: con tramos de 25 m como mucho (MAX_SEGMENT_M) son 4 × 4.
-            const int MaxPerAxis = 4;
+            // Un plafón cada nueve metros por eje. Eran seis, y con range 9 cada punto del techo
+            // caía dentro de hasta cuatro luces a la vez: en un radio de 9 chunks salían cientos de
+            // puntuales realtime, por encima del tope de 256 visibles de Forward+ y muy por encima
+            // de la densidad que WG2 dejaba tras su dado de densidad y sus lámparas rotas.
+            const float Spacing = 9f;
+            // Tope por eje: con tramos de 25 m como mucho (MAX_SEGMENT_M) son 2 × 2. El 4 × 4
+            // anterior ponía 16 luces en una nave — más que un chunk entero de WG2.
+            const int MaxPerAxis = 2;
             // A partir de aquí el techo es alto y el plafón pasa a colgar.
             const float HangHeight = 3f;
 
@@ -336,7 +340,10 @@ namespace BackroomsSurvival.WorldGen3
 
                     var light = lamp.AddComponent<Light>();
                     light.type = LightType.Point;
-                    light.range = 9f;
+                    // 6 m, el mismo techo que WG2 (`BackroomsLighting` acota lampRange ≤ 6). Con 9 m
+                    // el volumen iluminado por lámpara era 3,4 veces el de WG2 y el clustering de
+                    // Forward+ lo pagaba entero cada frame.
+                    light.range = 6f;
                     light.intensity = 1.1f;
                     light.color = new Color(1f, 0.96f, 0.78f);
                     light.shadows = LightShadows.None;
@@ -377,27 +384,53 @@ namespace BackroomsSurvival.WorldGen3
         /// ADR-107 D2 — el panel emisivo que se ve cuando miras al techo.
         ///
         /// Copia la forma de <c>BackroomsLighting.MakeLuminaire</c>: cubo aplanado, **sin collider**
-        /// —es decoración, y un plafón que frena es una viga invisible a la altura de la cabeza— y con
-        /// la emisión por `MaterialPropertyBlock` para no instanciar un material por lámpara.
+        /// —es decoración, y un plafón que frena es una viga invisible a la altura de la cabeza—.
+        ///
+        /// A diferencia de aquélla, la emisión NO va por `MaterialPropertyBlock`: el material de
+        /// luminaria llega ya resuelto desde <see cref="Wg3ChunkStreamer"/> y se comparte tal cual,
+        /// así que no hay nada que sobrescribir por lámpara. Un MPB aquí, además, rompería el SRP
+        /// Batcher para las ~900 luminarias de un radio 1.
         /// </summary>
         private static void AddLuminaire(Transform parent, Material lampMaterial)
         {
-            var go = GameObject.CreatePrimitive(PrimitiveType.Cube);
-            go.name = "Luminaire";
+            var go = new GameObject("Luminaire");
             go.hideFlags = HideFlags.DontSave;
-            if (go.TryGetComponent<Collider>(out var col))
-            {
-                if (Application.isPlaying) Object.Destroy(col);
-                else Object.DestroyImmediate(col);
-            }
             go.transform.SetParent(parent, false);
             go.transform.localPosition = Vector3.zero;
             go.transform.localScale = new Vector3(1.65f, 0.08f, 1.65f);
-            var r = go.GetComponent<MeshRenderer>();
+            go.AddComponent<MeshFilter>().sharedMesh = LuminaireMesh();
+            var r = go.AddComponent<MeshRenderer>();
             r.sharedMaterial = lampMaterial;
             // La luminaria pertenece a la planta de su lámpara (ADR-104 enmienda 2): si no, la de
             // abajo se ve iluminada desde arriba y vuelve el síntoma que esa enmienda quitó.
             r.renderingLayerMask = Wg3StoreyLayers.ForLight(parent.position.y);
+        }
+
+        /// <summary>
+        /// UNA malla de cubo para todas las luminarias de la sesión.
+        ///
+        /// Antes cada una salía de <c>GameObject.CreatePrimitive</c>, que por lámpara carga el cubo
+        /// de los recursos internos, le añade un <c>BoxCollider</c> y lo destruye acto seguido. Con
+        /// ~900 lámparas en radio 1 eso era el grueso del tirón al montar un chunk, y todo para
+        /// acabar en la misma caja escalada.
+        ///
+        /// **NO va a la lista de mallas del chunk**, y es deliberado: la comparten todos los chunks
+        /// montados, así que podar uno la destruiría bajo los demás. Muere sola con la recarga de
+        /// dominio o el cambio de escena, y el nulo la reconstruye — misma cautela que
+        /// <c>Wg3StyleMaterials.Valid</c> toma con sus variantes, y por el mismo motivo: una malla
+        /// destruida por debajo deja las luminarias invisibles sin decir por qué.
+        /// </summary>
+        private static Mesh _luminaireMesh;
+
+        private static Mesh LuminaireMesh()
+        {
+            if (_luminaireMesh == null)
+            {
+                _luminaireMesh = Wg3MeshBuilder.BuildUnitCube();
+                _luminaireMesh.name = "wg3_luminaire";
+                _luminaireMesh.hideFlags = HideFlags.DontSave;
+            }
+            return _luminaireMesh;
         }
 
         /// <summary>
@@ -506,7 +539,10 @@ namespace BackroomsSurvival.WorldGen3
             light.type = LightType.Point;
             light.color = new Color(1f, 0.97f, 0.88f);
             light.intensity = 1.6f;
-            light.range = Mathf.Max(placement.SizeX, placement.SizeZ) * 0.75f + 6f;
+            // Acotado a 9 m: la fórmula abierta llegaba a 21,75 m en la pieza más grande, y una
+            // puntual así cruza decenas de clusters de Forward+ ella sola. Una pieza grande queda
+            // con penumbra en los bordes hasta que declare sus propias luces (R32), que es el plan.
+            light.range = Mathf.Min(Mathf.Max(placement.SizeX, placement.SizeZ) * 0.75f + 6f, 9f);
             light.shadows = LightShadows.None;
             // Sólo su planta, igual que el plafón de un tramo. Éste es el que más alcance tiene
             // —hasta 21,75 m— así que es el que peor filtraba.

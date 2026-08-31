@@ -289,6 +289,31 @@ impl Wg3CollisionCache {
     /// y que estando ahí no le estorbe nada. La tercera no sobra — el suelo puede estar libre y tener
     /// un pilar justo al lado, dentro del radio de la cápsula.
     pub fn standable_near(&self, preferred: Vec3) -> Option<Vec3> {
+        self.standable_near_bounded(preferred, false)
+    }
+
+    /// **ADR-110 D3 — el sitio de pie más cercano SIN CAMBIARSE DE PLANTA.**
+    ///
+    /// `standable_near` busca en anillos de hasta [`SPAWN_SEARCH_RADIUS_M`] y resuelve el suelo con
+    /// `floor_below`, que **sólo sabe bajar**. Para el spawn del JUGADOR eso está bien —cualquier
+    /// sitio de pie sirve—, pero para una criatura a la que el reparto ya le ha asignado una planta
+    /// es un fallo silencioso: si el XZ vecino no tiene suelo en su planta, aterriza en una
+    /// inferior **conservando la planta asignada**. Medido antes de este arreglo: 3 de 49 criaturas
+    /// (y hasta 3 de 13 con el jugador en la planta 2) estaban físicamente en otra planta.
+    ///
+    /// Lo que eso provoca no es sólo una cifra: la criatura nace donde el jugador no está, la
+    /// retirada la mata al tick siguiente por no coincidir la cota, y su plaza del cap se pierde.
+    ///
+    /// **La cota es el ÍNDICE DE PLANTA y no una distancia en metros**, y la diferencia se midió: con
+    /// un margen de media planta (1,66 m) un peldaño a 5,14 m entra dentro del suelo de la planta 2
+    /// —está a 1,50 m— pero `storey_of_floor_cm` lo asigna a la planta 1, que es de donde sale su
+    /// escalera. Quedaba 1 desajuste de 12. Comparar la planta directamente no deja fisura.
+    ///
+    /// `same_storey = true` exige que el suelo elegido sea de la misma planta que el pedido; `false`
+    /// es el comportamiento de siempre.
+    pub fn standable_near_bounded(&self, preferred: Vec3, same_storey: bool) -> Option<Vec3> {
+        let preferred_storey =
+            super::plan::storey_of_floor_cm(((preferred.y - PLAYER_BODY_M) * 100.0).round() as i32);
         let rings = (SPAWN_SEARCH_RADIUS_M / SPAWN_SEARCH_STEP_M) as i32;
         for ring in 0..=rings {
             let mut best: Option<Vec3> = None;
@@ -314,6 +339,13 @@ impl Wg3CollisionCache {
                         .headroom_above_floor(x, from_y, z)
                         .unwrap_or(f32::INFINITY);
                     if head < SPAWN_MIN_HEADROOM_M {
+                        continue;
+                    }
+                    // ADR-110 D3 — y en la planta que se pidió, si se pidió una.
+                    if same_storey
+                        && super::plan::storey_of_floor_cm((floor * 100.0).round() as i32)
+                            != preferred_storey
+                    {
                         continue;
                     }
                     let candidate = Vec3::new(x, floor + PLAYER_BODY_M, z);

@@ -1,0 +1,66 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 20b2d8c8dee963a459e7537df4353d66, type: 3}
+  m_Name: NewChunk
+  m_EditorClassIdentifier: 
+  name: 
+  version: 1
+  weight: 0.15
+  description: 
+  tags: []
+  width: 5
+  length: 5
+  depth: 12
+  layers:
+  - zPosition: 0
+    height: 4
+    type: 0
+    cellSize: 0.05
+    holeSize: 0.04
+  - zPosition: -4
+    height: 4
+    type: 1
+    cellSize: 0
+    holeSize: 0
+  - zPosition: -8
+    height: 4
+    type: 1
+    cellSize: 0
+    holeSize: 0
+  - zPosition: -12
+    height: 2
+    type: 1
+    cellSize: 0
+    holeSize: 0
+  north:
+    enabled: 1
+    thickness: 0.2
+    openings:
+    - position: 2.5
+      width: 1.5
+      height: 2.2
+  south:
+    enabled: 1
+    thickness: 0.2
+    openings: []
+  east:
+    enabled: 1
+    thickness: 0.2
+    openings: []
+  west:
+    enabled: 1
+    thickness: 0.2
+    openings: []
+  wallColor: {r: 0.5, g: 0.5, b: 0.5, a: 1}
+  floorColor: {r: 0.7, g: 0.7, b: 0.7, a: 1}
+  grateColor: {r: 0.3, g: 0.3, b: 0.3, a: 1}
+  customMaterial: {fileID: 0}

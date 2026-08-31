@@ -470,6 +470,54 @@ impl Wg3ServedWorld {
             .min_by_key(|s| (s.floor_y_cm, (s.size_x_cm as i64) * (s.size_z_cm as i64)))
     }
 
+    /// **ADR-110 D3 / T1 — TODOS los espacios de esa vertical, de abajo arriba.**
+    ///
+    /// Lo que `lowest_space_at_xz` prometía en su propia documentación: «el día que el reparto sepa
+    /// de plantas, esto se sustituye». Ese día es éste. Aquélla contesta siempre el de más abajo, así
+    /// que un reparto que ya sabe a qué planta apunta seguía naciendo en la planta baja — la mitad
+    /// del arreglo de T2 se perdía en la última línea.
+    ///
+    /// El orden es `(cota, área, x, z)` y no el del vector: el de `segments` no es el mismo en las
+    /// dos partes, y un mundo que dependa de él deja de ser determinista. Es el mismo desempate que
+    /// usan `space_at` y `lowest_space_at_xz`, con las coordenadas añadidas para que dos espacios de
+    /// la misma cota y la misma área tampoco puedan intercambiarse.
+    pub fn spaces_at_xz(&self, x: f32, z: f32) -> Vec<&Wg3Segment> {
+        let x_cm = (x * 100.0).round() as i32;
+        let z_cm = (z * 100.0).round() as i32;
+        let mut out: Vec<&Wg3Segment> = self
+            .segments
+            .iter()
+            .filter(|s| {
+                x_cm >= s.x_cm
+                    && x_cm <= s.x_cm + s.size_x_cm
+                    && z_cm >= s.z_cm
+                    && z_cm <= s.z_cm + s.size_z_cm
+            })
+            .collect();
+        out.sort_by_key(|s| {
+            (
+                s.floor_y_cm,
+                (s.size_x_cm as i64) * (s.size_z_cm as i64),
+                s.x_cm,
+                s.z_cm,
+            )
+        });
+        out
+    }
+
+    /// **ADR-110 D3 / T1 — el espacio de ESA planta en esa vertical, si lo hay.**
+    ///
+    /// Lo que el reparto necesita de verdad: no «el de más abajo» sino «el de la planta a la que
+    /// apunta el sorteo». `None` cuando esa vertical no llega a esa planta, que es una respuesta
+    /// legítima y frecuente —el edificio se estrecha al subir (ADR-102 D3)— y **no** una señal de que
+    /// haya que caer a otra planta: nacer en la de abajo porque la de arriba no llegaba es
+    /// exactamente el fallo que T1 viene a cerrar.
+    pub fn space_on_storey_at_xz(&self, x: f32, z: f32, storey: i32) -> Option<&Wg3Segment> {
+        self.spaces_at_xz(x, z)
+            .into_iter()
+            .find(|s| super::plan::storey_of_floor_cm(s.floor_y_cm) == storey)
+    }
+
     /// ADR-108 D6 — el ESPACIO que contiene ese punto del mundo, si alguno.
     ///
     /// La cota MANDA y no es un adorno: dos plantas se solapan en XZ, así que un test sólo

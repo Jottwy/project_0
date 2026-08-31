@@ -133,8 +133,8 @@ footer p{max-width:78ch}
       versión <b>0.0.0.8c</b> prealpha<br>
       rama <b>migration/worldgraph-v1</b><br>
       wire <b>v50</b> · IPC y P2P<br>
-      <b>1.248</b> commits · HEAD <b>359fb5fe</b><br>
-      corte de datos <b>2026-08-29</b>
+      <b>1.257</b> commits · HEAD <b>1d901d31</b><br>
+      corte de datos <b>2026-08-29 noche</b>
     </div>
   </div>
 </header>
@@ -161,11 +161,11 @@ footer p{max-width:78ch}
     <div class="sec-head">
       <div class="kicker">00 — Dónde está el proyecto</div>
       <h2>El mundo dio un salto de nivel; el loop sigue esperando su eslabón</h2>
-      <p>Nueve días de agosto cambiaron la pieza más grande del juego: el mundo dejó de ser una pila de rejillas 2D y pasó a WorldGen3, con dos plantas, atrios y agujeros por los que se cae. La IA se mudó detrás y quedó validada en partida. Lo que no se ha movido en todo ese tiempo es el crafteo, y sigue siendo el bloqueante del loop.</p>
+      <p>Nueve días de agosto cambiaron la pieza más grande del juego: el mundo dejó de ser una pila de rejillas 2D y pasó a WorldGen3, con atrios, agujeros por los que se cae y —desde la última noche— <b>de tres a seis plantas por región</b>. La IA se mudó detrás y quedó validada en partida. Lo que no se ha movido en todo ese tiempo es el crafteo, y sigue siendo el bloqueante del loop.</p>
     </div>
 
     <div class="tiles">
-      <div class="tile good"><div class="k">Tests backend</div><div class="v">1139</div><div class="s">0 fallos · clippy y fmt limpios</div></div>
+      <div class="tile good"><div class="k">Tests backend</div><div class="v">1140</div><div class="s">0 fallos · clippy y fmt limpios</div></div>
       <div class="tile"><div class="k">ADR escritos</div><div class="v">109</div><div class="s">095 → 109 son WorldGen3</div></div>
       <div class="tile good"><div class="k">Autoridad en WG2</div><div class="v">0</div><div class="s">no queda un solo consumidor</div></div>
       <div class="tile bad"><div class="k">Crafteo</div><div class="v">0 %</div><div class="s">tabla de recetas sin consumidor</div></div>
@@ -179,8 +179,8 @@ footer p{max-width:78ch}
         <tbody>
           <tr>
             <td>Geometría WG3</td>
-            <td><div class="meter"><div class="track"><div class="fill ok" style="width:85%"></div></div><span class="pct">85 %</span></div></td>
-            <td>Pretiles y megapilares medidos pero sin andar; plantas bajo la cota base; ADR-103 aprobado con cero código.</td>
+            <td><div class="meter"><div class="track"><div class="fill ok" style="width:88%"></div></div><span class="pct">88 %</span></div></td>
+            <td><b>Ninguna región baja de tres plantas</b> (tope servido 10, real 3-6). Pretiles y megapilares medidos pero sin andar; plantas bajo la cota base; ADR-103 aprobado con cero código.</td>
           </tr>
           <tr>
             <td>Atmósfera WG3</td>
@@ -256,6 +256,9 @@ footer p{max-width:78ch}
         <tbody>
           <tr><td>Mundo por regiones, junta cruzable</td><td><span class="chip ok">andado</span></td><td class="num">150 m · infinito</td><td class="num">096</td></tr>
           <tr><td>Dos plantas y escalera</td><td><span class="chip ok">andado</span></td><td class="num">46/49 regiones · 2-5 escaleras</td><td class="num">102</td></tr>
+          <tr><td><b>Torres y aterrizaje por unión</b></td><td><span class="chip ok">andado</span></td><td class="num">49/49 con ≥3 plantas · máx. 6</td><td class="num">VERT. D1</td></tr>
+          <tr><td><b>Un muro construido corta la navegación</b></td><td><span class="chip ok">andado</span></td><td class="num">lo rodea · no corta la vista</td><td class="num">109</td></tr>
+          <tr><td>Criaturas en las plantas altas</td><td><span class="chip no">no existe</span></td><td class="num">el reparto elige el espacio más bajo</td><td class="num">VERT. D5</td></tr>
           <tr><td>Vanos excavados (catálogo encendido)</td><td><span class="chip ok">andado</span></td><td class="num">8/8/6/2 piezas por región</td><td class="num">101</td></tr>
           <tr><td>Identidad visual por papel</td><td><span class="chip ok">andado</span></td><td class="num">7 papeles a 20 m</td><td class="num">Frente A</td></tr>
           <tr><td>Atrio de dos plantas</td><td><span class="chip ok">andado</span></td><td class="num">11 atrios · 6,39 m</td><td class="num">104</td></tr>
@@ -278,6 +281,13 @@ footer p{max-width:78ch}
       </table>
     </div>
 
+    <div class="note">
+      <div class="t">La última noche el mundo creció hacia arriba — VERTICALITY-ROADMAP D1</div>
+      <p>El tope servido pasa de <b>2 a 10</b> plantas y el reparto real de las 49 regiones va de <code>{1:3, 2:11, 3:22, 4:13}</code> a <code>{3:10, 4:29, 5:8, 6:2}</code>: <b>ninguna región baja de tres</b> y dos llegan a seis. Cero wire, 1140 tests, validado en partida.</p>
+      <p>Lo que lo desbloqueó no fue una huella más grande —se midió y no movía ni una región— sino <b>aflojar dónde puede aterrizar el pozo</b>. Exigir que <i>una sola</i> sala contuviera el tiro con margen mataba 92 candidatos en la planta baja de una sola región; como los espacios teselan sus límites, la <b>unión</b> cubre el tiro aunque ninguna pieza lo haga sola — y bajar a un pasillo es arquitectura normal. La <b>torre</b> (huella constante de 18 m sobre el espacio más grande de abajo) quedó como <b>reintento</b> cuando el pozo no encaja en la planta entera.</p>
+      <p>El peaje: <b>dos fallos que a dos plantas no podían existir</b> — la escalera de la planta <i>n</i> encogía un aterrizaje ya comprometido en la <i>n−1</i>, y un megapilar de atrio se plantaba sobre la boca del pozo dejando 1,53 m de techo (las naves intermedias sólo reciben pilares cuando hay planta encima). Y el cuello para pasar de seis ya tiene nombre: arriba escasean las salas con tiro recto de 12,6 m; ensanchar la torre a 26 m <b>no cambia la distribución</b>, lo que falta es escalera de ida y vuelta.</p>
+    </div>
+
     <h3>Nivel de migración: cerrada — cero consumidores de autoridad en WG2</h3>
     <div class="scroller">
       <table>
@@ -297,7 +307,7 @@ footer p{max-width:78ch}
       <table>
         <thead><tr><th>Etapa</th><th>Qué hace</th><th>Estado</th></tr></thead>
         <tbody>
-          <tr><td><b>1 — apagar la producción</b></td><td>Con WG3 mandando, <code>update_ownership</code> deja de generar y <code>visible_chunk_views</code> devuelve vacío: cada vista llevaba su rejilla de 20 × 20 a 10 Hz por columna visible, <b>sin un solo consumidor</b>. Son guardas, no borrado — apagar WG3 devuelve el comportamiento anterior byte a byte.</td><td><span class="chip ok">hecha</span></td></tr>
+          <tr><td><b>1 — apagar la producción</b></td><td>Con WG3 mandando, <code>update_ownership</code> deja de generar y <code>visible_chunk_views</code> devuelve vacío: cada vista llevaba su rejilla de 20 × 20 a 10 Hz por columna visible, <b>sin un solo consumidor</b>. Son guardas, no borrado — apagar WG3 devuelve el comportamiento anterior byte a byte. <b>Y quedaba una puerta abierta por el otro lado:</b> el handler de <code>RequestChunk</code> seguía generando el chunk entero —rejilla, sala construible y salas autoradas— para cualquiera que mandara el mensaje. Hoy no lo manda nadie, pero un cliente viejo o un test revivían el mundo muerto. Se <b>ignora</b> en vez de contestar vacío, con un aviso una vez por proceso: un cliente de WG2 contra un mundo de WG3 no es uno al que le falte geometría, es uno que chocaría contra la que no es.</td><td><span class="chip ok">hecha</span></td></tr>
           <tr><td><b>2 — portar o perder</b></td><td>El <b>Level 4</b> (reserva a 2.000 chunks, portal, regla de no construir) y las <b>salas autoradas</b> (ADR-083/084/085: pool, horneado, proxy de colisión, multi-chunk) se tallan dentro de <code>grid_gen</code> y no tienen equivalente. <b>Es decisión de contenido, no de código.</b></td><td><span class="chip no">bloqueante</span></td></tr>
           <tr><td><b>3 — borrar</b></td><td>Por trozos y con la suite verde entre uno y otro: consumidores muertos → generador y plantillas → cliente (<code>ChunkStreamer</code>, <code>GridChunkBuilder</code>, <code>ZoneRegistry</code>) → <code>ChunkView</code> del wire al final, que es lo único que pide bump de esquema.</td><td><span class="chip neu">después de 2</span></td></tr>
         </tbody>
@@ -322,7 +332,7 @@ footer p{max-width:78ch}
         </tbody>
       </table>
     </div>
-    <p>Por encima del 100 % porque hay más suelo que región: dos plantas. Reparto de papeles sobre 504 tramos medidos en cliente contra servidor: oficina 31 %, <b>escalera 23 %</b>, servicio 16 %, pasillo 11 %, callejón 10 %, nave 5 %, <b>espina 4 %</b>. Las dos en negrita son las que hay que vigilar — la espina existe para decir por dónde ir y es el papel más raro del mundo, y el 23 % de escalera debería <b>bajar</b> si la verticalidad sustituye escaleras en vez de sumarse a ellas.</p>
+    <p>Por encima del 100 % porque hay más suelo que región. <b>Ojo con la fecha:</b> estas cuatro columnas y el reparto de papeles se midieron cuando el mundo tenía <b>dos</b> plantas; con tres a seis hay que volver a medirlas, y el 23 % de escalera de abajo es justo el número que más va a moverse. Reparto de papeles sobre 504 tramos medidos en cliente contra servidor: oficina 31 %, <b>escalera 23 %</b>, servicio 16 %, pasillo 11 %, callejón 10 %, nave 5 %, <b>espina 4 %</b>. Las dos en negrita son las que hay que vigilar — la espina existe para decir por dónde ir y es el papel más raro del mundo, y el 23 % de escalera debería <b>bajar</b> si la verticalidad sustituye escaleras en vez de sumarse a ellas.</p>
 
     <h3>Reglas medidas que no hay que volver a descubrir</h3>
     <ul>
@@ -332,6 +342,8 @@ footer p{max-width:78ch}
       <li><b>La niebla es presupuesto compartido</b>, no un valor: gasta de la legibilidad del papel y de encontrar por dónde subir. <code>rho ≤ 0,045</code>, y <code>≤ 0,030</code> mientras la escalera dependa de su rodapié.</li>
       <li><b>Un canal nuevo hay que enseñárselo a las sondas.</b> Los macizos entraron y las seis sondas del mundo servido siguieron construyendo el ráster sin ellos: la primera medida del peaje dio «sin cambio» y era mentira. Una sonda ciega no da error, da un cero tranquilizador.</li>
       <li><b>Contar colocaciones no es medir el mundo</b>, y un tope no es un resultado: «hasta seis escaleras» son 2-5 reales.</li>
+      <li><b>Todo invariante probado a dos plantas hay que volver a probarlo con más.</b> Subir el tope de 2 a 10 destapó dos fallos que a dos plantas no podían existir, y ninguno habría aparecido barriendo las 49 regiones al tope viejo.</li>
+      <li><b>Lo que rompe la subida casi nunca es la huella.</b> Medido con contadores de muerte en el excavador de pozos: ensanchar la torre de 18 a 26 m deja la distribución de plantas casi idéntica. El cuello es dónde se permite aterrizar, no cuánto sitio hay arriba.</li>
     </ul>
 
     <div class="note risk">
@@ -409,7 +421,8 @@ footer p{max-width:78ch}
       <div class="t">Y dos consultas que la mudanza deshizo sin dar un solo error</div>
       <p><b>Las piezas construidas dejaron de parar a la criatura.</b> <code>sync_built_cells</code> escribía las celdas ocupadas en la caja de <code>grid_gen</code>, y la navegación de WG3 no mira esa caja: desde ADR-108 el robapieles <b>volvía a atravesar el muro que acababas de levantar</b>. Se lee como juego roto, no como bicho temible. Ahora las celdas van al <code>Wg3CollisionCache</code>, aparte del ráster porque el ráster es función pura de la semilla y esto cambia cada vez que alguien pone una pieza.</p>
       <p><b>Y el sub-objetivo de viaje largo venía en celdas</b> — quinta vez en esta migración. ADR-041 lo pone «justo dentro de la ventana» y lo ponía a 55 m, o sea 22 celdas de 2,5: la ventana de WG3 mide 30 m, así que el sub-objetivo caía <b>fuera de su propia ventana</b>, la búsqueda no encontraba nada y el viaje largo degradaba a la recta ciega — exactamente lo que ADR-041 existe para evitar. Las dos salieron de <b>auditar qué quedaba de WG2</b>, no de un playtest.</p>
-      <p>Vivo y con nombre: las piezas construidas <b>paran</b> a las criaturas pero no las <b>rodean</b>, y no cortan la vista. Y quedan 15 usos de <code>world_pos_to_layer</code> fuera de la navegación —activación, capa del ruido, agrupar claims, el coro de gritos— midiendo capas de 4 m en un mundo de plantas de 3,32.</p>
+      <p><b>Cerrado unas horas después:</b> el muro que levantas ya entra en la caché que consulta la navegación de WG3 y la criatura <b>lo rodea</b> — visto en partida. Lo que sigue vivo es más pequeño: una pieza corta el <b>paso</b>, no la <b>vista</b>, y los facelings nunca la respetaron (tampoco en WG2).</p>
+      <p>Vivo y con nombre: quedan 15 usos de <code>world_pos_to_layer</code> fuera de la navegación —activación, capa del ruido, agrupar claims, el coro de gritos— midiendo capas de 4 m en un mundo de plantas de 3,32.</p>
     </div>
 
     <h4>Un ajuste de bulto que sale de jugar</h4>
@@ -658,7 +671,7 @@ footer p{max-width:78ch}
           <tr><td class="num">1</td><td>Flujo de crafteo</td><td><span class="chip no">bloqueante</span></td><td>Sin él, el anillo de la expedición no cierra. <b>Es lo primero desde que la mudanza se cerró.</b></td></tr>
           <tr><td class="num">2</td><td>Level 4 y salas autoradas: portar o perder</td><td><span class="chip mid">decisión</span></td><td>No es código: hasta que se decida, el borrado de WG2 no puede empezar. Barato de decidir, caro de aplazar.</td></tr>
           <tr><td class="num">3</td><td>Borrado de <code>grid_gen</code></td><td><span class="chip neu">limpieza</span></td><td>294 referencias fuera, 12.124 líneas dentro. No urge para la Alpha, pero cada día que siga ahí es superficie que mantener.</td></tr>
-          <tr><td class="num">4</td><td>Las piezas construidas <b>no se rodean</b></td><td><span class="chip mid">IA</span></td><td>Paran a la criatura y no cortan la vista. Nunca existió, tampoco en WG2 — pero ahora se nota más.</td></tr>
+          <tr><td class="num">4</td><td><s>Las piezas construidas <b>no se rodean</b></s> — <b>hecho el 29 de agosto</b>; queda que no cortan la vista</td><td><span class="chip mid">IA</span></td><td>Un muro levantado ya corta la navegación y la criatura lo bordea, visto en partida. Que no corte la <b>vista</b> nunca existió, tampoco en WG2 — y los facelings siguen sin respetar las piezas.</td></tr>
           <tr><td class="num">5</td><td>HUD de propiedad, anclaje y capa</td><td><span class="chip mid">interfaz</span></td><td>Hace legible la progresión que ya existe.</td></tr>
           <tr><td class="num">6</td><td>Jornada a 45-90 min + peligro por profundidad</td><td><span class="chip mid">parámetros</span></td><td>Un cambio por vez, sobre sistemas existentes.</td></tr>
           <tr><td class="num">7</td><td>Volver a IL2CPP</td><td><span class="chip no">build</span></td><td>Con Mono los assemblies se publican descompilables. Es fácil que se olvide porque no rompe nada mientras tanto.</td></tr>
@@ -671,7 +684,7 @@ footer p{max-width:78ch}
 
     <div class="note risk">
       <div class="t">El riesgo no es capacidad, es alcance</div>
-      <p>El ritmo observado es altísimo —trece ADR y 1.234 commits acumulados, con el mundo entero rehecho en nueve días—. Lo que amenaza noviembre es dejar entrar trabajo nuevo: <b>ADR-103 (identidad de subnivel) y el Frente C son opcionales para la Alpha</b>, tiran en direcciones opuestas y ninguno de los dos aparece en la lista de arriba. Aparcarlos hasta después de la build es la decisión barata.</p>
+      <p>El ritmo observado es altísimo —trece ADR y 1.257 commits acumulados, con el mundo entero rehecho en nueve días y las plantas subidas a seis la última noche—. Lo que amenaza noviembre es dejar entrar trabajo nuevo: <b>ADR-103 (identidad de subnivel) y el Frente C son opcionales para la Alpha</b>, tiran en direcciones opuestas y ninguno de los dos aparece en la lista de arriba. Aparcarlos hasta después de la build es la decisión barata.</p>
     </div>
 
     <h3>Etapas de escalado — el «MM» del nombre (ADR-073)</h3>
@@ -770,8 +783,8 @@ footer p{max-width:78ch}
     <div class="srcs">
       <div class="src">
         <a href="https://claude.ai/code/artifact/27c4bfe4-3a84-4fe5-8e50-8371e99a6d68">Análisis de loop</a>
-        <div class="meta">rev. 34 · 2026-08-18 · <span class="chip mid">anterior a WG3</span></div>
-        <p>Siete pestañas: diseño técnico, roadmap, inversores, versiones, semana, devlog, deuda. Su carril de negocio calcula sobre el Next Fest de octubre, que ya se movió a febrero.</p>
+        <div class="meta">rev. 37 · 2026-08-29 · <span class="chip ok">al día</span></div>
+        <p>Ocho pestañas: diseño técnico, <b>Mundo — WG3</b>, roadmap, inversores, versiones, semana (archivada), devlog y deuda. Ya cubre WorldGen3, el tramo 0.0.0.14 y las torres. Su carril de negocio sigue dibujado sobre el Next Fest de octubre, y ahí lo que manda es el repo: febrero de 2027.</p>
       </div>
       <div class="src">
         <a href="https://claude.ai/code/artifact/5ff6680e-6a11-4b64-abc8-49be3fd0e92e">Debt Roadmap</a>
@@ -791,7 +804,7 @@ footer p{max-width:78ch}
       <div class="src">
         <a href="https://claude.ai/code/artifact/6f15dffc-98f3-4f4c-bd3e-827500556e1c">Análisis de loop — variante Level 0</a>
         <div class="meta">2026-08-13 · <span class="chip no">superado</span></div>
-        <p>Versión anterior del dossier. Todo lo suyo está dentro de la rev. 34; no hay que leerlo.</p>
+        <p>Versión anterior del dossier. Todo lo suyo está dentro de la rev. 37; no hay que leerlo.</p>
       </div>
     </div>
 
@@ -802,6 +815,7 @@ footer p{max-width:78ch}
         <tbody>
           <tr><td><code>docs/STATE.md</code></td><td>Estado vivo, reescrito al cierre de cada sesión. Es la fuente de la sección 00.</td></tr>
           <tr><td><code>docs/WG3-ROADMAP.md</code></td><td>Estado vivo de WorldGen3: qué está andado, medido o inexistente. Manda sobre la sección 01.</td></tr>
+          <tr><td><code>docs/VERTICALITY-ROADMAP.md</code></td><td>Las cinco decisiones de verticalidad (D1 torres hecha; D2 rampas, D3 vacíos, D4 conductos y D5 poblar plantas altas, abiertas). Manda sobre cuántas plantas tiene el mundo.</td></tr>
           <tr><td><code>docs/DECISIONS.md</code></td><td>Registro ADR append-only, 108 ADR con sus enmiendas. Vinculante; las cabeceras no son estado.</td></tr>
           <tr><td><code>docs/GAME-LOOP-GDD.md</code></td><td>Diseño del loop en tres anillos. Fuente de la sección 03.</td></tr>
           <tr><td><code>docs/DEBT-ROADMAP.md</code> · <code>AUDIT-2026-08-28.md</code></td><td>Deuda y auditorías vigentes. Sección 05.</td></tr>
@@ -821,7 +835,7 @@ footer p{max-width:78ch}
         <thead><tr><th>Sección</th><th>Fuente</th><th class="num">Fecha del dato</th></tr></thead>
         <tbody>
           <tr><td>00 Estado global</td><td><code>docs/STATE.md</code> + <code>WG3-ROADMAP.md</code>; los porcentajes son estimación de criterio sobre alcance de Alpha</td><td class="num">2026-08-29</td></tr>
-          <tr><td>01 WorldGen3</td><td><code>WG3-ROADMAP.md</code> y ADR-095 a <b>109</b>; cifras de las sondas del mundo servido sobre 4 regiones de referencia. Estado de la retirada verificado en código (<code>update_ownership</code>, <code>visible_chunk_views</code>, <code>sync_built_cells</code>), no sólo en el registro</td><td class="num">2026-08-29 noche</td></tr>
+          <tr><td>01 WorldGen3</td><td><code>WG3-ROADMAP.md</code> y ADR-095 a <b>109</b>; cifras de las sondas del mundo servido sobre 4 regiones de referencia. Estado de la retirada verificado en código (<code>update_ownership</code>, <code>visible_chunk_views</code>, <code>sync_built_cells</code>), no sólo en el registro. Plantas, torres y aterrizaje por unión salen de <code>docs/VERTICALITY-ROADMAP.md</code> D1 y de los contadores de <code>dig_wells</code> sobre 49 regiones</td><td class="num">2026-08-29 noche (2.ª tanda)</td></tr>
           <tr><td>02 IA y criaturas</td><td>ADR-108 y enmiendas 1-3; sonda <code>probe_sight_is_not_the_same_as_passage</code>; validación en partida</td><td class="num">2026-08-29</td></tr>
           <tr><td>03 Loop</td><td><code>docs/GAME-LOOP-GDD.md</code>, verificado con grep sobre código antes que sobre ADR</td><td class="num">2026-08-25</td></tr>
           <tr><td>04 Economía</td><td>Economía de supervivencia + <code>FARMING-ROADMAP.md</code>; densidades por arnés headless</td><td class="num">2026-08-17/22</td></tr>

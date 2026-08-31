@@ -25,7 +25,10 @@ namespace BackroomsSurvival.Gameplay
     ///     the missing piece so far. If a click over the inventory/book/build button hits nothing,
     ///     or hits something on the wrong Canvas, that is the real mechanism, not a guess.
     ///
-    /// Self-bootstraps, mirrors RespawnRequester; removable; safe to leave running.
+    /// Self-bootstraps, mirrors RespawnRequester; removable. **OFF by default** — set
+    /// <c>BACKROOMS_UI_DIAG=1</c> to arm it (see <see cref="Enabled"/>): left running it cost
+    /// 1.09 ms/frame on a full-scene scan, which is not a price a diagnostic gets to charge every
+    /// session for a question it answers once per scene.
     /// </summary>
     public sealed class EventSystemDiagnostics : MonoBehaviour
     {
@@ -41,10 +44,25 @@ namespace BackroomsSurvival.Gameplay
             _instance = null;
         }
 
+        /// <summary>
+        /// APAGADO por defecto, y el interruptor está en el arranque y no en el bucle.
+        ///
+        /// Este diagnóstico barría la escena entera con <c>FindObjectsByType</c> **cada frame**, y
+        /// el Profiler lo midió en **1,09 ms por frame** — el 14 % del presupuesto de scripts— para
+        /// detectar un cambio que ocurre una vez por escena. Cuando el objeto ni siquiera se crea,
+        /// no hay <c>Update</c> que llamar y el coste es exactamente cero, que es la única cifra
+        /// aceptable para una herramienta que la mayoría de sesiones no usa.
+        ///
+        /// Se enciende con <c>BACKROOMS_UI_DIAG=1</c> en el entorno, misma convención que
+        /// <c>BACKROOMS_VERBOSE_LOG</c>.
+        /// </summary>
+        public static readonly bool Enabled =
+            System.Environment.GetEnvironmentVariable("BACKROOMS_UI_DIAG") == "1";
+
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void Bootstrap()
         {
-            if (_instance != null)
+            if (!Enabled || _instance != null)
                 return;
 
             var go = new GameObject("[EventSystemDiagnostics]");
@@ -63,7 +81,42 @@ namespace BackroomsSurvival.Gameplay
             _instance = this;
         }
 
+        /// <summary>Cada cuánto se rebarre la escena buscando EventSystems, en segundos. Un
+        /// EventSystem aparece al construir una pantalla, no a mitad de un frame, así que un segundo
+        /// lo caza igual de bien que sesenta barridos por segundo y cuesta la sesentava parte.</summary>
+        private const float ScanInterval = 1f;
+
+        private float _nextScan;
+
         private void Update()
+        {
+            if (Time.unscaledTime >= _nextScan)
+            {
+                _nextScan = Time.unscaledTime + ScanInterval;
+                ScanLiveSet();
+            }
+
+            // El cambio de AUTORIDAD sí se mira por frame: `EventSystem.current` es una propiedad
+            // estática, leerla es gratis, y el instante exacto del relevo es justo el dato que este
+            // diagnóstico existe para capturar.
+            var current = EventSystem.current;
+            if (current != _lastCurrent)
+            {
+                Debug.Log("[EventSystemDiag] EventSystem.current changed: "
+                    + (_lastCurrent != null ? DescribeEventSystem(_lastCurrent) : "null")
+                    + "  ->  "
+                    + (current != null ? DescribeEventSystem(current) : "null"));
+                _lastCurrent = current;
+            }
+
+#if ENABLE_INPUT_SYSTEM
+            if (Mouse.current != null && Mouse.current.leftButton.wasPressedThisFrame)
+                LogClickSnapshot();
+#endif
+        }
+
+        /// <summary>El barrido caro, ya fuera del camino de cada frame.</summary>
+        private void ScanLiveSet()
         {
             var systems = FindObjectsByType<EventSystem>(FindObjectsInactive.Include, FindObjectsSortMode.None);
 
@@ -82,33 +135,17 @@ namespace BackroomsSurvival.Gameplay
                 }
             }
 
-            if (changed)
-            {
-                _knownSystemIds.Clear();
-                var sb = new StringBuilder();
-                sb.Append("[EventSystemDiag] live set changed (" + systems.Length + "):");
-                foreach (var s in systems)
-                {
-                    _knownSystemIds.Add(s.GetInstanceID());
-                    sb.Append("\n  - ").Append(DescribeEventSystem(s));
-                }
-                Debug.Log(sb.ToString());
-            }
+            if (!changed) return;
 
-            var current = EventSystem.current;
-            if (current != _lastCurrent)
+            _knownSystemIds.Clear();
+            var sb = new StringBuilder();
+            sb.Append("[EventSystemDiag] live set changed (" + systems.Length + "):");
+            foreach (var s in systems)
             {
-                Debug.Log("[EventSystemDiag] EventSystem.current changed: "
-                    + (_lastCurrent != null ? DescribeEventSystem(_lastCurrent) : "null")
-                    + "  ->  "
-                    + (current != null ? DescribeEventSystem(current) : "null"));
-                _lastCurrent = current;
+                _knownSystemIds.Add(s.GetInstanceID());
+                sb.Append("\n  - ").Append(DescribeEventSystem(s));
             }
-
-#if ENABLE_INPUT_SYSTEM
-            if (Mouse.current != null && Mouse.current.leftButton.wasPressedThisFrame)
-                LogClickSnapshot();
-#endif
+            Debug.Log(sb.ToString());
         }
 
 #if ENABLE_INPUT_SYSTEM

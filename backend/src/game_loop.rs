@@ -761,8 +761,27 @@ pub async fn run(
     let mut voice_bytes_in: u64 = 0;
     let mut next_voice_log = Instant::now();
 
+    // HBTRACE: el bucle es el ÚNICO sitio desde el que salen latidos y desde el que se comprueban
+    // los ajenos. Si una vuelta tarda más que el umbral de 5 s, el otro extremo deja de recibir y
+    // nos da por muertos sin que aquí haya nada roto en la red — y sin esta medida ese caso y una
+    // pérdida real de paquetes producen exactamente el mismo síntoma.
+    let mut last_tick_at = Instant::now();
+    let mut worst_stall_ms: u128 = 0;
     loop {
         ticker.tick().await;
+        let stall = last_tick_at.elapsed();
+        last_tick_at = Instant::now();
+        if stall.as_millis() > 250 {
+            worst_stall_ms = worst_stall_ms.max(stall.as_millis());
+            warn!(
+                "HBTRACE event=LOOP_STALL self_id={} tick={} stalled_ms={} worst_ms={} budget_ms={}",
+                net.local_id,
+                tick,
+                stall.as_millis(),
+                worst_stall_ms,
+                TICK_DURATION.as_millis()
+            );
+        }
 
         // ─── PHASE 1: RECEIVE (IPC + Network) ───
         while let Ok(msg) = from_clients.try_recv() {
@@ -1625,7 +1644,21 @@ pub async fn run(
                 // ADR-043: reconcile which of the world's robapieles are simulated BEFORE stepping
                 // them, so one that just woke up gets a full tick instead of standing still for
                 // 100 ms at the edge of view — the frame a player is most likely to be looking.
-                phantom_driver.sync_population(&mut net, player.position, entity_dt);
+                let phantom_spawn_seed = net.world_seed;
+                phantom_driver.sync_population(
+                    &mut net,
+                    player.position,
+                    entity_dt,
+                    // ADR-110 D3 / T4 — el robapieles pregunta a WG3 en qué PLANTA está cada
+                    // jugador, igual que los facelings desde ADR-109 D5.
+                    wg3.manifest().filter(|_| wg3.is_enabled()).map(|manifest| {
+                        crate::game_loop::faceling::Wg3SpawnCtx {
+                            worlds: &mut wg3_world,
+                            manifest,
+                            world_seed: phantom_spawn_seed,
+                        }
+                    }),
+                );
                 // ADR-094 E1a/E1b: same 1 Hz reconcile shape as the robapieles', own driver, own
                 // grid cache — walks/reconciles the office adults; `apply_damage` (PvP branch)
                 // is the only other entry point.
@@ -1790,7 +1823,19 @@ pub async fn run(
                 // ADR-047 D5: a noise reported this tick may wake sleepers near its SOURCE, which
                 // is what makes ADR-041's long-distance travel reachable at all. Must run every
                 // tick (not on the 1 Hz reconcile) because `step` drains the queue immediately.
-                phantom_driver.wake_for_noises(&mut net);
+                let phantom_spawn_seed = net.world_seed;
+                phantom_driver.wake_for_noises(
+                    &mut net,
+                    // ADR-110 D3 / T4 — el robapieles pregunta a WG3 en qué PLANTA está cada
+                    // jugador, igual que los facelings desde ADR-109 D5.
+                    wg3.manifest().filter(|_| wg3.is_enabled()).map(|manifest| {
+                        crate::game_loop::faceling::Wg3SpawnCtx {
+                            worlds: &mut wg3_world,
+                            manifest,
+                            world_seed: phantom_spawn_seed,
+                        }
+                    }),
+                );
 
                 // ADR-070: advance the falling items. Runs here, in the host-only entity block,
                 // because it is the same class of work as stepping a phantom and it feeds the same
@@ -2479,6 +2524,29 @@ async fn handle_network_event(
                 data: serde_json::json!({ "player_id": id, "name": name }),
             }));
 
+            // El joiner acaba de registrar AL HOST: esto, y no el IPC local, es el instante en
+            // que existe sesión. Va como `GameEvent` de texto libre —el bus que ya transporta
+            // `session_ended`/`player_joined`— para no tocar `WIRE_SCHEMA_VERSION` por un dato
+            // que no cambia la forma de ningún mensaje.
+            //
+            // Sin esta línea Unity no tenía NINGUNA forma de distinguir "me uní" de "mi propio
+            // backend aceptó mi TCP", y usaba lo segundo como si fuera lo primero: un join a una
+            // IP inalcanzable entraba a jugar igual, en un mundo local en solitario.
+            if !net.is_host && net.host_peer_id == Some(id) {
+                let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                    event_type: "session_joined".into(),
+                    data: serde_json::json!({
+                        "host_id": id,
+                        "self_id": net.local_id,
+                        "world_seed": net.world_seed,
+                    }),
+                }));
+                info!(
+                    "MPTRACE step=F2 event=joiner_session_joined self_id={} host_id={} world_seed={}",
+                    net.local_id, id, net.world_seed
+                );
+            }
+
             // If we're the host, send world sync to the new peer.
             if net.is_host {
                 sync::send_world_sync(net, id, world, player).await;
@@ -2544,6 +2612,35 @@ async fn handle_network_event(
             // que no hay nada que persistir aquí, a diferencia del brazo `PeerDisconnected`
             // de arriba.
             info!("Connect rejected by host: {reason}");
+            let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                event_type: "session_ended".into(),
+                data: serde_json::json!({ "reason": reason }),
+            }));
+        }
+
+        NetworkEvent::ConnectTimedOut {
+            addr,
+            attempts,
+            elapsed_ms,
+        } => {
+            // Mismo destino que `ConnectRejected` y por la misma razón: nunca llegamos a entrar
+            // en ningún mundo, así que no hay nada que persistir, y `session_ended` es el camino
+            // de teardown que Unity YA sabe recorrer (ADR-056) — devuelve al menú y deja el
+            // motivo a la vista. Una UI nueva para esto sería un segundo camino que mantener.
+            //
+            // El motivo se redacta para que se pueda ACTUAR sobre él: quien lo lee no sabe nada
+            // de UDP, así que dice a qué destino se estuvo llamando y cuáles son las causas
+            // reales, en orden de frecuencia.
+            warn!(
+                "Connect timed out: nadie contestó en {addr} tras {attempts} intentos ({elapsed_ms} ms)"
+            );
+            let reason = format!(
+                "sin respuesta de {addr} tras {attempts} intentos en {} s — comprueba que el host \
+                 está hosteando, que la IP y el puerto son los suyos, y que su firewall deja \
+                 entrar UDP {}",
+                elapsed_ms / 1000,
+                addr.port()
+            );
             let _ = to_clients.send(ServerMessage::Event(GameEvent {
                 event_type: "session_ended".into(),
                 data: serde_json::json!({ "reason": reason }),

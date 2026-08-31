@@ -77,6 +77,32 @@ namespace BackroomsSurvival.WorldGen3
             return mesh;
         }
 
+        /// <summary>
+        /// Un cubo unitario centrado en el origen, con UNA sola submalla.
+        ///
+        /// Es para la decoración que se dibuja con un material único y no necesita el reparto por
+        /// función —hoy, la luminaria—: se escala con el transform, así que una sola instancia sirve
+        /// para todas las de la sesión. Va aparte de <see cref="Build"/> a propósito: aquélla emite
+        /// las cuatro submallas y con un solo material asignado las tres restantes se quedarían sin
+        /// con qué dibujarse.
+        /// </summary>
+        public static Mesh BuildUnitCube()
+        {
+            var verts = new List<Vector3>(24);
+            var normals = new List<Vector3>(24);
+            var uvs = new List<Vector2>(24);
+            var tris = new List<int>(36);
+            AddBox(verts, normals, uvs, tris, Vector3.zero, Vector3.one, 0f);
+
+            var mesh = new Mesh();
+            mesh.SetVertices(verts);
+            mesh.SetNormals(normals);
+            mesh.SetUVs(0, uvs);
+            mesh.SetTriangles(tris, 0);
+            mesh.RecalculateBounds();
+            return mesh;
+        }
+
         /// <summary>Una caja con 24 vértices: cuatro por cara, para que cada cara tenga su normal
         /// dura. Con 8 compartidos las normales se promedian y una esquina de pared se ve como un
         /// bisel redondeado bajo cualquier luz rasante — que es toda la luz de este juego.</summary>

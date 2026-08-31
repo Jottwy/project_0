@@ -47,6 +47,11 @@ MonoBehaviour:
   seed: 42
   layerCount: 4
   onlyLayer: -1
+  wg3Materials:
+    floor: {fileID: 2100000, guid: 8d79e6ab2f46bbc4d910dbdc27d4ba50, type: 2}
+    structure: {fileID: 2100000, guid: d4658cf4c0dcc184bb6acbd77af89660, type: 2}
+    ceiling: {fileID: 2100000, guid: 5dfd27f4af1a9ab46bfd93347276554e, type: 2}
+    decoration: {fileID: 2100000, guid: 8821b312e1c291645bde9c97acf695dd, type: 2}
   viewRadius: 1
   layerConfig0: {fileID: 0}
   layerConfig1: {fileID: 0}

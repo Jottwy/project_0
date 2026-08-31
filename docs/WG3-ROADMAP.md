@@ -13,10 +13,25 @@
 
 ---
 
-## ESTADO AL 2026-08-29 — esto manda sobre todo lo de abajo
+## ESTADO AL 2026-08-30 — esto manda sobre todo lo de abajo
 
 > Las secciones 0 a 6 son de la era ADR-102 y **se conservan por sus medidas**, no por su orden: donde
 > contradigan a esta cabecera, manda ésta. La sección 7 es posterior y sigue vigente.
+
+### ADR-110 desatasca el orden (2026-08-30)
+
+Las decisiones están en [`DECISIONS.md`](DECISIONS.md), ADR-110. Cambian tres cosas de este fichero:
+
+1. **Level 4 y salas autoradas NO se portan** (D1). Se pierden a sabiendas: cuando toque, sistema
+   nuevo desde cero con su ADR. Donde este fichero diga «bloquea el borrado», ya no bloquea nada —
+   la etapa 3 de ADR-109 está **desbloqueada**.
+2. **El empate Frente C ↔ ADR-103 se resuelve a favor de ADR-103** (D2): manda la RAREZA. **C2
+   —ajustar el plan al catálogo— queda descartado** por regularizar el mundo; C1 —autorar contra el
+   histograma— sobrevive porque puebla el catálogo sin tocar el plan. Toda mención de C2 abajo es
+   histórica.
+3. **Aprobados y ordenados**: poblar plantas altas, guarda de aislamiento en claims, autorar
+   `styleProfiles` y piezas. Orden: plantas altas → guarda de claims → ADR-103 y perillas de rareza
+   → autorado (en paralelo) → borrado de WG2.
 
 ### Qué es WG3 hoy, en cinco líneas
 
@@ -32,6 +47,9 @@ que se cae y macizos —pretiles y megapilares— (ADR-104 y ADR-105, wire 50).
 > y la construcción, que ya estaban mudados desde la misma mañana — se contradecía con la sección
 > «Hacia dónde vamos» de este mismo fichero. Es exactamente el modo de fallo contra el que avisa la
 > regla del proyecto: **una tabla envejece igual de mal que la cabecera de un ADR**.
+
+> Y desde ADR-110 D1 la columna derecha ya no BLOQUEA nada: el Level 4 y las salas autoradas se
+> pierden a sabiendas, así que lo que queda en WG2 es código dormido y contenido condenado.
 
 | En WG3 | Sigue existiendo en WG2 |
 |---|---|
@@ -90,9 +108,9 @@ transportable**, que es lo que se pidió. Buscar ahí un fallo de la migración 
 | **Facelings (adultos y niños)** | ✅ | **andados y validados en juego** | 108 enm. 1-3 |
 | **Loot por papel** | ✅ | **validado en partida** (2026-08-29); densidad intacta | 108 enm. 4 |
 | **Construcción y claims** | ✅ | **validado en partida** (2026-08-29); se construye en servicio/almacén/callejón | 108 D6 |
-| **Retirada de WG2** | 🟡 | **etapa 1 hecha y validada en partida**; borrar el código lo bloquea el contenido | 109 |
+| **Retirada de WG2** | 🟡 | **etapa 1 hecha y validada en partida**; etapa 3 **desbloqueada** por ADR-110 D1 | 109 · 110 |
 | **Spawn de criaturas** | ✅ | **sitio y reparto de WG3, validados en partida**; falta poblar plantas altas | 109 D4-D5 |
-| Level 4 y salas autoradas en WG3 | 🔴 | sólo existen en WG2; bloquean el borrado | 109 D2 |
+| ~~Level 4 y salas autoradas en WG3~~ | ⚰️ | **NO se portan: se pierden a sabiendas** (ADR-110 D1). Sistema nuevo desde cero cuando toque | 109 D2 · 110 D1 |
 
 ### Cifras del mundo servido, hoy
 
@@ -153,8 +171,9 @@ contra el ráster, ambos validados en juego el 2026-08-29. Lo que queda es el re
   la **guarda de aislamiento** que pidió Joel —medir que reclamar una sala no puede cerrar un paso—,
   que hoy sólo está garantizada de rebote por cómo el plan cuelga esas salas.
 - **Ya no queda ningún consumidor de autoridad en WG2.** La retirada arrancó (ADR-109): con WG3
-  mandando ya no se genera el mundo viejo ni viajan sus vistas. **Borrar el código está bloqueado por
-  contenido**: el Level 4 y las salas autoradas existen sólo en WG2, y el borrado se las lleva.
+  mandando ya no se genera el mundo viejo ni viajan sus vistas. ~~Borrar el código está bloqueado por
+  contenido~~ — **desbloqueado (ADR-110 D1)**: el Level 4 y las salas autoradas se pierden a
+  sabiendas y el borrado se las lleva, que es la decisión tomada.
 - Y una que no estaba en ninguna lista y ya está medio cerrada: las criaturas se movían con WG3 y
   **nacían donde dijera WG2**. El SITIO ya lo decide `standable_near` (ADR-109 D4; medido: de 18
   sorteos, el ráster corrige 10, hasta 3 m), y el **reparto** también (D5): la concentración en
@@ -182,9 +201,9 @@ mundo que todavía usan las criaturas las dejaría sin suelo.
 **4. Contenido y formas.** Sección 7. El cuello no es código: las huellas autoradas no coinciden con
 las que el plan pide, y hay histograma para autorar contra él.
 
-**Y una decisión pendiente que bloquea el orden:** el Frente C (que el plan se ajuste al catálogo) hace
-el mundo **más regular**, y ADR-103 lo hace **más raro**. Van en direcciones opuestas y hay que decidir
-cuál manda antes de tocar ninguno.
+**~~Y una decisión pendiente que bloquea el orden~~ — RESUELTA (ADR-110 D2, 2026-08-30):** el Frente C
+(que el plan se ajuste al catálogo) hace el mundo **más regular**, y ADR-103 lo hace **más raro**.
+**Manda ADR-103**: la dirección es la rareza y la variedad. C2 descartado, C1 vivo.
 
 ---
 
@@ -321,9 +340,9 @@ Dos caminos, y forzarlo desde el relleno no es ninguno de los dos:
 
 - C1. **Que existan piezas de las medidas que el plan pide.** Mirar el histograma de tamaños que ya
   imprime `probe_region_plan` y autorar contra él.
-- C2. **Que el plan se ajuste a las medidas que existen.** Sesgar `TARGET_AREA_M2` y los cortes hacia
-  huellas del catálogo. Más barato, y hace el mundo más regular — que es justo lo contrario de lo que
-  pide el frente D.
+- C2. ~~**Que el plan se ajuste a las medidas que existen.**~~ **DESCARTADO por ADR-110 D2.** Sesgar
+  `TARGET_AREA_M2` y los cortes hacia huellas del catálogo era más barato, y hacía el mundo más
+  regular — que es justo lo contrario de la dirección elegida.
 
 ---
 

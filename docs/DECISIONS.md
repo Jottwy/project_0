@@ -10890,3 +10890,70 @@ es exactamente lo que este ADR estuvo a punto de hacer.
 **Sigue pendiente:** las plantas altas. La cota que se elige es la del espacio **de más abajo** en esa
 vertical, así que el reparto sigue siendo de planta baja. Poblar las de arriba es una decisión de
 contenido —cuánta gente vive arriba— y no un arreglo de coordenadas.
+
+---
+
+## ADR-110 — Decisiones de dirección: Level 4 se pierde a sabiendas, manda la rareza, y tres trabajos aprobados (2026-08-30)
+
+Estado: validada — decisiones dictadas por Joel en sesión. Los mecanismos marcados como *propuesta*
+se detallan (plan de tandas) antes de tocar código, regla 4.
+
+### D1 — Level 4 y salas autoradas: NO se portan. Se pierden a sabiendas
+
+La etapa 2 de ADR-109 daba dos frases posibles: «portado» o «se pierde a sabiendas». Joel elige la
+segunda. El Level 4 y las salas autoradas de WG2 **no se migran**: en su momento se creará un
+sistema nuevo **desde cero, distinto del que se pensó entonces**, con su propio ADR — no es una
+promesa con fecha, es la razón por la que no se porta lo viejo.
+
+Consecuencia inmediata: **la etapa 3 de ADR-109 (borrar) queda desbloqueada.** El borrado sigue
+siendo por trozos con la suite en verde entre uno y otro, en el orden que ADR-109 D3 ya fija:
+consumidores muertos, generador y plantillas, cliente, y `ChunkView` del wire al final (único bump
+de esquema).
+
+### D2 — Frente C contra ADR-103: manda ADR-103. La dirección es la rareza
+
+La decisión que WG3-ROADMAP dejó «bloqueando el orden». Joel: más sensación de Backrooms, jugar con
+la perspectiva, **más variedad en el mundo actual**. Eso es la dirección de ADR-103.
+
+- **C2 (ajustar el plan al catálogo) queda DESCARTADO**: hace el mundo más regular, que es
+  exactamente lo contrario de lo pedido. No se toca `TARGET_AREA_M2` para acercarlo al catálogo.
+- **C1 (autorar piezas contra el histograma de `probe_region_plan`) sigue vivo**: no regulariza el
+  plan, puebla el catálogo. Compatible con la rareza — pasa a D5.
+- **ADR-103 pasa de «aprobado sin código» a siguiente frente de sensación**: identidad de subnivel
+  por el AIRE —niebla, ambiente, color de plafón, en ese orden— con su presupuesto medido
+  (`rho ≤ 0,045`, `≤ 0,030` mientras la escalera dependa de su rodapié). Las perillas de rareza ya
+  identificadas y nunca tocadas (`WEIRD_SPREAD`, `TARGET_AREA_M2` al alza, `VOID_CHANCE_WEIRD`,
+  `clear_height_cm`) entran en este frente, **cada una con su medida antes y después**, no al gusto.
+
+### D3 — Poblar las plantas altas (VERTICALITY-ROADMAP D5): aprobado
+
+Hoy el reparto elige siempre el espacio **más bajo** de la columna, así que con las torres de hasta
+6 plantas las altas nacen sin criaturas (el loot sí sube: va por espacio). Mecanismo *propuesta*: el
+sorteo de huecos considera todos los espacios de la columna con **peso por planta como perilla de
+contenido**. Guardas que ya existen y siguen mandando: la sonda de banda **±25 %** sobre la
+población total (ADR-109 D5) —poblar arriba no puede multiplicar los facelings del mundo— y el
+**8:1** dentro/fuera de oficina de ADR-094 enm. 5.
+
+### D4 — Guarda de aislamiento anti-griefing en claims: aprobado
+
+La pidió Joel en ADR-108 D6 y hoy solo está garantizada de rebote, por cómo el plan cuelga servicio,
+almacén y callejón sin salida. Pasa a garantía medida: **reclamar una sala no puede cerrar un
+paso**. La verificación es de conectividad —el mundo andable fuera del claim conserva su
+componente, el mismo criterio de `probe_is_the_served_world_one_piece_or_islands` restringido al
+entorno del claim—, con sonda propia, y la regla vive en el **servidor**, que es quien responde el
+claim (host y cliente ya contestan con el mismo dato, ADR-108 D6).
+
+### D5 — Autorar lo que corre con valores de código: aprobado
+
+- `styleProfiles` al asset — hoy los siete papeles llevan los valores del código (ADR-108 enm. 4).
+- Piezas nuevas **contra el histograma** de `probe_region_plan` (C1, escalón 3 del catálogo de
+  formas). El histograma es el primer paso, no el último: dibujar sin mirarlo las deja fuera igual
+  de rápido (hoy 5-14 piezas colocadas por región de ~170 espacios).
+
+### Orden
+
+1. **D3** plantas altas — se ve jugando, y las torres lo hacen urgente: hay hasta 6 plantas vacías.
+2. **D4** guarda de claims — regla de servidor con sonda, barata.
+3. **D2** ADR-103 + perillas de rareza — el frente grande de sensación.
+4. **D5** autorado — contenido; puede ir en paralelo con todo lo anterior.
+5. **D1** borrado de WG2, etapa 3 — mecánico, por trozos, cuando no estorbe a lo de arriba.

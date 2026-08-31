@@ -73,3 +73,6 @@ backup_birp/
 
 # Scratch for tools/dev/GenFacelingChildVoices.py (decoded source, IRs, per-clip cuts).
 tools/dev/_voicetmp/
+
+# Salida generada de las sondas de plan WG3 (12 SVG, ~23 MB). No es fuente.
+wg3maps/

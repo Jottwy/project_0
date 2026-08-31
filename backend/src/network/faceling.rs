@@ -50,7 +50,12 @@ impl NetworkManager {
         // 4 m en un mundo de plantas de 3,32. Y aquí duele más, porque son muchos más.
         if let Some(cache) = wg3 {
             let preferred = crate::utils::Vec3::from_array(position);
-            let placed = match cache.standable_near(preferred) {
+            // **ADR-110 D3 — ACOTADO A SU PLANTA.** Sin el tope, el anillo de 24 m de
+            // `standable_near` resuelve el suelo con `floor_below` —que sólo baja— y deja a la
+            // criatura en una planta INFERIOR con la planta alta todavía escrita en su ficha.
+            // Media planta es la misma tolerancia con la que el reparto decide que dos cosas están
+            // «a la misma altura», así que un peldaño o una rampa siguen valiendo y un forjado no.
+            let placed = match cache.standable_near_bounded(preferred, true) {
                 Some(p) => p,
                 None => {
                     log::warn!(
@@ -91,7 +96,12 @@ impl NetworkManager {
     }
 
     /// El alta del peer sintético, sin decidir dónde. Separado por lo mismo que en el robapieles.
-    fn insert_faceling_peer(&mut self, name: &str, position: [f32; 3], species: u8) -> PeerId {
+    pub(crate) fn insert_faceling_peer(
+        &mut self,
+        name: &str,
+        position: [f32; 3],
+        species: u8,
+    ) -> PeerId {
         let id = self.allocate_faceling_id();
         let addr: SocketAddr = super::INERT_PEER_ADDR;
         let mut conn = PeerConnection::new(id, name.to_string(), addr);

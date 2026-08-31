@@ -61,7 +61,12 @@ impl NetworkManager {
         // aparecer enterrado o en el aire. `standable_near` mira suelo, hueco de pie y estorbos.
         if let Some(cache) = wg3 {
             let preferred = crate::utils::Vec3::from_array(position);
-            let placed = match cache.standable_near(preferred) {
+            // **ADR-110 D3 — ACOTADO A SU PLANTA.** Sin el tope, el anillo de 24 m de
+            // `standable_near` resuelve el suelo con `floor_below` —que sólo baja— y deja a la
+            // criatura en una planta INFERIOR con la planta alta todavía escrita en su ficha.
+            // Media planta es la misma tolerancia con la que el reparto decide que dos cosas están
+            // «a la misma altura», así que un peldaño o una rampa siguen valiendo y un forjado no.
+            let placed = match cache.standable_near_bounded(preferred, true) {
                 Some(p) => p,
                 None => {
                     // No se inventa un sitio: se deja el candidato. Aparecerá mal, pero se ve en el

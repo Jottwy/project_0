@@ -137,6 +137,24 @@ pub const MAX_WALK_STEP_CM: i32 = 27;
 /// es cara pisable a cara pisable: la losa cuelga por DEBAJO de su cota, no por encima.
 pub const STOREY_HEIGHT_CM: i32 = 332;
 
+/// **ADR-110 D3 / T2 — LA PLANTA A LA QUE PERTENECE UNA COTA DE SUELO.**
+///
+/// El eje vertical de WG3, y el sustituto de `grid_gen::world_pos_to_layer` para todo lo que decida
+/// población. La diferencia no es el número, es la UNIDAD: aquélla parte el mundo en cajones de 4 m
+/// que no alinean con plantas de 3,32, así que la planta 1 caía en la capa 1 —densidad cero— y de la
+/// 4 en adelante todas colapsaban en la capa 3 por saturación de `u8`. Medido en T0
+/// (`docs/PLAN-PLANTAS-ALTAS.md`, sección «T0 EJECUTADA»).
+///
+/// `div_euclid` y no una división normal, porque **hay geometría por debajo de la cota 0** —peldaños
+/// y celdas de conector que bajan, 113 tramos en las cuatro regiones auditadas— y una división que
+/// trunca hacia cero metería la planta −1 en la 0. Que es justo lo que hacía `(y / 4.0) as u8`, donde
+/// una Y negativa satura a 0 en Rust y un jugador a −1,52 m se clasificaba en la planta baja.
+///
+/// Un peldaño a 306 cm pertenece a la planta 0, que es de donde sale su escalera.
+pub fn storey_of_floor_cm(floor_y_cm: i32) -> i32 {
+    floor_y_cm.div_euclid(STOREY_HEIGHT_CM)
+}
+
 /// Contrahuella de una escalera que sube una planta entera (ADR-102 D4).
 ///
 /// No son los [`STEP_RISE_CM`] de una terraza, y la diferencia no es un gusto. Con 12 cm, subir 332

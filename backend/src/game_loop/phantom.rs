@@ -2091,12 +2091,17 @@ impl PhantomDriver {
         net: &mut NetworkManager,
         host_player_pos: Vec3,
         dt: f32,
+        // ADR-110 D3 / T4 — lo que hace falta para preguntar por PLANTAS en vez de por capas de 4 m.
+        // `None` es WG2 y deja el reparto del robapieles exactamente como estaba.
+        mut wg3: Option<super::faceling::Wg3SpawnCtx<'_>>,
     ) {
         self.population_sync_in -= dt;
         if self.population_sync_in > 0.0 {
             return;
         }
         self.population_sync_in = PHANTOM_POPULATION_SYNC_INTERVAL;
+        // Copiado antes de que `wg3` se preste en mutable para resolver plantas.
+        let wg3_on = wg3.is_some();
 
         // Every REAL player: the host's own local player (which is not a peer) plus real peers.
         // Collected up front so no borrow of `net` survives into the mutation below.
@@ -2109,6 +2114,10 @@ impl PhantomDriver {
             )
             .collect();
 
+        // ADR-110 D3 — una sola resolución de planta por reconcile, compartida por la retirada y
+        // el despertar. Misma razón que en los facelings.
+        let storeys = super::faceling::player_storeys(&mut wg3, &players);
+
         // ── Put away the ones nobody is near any more ──
         let mut retired: Vec<PeerId> = Vec::new();
         for m in &self.movers {
@@ -2119,9 +2128,20 @@ impl PhantomDriver {
                 continue;
             };
             let here = Vec3::from_array(peer.position);
-            let layer = world_pos_to_layer(here.y);
-            let far = players.iter().all(|p| {
-                world_pos_to_layer(p.y) != layer || p.distance_xz(here) > PHANTOM_DEACTIVATE_RADIUS
+            // ADR-110 D3 — **la retirada ya no compara capas de 4 m, y tampoco cotas continuas.**
+            // La planta ASIGNADA está en su propia ancla —`(bloque, planta, índice)`— así que no
+            // hace falta deducirla de su Y, que es justo de donde salía el error: un robapieles que
+            // se ha subido a un peldaño persiguiéndote no ha cambiado de planta.
+            //
+            // Y aquí duele más que en los facelings: es UNO. Retirarlo por cruzar una frontera no
+            // adelgaza una población, deja el mundo sin su amenaza.
+            let asignada = m
+                .anchor
+                .map(|a| a.1)
+                .unwrap_or_else(|| world_pos_to_layer(here.y));
+            let far = players.iter().zip(&storeys).all(|(p, ps)| {
+                !super::faceling::belongs_to_player_storey(wg3_on, asignada, *ps, p.y)
+                    || p.distance_xz(here) > PHANTOM_DEACTIVATE_RADIUS
             });
             if far {
                 retired.push(m.id);
@@ -2143,11 +2163,21 @@ impl PhantomDriver {
         let mut candidates: Vec<PhantomCandidate> = Vec::new();
         let mut drawn: Vec<[f32; 3]> = Vec::new();
 
-        for p in &players {
+        for (idx, p) in players.iter().enumerate() {
             // ADR-043 D-ACTIVACIÓN: the player's OWN layer only. Distance in XZ alone would wake a
             // creature standing on layer 1 directly under your feet — paying AI for something that
             // can neither reach you nor be seen by you.
-            let layer = world_pos_to_layer(p.y);
+            //
+            // ADR-110 D3 / T4 — y con WG3 ese «suyo» es su PLANTA, la MISMA que usó la retirada.
+            // Bajo la cota 0 no se reparte: no hay política para las plantas bajo rasante
+            // (ADR-104 D5).
+            let layer = match wg3_on {
+                true => match storeys.get(idx).copied().flatten() {
+                    Some(s) => s,
+                    None => continue,
+                },
+                false => world_pos_to_layer(p.y),
+            };
             let (bx0, bz0) = phantom_spawn::block_of(
                 p.x - PHANTOM_ACTIVATE_RADIUS,
                 p.z - PHANTOM_ACTIVATE_RADIUS,
@@ -2161,22 +2191,48 @@ impl PhantomDriver {
                     if !seen_blocks.insert(((bx, bz), layer)) {
                         continue; // already offered by another player this scan
                     }
+                    // **ADR-110 D3 / T4 — LEVEL 4 NO SE CONSULTA CON WG3 MANDANDO, Y NO ES
+                    // LIMPIEZA: ES UN FALLO REAL EVITADO.** La reserva vive en la capa 0 de WG2
+                    // (`level4::REGION_LAYER`), así que pasarle la PLANTA 0 de WG3 hace que
+                    // `block_is_in_region` conteste que sí para los bloques de la reserva — y
+                    // entonces `level4_spot_is_usable` exige que el punto caiga dentro de una
+                    // geometría que el mundo servido **no contiene**: ADR-109 dejó de generar WG2 y
+                    // ADR-110 D1 decidió no portar el Level 4. El resultado sería la planta baja de
+                    // esa zona sin un solo robapieles, por un filtro que mide otro mundo.
+                    let l4 = !wg3_on;
                     phantom_spawn::draw_into(
                         net.world_seed,
                         (bx, bz),
                         layer,
-                        level4_scaled_density(
-                            self.density_scale,
-                            (bx, bz),
-                            layer,
-                            net.level4.epoch,
-                        ),
+                        match l4 {
+                            true => level4_scaled_density(
+                                self.density_scale,
+                                (bx, bz),
+                                layer,
+                                net.level4.epoch,
+                            ),
+                            false => self.density_scale,
+                        },
+                        !l4,
                         &mut drawn,
                     );
                     for (index, pos) in drawn.iter().copied().enumerate() {
-                        if !level4_spot_is_usable((bx, bz), layer, pos) {
+                        if l4 && !level4_spot_is_usable((bx, bz), layer, pos) {
                             continue; // sorteado fuera de la reserva — inalcanzable, no despertar
                         }
+                        // **ADR-110 D3 / T4 — LA COTA SALE DEL ESPACIO DE ESA PLANTA.** El sorteo
+                        // es puro por semilla y con WG3 devuelve una cota provisional de planta
+                        // baja; dejarla haría que `standable_near` (ADR-109 D4) pegase al
+                        // robapieles al suelo de ABAJO por alta que fuera la planta sorteada — el
+                        // mismo fallo que T1 arregló en los facelings. Sin espacio en esa planta no
+                        // hay sitio, y no se inventa uno en otra.
+                        let pos = match &mut wg3 {
+                            Some(ctx) => match super::faceling::wg3_floor_point(ctx, layer, pos) {
+                                Some(p) => p,
+                                None => continue,
+                            },
+                            None => pos,
+                        };
                         let key = ((bx, bz), layer, index as u8);
                         if taken.contains(&key) {
                             continue; // this one is already awake
@@ -2260,10 +2316,16 @@ impl PhantomDriver {
     /// TWO caps, and they are the load-bearing part: `PHANTOM_NOISE_ACTIVATE_MAX` per noise, and
     /// the global `active_cap` on top. A 500 m radius sweeps ~785.000 m²; without them one shot
     /// would wake everything inside it and blow the step budget ADR-043 measured and protected.
-    pub(super) fn wake_for_noises(&mut self, net: &mut NetworkManager) {
+    pub(super) fn wake_for_noises(
+        &mut self,
+        net: &mut NetworkManager,
+        // ADR-110 D3 / T4 — igual que `sync_population`: la planta manda, no la capa de 4 m.
+        mut wg3: Option<super::faceling::Wg3SpawnCtx<'_>>,
+    ) {
         if net.pending_noises.is_empty() || self.movers.len() >= self.active_cap {
             return;
         }
+        let wg3_on = wg3.is_some();
         // Cloned so the spawn below can borrow `net` mutably. Only allocates on a tick where
         // somebody actually made a noise, which is rare by construction.
         let noises = net.pending_noises.clone();
@@ -2279,29 +2341,57 @@ impl PhantomDriver {
             // The noise's OWN layer: same reason as ADR-043's per-layer activation, and it agrees
             // with the layer test `hear_noises` applies — waking something that then cannot hear
             // the noise would be pure cost.
-            let layer = world_pos_to_layer(source.y);
+            //
+            // ADR-110 D3 / T4 — con WG3, la PLANTA del ruido. Un disparo en la planta 2 tiene que
+            // despertar lo de la planta 2, no lo de la capa de 4 m en la que cae su Y.
+            let layer = match &mut wg3 {
+                Some(ctx) => match super::faceling::wg3_player_storey(ctx, source) {
+                    Some(s) => s,
+                    None => continue,
+                },
+                None => world_pos_to_layer(source.y),
+            };
             let (bx0, bz0) = phantom_spawn::block_of(source.x - loudness, source.z - loudness);
             let (bx1, bz1) = phantom_spawn::block_of(source.x + loudness, source.z + loudness);
 
             let mut candidates: Vec<PhantomCandidate> = Vec::new();
             for bx in bx0..=bx1 {
                 for bz in bz0..=bz1 {
+                    // Mismo motivo que arriba: con WG3 el Level 4 no está en el mundo servido.
+                    let l4 = !wg3_on;
                     phantom_spawn::draw_into(
                         net.world_seed,
                         (bx, bz),
                         layer,
-                        level4_scaled_density(
-                            self.density_scale,
-                            (bx, bz),
-                            layer,
-                            net.level4.epoch,
-                        ),
+                        match l4 {
+                            true => level4_scaled_density(
+                                self.density_scale,
+                                (bx, bz),
+                                layer,
+                                net.level4.epoch,
+                            ),
+                            false => self.density_scale,
+                        },
+                        !l4,
                         &mut drawn,
                     );
                     for (index, pos) in drawn.iter().copied().enumerate() {
-                        if !level4_spot_is_usable((bx, bz), layer, pos) {
+                        if l4 && !level4_spot_is_usable((bx, bz), layer, pos) {
                             continue; // sorteado fuera de la reserva — inalcanzable, no despertar
                         }
+                        // **ADR-110 D3 / T4 — LA COTA SALE DEL ESPACIO DE ESA PLANTA.** El sorteo
+                        // es puro por semilla y con WG3 devuelve una cota provisional de planta
+                        // baja; dejarla haría que `standable_near` (ADR-109 D4) pegase al
+                        // robapieles al suelo de ABAJO por alta que fuera la planta sorteada — el
+                        // mismo fallo que T1 arregló en los facelings. Sin espacio en esa planta no
+                        // hay sitio, y no se inventa uno en otra.
+                        let pos = match &mut wg3 {
+                            Some(ctx) => match super::faceling::wg3_floor_point(ctx, layer, pos) {
+                                Some(p) => p,
+                                None => continue,
+                            },
+                            None => pos,
+                        };
                         let key = ((bx, bz), layer, index as u8);
                         if taken.contains(&key) {
                             continue; // already awake, or already claimed by an earlier noise

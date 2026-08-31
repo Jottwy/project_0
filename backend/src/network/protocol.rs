@@ -8,6 +8,18 @@ use crate::world::chunk::ChunkLayoutV1;
 pub const HEADER_SIZE: usize = 12;
 pub const MAX_PACKET_SIZE: usize = 65535;
 
+/// Techo REAL de un datagrama que sale a la red, cabecera de paquete incluida.
+///
+/// No es la MTU de Ethernet (1500 − 20 IP − 8 UDP = 1472): ése es el mejor caso. Un enlace PPPoE
+/// da 1492 (→1464) y una VPN menos, y no hay forma de conocer la MTU de camino sin sondearla. 1200
+/// es el suelo que adopta QUIC como mínimo garantizado, y es el número que se puede defender sin
+/// medir la red de cada jugador.
+///
+/// `MAX_PACKET_SIZE` (65535) sigue siendo el tope de DECODIFICACIÓN —lo que el receptor acepta
+/// como longitud sensata—; esto es el tope de EMISIÓN. Son cosas distintas y por eso son dos
+/// constantes: aceptar de más es tolerancia, emitir de más es fragmentación.
+pub const SAFE_DATAGRAM_BYTES: usize = 1200;
+
 /// 12-byte packet header (ARCHITECTURE_V1.md §5.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PacketHeader {
@@ -403,6 +415,25 @@ pub struct ChunkSyncData {
     pub teleport_timer: f32,
     pub entities: Vec<EntitySyncData>,
     pub items: Vec<ItemSyncData>,
+    /// Página de este chunk dentro de su propio goteo, 0-based. Auditoría de MTU (2026-08-30).
+    ///
+    /// La cabecera fija de un chunk (con `layout`) mide 754 B medidos, y cada entidad ~87 B: con
+    /// una docena de entidades el datagrama pasaba de 1800 B, se fragmentaba en IP, y perder UN
+    /// fragmento perdía el paquete entero. Los 4 únicos reenvíos de la sesión física de 9 min
+    /// fueron los 4 datagramas por encima de 1472 B; ninguno por debajo se perdió.
+    ///
+    /// `entities`/`items` son las ÚNICAS partes de tamaño ilimitado, así que la unidad de
+    /// división son ellas: todas las páginas repiten la cabecera —barata y idempotente— y cada una
+    /// trae un tramo disjunto de las listas. Mismo patrón que la paginación de rosters de ADR-060
+    /// (`generation`/`page`/`page_count`), no un protocolo nuevo.
+    ///
+    /// `#[serde(default)]`: un emisor anterior a esto manda una sola página con la lista entera,
+    /// que decodifica como `page=0, page_count=1` — exactamente lo que era.
+    #[serde(default)]
+    pub page: u16,
+    /// Cuántas páginas componen ESTE chunk. Nunca 0.
+    #[serde(default = "default_page_count")]
+    pub page_count: u16,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1368,6 +1399,8 @@ mod tests {
                     quantity: 1,
                     position: [155.0, 0.0, 115.0],
                 }],
+                page: 0,
+                page_count: 1,
             },
         };
         let header = PacketHeader::new(payload.type_code(), 1, 200, 10000);
@@ -1402,6 +1435,8 @@ mod tests {
                 teleport_timer: 300.0,
                 entities: vec![],
                 items: vec![],
+                page: 0,
+                page_count: 1,
             }],
         };
         let header = PacketHeader::new(payload.type_code(), 1, 300, 10000);
@@ -1446,6 +1481,8 @@ mod tests {
                     quantity: 2,
                     position: [1.0, 0.0, 2.0],
                 }],
+                page: 0,
+                page_count: 1,
             },
         };
         let header = PacketHeader::new(payload.type_code(), 1, 400, 10000);

@@ -8,7 +8,14 @@ use std::time::{Duration, Instant};
 use super::reliability::{MAX_RETRIES, RETRANSMIT_BACKOFF_MS, WINDOW_SIZE};
 use super::PeerId;
 
-const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(5);
+/// Cuánto puede pasar sin recibir NADA de un peer antes de darlo por muerto. Se compara contra
+/// `last_heartbeat`, que refresca CUALQUIER paquete entrante de ese peer (no solo el `Heartbeat`),
+/// así que el margen real es este valor frente a la cadencia de 1 s de `HEARTBEAT_EVERY`.
+///
+/// `pub(super)` desde la auditoría de heartbeat (2026-08-30): `check_timeouts` imprime el umbral en
+/// su traza y lo tenía escrito a mano como `threshold_ms=5000`. Dos sitios con el mismo número y
+/// ninguna relación es cómo una traza acaba mintiendo sobre el umbral que de verdad se aplica.
+pub(super) const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// A reliable packet awaiting acknowledgement.
 ///
@@ -216,9 +223,14 @@ impl PeerConnection {
         }
     }
 
-    /// Collect packets that need retransmission. Returns (data, timed_out_peer).
+    /// Collect packets that need retransmission. Returns (retransmits, timed_out_peer).
     /// If a packet exceeds MAX_RETRIES, returns the peer as timed out.
-    pub fn collect_retransmits(&mut self) -> (Vec<Vec<u8>>, bool) {
+    ///
+    /// Cada reenvío sale como `(sequence, retries, data)` y no como bytes sueltos: sin la
+    /// secuencia y el número de intento no se puede distinguir "un paquete concreto se pierde
+    /// SIEMPRE" (tamaño / ruta) de "se pierden paquetes distintos cada vez" (congestión), y las
+    /// dos terminan en el mismo `reliable retransmit exhausted`.
+    pub fn collect_retransmits(&mut self) -> (Vec<(u32, u8, Vec<u8>)>, bool) {
         let now = Instant::now();
         let mut to_send = Vec::new();
         let mut peer_dead = false;
@@ -232,11 +244,21 @@ impl PeerConnection {
                 }
                 let backoff_idx = (pkt.retries as usize - 1).min(RETRANSMIT_BACKOFF_MS.len() - 1);
                 pkt.next_retry_at = now + Duration::from_millis(RETRANSMIT_BACKOFF_MS[backoff_idx]);
-                to_send.push(pkt.data.clone());
+                to_send.push((pkt.sequence, pkt.retries, pkt.data.clone()));
             }
         }
 
         (to_send, peer_dead)
+    }
+
+    /// El más viejo sin confirmar, en ms. `None` con la ventana vacía. Es la medida que dice si
+    /// la vía reliable AVANZA: una cola corta pero cuyo paquete más viejo no para de envejecer es
+    /// exactamente el cuadro previo a agotar `MAX_RETRIES`.
+    pub fn oldest_unacked_age_ms(&self) -> Option<u128> {
+        self.reliable_queue
+            .iter()
+            .map(|p| p.sent_at.elapsed().as_millis())
+            .max()
     }
 
     pub fn update_player_state(&mut self, position: [f32; 3], rotation: f32, animation: String) {

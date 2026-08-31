@@ -45,6 +45,56 @@ const FACELING_WG3_KEEP_SALT: u64 = 0xFACE_1109_0FF1_0000;
 /// calibrado, y es la mitad de lo que hace que entrar en una oficina signifique algo.
 const FACELING_WG3_OFFICE_KEEP: f32 = 0.23;
 
+/// ADR-110 D3 / T2 — **LA DENSIDAD DE UNA PLANTA DE WG3, QUE YA NO ES LA DE UNA CAPA DE WG2.**
+///
+/// `FACELING_ADULT_LAYER_DENSITY` está indexada por la capa de 4 m de `grid_gen` y vale `0.0` en
+/// todas menos la 0, con un comentario que dice por qué: en WG2 las capas 1-3 eran inalcanzables.
+/// En WG3 las plantas miden [`STOREY_HEIGHT_CM`](crate::world::wg3::plan::STOREY_HEIGHT_CM) = 332 cm
+/// y **sí se andan**, así que seguir preguntándole a esa tabla apaga el mundo entero por encima de la
+/// planta baja. Medido en T0 (`docs/PLAN-PLANTAS-ALTAS.md`, sección «T0 EJECUTADA»): 13 plantas
+/// servidas por encima de la baja en las cuatro regiones auditadas, **las 13 vacías**, con 932
+/// espacios sin una sola criatura.
+///
+/// **T3 — PLANA, Y DECIDIDA CON LA MEDIDA DELANTE, NO POR COMODIDAD.**
+///
+/// El peso por planta es **1,0 en todas**, y la caída de población hacia arriba sale de la
+/// COBERTURA del edificio, no de esta constante. Medido sobre 25 regiones
+/// (`probe_storey_coverage_and_population`):
+///
+/// | planta | cobertura | se quedan | por región |
+/// |---|---|---|---|
+/// | 0 | 85,8 % | 60 | 2,40 |
+/// | 1 | 40,7 % | 13 | 0,52 |
+/// | 2 | 21,8 % | 13 | 0,52 |
+/// | 3 | 14,5 % | 8 | 0,32 |
+/// | 4 | 7,4 % | 0 | 0,00 |
+///
+/// **La razón por la que esto es un modelo y no una renuncia:** la tasa de aceptación por espacio
+/// DISPONIBLE se mantiene entre el 7 y el 17 % en todas las plantas, así que lo que hay es la misma
+/// densidad por metro cuadrado construido en todo el edificio. La pirámide de población sale de que
+/// el edificio se estrecha al subir (ADR-102 D3), que es geometría del mundo y no un número que
+/// alguien eligió. Meter además un multiplicador decreciente contaría el estrechamiento dos veces.
+///
+/// **Lo que esto NO hace, que es la mitad de la decisión:** no toca la planta baja. Sigue en 2,40 por
+/// región y la banda de ±25 % contra WG2 sigue verde (`probe_faceling_draw_under_wg3`: 68 contra 72).
+/// Vaciar la planta baja para repartir hacia arriba habría sido el modo fácil de conseguir simetría
+/// vertical, y se descartó a propósito.
+///
+/// La planta 4 sale a cero con 108 sorteos y un 7,4 % de cobertura —espera medio adulto— así que es
+/// **rara por pequeña, no vacía por rota**: la 3, con el doble de cobertura, sí puebla. Cuánta gente
+/// debe vivir en un núcleo de torre es contenido, y se decide con ojos, no con esta tabla.
+fn wg3_storey_adult_density(_storey: u8) -> f32 {
+    FACELING_ADULT_LAYER_DENSITY[0]
+}
+
+/// Igual que [`wg3_storey_adult_density`], para las manadas de niños: plana, y la caída por
+/// cobertura. Una manada se decide ENTERA con el hueco de cabeza (ADR-109 D5), así que en las plantas
+/// altas —donde la cobertura es baja— lo que baja es la probabilidad de que la cabeza caiga en
+/// espacio, no el tamaño de la manada. Una manada partida por un forjado no es una manada.
+fn wg3_storey_pack_chance(_storey: u8) -> f32 {
+    FACELING_CHILD_PACK_LAYER_PROBABILITY[0]
+}
+
 /// La cota con la que sale un candidato del sorteo.
 ///
 /// Con WG2 es la de su capa. Con WG3 no hay cota que dar aquí —la geometría no se conoce en un
@@ -68,13 +118,16 @@ fn candidate_y(wg3: bool, layer: u8) -> f32 {
 /// tiene número propio). Sin espacio —el hueco cae en el vacío del plan— no se queda nadie: ahí no
 /// hay suelo que pisar.
 ///
-/// Determinista por (semilla, chunk, capa, índice del hueco): dos llamadas dan lo mismo, y subir
+/// Determinista por (semilla, chunk, PLANTA, índice del hueco): dos llamadas dan lo mismo, y subir
 /// `density_scale` no reubica a quien ya estaba.
+///
+/// ADR-110 D3 / T2 — el eje es la planta de WG3, no la capa de WG2. Tiene que ser el MISMO que se le
+/// pasó a `draw_adults_into`, o el índice del hueco se estaría comprobando contra otro sorteo.
 pub fn wg3_keeps_position(
     world_seed: u64,
     cx: i32,
     cz: i32,
-    layer: u8,
+    storey: u8,
     index: usize,
     style: Option<u8>,
 ) -> bool {
@@ -89,7 +142,7 @@ pub fn wg3_keeps_position(
         chunk_seed_layer(
             world_seed ^ FACELING_WG3_KEEP_SALT,
             (cx, cz),
-            layer as ChunkLayer,
+            storey as ChunkLayer,
         )
         .wrapping_add(index as u64),
     );
@@ -118,7 +171,12 @@ pub fn draw_adults_into(
     world_seed: u64,
     cx: i32,
     cz: i32,
-    layer: u8,
+    // ADR-110 D3 / T2 — **EL EJE, y qué significa depende de `wg3`**: con WG2 es la CAPA de 4 m de
+    // `grid_gen`; con WG3 es la PLANTA de 332 cm. No son la misma unidad y por eso no comparten
+    // tabla de densidad (ver `wg3_storey_adult_density`). Se llama `axis` y no `layer` justamente
+    // para que quien lo lea tenga que preguntarse cuál de las dos es — el nombre viejo ya indujo a
+    // indexar la tabla de WG2 con una planta de WG3, que es el fallo que T0 midió.
+    axis: u8,
     density_scale: f32,
     // ADR-109 D5 — el reparto se hace con WG3. Cambia DÓNDE se decide la concentración de oficina:
     // aquí ya no, porque un chunk de WG3 tiene varios espacios con papeles distintos y una respuesta
@@ -136,17 +194,21 @@ pub fn draw_adults_into(
     // partitioned.
     let zone_factor = match wg3 {
         true => 1.0,
-        false => match zone_kind_for(world_seed, cx, cz, layer) == ZONE_OFFICE {
+        false => match zone_kind_for(world_seed, cx, cz, axis) == ZONE_OFFICE {
             true => 1.0,
             false => FACELING_OUTSIDE_DENSITY_FACTOR,
         },
     };
-    let expected = FACELING_ADULT_LAYER_DENSITY
-        .get(layer as usize)
-        .copied()
-        .unwrap_or(0.0)
-        * density_scale.max(0.0)
-        * zone_factor;
+    // ADR-110 D3 / T2 — cada mundo con su tabla. Indexar la de WG2 con una planta de WG3 es lo que
+    // dejaba mudo todo lo que está por encima de la planta baja (T0, 2026-08-30).
+    let base = match wg3 {
+        true => wg3_storey_adult_density(axis),
+        false => FACELING_ADULT_LAYER_DENSITY
+            .get(axis as usize)
+            .copied()
+            .unwrap_or(0.0),
+    };
+    let expected = base * density_scale.max(0.0) * zone_factor;
     if expected <= 0.0 {
         return;
     }
@@ -154,7 +216,7 @@ pub fn draw_adults_into(
     let mut rng = StdRng::seed_from_u64(chunk_seed_layer(
         world_seed ^ FACELING_ADULT_DRAW_SALT,
         (cx, cz),
-        layer as ChunkLayer,
+        axis as ChunkLayer,
     ));
     // Count settled before positions, fractional part costs exactly one draw — same reason
     // `phantom_spawn::draw_into` does it this way (a load-test lever must not relocate the
@@ -175,7 +237,7 @@ pub fn draw_adults_into(
             // ADR-109 D5 — con WG3 la cota NO sale de aquí: la capa mide 4 m y las plantas 3,32, así
             // que este número sería falso en cuanto el suelo no esté a cero. Se deja el suelo del
             // espacio, que lo pone quien llama con la geometría delante.
-            candidate_y(wg3, layer),
+            candidate_y(wg3, axis),
             (gz as f32 + 0.5) * CELL_SIZE_M,
         ]);
     }
@@ -217,7 +279,8 @@ pub fn draw_child_pack_into(
     world_seed: u64,
     cx: i32,
     cz: i32,
-    layer: u8,
+    // El EJE, capa de WG2 o planta de WG3 según `wg3` — ver `draw_adults_into`.
+    axis: u8,
     density_scale: f32,
     // Igual que en los adultos, ver su doc.
     wg3: bool,
@@ -227,17 +290,20 @@ pub fn draw_child_pack_into(
     // Same office-dense / elsewhere-sparse split as the adults — see `draw_adults_into`.
     let zone_factor = match wg3 {
         true => 1.0,
-        false => match zone_kind_for(world_seed, cx, cz, layer) == ZONE_OFFICE {
+        false => match zone_kind_for(world_seed, cx, cz, axis) == ZONE_OFFICE {
             true => 1.0,
             false => FACELING_OUTSIDE_DENSITY_FACTOR,
         },
     };
-    let chance = FACELING_CHILD_PACK_LAYER_PROBABILITY
-        .get(layer as usize)
-        .copied()
-        .unwrap_or(0.0)
-        * density_scale.max(0.0)
-        * zone_factor;
+    // ADR-110 D3 / T2 — cada mundo con su tabla, igual que en los adultos.
+    let base = match wg3 {
+        true => wg3_storey_pack_chance(axis),
+        false => FACELING_CHILD_PACK_LAYER_PROBABILITY
+            .get(axis as usize)
+            .copied()
+            .unwrap_or(0.0),
+    };
+    let chance = base * density_scale.max(0.0) * zone_factor;
     if chance <= 0.0 {
         return;
     }
@@ -245,7 +311,7 @@ pub fn draw_child_pack_into(
     let mut rng = StdRng::seed_from_u64(chunk_seed_layer(
         world_seed ^ FACELING_CHILD_DRAW_SALT,
         (cx, cz),
-        layer as ChunkLayer,
+        axis as ChunkLayer,
     ));
     // The roll is settled BEFORE the size, and the size before any position — same "count first"
     // discipline `phantom_spawn::draw_into` uses, so raising `density_scale` never relocates a
@@ -262,7 +328,7 @@ pub fn draw_child_pack_into(
         let gz = cz * CHUNK_CELLS as i32 + cell_z;
         out.push([
             (gx as f32 + 0.5) * CELL_SIZE_M,
-            candidate_y(wg3, layer), // ver `draw_adults_into`
+            candidate_y(wg3, axis), // ver `draw_adults_into`
             (gz as f32 + 0.5) * CELL_SIZE_M,
         ]);
     }

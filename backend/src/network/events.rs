@@ -3,6 +3,8 @@
 //! Split out of `mod.rs` verbatim; `network` re-exports it, so `network::NetworkEvent`
 //! is still the only path anyone outside this module uses.
 
+use std::net::SocketAddr;
+
 use super::protocol::ChunkSyncData;
 use super::PeerId;
 
@@ -374,5 +376,22 @@ pub enum NetworkEvent {
     /// mirrors a `PacketPayload` variant.
     ConnectRejected {
         reason: String,
+    },
+    /// El joiner mandó handshakes y NADIE contestó dentro del presupuesto de
+    /// `CONNECT_TIMEOUT`. Es el gemelo silencioso de `ConnectRejected` y cubre el modo de fallo
+    /// dominante sobre UDP: IP equivocada, puerto equivocado, host apagado, firewall entrante
+    /// bloqueando, o NAT sin redirección. Un rechazo llega como paquete y ya tenía camino; el
+    /// silencio no tenía ninguno — `retry_pending_connection` reenviaba cada segundo para
+    /// siempre mientras el backend del joiner le servía a Unity un mundo local en solitario, y
+    /// el jugador entraba a jugar creyendo que se había unido.
+    ///
+    /// Interno como `ConnectRejected`: no cruza el cable, lo produce el reloj local.
+    ConnectTimedOut {
+        /// Destino al que se estuvo mandando el handshake, tal cual salió de `CONNECT_TO`.
+        addr: SocketAddr,
+        /// Handshakes enviados sin respuesta. Va en el diagnóstico porque distingue "no salió
+        /// ni uno" (socket roto) de "salieron doce y no volvió nada" (destino inalcanzable).
+        attempts: u32,
+        elapsed_ms: u64,
     },
 }

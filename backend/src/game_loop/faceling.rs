@@ -36,14 +36,14 @@ const FACELING_POPULATION_SYNC_INTERVAL: f32 = 1.0;
 /// exactly like ADR-043's own table did before ITS measurement pass. An office chunk is 50 m
 /// (`CELL_SIZE_M * CHUNK_CELLS`) on a side, so 70 m from a player already reaches one from an
 /// adjacent hallway before they round the corner.
-const FACELING_ACTIVATE_RADIUS: f32 = 70.0;
+pub(super) const FACELING_ACTIVATE_RADIUS: f32 = 70.0;
 /// Hysteresis gap above `FACELING_ACTIVATE_RADIUS`, same shape as `PHANTOM_DEACTIVATE_RADIUS`.
 const FACELING_DEACTIVATE_RADIUS: f32 = 100.0;
 /// A floor as well as a ceiling, same reason as `PHANTOM_MIN_SPAWN_DISTANCE`: nothing should
 /// pop into a player's face. Smaller than the robapieles' 35 m — an adult is not a threat.
-const FACELING_MIN_SPAWN_DISTANCE: f32 = 10.0;
+pub(super) const FACELING_MIN_SPAWN_DISTANCE: f32 = 10.0;
 /// Cap on simultaneously-simulated adults. v1 PLACEHOLDER.
-const FACELING_ACTIVE_CAP: usize = 32;
+pub(super) const FACELING_ACTIVE_CAP: usize = 32;
 
 /// ADR-094 point 2: "un jugador entra en radio ⇒ TODOS los adultos de la sala paran A LA VEZ".
 const FACELING_REGARD_RADIUS: f32 = 12.0;
@@ -174,6 +174,19 @@ fn level4_is_neutral(target: Vec3) -> bool {
     crate::world::grid_gen::level4::world_pos_to_region_cell(target.to_array()).is_some()
 }
 
+/// ADR-110 D3 / T5 — un chunk que PODRÍA despertar, con la distancia por la que compite.
+///
+/// Gemelo de `PhantomCandidate`: existe para que el cap se gaste por cercanía y no por el orden del
+/// recorrido. La unidad es el CHUNK y no el adulto, porque ADR-094 exige que una oficina despierte
+/// entera.
+struct AdultCandidate {
+    /// Distancia del hueco sorteado MÁS CERCANO al jugador que lo propuso.
+    distance: f32,
+    chunk: (i32, i32),
+    storey: u8,
+    drawn: Vec<[f32; 3]>,
+}
+
 pub(super) struct AdultMover {
     pub(super) id: PeerId,
     pub(super) home_chunk: (i32, i32),
@@ -210,7 +223,7 @@ pub(super) struct AdultDriver {
     pub(super) wg3: Option<crate::world::wg3::collision::Wg3CollisionCache>,
     pub(super) movers: Vec<AdultMover>,
     pub(super) density_scale: f32,
-    population_sync_in: f32,
+    pub(super) population_sync_in: f32,
     /// Enmienda 8 — A* scratch and cell buffer, lent to each search. One set per driver, never
     /// per mover: see the same field on `ChildDriver` for why.
     pub(super) nav_scratch: NavScratch,
@@ -251,7 +264,7 @@ pub(super) fn pos_in_chunk(pos: Vec3, chunk: (i32, i32)) -> bool {
 /// Con WG3 no hay cajón: se mide la diferencia de cota contra media planta. Menos que una planta,
 /// para que nadie pegue a través de un forjado, y más que cualquier escalón o rampa, para que subirse
 /// a un peldaño no te haga invisible.
-fn same_level(wg3: bool, layer: u8, self_y: f32, other_y: f32) -> bool {
+pub(super) fn same_level(wg3: bool, layer: u8, self_y: f32, other_y: f32) -> bool {
     const HALF_STOREY_M: f32 = crate::world::wg3::plan::STOREY_HEIGHT_CM as f32 / 100.0 * 0.5;
     match wg3 {
         true => (other_y - self_y).abs() <= HALF_STOREY_M,
@@ -345,6 +358,10 @@ impl AdultDriver {
             )
             .collect();
 
+        // ADR-110 D3 — las plantas de los jugadores, una sola vez: las usan la retirada y el
+        // despertar, y tienen que ser LA MISMA respuesta o el mundo se vacía en las escaleras.
+        let storeys = player_storeys(&mut wg3, &players);
+
         // ── Put away the ones nobody is near any more ──
         let mut retired: Vec<PeerId> = Vec::new();
         for m in &self.movers {
@@ -352,8 +369,15 @@ impl AdultDriver {
                 continue;
             };
             let here = Vec3::from_array(peer.position);
-            let far = players.iter().all(|p| {
-                world_pos_to_layer(p.y) != m.layer
+            // ADR-110 D3 / T2 — **LA RETIRADA YA NO PREGUNTA POR LA CAPA DE WG2.** `m.layer` es una
+            // capa de 4 m y las plantas miden 3,32: medido en T0, subir de planta cambiaba de capa en
+            // 3 de cada 5 transiciones, así que al subir se retiraba TODO lo que estaba activo en la
+            // planta de abajo aunque el jugador siguiera al lado. Se usa `same_level`, que es el
+            // sustituto que ADR-108 creó para exactamente esta pregunta y que con WG3 compara cotas
+            // contra media planta en vez de cajones — el mismo criterio con el que estas criaturas
+            // ya se ven, se persiguen y se pegan.
+            let far = players.iter().zip(&storeys).all(|(p, ps)| {
+                !belongs_to_player_storey(wg3.is_some(), m.layer, *ps, p.y)
                     || p.distance_xz(here) > FACELING_DEACTIVATE_RADIUS
             });
             if far {
@@ -372,9 +396,23 @@ impl AdultDriver {
         let taken: HashSet<(i32, i32)> = self.movers.iter().map(|m| m.home_chunk).collect();
         let mut seen_chunks: HashSet<((i32, i32), u8)> = HashSet::new();
         let mut drawn: Vec<[f32; 3]> = Vec::new();
+        // ADR-110 D3 / T5 — (distancia al jugador, chunk, planta, huecos sorteados). Se llena
+        // entero antes de gastar una sola plaza del cap.
+        let mut candidatos: Vec<AdultCandidate> = Vec::new();
 
-        for p in &players {
-            let layer = world_pos_to_layer(p.y);
+        for (p, ps) in players.iter().zip(&storeys) {
+            // ADR-110 D3 — el eje del sorteo, y **la misma respuesta que usó la retirada**: se
+            // reutiliza `storeys` en vez de volver a resolverla. Dos cálculos de la planta del mismo
+            // jugador en el mismo reconcile es exactamente cómo se separan el despertar y la
+            // retirada. `None` es geometría bajo la cota 0: ahí no se reparte mientras no haya
+            // política (ver `wg3_player_storey`).
+            let layer = match wg3.is_some() {
+                true => match ps {
+                    Some(s) => *s,
+                    None => continue,
+                },
+                false => world_pos_to_layer(p.y),
+            };
             let cell = CELL_SIZE_M * CHUNK_CELLS as f32;
             let cx0 = ((p.x - FACELING_ACTIVATE_RADIUS) / cell).floor() as i32;
             let cx1 = ((p.x + FACELING_ACTIVATE_RADIUS) / cell).floor() as i32;
@@ -412,66 +450,95 @@ impl AdultDriver {
                     }) {
                         continue;
                     }
-                    for (index, pos) in drawn.iter().copied().enumerate() {
-                        if self.movers.len() >= FACELING_ACTIVE_CAP {
-                            break;
-                        }
-                        // ADR-109 D5 — el hueco se queda o no según el PAPEL del espacio donde cae,
-                        // y su cota sale de ese espacio. Antes lo decidía la zona del chunk entero.
-                        let pos = match &mut wg3 {
-                            Some(ctx) => {
-                                let Some(p) = wg3_spawn_point(ctx, cx, cz, layer, index, pos)
-                                else {
-                                    continue;
-                                };
-                                // Y se precalienta el ráster AHÍ: sin esto `standable_near` no tiene
-                                // nada que mirar y el sitio se queda sin comprobar.
-                                if let Some(cache) = self.wg3.as_mut() {
-                                    let v = Vec3::from_array(p);
-                                    cache.prewarm_for_move(
-                                        ctx.worlds,
-                                        ctx.manifest,
-                                        ctx.world_seed,
-                                        v,
-                                        v,
-                                    );
-                                }
-                                p
-                            }
-                            None => pos,
-                        };
-                        let id = net.spawn_faceling("Faceling", pos, 1, self.wg3.as_ref());
-                        let spawn_pos = net
-                            .peers
-                            .get(&id)
-                            .map(|p| Vec3::from_array(p.position))
-                            .unwrap_or_else(|| Vec3::from_array(pos));
-                        self.movers.push(AdultMover {
-                            id,
-                            home_chunk: (cx, cz),
-                            layer,
-                            state: AdultState::Working,
-                            heading: rand::random::<f32>() * std::f32::consts::TAU,
-                            commute_target: spawn_pos,
-                            state_timer: FACELING_COMMUTE_MIN_S
-                                + rand::random::<f32>()
-                                    * (FACELING_COMMUTE_MAX_S - FACELING_COMMUTE_MIN_S),
-                            health: FACELING_ADULT_MAX_HEALTH,
-                            enforce_target: None,
-                            strike_recover: 0.0,
-                            progress: ProgressWatch::new(),
-                            nav_waypoints: Vec::new(),
-                            nav_cursor: 0,
-                            nav_goal: None,
-                            nav_age: 0.0,
-                            nav_blocked: 0,
-                        });
-                        info!(
-                            "MPTRACE step=FL_POP event=faceling_adult_spawned faceling_id={} chunk=({},{}) layer={}",
-                            id, cx, cz, layer
-                        );
-                    }
+                    // ADR-110 D3 / T5 — el chunk NO se puebla aquí: se apunta como candidato con su
+                    // distancia y se decide después. Ver `candidatos` más abajo.
+                    candidatos.push(AdultCandidate {
+                        distance: closest,
+                        chunk: (cx, cz),
+                        storey: layer,
+                        drawn: drawn.clone(),
+                    });
                 }
+            }
+        }
+
+        // **ADR-110 D3 / T5 — EL CAP SE GASTA POR CERCANÍA, NO POR ORDEN DE BUCLE.**
+        //
+        // Hasta aquí esto poblaba dentro del `for cx`/`for cz` y cortaba al llegar a
+        // `FACELING_ACTIVE_CAP`. Lo que se quedaba fuera no era lo más lejano: era **lo último del
+        // recorrido**, o sea el chunk de mayor `cz` — un sesgo de coordenada disfrazado de tope. El
+        // jugador lo vería como un lado de la sala poblado y el otro vacío, sin nada en pantalla que
+        // lo explicara, y la causa no estaría en el reparto sino en el orden de un `for`.
+        //
+        // La solución no es subir el cap: es la que el robapieles ya usa
+        // (`PhantomDriver::sync_population` junta `PhantomCandidate` y ordena por distancia antes de
+        // gastar `active_cap`). Se copia esa disciplina y no se inventa otra.
+        //
+        // **La unidad es el CHUNK y no el adulto**, que es lo que hace que esto respete ADR-094: una
+        // oficina despierta o duerme ENTERA. Ordenar adultos sueltos por distancia partiría oficinas
+        // por la mitad justo en el borde del cap.
+        //
+        // `total_cmp` y no `partial_cmp().unwrap()` porque un NaN aquí no debe entrar en pánico, y
+        // `sort_by` es ESTABLE: los empates conservan el orden del recorrido, que es determinista.
+        // Nada de aleatoriedad para deshacer el sesgo — eso lo cambiaría por otro problema.
+        candidatos.sort_by(|a, b| a.distance.total_cmp(&b.distance));
+
+        for cand in candidatos {
+            let (cx, cz) = cand.chunk;
+            let (layer, drawn) = (cand.storey, cand.drawn);
+            if self.movers.len() >= FACELING_ACTIVE_CAP {
+                break;
+            }
+            for (index, pos) in drawn.iter().copied().enumerate() {
+                if self.movers.len() >= FACELING_ACTIVE_CAP {
+                    break;
+                }
+                // ADR-109 D5 — el hueco se queda o no según el PAPEL del espacio donde cae,
+                // y su cota sale de ese espacio. Antes lo decidía la zona del chunk entero.
+                let pos = match &mut wg3 {
+                    Some(ctx) => {
+                        let Some(p) = wg3_spawn_point(ctx, cx, cz, layer, index, pos) else {
+                            continue;
+                        };
+                        // Y se precalienta el ráster AHÍ: sin esto `standable_near` no tiene
+                        // nada que mirar y el sitio se queda sin comprobar.
+                        if let Some(cache) = self.wg3.as_mut() {
+                            let v = Vec3::from_array(p);
+                            cache.prewarm_for_move(ctx.worlds, ctx.manifest, ctx.world_seed, v, v);
+                        }
+                        p
+                    }
+                    None => pos,
+                };
+                let id = net.spawn_faceling("Faceling", pos, 1, self.wg3.as_ref());
+                let spawn_pos = net
+                    .peers
+                    .get(&id)
+                    .map(|p| Vec3::from_array(p.position))
+                    .unwrap_or_else(|| Vec3::from_array(pos));
+                self.movers.push(AdultMover {
+                    id,
+                    home_chunk: (cx, cz),
+                    layer,
+                    state: AdultState::Working,
+                    heading: rand::random::<f32>() * std::f32::consts::TAU,
+                    commute_target: spawn_pos,
+                    state_timer: FACELING_COMMUTE_MIN_S
+                        + rand::random::<f32>() * (FACELING_COMMUTE_MAX_S - FACELING_COMMUTE_MIN_S),
+                    health: FACELING_ADULT_MAX_HEALTH,
+                    enforce_target: None,
+                    strike_recover: 0.0,
+                    progress: ProgressWatch::new(),
+                    nav_waypoints: Vec::new(),
+                    nav_cursor: 0,
+                    nav_goal: None,
+                    nav_age: 0.0,
+                    nav_blocked: 0,
+                });
+                info!(
+                    "MPTRACE step=FL_POP event=faceling_adult_spawned faceling_id={} chunk=({},{}) layer={}",
+                    id, cx, cz, layer
+                );
             }
         }
     }
@@ -1432,6 +1499,16 @@ pub(super) enum ChildRole {
     Ring,
 }
 
+/// ADR-110 D3 / T5 — lo mismo para las manadas. Con ocho plazas de cap el sesgo de recorrido se ve
+/// antes que en los adultos, no después.
+struct PackCandidate {
+    distance: f32,
+    chunk: (i32, i32),
+    storey: u8,
+    anchor: Vec3,
+    drawn: Vec<[f32; 3]>,
+}
+
 pub(super) struct ChildPack {
     pub(super) home_chunk: (i32, i32),
     pub(super) layer: u8,
@@ -1754,16 +1831,112 @@ pub(super) struct Wg3SpawnCtx<'a> {
     pub world_seed: u64,
 }
 
-/// El sitio donde nace un candidato del sorteo, con la geometría delante: `None` cuando ese hueco
-/// no se queda —el papel de su espacio no lo concentra, o no hay espacio ninguno ahí.
+/// **ADR-110 D3 — ¿pertenece esta criatura a la planta en la que está el jugador?**
 ///
-/// **La cota sale del ESPACIO, no de la capa.** Es la mitad del arreglo: el sorteo es puro por
-/// semilla y no puede saber a qué altura está el suelo, así que devolvía la de una capa de 4 m.
+/// El predicado de POBLACIÓN, y es deliberadamente distinto de [`same_level`]. Ese compara cotas
+/// continuas y sirve para lo que sirve —ver, perseguir, pegar—, donde media planta de tolerancia es
+/// justo lo que hace falta para que nadie golpee a través de un forjado.
+///
+/// Usarlo también para el reparto fue un error de T2 y esto lo corrige: el despertar clasifica al
+/// jugador en una planta DISCRETA (por el espacio que pisa) y la retirada medía una distancia
+/// CONTINUA. Los dos predicados discrepan justo donde más se nota — en una escalera. Medido sobre la
+/// región (0,0): en **6 de 14** peldaños el sorteo dice «estás en la planta 0» y `same_level` dice
+/// que no estás a la altura de nada de la planta 0. A media escalera el mundo se vaciaba: se
+/// retiraba lo de la planta que el sorteo seguía repartiendo.
+///
+/// Con WG2 se conserva la pregunta de siempre, con su capa de 4 m, intacta.
+pub(super) fn belongs_to_player_storey(
+    wg3: bool,
+    assigned: u8,
+    player_storey: Option<u8>,
+    player_y: f32,
+) -> bool {
+    match wg3 {
+        true => player_storey == Some(assigned),
+        false => world_pos_to_layer(player_y) == assigned,
+    }
+}
+
+/// Las plantas en las que están los jugadores, resueltas UNA vez por reconcile.
+///
+/// Una vez y no por criatura: `wg3_player_storey` planifica la región si no está en caché, y
+/// preguntarlo dentro del bucle de retirada lo repetiría por cada faceling vivo.
+pub(super) fn player_storeys(
+    wg3: &mut Option<Wg3SpawnCtx<'_>>,
+    players: &[Vec3],
+) -> Vec<Option<u8>> {
+    match wg3 {
+        Some(ctx) => players.iter().map(|p| wg3_player_storey(ctx, *p)).collect(),
+        None => vec![None; players.len()],
+    }
+}
+
+/// **ADR-110 D3 / T2 — EN QUÉ PLANTA DE WG3 ESTÁ UN JUGADOR.**
+///
+/// El eje del reparto, y el que sustituye a `world_pos_to_layer` en todo lo que decida población.
+///
+/// La autoridad es el ESPACIO donde cae —el mismo dato que ya usan el loot (ADR-108 D4), la
+/// construcción (D6) y el sitio de nacimiento (ADR-109 D4)—, no una división de su Y: el suelo de
+/// una planta sube y baja, y dos plantas se solapan en XZ. Cuando no hay espacio bajo el jugador
+/// —está en un hueco del plan, o fuera de la región servida— se cae a la aritmética en vez de
+/// devolver `None`, porque dejar de repartir por no saber la planta vaciaría el mundo por un borde.
+///
+/// **`None` es «fuera del reparto», y hoy sólo lo devuelve la geometría bajo la cota 0.** Hay 113
+/// tramos por debajo de cero en las cuatro regiones auditadas (T0) y **no existe política de
+/// población para ellos**: ADR-104 D5 da las plantas bajo rasante como no implementadas, así que
+/// poblarlas sería inventarse una decisión de diseño. Quedan explícitamente fuera hasta que se tome.
+pub(super) fn wg3_player_storey(ctx: &mut Wg3SpawnCtx<'_>, p: Vec3) -> Option<u8> {
+    let coord = crate::world::wg3::chunk::Wg3ChunkCoord::containing(p.x, p.z);
+    let region = ctx.worlds.region_for(ctx.manifest, ctx.world_seed, coord);
+    // **LA PLANTA ES LA DEL SUELO QUE PISA, y esto costó una auditoría entera.** La primera versión
+    // preguntaba por `space_at`, que devuelve el espacio que CONTIENE el cuerpo, y no es la misma
+    // pregunta: un jugador subido a un peldaño a 306 cm tiene la cabeza dentro del volumen de la
+    // planta de arriba —cuyo espacio va de 292 a 640—, así que contestaba **planta 1** mientras el
+    // peldaño que pisa es de la **planta 0** (`storey_of_floor_cm(306) == 0`: una escalera pertenece
+    // a la planta de la que sale).
+    //
+    // Y la planta de una CRIATURA sale siempre del suelo sobre el que está. Así que jugador y
+    // criatura de pie EN EL MISMO PELDAÑO quedaban en plantas distintas — dos reglas para la misma
+    // pregunta, que es la clase de fallo que arrastraba la migración de WG2. Medido: con el jugador
+    // en el peldaño alto de una escalera, el faceling que tenía a 8 m en su misma planta se retiraba.
+    //
+    // `spaces_at_xz` viene ordenado de abajo arriba, así que el último que no supera los pies es el
+    // suelo que se pisa. Sin espacio ninguno se cae a la cota de los pies en vez de devolver `None`:
+    // dejar de repartir por no saber la planta vaciaría el mundo por un borde.
+    //
+    // **El margen tiene que ser MENOR QUE UNA CONTRAHUELLA, y esto también se midió.** Empezó en los
+    // 40 cm del `HEAD_MARGIN_CM` de `space_at` y seguía dando planta 1 en el peldaño de 306: el suelo
+    // de la planta de arriba está a 332, o sea a **26 cm**, y con 40 de margen ganaba él. Las
+    // contrahuellas de este mundo miden de 18 a 26 cm (`plan::STEP_RISE_CM` y la del catálogo), así
+    // que cualquier margen que llegue a 18 se traga un escalón entero y vuelve a subir de planta
+    // antes de tiempo. Cinco centímetros sólo absorben el redondeo de la pose.
+    const FOOT_MARGIN_CM: i32 = 5;
+    let feet_cm = ((p.y - BODY_TOP_M) * 100.0).round() as i32;
+    let floor_y_cm = region
+        .spaces_at_xz(p.x, p.z)
+        .iter()
+        .rev()
+        .find(|s| s.floor_y_cm <= feet_cm + FOOT_MARGIN_CM)
+        .map(|s| s.floor_y_cm)
+        .unwrap_or(feet_cm);
+    match crate::world::wg3::plan::storey_of_floor_cm(floor_y_cm) {
+        s if s < 0 => None,
+        s => Some(s.min(u8::MAX as i32) as u8),
+    }
+}
+
+/// El sitio donde nace un candidato del sorteo, con la geometría delante: `None` cuando ese hueco
+/// no se queda —el papel de su espacio no lo concentra, o esa vertical no llega a esa planta.
+///
+/// **La cota sale del ESPACIO, no de la capa** (ADR-109 D5), **y el espacio es el de la PLANTA a la
+/// que apunta el sorteo, no el de más abajo** (ADR-110 D3 / T1). Lo segundo era la mitad que
+/// faltaba: con el eje ya arreglado en T2, esta función seguía llamando a `lowest_space_at_xz` y
+/// devolviendo la planta baja, así que el reparto apuntaba arriba y nacía abajo.
 fn wg3_spawn_point(
     ctx: &mut Wg3SpawnCtx<'_>,
     cx: i32,
     cz: i32,
-    layer: u8,
+    storey: u8,
     index: usize,
     pos: [f32; 3],
 ) -> Option<[f32; 3]> {
@@ -1772,14 +1945,14 @@ fn wg3_spawn_point(
     // Copiados ANTES de soltar el préstamo: `region` sale de la caché en mutable y no puede seguir
     // viva mientras se precalienta el ráster.
     let space = region
-        .lowest_space_at_xz(pos[0], pos[2])
+        .space_on_storey_at_xz(pos[0], pos[2], storey as i32)
         .map(|s| (s.style, s.floor_y_cm));
     let (style, floor_y_cm) = space?;
     if !crate::world::faceling_spawn::wg3_keeps_position(
         ctx.world_seed,
         cx,
         cz,
-        layer,
+        storey,
         index,
         Some(style),
     ) {
@@ -1788,12 +1961,23 @@ fn wg3_spawn_point(
     Some([pos[0], floor_y_cm as f32 / 100.0 + BODY_TOP_M, pos[2]])
 }
 
-/// Sólo la cota: el suelo del espacio de más abajo en esa vertical, sin decidir si el hueco se queda.
-/// Lo usan los miembros de una manada, cuya pertenencia ya se decidió con el hueco de cabeza.
-fn wg3_floor_point(ctx: &mut Wg3SpawnCtx<'_>, pos: [f32; 3]) -> Option<[f32; 3]> {
+/// Sólo la cota, sin decidir si el hueco se queda: lo usan los miembros de una manada, cuya
+/// pertenencia ya se decidió con el hueco de cabeza.
+///
+/// ADR-110 D3 / T1 — y de la MISMA planta que la cabeza. Con `lowest_space_at_xz` una manada
+/// sorteada para la planta 2 se repartía por el suelo de la planta baja: los miembros caían donde la
+/// vertical tuviera algo, no donde está la manada. Un miembro cuya vertical no llega a esa planta se
+/// descarta y la manada sigue, que es lo que ya hacía cuando el hueco caía en el vacío del plan.
+pub(super) fn wg3_floor_point(
+    ctx: &mut Wg3SpawnCtx<'_>,
+    storey: u8,
+    pos: [f32; 3],
+) -> Option<[f32; 3]> {
     let coord = crate::world::wg3::chunk::Wg3ChunkCoord::containing(pos[0], pos[2]);
     let region = ctx.worlds.region_for(ctx.manifest, ctx.world_seed, coord);
-    let floor_y_cm = region.lowest_space_at_xz(pos[0], pos[2])?.floor_y_cm;
+    let floor_y_cm = region
+        .space_on_storey_at_xz(pos[0], pos[2], storey as i32)?
+        .floor_y_cm;
     Some([pos[0], floor_y_cm as f32 / 100.0 + BODY_TOP_M, pos[2]])
 }
 
@@ -2124,11 +2308,15 @@ impl ChildDriver {
             )
             .collect();
 
+        // ADR-110 D3 — igual que en los adultos: una sola resolución de planta por reconcile.
+        let storeys = player_storeys(&mut wg3, &players);
+
         // ── Put away the packs nobody is near any more ──
         let mut retired_packs: Vec<usize> = Vec::new();
         for (pi, pack) in self.packs.iter().enumerate() {
-            let far = players.iter().all(|p| {
-                world_pos_to_layer(p.y) != pack.layer
+            // ADR-110 D3 — el MISMO predicado que el despertar, ver `belongs_to_player_storey`.
+            let far = players.iter().zip(&storeys).all(|(p, ps)| {
+                !belongs_to_player_storey(wg3.is_some(), pack.layer, *ps, p.y)
                     || p.distance_xz(pack.anchor) > FACELING_CHILD_DEACTIVATE_RADIUS
             });
             if far {
@@ -2159,9 +2347,19 @@ impl ChildDriver {
         let taken: HashSet<(i32, i32)> = self.packs.iter().map(|p| p.home_chunk).collect();
         let mut seen_chunks: HashSet<((i32, i32), u8)> = HashSet::new();
         let mut drawn: Vec<[f32; 3]> = Vec::new();
+        // ADR-110 D3 / T5 — mismo tratamiento que los adultos: (distancia, chunk, planta, ancla,
+        // manada sorteada). El cap se gasta por cercanía y no por orden de recorrido.
+        let mut candidatos: Vec<PackCandidate> = Vec::new();
 
-        for p in &players {
-            let layer = world_pos_to_layer(p.y);
+        for (p, ps) in players.iter().zip(&storeys) {
+            // ADR-110 D3 — igual que en los adultos: la MISMA planta que usó la retirada.
+            let layer = match wg3.is_some() {
+                true => match ps {
+                    Some(s) => *s,
+                    None => continue,
+                },
+                false => world_pos_to_layer(p.y),
+            };
             let cell = CELL_SIZE_M * CHUNK_CELLS as f32;
             let cx0 = ((p.x - FACELING_CHILD_ACTIVATE_RADIUS) / cell).floor() as i32;
             let cx1 = ((p.x + FACELING_CHILD_ACTIVATE_RADIUS) / cell).floor() as i32;
@@ -2186,118 +2384,144 @@ impl ChildDriver {
                     }
                     let anchor = {
                         let (x0, x1, z0, z1) = chunk_bounds((cx, cz));
-                        Vec3::new(
-                            (x0 + x1) / 2.0,
-                            crate::world::grid_gen::grid_floor_y(layer)
-                                + crate::world::collision::PLAYER_BASE_Y,
-                            (z0 + z1) / 2.0,
-                        )
-                    };
-                    if p.distance_xz(anchor) > FACELING_CHILD_ACTIVATE_RADIUS {
-                        continue;
-                    }
-                    // Measured against the actual drawn spot, not the anchor — same reasoning as
-                    // `AdultDriver::sync_population`: the anchor is just the leash centre, and a
-                    // member can land anywhere in the chunk, including right next to a player who
-                    // is standing nowhere near the geometric centre.
-                    if players.iter().any(|q| {
-                        q.distance_xz(Vec3::from_array(drawn[0]))
-                            < FACELING_CHILD_MIN_SPAWN_DISTANCE
-                    }) {
-                        continue;
-                    }
-                    // ADR-109 D5 — LA MANADA SE DECIDE ENTERA, no miembro a miembro. Con el filtro
-                    // por hueco de los adultos, una manada de 3-8 se quedaría en uno o dos y dejaría
-                    // de ser una manada: los roles de ADR-094 (cerco, presa, robo) no existen sin
-                    // ella. Así que la tirada de papel se hace UNA vez, con el hueco de cabeza, y
-                    // luego cada miembro sólo se pega al suelo de su espacio.
-                    if let Some(ctx) = &mut wg3 {
-                        let cabeza = drawn.first().copied().unwrap_or([0.0; 3]);
-                        if wg3_spawn_point(ctx, cx, cz, layer, 0, cabeza).is_none() {
-                            continue;
-                        }
-                    }
-                    let mut members = Vec::with_capacity(drawn.len());
-                    for pos in drawn.iter().copied() {
-                        let pos = match &mut wg3 {
-                            Some(ctx) => {
-                                // Aquí ya no se decide si se queda: sólo dónde. Un miembro cuyo hueco
-                                // cae en el vacío del plan se descarta, la manada sigue.
-                                let Some(p) = wg3_floor_point(ctx, pos) else {
-                                    continue;
-                                };
-                                if let Some(cache) = self.wg3.as_mut() {
-                                    let v = Vec3::from_array(p);
-                                    cache.prewarm_for_move(
-                                        ctx.worlds,
-                                        ctx.manifest,
-                                        ctx.world_seed,
-                                        v,
-                                        v,
-                                    );
-                                }
-                                p
+                        // ADR-110 D3 / T2 — la cota del ancla. Con WG2 es la de su capa de 4 m; con
+                        // WG3 es el plano de la PLANTA, que `plan::problems` garantiza que es
+                        // `planta * STOREY_HEIGHT_CM` para todo espacio servido. Dejar aquí
+                        // `grid_floor_y(planta)` la habría puesto a 4 m por planta en un mundo de
+                        // 3,32 — y esta Y no es decorativa: es el centro de la correa que `pick_roam_point`
+                        // usa como cota de partida para buscar suelo.
+                        let y = match wg3.is_some() {
+                            true => {
+                                (layer as i32 * crate::world::wg3::plan::STOREY_HEIGHT_CM) as f32
+                                    / 100.0
+                                    + crate::world::collision::PLAYER_BASE_Y
                             }
-                            None => pos,
+                            false => {
+                                crate::world::grid_gen::grid_floor_y(layer)
+                                    + crate::world::collision::PLAYER_BASE_Y
+                            }
                         };
-                        let id = net.spawn_faceling("Faceling_Child", pos, 2, self.wg3.as_ref());
-                        let spawn_pos = net
-                            .peers
-                            .get(&id)
-                            .map(|pp| Vec3::from_array(pp.position))
-                            .unwrap_or_else(|| Vec3::from_array(pos));
-                        members.push(ChildMover {
-                            id,
-                            heading: rand::random::<f32>() * std::f32::consts::TAU,
-                            roam_target: spawn_pos,
-                            state_timer: FACELING_CHILD_ROAM_MIN_S
-                                + rand::random::<f32>()
-                                    * (FACELING_CHILD_ROAM_MAX_S - FACELING_CHILD_ROAM_MIN_S),
-                            health: FACELING_CHILD_MAX_HEALTH,
-                            role: None,
-                            frozen: false,
-                            pending_vocal: None,
-                            vocal_seq: 0,
-                            vocal_kind: 0,
-                            vocal_delay: None,
-                            vocal_cooldown: 0.0,
-                            strike_recover: 0.0,
-                            progress: ProgressWatch::new(),
-                            nav_waypoints: Vec::new(),
-                            nav_cursor: 0,
-                            nav_goal: None,
-                            nav_age: 0.0,
-                            nav_blocked: 0,
-                            loot: None,
-                            flank_offset: 0.0,
-                        });
+                        Vec3::new((x0 + x1) / 2.0, y, (z0 + z1) / 2.0)
+                    };
+                    let d = p.distance_xz(anchor);
+                    if d > FACELING_CHILD_ACTIVATE_RADIUS {
+                        continue;
                     }
-                    info!(
-                        "MPTRACE step=FL_POP event=faceling_pack_spawned chunk=({},{}) layer={} size={} temper={:?}",
-                        cx, cz, layer, members.len(), PackTemper::roll(cx, cz)
-                    );
-                    self.packs.push(ChildPack {
-                        home_chunk: (cx, cz),
-                        layer,
+                    // ADR-110 D3 / T5 — se apunta, no se puebla. Ver el bucle de abajo.
+                    candidatos.push(PackCandidate {
+                        distance: d,
+                        chunk: (cx, cz),
+                        storey: layer,
                         anchor,
-                        state: ChildState::PackRoam,
-                        mind: PackMind::empty(),
-                        frozen: false,
-                        members,
-                        giggle_timer: FACELING_CHILD_GIGGLE_INTERVAL_S,
-                        giggle_round: 0,
-                        temper: PackTemper::roll(cx, cz),
-                        vocal_band: VocalBand::Mute,
-                        hush_timer: 0.0,
-                        ring_was_shut: false,
-                        vocal_cursor: 0,
-                        screamer_cooldown: 0.0,
+                        drawn: drawn.clone(),
                     });
-                    if self.packs.len() >= FACELING_CHILD_PACK_ACTIVE_CAP {
-                        return;
-                    }
                 }
             }
+        }
+
+        // **ADR-110 D3 / T5 — el cap de manadas, por cercanía.** Idéntico razonamiento que el de los
+        // adultos: `FACELING_CHILD_PACK_ACTIVE_CAP` son OCHO, y con el `return` dentro del recorrido
+        // las manadas que se quedaban fuera eran las de mayor `cz`, no las más lejanas. Con ocho
+        // plazas el sesgo es más visible que en los adultos, no menos.
+        candidatos.sort_by(|a, b| a.distance.total_cmp(&b.distance));
+
+        for cand in candidatos {
+            let (cx, cz) = cand.chunk;
+            let (layer, anchor, drawn) = (cand.storey, cand.anchor, cand.drawn);
+            if self.packs.len() >= FACELING_CHILD_PACK_ACTIVE_CAP {
+                return;
+            }
+
+            // Measured against the actual drawn spot, not the anchor — same reasoning as
+            // `AdultDriver::sync_population`: the anchor is just the leash centre, and a
+            // member can land anywhere in the chunk, including right next to a player who
+            // is standing nowhere near the geometric centre.
+            if players.iter().any(|q| {
+                q.distance_xz(Vec3::from_array(drawn[0])) < FACELING_CHILD_MIN_SPAWN_DISTANCE
+            }) {
+                continue;
+            }
+            // ADR-109 D5 — LA MANADA SE DECIDE ENTERA, no miembro a miembro. Con el filtro
+            // por hueco de los adultos, una manada de 3-8 se quedaría en uno o dos y dejaría
+            // de ser una manada: los roles de ADR-094 (cerco, presa, robo) no existen sin
+            // ella. Así que la tirada de papel se hace UNA vez, con el hueco de cabeza, y
+            // luego cada miembro sólo se pega al suelo de su espacio.
+            if let Some(ctx) = &mut wg3 {
+                let cabeza = drawn.first().copied().unwrap_or([0.0; 3]);
+                if wg3_spawn_point(ctx, cx, cz, layer, 0, cabeza).is_none() {
+                    continue;
+                }
+            }
+            let mut members = Vec::with_capacity(drawn.len());
+            for pos in drawn.iter().copied() {
+                let pos = match &mut wg3 {
+                    Some(ctx) => {
+                        // Aquí ya no se decide si se queda: sólo dónde. Un miembro cuyo hueco
+                        // cae en el vacío del plan se descarta, la manada sigue.
+                        let Some(p) = wg3_floor_point(ctx, layer, pos) else {
+                            continue;
+                        };
+                        if let Some(cache) = self.wg3.as_mut() {
+                            let v = Vec3::from_array(p);
+                            cache.prewarm_for_move(ctx.worlds, ctx.manifest, ctx.world_seed, v, v);
+                        }
+                        p
+                    }
+                    None => pos,
+                };
+                let id = net.spawn_faceling("Faceling_Child", pos, 2, self.wg3.as_ref());
+                let spawn_pos = net
+                    .peers
+                    .get(&id)
+                    .map(|pp| Vec3::from_array(pp.position))
+                    .unwrap_or_else(|| Vec3::from_array(pos));
+                members.push(ChildMover {
+                    id,
+                    heading: rand::random::<f32>() * std::f32::consts::TAU,
+                    roam_target: spawn_pos,
+                    state_timer: FACELING_CHILD_ROAM_MIN_S
+                        + rand::random::<f32>()
+                            * (FACELING_CHILD_ROAM_MAX_S - FACELING_CHILD_ROAM_MIN_S),
+                    health: FACELING_CHILD_MAX_HEALTH,
+                    role: None,
+                    frozen: false,
+                    pending_vocal: None,
+                    vocal_seq: 0,
+                    vocal_kind: 0,
+                    vocal_delay: None,
+                    vocal_cooldown: 0.0,
+                    strike_recover: 0.0,
+                    progress: ProgressWatch::new(),
+                    nav_waypoints: Vec::new(),
+                    nav_cursor: 0,
+                    nav_goal: None,
+                    nav_age: 0.0,
+                    nav_blocked: 0,
+                    loot: None,
+                    flank_offset: 0.0,
+                });
+            }
+            info!(
+                "MPTRACE step=FL_POP event=faceling_pack_spawned chunk=({},{}) layer={} size={} temper={:?}",
+                cx, cz, layer, members.len(), PackTemper::roll(cx, cz)
+            );
+            self.packs.push(ChildPack {
+                home_chunk: (cx, cz),
+                layer,
+                anchor,
+                state: ChildState::PackRoam,
+                mind: PackMind::empty(),
+                frozen: false,
+                members,
+                giggle_timer: FACELING_CHILD_GIGGLE_INTERVAL_S,
+                giggle_round: 0,
+                temper: PackTemper::roll(cx, cz),
+                vocal_band: VocalBand::Mute,
+                hush_timer: 0.0,
+                ring_was_shut: false,
+                vocal_cursor: 0,
+                screamer_cooldown: 0.0,
+            });
         }
     }
 
