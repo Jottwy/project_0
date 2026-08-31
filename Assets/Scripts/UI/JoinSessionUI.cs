@@ -92,6 +92,27 @@ namespace BackroomsSurvival.UI
             public int Port;
             public string PlayerName;
             public bool Valid;
+
+            /// <summary>
+            /// Otra dirección del MISMO host, que el [Retry] usa **una vez** si la primera no
+            /// contestó. Hoy la llena `bs_lan_ip` del lobby.
+            ///
+            /// Existe por el hairpin: cuando un host con mapeo UPnP confirmado anuncia su IP
+            /// pública, un joiner de su misma red sólo llega ahí si el router hace NAT loopback,
+            /// y muchos routers domésticos no lo hacen. Sin esto, dos personas en el mismo salón
+            /// no pueden jugar juntas en cuanto el host consigue UPnP — que es hacer peor lo que
+            /// ya funcionaba.
+            ///
+            /// Se prueba en el REINTENTO y no en el primer intento a propósito: quién está en la
+            /// misma red que el host no se sabe desde aquí (dos casas distintas pueden ser las dos
+            /// `192.168.1.0/24`), así que adivinarlo mandaría a gente de fuera a una dirección
+            /// privada. Probar primero lo anunciado y la alternativa después no puede equivocarse.
+            /// </summary>
+            public string FallbackIp;
+
+            /// La alternativa ya se ha usado. Un solo reintento por ella; a partir de ahí [Retry]
+            /// vuelve a ser lo que era, o sea repetir el mismo intento.
+            public bool FallbackUsed;
         }
         private Attempt _lastAttempt;
 
@@ -579,6 +600,17 @@ namespace BackroomsSurvival.UI
             var init = EnsureInitializer();
             if (_lastAttempt.IsJoin)
             {
+                // Si el host anunció una segunda dirección, el reintento va POR ELLA. Es el caso
+                // del hairpin: la IP pública del host no vale desde su propia red, y su LAN sí.
+                // Una sola vez; ver `Attempt.FallbackIp`.
+                if (!_lastAttempt.FallbackUsed && !string.IsNullOrWhiteSpace(_lastAttempt.FallbackIp))
+                {
+                    _lastAttempt.Ip = _lastAttempt.FallbackIp.Trim();
+                    _lastAttempt.FallbackUsed = true;
+                    if (_ipField != null) _ipField.SetTextWithoutNotify(_lastAttempt.Ip);
+                    Debug.Log($"[JoinSessionUI] Retry por la dirección alternativa del host: {_lastAttempt.Ip}");
+                }
+
                 BeginAttemptUi(PanelState.Joining, $"Connecting to {_lastAttempt.Ip}:{_lastAttempt.Port}…");
                 init.StartAsJoiner(_lastAttempt.Ip, _lastAttempt.Port, _lastAttempt.PlayerName);
                 ApplySelectedLocalConfigToUi(init, updateServerPort: false);
@@ -665,14 +697,21 @@ namespace BackroomsSurvival.UI
         /// <see cref="SteamLobbyManager"/> caiga en StartAsJoiner directo — el destino es
         /// el mismo método en ambos casos, nunca un segundo camino de conexión.
         /// </summary>
-        public static bool TryBeginSteamJoin(string ip, int port, string playerName)
+        public static bool TryBeginSteamJoin(string ip, int port, string playerName) =>
+            TryBeginSteamJoin(ip, port, playerName, null);
+
+        /// <summary>
+        /// Igual, con la dirección alternativa que anunció el host (`bs_lan_ip`). Ver
+        /// <see cref="Attempt.FallbackIp"/>: el primer intento va SIEMPRE a lo anunciado.
+        /// </summary>
+        public static bool TryBeginSteamJoin(string ip, int port, string playerName, string fallbackIp)
         {
             if (_instance == null) return false;
-            _instance.BeginSteamJoin(ip, port, playerName);
+            _instance.BeginSteamJoin(ip, port, playerName, fallbackIp);
             return true;
         }
 
-        private void BeginSteamJoin(string ip, int port, string playerName)
+        private void BeginSteamJoin(string ip, int port, string playerName, string fallbackIp = null)
         {
             CancelAutoHostBecauseUserInteracted();
             var init = EnsureInitializer();
@@ -690,7 +729,11 @@ namespace BackroomsSurvival.UI
             Debug.Log("[JoinSessionUI] role efectivo=joiner (steam)");
             Debug.Log($"[JoinSessionUI] CONNECT_TO={ip}:{port}");
 
-            _lastAttempt = new Attempt { IsJoin = true, Ip = ip, Port = port, PlayerName = playerName, Valid = true };
+            _lastAttempt = new Attempt
+            {
+                IsJoin = true, Ip = ip, Port = port, PlayerName = playerName, Valid = true,
+                FallbackIp = string.Equals(fallbackIp, ip, StringComparison.OrdinalIgnoreCase) ? null : fallbackIp,
+            };
             BeginAttemptUi(PanelState.Joining, $"Connecting to {ip}:{port} (Steam)…");
             init.StartAsJoiner(ip, port, playerName);
             ApplySelectedLocalConfigToUi(init, updateServerPort: false);

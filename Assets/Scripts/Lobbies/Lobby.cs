@@ -46,11 +46,34 @@ namespace BackroomsSurvival.Lobbies
         public readonly string Host;
         public readonly int Port;
 
-        public LobbyEndpoint(string host, int port)
+        /// <summary>
+        /// Otra dirección del MISMO host, para reintentar si la principal no contesta. Hoy la
+        /// llena `bs_lan_ip`: cuando un host con mapeo UPnP confirmado anuncia su IP pública, un
+        /// joiner de la misma red sólo llega ahí si el router hace hairpin (NAT loopback), y
+        /// muchos routers domésticos no lo hacen. El puerto es el mismo.
+        ///
+        /// **No forma parte de la identidad del endpoint** — <see cref="Equals"/> y
+        /// <see cref="GetHashCode"/> siguen mirando sólo host y puerto. Dos fichas del mismo
+        /// servidor, una leída antes de que el host publicara su LAN y otra después, tienen que
+        /// seguir siendo el mismo destino; si la alternativa contara, la selección del navegador
+        /// se perdería sola en el refresco siguiente.
+        /// </summary>
+        public readonly string Alternate;
+
+        public LobbyEndpoint(string host, int port) : this(host, port, null)
+        {
+        }
+
+        public LobbyEndpoint(string host, int port, string alternate)
         {
             Host = string.IsNullOrWhiteSpace(host) ? null : host.Trim();
             Port = port;
+            Alternate = string.IsNullOrWhiteSpace(alternate) ? null : alternate.Trim();
         }
+
+        /// <summary>Hay una segunda dirección a la que probar, y no es la misma que la primera.</summary>
+        public bool HasAlternate =>
+            Alternate != null && !string.Equals(Alternate, Host, StringComparison.OrdinalIgnoreCase);
 
         /// El rango es el de un puerto utilizable; el 0 es "que elija el sistema" y nunca es un
         /// destino válido al que llamar.
@@ -248,6 +271,36 @@ namespace BackroomsSurvival.Lobbies
             double updatedAtUnix,
             float ttlSeconds,
             LobbyStatus status,
+            out Lobby lobby) =>
+            TryCreate(id, name, version, players, maxPlayers, map, region, pingMs, privacy,
+                requiresPassword, host, port, updatedAtUnix, ttlSeconds, status, null, out lobby);
+
+        /// <summary>
+        /// Igual, con una dirección alternativa del mismo host (ver
+        /// <see cref="LobbyEndpoint.Alternate"/>).
+        ///
+        /// Es una SOBRECARGA y no un parámetro opcional porque `out lobby` va al final, y C# no
+        /// admite un opcional delante de un obligatorio. Y no es un `Attach` posterior porque
+        /// <see cref="Lobby"/> es inmutable a propósito: un refresh sustituye la lista entera, así
+        /// que la UI nunca pinta una ficha a medio actualizar.
+        /// </summary>
+        public static bool TryCreate(
+            string id,
+            string name,
+            string version,
+            int players,
+            int maxPlayers,
+            string map,
+            string region,
+            int pingMs,
+            LobbyPrivacy privacy,
+            bool requiresPassword,
+            string host,
+            int port,
+            double updatedAtUnix,
+            float ttlSeconds,
+            LobbyStatus status,
+            string alternateHost,
             out Lobby lobby)
         {
             lobby = null;
@@ -270,7 +323,7 @@ namespace BackroomsSurvival.Lobbies
 
             lobby = new Lobby(
                 lobbyId, safeName, safeVersion, safePlayers, safeMax, safeMap, safeRegion,
-                safePing, privacy, requiresPassword, new LobbyEndpoint(host, port),
+                safePing, privacy, requiresPassword, new LobbyEndpoint(host, port, alternateHost),
                 safeUpdated, safeTtl, status);
             return true;
         }

@@ -171,6 +171,7 @@ namespace BackroomsSurvival.Net
                         Map = lobby.GetData(MapKey),
                         State = lobby.GetData(StateKey),
                         AnnouncedAt = lobby.GetData(AnnouncedAtKey),
+                        LanIp = lobby.GetData(LanIpKey),
                         MemberCount = lobby.MemberCount,
                         MemberCapacity = lobby.MaxMembers,
                     });

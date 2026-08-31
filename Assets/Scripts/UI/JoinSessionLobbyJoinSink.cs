@@ -45,7 +45,10 @@ namespace BackroomsSurvival.UI
             }
 
             string name = string.IsNullOrWhiteSpace(playerName) ? "Player" : playerName.Trim();
-            if (!JoinSessionUI.TryBeginSteamJoin(endpoint.Host, endpoint.Port, name))
+            // `endpoint.Alternate` es la LAN que anunció el host (`bs_lan_ip`). El primer intento
+            // va SIEMPRE a lo anunciado; la alternativa sólo la usa el [Retry].
+            if (!JoinSessionUI.TryBeginSteamJoin(endpoint.Host, endpoint.Port, name,
+                    endpoint.HasAlternate ? endpoint.Alternate : null))
             {
                 failure = "No hay panel de conexión vivo.";
                 return false;

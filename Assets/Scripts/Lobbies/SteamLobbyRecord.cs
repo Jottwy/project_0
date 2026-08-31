@@ -25,6 +25,10 @@ namespace BackroomsSurvival.Lobbies
         public string State;
         public string AnnouncedAt;
 
+        /// `bs_lan_ip`: la dirección LAN del host, cuando la publica. Sólo sirve si el joiner está
+        /// en la misma red; ver <see cref="LobbyEndpoint.Alternate"/>.
+        public string LanIp;
+
         /// Lo que Steam sabe por sí mismo, sin metadatos. Es el respaldo cuando el host no
         /// publicó contadores.
         public int MemberCount;
@@ -95,6 +99,10 @@ namespace BackroomsSurvival.Lobbies
                 nowUnix,
                 LobbyTtlSeconds,
                 ParseState(record.State),
+                // No se valida: es una dirección de LAN, así que ni es pública ni tiene por qué
+                // parecerlo. Lo único que se hace con ella es reintentar cuando la principal no
+                // contestó, y para entonces no hay nada que perder.
+                record.LanIp,
                 out lobby);
         }
 
