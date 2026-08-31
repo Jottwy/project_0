@@ -430,6 +430,13 @@ namespace BackroomsSurvival.Net
         public long tick;
         public long worldSeed;
         public long worldRevision;
+        /// <summary>
+        /// ADR-111 — el `PeerId` AUTORITATIVO de este cliente: el que el host asignó en el
+        /// handshake, no el `NET_ID` que Unity propuso al lanzar el backend. 0 = backend anterior
+        /// a la v53 (campo ausente ⇒ default de C#), y <see cref="NetIdentity.Adopt"/> lo rechaza
+        /// justamente por eso.
+        /// </summary>
+        public int localPlayerId;
         public LocalPlayerMsg localPlayer = new LocalPlayerMsg();
         public List<RemotePlayerMsg> remotePlayers = new List<RemotePlayerMsg>();
         public List<ChunkViewMsg> visibleChunks = new List<ChunkViewMsg>();
@@ -462,6 +469,7 @@ namespace BackroomsSurvival.Net
             {
                 var k = r.ReadKey();
                 if (MsgPackReader.Is(k, "tick")) ws.tick = r.ReadInt();
+                else if (MsgPackReader.Is(k, "local_player_id")) ws.localPlayerId = (int)r.ReadInt();
                 else if (MsgPackReader.Is(k, "world_seed")) ws.worldSeed = r.ReadInt();
                 else if (MsgPackReader.Is(k, "world_revision")) ws.worldRevision = r.ReadInt();
                 else if (MsgPackReader.Is(k, "local_player")) ws.localPlayer = LocalPlayerMsg.Parse(r);

@@ -222,7 +222,7 @@ namespace BackroomsSurvival.Net
         /// </summary>
         public static long MintDropId()
         {
-            int netId = NetworkInitializer.Instance != null ? NetworkInitializer.Instance.LastSelectedNetId : 0;
+            int netId = NetIdentity.Local;
             return (long)Mathf.Max(1, netId) * 1000000000L + (++_dropCounter);
         }
 

@@ -7286,6 +7286,10 @@ fn build_world_state(
         tick,
         world_seed: world.seed,
         world_revision: world.revision,
+        // ADR-111: la identidad autoritativa sale de `net`, NUNCA de `player.id`. Son la misma
+        // cosa sólo después de que el arm de `PeerConnected` realinee `player.id = net.local_id`;
+        // entre el ack y ese realineo, `player.id` todavía es el propuesto.
+        local_player_id: net.local_id,
         local_player: LocalPlayerState {
             position: player.position.to_array(),
             rotation: player.rotation,

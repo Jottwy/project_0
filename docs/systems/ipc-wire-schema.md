@@ -803,3 +803,110 @@ fragmentación.
 
 `WireSchema.Expected` (C#) a 52 en el mismo commit — lo vigila
 `the_csharp_mirror_declares_the_same_wire_schema_version`.
+
+## v53 — QUEMADO: nunca existió como estado commiteado
+
+ADR-111 se escribió declarando **v52 → v53**, y es lo que había en el árbol mientras se implementaba.
+No llegó a existir como estado commiteado: con cuatro sesiones sobre el mismo índice, el bump a 53
+—sin estacionar todavía— quedó absorbido dentro del commit de la paginación de datagramas, que lo
+subió a **54** (`3fe24c3c`). O sea que **54 identifica un build que NO lleva `local_player_id`**.
+
+Reutilizar ese 54 para este campo lo dejaría nombrando dos protocolos distintos, que es exactamente
+lo que la puerta existe para impedir. Por eso este cambio entra como **55**. El 53 queda como número
+quemado: no lo usó nadie y no lo va a usar nadie.
+
+Enmienda 1 de ADR-111 lo registra.
+
+## v54 — paginación del resto de portadores, y el techo de 1200 B como rechazo (ADR-113, 2026-08-31)
+
+**`ChunkSyncData.generation: u32`** y **`page`/`page_count` en `SprayPlaced` (0x52) y
+`SprayPlaceRequest` (0x51)**, los tres aditivos y con `serde(default)`.
+
+**Por qué el bump, si el formato es aditivo.** Precisamente porque un decodificador anterior **NO
+falla**: aplicaría una página suelta como si fuera el mensaje entero. Un chunk con un tercio de sus
+entidades, o una pintada con un tercio de sus trazos, dados por buenos y en silencio. Aquí la
+puerta de versión no es burocracia, es el único mecanismo que impide que un build viejo entre en
+una sesión nueva.
+
+**Qué faltaba tras el v52.** Aquél paginó `WorldSyncChunk`; el techo seguía siendo un `warn` y sólo
+para los caminos FIABLES. Medido antes de tocar nada, con el payload real y la cabecera de 12 B
+incluida: `ChunkState` (0x11) **1094 B VACÍO**, 2078 con 13 entidades, 4460 con 40 · `ChunkTransfer`
+(0x30) igual y encima fiable · `PeerList` (0x07) **1617 B con 16 peers**, 4983 con 50 ·
+`HandshakeAck` (0x03) **1791 B con 16** · `SprayPlaced`/`SprayPlaceRequest` **1923 B en su peor caso
+declarado**, fiables · `CorpseList` (0x46) **1207 B con UN cadáver de 35 pilas** · `VoiceFrame`
+(0x50) hasta 1439 B, y **el tamaño lo decide el cliente**.
+
+**Por qué `generation` y no basta con `page`/`page_count`.** `WorldSyncChunk` ya viajaba estampado
+con `world_revision` y el ensamblador la usaba de clave. `ChunkState` y `ChunkTransfer` no llevan
+ninguna: son instantáneas SIN versionado. Si la ronda N entrega su página 0 y pierde el resto, y la
+N+1 pierde su página 0 y entrega el resto, los índices no se pisan y el ensamblador cose un chunk
+**QUIMERA** — una lista de entidades que nunca existió, aplicada como buena porque
+`apply_chunk_sync` es un reemplazo verbatim. «El índice nuevo pisa al viejo» NO basta. La estampa el
+PAGINADOR y nunca `chunk_to_sync_data`: dentro del hash del gate de F0.8 cambiaría en cada ronda y
+lo dejaría abierto para siempre.
+
+**Las pintadas se parten por TRAZOS**, que es la unidad atómica del formato (el blob `points` de un
+trazo no se puede partir sin inventar un índice dentro de él), con reensamblado todo-o-nada por
+`spray.id` / `place_id`. Bajar los topes no era alternativa: para que el peor caso cupiera en 1200 B
+habría que dejar `MAX_STROKES_PER_SPRAY` en 3 o `MAX_POINTS_PER_SPRAY` en 150, que es recortar el
+dibujo, no el transporte.
+
+**Lo que NO bumpea, y por qué.** `PeerList` y `SprayDraft` (0x54) se trocean **sin campos nuevos y
+sin ensamblador**: su receptor ya es aditivo —`PeerList` inserta y refresca y **nunca borra**— así
+que cada trozo es un mensaje completo, aplicable suelto, desordenado y repetido. El `HandshakeAck`
+se **recorta** con log en vez de paginarse: es la única respuesta al handshake y no tiene reintento
+propio, así que obligar al joiner a reensamblar N datagramas ANTES de estar conectado sería el peor
+momento posible. Y un cadáver que no cabe se parte en varias ENTRADAS del mismo roster, mismo `id` y
+tramos disjuntos, que el receptor une por id — no hace falta wire nuevo porque el roster se aplica
+reemplazando la lista completa de una generación.
+
+**El techo pasa de aviso a rechazo.** `send_datagram` —único punto de salida— devuelve `bool` y
+descarta por encima de `SAFE_DATAGRAM_BYTES` **antes del `send_to`**, fiable o no. Los caminos
+fiables miran ese retorno y **no encolan lo rechazado**: reenviarlo cinco veces daría cinco rechazos
+idénticos y `MAX_RETRIES` expulsaría al peer.
+
+⚠️ **Trampa de medición, para quien toque esto.** Los tamaños se miden **codificando con el sobre
+real de cada portador**, y contra el PEOR índice posible: msgpack escribe cada valor con el prefijo
+más corto que le sirva, así que un `first_index` de 40 ocupa 1 byte y uno de 900 ocupa 3, y un blob
+de 200 B lleva un byte de longitud y uno de 300 lleva dos. Estimar con el sobre vacío y el primer
+índice producía trozos de **1201 B**.
+
+`WireSchema.Expected` (C#) a 54 en el mismo commit (`3fe24c3c`) — lo vigila
+`the_csharp_mirror_declares_the_same_wire_schema_version`. Esta entrada llega DESPUÉS de ese commit
+y no dentro de él: deuda de proceso mía, señalada por la sesión de ADR-111.
+
+## v55 — `world_state.local_player_id`: la identidad autoritativa del cliente (ADR-111, 2026-08-31)
+
+**`WorldState.local_player_id: u16`**, en la RAÍZ del mensaje (no dentro de `local_player`) y
+**serializado siempre**, sin `skip_serializing_if`.
+
+**Qué lleva.** `net.local_id`, o sea el `PeerId` que el host asignó en el handshake
+(`allocate_peer_id` → `self.local_id = assigned_id`) y con el que este backend firma cada paquete y
+cada `owner_id`. **No** `player.id`: entre el `HandshakeAck` y el arm de `PeerConnected` que hace
+`player.id = net.local_id`, el avatar todavía arrastra el id propuesto.
+
+**Por qué existe.** Era el único dato de la sesión que el cliente **no podía deducir de ningún otro
+campo**. Unity sólo conocía el `NET_ID` que ella misma propuso al lanzar el backend, que es una
+petición y no una identidad; y `remote_players` no ayuda porque un nodo nunca se registra a sí mismo
+como peer, así que el id local está ausente de esa lista por construcción. Los daños concretos que
+esto causaba —dueño equivocado de las reclamaciones de construcción, colisión de los prefijos de id
+de petición entre dos clientes, y la guarda de auto-golpe del PvP disparándose contra el host— están
+en ADR-111.
+
+**Por qué en la raíz.** No es estado del avatar: `LocalPlayerState` se reconstruye entero desde el
+`Player` en cada tick, y la identidad de red es del PROCESO.
+
+**Por qué siempre, y no omitido cuando «no se sabe».** Un campo ausente decodifica a 0 en C#, o sea
+indistinguible de un backend viejo. El campo dice siempre la verdad que el backend tiene en ese
+instante: un joiner que aún no ha recibido el ack reporta el id propuesto, porque ése ES su
+`local_id` mientras tanto, y se corrige solo en el siguiente snapshot. La política del cliente para
+esa ventana es explícita (`NetIdentity.Resolve`): el asignado en cuanto se conoce, el propuesto
+mientras tanto, y el propuesto no vuelve a ganar jamás.
+
+**Lado cliente.** `NetIdentity` (`Assets/Scripts/Network/NetIdentity.cs`) es el único dueño; adopta
+en el hilo de red al parsear el snapshot (no al drenarlo: los acuñadores de id de petición son
+estáticos y no drenan ninguna cola) y olvida al ABRIR conexión IPC, no al cerrarla. Rechaza 0 y todo
+lo que no cabe en un `u16`.
+
+`WireSchema.Expected` (C#) a 55 en el mismo commit — lo vigila
+`the_csharp_mirror_declares_the_same_wire_schema_version`.

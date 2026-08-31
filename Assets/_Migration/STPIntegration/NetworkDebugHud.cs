@@ -83,7 +83,14 @@ namespace BackroomsSurvival.Migration.STPIntegration
             {
                 sb.Append("role: ").Append(init.CurrentRole)
                   .Append("  (effective: ").Append(init.LastEffectiveRole).AppendLine(")");
-                sb.Append("self NET_ID: ").AppendLine(init.LastSelectedNetId.ToString());
+                // ADR-111: los DOS, y etiquetados. Un HUD que enseña sólo el propuesto es lo que
+                // hizo que el desajuste entre propuesto y asignado tardara tanto en verse.
+                sb.Append("self id: ").Append(BackroomsSurvival.Net.NetIdentity.Local)
+                  .Append("  (asignado: ")
+                  .Append(BackroomsSurvival.Net.NetIdentity.Assigned == 0
+                      ? "<sin snapshot>"
+                      : BackroomsSurvival.Net.NetIdentity.Assigned.ToString())
+                  .Append(", propuesto NET_ID: ").Append(init.LastSelectedNetId).AppendLine(")");
                 sb.Append("IPC: ").Append(init.LastSelectedIpcAddress).Append(':').Append(init.LastSelectedIpcPort)
                   .Append("   connected: ").AppendLine(connected ? "YES" : "no");
                 sb.Append("UDP NET_PORT (local): ").AppendLine(init.LastSelectedNetPort.ToString());

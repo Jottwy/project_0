@@ -195,12 +195,18 @@ namespace BackroomsSurvival.Gameplay.Building
         }
 
         /// <summary>
-        /// El `PeerId` de este cliente — el mismo `NET_ID` que el backend estampa en la cabecera de
-        /// cada paquete y que acaba en `owner_id`. 0 si no hay sesión: nunca dueño de nada.
+        /// El `PeerId` de este cliente — el mismo que el backend estampa en la cabecera de cada
+        /// paquete y que acaba en `owner_id`. 0 si no hay sesión: nunca dueño de nada.
+        ///
+        /// ADR-111: sale de <see cref="NetIdentity.Local"/>, es decir del id que el host ASIGNÓ,
+        /// no del `NET_ID` que Unity propuso. La diferencia no es cosmética aquí: esto se compara
+        /// contra `owner_id`, que el host escribe con el asignado. Con el propuesto (1 por
+        /// defecto, el id del host) un joiner se declaraba dueño de las reclamaciones DEL HOST y,
+        /// a la vez, intruso en las suyas.
         /// </summary>
         public static ushort LocalPeerId()
         {
-            int netId = NetworkInitializer.Instance != null ? NetworkInitializer.Instance.LastSelectedNetId : 0;
+            int netId = NetIdentity.Local;
             return netId > 0 && netId <= ushort.MaxValue ? (ushort)netId : (ushort)0;
         }
 

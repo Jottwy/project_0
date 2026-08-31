@@ -49,6 +49,13 @@ namespace BackroomsSurvival.Net
         public string StatusMessage { get; private set; } = "";
         public int LastSelectedIpcPort { get; private set; }
         public int LastSelectedNetPort { get; private set; }
+        /// <summary>
+        /// ADR-111 — el <c>NET_ID</c> **PROPUESTO**: lo que Unity pidió al lanzar su backend, no
+        /// lo que el host asignó. NO es identidad autoritativa y no debe compararse con ningún
+        /// id venido del backend (`owner_id`, ids de `remote_players`, `victim_id`) ni usarse
+        /// para particionar ids de petición. Para eso está <see cref="NetIdentity.Local"/>.
+        /// Legítimo sólo para hablar del LANZAMIENTO (logs de configuración, el HUD de depuración).
+        /// </summary>
         public int LastSelectedNetId { get; private set; }
         /// <summary>World seed handed to the backend as WORLD_SEED. Observable so the
         /// port-passed-as-seed regression stays covered by a test.</summary>

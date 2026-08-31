@@ -103,7 +103,7 @@ namespace BackroomsSurvival.Net
         // host can dedup a reliable retransmit (process_stp_build_add).
         private long NextAddId()
         {
-            int netId = NetworkInitializer.Instance != null ? NetworkInitializer.Instance.LastSelectedNetId : 0;
+            int netId = NetIdentity.Local;
             return (long)Mathf.Max(1, netId) * 1000000000L + (++_addCounter);
         }
 

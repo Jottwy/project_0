@@ -154,7 +154,7 @@ namespace BackroomsSurvival.Gameplay.Building
         /// que dos clientes no colisionen y el host pueda deduplicar una retransmisión.</summary>
         private long NextAddId()
         {
-            int netId = NetworkInitializer.Instance != null ? NetworkInitializer.Instance.LastSelectedNetId : 0;
+            int netId = NetIdentity.Local;
             return (long)Mathf.Max(1, netId) * 1000000000L + (++_addCounter);
         }
 

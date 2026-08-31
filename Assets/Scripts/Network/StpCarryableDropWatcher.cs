@@ -168,7 +168,7 @@ namespace BackroomsSurvival.Net
         // Globally-unique per logical drop: NET_ID-prefixed counter (host dedups via drop_id).
         private long NextDropId()
         {
-            int netId = NetworkInitializer.Instance != null ? NetworkInitializer.Instance.LastSelectedNetId : 0;
+            int netId = NetIdentity.Local;
             return (long)Mathf.Max(1, netId) * 1000000000L + (++_dropCounter);
         }
 

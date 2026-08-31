@@ -75,7 +75,7 @@ namespace BackroomsSurvival.Net
         // players chopping the same tree never double-count.
         private static long NextHitId()
         {
-            int netId = NetworkInitializer.Instance != null ? NetworkInitializer.Instance.LastSelectedNetId : 0;
+            int netId = NetIdentity.Local;
             return (long)Mathf.Max(1, netId) * 1000000000L + (++_hitCounter);
         }
     }

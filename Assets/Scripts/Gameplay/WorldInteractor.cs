@@ -48,7 +48,7 @@ namespace BackroomsSurvival.Gameplay
                 return;
 
             long requestId = MakeRequestId();
-            int selfId = NetworkInitializer.Instance != null ? NetworkInitializer.Instance.LastSelectedNetId : 0;
+            int selfId = NetIdentity.Local;
             Debug.Log($"MPTRACE step=AI event=unity_interact_attempt self_id={selfId} target_id={target.id} kind={target.kind}");
 
             ipc.SendWorldInteractRequest(requestId, target.id, target.kind, "pickup", cam.transform.position);
@@ -59,7 +59,7 @@ namespace BackroomsSurvival.Gameplay
         private void Drop(IPCClient ipc, Camera cam)
         {
             long requestId = MakeRequestId();
-            int selfId = NetworkInitializer.Instance != null ? NetworkInitializer.Instance.LastSelectedNetId : 0;
+            int selfId = NetIdentity.Local;
 
             // Place it a little in front of and below the eyes so it lands near the floor
             // ahead of the player rather than inside the camera. target_id=0 (no existing
@@ -74,7 +74,7 @@ namespace BackroomsSurvival.Gameplay
 
         private long MakeRequestId()
         {
-            int selfId = NetworkInitializer.Instance != null ? NetworkInitializer.Instance.LastSelectedNetId : 0;
+            int selfId = NetIdentity.Local;
             long local = _nextRequestId++;
             return ((long)Mathf.Max(1, selfId) * 1000000000L) + local;
         }

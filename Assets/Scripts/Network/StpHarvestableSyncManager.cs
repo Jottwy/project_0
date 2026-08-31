@@ -321,7 +321,7 @@ namespace BackroomsSurvival.Net
 
         private long NextDropId()
         {
-            int netId = NetworkInitializer.Instance != null ? NetworkInitializer.Instance.LastSelectedNetId : 0;
+            int netId = NetIdentity.Local;
             return (long)Mathf.Max(1, netId) * 1000000000L + 500000000L + (++_dropCounter);
         }
 

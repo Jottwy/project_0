@@ -239,7 +239,7 @@ namespace BackroomsSurvival.Net
         // never collide and the host can dedup a reliable retransmit (process_stp_place).
         private long NextPlaceId()
         {
-            int netId = NetworkInitializer.Instance != null ? NetworkInitializer.Instance.LastSelectedNetId : 0;
+            int netId = NetIdentity.Local;
             return (long)Mathf.Max(1, netId) * 1000000000L + (++_placeCounter);
         }
 

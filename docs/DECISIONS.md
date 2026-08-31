@@ -11227,3 +11227,37 @@ aunque sean 557 B por chunk que casi nunca cambian: eso es WorldGen y es otra de
 - **NO verificado en partida.** Lo probado son las reglas y el transporte sobre sockets reales de
   loopback. La medición física (`oversized` = 0 en un log de sesión) sigue pendiente de una partida
   entre máquinas.
+
+---
+
+## ADR-111 — Enmienda 1: el número de wire NO es el 53, y por qué eso importa (2026-08-31)
+
+**Qué cambia.** D1 declaraba **v52 → v53**. El campo `local_player_id` entra como **v55**. Nada más
+del ADR se toca: ni el campo, ni su semántica, ni la política de la ventana pre-ack, ni el reparto
+propuesto/asignado.
+
+**Por qué.** El 53 nunca llegó a existir como estado commiteado. Con cuatro sesiones sobre el mismo
+índice de git, el bump a 53 —escrito en el árbol pero sin estacionar— quedó **absorbido dentro del
+commit de otra tarea**, la paginación de datagramas contra la MTU, que lo subió a **54**
+(`3fe24c3c`). El resultado es que **54 nombra un build que NO lleva `local_player_id`**: paginación
+sí, identidad autoritativa no.
+
+**Por qué no basta con reusar el 54.** La puerta de ADR-061 no compara capacidades, compara un
+número, y lo hace por igualdad exacta. Dejar que 54 nombrase dos protocolos distintos —uno con el
+campo y otro sin él— convierte la puerta en un sello que deja pasar justo el caso que existe para
+cortar: dos builds desincronizados que se declaran iguales. Un número por protocolo no es
+burocracia; es la única propiedad que hace útil la comparación.
+
+**El 53 queda quemado.** No lo usó nadie, no lo usará nadie, y la guía de wire lo dice en su propia
+entrada para que el hueco no se lea como una entrada perdida.
+
+**La lección, que es de proceso y no de red.** Un cambio de contrato sin estacionar es un cambio que
+**otro puede commitear por ti**, con su mensaje y dentro de su razonamiento. No fue un error de
+nadie: la sesión que subió a 54 hizo lo correcto —leer el valor del árbol y sumarle uno— y avisó de
+que lo hacía. Lo que falla es dejar una constante de protocolo modificada y sin commitear en un
+índice compartido. Regla práctica: **el bump y su ADR viajan juntos y se estacionan pronto**, o el
+número deja de significar lo que su documento dice.
+
+**Sin cambio de comportamiento.** El campo, su lado cliente (`NetIdentity`) y sus tests son los
+mismos que ya estaban verificados; sólo se mueve el número de la puerta, en las dos puntas a la vez
+(`backend/src/ipc/server.rs` y `Assets/Scripts/Network/WireSchema.cs`), como exige ADR-061.

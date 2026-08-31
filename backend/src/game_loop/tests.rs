@@ -12830,3 +12830,77 @@ async fn a_silent_connect_timeout_ends_the_session_with_an_actionable_reason() {
         "y nombrar la causa mas frecuente para que se pueda actuar: {reason}"
     );
 }
+
+// ─────────────────────── ADR-111 · identidad autoritativa en el snapshot ───────────────────────
+
+/// **EL TEST QUE REPRODUCE EL FALLO DE RAÍZ.** Un joiner arranca con el id que Unity le
+/// **propuso** por `NET_ID` (por defecto 1, que es justo el del host), el host le **asigna** otro
+/// en el handshake y el backend lo adopta (`self.local_id = assigned_id`). Antes de ADR-111 el
+/// snapshot no llevaba ningún campo con esa identidad, así que Unity se quedaba con la propuesta
+/// para siempre: filtraba el roster contra ella, minteaba los ids de petición con ella y
+/// comparaba los `owner_id` de las reclamaciones con ella.
+///
+/// `player.id` se deja adrede en el valor viejo: es el estado exacto entre el ack y el arm de
+/// `PeerConnected` que lo realinea, y el campo tiene que salir de `net`, no del avatar.
+#[tokio::test]
+async fn world_state_reports_the_assigned_id_not_the_one_unity_proposed() {
+    let mut net = NetworkManager::bind(0, 1, 42, false).await.unwrap();
+    let mut world = World::new(42);
+    // Lo que el host asignó de verdad en el handshake.
+    net.local_id = 4242;
+    // Lo que Unity propuso, y lo que el avatar todavía arrastra en esa ventana.
+    let player = Player::new(1, "Joiner");
+
+    let ws = build_world_state(7, &player, &mut world, &net, 0);
+
+    assert_eq!(
+        ws.local_player_id, 4242,
+        "el snapshot tiene que llevar el id ASIGNADO por el host; con el propuesto (1) el joiner \
+         se cree el host: borra al host de su roster, choca los ids de petición con los de otro \
+         jugador y se declara dueño de las reclamaciones ajenas"
+    );
+    assert_ne!(
+        ws.local_player_id, player.id,
+        "y sale de `net.local_id`, NO de `player.id`: entre el ack y el realineo de \
+         `PeerConnected` el avatar todavía lleva el propuesto"
+    );
+}
+
+/// El host no recibe asignación de nadie: la suya es la que él mismo se dio al hacer bind. El
+/// campo tiene que decirlo igual — Unity no puede tener dos caminos según el rol.
+#[tokio::test]
+async fn world_state_reports_the_hosts_own_id() {
+    let net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let mut world = World::new(42);
+    let player = Player::new(1, "Host");
+
+    let ws = build_world_state(3, &player, &mut world, &net, 0);
+
+    assert_eq!(ws.local_player_id, net.local_id);
+    assert_eq!(ws.local_player_id, 1);
+}
+
+/// Dos jugadores distintos, dos identidades distintas EN EL SNAPSHOT. Es la propiedad que hace
+/// que los prefijos de id de petición (`NET_ID * 1e9 + contador`) no colisionen: con la propuesta
+/// los dos joiners podían salir con el mismo prefijo y el host se tragaba en silencio, como
+/// duplicada, la acción del segundo.
+#[tokio::test]
+async fn two_backends_report_two_different_identities() {
+    let mut a = NetworkManager::bind(0, 1, 42, false).await.unwrap();
+    let mut b = NetworkManager::bind(0, 1, 42, false).await.unwrap();
+    a.local_id = 2;
+    b.local_id = 3;
+    let mut world_a = World::new(42);
+    let mut world_b = World::new(42);
+    // Los dos arrancaron con la MISMA propuesta (1), que es el caso que colisionaba.
+    let player_a = Player::new(1, "A");
+    let player_b = Player::new(1, "B");
+
+    let ws_a = build_world_state(1, &player_a, &mut world_a, &a, 0);
+    let ws_b = build_world_state(1, &player_b, &mut world_b, &b, 0);
+
+    assert_ne!(
+        ws_a.local_player_id, ws_b.local_player_id,
+        "dos backends con la misma propuesta tienen que reportar identidades distintas"
+    );
+}

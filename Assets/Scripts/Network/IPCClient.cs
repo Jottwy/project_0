@@ -497,6 +497,11 @@ namespace BackroomsSurvival.Net
                     _firstFrameOfConnection = true;
                     _schemaMismatch = false;
 
+                    // ADR-111: y por el mismo motivo, la identidad asignada. Cada sesión lanza un
+                    // backend nuevo al que el host puede darle OTRO id; arrastrar el de la sesión
+                    // anterior es el mismo fallo de id obsoleto, una partida más tarde.
+                    NetIdentity.ResetForNewConnection();
+
                     ReadFrames(_stream);
                 }
                 catch (ThreadAbortException) { return; }
@@ -592,6 +597,12 @@ namespace BackroomsSurvival.Net
                     break;
                 case ProtocolMessageTypes.WorldState:
                     var ws = WorldStateMsg.Parse(r, remaining);
+                    // ADR-111: la identidad autoritativa, en cuanto llega. Va AQUÍ y no en el
+                    // consumidor del hilo principal porque los ids de petición se acuñan desde
+                    // sitios estáticos que no drenan ninguna cola (MintDropId, LocalPeerId), y
+                    // porque el retraso de un frame es justo la ventana en la que un joiner
+                    // recién asignado seguiría actuando como el host.
+                    NetIdentity.Adopt(ws.localPlayerId);
                     // Unchecked delta rather than `TickCount >= nextTick`: TickCount wraps every
                     // ~24.9 days of uptime, and past the wrap the plain comparison latches — the
                     // trace either goes silent or fires on every single snapshot. Same idiom and
@@ -600,7 +611,10 @@ namespace BackroomsSurvival.Net
                     {
                         var ids = ws.remotePlayers.ConvertAll(rp => rp.id.ToString());
                         Debug.Log($"[IPCClient] Parsed remote_players count={ws.remotePlayers.Count} ids=[{string.Join(",", ids)}]");
-                        int selfId = NetworkInitializer.Instance != null ? NetworkInitializer.Instance.LastSelectedNetId : 0;
+                        // ADR-111: el id AUTORITATIVO, y leído del propio snapshot — este bloque
+                        // corre en el hilo de red, donde tocar `NetworkInitializer.Instance` (un
+                        // UnityEngine.Object) no es legal.
+                        int selfId = ws.localPlayerId;
                         Debug.Log($"MPTRACE step=J event=unity_parse_world_state self_id={selfId} sender_id=<none> assigned_id=<none> peer_id=<none> endpoint={serverAddress}:{port} peer_count=<unknown> remote_players_count={ws.remotePlayers.Count} remote_players_ids=[{string.Join(",", ids)}]");
                         Debug.Log($"MPTRACE step=AA event=unity_parse_world_snapshot seed={ws.worldSeed} revision={ws.worldRevision} chunks={ws.visibleChunks.Count} entities={ws.visibleEntities.Count} items={ws.visibleItems.Count}");
                         _lastRemotePlayersLogTick = Environment.TickCount;

@@ -51,9 +51,12 @@ namespace BackroomsSurvival.Net
             if (_victimId <= 0 || !connected)
                 return DamageResult.Ignored;
 
-            int attackerId = NetworkInitializer.Instance != null
-                ? NetworkInitializer.Instance.LastSelectedNetId
-                : 0;
+            // ADR-111: el ASIGNADO. El backend ignora este `attacker_id` y usa su propio
+            // `net.local_id` (game_loop.rs), así que aquí sólo gobierna la guarda de auto-golpe
+            // de abajo — y con el id propuesto esa guarda mentía: un joiner con el defecto (1)
+            // creía estar pegándose a sí mismo cada vez que apuntaba al host, y el disparo no
+            // llegaba a salir.
+            int attackerId = NetIdentity.Local;
             if (attackerId <= 0 || attackerId == _victimId)
                 return DamageResult.Ignored;
 

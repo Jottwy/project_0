@@ -435,9 +435,7 @@ namespace BackroomsSurvival.Gameplay
         private void EnsurePlaceId()
         {
             if (_activePlaceId != 0) return;
-            int selfId = NetworkInitializer.Instance != null
-                ? NetworkInitializer.Instance.LastSelectedNetId
-                : 0;
+            int selfId = NetIdentity.Local;
             _activePlaceId = ((long)Mathf.Max(1, selfId) * 1000000000L) + _nextPlaceId++;
         }
 

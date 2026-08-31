@@ -571,6 +571,23 @@ pub struct WorldState {
     pub tick: u64,
     pub world_seed: u64,
     pub world_revision: u64,
+    /// ADR-111 — **el id AUTORITATIVO de este jugador**, o sea `net.local_id`: el que el host
+    /// asignó en el handshake (`allocate_peer_id` → `self.local_id = assigned_id`) y el mismo que
+    /// este backend estampa en la cabecera de cada paquete y en cada `owner_id`.
+    ///
+    /// Existe porque Unity sólo conocía el id que ella misma **propuso** por `NET_ID`, y el
+    /// propuesto y el asignado no tienen por qué coincidir: con el defecto (1) un joiner se creía
+    /// el host. `remote_players` no servía para deducirlo — un nodo nunca se registra a sí mismo
+    /// como peer, así que el id local no aparece en esa lista por construcción.
+    ///
+    /// Va aquí y no en `local_player` porque no es estado del avatar: es la identidad de red del
+    /// proceso, y `LocalPlayerState` se reconstruye entero cada tick desde el `Player`.
+    ///
+    /// **Antes del ack del handshake un joiner sigue reportando el propuesto** (es literalmente
+    /// su `local_id` en ese instante): el campo dice la verdad que el backend tiene, y se corrige
+    /// solo en el siguiente snapshot tras el ack. No se manda 0 en ese hueco a propósito — un 0
+    /// sería indistinguible de «campo ausente» para un cliente viejo.
+    pub local_player_id: u16,
     pub local_player: LocalPlayerState,
     pub remote_players: Vec<RemotePlayerState>,
     pub visible_chunks: Vec<ChunkView>,
@@ -1046,6 +1063,7 @@ mod tests {
             tick: 42,
             world_seed: 42,
             world_revision: 1,
+            local_player_id: 1,
             local_player: LocalPlayerState {
                 position: [1.0, 1.8, 2.0],
                 rotation: 90.0,
@@ -1080,12 +1098,56 @@ mod tests {
         }
     }
 
+    /// ADR-111 — el id autoritativo tiene que SOBREVIVIR la codificación, no sólo existir en la
+    /// estructura. Es el único dato del snapshot que Unity no puede recalcular ni deducir de
+    /// ningún otro campo: `remote_players` excluye al local por construcción.
+    #[test]
+    fn world_state_carries_the_authoritative_local_id_over_the_wire() {
+        let ws = WorldState {
+            tick: 1,
+            world_seed: 42,
+            world_revision: 1,
+            local_player_id: 4242,
+            local_player: LocalPlayerState {
+                position: [0.0, 0.0, 0.0],
+                rotation: 0.0,
+                stats: StatsView {
+                    health: 100.0,
+                    hunger: 100.0,
+                    thirst: 100.0,
+                    sanity: 100.0,
+                    stamina: 100.0,
+                },
+                speed_modifier: 1.0,
+                inventory_changed: false,
+                ack_input_seq: 0,
+            },
+            remote_players: vec![],
+            visible_chunks: vec![],
+            visible_entities: vec![],
+            visible_items: vec![],
+            vertical_debug_markers: vec![],
+            stp_items: vec![],
+            stp_buildings: vec![],
+            stp_carryables: vec![],
+            stp_harvestables: vec![],
+            visible_corpses: vec![],
+        };
+        let frame = encode(&ServerMessage::WorldState(ws)).unwrap();
+        let decoded: ServerMessage = decode(&frame[4..]).unwrap();
+        match decoded {
+            ServerMessage::WorldState(ws) => assert_eq!(ws.local_player_id, 4242),
+            _ => panic!("wrong variant"),
+        }
+    }
+
     #[test]
     fn world_state_with_chunks_and_entities_round_trips() {
         let msg = ServerMessage::WorldState(WorldState {
             tick: 100,
             world_seed: 42,
             world_revision: 7,
+            local_player_id: 1,
             local_player: LocalPlayerState {
                 position: [10.0, 1.8, 20.0],
                 rotation: 45.0,

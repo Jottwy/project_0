@@ -894,6 +894,48 @@ namespace BackroomsSurvival.Tests
             Assert.IsNotNull(ws.visibleCorpses); Assert.AreEqual(0, ws.visibleCorpses.Count);
         }
 
+        /// <summary>
+        /// ADR-111 (wire v53) — `local_player_id` es el ÚNICO dato del snapshot que el cliente no
+        /// puede recalcular ni deducir de ningún otro campo: `remote_players` excluye al local por
+        /// construcción. Si el parse lo perdiera, el fallo sería indistinguible de «backend viejo»
+        /// y Unity volvería en silencio a usar el `NET_ID` propuesto como identidad.
+        /// </summary>
+        [Test]
+        public void WorldStateMsg_CarriesTheAuthoritativeLocalPlayerId()
+        {
+            var w = new MsgPackWriter();
+            w.WriteMapHeader(3);
+            w.WriteString("type"); w.WriteString("world_state");
+            w.WriteString("tick"); w.WriteInt(1);
+            w.WriteString("local_player_id"); w.WriteInt(4242);
+
+            var (reader, remaining) = OpenTaggedFrame(w.ToArray(), "world_state");
+            var ws = WorldStateMsg.Parse(reader, remaining);
+
+            Assert.AreEqual(4242, ws.localPlayerId);
+        }
+
+        /// <summary>
+        /// Un backend anterior a la v53 no manda el campo y decodifica a 0. NO es una identidad:
+        /// `NetIdentity.Adopt` lo rechaza y el cliente se queda con el propuesto, que es lo que
+        /// había antes de ADR-111. (En producción la puerta de `WireSchema` ya habría cortado esa
+        /// conexión; esto cubre que el DECODE no invente un id, no que se permita el backend.)
+        /// </summary>
+        [Test]
+        public void WorldStateMsg_AnAbsentLocalPlayerIdIsNotAnIdentity()
+        {
+            var w = new MsgPackWriter();
+            w.WriteMapHeader(2);
+            w.WriteString("type"); w.WriteString("world_state");
+            w.WriteString("tick"); w.WriteInt(1);
+
+            var (reader, remaining) = OpenTaggedFrame(w.ToArray(), "world_state");
+            var ws = WorldStateMsg.Parse(reader, remaining);
+
+            Assert.AreEqual(0, ws.localPlayerId);
+            Assert.IsFalse(BackroomsSurvival.Net.NetIdentity.Adopt(ws.localPlayerId));
+        }
+
         [Test]
         public void WorldStateMsg_VisibleChunksAndCorpsesListsDecodeCorrectly()
         {

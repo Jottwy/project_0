@@ -123,7 +123,7 @@ namespace BackroomsSurvival.Net
             if (remotePlayers == null)
                 return;
 
-            int selfId = NetworkInitializer.Instance != null ? NetworkInitializer.Instance.LastSelectedNetId : 0;
+            int selfId = NetIdentity.Local;
 
             if (Time.unscaledTime >= _nextReceiveLogTime)
             {
@@ -311,7 +311,7 @@ namespace BackroomsSurvival.Net
                     if (view != null)
                     {
                         Debug.Log($"[RemotePlayerManager] updated id={kvp.Key} pos={view.targetPosition}");
-                        int selfId = NetworkInitializer.Instance != null ? NetworkInitializer.Instance.LastSelectedNetId : 0;
+                        int selfId = NetIdentity.Local;
                         Debug.Log($"MPTRACE step=U event=remote_transform_apply self_id={selfId} remote_id={kvp.Key} pos=({view.targetPosition.x:F2},{view.targetPosition.y:F2},{view.targetPosition.z:F2})");
                     }
                 }
