@@ -3991,6 +3991,52 @@ async fn a_refused_reliable_is_never_queued_for_retransmission() {
     );
 }
 
+/// **EL AGUJERO DE LA AUDITORÍA DE INTEGRACIÓN (2026-08-31).** El mismo daño que el test de
+/// arriba, por la puerta de al lado.
+///
+/// `send_reliable_queued` sólo pasa por el techo en la rama que ENVÍA. Cuando la ventana está
+/// llena —o ya hay diferidos— aparca el paquete sin medirlo, y quien lo saca es
+/// `pump_deferred_reliable`, que encolaba para retransmisión **sin mirar si había salido**. Un
+/// veredicto sobredimensionado aparcado en una ráfaga acababa exactamente donde ADR-113 dice que
+/// no puede acabar: cinco rechazos idénticos y el peer expulsado por `MAX_RETRIES`.
+///
+/// Se siembra la cola diferida directamente porque es el estado que hay que reproducir: llegar a
+/// él por la API pública exige llenar la ventana Y vaciarla con ACKs en el mismo test, y eso
+/// probaría el drenaje, no el contrato del drenaje.
+#[tokio::test]
+async fn a_deferred_reliable_refused_by_the_ceiling_is_never_queued_either() {
+    let (mut host, _joiner) = connected_pair().await;
+    let peer_id = *host.peers.keys().next().expect("hay un peer");
+
+    let huge = PacketPayload::Disconnect {
+        reason: "x".repeat(4000),
+    };
+    let header = PacketHeader::new(huge.type_code(), host.local_id, 7, host.timestamp());
+    let data = encode_packet(&header, &huge);
+    assert!(data.len() > protocol::SAFE_DATAGRAM_BYTES);
+    host.peers
+        .get_mut(&peer_id)
+        .expect("el peer sigue ahí")
+        .defer_reliable(7, data);
+
+    host.pump_deferred_reliable().await;
+
+    assert_eq!(
+        host.refused_datagram_count(),
+        1,
+        "el techo lo rechazó también saliendo de la cola diferida"
+    );
+    assert_eq!(
+        host.peers[&peer_id].reliable_queue.len(),
+        0,
+        "y NO se encoló: mismo criterio que send_reliable, o el techo tiene una puerta trasera"
+    );
+    assert!(
+        host.peers[&peer_id].deferred_reliable.is_empty(),
+        "y no vuelve a la cola diferida: reintentarlo eternamente es el otro modo de fallo"
+    );
+}
+
 // ─── ChunkState: instantánea COMPLETA y reemplazable, sin versionado propio ───
 
 /// El emisor que producía los ~31.000 datagramas sobredimensionados por sesión. Extremo a extremo

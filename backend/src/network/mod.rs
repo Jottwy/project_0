@@ -903,10 +903,20 @@ impl NetworkManager {
                 let Some((addr, pkt)) = next else {
                     break;
                 };
-                self.send_datagram(&pkt.data, addr, "deferred_reliable")
+                // ADR-113 / auditoría de integración (2026-08-31): mismo criterio que
+                // `send_reliable` y `send_reliable_queued` — lo que el techo rechaza NO se encola.
+                // Ésta era la puerta trasera: `send_reliable_queued` sólo mide el tamaño en la
+                // rama que ENVÍA, así que un paquete sobredimensionado aparcado con la ventana
+                // llena llegaba aquí sin haber pasado por el techo ni una vez, y se encolaba para
+                // cinco retransmisiones que tampoco podían salir — expulsando al peer por
+                // `MAX_RETRIES` (ADR-062). El `error!` del rechazo ya nombra el tipo y el tamaño.
+                let sent = self
+                    .send_datagram(&pkt.data, addr, "deferred_reliable")
                     .await;
-                if let Some(peer) = self.peers.get_mut(&pid) {
-                    peer.queue_reliable(pkt.sequence, pkt.data);
+                if sent {
+                    if let Some(peer) = self.peers.get_mut(&pid) {
+                        peer.queue_reliable(pkt.sequence, pkt.data);
+                    }
                 }
                 // Misma cesión que en `send_world_sync`: cuando los ACK abren la ventana de golpe,
                 // este bucle la vuelve a llenar entera sin respirar — la ráfaga reaparecería aquí

@@ -9,29 +9,47 @@ Verificado el 2026-08-30 contra `cargo test` (1189 pass), `clippy --all-targets 
 
 ---
 
-## I1 — Transporte: ningún datagrama fiable fragmenta
+## I1 — Transporte: ningún datagrama fragmenta
 
-> Ningún datagrama emitido por un camino **fiable** puede superar `SAFE_DATAGRAM_BYTES` (1200 B).
+> **Ningún** datagrama saliente puede superar `SAFE_DATAGRAM_BYTES` (1200 B). Lo aplica el emisor,
+> en el único punto de salida (`send_datagram`), **rechazando** — no avisando.
+
+ADR-113 (2026-08-31) subió el alcance de «los caminos fiables» a **todos**. Antes esto sólo
+GRITABA, y sólo para los fiables: los no fiables seguían poniendo en el cable datagramas de hasta
+1881 B medidos. Un aviso no es una invariante.
 
 Caminos fiables: `reliable`, `deferred_reliable`, `retransmit`, `broadcast_reliable`
-(`NetworkManager::is_reliable_kind`).
+(`NetworkManager::is_reliable_kind`). Siguen teniendo un tratamiento EXTRA: lo que el techo rechaza
+**no se encola**, porque reenviarlo cinco veces produciría cinco rechazos idénticos y la expulsión
+del peer por `MAX_RETRIES` (ADR-062) — un daño mayor que el paquete perdido.
 
 **Por qué 1200 y no 1472.** 1472 es MTU Ethernet menos cabeceras IP+UDP: el mejor caso. PPPoE da
 1492 (→1464) y una VPN menos. 1200 es el mínimo garantizado que adopta QUIC, y es el único número
 defendible sin sondear la red de cada jugador.
 
-**Por qué solo los fiables.** Un no-fiable sobredimensionado se pierde y se auto-cura al siguiente
-envío. Uno fiable se reenvía cinco veces **con el mismo tamaño**, se pierde las cinco, y agota
-`MAX_RETRIES` — expulsando al peer.
+**Por qué los fiables duelen MÁS** (el argumento que justificaba limitar el techo a ellos, y que
+sigue explicando el tratamiento extra). Un no-fiable sobredimensionado se pierde y se auto-cura al
+siguiente envío. Uno fiable se reenvía cinco veces **con el mismo tamaño**, se pierde las cinco, y
+agota `MAX_RETRIES` — expulsando al peer. Lo que ADR-113 corrigió es la conclusión: «se auto-cura»
+no es gratis a 10 Hz sobre un cable real, y los 4 únicos reenvíos de la sesión física de 9 min
+fueron exactamente los 4 datagramas por encima del techo.
 
 | Fijada por |
 |---|
 | `no_world_sync_page_can_exceed_the_transport_budget` |
 | `a_real_world_sync_puts_nothing_oversized_on_the_wire` (sockets reales, contador `oversized_reliable_count`) |
+| `an_oversized_datagram_is_refused_before_the_socket` (ADR-113: el techo, medido en el punto de salida) |
+| `a_refused_reliable_is_never_queued_for_retransmission` (ADR-113: el rechazo no alimenta `MAX_RETRIES`) |
+| `a_deferred_reliable_refused_by_the_ceiling_is_never_queued_either` (ADR-113 enm. 1: la cola diferida era la puerta trasera del techo) |
+| `a_dense_chunk_broadcast_puts_nothing_oversized_on_the_wire`, `a_full_broadcast_round_puts_nothing_oversized_on_the_wire`, `an_oversized_voice_frame_can_never_reach_the_socket` (los caminos NO fiables) |
 
-**Limitación conocida:** los caminos NO fiables (`broadcast_unreliable`, `unreliable_to`,
-`relay_as`) **siguen pudiendo superar 1200 B**. Medido en físico: 31.004 datagramas oversized por
-sesión, máx. 1881 B, mayoría `broadcast_unreliable` (`ChunkState` + roster). Ver «Riesgos» abajo.
+**Limitación CERRADA por ADR-113.** Lo que decía aquí —que los caminos NO fiables
+(`broadcast_unreliable`, `unreliable_to`, `relay_as`) podían superar 1200 B— era cierto y estaba
+medido en físico: 31.004 datagramas oversized por sesión, máx. 1881 B, mayoría
+`broadcast_unreliable` (`ChunkState` + roster). Hoy el techo los rechaza igual que a los fiables, y
+cada productor sin cota paginó, troceó o se acotó antes de llegar al punto de salida. Que el
+rechazo salte (`MTUPROBE event=datagram_refused_over_budget`, `error!`) significa que hay un emisor
+NUEVO sin acotar: es un defecto del emisor, no una condición de red.
 
 ---
 
@@ -218,8 +236,8 @@ asimetría era la pista y despistó: parecía de red y no lo era.
 **Causa raíz, en cuatro pasos verificados:** Unity **propone** un id por `NET_ID` y lo guarda en
 `LastSelectedNetId` (`NetworkInitializer.cs:989`); el host **asigna** el de verdad
 (`handlers.rs:1221`) y el backend del joiner lo adopta (`self.local_id = assigned_id`,
-`handlers.rs:1071`); **nada se lo cuenta a Unity** — `WorldState` (`ipc/mod.rs:570`) no tiene ningún
-campo con el id local; y Unity filtraba `remote_players` contra ese valor obsoleto. Como el backend
+`handlers.rs:1071`); **nada se lo contaba a Unity** — `WorldState` no llevaba ningún campo con el id
+local; y Unity filtraba `remote_players` contra ese valor obsoleto. Como el backend
 construye la lista recorriendo `net.peers` (`game_loop.rs:7185`) y **un nodo nunca se registra a sí
 mismo**, esa lista ya venía sin el local: el segundo filtro no podía aportar nada correcto, sólo
 quitar. El valor por defecto de `NetworkInitializer.netId` es **1**, que es el id del host.
@@ -229,10 +247,23 @@ quitar. El valor por defecto de `NetworkInitializer.netId` es **1**, que es el i
 **Prueba:** `RemotePlayerRosterTests` — 8 casos; 5 fallaban antes del cambio, incluido
 `TheHostIsRenderedEvenIfOurStaleSelfIdCollidesWithIts`.
 
-**Limitación anotada, NO arreglada:** `LastSelectedNetId` sigue siendo el id *propuesto* y lo leen
-otros cinco sitios (`RemotePvpHitbox`, `StpBuildMaterialWatcher`, `StpBuildingPlacementWatcher`,
-`NetworkHarvestableInstance`, `IPCClient:603`). Comparten la misma fuente de error. Arreglarlo de
-raíz es llevar el id asignado por el IPC, y eso es **cambio de wire + ADR**.
+**Limitación CERRADA por ADR-111 (2026-08-31, wire 55).** Cuando se escribió este invariante,
+`LastSelectedNetId` seguía siendo el id *propuesto* y lo leían otros cinco sitios
+(`RemotePvpHitbox`, `StpBuildMaterialWatcher`, `StpBuildingPlacementWatcher`,
+`NetworkHarvestableInstance`, `IPCClient`), y arreglarlo de raíz se anotó como **cambio de wire +
+ADR**. Eso es exactamente lo que se hizo: `WorldState` **sí lleva ahora** `local_player_id`, que
+`IPCClient` adopta en `NetIdentity.Adopt`, y los consumidores leen `NetIdentity.Local`. Ver ADR-111
+(y su Enmienda 1 para por qué el número de wire es 55 y no 53).
+
+**Lo que sigue abierto, y es deuda declarada (ADR-111 D2):** la ventana anterior al ack. Antes de
+que el host conteste, `local_player_id` lleva el propuesto porque es literalmente lo que el backend
+tiene; `NetIdentity.Resolve` garantiza que el asignado no retrocede nunca, pero un id de petición
+acuñado dentro de esa ventana lleva el prefijo propuesto. Cerrarla exige distinguir «aún no hay
+sesión» de «sesión en solitario», que no es decisión de este invariante.
+
+`LastSelectedNetId` sobrevive con el papel recortado que le da ADR-111 D5: hablar del LANZAMIENTO
+(el log de configuración, el HUD de depuración). Comparado con cualquier id venido del backend, ya
+no es legítimo.
 
 ## I14 — Un destino de gameplay se decide en UN sitio, y la estrella es una de sus condiciones
 
@@ -365,10 +396,11 @@ media sesión. Cada recorte deja línea de log; esa línea es la única defensa.
 
 | # | Hueco | Evidencia |
 |---|---|---|
-| R1 | Los caminos **no fiables** pueden superar 1200 B | 31.004 oversized/sesión, máx. 1881 B; 824 muestras `broadcast_unreliable`, 366 `unreliable_to`, 13 `relay_as` |
+| ~~R1~~ | **CERRADO** por ADR-113 (2026-08-31): el techo de 1200 B lo aplica ahora `send_datagram` a TODO datagrama, rechazando. Se conserva la fila porque la evidencia que lo abrió es la que dimensiona el riesgo | 31.004 oversized/sesión, máx. 1881 B; 824 muestras `broadcast_unreliable`, 366 `unreliable_to`, 13 `relay_as` |
 | R2 | Paginar `ChunkState` (no fiable) daría chunks **parcialmente** aplicados si se pierde una página, en vez de la pérdida total actual. Requiere decidir cuál de los dos males se prefiere | análisis, sin medir |
 | R3 | Ciclo de vida de peers sin invariante propia: no hay test que garantice que no quedan peers fantasma tras N conexiones/desconexiones | host con 22 peers y 5 ids reales al final de una sesión de 20 min con varios clientes — **no confirmado como fuga**. **Parcialmente cerrado** por la auditoría de la Tarea 4: las marcas `phantom_ids`/`faceling_ids` eran el único estado indexado por `PeerId` que sobrevivía a una baja no ordenada, y ya se limpian en `purge_peer_state` (prueba: `an_unclean_removal_leaves_no_injected_mark_behind`). Lo que **sigue abierto** es la ventana de peer duplicado descrita en R5 |
 | R5 | **Peer duplicado tras reconexión desde un puerto nuevo.** El deduplicado del handshake casa por `sender_id` O por `addr`. Un cliente que se reinicia sale con puerto de origen nuevo y `NET_ID` nuevo (`GenerateDebugNetId` = 1000 + pid%60000), así que no casa por ninguna de las dos: se le asigna un id nuevo y la entrada vieja sobrevive hasta que la coseche el timeout de latido. Ventana acotada (≤ 5 s) pero real — durante ella el jugador aparece dos veces en el roster, y el host relaya poses a un endpoint muerto | análisis del código, sin medir; no reproducido en partida |
 | R6 | **Los ~30 envíos de un joiner escriben el literal `1`, no `host_peer_id`.** Coinciden porque `NET_ID` por defecto es 1 y el host nunca lo cambia, pero son dos fuentes de verdad para el mismo número. Un host lanzado con `NET_ID` distinto haría que todos esos envíos apuntaran a un peer inexistente — y desde I14 eso ya no es un fallo silencioso: sale por `illegal_gameplay_destination` con `registered=false` | análisis del código; no reproducido — exigiría lanzar el host con `NET_ID≠1` a mano |
 | R7 | **Ventana de peer duplicado** — ver R5. No se cierra sin decidir qué identifica a un jugador entre reconexiones, y eso hoy no existe: el handshake sólo tiene `sender_id` (propuesto) y la dirección de origen | ídem |
 | R4 | La paginación de WorldSync está validada por test, no por una partida real que la ejerza: los mundos probados en físico no tenían chunks lo bastante densos | `chunk_page_buffered = 0` en la corrida de dos procesos |
+| R8 | **La legalidad del destino se comprueba al ENCOLAR, no al reenviar.** `pump_deferred_reliable` y `process_retransmits` mandan a `peer.addr` sin volver a pasar por `is_gameplay_destination`. Hoy no es alcanzable —un peer que desaparece del mapa deja de iterarse, y ambos bucles recorren `peers.keys()`—, pero un peer que se marque `relay_only` **después** de encolar seguiría recibiendo sus reenvíos hasta agotarlos. Cerrarlo bien es unificar «enviar y encolar un fiable» en una sola función, o sea un refactor: ver ADR-113 enmienda 1 | análisis del código durante la auditoría de integración; no reproducido |

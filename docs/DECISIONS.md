@@ -11261,3 +11261,40 @@ número deja de significar lo que su documento dice.
 **Sin cambio de comportamiento.** El campo, su lado cliente (`NetIdentity`) y sus tests son los
 mismos que ya estaban verificados; sólo se mueve el número de la puerta, en las dos puntas a la vez
 (`backend/src/ipc/server.rs` y `Assets/Scripts/Network/WireSchema.cs`), como exige ADR-061.
+
+---
+
+## ADR-113 — Enmienda 1: el techo tenía una puerta trasera, y estaba en la cola diferida (2026-08-31)
+
+**Contexto.** Auditoría de integración de las tareas de networking T1–T4. ADR-113 dice que el techo
+de 1200 B lo aplica el emisor en el único punto de salida y que **lo rechazado no se encola**, por
+la razón que le da sentido: un fiable rechazado se reenviaría cinco veces con el mismo tamaño, se
+rechazaría las cinco, y al agotar `MAX_RETRIES` ADR-062 expulsaría al peer. La implementación puso
+ese criterio en `send_reliable`, `send_reliable_queued` y `broadcast_reliable`.
+
+**El hueco.** `send_reliable_queued` mide el tamaño **sólo en la rama que envía**. Cuando la ventana
+está llena —o ya hay diferidos— aparca el paquete sin medirlo (ADR-060), y quien lo saca es
+`pump_deferred_reliable`, que ignoraba el valor de retorno de `send_datagram` y encolaba para
+retransmisión pasara lo que pasara. O sea: un veredicto sobredimensionado emitido dentro de una
+ráfaga —justo la condición para la que existe la cola diferida— llegaba al aire sin haber pasado por
+el techo ni una vez y terminaba exactamente en el modo de fallo que ADR-113 dice haber cerrado.
+
+Reproducido en rojo antes de tocar nada: `reliable_queue.len()` daba **1** donde la invariante exige
+0.
+
+**Decisión.** `pump_deferred_reliable` aplica el mismo criterio que los otros tres caminos: si
+`send_datagram` devuelve `false`, no se encola. No se re-aparca tampoco — reintentar eternamente
+algo que el techo no deja salir es el otro modo de fallo, y el `error!` del rechazo ya nombra el
+tipo y el tamaño.
+
+**Alcance.** Cuatro líneas de `backend/src/network/mod.rs`. Ni wire, ni protocolo, ni Unity. No
+cambia ninguna semántica ya decidida por ADR-113: la extiende al único camino que se la saltaba.
+
+**Prueba.** `a_deferred_reliable_refused_by_the_ceiling_is_never_queued_either`.
+
+**Lo que esto dice del proceso, y por eso se anota.** El agujero no lo dejó una tarea descuidada: lo
+dejó el hecho de que el camino diferido y el camino directo tengan dos sitios donde medir en vez de
+uno. Un techo que se aplica en el punto de salida y una decisión de encolar que se toma en cuatro
+sitios distintos son la misma clase de fragilidad que I14 cerró para los destinos. Queda anotado
+como deuda: unificar «enviar y encolar un fiable» en una sola función es un refactor, y un refactor
+no cabe en una auditoría de integración.
