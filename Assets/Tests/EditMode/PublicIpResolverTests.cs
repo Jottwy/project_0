@@ -81,6 +81,21 @@ namespace BackroomsSurvival.Tests
             Assert.IsNull(PublicIpResolver.ParseEchoResponse(body));
         }
 
+        /// **Una respuesta TRUNCADA no puede convertirse en una IP pública válida.**
+        /// `IPAddress.TryParse` acepta la forma abreviada clásica: `8.8` es `8.0.0.8` y
+        /// `88.16.240` es `88.16.0.240`. Las dos son públicamente enrutables, así que sin exigir
+        /// cuatro octetos una respuesta cortada a la mitad acabaría publicada en `connect_ip`
+        /// como si fuera la IP del host. Salió como un rojo al ejecutar los tests, no de leer la
+        /// documentación.
+        [TestCase("8.8")]
+        [TestCase("88.16.240")]
+        [TestCase("88")]
+        [TestCase("88.16.240.7.9")]
+        public void ATruncatedAnswerIsRejectedEvenThoughDotNetWouldParseIt(string body)
+        {
+            Assert.IsNull(PublicIpResolver.ParseEchoResponse(body));
+        }
+
         // ─── Varios ecos ───
 
         /// **La razón de que haya tres y no uno.** El primero está caído; el segundo contesta y la

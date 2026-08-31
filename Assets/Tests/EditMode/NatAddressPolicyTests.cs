@@ -138,12 +138,27 @@ namespace BackroomsSurvival.Tests
         /// decide; lo que no puede es creerse una respuesta inventada.
         [TestCase("micasa.duckdns.org")]
         [TestCase("localhost")]
-        [TestCase("192.168.1")]
         [TestCase("no es una ip")]
         public void ANameIsNotClassifiedAsAnAddress(string address)
         {
             Assert.AreEqual(Kind.NotAnIpLiteral, NatAddressPolicy.Classify(address));
             Assert.IsFalse(NatAddressPolicy.IsPubliclyRoutable(address));
+        }
+
+        /// **`IPAddress.TryParse` acepta la forma abreviada clásica** y eso sorprende: `192.168.1`
+        /// es `192.168.0.1`, y `8.8` es `8.0.0.8`. Aquí da igual —se clasifica lo que de verdad
+        /// salió del parseo, y sale bien— pero en el eco de IP pública NO daba igual: una
+        /// respuesta truncada se convertía en una IP pública válida que habría acabado publicada
+        /// en el lobby. Por eso <c>PublicIpResolver.ParseEchoResponse</c> exige cuatro octetos.
+        ///
+        /// Este test existe para dejar la sorpresa por escrito, que es como se descubrió: como un
+        /// rojo.
+        [TestCase("192.168.1", Kind.PrivateRfc1918)]
+        [TestCase("10.1", Kind.PrivateRfc1918)]
+        [TestCase("8.8", Kind.Public)]
+        public void TheShorthandFormOfAnIPv4ParsesAndThatIsATrap(string address, Kind expected)
+        {
+            Assert.AreEqual(expected, NatAddressPolicy.Classify(address));
         }
 
         /// Una IPv4 vestida de IPv6 tiene que clasificarse por lo que ES. Si no,

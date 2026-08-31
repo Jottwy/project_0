@@ -179,6 +179,14 @@ namespace BackroomsSurvival.Connectivity
             if (body.Length > MaxEchoBytes) return null;
 
             string trimmed = body.Trim();
+
+            // CUATRO octetos, exactamente. `IPAddress.TryParse` acepta la forma abreviada clásica
+            // —`8.8` es `8.0.0.8` y `192.168.1` es `192.168.0.1`— así que una respuesta TRUNCADA a
+            // medio camino se convierte en una IP pública perfectamente válida, y ésa es la que
+            // acabaría en `connect_ip` del lobby. Medido, no supuesto: salió como un rojo al
+            // ejecutar los tests de clasificación.
+            if (trimmed.Split('.').Length != 4) return null;
+
             if (!IPAddress.TryParse(trimmed, out IPAddress parsed)) return null;
             if (parsed.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork) return null;
             if (!NatAddressPolicy.IsPubliclyRoutable(trimmed)) return null;
