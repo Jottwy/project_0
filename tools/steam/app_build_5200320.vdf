@@ -1,0 +1,27 @@
+// SteamPipe — Project 0 Playtest (App 5200320, Depot 5200321)
+//
+// Uso:
+//   J:\SteamBuild\ContentBuilder\builder\steamcmd.exe +login <usuario> ^
+//     +run_app_build "J:\Unity\BackroomsSurvivalMMO\tools\steam\app_build_5200320.vdf" +quit
+//
+// NO lleva "SetLive" A PROPOSITO. Sin esa clave el build se sube y queda registrado en
+// Steamworks SIN asignar a ninguna rama, que es exactamente "subido pero sin publicar".
+// Anadirla activaria el playtest para quien tenga acceso a esa rama.
+"AppBuild"
+{
+	"AppID"       "5200320"
+	"Desc"        "Project 0 Playtest — build de desarrollo, sin publicar"
+
+	// 1 = no sube nada, solo escribe el manifiesto de ficheros para revisar que las
+	// exclusiones hacen lo que se cree. Ponerlo a 1 para el ensayo, a 0 para subir.
+	"Preview"     "0"
+
+	"ContentRoot" "J:\Unity\BackroomsSurvivalMMO\Builds\Build_steam"
+	"BuildOutput" "J:\SteamBuild\output\"
+	"verbose"     "1"
+
+	"Depots"
+	{
+		"5200321" "depot_build_5200321.vdf"
+	}
+}

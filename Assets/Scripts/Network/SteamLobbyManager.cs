@@ -8,7 +8,9 @@ using UnityEngine;
 namespace BackroomsSurvival.Net
 {
     /// <summary>
-    /// Spike de matchmaking Steam (App ID 480 / Spacewar). Capa ADITIVA sobre el flujo
+    /// Matchmaking Steam. El App ID sale de <see cref="SteamAppConfig"/>, nunca de aquí:
+    /// desarrollo usa Spacewar (480) y producción el id real, y el mismo binario sirve para los
+    /// dos. Capa ADITIVA sobre el flujo
     /// manual Host/Join: publica un lobby con el ip:puerto que el flujo manual ya usa,
     /// abre el overlay de invitación, y al entrar en un lobby ajeno reinyecta esos datos
     /// en <see cref="NetworkInitializer.StartAsJoiner"/> — el MISMO método interno que
@@ -21,10 +23,12 @@ namespace BackroomsSurvival.Net
     /// queda inerte: <see cref="IsAvailable"/> es false, la UI oculta el botón y el
     /// flujo manual se comporta exactamente igual que antes de este archivo.
     /// </summary>
-    public sealed class SteamLobbyManager : MonoBehaviour
+    public sealed partial class SteamLobbyManager : MonoBehaviour
     {
-        /// Spacewar, el App ID público de test de Valve. Sustituir por el real al publicar.
-        public const uint SpacewarAppId = 480;
+        /// El App ID **no vive aquí**: sale de <see cref="SteamAppConfig"/>, que lo resuelve por
+        /// entorno → `steam_appid.txt` → constante compilada. Se guarda el efectivo para poder
+        /// nombrarlo en los diagnósticos.
+        public static uint ActiveAppId { get; private set; }
 
         // Claves de metadata del lobby. Son el contrato completo del spike: Steam no
         // transporta nada más.
@@ -64,6 +68,18 @@ namespace BackroomsSurvival.Net
         private bool _creatingLobby;
         private bool _joinRequestInFlight;
 
+        /// <summary>
+        /// Identidad de la tanda de anuncio en curso. Sube en cada <see cref="CloseHostedLobby"/>,
+        /// también cuando no había lobby que cerrar.
+        ///
+        /// `CreateLobbyAsync` tarda; si la sesión termina mientras está en vuelo, la continuación
+        /// aterriza DESPUÉS del teardown y adoptaba el lobby recién creado — público, joinable,
+        /// apuntando a un endpoint ya muerto y sin nadie que volviera a cerrarlo. Un `bool` no
+        /// bastaba: el problema no es "hay teardown", es "esta creación es de la sesión
+        /// ANTERIOR". Mismo patrón que <c>Generation</c> en <see cref="SessionStateMachine"/>.
+        /// </summary>
+        private int _lobbyEpoch;
+
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
         private static void Bootstrap()
         {
@@ -97,38 +113,89 @@ namespace BackroomsSurvival.Net
             if (SteamClient.IsValid)
             {
                 _initialized = true;
+                ActiveAppId = SteamClient.AppId.Value;
                 SubscribeCallbacks();
                 StatusMessage = $"Steam ready ({SteamClient.Name})";
-                Debug.Log($"[SteamLobbyManager] SteamClient already valid; adopted. name={SteamClient.Name} steam_id={SteamClient.SteamId.Value}");
+                Debug.Log($"[SteamLobbyManager] SteamClient already valid; adopted. " +
+                          $"app_id={SteamAppConfig.Describe(ActiveAppId)} name={SteamClient.Name} " +
+                          $"steam_id={SteamClient.SteamId.Value}");
                 return;
             }
+
+            uint appId = SteamAppConfig.Current(out SteamAppConfig.AppIdSource source, out string sourceDetail);
+            ActiveAppId = appId;
+
+            // Se registra ANTES de intentar nada: si Init revienta, el log ya dice con qué id se
+            // intentó y de dónde salió. Un fallo de Steam sin esa línea obliga a adivinar.
+            Debug.Log($"[SteamLobbyManager] Steam init: app_id={SteamAppConfig.Describe(appId)} " +
+                      $"origen={source} ({sourceDetail})");
 
             try
             {
                 // asyncCallbacks:false — los callbacks se bombean desde Update, así que
                 // aterrizan en el hilo principal de Unity y pueden tocar la API de Unity.
-                SteamClient.Init(SpacewarAppId, false);
+                SteamClient.Init(appId, false);
+            }
+            catch (DllNotFoundException e)
+            {
+                // ESTE es el fallo que estuvo escondido: el binding managed de Facepunch está en
+                // Assets/Plugins, pero el NATIVO `steam_api64.dll` del SDK de Steamworks es un
+                // fichero aparte, y sin él Init lanza `DllNotFoundException` — no "Steam cerrado".
+                // Se separa del catch general a propósito: el mensaje genérico ("Steam
+                // unavailable") hizo que se leyera durante semanas como "el cliente no está".
+                StatusMessage = "Steam unavailable (steam_api64.dll ausente)";
+                Debug.LogError(
+                    $"[SteamLobbyManager] FALTA EL NATIVO DE STEAM: {e.Message}. " +
+                    "Esto NO es 'Steam cerrado'. `steam_api64.dll` del SDK de Steamworks tiene que " +
+                    "estar en Assets/Plugins/Facepunch.Steamworks/redistributable_bin/win64/ (Editor) " +
+                    "y en <build>_Data/Plugins/x86_64/ (player). " +
+                    "Steam, invitaciones y navegador de servidores quedan desactivados; " +
+                    "el Host/Join por IP no se ve afectado.");
+                return;
+            }
+            catch (EntryPointNotFoundException e)
+            {
+                // El nativo cargó pero es de OTRA versión del SDK que la que espera el binding
+                // managed de Facepunch. Medido: con el SDK 1.65, `SteamAPI_SteamApps_v009`; el
+                // binding pide `_v008`. Se separa del catch general porque el mensaje genérico
+                // manda a mirar el cliente de Steam, y aquí el cliente no tiene nada que ver.
+                StatusMessage = "Steam unavailable (versión de steam_api64.dll)";
+                Debug.LogError(
+                    $"[SteamLobbyManager] VERSIÓN DE STEAM_API64.DLL EQUIVOCADA: {e.Message}. " +
+                    "El nativo cargó, pero exporta otra versión de interfaz que la que pide " +
+                    "Facepunch.Steamworks.Win64.dll. El binding vendorizado targetea el " +
+                    "**SDK 1.61**; poner ese redistribuible en " +
+                    "Assets/Plugins/Facepunch.Steamworks/redistributable_bin/win64/. " +
+                    "Steam path disabled; manual Host/Join unaffected.");
+                return;
             }
             catch (Exception e)
             {
-                // Steam cerrado o DLL nativo ausente. NO es un error del juego: el flujo
-                // manual sigue intacto, solo desaparece el camino Steam.
+                // Cliente de Steam cerrado, o el App ID no coincide con `steam_appid.txt`. NO es
+                // un error del juego: el flujo manual sigue intacto, solo desaparece Steam.
                 StatusMessage = "Steam unavailable";
-                Debug.LogWarning($"[SteamLobbyManager] SteamClient.Init({SpacewarAppId}) failed: {e.Message}. Steam path disabled; manual Host/Join unaffected.");
+                Debug.LogWarning(
+                    $"[SteamLobbyManager] SteamClient.Init({appId}) failed: {e.GetType().Name}: {e.Message}. " +
+                    $"Comprobar: (a) el cliente de Steam está abierto y con sesión iniciada; " +
+                    $"(b) {SteamAppConfig.AppIdFileName} junto al ejecutable dice {appId}; " +
+                    $"(c) la cuenta tiene acceso a ese App ID. " +
+                    "Steam path disabled; manual Host/Join unaffected.");
                 return;
             }
 
             if (!SteamClient.IsValid)
             {
                 StatusMessage = "Steam unavailable";
-                Debug.LogWarning("[SteamLobbyManager] SteamClient.Init returned but IsValid=false. Steam path disabled.");
+                Debug.LogWarning($"[SteamLobbyManager] SteamClient.Init({appId}) returned but IsValid=false. " +
+                                 "Steam path disabled; manual Host/Join unaffected.");
                 return;
             }
 
             _initialized = true;
             SubscribeCallbacks();
             StatusMessage = $"Steam ready ({SteamClient.Name})";
-            Debug.Log($"[SteamLobbyManager] Steam initialized app_id={SpacewarAppId} name={SteamClient.Name} steam_id={SteamClient.SteamId.Value}");
+            Debug.Log($"[SteamLobbyManager] Steam initialized app_id={SteamAppConfig.Describe(appId)} " +
+                      $"name={SteamClient.Name} steam_id={SteamClient.SteamId.Value}");
         }
 
         private void SubscribeCallbacks()
@@ -197,6 +264,7 @@ namespace BackroomsSurvival.Net
             }
 
             _creatingLobby = true;
+            int epoch = _lobbyEpoch;
             StatusMessage = "Creating Steam lobby...";
 
             Lobby? created;
@@ -222,6 +290,18 @@ namespace BackroomsSurvival.Net
             }
 
             var lobby = created.Value;
+
+            // La sesión terminó mientras Steam creaba: este lobby es de la partida anterior.
+            // Adoptarlo sería publicar un anuncio que ya nadie va a retirar.
+            if (epoch != _lobbyEpoch)
+            {
+                TryLeave(lobby);
+                StatusMessage = "Steam lobby cancelled";
+                Debug.Log($"[SteamLobbyManager] Lobby {lobby.Id.Value} cerrado al nacer: la sesión " +
+                          $"terminó mientras Steam lo creaba (epoch {epoch} → {_lobbyEpoch}).");
+                return false;
+            }
+
             _hostedLobby = lobby;
 
             // SetPublic/SetJoinable/SetData bajan a nativo y pueden lanzar igual que

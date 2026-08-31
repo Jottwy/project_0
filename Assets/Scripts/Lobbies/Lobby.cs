@@ -1,0 +1,289 @@
+using System;
+
+namespace BackroomsSurvival.Lobbies
+{
+    /// <summary>
+    /// Identidad de un lobby en el directorio. Envuelve un string porque el identificador lo
+    /// emite QUIEN publica (hoy el mock, mañana el Lobby Directory), y compararlo como texto
+    /// suelto por todo el código es como se cuela un `==` sensible a mayúsculas contra un
+    /// backend que no lo es. La comparación es ordinal-ignore-case y el valor viaja recortado.
+    /// </summary>
+    public readonly struct LobbyId : IEquatable<LobbyId>
+    {
+        public static readonly LobbyId None = new LobbyId(null);
+
+        public readonly string Value;
+
+        public LobbyId(string value)
+        {
+            Value = string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+        }
+
+        public bool IsValid => Value != null;
+
+        public bool Equals(LobbyId other)
+        {
+            if (Value == null || other.Value == null) return Value == null && other.Value == null;
+            return string.Equals(Value, other.Value, StringComparison.OrdinalIgnoreCase);
+        }
+
+        public override bool Equals(object obj) => obj is LobbyId other && Equals(other);
+
+        public override int GetHashCode() =>
+            Value == null ? 0 : StringComparer.OrdinalIgnoreCase.GetHashCode(Value);
+
+        public override string ToString() => Value ?? "<none>";
+
+        public static bool operator ==(LobbyId a, LobbyId b) => a.Equals(b);
+        public static bool operator !=(LobbyId a, LobbyId b) => !a.Equals(b);
+    }
+
+    /// <summary>Dónde se conecta el cliente. Es el ÚNICO dato del lobby que toca la red.</summary>
+    public readonly struct LobbyEndpoint : IEquatable<LobbyEndpoint>
+    {
+        public static readonly LobbyEndpoint None = default;
+
+        public readonly string Host;
+        public readonly int Port;
+
+        public LobbyEndpoint(string host, int port)
+        {
+            Host = string.IsNullOrWhiteSpace(host) ? null : host.Trim();
+            Port = port;
+        }
+
+        /// El rango es el de un puerto utilizable; el 0 es "que elija el sistema" y nunca es un
+        /// destino válido al que llamar.
+        public bool IsValid => Host != null && Port > 0 && Port <= 65535;
+
+        public bool Equals(LobbyEndpoint other) =>
+            string.Equals(Host, other.Host, StringComparison.OrdinalIgnoreCase) && Port == other.Port;
+
+        public override bool Equals(object obj) => obj is LobbyEndpoint other && Equals(other);
+
+        public override int GetHashCode() =>
+            ((Host == null ? 0 : StringComparer.OrdinalIgnoreCase.GetHashCode(Host)) * 397) ^ Port;
+
+        public override string ToString() => IsValid ? Host + ":" + Port : "<invalid>";
+    }
+
+    /// <summary>Visibilidad declarada por quien publica. El navegador NO la deduce.</summary>
+    public enum LobbyPrivacy
+    {
+        Public = 0,
+        FriendsOnly = 1,
+        Private = 2,
+    }
+
+    /// <summary>En qué punto de su vida está la partida.</summary>
+    public enum LobbyStatus
+    {
+        Unknown = 0,
+
+        /// Aceptando gente.
+        Waiting = 1,
+
+        /// Partida en curso.
+        InProgress = 2,
+
+        /// El host la cerró; sigue en la lista hasta que caduque por TTL.
+        Closed = 3,
+    }
+
+    /// <summary>
+    /// Resultado de preguntar "¿puedo entrar aquí?". Un bool no vale: la UI tiene que decir POR
+    /// QUÉ no, y el adaptador de Join tiene que negarse por el mismo motivo que la lista pinta.
+    /// </summary>
+    public enum LobbyJoinability
+    {
+        Joinable = 0,
+        Expired = 1,
+        Closed = 2,
+        Private = 3,
+        InvalidEndpoint = 4,
+        VersionMismatch = 5,
+        Full = 6,
+        PasswordRequired = 7,
+    }
+
+    /// <summary>
+    /// Una entrada del navegador de servidores. Inmutable a propósito: un refresh SUSTITUYE la
+    /// lista entera en vez de mutar fichas vivas, así que la UI nunca pinta un objeto a medio
+    /// actualizar y la selección se resuelve por <see cref="LobbyId"/>, no por referencia.
+    ///
+    /// Este modelo NO habla con la red. No conoce el protocolo, ni el handshake, ni
+    /// NetworkManager: lo único que exporta hacia la conexión es <see cref="Endpoint"/>.
+    /// </summary>
+    public sealed class Lobby
+    {
+        public const int UnknownPing = -1;
+        public const float DefaultTtlSeconds = 30f;
+        public const int MaxNameLength = 48;
+
+        public readonly LobbyId Id;
+        public readonly string Name;
+
+        /// Versión del build que sirve la partida. Se compara como texto, ordinal: dos builds
+        /// sólo son compatibles si publican exactamente la misma cadena.
+        public readonly string Version;
+
+        public readonly int Players;
+        public readonly int MaxPlayers;
+        public readonly string Map;
+        public readonly string Region;
+
+        /// Milisegundos, o <see cref="UnknownPing"/> mientras no se haya medido.
+        public readonly int PingMs;
+
+        public readonly LobbyPrivacy Privacy;
+        public readonly bool RequiresPassword;
+        public readonly LobbyEndpoint Endpoint;
+
+        /// Segundos Unix del último anuncio recibido. Con <see cref="TtlSeconds"/> decide cuándo
+        /// la entrada deja de ser creíble: un directorio no avisa de los servidores que MUEREN,
+        /// sólo deja de anunciarlos.
+        public readonly double UpdatedAtUnix;
+
+        public readonly float TtlSeconds;
+        public readonly LobbyStatus Status;
+
+        public Lobby(
+            LobbyId id,
+            string name,
+            string version,
+            int players,
+            int maxPlayers,
+            string map,
+            string region,
+            int pingMs,
+            LobbyPrivacy privacy,
+            bool requiresPassword,
+            LobbyEndpoint endpoint,
+            double updatedAtUnix,
+            float ttlSeconds,
+            LobbyStatus status)
+        {
+            Id = id;
+            Name = name;
+            Version = version;
+            Players = players;
+            MaxPlayers = maxPlayers;
+            Map = map;
+            Region = region;
+            PingMs = pingMs;
+            Privacy = privacy;
+            RequiresPassword = requiresPassword;
+            Endpoint = endpoint;
+            UpdatedAtUnix = updatedAtUnix;
+            TtlSeconds = ttlSeconds;
+            Status = status;
+        }
+
+        public bool HasPing => PingMs >= 0;
+        public bool IsFull => Players >= MaxPlayers;
+        public bool IsEmpty => Players <= 0;
+        public int FreeSlots => MaxPlayers - Players < 0 ? 0 : MaxPlayers - Players;
+
+        /// <summary>Caducidad por TTL. Un `ttl &lt;= 0` significa "no caduca".</summary>
+        public bool IsExpired(double nowUnix) =>
+            TtlSeconds > 0f && nowUnix - UpdatedAtUnix > TtlSeconds;
+
+        public bool IsCompatibleWith(string clientVersion) =>
+            !string.IsNullOrEmpty(Version) &&
+            !string.IsNullOrEmpty(clientVersion) &&
+            string.Equals(Version, clientVersion.Trim(), StringComparison.Ordinal);
+
+        /// <summary>
+        /// El orden de las comprobaciones ES la regla: primero lo que invalida la ficha entera
+        /// (caducada, cerrada, privada, sin destino), luego lo que impide entrar a ESTE cliente
+        /// (versión), y sólo al final lo que el jugador puede resolver esperando un hueco o
+        /// tecleando una contraseña. Al revés, un servidor lleno de otra versión pediría hueco.
+        /// </summary>
+        public LobbyJoinability EvaluateJoinability(string clientVersion, double nowUnix, bool passwordSupplied = false)
+        {
+            if (IsExpired(nowUnix)) return LobbyJoinability.Expired;
+            if (Status == LobbyStatus.Closed) return LobbyJoinability.Closed;
+            if (Privacy == LobbyPrivacy.Private) return LobbyJoinability.Private;
+            if (!Endpoint.IsValid) return LobbyJoinability.InvalidEndpoint;
+            if (!IsCompatibleWith(clientVersion)) return LobbyJoinability.VersionMismatch;
+            if (IsFull) return LobbyJoinability.Full;
+            if (RequiresPassword && !passwordSupplied) return LobbyJoinability.PasswordRequired;
+            return LobbyJoinability.Joinable;
+        }
+
+        /// <summary>Copia con otro ping. Es lo único que se remide sin volver a anunciar.</summary>
+        public Lobby WithPing(int pingMs) => new Lobby(
+            Id, Name, Version, Players, MaxPlayers, Map, Region, pingMs,
+            Privacy, RequiresPassword, Endpoint, UpdatedAtUnix, TtlSeconds, Status);
+
+        /// <summary>Copia con otro sello de tiempo. Es lo que hace un anuncio repetido.</summary>
+        public Lobby WithUpdatedAt(double updatedAtUnix) => new Lobby(
+            Id, Name, Version, Players, MaxPlayers, Map, Region, PingMs,
+            Privacy, RequiresPassword, Endpoint, updatedAtUnix, TtlSeconds, Status);
+
+        /// <summary>
+        /// La única puerta por la que deben entrar datos de OTRA máquina. Lo que hoy sanea al
+        /// mock es exactamente lo que mañana saneará al JSON del Lobby Directory; por eso vive
+        /// aquí y no en el mock.
+        ///
+        /// Rechaza (devuelve false) lo que no se puede reparar sin inventarse un servidor: sin
+        /// id, sin aforo. Repara lo que sí: nombres nulos, contadores fuera de rango, ping
+        /// negativo, TTL ausente. Un lobby sin endpoint válido SE ADMITE —se lista y se ve— pero
+        /// <see cref="EvaluateJoinability"/> lo marca InvalidEndpoint; esconderlo dejaría al
+        /// jugador buscando un servidor que sí está anunciado.
+        /// </summary>
+        public static bool TryCreate(
+            string id,
+            string name,
+            string version,
+            int players,
+            int maxPlayers,
+            string map,
+            string region,
+            int pingMs,
+            LobbyPrivacy privacy,
+            bool requiresPassword,
+            string host,
+            int port,
+            double updatedAtUnix,
+            float ttlSeconds,
+            LobbyStatus status,
+            out Lobby lobby)
+        {
+            lobby = null;
+
+            var lobbyId = new LobbyId(id);
+            if (!lobbyId.IsValid) return false;
+            if (maxPlayers <= 0) return false;
+
+            int safeMax = maxPlayers;
+            int safePlayers = players < 0 ? 0 : players;
+            if (safePlayers > safeMax) safePlayers = safeMax;
+
+            string safeName = Sanitize(name, lobbyId.Value, MaxNameLength);
+            string safeVersion = string.IsNullOrWhiteSpace(version) ? "" : version.Trim();
+            string safeMap = Sanitize(map, "Unknown", 32);
+            string safeRegion = Sanitize(region, "Unknown", 16);
+            int safePing = pingMs < 0 ? UnknownPing : pingMs;
+            float safeTtl = ttlSeconds > 0f ? ttlSeconds : DefaultTtlSeconds;
+            double safeUpdated = updatedAtUnix < 0d ? 0d : updatedAtUnix;
+
+            lobby = new Lobby(
+                lobbyId, safeName, safeVersion, safePlayers, safeMax, safeMap, safeRegion,
+                safePing, privacy, requiresPassword, new LobbyEndpoint(host, port),
+                safeUpdated, safeTtl, status);
+            return true;
+        }
+
+        private static string Sanitize(string value, string fallback, int maxLength)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return fallback;
+            string trimmed = value.Trim();
+            return trimmed.Length > maxLength ? trimmed.Substring(0, maxLength) : trimmed;
+        }
+
+        public override string ToString() =>
+            Name + " [" + Id + "] " + Players + "/" + MaxPlayers + " " + Map + "@" + Region +
+            " v" + Version + " " + Endpoint;
+    }
+}

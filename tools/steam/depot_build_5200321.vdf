@@ -1,0 +1,29 @@
+// Depot 5200321 — todo Builds\Build_steam\ menos lo que no debe viajar.
+//
+// Las tres exclusiones NO son limpieza cosmetica; cada una tiene un motivo concreto:
+//
+//  1. steam_appid.txt — Valve dice explicitamente que no se envie. Ademas, en este proyecto
+//     `SteamAppConfig` LO LEE (entorno -> steam_appid.txt -> constante), asi que un fichero con
+//     "480" dentro del paquete haria que el juego se inicializara como Spacewar en la maquina de
+//     cada tester, en vez de como el playtest. Sin lobby, sin invitaciones, sin navegador.
+//     El fichero existe SOLO para lanzar el .exe a mano fuera de Steam.
+//
+//  2. Builds\ — carpeta anidada con los logs de backend de las pruebas locales (10 ficheros,
+//     6,5 MB). Llevan rutas absolutas de la maquina de desarrollo y nombres de persona de Steam.
+//
+//  3. *_BurstDebugInformation_DoNotShip — lo nombra Unity, no nosotros.
+"DepotBuild"
+{
+	"DepotID" "5200321"
+
+	"FileMapping"
+	{
+		"LocalPath"  "*"
+		"DepotPath"  "."
+		"Recursive"  "1"
+	}
+
+	"FileExclusion" "steam_appid.txt"
+	"FileExclusion" "Builds\*"
+	"FileExclusion" "*_BurstDebugInformation_DoNotShip\*"
+}

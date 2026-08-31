@@ -1,0 +1,23 @@
+// Ensayo del build del Playtest: NO sube nada.
+//
+// Identico a `app_build_5200320.vdf` salvo `"Preview" "1"`. Existe como fichero aparte y no como
+// una edicion temporal del real porque un "Preview" "1" olvidado dentro del fichero de verdad
+// significa una subida que parece haber funcionado y no subio nada.
+//
+// Escribe el manifiesto de ficheros en J:\SteamBuild\output\ para revisar que las exclusiones
+// (steam_appid.txt, Builds\, *_BurstDebugInformation_DoNotShip) hacen lo que se cree.
+"AppBuild"
+{
+	"AppID"       "5200320"
+	"Desc"        "Project 0 Playtest — ENSAYO, no sube nada"
+	"Preview"     "1"
+
+	"ContentRoot" "J:\Unity\BackroomsSurvivalMMO\Builds\Build_steam"
+	"BuildOutput" "J:\SteamBuild\output\"
+	"verbose"     "1"
+
+	"Depots"
+	{
+		"5200321" "depot_build_5200321.vdf"
+	}
+}
