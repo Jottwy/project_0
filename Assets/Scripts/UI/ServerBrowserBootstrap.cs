@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using BackroomsSurvival.Connectivity;
 using BackroomsSurvival.Lobbies;
 using BackroomsSurvival.Net;
 using UnityEngine;
@@ -159,6 +160,40 @@ namespace BackroomsSurvival.UI
                     string.IsNullOrEmpty(session.WorldScene) ? "Unknown" : session.WorldScene,
                     session.Phase == SessionPhase.InGame ? LobbyStatus.InProgress : LobbyStatus.Waiting),
                 Time.unscaledTimeAsDouble);
+
+            PublishLanFallback();
+        }
+
+        /// Lo último que se escribió en `bs_lan_ip`, para no llamar a `SetData` sesenta veces por
+        /// segundo con el mismo valor. Steam no se queja, pero es tráfico de red por frame.
+        private static string _publishedLanIp;
+
+        /// <summary>
+        /// Escribe la dirección LAN del host como metadato APARTE de `connect_ip`.
+        ///
+        /// Hace falta porque con mapeo UPnP confirmado `connect_ip` pasa a ser la IP **pública**, y
+        /// un joiner de la MISMA red que llame ahí sólo llega si el router hace hairpin (NAT
+        /// loopback), que muchos routers domésticos no hacen. Con esta clave, ese joiner tiene a
+        /// dónde ir.
+        ///
+        /// Va por <see cref="SteamLobbyManager.TrySetHostedData"/> y no por el publicador a
+        /// propósito: es un metadato del lobby, no un campo del modelo, y meterlo en
+        /// <c>LobbyPublication</c> obligaría a tocar la ficha, el conductor y sus tests para un
+        /// dato que sólo mira el camino de conexión.
+        /// </summary>
+        private static void PublishLanFallback()
+        {
+            HostConnectivityReport report = HostConnectivityRunner.Latest;
+            string lan = report.LanIp;
+
+            if (string.IsNullOrEmpty(lan) || !SteamLobbyManager.HasHostedLobby)
+            {
+                _publishedLanIp = null;
+                return;
+            }
+
+            if (string.Equals(lan, _publishedLanIp, StringComparison.Ordinal)) return;
+            if (SteamLobbyManager.TrySetHostedData(SteamLobbyKeys.LanIp, lan)) _publishedLanIp = lan;
         }
 
         /// <summary>
@@ -208,11 +243,19 @@ namespace BackroomsSurvival.UI
                 return LobbyEndpoint.None;
             }
 
+            IReadOnlyList<string> local = LocalAddresses(Time.unscaledTimeAsDouble);
+
+            // Arranca la preparación de conectividad (IP pública + UPnP). Es idempotente por
+            // destino y NO bloquea: lanza una tarea la primera vez y en las siguientes 59
+            // llamadas por segundo no hace nada. Aquí no se consulta ninguna red.
+            HostConnectivityRunner.BeginForHost(local.Count > 0 ? local[0] : null, init.LastSelectedNetPort);
+
             // `JoinSessionUI.CurrentServerIP`, no `FindFirstObjectByType`: esto corre cada frame
             // mientras dura la partida, y el panel es `DontDestroyOnLoad` con instancia estática.
             string field = JoinSessionUI.CurrentServerIP;
             string host = LobbyEndpointPolicy.ResolvePublishableHost(
-                field, LocalAddresses(Time.unscaledTimeAsDouble), out string reason);
+                field, HostEndpointCandidates.WithConfirmedPublicFirst(
+                    HostConnectivityRunner.Latest, local), out string reason);
 
             // El motivo se registra UNA vez por valor: esto corre a 60 Hz y un warning por frame
             // es indistinguible de un bucle roto.
@@ -234,6 +277,7 @@ namespace BackroomsSurvival.UI
             }
 
             AnnouncementBlockReason = null;
+            HostConnectivityRunner.Latest.MarkEndpointPublished(host);
             return new LobbyEndpoint(host, init.LastSelectedNetPort);
         }
 

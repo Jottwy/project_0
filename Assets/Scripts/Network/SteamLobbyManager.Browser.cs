@@ -43,6 +43,10 @@ namespace BackroomsSurvival.Net
         /// tiene que traducirlo (ver `docs/SERVER_BROWSER.md`, §reloj).
         public const string AnnouncedAtKey = "bs_at";
 
+        /// La dirección LAN del host. Ver `SteamLobbyKeys.LanIp`: cuando `connect_ip` es la IP
+        /// pública, ésta es la que sirve a un joiner de la misma red.
+        public const string LanIpKey = "bs_lan_ip";
+
         /// Tope de resultados de una consulta. Steam no promete devolverlos todos.
         public const int DefaultMaxQueryResults = 50;
 

@@ -294,6 +294,16 @@ namespace BackroomsSurvival.Net
             Step("steam announcement", UI.ServerBrowserBootstrap.WithdrawAnnouncement);
             Step("steam lobby", () => SteamLobbyManager.Instance?.LeaveLobby());
 
+            // El reenvío de puerto que este host le pidió al router. Va DESPUÉS de retirar el
+            // anuncio y no antes: mientras el lobby siga publicado hay gente que puede estar
+            // llamando, y cerrarles la puerta antes de quitar el cartel sólo cambia un fallo por
+            // otro. El orden de los dos pasos de arriba no se toca — está documentado en el
+            // comentario que los precede y costó una sesión de diagnóstico.
+            //
+            // No bloquea: `Release` lanza el borrado y vuelve. Si el router no contesta, el mapeo
+            // caduca solo en una hora (por eso se pide con caducidad y no permanente).
+            Step("upnp mapping", Connectivity.HostConnectivityRunner.Release);
+
             Step("connect panel reset", () =>
             {
                 var ui = FindFirstObjectByType<JoinSessionUI>();

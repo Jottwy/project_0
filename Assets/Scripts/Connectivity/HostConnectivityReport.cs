@@ -107,6 +107,23 @@ namespace BackroomsSurvival.Connectivity
 
         public bool Has(ConnectivityRung rung) => (Rungs & rung) == rung;
 
+        /// <summary>
+        /// La IP pública que se puede ANUNCIAR, o null. Exige las tres cosas a la vez: que se
+        /// conozca, que el router haya CONFIRMADO el reenvío al releerlo, y que no haya sospecha
+        /// de CGNAT.
+        ///
+        /// Las tres son necesarias y ninguna sobra. Sin la confirmación se anunciaría un endpoint
+        /// que probablemente no acepta nada; con CGNAT, uno que seguro que no. Y publicar un
+        /// endpoint malo cuesta 15 s de espera a quien lo elige, mientras que no publicarlo no le
+        /// cuesta nada — la misma regla que ya impone `LobbyEndpointPolicy`.
+        /// </summary>
+        public string ConfirmedPublicHost =>
+            Has(ConnectivityRung.PublicIpKnown) &&
+            Has(ConnectivityRung.PortMappingConfirmed) &&
+            !HasCode(ConnectivityCode.CgnatSuspected)
+                ? PublicIp
+                : null;
+
         public bool HasCode(ConnectivityCode code) => _codes.Contains(code);
 
         public void SetLan(string lanIp, int port)

@@ -145,6 +145,12 @@ namespace BackroomsSurvival.Lobbies
         public const string GameValue = "backrooms_survival";
         public const string ConnectIp = "connect_ip";
         public const string ConnectPort = "connect_port";
+
+        /// La dirección LAN del host, ADEMÁS de `connect_ip`. Cuando el host consigue un mapeo
+        /// UPnP confirmado, `connect_ip` pasa a ser su IP pública — y un joiner de la MISMA red que
+        /// llame a esa IP pública sólo llega si el router hace hairpin/NAT loopback, cosa que
+        /// muchos routers domésticos no hacen. Esta clave es el respaldo para ese caso.
+        public const string LanIp = "bs_lan_ip";
         public const string HostName = "host_name";
         public const string Name = "bs_name";
         public const string WireVersion = "bs_wire";

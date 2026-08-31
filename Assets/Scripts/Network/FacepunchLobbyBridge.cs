@@ -120,6 +120,7 @@ namespace BackroomsSurvival.Net
             if (!Same(SteamLobbyKeys.Map, SteamLobbyManager.MapKey, "map", ref mismatch)) return false;
             if (!Same(SteamLobbyKeys.State, SteamLobbyManager.StateKey, "state", ref mismatch)) return false;
             if (!Same(SteamLobbyKeys.AnnouncedAt, SteamLobbyManager.AnnouncedAtKey, "announced_at", ref mismatch)) return false;
+            if (!Same(SteamLobbyKeys.LanIp, SteamLobbyManager.LanIpKey, "lan_ip", ref mismatch)) return false;
 
             return true;
         }
