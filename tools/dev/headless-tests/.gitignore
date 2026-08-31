@@ -1,0 +1,8 @@
+# Salida del build del harness. `obj/` ya lo cubre el .gitignore raíz; `bin/` no, y dejarlo
+# suelto llena `git status` de ruido para las otras sesiones que comparten el índice.
+bin/
+
+# El .gitignore raíz ignora `*.csproj` entero, y con razón: los de Unity los regenera el editor.
+# Éste NO lo genera nadie, es fuente. La negación tiene que vivir aquí abajo para poder ganarle a
+# la regla de arriba.
+!natverify.csproj

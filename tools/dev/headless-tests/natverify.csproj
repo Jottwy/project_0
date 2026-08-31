@@ -1,0 +1,52 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <LangVersion>9.0</LangVersion>
+    <AssemblyName>natverify</AssemblyName>
+    <RootNamespace>natverify</RootNamespace>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <NoWarn>$(NoWarn);CS0618;CS1591</NoWarn>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="NUnitShim.cs" />
+    <Compile Include="Runner.cs" />
+  </ItemGroup>
+
+  <!-- El codigo REAL, no una copia. Se excluye HostConnectivityRunner.cs porque usa UnityEngine. -->
+  <ItemGroup>
+    <Compile Include="$(Repo)\Assets\Scripts\Connectivity\NatAddressPolicy.cs" />
+    <Compile Include="$(Repo)\Assets\Scripts\Connectivity\HostConnectivityReport.cs" />
+    <Compile Include="$(Repo)\Assets\Scripts\Connectivity\CgnatHeuristic.cs" />
+    <Compile Include="$(Repo)\Assets\Scripts\Connectivity\SsdpMessage.cs" />
+    <Compile Include="$(Repo)\Assets\Scripts\Connectivity\SsdpProbe.cs" />
+    <Compile Include="$(Repo)\Assets\Scripts\Connectivity\IgdDescription.cs" />
+    <Compile Include="$(Repo)\Assets\Scripts\Connectivity\IgdSoap.cs" />
+    <Compile Include="$(Repo)\Assets\Scripts\Connectivity\IgdClient.cs" />
+    <Compile Include="$(Repo)\Assets\Scripts\Connectivity\IgdLocator.cs" />
+    <Compile Include="$(Repo)\Assets\Scripts\Connectivity\PublicIpResolver.cs" />
+    <Compile Include="$(Repo)\Assets\Scripts\Connectivity\HostConnectivityService.cs" />
+    <Compile Include="$(Repo)\Assets\Scripts\Connectivity\HostEndpointCandidates.cs" />
+    <Compile Include="$(Repo)\Assets\Scripts\Lobbies\LobbyEndpointPolicy.cs" />
+  </ItemGroup>
+
+  <!-- Los ficheros de test REALES, sin tocar. LanFallbackMetadataTests queda fuera: depende de
+       SteamLobbyManager, que arrastra Steamworks y UnityEngine. -->
+  <ItemGroup>
+    <Compile Include="$(Repo)\Assets\Tests\EditMode\FakeUpnpDevice.cs" />
+    <Compile Include="$(Repo)\Assets\Tests\EditMode\NatAddressPolicyTests.cs" />
+    <Compile Include="$(Repo)\Assets\Tests\EditMode\HostConnectivityReportTests.cs" />
+    <Compile Include="$(Repo)\Assets\Tests\EditMode\CgnatHeuristicTests.cs" />
+    <Compile Include="$(Repo)\Assets\Tests\EditMode\IgdProtocolTests.cs" />
+    <Compile Include="$(Repo)\Assets\Tests\EditMode\IgdClientTests.cs" />
+    <Compile Include="$(Repo)\Assets\Tests\EditMode\PublicIpResolverTests.cs" />
+    <Compile Include="$(Repo)\Assets\Tests\EditMode\HostConnectivityServiceTests.cs" />
+    <Compile Include="$(Repo)\Assets\Tests\EditMode\HostEndpointPrecedenceTests.cs" />
+  </ItemGroup>
+
+</Project>
