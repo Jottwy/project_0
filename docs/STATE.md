@@ -2,6 +2,36 @@
 > Actualizado por /checkpoint al cierre de cada sesión. Leído al inicio de cada sesión.
 
 ## Última sesión
+- Fecha: 2026-08-31, 5.ª tanda (**NETWORKING TASK 3: el host se abre el puerto solo, y sólo anuncia lo que puede confirmar**) — validación: **EditMode 1191 tests, 1176 pasan, 15 fallan (los 15 preexistentes y ajenos); mis 204 casos nuevos TODOS verdes. `CompileCheckClient` 0 errores en las cuatro assemblies. `cargo test` 1212/1212, clippy `--all-targets -D warnings` y fmt limpios. CERO RUST, CERO WIRE.**
+
+0. **Lo que había y lo que falta.** Los pasos 1, 2, 6 y 7 del encargo (interfaz local, puerto, publicar endpoint real, fallback manual) YA existían desde la 2.ª tanda (`LocalAddressProbe` + `LobbyEndpointPolicy` + `LastSelectedNetPort`). Lo que faltaba: IP pública, UPnP, verificación del mapeo, y **la escalera de estados** — antes no había ningún concepto de "confirmado" frente a "supuesto".
+
+1. **UPnP a mano, sin dependencia nueva.** SSDP es UDP multicast y el control SOAP sobre HTTP: todo `System.Net`. Descartadas Mono.Nat/Open.NAT (DLL de terceros en `Assets/Plugins`, misma familia que costó dos sesiones con `steam_api64.dll`) y el crate `igd` de Rust (dependencia MÁS superficie IPC nueva ⇒ wire + ADR, para algo que no es tráfico de juego). Vive entero en Unity, por eso CERO WIRE.
+
+2. **Pedir un mapeo no es tenerlo, y ése es el hallazgo de diseño.** `AddPortMapping` devolviendo 200 no demuestra nada: hay routers que aceptan y aplican otro cliente interno. La confirmación es RELEER con `GetSpecificPortMappingEntry`. Sin esa relectura el host anunciaría una IP pública que reenvía al PC del vecino. Dos tests cubren ese caso exacto. De ahí que el estado sea una ESCALERA de cinco peldaños (`PublicIpKnown` → `PortMappingRequested` → `PortMappingConfirmed` → `EndpointPublished` → `RemotePeerObserved`) y no un booleano. **Ninguno de los cinco significa "internet funciona"**: el último lo enciende igual un joiner de la misma LAN.
+
+3. **La IP pública sale del router primero.** `GetExternalIPAddress` no depende de terceros y es la ÚNICA fuente que puede delatar un CGNAT: un eco HTTP le contesta una IP pública impecable a una máquina detrás del NAT del operador. Tres ecos HTTPS de dueños distintos como respaldo (punto único de fallo si fuera uno). Se consultan las dos aunque el router ya haya contestado: la discrepancia es el tercer indicio de CGNAT.
+
+4. **Precedencia de `connect_ip`:** lo que escribió el humano → IP pública con mapeo CONFIRMADO y sin CGNAT → dirección local → nada, y no se anuncia. `LobbyEndpointPolicy` NO se tocó: sigue pura y sigue recibiendo los candidatos ya ordenados; el reordenado vive en `HostEndpointCandidates`. **Cero regresión en LAN**, con test.
+
+5. **`bs_lan_ip` y el hairpin.** Con la pública en `connect_ip`, un joiner de la MISMA red sólo llega si el router hace NAT loopback, que muchos domésticos no hacen: la mejora habría roto lo que ya funcionaba. El host publica además su LAN y el joiner la usa en el **[Retry]**, no en el primer intento — desde el joiner no se puede saber si está en la misma red (dos casas pueden ser las dos `192.168.1.0/24`) y adivinarlo mandaría a gente de fuera a una dirección privada. `LobbyEndpoint.Alternate` NO cuenta para `Equals`/`GetHashCode` o la selección del navegador se perdería en cada refresco. `Lobby` sigue INMUTABLE: `TryCreate` gana una sobrecarga, no un `Attach`.
+
+6. **UN BUG REAL, encontrado EJECUTANDO y no leyendo.** `IPAddress.TryParse` acepta la forma abreviada clásica: `88.16.240` es `88.16.0.240`, `8.8` es `8.0.0.8`. Una respuesta TRUNCADA del eco de IP pública pasaba la validación, era públicamente enrutable y habría acabado publicada en `connect_ip`. Compilaba perfectamente. `ParseEchoResponse` exige ahora cuatro octetos. Commit `9f95f455`.
+
+7. **Herramienta nueva: `tools/dev/headless-tests/`.** Corre los ficheros de test REALES sin abrir Unity (SDK de .NET + shim mínimo de NUnit). Nació porque el lock lo tenía otra sesión y `CompileCheckClient` contesta "compila", que no es "pasa" — el bug del punto 6 compilaba. No sustituye a `-runTests` y no cubre nada con UnityEngine/Steamworks.
+
+8. **Regla de parada, respetada y por escrito en ADR-112.** Ni Steam Networking Sockets, ni Steam Datagram Relay, ni STUN, ni TURN, ni hole punching: los cinco son cambios de TRANSPORTE. Se anota lo que cuesta no tenerlos: **el CGNAT no tiene solución por esta vía**, y eso no es configuración de nadie.
+
+9. **PENDIENTE, con nombre.** (a) **En esta máquina NO hay IGD** — M-SEARCH multicast atado a `192.168.1.40` con el `ST` de `InternetGatewayDevice` y con `ssdp:all`: cero respuestas; unicast a `192.168.1.1:1900`: timeout. Así que lo validado aquí es el camino de FALLO, no el de éxito con hardware. La sonda en vivo del código real sí se ejecutó: ruta por defecto correcta, `UPNP_UNAVAILABLE` en 3,2 s, IP pública por eco, y correctamente NO se publica. (b) Faltan **tres pruebas físicas**: host CON router UPnP, host SIN él (comprobando que sigue sirviendo en LAN), y dos máquinas en redes distintas. (c) Nadie ha visto todavía un Join entrante desde fuera de la LAN.
+
+10. **Documentación:** `ADR-112` (siete decisiones, con la regla de parada); `NETWORK_ARCHITECTURE_CURRENT.md` §"La puerta a internet" nueva (la escalera, los cinco códigos `UPNP_UNAVAILABLE`/`UPNP_DISABLED`/`UPNP_MAPPING_FAILED`/`CGNAT_SUSPECTED`/`PUBLIC_ENDPOINT_UNKNOWN`, los dos interruptores `BS_NO_UPNP` y `BS_NO_PUBLIC_IP_LOOKUP`) más cuatro recetas de diagnóstico y la corrección de "lo que NO incluye" (UPnP **no** es NAT traversal); `SERVER_BROWSER.md` §17 nueva.
+
+**Próximo paso único:** la prueba física del camino de éxito — hostear desde una máquina con router UPnP y comprobar en el log que sale `rungs=...PortMappingConfirmed` y que el endpoint anunciado es la IP pública.
+
+**NO tocar:** la precedencia de `LobbyEndpointPolicy` y su regla de "sin dirección defendible NO se anuncia" están validadas y no se relajan; `LobbyEndpoint.Equals`/`GetHashCode` no incorporan `Alternate`; el orden de los dos `Step` de Steam en `SessionEndHandler` no se toca (el de UPnP va después).
+
+---
+
 - Fecha: 2026-08-31, 4.ª tanda (**ALPHA-1 NETWORKING: A y B resueltos con ciclo rojo→verde; C, D y E PARADOS en decisiones que no improviso**) — **`cargo test` 1196/1196, clippy `--all-targets -D warnings` y fmt limpios. Suite EditMode 954/969 (los 14 rojos ajenos + el flaky conocido). CERO WIRE.**
 
 0. **A — «el host es invisible para los joiners» NO ERA DE RED.** Cadena verificada: Unity **propone** un id por `NET_ID` (`LastSelectedNetId`), el host **asigna** el de verdad (`allocate_peer_id`), el backend del joiner lo adopta (`self.local_id = assigned_id`) y **nada se lo cuenta a Unity** — `WorldState` no tiene campo con el id local. Unity filtraba `remote_players` contra el valor obsoleto; y como el backend construye esa lista recorriendo `net.peers`, que **nunca contiene al local**, ese segundo filtro no podía aportar nada correcto, sólo quitar. El default de `NetworkInitializer.netId` es **1**, el id del host: por eso desaparecía el host y no los demás. **Fix mínimo: se quita el filtro.** 5 de 8 tests fallaban antes; 8/8 después.
