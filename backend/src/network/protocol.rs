@@ -20,6 +20,20 @@ pub const MAX_PACKET_SIZE: usize = 65535;
 /// constantes: aceptar de más es tolerancia, emitir de más es fragmentación.
 pub const SAFE_DATAGRAM_BYTES: usize = 1200;
 
+/// TAREA 2 (2026-08-31) — tamaño máximo de un frame de voz que se acepta para emitir.
+///
+/// `VoiceFrame::data` es un blob OPACO que llega por IPC desde el cliente, así que su tamaño lo
+/// decide Unity y no este proceso: es la única entrada de tamaño ilimitado del wire que no
+/// controla el backend. Medido, el sobre de un `VoiceFrame` son 39 B (cabecera de 12 incluida),
+/// así que `1200 − 64` deja holgura de sobra para el sobre y sigue admitiendo un frame ~4× mayor
+/// que el de Opus a 20 ms (~60-240 B), que es lo que manda el cliente real.
+///
+/// Se rechaza en el PRODUCTOR y no sólo en el techo de salida porque un frame de voz es
+/// desechable por diseño (el decodificador tiene ocultación de pérdidas) y porque así el log dice
+/// "un cliente mandó un frame de N bytes" en vez de "un datagrama no cupo": la causa está en el
+/// otro lado del IPC y el mensaje tiene que apuntar allí.
+pub const MAX_VOICE_FRAME_BYTES: usize = SAFE_DATAGRAM_BYTES - 64;
+
 /// 12-byte packet header (ARCHITECTURE_V1.md §5.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PacketHeader {
@@ -434,6 +448,29 @@ pub struct ChunkSyncData {
     /// Cuántas páginas componen ESTE chunk. Nunca 0.
     #[serde(default = "default_page_count")]
     pub page_count: u16,
+    /// TAREA 2 (2026-08-31) — qué RONDA de emisión partió estas páginas.
+    ///
+    /// `page`/`page_count` bastaban mientras el único portador paginado era `WorldSyncChunk`,
+    /// porque ése ya viaja estampado con `world_revision` y el ensamblador puede usarla de clave.
+    /// `ChunkState` (0x11) y `ChunkTransfer` (0x30) no llevan ninguna: son instantáneas completas
+    /// SIN versionado, y sin un discriminante de ronda el ensamblador puede coser la página 0 de
+    /// una emisión con la página 1 de la siguiente y entregar un chunk QUIMERA — una lista de
+    /// entidades que nunca existió, y que además el receptor aplica como buena porque
+    /// `apply_chunk_sync` es un reemplazo verbatim.
+    ///
+    /// No basta con "el índice nuevo pisa al viejo": si la ronda N entrega {0} y la N+1 entrega
+    /// {1}, el índice 1 no pisa nada y las dos mitades se juntan. La única regla que sobrevive a
+    /// pérdida + reordenación es que las páginas digan de qué ronda son.
+    ///
+    /// La estampa el PAGINADOR, no `chunk_to_sync_data`: el gate de F0.8 hashea el dato sin
+    /// paginar para decidir si la ronda sale, y una generación dentro de ese hash cambiaría en
+    /// cada ronda, dejando el gate permanentemente abierto — justo el ahorro que F0.8 compró.
+    ///
+    /// `WorldSyncChunk` la ignora y sigue con `world_revision`, que es más fuerte (identifica el
+    /// goteo entero, no una ronda). `#[serde(default)]` = 0, que es lo que vale un chunk de una
+    /// sola página: sin partir no hay nada que discriminar.
+    #[serde(default)]
+    pub generation: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -609,13 +646,35 @@ pub enum PacketPayload {
         yaw: f32,
         size: [f32; 2],
         strokes: Vec<crate::world::spray::SprayStroke>,
+        /// TAREA 2 (2026-08-31): pagina de este gesto, 0-based. Ver el doc de `SprayPlaced`; la
+        /// clave de reensamblado aqui es `place_id`, que ya es unico por gesto.
+        #[serde(default)]
+        page: u16,
+        #[serde(default = "default_page_count")]
+        page_count: u16,
     },
     /// ADR-068: a spray the host ACCEPTED, on its way to every peer. Travels one per packet and
     /// not as a roster, unlike `StpBuildingList`: a spray is ~1,9 KB, so even a modest chunk's
     /// worth would blow the datagram that ADR-060 (d) already had to paginate for far lighter
     /// elements.
+    ///
+    /// TAREA 2 (2026-08-31): y por eso mismo va PAGINADO POR TRAZOS. El peor caso declarado
+    /// (`MAX_STROKES_PER_SPRAY` x `MAX_POINTS_PER_SPRAY`) mide 1923 B medidos contra un techo de
+    /// 1200, y esto es FIABLE: sin trocearlo el techo de `send_datagram` lo rechaza, la capa
+    /// fiable lo reintenta cinco veces identico y ADR-062 termina expulsando al peer. Bajar los
+    /// topes no era alternativa: para que el peor caso cupiera habria que dejar los trazos en 3 o
+    /// los puntos en 150, que es recortar el dibujo, no el transporte.
+    ///
+    /// La unidad de division es el TRAZO porque es la unidad atomica del formato (`points` de un
+    /// trazo es un blob que no se puede partir sin inventar un indice dentro de el), y la clave de
+    /// reensamblado es `spray.id`, que el host acuna monotono. Todo-o-nada como los chunks: media
+    /// pintada no es una pintada a medias, es una pintada DISTINTA, y ademas se guarda.
     SprayPlaced {
         spray: crate::world::spray::Spray,
+        #[serde(default)]
+        page: u16,
+        #[serde(default = "default_page_count")]
+        page_count: u16,
     },
     /// ADR-068: "que hay pintado en este chunk". El host responde con un `SprayPlaced` por
     /// pintada, no con una lista: ver el porque en el doc de `SprayPlaced`.
@@ -1401,6 +1460,7 @@ mod tests {
                 }],
                 page: 0,
                 page_count: 1,
+                generation: 0,
             },
         };
         let header = PacketHeader::new(payload.type_code(), 1, 200, 10000);
@@ -1437,6 +1497,7 @@ mod tests {
                 items: vec![],
                 page: 0,
                 page_count: 1,
+                generation: 0,
             }],
         };
         let header = PacketHeader::new(payload.type_code(), 1, 300, 10000);
@@ -1483,6 +1544,7 @@ mod tests {
                 }],
                 page: 0,
                 page_count: 1,
+                generation: 0,
             },
         };
         let header = PacketHeader::new(payload.type_code(), 1, 400, 10000);

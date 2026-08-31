@@ -6985,6 +6985,8 @@ async fn the_spray_opcodes_belong_to_spray_and_travel_reliably() {
         yaw: 90.0,
         size: [1.0, 1.0],
         strokes: vec![],
+        page: 0,
+        page_count: 1,
     };
     let placed = PacketPayload::SprayPlaced {
         spray: crate::world::spray::Spray {
@@ -6999,6 +7001,8 @@ async fn the_spray_opcodes_belong_to_spray_and_travel_reliably() {
             tick: 1,
             strokes: vec![],
         },
+        page: 0,
+        page_count: 1,
     };
     let chunk_req = PacketPayload::SprayChunkRequest {
         cx: 1,

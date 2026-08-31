@@ -1135,16 +1135,19 @@ pub async fn run(
                     // esto es presentación efímera y la autoridad sigue siendo SprayPlace. Lo
                     // único que se decide aquí es a quién se le manda.
                     let me = [player.position.x, player.position.y, player.position.z];
-                    let payload = crate::network::protocol::PacketPayload::SprayDraft {
-                        place_id: req.place_id,
-                        layer: req.layer,
-                        anchor: req.anchor,
-                        yaw: req.yaw,
-                        color: req.color,
-                        width: req.width,
-                        first_index: req.first_index,
-                        points_mm: req.points_mm,
-                    };
+                    // TAREA 2 (2026-08-31): `points_mm` lo dimensiona el cliente, así que el trazo
+                    // se trocea en frontera de punto. Sin ensamblador: `first_index` ya dice dónde
+                    // encaja cada trozo (ver `spray_draft_datagrams`).
+                    let payloads = crate::network::sync::spray_draft_datagrams(
+                        req.place_id,
+                        req.layer,
+                        req.anchor,
+                        req.yaw,
+                        req.color,
+                        req.width,
+                        req.first_index,
+                        req.points_mm,
+                    );
                     if net.is_host {
                         // Somos el relay: una copia por cada quien esté lo bastante cerca para
                         // verlo. Misma forma que la voz (ADR-046).
@@ -1154,7 +1157,9 @@ pub async fn run(
                             net.local_id,
                         );
                         for dest in dests {
-                            net.send_unreliable_to(dest, &payload).await;
+                            for payload in &payloads {
+                                net.send_unreliable_to(dest, payload).await;
+                            }
                         }
                     } else {
                         // El único enlace real de un joiner es el host, que es quien decide
@@ -1166,7 +1171,9 @@ pub async fn run(
                                 && crate::network::sync::within_spray_draft_range(me, p.position)
                         });
                         if anyone_near {
-                            net.send_unreliable_to(1, &payload).await; // 1 = host
+                            for payload in &payloads {
+                                net.send_unreliable_to(1, payload).await; // 1 = host
+                            }
                         }
                     }
                 }
@@ -1174,6 +1181,22 @@ pub async fn run(
                     // ADR-046 Fase 2 — our own microphone, on its way out.
                     voice_frames_in = voice_frames_in.wrapping_add(1);
                     voice_bytes_in = voice_bytes_in.wrapping_add(data.len() as u64);
+
+                    // TAREA 2 (2026-08-31): el ÚNICO campo del wire cuyo tamaño lo decide el
+                    // cliente. Un frame por encima del tope produciría un datagrama que el techo
+                    // de salida rechaza, y el log diría "no cupo" en vez de decir quién lo mandó.
+                    // Un frame de voz es desechable por diseño (el decodificador oculta pérdidas),
+                    // así que se tira éste y la voz sigue: no se corta la sesión por un frame.
+                    if data.len() > crate::network::protocol::MAX_VOICE_FRAME_BYTES {
+                        if voice_frames_in % 100 == 1 {
+                            warn!(
+                                "MTUPROBE event=voice_frame_over_budget bytes={} max={} seq={seq} — frame descartado; el cliente está emitiendo frames que no caben en un datagrama",
+                                data.len(),
+                                crate::network::protocol::MAX_VOICE_FRAME_BYTES
+                            );
+                        }
+                        continue;
+                    }
 
                     // The dead do not speak. The client also stops capturing, but that half is
                     // the one a patched client can delete.
@@ -2961,10 +2984,11 @@ async fn handle_network_event(
                     sprays.len()
                 );
                 for spray in &sprays {
-                    let payload = crate::network::protocol::PacketPayload::SprayPlaced {
-                        spray: spray.clone(),
-                    };
-                    net.send_reliable(requester_id, &payload).await;
+                    // TAREA 2 (2026-08-31): paginado por trazos — el peor caso declarado mide
+                    // 1923 B contra un techo de 1200, y esto es fiable.
+                    for payload in crate::network::sync::spray_placed_pages(spray) {
+                        net.send_reliable(requester_id, &payload).await;
+                    }
                 }
             }
         }
@@ -3276,7 +3300,24 @@ async fn handle_network_event(
             // StpItemList). The host never receives this (it doesn't broadcast to itself),
             // but guard anyway — its own map is the source of truth.
             if !net.is_host {
-                world.corpses = corpses.into_iter().map(|c| (c.id, c)).collect();
+                // TAREA 2 (2026-08-31): dos entradas con el mismo `id` son dos tramos de UN
+                // cadáver que no cabía en un datagrama (ver `split_oversized_corpses`). Se unen
+                // por id en vez de quedarse con la última, que es lo que hacía el `collect`
+                // directo — y que con el troceo habría borrado botín en silencio. Sin troceo el
+                // resultado es idéntico al de antes: un id repetido no podía existir.
+                let mut merged: std::collections::HashMap<u32, crate::world::corpse::CorpseData> =
+                    std::collections::HashMap::with_capacity(corpses.len());
+                for corpse in corpses {
+                    match merged.entry(corpse.id) {
+                        std::collections::hash_map::Entry::Occupied(mut slot) => {
+                            slot.get_mut().items.extend(corpse.items);
+                        }
+                        std::collections::hash_map::Entry::Vacant(slot) => {
+                            slot.insert(corpse);
+                        }
+                    }
+                }
+                world.corpses = merged;
             }
         }
 
@@ -6007,15 +6048,18 @@ async fn process_spray_place(
         // El joiner no ancla, no valida y no numera: solo pide. Fiable porque una pintada
         // perdida no se auto-cura — nadie la reintenta y el jugador se queda mirando una pared
         // que para los demás sí está pintada.
-        let payload = crate::network::protocol::PacketPayload::SprayPlaceRequest {
-            place_id: req.place_id,
-            layer: req.layer,
-            world_pos: req.world_pos,
-            yaw: req.yaw,
-            size: req.size,
-            strokes: req.strokes,
-        };
-        net.send_reliable(1, &payload).await;
+        // TAREA 2 (2026-08-31): paginado por trazos; lleva los mismos trazos que `SprayPlaced` y
+        // por tanto el mismo peor caso de 1923 B.
+        for payload in crate::network::sync::spray_place_request_pages(
+            req.place_id,
+            req.layer,
+            req.world_pos,
+            req.yaw,
+            req.size,
+            req.strokes,
+        ) {
+            net.send_reliable(1, &payload).await;
+        }
         info!(
             "MPTRACE step=SPRAY event=spray_place_forwarded_to_host place_id={}",
             req.place_id
@@ -6032,11 +6076,13 @@ async fn process_spray_place(
 /// (a diferencia de `StpBuildingList`): una pintada son ~1,9 KB y un puñado no cabría en el
 /// datagrama que ADR-060 (d) ya tuvo que paginar para elementos mucho más ligeros.
 async fn broadcast_spray(spray: &crate::world::spray::Spray, net: &mut NetworkManager) {
-    let payload = crate::network::protocol::PacketPayload::SprayPlaced {
-        spray: spray.clone(),
-    };
+    // TAREA 2 (2026-08-31): paginado por trazos. Se construyen las páginas UNA vez y se reusan
+    // para todos los destinos: el troceo no depende de a quién va.
+    let pages = crate::network::sync::spray_placed_pages(spray);
     for peer_id in net.peer_ids() {
-        net.send_reliable(peer_id, &payload).await;
+        for payload in &pages {
+            net.send_reliable(peer_id, payload).await;
+        }
     }
 }
 

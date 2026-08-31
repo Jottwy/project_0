@@ -11120,3 +11120,110 @@ cierre sucio se queda en el router para siempre. Los routers que sólo admiten p
   (M-SEARCH multicast atado a `192.168.1.40` y unicast a `192.168.1.1:1900`: cero respuestas). Lo
   que está probado contra un router de mentira que habla HTTP de verdad es el comportamiento del
   cliente; lo que falta es un router real.
+
+---
+
+## ADR-113 — Ningún datagrama UDP saliente pasa de 1200 B, y el techo lo aplica el emisor (2026-08-31)
+
+**Contexto.** `SAFE_DATAGRAM_BYTES = 1200` existía desde la auditoría de MTU de 2026-08-30 y no era
+una invariante: era un aviso, y sólo para los caminos FIABLES. Los no fiables seguían poniendo en el
+cable datagramas de hasta **1881 B**, **31.004 por sesión**, que IP trocea en fragmentos de los que
+basta perder uno para perder el paquete entero. Los 4 únicos reenvíos de la sesión física de 9 min
+fueron exactamente los 4 datagramas por encima de 1472 B; ninguno por debajo se perdió.
+
+Medido antes de tocar nada (payload real, cabecera de 12 B incluida):
+
+| mensaje | bytes | fiable | estado |
+|---|---|---|---|
+| `ChunkState` 0x11 | **1094 vacío**, 1666 con 8 entidades, 2078 con 13, 4460 con 40 | no | sin paginar |
+| `ChunkTransfer` 0x30 | idem (mismo `ChunkSyncData`) | **sí** | sin paginar |
+| `PeerList` 0x07 | 823 con 8 peers, **1617 con 16**, 4983 con 50 | no | sin trocear |
+| `HandshakeAck` 0x03 | 997 con 8 peers, **1791 con 16** | no (`raw`) | sin acotar |
+| `SprayPlaced` 0x52 / `SprayPlaceRequest` 0x51 | **1923 en el peor caso declarado** | **sí** | sin paginar |
+| `CorpseList` 0x46, un solo cadáver | **1207 con 35 pilas**, 2048 con 64 | no | un elemento no cabe él solo |
+| `VoiceFrame` 0x50 | 98–1439, **lo dimensiona el cliente** | no | sin tope |
+| `SprayDraft` 0x54 | lo dimensiona el cliente | no | sin trocear |
+| `PlayerUpdate` 0x10 | 254 | no | correcto |
+
+De esos 1094 B de un chunk vacío, **557 son `layout`**; la rejilla es fija (`LAYOUT_GRID_SIZE` = 10)
+así que la cabecera de un chunk no crece, pero deja sólo ~106 B de margen. Añadir UN campo al
+`ChunkSyncData` bastó para partir un chunk que antes cabía.
+
+**Decisión 1 — el techo se aplica ANTES del `send_to`, no después.** `send_datagram` —el único punto
+de salida— pasa a devolver `bool` y a RECHAZAR cualquier datagrama por encima de
+`SAFE_DATAGRAM_BYTES`, fiable o no, con `error!` y un contador propio (`refused_datagram_count()`).
+Un aviso que nadie lee no es una invariante; un contador que un test puede afirmar, sí. Los caminos
+fiables miran ese retorno y **no encolan lo rechazado**: reenviarlo cinco veces produciría cinco
+rechazos idénticos y `MAX_RETRIES` expulsaría al peer (ADR-062) — un datagrama demasiado grande
+acabaría echando a un jugador de la partida.
+
+**Decisión 2 — la solución la elige la SEMÁNTICA de cada mensaje, no una regla única.** Cuatro
+tratamientos distintos, y la diferencia entre ellos es lo que este ADR fija:
+
+- **Paginación con reensamblado todo-o-nada** para `ChunkState`, `ChunkTransfer`, `SprayPlaced` y
+  `SprayPlaceRequest`. Son instantáneas COMPLETAS que el receptor aplica reemplazando
+  (`apply_chunk_sync` hace `entities.clear()` y reconstruye), así que aplicar una página suelta no
+  deja el objeto a medias: lo deja MAL, y dado por bueno. Los chunks se parten por entidades e
+  items; las pintadas por TRAZOS, que es su unidad atómica.
+- **Troceo SIN ensamblador** para `PeerList` y `SprayDraft`. Su receptor ya es aditivo —`PeerList`
+  inserta y refresca, y **nunca borra**: la baja llega por `PeerDisconnected` o por timeout— así que
+  cada trozo es un mensaje completo, aplicable suelto, en cualquier orden y repetido. Aquí el
+  todo-o-nada no compraría nada y sí introduciría un fallo nuevo: una generación que nunca completa
+  no refrescaría ningún latido y expulsaría a todos los pares con la red intacta (I17).
+- **Recorte con log** para `HandshakeAck`. Es la única respuesta al handshake, no tiene reintento
+  propio, y paginarlo obligaría al joiner a reensamblar N datagramas ANTES de estar conectado. Se
+  recorta la lista de peers —una pista que hoy el receptor ni lee, y que el relay de `PeerList`
+  repone en 100 ms— y nunca `assigned_id`, `world_seed`, `config` ni `phantom_density_scale`.
+- **Tope en el productor** para `VoiceFrame` (`MAX_VOICE_FRAME_BYTES`). Un frame de voz es
+  desechable por diseño (el decodificador oculta pérdidas) y su tamaño lo decide Unity: rechazarlo
+  en el productor hace que el log diga quién lo mandó en vez de "un datagrama no cupo".
+
+**Decisión 3 — `ChunkSyncData` gana `generation: u32`, y sin ella la paginación no es correcta.**
+`ChunkState` y `ChunkTransfer` no llevan versión: son instantáneas sin versionado. Si la ronda N
+entrega su página 0 y pierde el resto, y la N+1 pierde su página 0 y entrega el resto, los índices no
+se pisan y el ensamblador cose un chunk QUIMERA — una lista de entidades que nunca existió, aplicada
+como buena. "El índice nuevo pisa al viejo" NO basta. La generación es el reloj de sesión y la
+estampa el PAGINADOR, nunca `chunk_to_sync_data`: dentro del hash del gate de F0.8 cambiaría en cada
+ronda y dejaría el gate permanentemente abierto, tirando el ahorro que compró.
+
+**Decisión 4 — un cadáver que no cabe se parte en varias ENTRADAS del mismo roster.** Es el único
+elemento de roster que se pasa él solo (1207 B con 35 pilas, que es un inventario STP lleno de
+verdad, no el tope de higiene de 64). Se emiten varias entradas con el mismo `id` y tramos disjuntos
+de `items`, y el receptor las une por id. No hace falta wire nuevo porque el roster se aplica
+reemplazando la lista completa de una generación: dos entradas con el mismo `id` dentro de una
+generación son inequívocamente dos tramos del mismo cadáver, y antes de esto un `id` repetido no
+podía existir. Truncar habría sido perder botín de un jugador muerto — el único camino por el que
+este sistema puede destruir algo — y encima de forma invisible.
+
+**Lo que NO se hace.** No se toca `MAX_STROKES_PER_SPRAY` ni `MAX_POINTS_PER_SPRAY`: para que el
+peor caso de una pintada cupiera en 1200 B habría que dejar los trazos en 3 o los puntos en 150, que
+es recortar el dibujo, no el transporte. No se deja de enviar `layout` en el broadcast periódico
+aunque sean 557 B por chunk que casi nunca cambian: eso es WorldGen y es otra decisión.
+
+**Consecuencias.**
+
+- `WIRE_SCHEMA_VERSION` 53 → 54 y su espejo `WireSchema.Expected` en el mismo cambio (ADR-061). Los
+  campos nuevos son `#[serde(default)]` y el formato es aditivo, así que un decodificador anterior
+  **no falla** — y ése es exactamente el motivo del bump: aplicaría una página suelta como si fuera
+  el mensaje entero, en silencio. La puerta de versión es el mecanismo, no burocracia.
+- **Coste medido de la paginación**, sobre el emisor más pesado (`ChunkState`, chunk real): 4
+  entidades 1448 B → 2 páginas / 1891 B; 13 entidades 2202 B → 3 páginas / 3080 B (+40 %); 40
+  entidades 4555 B → 6 páginas / 6750 B. Ningún datagrama pasa de **1196 B**. El aumento se paga
+  sólo en las rondas que el gate de F0.8 deja salir, y a cambio ningún datagrama se fragmenta en IP.
+- Las páginas de continuación viajan con el `layout` VACÍO (el ensamblador toma la cabecera de la
+  página 0). Sin eso el presupuesto restante era de ~106 B, o sea UNA entidad por página, y a 5 Hz
+  eso habría sido peor que el problema original. Queda anotado que el sobre de una página de
+  continuación sigue costando ~463 B en nombres de campo de msgpack.
+- Los tamaños se miden CODIFICANDO con el sobre real de cada portador, nunca estimando: msgpack
+  escribe cada valor con el prefijo más corto que le sirva, así que un `first_index` de 40 ocupa 1
+  byte y uno de 900 ocupa 3, y un blob de 200 B lleva un byte de longitud y uno de 300 lleva dos. Se
+  mide contra el PEOR índice posible; estimar con el primero producía trozos de 1201 B.
+- La invariante se afirma contra `refused_datagram_count() == 0` y `max_datagram_seen() <= 1200`, no
+  contra el log. 16 tests nuevos: techo, no-encolado de lo rechazado, chunk denso extremo a extremo,
+  reensamblado desordenado y con duplicados, página perdida, quimera entre rondas, handoff fiable
+  con su ACK, roster de 50 peers, trozo de `PeerList` aplicable solo, `HandshakeAck` de sesión
+  llena, pintada en sus dos direcciones, trazo en vivo, voz, cadáver lleno y una ronda completa de
+  todos los emisores del host.
+- **NO verificado en partida.** Lo probado son las reglas y el transporte sobre sockets reales de
+  loopback. La medición física (`oversized` = 0 en un log de sesión) sigue pendiente de una partida
+  entre máquinas.

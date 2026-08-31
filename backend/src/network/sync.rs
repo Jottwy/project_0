@@ -73,6 +73,49 @@ pub fn chunk_to_sync_data(chunk: &Chunk) -> ChunkSyncData {
         // Una sola página por defecto. `chunk_to_sync_pages` reetiqueta cuando parte.
         page: 0,
         page_count: 1,
+        // TAREA 2: la estampa el paginador, NO esto. Ver el doc del campo: si entrara aquí, el
+        // hash del gate de F0.8 cambiaría en cada ronda y el gate dejaría de cortar nunca.
+        generation: 0,
+    }
+}
+
+/// TAREA 2 (2026-08-31) — el SOBRE con el que un `ChunkSyncData` va a viajar.
+///
+/// El troceo se decide midiendo el datagrama REAL, y el mismo chunk no mide igual según el
+/// portador: `WorldSyncChunk` añade `world_revision`, `ChunkState` y `ChunkTransfer` no añaden
+/// nada. Medir con el sobre equivocado produce páginas que caben "casi" — que es exactamente el
+/// fallo que esto viene a cerrar.
+#[derive(Debug, Clone, Copy)]
+pub enum ChunkCarrier {
+    /// Goteo de snapshot de ADR-060 (0x36), fiable. Su clave de ensamblado es `world_revision`.
+    WorldSync { world_revision: u64 },
+    /// Broadcast periódico del dueño (0x11), no fiable.
+    State,
+    /// Handoff explícito de propiedad (0x30), fiable y confirmado.
+    Transfer,
+}
+
+impl ChunkCarrier {
+    /// Bytes que ocuparía este `ChunkSyncData` EN EL CABLE con este sobre, cabecera de paquete
+    /// incluida. Se mide contra el mismo `encode_packet` que usa el envío para que no puedan
+    /// divergir.
+    pub fn encoded_len(self, data: &ChunkSyncData) -> usize {
+        let payload = self.wrap(data.clone());
+        let header = PacketHeader::new(payload.type_code(), 0, 1, 0);
+        crate::network::protocol::encode_packet(&header, &payload).len()
+    }
+
+    /// El payload listo para enviar. Único sitio donde se decide qué variante lleva qué, para que
+    /// la medida y el envío no puedan usar sobres distintos.
+    pub fn wrap(self, data: ChunkSyncData) -> PacketPayload {
+        match self {
+            Self::WorldSync { world_revision } => PacketPayload::WorldSyncChunk {
+                world_revision,
+                data,
+            },
+            Self::State => PacketPayload::ChunkState { data },
+            Self::Transfer => PacketPayload::ChunkTransfer { data },
+        }
     }
 }
 
@@ -84,33 +127,112 @@ pub fn chunk_to_sync_data(chunk: &Chunk) -> ChunkSyncData {
 /// `item_type`). Una estimación por conteo se desviaría justo en los chunks densos, que son
 /// exactamente los que rompen. Esto corre una vez por join, no por tick.
 ///
-/// La cabecera se repite en cada página. Medido: 754 B de cabecera contra ~87 B por entidad, así
-/// que repetirla cuesta menos que cualquier esquema que la separase, y hace cada página
-/// AUTOSUFICIENTE — que es lo que permite aplicarlas en cualquier orden, como exige una capa
-/// reliable at-least-once y sin orden.
+/// La cabecera va ENTERA en la página 0 y las de continuación la mandan vacía — ver
+/// `lean_continuation`. El ensamblador ya tomaba la cabecera de la página 0, así que esto no es
+/// un protocolo distinto: es dejar de pagar 557 B por página por un dato que el receptor
+/// descarta.
 pub fn chunk_to_sync_pages(chunk: &Chunk, world_revision: u64) -> Vec<ChunkSyncData> {
-    let full = chunk_to_sync_data(chunk);
-    if encoded_len(&full, world_revision) <= crate::network::protocol::SAFE_DATAGRAM_BYTES {
+    split_chunk_pages(
+        chunk_to_sync_data(chunk),
+        ChunkCarrier::WorldSync { world_revision },
+        0,
+    )
+}
+
+/// TAREA 2 — páginas del broadcast periódico del dueño (0x11), estampadas con la ronda.
+pub fn chunk_state_pages(data: ChunkSyncData, generation: u32) -> Vec<ChunkSyncData> {
+    split_chunk_pages(data, ChunkCarrier::State, generation)
+}
+
+/// TAREA 2 — páginas del handoff de propiedad (0x30). Fiable y confirmado, pero paginado por lo
+/// mismo: un `ChunkSyncData` completo mide 1094 B VACÍO (medido), así que con cuatro entidades ya
+/// no cabe, y un fiable que no cabe se reenvía cinco veces y expulsa al peer (ADR-062).
+pub fn chunk_transfer_pages(data: ChunkSyncData, generation: u32) -> Vec<ChunkSyncData> {
+    split_chunk_pages(data, ChunkCarrier::Transfer, generation)
+}
+
+/// TAREA 2 — la cabecera que llevan las páginas de CONTINUACIÓN: vacía.
+///
+/// `ChunkLayoutV1::default()` NO sirve aquí: devuelve una rejilla 10×10 entera de celdas
+/// caminables, que son 557 de los 1094 B que mide un chunk vacío. Con la cabecera completa
+/// repetida en cada página, el presupuesto restante era de ~106 B — UNA entidad por página. A 5 Hz
+/// eso convierte un chunk de 13 entidades en 13 datagramas de 1094 B por peer, que es peor que el
+/// problema original.
+///
+/// Vaciarla es correcto porque el ensamblador toma la cabecera de la página 0 y descarta la del
+/// resto (ver `ChunkPageAssembler::offer`). Una página de continuación baja así a ~537 B y admite
+/// ~7 entidades.
+fn lean_continuation(page0: &ChunkSyncData) -> ChunkSyncData {
+    let mut lean = page0.clone();
+    lean.entities.clear();
+    lean.items.clear();
+    lean.layout = crate::world::chunk::ChunkLayoutV1 {
+        grid_size: 0,
+        cell_size: 0.0,
+        cells: Vec::new(),
+        edge_openings: 0,
+        macro_id: 0,
+        zone_kind: 0,
+        macro_local: [0, 0],
+        macro_size: [0, 0],
+        floor_level: 0,
+        floor_profile: 0,
+        ceiling_profile: 0,
+        light_profile: 0,
+        anomaly_flags: 0,
+        vertical_flags: 0,
+        inter_layer_volumes: Vec::new(),
+        edges_v: Vec::new(),
+        edges_h: Vec::new(),
+    };
+    lean
+}
+
+/// Parte un chunk en las páginas que hagan falta para que NINGÚN datagrama supere
+/// `SAFE_DATAGRAM_BYTES` con el sobre de `carrier`. Devuelve siempre al menos una.
+///
+/// El límite se comprueba CODIFICANDO, no estimando: el tamaño depende de `layout` (que varía por
+/// chunk) y de cadenas de longitud variable dentro de cada entidad e ítem (`entity_type`, `state`,
+/// `item_type`). Una estimación por conteo se desviaría justo en los chunks densos, que son
+/// exactamente los que rompen.
+fn split_chunk_pages(
+    full: ChunkSyncData,
+    carrier: ChunkCarrier,
+    generation: u32,
+) -> Vec<ChunkSyncData> {
+    let budget = crate::network::protocol::SAFE_DATAGRAM_BYTES;
+    // La generación viaja en TODAS las páginas, también en la única de un chunk que cabe: medir
+    // sin ella daría un tamaño que no es el que sale al cable.
+    let mut full = full;
+    full.generation = generation;
+    if carrier.encoded_len(&full) <= budget {
         return vec![full];
     }
 
-    // La cabecera sola no cabe: partir las listas no puede salvarlo. Se emite igual y el guard de
-    // `send_reliable_queued` lo denuncia — callarlo sería perder el chunk en silencio, que es peor
-    // que un datagrama fragmentado. Solo puede ocurrir si `layout` crece más allá de lo medido.
-    let mut probe = full.clone();
-    probe.entities.clear();
-    probe.items.clear();
-    if encoded_len(&probe, world_revision) > crate::network::protocol::SAFE_DATAGRAM_BYTES {
+    // La cabecera sola no cabe: partir las listas no puede salvarlo. Se devuelve entera y el techo
+    // de `send_datagram` la rechazará nombrándola — callarlo sería perder el chunk en silencio,
+    // que es lo único peor que perderlo a gritos. Solo puede ocurrir si `layout` crece más allá de
+    // lo medido (hoy `LAYOUT_GRID_SIZE` es 10 y fijo).
+    let mut head = full.clone();
+    head.entities.clear();
+    head.items.clear();
+    // Se mide con los índices en su PEOR valor: msgpack escribe un entero con el prefijo más
+    // corto que le sirva, así que `page = 0` ocupa un byte y `page = 300` ocupa tres, y los
+    // índices reales no se conocen hasta el final. Estimar con 0/1 y estampar después dejaba
+    // páginas un par de bytes por encima del techo. Se restauran al numerar.
+    head.page = u16::MAX;
+    head.page_count = u16::MAX;
+    if carrier.encoded_len(&head) > budget {
         warn!(
-            "MTUPROBE event=chunk_header_exceeds_budget chunk=({},{}) layer={} bare_bytes={} budget={}",
+            "MTUPROBE event=chunk_header_exceeds_budget chunk=({},{}) layer={} bare_bytes={} budget={budget}",
             full.pos[0],
             full.pos[1],
             full.layer,
-            encoded_len(&probe, world_revision),
-            crate::network::protocol::SAFE_DATAGRAM_BYTES
+            carrier.encoded_len(&head),
         );
         return vec![full];
     }
+    let tail = lean_continuation(&head);
 
     let mut pages: Vec<ChunkSyncData> = Vec::new();
     let mut entities = full.entities.clone();
@@ -119,12 +241,17 @@ pub fn chunk_to_sync_pages(chunk: &Chunk, world_revision: u64) -> Vec<ChunkSyncD
     items.reverse();
 
     while !entities.is_empty() || !items.is_empty() || pages.is_empty() {
-        let mut page = probe.clone();
+        // Página 0 con la cabecera real; el resto con la vacía.
+        let mut page = if pages.is_empty() {
+            head.clone()
+        } else {
+            tail.clone()
+        };
         // Llenado voraz, verificando tras cada añadido: en cuanto uno se pasa, se devuelve a la
         // cola y la página se cierra. Nunca se emite una página que no se haya medido.
         while let Some(e) = entities.pop() {
             page.entities.push(e);
-            if encoded_len(&page, world_revision) > crate::network::protocol::SAFE_DATAGRAM_BYTES {
+            if carrier.encoded_len(&page) > budget {
                 let back = page.entities.pop().expect("acabamos de meterlo");
                 entities.push(back);
                 break;
@@ -132,14 +259,14 @@ pub fn chunk_to_sync_pages(chunk: &Chunk, world_revision: u64) -> Vec<ChunkSyncD
         }
         while let Some(i) = items.pop() {
             page.items.push(i);
-            if encoded_len(&page, world_revision) > crate::network::protocol::SAFE_DATAGRAM_BYTES {
+            if carrier.encoded_len(&page) > budget {
                 let back = page.items.pop().expect("acabamos de meterlo");
                 items.push(back);
                 break;
             }
         }
         // Una página vacía con cosas pendientes significaría que un solo elemento no cabe ni con
-        // la cabecera: se fuerza para no entrar en bucle infinito, y el guard de emisión lo grita.
+        // la cabecera: se fuerza para no entrar en bucle infinito, y el techo de salida lo grita.
         if page.entities.is_empty() && page.items.is_empty() {
             if let Some(e) = entities.pop() {
                 page.entities.push(e);
@@ -159,17 +286,6 @@ pub fn chunk_to_sync_pages(chunk: &Chunk, world_revision: u64) -> Vec<ChunkSyncD
         page.page_count = total;
     }
     pages
-}
-
-/// Bytes que ocuparía este `ChunkSyncData` EN EL CABLE, cabecera de paquete incluida. Se mide
-/// contra el mismo `encode_packet` que usa el envío para que no puedan divergir.
-fn encoded_len(data: &ChunkSyncData, world_revision: u64) -> usize {
-    let payload = PacketPayload::WorldSyncChunk {
-        world_revision,
-        data: data.clone(),
-    };
-    let header = PacketHeader::new(payload.type_code(), 0, 1, 0);
-    crate::network::protocol::encode_packet(&header, &payload).len()
 }
 
 /// Ensamblador de las páginas de UN chunk del goteo de mundo (auditoría de MTU, 2026-08-30).
@@ -221,6 +337,16 @@ impl ChunkPageAssembler {
 
         let key = (world_revision, data.pos, data.layer);
         let page_count = data.page_count;
+        // TAREA 2: un parcial de una clave ANTERIOR del mismo chunk ya no se puede completar —su
+        // ronda pasó— y su único destino sería ocupar sitio hasta que el tope lo desalojara. Se
+        // tira aquí, que además es lo que impide que un rezagado viejo llegue a mezclarse si el
+        // emisor reutilizara una generación (no lo hace: es el reloj de sesión, monótono).
+        self.pending.retain(|(gen, pos, layer), _| {
+            !(*pos == data.pos && *layer == data.layer && *gen < world_revision)
+        });
+        self.order.retain(|(gen, pos, layer)| {
+            !(*pos == data.pos && *layer == data.layer && *gen < world_revision)
+        });
         if !self.pending.contains_key(&key) {
             self.order.push_back(key);
             while self.order.len() > PENDING_CHUNK_CAP {
@@ -273,6 +399,264 @@ impl ChunkPageAssembler {
     }
 
     /// Cuántos chunks hay a medio ensamblar. Para trazas y tests.
+    pub fn pending_len(&self) -> usize {
+        self.pending.len()
+    }
+}
+
+// ─── TAREA 2 (2026-08-31): paginación de las pintadas, por trazos ───
+
+/// Reparte los trazos de un gesto en las tandas que hagan falta para que ningún datagrama supere
+/// `SAFE_DATAGRAM_BYTES`, midiendo con `measure` el payload REAL de cada tanda.
+///
+/// Un trazo que por sí solo no cabe viaja SOLO en su tanda: partirlo exigiría un índice dentro de
+/// su blob de puntos, y con el tope actual (`MAX_POINTS_PER_SPRAY` = 512, o sea 1024 B de puntos)
+/// un trazo suelto sigue cabiendo. Si algún día no cupiera, el techo de salida lo rechazaría
+/// nombrándolo, que es la degradación ruidosa y no la silenciosa.
+///
+/// Una lista vacía devuelve UNA tanda vacía y no cero: `validate` ya rechaza las pintadas sin
+/// trazos, pero suprimir la tanda convertiría un rechazo en un mensaje que no llega nunca.
+pub fn split_spray_strokes(
+    strokes: &[crate::world::spray::SprayStroke],
+    measure: impl Fn(&[crate::world::spray::SprayStroke]) -> usize,
+) -> Vec<Vec<crate::world::spray::SprayStroke>> {
+    let budget = crate::network::protocol::SAFE_DATAGRAM_BYTES;
+    if strokes.is_empty() || measure(strokes) <= budget {
+        return vec![strokes.to_vec()];
+    }
+
+    let mut pages: Vec<Vec<crate::world::spray::SprayStroke>> = Vec::new();
+    let mut current: Vec<crate::world::spray::SprayStroke> = Vec::new();
+    for stroke in strokes {
+        current.push(stroke.clone());
+        // Se mide DESPUÉS de añadir, igual que el paginador de chunks: el tamaño de un trazo
+        // depende de su blob de puntos y estimarlo se desviaría justo en los gestos largos.
+        if measure(&current) > budget && current.len() > 1 {
+            let back = current.pop().expect("acabamos de meterlo");
+            pages.push(std::mem::take(&mut current));
+            current.push(back);
+        }
+    }
+    if !current.is_empty() {
+        pages.push(current);
+    }
+    pages
+}
+
+/// TAREA 2 (2026-08-31) — trocea un `SprayDraft` (0x54) en datagramas que quepan.
+///
+/// `points_mm` es un blob de pares `(u, v)` en `i16` — 4 bytes por punto — cuyo tamaño lo decide
+/// el cliente: manda los puntos NUEVOS desde el último envío, así que un cliente con hipo (o uno
+/// parcheado) puede meter un gesto entero en un solo paquete.
+///
+/// **Sin ensamblador, y por diseño del propio payload**: `first_index` existe precisamente para
+/// que el receptor sepa dónde encaja cada trozo y no cosa dos que no van seguidos. Un trazo en
+/// curso es efímero (vive 3 s, no se guarda, y `SprayPlaced` lo sustituye entero al soltar), así
+/// que cada trozo es aplicable por sí solo y perder uno se cura al soltar el gatillo. Exigir
+/// todo-o-nada aquí sería pagar latencia por un dibujo provisional.
+///
+/// El corte cae siempre en frontera de punto (múltiplo de 4 B): partir un par `(u, v)` por la
+/// mitad daría coordenadas inventadas.
+#[allow(clippy::too_many_arguments)]
+pub fn spray_draft_datagrams(
+    place_id: u64,
+    layer: u8,
+    anchor: [f32; 3],
+    yaw: f32,
+    color: u8,
+    width: f32,
+    first_index: u16,
+    points_mm: Vec<u8>,
+) -> Vec<PacketPayload> {
+    const BYTES_PER_POINT: usize = 4;
+    let budget = crate::network::protocol::SAFE_DATAGRAM_BYTES;
+    let build = |first_index: u16, points_mm: Vec<u8>| PacketPayload::SprayDraft {
+        place_id,
+        layer,
+        anchor,
+        yaw,
+        color,
+        width,
+        first_index,
+        points_mm,
+    };
+    let wire = |payload: &PacketPayload| {
+        let header = PacketHeader::new(payload.type_code(), 0, 0, 0);
+        crate::network::protocol::encode_packet(&header, payload).len()
+    };
+
+    let whole = build(first_index, points_mm.clone());
+    if wire(&whole) <= budget {
+        return vec![whole];
+    }
+
+    // Cuántos puntos caben. Se mide contra el PEOR sobre posible, no contra el de este trozo, y
+    // las dos razones son la misma trampa de msgpack: escribe cada valor con el prefijo más corto
+    // que le sirva. Un blob de 200 B lleva un byte de longitud y uno de 300 lleva dos; un
+    // `first_index` de 40 ocupa 1 byte y uno de 900 ocupa 3. Estimar con el sobre VACÍO y el
+    // `first_index` de la PRIMERA página producía trozos de 1201 B en las últimas — medido, no
+    // supuesto. `u16::MAX` acota los dos crecimientos a la vez y cuesta, como mucho, un punto por
+    // trozo.
+    let worst_envelope = wire(&build(u16::MAX, vec![0u8; budget]));
+    let overhead = worst_envelope.saturating_sub(budget);
+    let per_page = (budget.saturating_sub(overhead) / BYTES_PER_POINT).max(1);
+
+    points_mm
+        .chunks(per_page * BYTES_PER_POINT)
+        .enumerate()
+        .map(|(idx, slice)| {
+            // El índice del primer punto de este trozo dentro del trazo, que es lo que el receptor
+            // usa para colocarlo. Se satura en vez de envolver: un gesto no llega a 65 535 puntos
+            // (`MAX_POINTS_PER_SPRAY` es 512) y envolver colocaría el trozo al principio del trazo.
+            let offset = (idx * per_page).min(u16::MAX as usize) as u16;
+            build(first_index.saturating_add(offset), slice.to_vec())
+        })
+        .collect()
+}
+
+/// TAREA 2 — los datagramas de una pintada ya aceptada (0x52), listos para enviar.
+///
+/// Devuelve UNO en el caso normal. La cabecera de la pintada (id, chunk, ancla, tamaño, autor,
+/// tick) se repite en cada página —es barata frente a un trazo— y el receptor toma la de la
+/// primera que le llegue, igual que hace con la cabecera de un chunk.
+pub fn spray_placed_pages(spray: &crate::world::spray::Spray) -> Vec<PacketPayload> {
+    let measure = |strokes: &[crate::world::spray::SprayStroke]| {
+        let mut probe = spray.clone();
+        probe.strokes = strokes.to_vec();
+        let payload = PacketPayload::SprayPlaced {
+            spray: probe,
+            page: 0,
+            page_count: 1,
+        };
+        let header = PacketHeader::new(payload.type_code(), 0, 1, 0);
+        crate::network::protocol::encode_packet(&header, &payload).len()
+    };
+    let pages = split_spray_strokes(&spray.strokes, measure);
+    let page_count = pages.len() as u16;
+    pages
+        .into_iter()
+        .enumerate()
+        .map(|(idx, strokes)| {
+            let mut part = spray.clone();
+            part.strokes = strokes;
+            PacketPayload::SprayPlaced {
+                spray: part,
+                page: idx as u16,
+                page_count,
+            }
+        })
+        .collect()
+}
+
+/// TAREA 2 — lo mismo para la petición del cliente (0x51), que lleva los MISMOS trazos y por
+/// tanto el mismo peor caso. La clave de reensamblado es `place_id`.
+pub fn spray_place_request_pages(
+    place_id: u64,
+    layer: u8,
+    world_pos: [f32; 3],
+    yaw: f32,
+    size: [f32; 2],
+    strokes: Vec<crate::world::spray::SprayStroke>,
+) -> Vec<PacketPayload> {
+    let measure = |chunk: &[crate::world::spray::SprayStroke]| {
+        let payload = PacketPayload::SprayPlaceRequest {
+            place_id,
+            layer,
+            world_pos,
+            yaw,
+            size,
+            strokes: chunk.to_vec(),
+            page: 0,
+            page_count: 1,
+        };
+        let header = PacketHeader::new(payload.type_code(), 0, 1, 0);
+        crate::network::protocol::encode_packet(&header, &payload).len()
+    };
+    let pages = split_spray_strokes(&strokes, measure);
+    let page_count = pages.len() as u16;
+    pages
+        .into_iter()
+        .enumerate()
+        .map(|(idx, strokes)| PacketPayload::SprayPlaceRequest {
+            place_id,
+            layer,
+            world_pos,
+            yaw,
+            size,
+            strokes,
+            page: idx as u16,
+            page_count,
+        })
+        .collect()
+}
+
+/// Reensamblador de un gesto paginado. Mismo contrato que `ChunkPageAssembler` y por la misma
+/// razón: la capa fiable es at-least-once y SIN orden, así que aplicar tandas sueltas dejaría una
+/// pintada con la mitad de sus trazos — y una pintada se GUARDA, así que ese error no se
+/// auto-cura en la ronda siguiente como el de un roster.
+///
+/// La clave la pone el llamador: `spray.id` para `SprayPlaced` (acuñado por el host, monótono) y
+/// `place_id` para `SprayPlaceRequest` (acuñado por el cliente, único por gesto).
+#[derive(Debug, Default)]
+pub struct SprayPageAssembler {
+    pending: std::collections::HashMap<u64, PendingSpray>,
+    order: std::collections::VecDeque<u64>,
+}
+
+/// Tope de gestos a medio ensamblar, por la misma fuga que `PENDING_CHUNK_CAP`: una tanda perdida
+/// deja su parcial sin dueño. 32 es holgado — un gesto dura lo que el jugador tiene el gatillo
+/// apretado y no hay forma de tener decenas en vuelo a la vez.
+const PENDING_SPRAY_CAP: usize = 32;
+
+#[derive(Debug)]
+struct PendingSpray {
+    page_count: u16,
+    pages: std::collections::HashMap<u16, Vec<crate::world::spray::SprayStroke>>,
+}
+
+impl SprayPageAssembler {
+    /// Entrega una tanda. Devuelve los trazos COMPLETOS, en orden de página, la primera vez que se
+    /// completa el gesto; `None` mientras falte alguna.
+    pub fn offer(
+        &mut self,
+        key: u64,
+        page: u16,
+        page_count: u16,
+        strokes: Vec<crate::world::spray::SprayStroke>,
+    ) -> Option<Vec<crate::world::spray::SprayStroke>> {
+        if page_count <= 1 {
+            return Some(strokes);
+        }
+        if !self.pending.contains_key(&key) {
+            self.order.push_back(key);
+            while self.order.len() > PENDING_SPRAY_CAP {
+                if let Some(oldest) = self.order.pop_front() {
+                    self.pending.remove(&oldest);
+                }
+            }
+        }
+        let entry = self.pending.entry(key).or_insert_with(|| PendingSpray {
+            page_count,
+            pages: std::collections::HashMap::with_capacity(page_count as usize),
+        });
+        if entry.page_count != page_count {
+            entry.page_count = page_count;
+            entry.pages.clear();
+        }
+        entry.pages.insert(page, strokes);
+        if entry.pages.len() < entry.page_count as usize {
+            return None;
+        }
+
+        let done = self.pending.remove(&key).expect("acabamos de verlo");
+        self.order.retain(|k| *k != key);
+        let mut ordered: Vec<(u16, Vec<crate::world::spray::SprayStroke>)> =
+            done.pages.into_iter().collect();
+        ordered.sort_by_key(|(idx, _)| *idx);
+        Some(ordered.into_iter().flat_map(|(_, s)| s).collect())
+    }
+
+    /// Gestos a medio ensamblar. Para trazas y tests.
     pub fn pending_len(&self) -> usize {
         self.pending.len()
     }
@@ -478,10 +862,58 @@ pub async fn broadcast_peer_roster(net: &NetworkManager, player: &Player) {
     if net.peers.is_empty() {
         return;
     }
-    let payload = PacketPayload::PeerList {
-        peers: build_peer_list(net, player),
+    for payload in peer_list_datagrams(build_peer_list(net, player)) {
+        net.broadcast_unreliable(&payload).await;
+    }
+}
+
+/// TAREA 2 (2026-08-31) — trocea el roster de peers en los datagramas que hagan falta.
+///
+/// Medido: 823 B con 8 peers, **1617 B con 16** y 4983 B con 50, contra un techo de 1200. El
+/// lobby de Steam admite 8 miembros pero la sesión se anuncia con `bs_max = 50` y el navegador
+/// entra por fuera del lobby, así que 16 no es un caso teórico.
+///
+/// **NO lleva reensamblado, y ésa es la diferencia con los chunks.** El receptor de `PeerList`
+/// (`handlers.rs`) es ADITIVO: recorre las entradas insertando las que no conoce y refrescando las
+/// que sí, y **nunca borra** — la baja de un peer viene por `PeerDisconnected` o por el timeout de
+/// latido, jamás por ausencia en un roster. Con esa semántica cada trozo es un mensaje completo y
+/// válido por sí mismo: se puede aplicar suelto, en cualquier orden y repetido, y el resultado es
+/// el mismo. Paginarlo con todo-o-nada habría sido pagar un ensamblador por una garantía que la
+/// semántica ya da gratis.
+///
+/// Se mide el datagrama REAL, elemento a elemento, porque `PeerInfo` lleva dos cadenas de longitud
+/// variable (`name` y `addr`) y un conteo por entradas se desviaría justo con los nombres largos.
+pub fn peer_list_datagrams(peers: Vec<PeerInfo>) -> Vec<PacketPayload> {
+    let budget = crate::network::protocol::SAFE_DATAGRAM_BYTES;
+    let wire = |peers: &[PeerInfo]| {
+        let payload = PacketPayload::PeerList {
+            peers: peers.to_vec(),
+        };
+        let header = PacketHeader::new(payload.type_code(), 0, 0, 0);
+        crate::network::protocol::encode_packet(&header, &payload).len()
     };
-    net.broadcast_unreliable(&payload).await;
+    // Un roster vacío se emite igual: es un mensaje válido y suprimirlo sería inventar un caso
+    // especial que el receptor no necesita.
+    if wire(&peers) <= budget {
+        return vec![PacketPayload::PeerList { peers }];
+    }
+
+    let mut out = Vec::new();
+    let mut current: Vec<PeerInfo> = Vec::new();
+    for info in peers {
+        current.push(info);
+        if wire(&current) > budget && current.len() > 1 {
+            let back = current.pop().expect("acabamos de meterlo");
+            out.push(PacketPayload::PeerList {
+                peers: std::mem::take(&mut current),
+            });
+            current.push(back);
+        }
+    }
+    if !current.is_empty() {
+        out.push(PacketPayload::PeerList { peers: current });
+    }
+    out
 }
 
 /// ADR-043 â€” peers a relayed pose may legitimately be ADDRESSED to: every real peer, never a
@@ -893,7 +1325,7 @@ pub async fn broadcast_corpses(net: &mut NetworkManager, world: &World) {
     if net.peers.is_empty() {
         return;
     }
-    let all: Vec<_> = world.corpses.values().cloned().collect();
+    let all: Vec<_> = split_oversized_corpses(world.corpses.values().cloned().collect());
     // ADR-071. Unlike the other four this one still pays the clone above before the gate can look
     // at it: the roster is assembled from `world.corpses` rather than stored flat. The clone is
     // orders of magnitude cheaper than the send it prevents, so it is not worth restructuring the
@@ -918,6 +1350,64 @@ pub async fn broadcast_corpses(net: &mut NetworkManager, world: &World) {
         // y con reensamblado todo-o-nada eso significa que el roster no converge NUNCA.
         tokio::task::yield_now().await;
     }
+}
+
+/// TAREA 2 (2026-08-31) — parte los cadáveres que no caben en un datagrama en varias ENTRADAS del
+/// mismo roster, con el mismo `id` y tramos disjuntos de `items`.
+///
+/// Un `CorpseData` con 35 pilas mide 1207 B (medido) contra un techo de 1200, y 35 es un
+/// inventario STP lleno de verdad, no el tope de higiene de `MAX_CORPSE_STACKS` (64 → 2048 B). Es
+/// el único elemento de roster que puede pasarse él solo: `paginate` le da una página para él y esa
+/// página sigue sin caber.
+///
+/// **Por qué partir la entrada y no truncar las pilas**: truncar es perder botín de un jugador
+/// muerto — el único camino por el que este sistema puede destruir algo — y encima de forma
+/// invisible para el que lo mira. Y por qué NO hace falta wire nuevo: el roster de cadáveres se
+/// aplica REEMPLAZANDO `world.corpses` con la lista completa de una generación, así que dos
+/// entradas con el mismo `id` dentro de la misma generación son inequívocamente dos tramos de un
+/// mismo cadáver. El receptor las une (`CorpseListReceived`); antes de esto un `id` repetido no
+/// podía existir, así que unir no cambia ningún comportamiento previo.
+///
+/// El reparto es por bytes reales y en frontera de PILA: media pila no significa nada.
+pub(crate) fn split_oversized_corpses(
+    corpses: Vec<crate::world::corpse::CorpseData>,
+) -> Vec<crate::world::corpse::CorpseData> {
+    let budget = roster::ROSTER_ITEM_BUDGET_BYTES;
+    let size = |c: &crate::world::corpse::CorpseData| {
+        rmp_serde::to_vec_named(c).map(|v| v.len()).unwrap_or(0)
+    };
+    if corpses.iter().all(|c| size(c) <= budget) {
+        return corpses;
+    }
+
+    let mut out = Vec::with_capacity(corpses.len());
+    for corpse in corpses {
+        if size(&corpse) <= budget {
+            out.push(corpse);
+            continue;
+        }
+        let stacks = corpse.items.clone();
+        let mut head = corpse.clone();
+        head.items.clear();
+        let mut current = head.clone();
+        let mut emitted = 0usize;
+        for stack in stacks {
+            current.items.push(stack);
+            if size(&current) > budget && current.items.len() > 1 {
+                let back = current.items.pop().expect("acabamos de meterlo");
+                out.push(std::mem::replace(&mut current, head.clone()));
+                emitted += 1;
+                current.items.push(back);
+            }
+        }
+        out.push(current);
+        emitted += 1;
+        warn!(
+            "MTUPROBE event=corpse_split_across_roster_entries corpse_id={} entries={} budget={budget} — el receptor las une por id",
+            corpse.id, emitted
+        );
+    }
+    out
 }
 
 /// ADR-093 (E2): host-as-server relay of the Level 4 region state. Self-healing at 10 Hz
@@ -1106,8 +1596,17 @@ pub async fn broadcast_chunk_states(net: &mut NetworkManager, world: &World, pla
         if !open {
             continue;
         }
-        let payload = PacketPayload::ChunkState { data };
-        net.broadcast_unreliable(&payload).await;
+        // TAREA 2 (2026-08-31): PAGINADO. Un `ChunkSyncData` mide 1094 B VACÍO y 2078 B con 13
+        // entidades (medido), así que este broadcast era el emisor de los ~31.000 datagramas
+        // sobredimensionados por sesión. Se trocea contra el sobre REAL de `ChunkState` y se
+        // estampa la ronda con el reloj de sesión: el receptor no aplica NADA hasta tener todas
+        // las páginas de la MISMA ronda, porque `apply_chunk_sync` es un reemplazo verbatim y
+        // media lista de entidades es un mundo que nunca existió.
+        let generation = net.timestamp();
+        for page in chunk_state_pages(data, generation) {
+            let payload = PacketPayload::ChunkState { data: page };
+            net.broadcast_unreliable(&payload).await;
+        }
         // ADR-060 (d): ceder entre páginas. Sin esto la ronda entera sale como una ráfaga
         // ininterrumpida y desborda el buffer de recepción del socket del receptor (~64 KB por
         // defecto): MEDIDO, a partir de ~56 páginas empezaba a perderse al menos una por ronda,
@@ -1253,10 +1752,10 @@ pub async fn send_world_sync(
     };
     net.send_reliable_queued(peer_id, &end).await;
 
-    let peer_list_payload = PacketPayload::PeerList {
-        peers: build_peer_list(net, player),
-    };
-    net.broadcast_unreliable(&peer_list_payload).await;
+    // TAREA 2: mismo troceo que en `broadcast_peer_roster`; ver `peer_list_datagrams`.
+    for payload in peer_list_datagrams(build_peer_list(net, player)) {
+        net.broadcast_unreliable(&payload).await;
+    }
 }
 
 pub async fn broadcast_world_sync(net: &mut NetworkManager, world: &World, player: &Player) {
@@ -1327,10 +1826,20 @@ pub async fn maybe_flush_world_sync(net: &mut NetworkManager, world: &World, pla
 }
 
 /// Send a chunk transfer to a specific peer (ownership handoff).
+///
+/// TAREA 2 (2026-08-31): paginado como `ChunkState`, y no por simetría. Éste es FIABLE: un
+/// datagrama por encima del techo lo rechaza `send_datagram`, y antes de este trabajo se
+/// fragmentaba en IP y se reenviaba cinco veces con el mismo tamaño hasta expulsar al peer
+/// (ADR-062). Se emite por `send_reliable_queued` y no por `send_reliable` por lo mismo que el
+/// goteo de ADR-060: es una emisión EN LOTE con final conocido, y con la ventana llena
+/// `send_reliable` descartaría páginas sueltas — que con reensamblado todo-o-nada es perder el
+/// handoff entero.
 pub async fn send_chunk_transfer(net: &mut NetworkManager, peer_id: PeerId, chunk: &Chunk) {
-    let data = chunk_to_sync_data(chunk);
-    let payload = PacketPayload::ChunkTransfer { data };
-    net.send_reliable(peer_id, &payload).await;
+    let generation = net.timestamp();
+    for page in chunk_transfer_pages(chunk_to_sync_data(chunk), generation) {
+        let payload = PacketPayload::ChunkTransfer { data: page };
+        net.send_reliable_queued(peer_id, &payload).await;
+    }
 }
 
 /// Broadcast chunk teleport to all peers.
@@ -1545,6 +2054,11 @@ mod chunk_broadcast_tests {
         joiner
             .peers
             .insert(1, PeerConnection::new(1, "Host".into(), host_addr));
+        // TAREA 4 (2026-08-31): sin esto el test PASABA por el motivo equivocado. Lo que quiere
+        // comprobar es la puerta `is_host` de `broadcast_chunk_states`; con `host_peer_id` en
+        // `None`, el joiner tampoco tenía destinos, así que borrar esa puerta entera seguiría
+        // dando verde. Una comprobación que sólo puede salir verde no comprueba nada.
+        joiner.host_peer_id = Some(1);
 
         let pos = Vec3::new(0.0, 1.8, 0.0);
 
@@ -1604,6 +2118,16 @@ mod chunk_broadcast_tests {
         joiner
             .peers
             .insert(1, PeerConnection::new(1, "Host".into(), host_addr));
+        // TAREA 4 (2026-08-31): el fixture montaba a mano un estado que producción NO puede
+        // alcanzar — un joiner con el host REGISTRADO pero sin `host_peer_id`. Las dos cosas se
+        // fijan en la misma función (`handle_handshake_ack`: inserta el peer y anota quién es el
+        // host), así que "peer 1 en la tabla" implica siempre "host_peer_id = Some(1)".
+        //
+        // Importa desde que la legalidad del destino es UNA condición para difusiones Y para
+        // envíos dirigidos: un joiner sin host conocido no encola un fiable a nadie, que es lo que
+        // fija `a_joiner_mid_handshake_cannot_queue_a_reliable_to_anyone`. Sin esta línea el test
+        // no medía el ACK del handoff, medía un handshake a medias.
+        joiner.host_peer_id = Some(1);
 
         let pos = Vec3::new(0.0, 1.8, 0.0);
         let mut host_world = World::new(42);
@@ -2104,6 +2628,7 @@ mod chunk_broadcast_tests {
             items: vec![],
             page: 0,
             page_count: 1,
+            generation: 0,
         };
         let now = std::time::Instant::now();
         let hash = roster::content_hash(std::slice::from_ref(&data));

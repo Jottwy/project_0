@@ -24,6 +24,20 @@ use serde::Serialize;
 /// exactamente lo que hace que apurar al MTU exacto vuelva a fragmentar.
 pub const ROSTER_PAGE_BUDGET_BYTES: usize = 1000;
 
+/// TAREA 2 (2026-08-31) — cuánto puede medir UN elemento de roster antes de que su página no
+/// quepa, aunque viaje sola.
+///
+/// `paginate` reparte por presupuesto de contenido, pero un elemento que por sí solo excede el
+/// presupuesto viaja SOLO en su página — y esa página puede seguir sin caber. Medido, el sobre de
+/// una página de roster (nombre de variante, `generation`/`page`/`page_count` y la cabecera de
+/// 12 B) son 59 B, así que un elemento por encima de `1200 − 96` produce un datagrama que el techo
+/// de salida rechaza. Los 96 son los 59 medidos con margen: los nombres de variante de los cinco
+/// rosters no miden lo mismo y no merece la pena tener cinco constantes.
+///
+/// NO es teórico: un `CorpseData` con 35 pilas mide 1207 B (medido), y 35 es el tamaño REAL de un
+/// inventario STP lleno — no el tope de higiene de `MAX_CORPSE_STACKS`, que es 64 y da 2048 B.
+pub const ROSTER_ITEM_BUDGET_BYTES: usize = crate::network::protocol::SAFE_DATAGRAM_BYTES - 96;
+
 // TECHO PRÁCTICO, MEDIDO (2026-08-10, loopback, `StpCarryableInfo`): la paginación no vuelve
 // infinito el roster, solo mueve el límite ~50×. Rondas necesarias para que el roster llegue
 // entero, con el `yield_now` entre páginas ya puesto:
