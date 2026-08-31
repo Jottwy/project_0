@@ -315,6 +315,20 @@ pub struct NetworkManager {
     /// Auditoría de MTU: reúne las páginas de un chunk del goteo antes de aplicarlo. Vive aquí,
     /// junto a `world_sync_progress`, porque es estado del MISMO goteo y muere con él.
     pub chunk_pages: sync::ChunkPageAssembler,
+    /// TAREA 2 (2026-08-31): lo mismo para el broadcast periódico (0x11) y para el handoff de
+    /// propiedad (0x30), que desde esta tanda también viajan paginados.
+    ///
+    /// Uno POR PORTADOR y no uno compartido: la clave de ensamblado es `(generación, pos, capa)` y
+    /// la generación de los dos es el mismo reloj de sesión, así que un `ChunkState` y un
+    /// `ChunkTransfer` del mismo chunk en el mismo milisegundo colisionarían en la misma clave y
+    /// podrían coserse entre sí. Cuesta dos mapas vacíos y quita una clase entera de fallo.
+    pub chunk_state_pages: sync::ChunkPageAssembler,
+    pub chunk_transfer_pages: sync::ChunkPageAssembler,
+    /// TAREA 2 (2026-08-31): reensamblado de las pintadas paginadas por trazos. Dos, por las dos
+    /// direcciones: `spray_place_pages` es la petición del cliente (clave `place_id`, sólo la usa
+    /// el host) y `spray_placed_pages` la pintada ya aceptada (clave `spray.id`, la usan todos).
+    pub spray_place_pages: sync::SprayPageAssembler,
+    pub spray_placed_pages: sync::SprayPageAssembler,
     /// ADR-060 (d), joiner-only: reensamblado de los cinco rosters paginados. Un roster solo se
     /// aplica cuando su generación está completa — aplicar media lista BORRARÍA la otra mitad de
     /// los objetos del joiner, que es peor que esperar los 100 ms a la ronda siguiente.
@@ -406,8 +420,17 @@ pub struct NetworkManager {
     /// Solo los FIABLES por encima del techo. Separado del total porque son los únicos que no se
     /// auto-curan, y por tanto los únicos sobre los que hay una invariante que un test puede fijar.
     oversized_reliable: std::sync::atomic::AtomicU64,
+    /// TAREA 2 (2026-08-31): datagramas que el techo de `SAFE_DATAGRAM_BYTES` RECHAZÓ antes del
+    /// `send_to` real, fiables y no fiables. Separado de `oversized_datagrams` porque ése cuenta
+    /// contra la MTU de Ethernet (1472) y sólo observa; éste cuenta lo que NO se ha enviado, que
+    /// es sobre lo que hay una invariante: en régimen normal tiene que ser 0, y cualquier valor
+    /// distinto nombra un emisor sin acotar.
+    refused_datagrams: std::sync::atomic::AtomicU64,
     max_datagram_bytes: std::sync::atomic::AtomicUsize,
     last_mtu_warn_ms: std::sync::atomic::AtomicU64,
+    /// TAREA 4 (2026-08-31): throttle de `note_illegal_destination`. Atómico por lo mismo que los
+    /// de arriba — lo toca la superficie de envío, que en su mitad no fiable es `&self`.
+    last_illegal_dest_log_ms: std::sync::atomic::AtomicU64,
     /// Igual que el de arriba, para la traza de `ChunkStateReceived`. Hace falta un throttle REAL
     /// (una línea por segundo) y no el `elapsed % 1000 < 120` que usan las trazas de pose: aquél
     /// deja pasar una VENTANA de 120 ms, y a ~820 chunks/s eso son ~60 líneas por segundo, no una
@@ -519,6 +542,10 @@ impl NetworkManager {
             level4: crate::world::level4_layout::Level4RegionState::default(),
             world_sync_progress: sync::WorldSyncProgress::default(),
             chunk_pages: sync::ChunkPageAssembler::default(),
+            chunk_state_pages: sync::ChunkPageAssembler::default(),
+            chunk_transfer_pages: sync::ChunkPageAssembler::default(),
+            spray_place_pages: sync::SprayPageAssembler::default(),
+            spray_placed_pages: sync::SprayPageAssembler::default(),
             roster_assemblers: RosterAssemblers::default(),
             next_corpse_request_id: 1,
             processed_pvp_hits: BoundedDedupeSet::with_capacity(512),
@@ -539,8 +566,10 @@ impl NetworkManager {
             last_send_error_log_ms: std::sync::atomic::AtomicU64::new(0),
             oversized_datagrams: std::sync::atomic::AtomicU64::new(0),
             oversized_reliable: std::sync::atomic::AtomicU64::new(0),
+            refused_datagrams: std::sync::atomic::AtomicU64::new(0),
             max_datagram_bytes: std::sync::atomic::AtomicUsize::new(0),
             last_mtu_warn_ms: std::sync::atomic::AtomicU64::new(0),
+            last_illegal_dest_log_ms: std::sync::atomic::AtomicU64::new(0),
             last_chunk_state_log_ms: std::sync::atomic::AtomicU64::new(0),
             last_pickup_at: None,
             next_peer_id: if is_host { 2 } else { 0 },
@@ -564,6 +593,22 @@ impl NetworkManager {
     /// de transporte se comprueba contra esto, no contra el log.
     pub fn oversized_reliable_count(&self) -> u64 {
         self.oversized_reliable
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// TAREA 2 (2026-08-31): cuántos datagramas ha RECHAZADO el techo de `SAFE_DATAGRAM_BYTES`
+    /// antes de llegar al socket. La invariante de la tarea —cero datagramas sobredimensionados—
+    /// se comprueba contra esto y no contra el log: un aviso que nadie lee no es una invariante, y
+    /// ése era exactamente el estado anterior.
+    pub fn refused_datagram_count(&self) -> u64 {
+        self.refused_datagrams
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// El mayor datagrama que ha SALIDO por el socket. Su pareja: `refused == 0` dice que nadie
+    /// intentó pasarse, y este número dice cuánto margen queda antes de que alguien lo intente.
+    pub fn max_datagram_seen(&self) -> usize {
+        self.max_datagram_bytes
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 

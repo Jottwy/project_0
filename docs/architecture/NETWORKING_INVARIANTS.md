@@ -234,11 +234,141 @@ otros cinco sitios (`RemotePvpHitbox`, `StpBuildMaterialWatcher`, `StpBuildingPl
 `NetworkHarvestableInstance`, `IPCClient:603`). Comparten la misma fuente de error. Arreglarlo de
 raíz es llevar el id asignado por el IPC, y eso es **cambio de wire + ADR**.
 
+## I14 — Un destino de gameplay se decide en UN sitio, y la estrella es una de sus condiciones
+
+Todo datagrama de gameplay sale hacia un peer que satisface las cuatro condiciones de
+`peer_is_gameplay_destination` (`send.rs`): no es fantasma, no es `relay_only`, su dirección es
+enrutable, y **o somos el host, o es el host**.
+
+**Síntoma:** ninguno todavía. Esto no arregla un fallo observado, cierra la forma en que I12 se
+podía perder.
+
+**Causa raíz de la fragilidad:** I12 puso el filtro de rol en `broadcast_destinations`, que cubre
+las difusiones. Los **envíos dirigidos** (`send_unreliable_to`, `send_prepared_unreliable`,
+`send_reliable`, `send_reliable_queued`) no lo tenían: eran seguros porque los ~30 sitios que un
+joiner ejecuta escriben el literal `1`. Eso es una costumbre, no una garantía — un sistema nuevo
+que sacara el id de una lista de peers reabría la ruta Joiner→Joiner sin tocar ni una línea de los
+filtros que la prohíben.
+
+Y había un agujero **latente y peor**: `broadcast_reliable` filtraba fantasmas y `relay_only` pero
+NO el rol. Un joiner habría emitido un fiable directo a cada par, y un fiable no se pierde y ya
+está: se reenvía cinco veces y termina expulsando al peer (ADR-062). No era alcanzable porque sus
+dos únicos llamadores (`broadcast_anchor`, `broadcast_stabilizer` en `sync.rs`) no tienen ni un
+call site — que es exactamente la razón de cerrarlo antes de que alguien los llame.
+
+**Impone:** `NetworkManager::is_gameplay_destination` / `peer_is_gameplay_destination`, invocadas
+como early-return en los cuatro envíos dirigidos y como filtro en las dos difusiones. Un destino
+rechazado se registra (`note_illegal_destination`, MPTRACE `illegal_gameplay_destination`), acotado
+a una línea por segundo global: un descarte silencioso es lo que este proyecto ya ha pagado dos
+veces.
+
+**Prueba:** `the_star_matrix_holds_at_two_three_and_four_peers` (la matriz completa a 2, 3 y 4
+jugadores, los dos roles), `no_send_surface_lets_a_joiner_reach_another_joiner` (**las seis
+superficies medidas por lo que sale al socket y por lo que se encola**, no por lo que dice un
+filtro), `the_host_still_reaches_every_joiner`,
+`a_roster_advertising_loopback_or_apipa_never_yields_a_destination`,
+`a_relay_only_peer_never_adopts_an_endpoint`. Los cinco tests de I12 siguen valiendo sin cambios:
+la condición de rol es literalmente la misma, sólo cambió de sitio.
+
+**Trade-off:** los envíos dirigidos pagan una consulta más al mapa de peers. A 10 Hz y con la
+tabla en memoria, no es medible.
+
+**Endpoint safety, y por qué NO se rechaza loopback en Rust:** una dirección anunciada en un
+roster es una AFIRMACIÓN del host, no una dirección observada. `0.0.0.0` se rechaza en el registro
+(significa «esta máquina» al enviar). `127.0.0.1` y APIPA `169.254.x.x` **no se pueden rechazar
+ahí**: la partida en una sola máquina va por loopback de verdad y quedaría rota. Se registran, se
+pintan, y no son destino porque la topología los deja fuera antes que la dirección. El rechazo de
+loopback/APIPA vive donde sí corresponde, en el lado que PUBLICA: `LobbyEndpointPolicy.cs`.
+
+## I15 — Un joiner sólo le devuelve ACKs al host
+
+El ACK de un paquete fiable va a `pkt.addr` **crudo**, sin pasar por la tabla de peers ni por I14.
+Era la última superficie por la que un joiner podía mandar un datagrama a otro joiner.
+
+**Síntoma:** ninguno observado; alcanzable sólo con un par ejecutando un build anterior al fix de
+la estrella, que emitiera fiables directos.
+
+**Causa raíz:** el ACK se emite antes del despacho del payload y sólo mira dos cosas — que el tipo
+sea fiable y que la secuencia sea > 0. Ninguna de las dos dice nada de quién lo mandó. No es
+tráfico de gameplay, pero es un datagrama hacia un endpoint que la topología dice que no existe, y
+en Windows lo que rebota vuelve como `WSAECONNRESET` sobre el socket propio (H10).
+
+**Impone:** `NetworkManager::may_ack_sender` (`handlers.rs`). El host ACKea a cualquiera: es el
+centro de la estrella. Un joiner, sólo al host.
+
+**La tercera rama NO es una concesión:** con `host_peer_id == None` se ACKea igual. El
+`HandshakeAck` es lo único que le dice a un joiner quién es el host, y UDP no ordena nada — un
+`WorldSyncChunk` (fiable, con secuencia) puede adelantarlo. Callar ahí costaría una retransmisión
+por cada chunk adelantado y no cierra ningún agujero: antes de ese punto el único que nos escribe
+es el host al que le hemos pedido entrar.
+
+**Prueba:** `a_joiner_acks_the_host_and_nobody_else`,
+`a_joiner_still_acks_before_it_knows_who_the_host_is`, `the_host_acks_every_sender`. Los tres
+miden el ACK en un socket UDP vivo, no en un flag.
+
+## I16 — La dirección de un `relay_only` no se adopta jamás
+
+Un peer marcado `relay_only` (ADR-079) conserva el centinela inerte pase lo que pase por el socket.
+
+**Causa raíz:** `handle_packet` adopta `pkt.addr` en cualquier peer conocido cuya dirección no
+pertenezca ya a OTRO peer. Al fantasma sólo lo protegía de rebote esa segunda condición —sus poses
+relayadas llegan desde el socket del host, que ya es un peer conocido—, o sea que la protección
+dependía de que el host estuviera registrado, no del contrato. Un datagrama que estampara ahí una
+dirección real convertiría el centinela en un endpoint con pinta de legítimo.
+
+**Impone:** la condición `&& !peer.relay_only` en la adopción (`handlers.rs`). La traza MPTRACE
+`peer_last_seen_update` dejó de imprimir `addr_adopted=!relayed_from_other_peer` —que desde este
+cambio ya no es la misma pregunta— y registra lo que de verdad pasó.
+
+**Prueba:** `a_relay_only_peer_never_adopts_an_endpoint`.
+
+## I17 — Ningún falso timeout de heartbeat en sesión estable
+
+Con la estrella aplicada, un joiner **no le manda nada a sus pares**. Lo único que los mantiene
+vivos en su tabla es el roster del host a 10 Hz (`broadcast_peer_roster`) y las poses relayadas
+(ADR-015): las dos refrescan `last_heartbeat` del peer al que se refieren.
+
+**Por qué es una invariante y no una obviedad:** es la consecuencia que I12 no dejó probada. Si ese
+refresco fallara, cada joiner expulsaría a sus pares a los 5 s **con la red intacta**, y el síntoma
+sería indistinguible de una pérdida de paquetes.
+
+**Impone:** `broadcast_peer_roster` (host, cadencia de `NET_BROADCAST_EVERY`, 10 Hz) contra
+`HEARTBEAT_TIMEOUT` (5 s). El margen es de 50 rondas.
+
+**Prueba:** `the_hosts_roster_keeps_silent_peers_alive_at_three_and_four` — coloca a los pares al
+borde del umbral y comprueba que el roster los devuelve al principio, a 3 y a 4 jugadores. Sin
+dormir 5 s.
+
+**Lo que esta invariante le exige a cualquiera que toque `PeerList` (auditoría de MTU, misma
+fecha):** el roster no cabe siempre en un datagrama. Medido: 1 peer 130 B, 4 → 427 B, 8 → 823 B,
+**16 → 1617 B**; el techo de 1200 B se cruza entre 11 y 12 peers. Con el tope del lobby de Steam
+(8) cabe entero; por el navegador de servidores, que anuncia `bs_max = 50`, no.
+
+Partirlo es obligatorio, pero **el reensamblado todo-o-nada NO es una opción aquí**, y es una
+diferencia real frente a los cinco rosters de ADR-060: si una generación no llega a completarse,
+NINGÚN `last_heartbeat` se refresca, y a los 5 s cada joiner expulsa a todos sus pares con la red
+intacta — un síntoma idéntico al de una pérdida de paquetes que no lo es. La forma correcta, y la
+que se implementó, es que cada trozo sea un `PeerList` **entero y válido por sí mismo**: el
+receptor ya es aditivo (inserta lo que no conoce, refresca lo que sí, y **nunca borra** — la baja
+llega por `PeerDisconnected` o por timeout, jamás por ausencia en un roster), así que el latido se
+refresca al recibir el trozo y no hay nada que completar. Con 50 rondas de margen, perder un trozo
+suelto es inocuo.
+
+Por la misma razón `HandshakeAck` **recorta** su lista de peers en vez de paginarla: un joiner no
+puede depender de reensamblar N datagramas antes de estar conectado, y `assigned_id` / `world_seed`
+/ `config` viajan intactos. Hoy es seguro porque `handle_handshake_ack` ni lee esa lista (sólo
+registra al host) y el roster autoritativo llega por el relay en los ~100 ms siguientes. **Queda
+como trampa anotada:** el día que alguien empiece a leerla, un recorte silencioso es un joiner con
+media sesión. Cada recorte deja línea de log; esa línea es la única defensa.
+
 ## Riesgos abiertos (invariantes que NO existen todavía)
 
 | # | Hueco | Evidencia |
 |---|---|---|
 | R1 | Los caminos **no fiables** pueden superar 1200 B | 31.004 oversized/sesión, máx. 1881 B; 824 muestras `broadcast_unreliable`, 366 `unreliable_to`, 13 `relay_as` |
 | R2 | Paginar `ChunkState` (no fiable) daría chunks **parcialmente** aplicados si se pierde una página, en vez de la pérdida total actual. Requiere decidir cuál de los dos males se prefiere | análisis, sin medir |
-| R3 | Ciclo de vida de peers sin invariante propia: no hay test que garantice que no quedan peers fantasma tras N conexiones/desconexiones | host con 22 peers y 5 ids reales al final de una sesión de 20 min con varios clientes — **no confirmado como fuga** |
+| R3 | Ciclo de vida de peers sin invariante propia: no hay test que garantice que no quedan peers fantasma tras N conexiones/desconexiones | host con 22 peers y 5 ids reales al final de una sesión de 20 min con varios clientes — **no confirmado como fuga**. **Parcialmente cerrado** por la auditoría de la Tarea 4: las marcas `phantom_ids`/`faceling_ids` eran el único estado indexado por `PeerId` que sobrevivía a una baja no ordenada, y ya se limpian en `purge_peer_state` (prueba: `an_unclean_removal_leaves_no_injected_mark_behind`). Lo que **sigue abierto** es la ventana de peer duplicado descrita en R5 |
+| R5 | **Peer duplicado tras reconexión desde un puerto nuevo.** El deduplicado del handshake casa por `sender_id` O por `addr`. Un cliente que se reinicia sale con puerto de origen nuevo y `NET_ID` nuevo (`GenerateDebugNetId` = 1000 + pid%60000), así que no casa por ninguna de las dos: se le asigna un id nuevo y la entrada vieja sobrevive hasta que la coseche el timeout de latido. Ventana acotada (≤ 5 s) pero real — durante ella el jugador aparece dos veces en el roster, y el host relaya poses a un endpoint muerto | análisis del código, sin medir; no reproducido en partida |
+| R6 | **Los ~30 envíos de un joiner escriben el literal `1`, no `host_peer_id`.** Coinciden porque `NET_ID` por defecto es 1 y el host nunca lo cambia, pero son dos fuentes de verdad para el mismo número. Un host lanzado con `NET_ID` distinto haría que todos esos envíos apuntaran a un peer inexistente — y desde I14 eso ya no es un fallo silencioso: sale por `illegal_gameplay_destination` con `registered=false` | análisis del código; no reproducido — exigiría lanzar el host con `NET_ID≠1` a mano |
+| R7 | **Ventana de peer duplicado** — ver R5. No se cierra sin decidir qué identifica a un jugador entre reconexiones, y eso hoy no existe: el handshake sólo tiene `sender_id` (propuesto) y la dirección de origen | ídem |
 | R4 | La paginación de WorldSync está validada por test, no por una partida real que la ejerza: los mundos probados en físico no tenían chunks lo bastante densos | `chunk_page_buffered = 0` en la corrida de dos procesos |

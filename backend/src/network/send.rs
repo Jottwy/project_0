@@ -7,6 +7,7 @@ use std::net::SocketAddr;
 
 use log::{info, warn};
 
+use super::peer::PeerConnection;
 use super::protocol::{encode_packet, PacketHeader, PacketPayload};
 use super::{reliability, NetworkManager, PeerId};
 
@@ -66,14 +67,85 @@ impl NetworkManager {
         )
     }
 
+    // ─── Destino legal ───
+
+    /// TAREA 4 (2026-08-31) — ¿puede salir un datagrama de gameplay hacia este peer?
+    ///
+    /// Existe porque hasta aquí la estrella se sostenía en DOS sitios distintos: el filtro de
+    /// `broadcast_destinations` (B, 2026-08-31) y la convención de que los ~30 envíos dirigidos de
+    /// un joiner escriben el literal `1`. Lo segundo no es una garantía, es una costumbre: un
+    /// envío dirigido nuevo que tomara el id de un peer cualquiera reabriría el camino
+    /// Joiner→Joiner sin tocar una sola línea de los filtros que lo prohíben.
+    ///
+    /// Las cuatro condiciones, y por qué cada una:
+    /// - **fantasma** (ADR-016/043): su `addr` es la inerte `127.0.0.1:1`; un datagrama ahí vuelve
+    ///   como `WSAECONNRESET` sobre el socket del emisor (H10, medido en 1.073.132 líneas).
+    /// - **`relay_only`** (ADR-079): gemelo del anterior en el lado receptor, misma addr inerte.
+    /// - **dirección enrutable**: una sin especificar significa "esta máquina" al enviar, así que
+    ///   un peer registrado en ella recibiría los latidos que iban para el peer REAL.
+    /// - **estrella** (ADR-015/056): un joiner sólo tiene una ruta de gameplay, el host. El host
+    ///   no se filtra: reemitir a todos es exactamente su papel.
+    pub(super) fn is_gameplay_destination(&self, peer_id: PeerId) -> bool {
+        self.peers
+            .get(&peer_id)
+            .is_some_and(|p| self.peer_is_gameplay_destination(p))
+    }
+
+    /// La misma decisión con el peer ya prestado, para los barridos que iteran `peers.values()`
+    /// y no pueden volver a indexar el mapa sin pelearse con el préstamo.
+    pub(super) fn peer_is_gameplay_destination(&self, peer: &PeerConnection) -> bool {
+        !self.is_phantom(peer.id)
+            && !peer.relay_only
+            && super::sync::is_routable_peer_addr(&peer.addr)
+            && (self.is_host || Some(peer.id) == self.host_peer_id)
+    }
+
+    /// Un descarte silencioso es lo que este proyecto ya ha pagado dos veces, así que un destino
+    /// ilegal se dice — pero acotado a una línea por segundo GLOBAL: si un camino nuevo se pone a
+    /// emitir a 10 Hz hacia un peer prohibido, la evidencia tiene que ser legible, no el nuevo
+    /// suelo de ruido. Mismo mecanismo que `last_send_error_log_ms`.
+    fn note_illegal_destination(&self, peer_id: PeerId, kind: &str) {
+        use std::sync::atomic::Ordering;
+        let now_ms = self.session_start.elapsed().as_millis() as u64;
+        let last = self.last_illegal_dest_log_ms.load(Ordering::Relaxed);
+        if now_ms.saturating_sub(last) < 1000 {
+            return;
+        }
+        if self
+            .last_illegal_dest_log_ms
+            .compare_exchange(last, now_ms, Ordering::Relaxed, Ordering::Relaxed)
+            .is_err()
+        {
+            return;
+        }
+        let (relay_only, addr) = self
+            .peers
+            .get(&peer_id)
+            .map(|p| (p.relay_only, Some(p.addr)))
+            .unwrap_or((false, None));
+        warn!(
+            "MPTRACE step=SEND_FAIL event=illegal_gameplay_destination self_id={} kind={} peer_id={} is_host={} host_peer_id={:?} phantom={} relay_only={} endpoint={:?} registered={}",
+            self.local_id,
+            kind,
+            peer_id,
+            self.is_host,
+            self.host_peer_id,
+            self.is_phantom(peer_id),
+            relay_only,
+            addr,
+            self.peers.contains_key(&peer_id)
+        );
+    }
+
     // ─── Send methods ───
 
     /// Send an unreliable packet to a specific peer.
     pub async fn send_unreliable_to(&self, peer_id: PeerId, payload: &PacketPayload) {
+        if !self.is_gameplay_destination(peer_id) {
+            self.note_illegal_destination(peer_id, "unreliable_to");
+            return;
+        }
         if let Some(peer) = self.peers.get(&peer_id) {
-            if peer.relay_only {
-                return; // ADR-079: unreachable by contract — a datagram here is H10 poison
-            }
             let seq = 0; // unreliable packets don't need meaningful sequence
             let header =
                 PacketHeader::new(payload.type_code(), self.local_id, seq, self.timestamp());
@@ -123,10 +195,11 @@ impl NetworkManager {
     /// define sobre estas dos para que no existan dos caminos de encode que puedan divergir; el
     /// test `a_cached_relay_encode_is_byte_identical_to_the_per_destination_one` lo congela.
     pub(super) async fn send_prepared_unreliable(&self, dest_peer: PeerId, data: &[u8]) {
+        if !self.is_gameplay_destination(dest_peer) {
+            self.note_illegal_destination(dest_peer, "relay_as");
+            return;
+        }
         if let Some(peer) = self.peers.get(&dest_peer) {
-            if peer.relay_only {
-                return; // ADR-079: never a legal relay destination
-            }
             self.send_datagram(data, peer.addr, "relay_as").await;
         }
     }
@@ -164,15 +237,19 @@ impl NetworkManager {
     pub(super) fn broadcast_destinations(&self) -> Vec<(PeerId, SocketAddr)> {
         self.peers
             .values()
+            // TAREA 4 (2026-08-31): las cuatro condiciones viven ahora en
+            // `peer_is_gameplay_destination` — este barrido y los cuatro envíos DIRIGIDOS aplican
+            // exactamente la misma, que es lo que impide que una superficie nueva herede media.
+            //
             // ADR-079: relay_only is the receiver-side twin of the phantom mark — same inert
-            // addr, same H10 poison if addressed. Both are filtered here.
-            .filter(|p| !self.is_phantom(p.id) && !p.relay_only)
-            // Auditoría de heartbeat (2026-08-30): última línea. Una dirección sin especificar
-            // significa "esta máquina" al enviar, así que un peer registrado en ella recibiría
-            // sus propios latidos y el peer REAL ninguno. `is_routable_peer_addr` ya lo impide en
-            // el registro; esto lo hace imposible también para cualquier futuro camino que
-            // escriba `peer.addr` sin pasar por allí.
-            .filter(|p| super::sync::is_routable_peer_addr(&p.addr))
+            // addr, same H10 poison if addressed. Both are filtered there.
+            //
+            // Auditoría de heartbeat (2026-08-30): una dirección sin especificar significa "esta
+            // máquina" al enviar, así que un peer registrado en ella recibiría sus propios
+            // latidos y el peer REAL ninguno. `is_routable_peer_addr` ya lo impide en el
+            // registro; esto lo hace imposible también para cualquier futuro camino que escriba
+            // `peer.addr` sin pasar por allí.
+            //
             // B (2026-08-31) — LA TOPOLOGÍA ES UNA ESTRELLA, Y AQUÍ NO LO ERA.
             //
             // Un joiner registra a los OTROS joiners con la dirección real que el host le reporta
@@ -188,7 +265,7 @@ impl NetworkManager {
             // 1.073.132 líneas en un solo playtest con direcciones inertes.
             //
             // El host no se filtra: reemitir a todos es precisamente su papel.
-            .filter(|p| self.is_host || Some(p.id) == self.host_peer_id)
+            .filter(|p| self.peer_is_gameplay_destination(p))
             .map(|p| (p.id, p.addr))
             .collect()
     }
@@ -201,12 +278,16 @@ impl NetworkManager {
 
         // Igual que en process_retransmits: se resuelve la dirección con un préstamo INMUTABLE,
         // se envía, y solo después se vuelve a pedir el mutable para encolar el reenvío.
+        // TAREA 4: mismo predicado que el resto de la superficie de envío. Encolar un fiable
+        // hacia un destino ilegal es peor que emitir un no-fiable hacia él: no se descarta, se
+        // reenvía cinco veces y termina expulsando al peer (ADR-062).
+        if !self.is_gameplay_destination(peer_id) {
+            self.note_illegal_destination(peer_id, "reliable");
+            return;
+        }
         let Some(peer) = self.peers.get(&peer_id) else {
             return;
         };
-        if peer.relay_only {
-            return; // ADR-079: nunca se encola reliable hacia un inalcanzable
-        }
         let addr = peer.addr;
 
         // Control de ventana. `can_queue_reliable` existía desde la Fase 3 y NO lo llamaba
@@ -227,7 +308,12 @@ impl NetworkManager {
             return;
         }
 
-        self.send_datagram(&data, addr, "reliable").await;
+        // TAREA 2: si el techo lo rechazó, NO se encola. Reenviarlo cinco veces produciría cinco
+        // rechazos idénticos y la expulsión del peer por `MAX_RETRIES`, que es un daño mucho mayor
+        // que el paquete perdido. El `error!` del rechazo ya nombra el tipo y el tamaño.
+        if !self.send_datagram(&data, addr, "reliable").await {
+            return;
+        }
         if let Some(peer) = self.peers.get_mut(&peer_id) {
             peer.queue_reliable(seq, data);
         }
@@ -315,12 +401,16 @@ impl NetworkManager {
         let header = PacketHeader::new(payload.type_code(), self.local_id, seq, self.timestamp());
         let data = encode_packet(&header, payload);
 
+        // TAREA 4: mismo contrato que send_reliable, y con una razón extra propia — lo que aquí
+        // no se puede enviar no se descarta, se APARCA, así que un destino ilegal llenaría la
+        // cola diferida hasta el tope fatal de `VERDICT_QUEUE_CAP`.
+        if !self.is_gameplay_destination(peer_id) {
+            self.note_illegal_destination(peer_id, "deferred_reliable");
+            return;
+        }
         let Some(peer) = self.peers.get(&peer_id) else {
             return;
         };
-        if peer.relay_only {
-            return; // ADR-079: mismo contrato que send_reliable
-        }
         let addr = peer.addr;
 
         if !peer.can_queue_reliable() || !peer.deferred_reliable.is_empty() {
@@ -339,7 +429,10 @@ impl NetworkManager {
         }
 
         let bytes = data.len();
-        self.send_datagram(&data, addr, "reliable").await;
+        // TAREA 2: mismo criterio que en `send_reliable` — lo rechazado por el techo no se encola.
+        if !self.send_datagram(&data, addr, "reliable").await {
+            return;
+        }
         if let Some(peer) = self.peers.get_mut(&peer_id) {
             peer.queue_reliable(seq, data);
             log::info!(
@@ -359,14 +452,21 @@ impl NetworkManager {
     /// reliable packet to one would never be ACKed and just pile up retransmits. Real
     /// peers still receive it.
     pub async fn broadcast_reliable(&mut self, payload: &PacketPayload) {
+        // TAREA 4 (2026-08-31): ÉSTE ERA EL AGUJERO LATENTE DE LA ESTRELLA. Filtraba fantasmas y
+        // `relay_only` pero NO el rol, así que un joiner habría emitido un fiable directo a cada
+        // uno de sus pares — y un fiable no se pierde y ya está: se reenvía cinco veces y termina
+        // expulsando al peer (ADR-062). Hoy no era alcanzable (`broadcast_anchor` y
+        // `broadcast_stabilizer`, sus únicos llamadores, no tienen ni un call site), y por eso
+        // exactamente había que cerrarlo ahora: el día que alguien los llame no va a acordarse.
+        //
+        // ADR-079: relay_only peers are as unACKable as phantoms — a reliable packet to one would
+        // pile retransmits until ADR-062 evicted it, then the roster re-adds it: an evict/re-add
+        // loop for free. Ambas condiciones viven ya en `peer_is_gameplay_destination`.
         let peer_addrs: Vec<(PeerId, SocketAddr)> = self
             .peers
-            .iter()
-            // ADR-079: relay_only peers are as unACKable as phantoms — a reliable packet to
-            // one would pile retransmits until ADR-062 evicted it, then the roster re-adds
-            // it: an evict/re-add loop for free.
-            .filter(|(id, p)| !self.phantom_ids.contains(id) && !p.relay_only)
-            .map(|(id, p)| (*id, p.addr))
+            .values()
+            .filter(|p| self.peer_is_gameplay_destination(p))
+            .map(|p| (p.id, p.addr))
             .collect();
 
         for (pid, addr) in peer_addrs {
@@ -374,7 +474,10 @@ impl NetworkManager {
             let header =
                 PacketHeader::new(payload.type_code(), self.local_id, seq, self.timestamp());
             let data = encode_packet(&header, payload);
-            self.send_datagram(&data, addr, "broadcast_reliable").await;
+            // TAREA 2: mismo criterio que en `send_reliable`.
+            if !self.send_datagram(&data, addr, "broadcast_reliable").await {
+                continue;
+            }
             if let Some(peer) = self.peers.get_mut(&pid) {
                 peer.queue_reliable(seq, data);
             }
@@ -392,35 +495,59 @@ impl NetworkManager {
     /// day, for everyone, permanently. The payload size travels in the log because the size IS
     /// the diagnosis.
     ///
+    /// TAREA 2 (2026-08-31) — devuelve si los bytes llegaron a salir por el socket. Lo necesitan
+    /// los caminos FIABLES: encolar en `queue_reliable` algo que el techo acaba de rechazar son
+    /// cinco retransmisiones idénticas, cinco rechazos idénticos y la expulsión del peer al agotar
+    /// `MAX_RETRIES` (ADR-062) — el rechazo sería peor que el problema que evita.
+    ///
     /// Takes `&self` (several broadcast paths are `&self`), hence the atomic throttle.
-    pub(super) async fn send_datagram(&self, data: &[u8], addr: SocketAddr, kind: &str) {
-        // MTUPROBE — un datagrama por encima de la MTU de Ethernet se fragmenta en IP, y perder UN
-        // fragmento pierde el datagrama ENTERO. En loopback la MTU es de 64 KB, así que esto no
-        // duele jamás en localhost y sí en cuanto hay un cable de por medio: es la asimetría exacta
-        // "en mi máquina va, con mi amigo no". Se cuenta aquí, en el único punto de salida.
-        self.note_datagram_size(data.len(), kind, addr);
-        // La invariante, aplicada donde no se puede esquivar: los caminos FIABLES no pueden
-        // fragmentar. Un no-fiable sobredimensionado se pierde y se auto-cura al siguiente envío;
-        // uno fiable se reenvía cinco veces con el MISMO tamaño, vuelve a perderse las cinco, y
-        // termina expulsando al peer. Se grita en vez de descartar: el emisor tiene un defecto que
-        // hay que arreglar, y silenciarlo aquí lo escondería.
-        if data.len() > crate::network::protocol::SAFE_DATAGRAM_BYTES
-            && Self::is_reliable_kind(kind)
-        {
-            self.oversized_reliable
+    pub(super) async fn send_datagram(&self, data: &[u8], addr: SocketAddr, kind: &str) -> bool {
+        // ─── TAREA 2 (2026-08-31): EL TECHO, APLICADO ANTES DEL `send_to` REAL ───
+        //
+        // Hasta aquí esto sólo GRITABA, y sólo para los caminos fiables. Un aviso no es una
+        // invariante: los no fiables seguían poniendo en el cable datagramas de hasta 1881 B
+        // medidos (31.004 por sesión), que IP trocea y de los que basta perder un fragmento para
+        // perder el paquete entero — y los 4 únicos reenvíos de la sesión física de 9 min fueron
+        // exactamente los 4 datagramas por encima del techo.
+        //
+        // Ahora se RECHAZA. No es tirar datos a la basura: cada productor de tamaño ilimitado
+        // pagina, trocea o acota antes de llegar aquí, así que esto es el fondo de saco que
+        // convierte "no debería pasar" en "no puede pasar". Que salte significa que hay un emisor
+        // sin acotar, y por eso se registra con `error!` y con su etiqueta: es un defecto del
+        // emisor, no una condición de red.
+        if data.len() > crate::network::protocol::SAFE_DATAGRAM_BYTES {
+            let reliable = Self::is_reliable_kind(kind);
+            if reliable {
+                self.oversized_reliable
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            self.refused_datagrams
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            warn!(
-                "MTUPROBE event=reliable_datagram_over_budget self_id={} kind={} dest={} bytes={} budget={}",
+            log::error!(
+                "MTUPROBE event=datagram_refused_over_budget self_id={} kind={} reliable={} dest={} bytes={} budget={} — NO se ha enviado: el emisor de este tipo no está acotado",
                 self.local_id,
                 kind,
+                reliable,
                 addr,
                 data.len(),
                 crate::network::protocol::SAFE_DATAGRAM_BYTES
             );
+            return false;
         }
 
+        // MTUPROBE — un datagrama por encima de la MTU de Ethernet se fragmenta en IP, y perder UN
+        // fragmento pierde el datagrama ENTERO. En loopback la MTU es de 64 KB, así que esto no
+        // duele jamás en localhost y sí en cuanto hay un cable de por medio: es la asimetría exacta
+        // "en mi máquina va, con mi amigo no". Se cuenta aquí, en el único punto de salida.
+        //
+        // TAREA 2: DESPUÉS del techo, no antes. La marca de agua tiene que decir cuánto mide lo que
+        // de verdad SALE — si contara también lo rechazado, el número que se lee para saber cuánto
+        // margen queda estaría midiendo justo lo que no se envió, y `max_seen > 1200` dejaría de
+        // ser imposible. Lo rechazado ya lleva su propia línea con su tamaño.
+        self.note_datagram_size(data.len(), kind, addr);
+
         let Err(e) = self.socket.send_to(data, addr).await else {
-            return;
+            return true;
         };
         use std::sync::atomic::Ordering;
         let now_ms = self.session_start.elapsed().as_millis() as u64;
@@ -440,6 +567,9 @@ impl NetworkManager {
                 e
             );
         }
+        // El socket falló: no salió. Distinto del rechazo por techo (que es culpa del emisor) pero
+        // el retorno es el mismo, y por lo mismo — encolar un fiable que no salió no lo arregla.
+        false
     }
 
     /// Send a raw encoded packet to an address (used for handshake responses

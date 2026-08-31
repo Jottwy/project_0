@@ -16,11 +16,36 @@ use super::{IncomingPacket, NetworkEvent, NetworkManager, PeerId};
 impl NetworkManager {
     // ─── Packet handling ───
 
+    /// TAREA 4 (2026-08-31): ¿le devolvemos un ACK a este emisor?
+    ///
+    /// El host ACKea a cualquiera —es el centro de la estrella—. Un joiner sólo al host.
+    ///
+    /// La tercera rama, `host_peer_id.is_none()`, NO es una concesión: es la ventana de arranque.
+    /// El `HandshakeAck` es lo único que le dice a un joiner quién es el host, y UDP no ordena
+    /// nada — un `WorldSyncChunk` (0x36, fiable y con secuencia) puede adelantarlo. Callar ahí
+    /// costaría una retransmisión por cada chunk adelantado, y la ventana se cierra sola en el
+    /// instante en que se procesa el ACK del handshake. Antes de ese punto el único que nos
+    /// escribe es el host al que le pedimos entrar.
+    fn may_ack_sender(&self, sender_id: PeerId) -> bool {
+        self.is_host || self.host_peer_id.is_none() || self.host_peer_id == Some(sender_id)
+    }
+
     pub(super) async fn handle_packet(&mut self, pkt: IncomingPacket) -> Option<NetworkEvent> {
         let sender_id = pkt.header.sender_id;
 
         // Send ACK for reliable packets.
-        if is_reliable(pkt.header.packet_type) && pkt.header.sequence > 0 {
+        //
+        // TAREA 4 (2026-08-31): ÚLTIMA SUPERFICIE DIRECTA. Un ACK no pasa por
+        // `is_gameplay_destination` —va a `pkt.addr` crudo, sin mirar la tabla de peers—, así que
+        // era el único datagrama que un joiner podía seguir mandando a otro joiner: bastaba con
+        // que el par tuviera un build viejo, sin el filtro de estrella, emitiendo fiables
+        // directos. Un ACK no es tráfico de gameplay, pero es un datagrama a un endpoint que la
+        // topología dice que no existe, y en Windows lo que rebota vuelve como `WSAECONNRESET`
+        // sobre nuestro propio socket (H10). Se calla.
+        if is_reliable(pkt.header.packet_type)
+            && pkt.header.sequence > 0
+            && self.may_ack_sender(sender_id)
+        {
             let ack = PacketPayload::Ack {
                 acked_sequence: pkt.header.sequence,
             };
@@ -46,11 +71,23 @@ impl NetworkManager {
         // imprimía `last_seen_ms=0` fijo — el único valor que jamás puede diagnosticar nada.
         let mut gap_ms: u128 = 0;
         let mut hb_known_peer = false;
+        // TAREA 4: la traza decía `addr_adopted=!relayed_from_other_peer`, que desde que un
+        // `relay_only` tampoco adopta ya no es la misma pregunta. Se registra lo que de verdad
+        // pasó, no la mitad de la condición que la decide.
+        let mut addr_adopted = false;
         if let Some(peer) = self.peers.get_mut(&sender_id) {
             hb_known_peer = true;
             gap_ms = peer.last_heartbeat.elapsed().as_millis();
-            if !relayed_from_other_peer {
+            // TAREA 4 (2026-08-31): un `relay_only` NO adopta direcciones. Su `addr` es el
+            // centinela inerte por contrato (ADR-079) y toda la superficie de envío se apoya en
+            // esa marca, no en la dirección; dejar que un datagrama entrante estampe ahí una
+            // dirección real convierte el centinela en un endpoint con pinta de legítimo. Hoy
+            // sólo lo impedía de rebote `relayed_from_other_peer` —porque las poses del fantasma
+            // llegan desde el socket del host, que ya es otro peer conocido—, o sea que la
+            // protección dependía de que el host estuviera registrado, no del contrato.
+            if !relayed_from_other_peer && !peer.relay_only {
                 peer.addr = pkt.addr;
+                addr_adopted = true;
             }
             peer.record_heartbeat();
             let should_log = self
@@ -96,7 +133,7 @@ impl NetworkManager {
                 self.local_id,
                 sender_id,
                 pkt.addr,
-                !relayed_from_other_peer,
+                addr_adopted,
                 self.peers.len(),
                 self.peer_ids()
             );
@@ -368,6 +405,9 @@ impl NetworkManager {
             // ADR-068: `requester_id` sale de la CABECERA, no del payload — por eso este arm no
             // puede vivir en la lista 1:1 de abajo. Es lo que impide que un cliente reclame estar
             // pintando desde la posición de otro para saltarse el tope de alcance.
+            // TAREA 2 (2026-08-31): las dos direcciones de la pintada llegan paginadas por trazos
+            // cuando el gesto no cabe en un datagrama. Un gesto de una sola tanda —el caso
+            // normal— sale por el atajo de `offer` sin tocar ninguna estructura.
             PacketPayload::SprayPlaceRequest {
                 place_id,
                 layer,
@@ -375,18 +415,36 @@ impl NetworkManager {
                 yaw,
                 size,
                 strokes,
-            } => Some(NetworkEvent::SprayPlaceRequest {
-                place_id,
-                layer,
-                world_pos,
-                yaw,
-                size,
-                strokes,
-                requester_id: sender_id,
-            }),
+                page,
+                page_count,
+            } => self
+                .spray_place_pages
+                .offer(place_id, page, page_count, strokes)
+                .map(|strokes| NetworkEvent::SprayPlaceRequest {
+                    place_id,
+                    layer,
+                    world_pos,
+                    yaw,
+                    size,
+                    strokes,
+                    requester_id: sender_id,
+                }),
 
-            PacketPayload::SprayPlaced { spray } => {
-                Some(NetworkEvent::SprayPlacedReceived { spray })
+            PacketPayload::SprayPlaced {
+                spray,
+                page,
+                page_count,
+            } => {
+                // El id lo acuña el host y es la clave; los trazos se reponen enteros al
+                // completarse, así que la pintada que se entrega nunca es una parcial.
+                let key = spray.id as u64;
+                self.spray_placed_pages
+                    .offer(key, page, page_count, spray.strokes.clone())
+                    .map(|strokes| {
+                        let mut spray = spray;
+                        spray.strokes = strokes;
+                        NetworkEvent::SprayPlacedReceived { spray }
+                    })
             }
 
             // ADR-093 (E2): `Level4State` se renombra a `*Received` — mismo motivo que
@@ -727,15 +785,56 @@ impl NetworkManager {
             // con el handoff de propiedad, y con ello heredaba su ACK FIABLE: a ~820 chunks/s eso
             // llenaba permanentemente la ventana de 32 del receptor. Ahora cada uno tiene su
             // evento; la APLICACIÓN sigue siendo la misma en ambos, solo cambia si se confirma.
-            PacketPayload::ChunkState { data } => Some(NetworkEvent::ChunkStateReceived {
-                from: sender_id,
-                data,
-            }),
+            // TAREA 2 (2026-08-31): los dos portadores de un chunk completo pasan ahora por su
+            // ensamblador. Un chunk de UNA página —el caso común— sale por el atajo de `offer` sin
+            // tocar ninguna estructura, así que esto no cuesta nada en régimen normal.
+            //
+            // NO se aplica ninguna página suelta, y ésa es la decisión entera: `apply_chunk_sync`
+            // hace `entities.clear()` + reconstruir, así que aplicar media partición no deja el
+            // chunk "a medias", lo deja MAL — con una lista de entidades que nunca existió y que
+            // el receptor da por buena. La clave es `(generación, pos, capa)`: una ronda nueva
+            // desaloja lo que quedara a medias de la anterior.
+            PacketPayload::ChunkState { data } => {
+                let pages = data.page_count;
+                let generation = data.generation as u64;
+                self.chunk_state_pages
+                    .offer(generation, data)
+                    .map(|merged| NetworkEvent::ChunkStateReceived {
+                        from: sender_id,
+                        data: merged,
+                    })
+                    .or_else(|| {
+                        debug!(
+                            "MTUPROBE event=chunk_state_page_buffered self_id={} from_peer={} pages={} pending_chunks={}",
+                            self.local_id,
+                            sender_id,
+                            pages,
+                            self.chunk_state_pages.pending_len()
+                        );
+                        None
+                    })
+            }
 
-            PacketPayload::ChunkTransfer { data } => Some(NetworkEvent::ChunkTransferReceived {
-                from: sender_id,
-                data,
-            }),
+            PacketPayload::ChunkTransfer { data } => {
+                let pages = data.page_count;
+                let generation = data.generation as u64;
+                self.chunk_transfer_pages
+                    .offer(generation, data)
+                    .map(|merged| NetworkEvent::ChunkTransferReceived {
+                        from: sender_id,
+                        data: merged,
+                    })
+                    .or_else(|| {
+                        debug!(
+                            "MTUPROBE event=chunk_transfer_page_buffered self_id={} from_peer={} pages={} pending_chunks={}",
+                            self.local_id,
+                            sender_id,
+                            pages,
+                            self.chunk_transfer_pages.pending_len()
+                        );
+                        None
+                    })
+            }
 
             PacketPayload::ChunkTransferAck { pos } => {
                 Some(NetworkEvent::ChunkTransferAckReceived {
@@ -1128,6 +1227,23 @@ impl NetworkManager {
             .retain(|(peer, _)| *peer != id);
         self.last_keepalive_trace_at.remove(&id);
         self.last_transform_trace_at.remove(&id);
+        // TAREA 4 (2026-08-31): LAS MARCAS DE INYECTADO TAMBIÉN SON ESTADO INDEXADO POR PeerId, y
+        // eran las dos únicas que sobrevivían a la baja. `despawn_phantom` / `despawn_faceling`
+        // limpian su set porque son la ruta ORDENADA de retirada; las cuatro rutas de baja no
+        // ordenada (timeout, paquete Disconnect, retransmisión agotada, desborde de veredictos)
+        // sacaban al peer del mapa y dejaban su id dentro del set para siempre.
+        //
+        // Lo que deja un id huérfano ahí: `is_phantom(id)` sigue diciendo que sí sobre un peer que
+        // ya no existe, y el `despawn_*` posterior devuelve `false` como si nunca hubiera estado.
+        // Hoy no es alcanzable en el bucle normal —`game_loop` refresca el latido de los
+        // inyectados antes del barrido, justo para que `check_timeouts` no los coseche— pero
+        // "inalcanzable mientras nada se atasque" no es una garantía, y esto es exactamente la
+        // forma que tiene el riesgo R3 (peers fantasma acumulados) de ser real.
+        //
+        // Va aquí y no en las cuatro rutas porque las cuatro pasan por esta función; ése era el
+        // motivo de que exista.
+        self.phantom_ids.remove(&id);
+        self.faceling_ids.remove(&id);
     }
 
     pub fn peer_ids(&self) -> Vec<PeerId> {
@@ -1150,7 +1266,7 @@ impl NetworkManager {
     /// Single source for the three handshake paths (new peer / duplicate by id / duplicate by
     /// endpoint), which previously carried byte-identical copies of this block.
     fn build_handshake_ack(&self, assigned_id: PeerId) -> PacketPayload {
-        PacketPayload::HandshakeAck {
+        let ack = PacketPayload::HandshakeAck {
             assigned_id,
             world_seed: self.world_seed,
             config: SessionConfig::default(),
@@ -1179,7 +1295,93 @@ impl NetworkManager {
             anchors: vec![],
             stabilizers: vec![],
             phantom_density_scale: self.phantom_density_scale,
+        };
+        self.trim_handshake_ack(ack)
+    }
+
+    /// TAREA 2 (2026-08-31) — recorta la lista de peers del `HandshakeAck` hasta que el datagrama
+    /// quepa en `SAFE_DATAGRAM_BYTES`.
+    ///
+    /// Medido: 997 B con 8 peers y **1791 B con 16**, contra un techo de 1200. Y este datagrama no
+    /// se puede permitir el lujo de perderse: es la ÚNICA respuesta al handshake, va por
+    /// `send_raw_to` (no fiable, sin reintento propio), y sin él el joiner agota
+    /// `CONNECT_TIMEOUT` y ve "no se pudo conectar" en una sesión que estaba perfectamente viva.
+    ///
+    /// **Recortar es aquí lo correcto, y no es truncar en silencio.** La lista de peers de este
+    /// paquete es una PISTA de arranque que hoy el receptor ni siquiera lee —
+    /// `handle_handshake_ack` sólo registra al host— y el roster autoritativo llega por el relay
+    /// de `PeerList` a 10 Hz, o sea dentro de los 100 ms siguientes. Lo que NO se puede recortar
+    /// es `assigned_id`, `world_seed`, `config` ni `phantom_density_scale`: sin ellos el joiner no
+    /// entra, y por eso se quita de la lista y nunca de la cabecera. Cada recorte deja su línea
+    /// con cuántos quedaron fuera.
+    ///
+    /// Paginarlo habría sido peor: exigiría que el joiner supiera esperar N datagramas ANTES de
+    /// estar conectado, que es justo el momento en el que menos garantías hay.
+    fn trim_handshake_ack(&self, ack: PacketPayload) -> PacketPayload {
+        let budget = crate::network::protocol::SAFE_DATAGRAM_BYTES;
+        let wire = |payload: &PacketPayload| {
+            let header =
+                super::protocol::PacketHeader::new(payload.type_code(), self.local_id, 0, 0);
+            super::protocol::encode_packet(&header, payload).len()
+        };
+        if wire(&ack) <= budget {
+            return ack;
         }
+        let PacketPayload::HandshakeAck {
+            assigned_id,
+            world_seed,
+            config,
+            mut peers,
+            anchors,
+            stabilizers,
+            phantom_density_scale,
+        } = ack
+        else {
+            return ack;
+        };
+        let full = peers.len();
+        while !peers.is_empty() {
+            peers.pop();
+            let probe = PacketPayload::HandshakeAck {
+                assigned_id,
+                world_seed,
+                config: config.clone(),
+                peers: peers.clone(),
+                anchors: anchors.clone(),
+                stabilizers: stabilizers.clone(),
+                phantom_density_scale,
+            };
+            if wire(&probe) <= budget {
+                warn!(
+                    "MTUPROBE event=handshake_ack_peers_trimmed self_id={} assigned_id={} kept={} of={} bytes={} budget={budget} — los que faltan llegan por el relay de PeerList (10 Hz)",
+                    self.local_id,
+                    assigned_id,
+                    peers.len(),
+                    full,
+                    wire(&probe)
+                );
+                return probe;
+            }
+        }
+        // Ni con la lista vacía cabe: la cabecera sola se pasó del techo. No hay nada más que
+        // quitar sin romper el handshake, así que sale y el techo de salida lo rechazará
+        // nombrándolo — que es lo que hace falta para que se vea.
+        let bare = PacketPayload::HandshakeAck {
+            assigned_id,
+            world_seed,
+            config,
+            peers,
+            anchors,
+            stabilizers,
+            phantom_density_scale,
+        };
+        log::error!(
+            "MTUPROBE event=handshake_ack_exceeds_budget_bare self_id={} assigned_id={} bytes={} budget={budget}",
+            self.local_id,
+            assigned_id,
+            wire(&bare)
+        );
+        bare
     }
 
     /// Send the `HandshakeAck` for `assigned_id` to `from_addr`, preceded by the two log lines
