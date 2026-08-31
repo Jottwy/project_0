@@ -2,6 +2,41 @@
 > Actualizado por /checkpoint al cierre de cada sesión. Leído al inicio de cada sesión.
 
 ## Última sesión
+- Fecha: 2026-08-31, 7.ª tanda (**TAREA 4 — hardening de red para Alpha 1. Cero wire, cero C#, cero gameplay.** Commit `1b9a7212` "fix(net): la estrella dependia de una costumbre, no de una garantia" (5 ficheros, +1786/−81)) — validación: **`cargo test` 1227/1227, clippy `--all-targets -D warnings` limpio, `fmt --check` limpio. EditMode 1176/1191 con 15 rojos, que son EXACTAMENTE los preexistentes de la línea base (8 `NetworkInitializerTests` incluido el flaky `HostLaunchesBackendWithValidPath`, 2 `StorageRackDisplayTests`, 3 `Wg3ComposerTests` + 1 `Wg3GeometryTests`, 1 `ZoneAmbienceSetTests`): cero rojos nuevos. Corroborado por una corrida independiente de la sesión de TAREA 1 que dio los mismos 15 nombre a nombre.**
+
+0. **La estrella se sostenía en una costumbre.** El filtro de rol de `b997eadb` vivía sólo en `broadcast_destinations`; los ~30 envíos DIRIGIDOS de un joiner eran seguros únicamente porque todos escriben el literal `1`. Las cuatro condiciones de destino legal (fantasma, `relay_only`, dirección enrutable, estrella) pasan a `peer_is_gameplay_destination` / `is_gameplay_destination` en `backend/src/network/send.rs`, aplicadas a las SEIS superficies de envío. `host_peer_id` intacto: misma condición, movida.
+
+1. **Agujero latente cerrado:** `broadcast_reliable` filtraba fantasmas y `relay_only` pero NO el rol. Inalcanzable hoy sólo porque `broadcast_anchor`/`broadcast_stabilizer` no tienen call sites. Un fiable a un par inalcanzable no se descarta: se reenvía 5 veces y expulsa al peer (ADR-062).
+
+2. **El ACK crudo era la última superficie directa** (va a `pkt.addr` sin mirar la tabla de peers). `may_ack_sender` en `backend/src/network/handlers.rs`: un joiner sólo ACKea al host. La rama `host_peer_id.is_none()` es la ventana de arranque, no una concesión — UDP puede entregar un `WorldSyncChunk` antes que el `HandshakeAck`.
+
+3. **Un `relay_only` ya no adopta direcciones** (`handlers.rs`). Antes sólo lo protegía de rebote `relayed_from_other_peer`, o sea que dependía de que el host estuviera registrado, no del contrato (ADR-079).
+
+4. **Ghost peer cerrado:** `phantom_ids`/`faceling_ids` eran el único estado indexado por `PeerId` que sobrevivía a una baja no ordenada. Se limpian en `purge_peer_state`, por donde pasan las cuatro rutas de baja.
+
+5. 11 tests nuevos en `backend/src/network/tests.rs`, incluida la matriz a 2/3/4 peers en los dos roles y las seis superficies medidas sobre sockets UDP vivos.
+
+6. Documentación: `docs/architecture/NETWORKING_INVARIANTS.md` con I14, I15, I16 e I17 nuevas, R3 marcado como parcialmente cerrado y R5/R6/R7 añadidas.
+
+7. **Corrección de fixtures (decláralo, no lo escondas):** dos fixtures de `sync::chunk_broadcast_tests` montaban a mano un joiner con el host REGISTRADO pero sin `host_peer_id`, estado que `handle_handshake_ack` no puede producir. Uno se puso rojo con el cambio; el otro **pasaba por el motivo equivocado**. Se corrigió el fixture, no la guarda, y la regla quedó afirmada aparte en `a_joiner_mid_handshake_cannot_queue_a_reliable_to_anyone`. Esas dos líneas viajan en el commit `3fe24c3c` de TAREA 2, que se llevó `sync.rs` entero.
+
+8. **Endpoint safety:** `0.0.0.0` y puerto 0 se rechazan en el registro. Loopback y APIPA **no se pueden rechazar en Rust** sin romper la partida en una sola máquina; el rechazo vive en `LobbyEndpointPolicy.cs` (lado que publica), verificado.
+
+**Próximo paso único:** la prueba física a tres máquinas en redes distintas. La matriz de 3 y 4 peers está verificada con sockets UDP reales, pero eso no es una partida, y nunca se ha jugado a tres.
+
+**PENDIENTES / RIESGOS NUEVOS** (todos documentados en NETWORKING_INVARIANTS.md, ninguno cerrado):
+- **R5:** peer duplicado tras reconexión desde puerto nuevo. El dedup del handshake casa por `sender_id` O por `addr`; un cliente reiniciado no casa por ninguno. Ventana ≤5 s con el jugador duplicado en el roster. No se cierra sin decidir qué identifica a un jugador entre reconexiones, y eso hoy no existe.
+- **R6:** los ~30 envíos de joiner escriben `1` en vez de `host_peer_id`. Ya no es silencioso (sale por `illegal_gameplay_destination` con `registered=false`), pero siguen siendo dos fuentes de verdad.
+- **Flake anotado, no diagnosticado:** `game_loop::tests::phantom_sprints_after_patience_exceeded` falló UNA vez en corrida completa y pasa aislado; no reprodujo en tres corridas posteriores. Apunta a estado global entre tests, de nadie.
+
+**SECCIÓN "NO TOCAR":**
+- `peer_is_gameplay_destination` tiene ya tres manos encima (ADR-015/056 la estrella, ADR-079 el `relay_only`, ADR-016/043 el fantasma). Cualquier superficie de envío NUEVA debe usarla; añadir media condición aparte es cómo nació el agujero que esta sesión cierra.
+- I17 le pone una condición a quien toque `PeerList`: el roster es lo único que mantiene vivos a los pares en la tabla de un joiner desde que la estrella calló el tráfico directo. El reensamblado todo-o-nada NO vale ahí, aunque sí valga para los cinco rosters de ADR-060.
+
+**CONTEXTO DE ÁRBOL COMPARTIDO** (cuatro sesiones concurrentes): el commit `1b9a7212` se llevó `backend/src/network/{send,mod,handlers,tests}.rs` ENTEROS, con trabajo en vuelo de TAREA 2 dentro, porque el entrelazado era a nivel de hunk y no había corte limpio; por eso ese commit no compila por sí solo (`protocol.rs`, `roster.rs` y `sync.rs` llegan en `3fe24c3c`). Está declarado en el cuerpo del commit.
+
+---
+
 - Fecha: 2026-08-31, 6.ª tanda (**NETWORKING TASK 2 (MTU): el techo de 1200 B era un aviso; ahora es un rechazo**) — validación: **`cargo test` 1227/1227 en el árbol y 1223/1223 en un worktree limpio sobre el commit, clippy `--all-targets -D warnings` y fmt limpios. 16 tests nuevos. WIRE 53 → 54 (backend + espejo C#). Commit `3fe24c3c`, en par con `1b9a7212`. CERO Unity más allá de la constante de versión.**
 
 0. **`SAFE_DATAGRAM_BYTES = 1200` existía y no era una invariante.** Era un `warn`, y sólo para los caminos FIABLES. Los no fiables seguían poniendo en el cable hasta **1881 B, 31.004 por sesión**. Ahora `send_datagram` —el único punto de salida— devuelve `bool` y **RECHAZA antes del `send_to`**, fiable o no, con `error!` y contador propio (`refused_datagram_count`). Los caminos fiables miran ese retorno y **no encolan lo rechazado**: reenviarlo cinco veces daría cinco rechazos idénticos y `MAX_RETRIES` expulsaría al peer (ADR-062) — un datagrama grande acabaría echando a un jugador.
