@@ -127,7 +127,7 @@ solo dice que Unity habló con su propio backend, y en un joiner eso ocurre exis
 | IP o puerto equivocados | nadie contesta | a los 15 s: `connect_attempt_timed_out` → vuelta al menú con el motivo |
 | Host apagado | igual que el anterior | ídem |
 | Firewall entrante bloqueando UDP en el host | igual que el anterior | ídem — el motivo nombra el firewall |
-| NAT sin redirección (IP pública) | igual que el anterior | ídem — **no hay NAT traversal**, hace falta port forwarding |
+| NAT sin redirección (IP pública) | igual que el anterior | ídem. Desde ADR-112 el host lo intenta solo por UPnP; si no pudo, el log dice cuál de las cinco causas fue (`UPNP_*`, `CGNAT_SUSPECTED`, `PUBLIC_ENDPOINT_UNKNOWN`) |
 | Versión de wire distinta | el host rechaza | `host_reject_handshake_version_mismatch` → `session_ended` |
 | Pool de salas distinto | el host rechaza | `host_reject_handshake_room_manifest_mismatch` → `session_ended` |
 | Sesión llena | el host rechaza | `host_reject_handshake_session_full` → `session_ended` |
@@ -142,8 +142,44 @@ solo dice que Unity habló con su propio backend, y en un joiner eso ocurre exis
   Unity con `CreateNoWindow`, así que Windows **no enseña el diálogo** de "permitir acceso": lo
   bloquea callado. Si hace falta regla, es de entrada, UDP, para el ejecutable — nunca desactivar el
   firewall.
-- **Internet**: la IP pública del host **no basta**. No hay NAT traversal ni hole punching; hace
-  falta redirigir el puerto UDP en el router del host.
+- **Internet**: desde ADR-112 el host **intenta abrirse el puerto él mismo** por UPnP-IGD y
+  averigua su IP pública. Sigue sin haber NAT traversal ni hole punching: UPnP no atraviesa nada,
+  le pide permiso al router. Si el router no lo soporta, sigue haciendo falta redirigir el puerto
+  UDP a mano; y **con CGNAT no hay nada que redirigir**. Ver la sección siguiente.
+
+## La puerta a internet (ADR-112)
+
+Al hostear, Unity prepara la conectividad **en segundo plano** y sin bloquear la creación de
+partida. Es una escalera de cinco peldaños, y cada uno se enciende por su propia evidencia:
+
+| Peldaño | Qué demuestra |
+|---|---|
+| `PublicIpKnown` | Se sabe qué IP pública nos ve el mundo. **No** que nadie pueda llegar a ella. |
+| `PortMappingRequested` | Se le pidió el reenvío al router. Sólo que la petición salió. |
+| `PortMappingConfirmed` | Se **releyó** el mapeo (`GetSpecificPortMappingEntry`) y apunta a este PC. |
+| `EndpointPublished` | El endpoint quedó en el lobby de Steam. |
+| `RemotePeerObserved` | Entró un peer. **Un joiner de la misma LAN lo enciende igual.** |
+
+**Ninguno de los cinco significa "internet funciona".** Eso sólo lo demuestra una conexión entrante
+desde fuera de la LAN, y quién entró por dónde lo sabe el backend, no Unity.
+
+Lo que se publica como `connect_ip` sale de esta precedencia: **lo que escribió el humano** →
+**la IP pública con mapeo confirmado y sin sospecha de CGNAT** → **la dirección local** → nada, y
+entonces la partida no se anuncia. El host publica además su LAN en `bs_lan_ip`, que el joiner usa
+en el REINTENTO cuando el hairpin del router no deja llegar a la IP pública desde la misma red.
+
+Cuando la escalera se corta, el motivo va al log con uno de estos cinco nombres, LITERALES:
+
+| Código | Qué pasó |
+|---|---|
+| `UPNP_UNAVAILABLE` | Nadie contestó al SSDP, o el que contestó no es un router. |
+| `UPNP_DISABLED` | Apagado por configuración (`BS_NO_UPNP=1`). No es lo mismo que lo anterior. |
+| `UPNP_MAPPING_FAILED` | El router está, y el mapeo no llegó a confirmarse. |
+| `CGNAT_SUSPECTED` | NAT de operador o doble NAT. **No tiene arreglo con este transporte.** |
+| `PUBLIC_ENDPOINT_UNKNOWN` | Ninguna fuente pudo decir la IP pública. |
+
+Interruptores: `BS_NO_UPNP=1` no pregunta al router; `BS_NO_PUBLIC_IP_LOOKUP=1` no habla con
+ningún servicio externo. Con los dos puestos se sigue pudiendo hostear en LAN igual que siempre.
 
 ## Diagnóstico en dos minutos
 
@@ -161,6 +197,9 @@ Recetas sobre el log del joiner y del host:
 | ¿El joiner entró? | `event=joiner_session_joined` |
 | ¿Se agotó el intento? | `event=connect_attempt_timed_out` |
 | ¿El backend cree que es host? | `role=host` en `socket_bound`; y `handshake_dropped reason=not_host` si no |
+| ¿Hasta dónde llegó la puerta a internet? | `NATPROBE` en el log de Unity (trae `rungs=` y `codes=`) |
+| ¿Por qué no hay UPnP? | `[HostConnectivity] upnp:` |
+| ¿Y el mapeo? | `[HostConnectivity] mapeo:` / `cgnat:` |
 
 ## Identity Model
 
@@ -177,5 +216,7 @@ Preocupaciones futuras reconocidas, no implementaciones actuales:
 
 - Servidor dedicado o relay
 - Migración de host (que el host se vaya termina la sesión — ADR-056)
-- NAT traversal / hole punching
+- NAT traversal / hole punching. **UPnP-IGD (ADR-112) no es esto**: no atraviesa nada, le pide
+  permiso al router. Steam Networking Sockets, Steam Datagram Relay, STUN y TURN siguen fuera, y
+  con ellos la única salida que tendría un host detrás de CGNAT.
 - Cifrado o autenticación (ni en P2P ni en IPC)

@@ -10957,3 +10957,166 @@ claim (host y cliente ya contestan con el mismo dato, ADR-108 D6).
 3. **D2** ADR-103 + perillas de rareza — el frente grande de sensación.
 4. **D5** autorado — contenido; puede ir en paralelo con todo lo anterior.
 5. **D1** borrado de WG2, etapa 3 — mecánico, por trozos, cuando no estorbe a lo de arriba.
+
+---
+
+## ADR-111 — La identidad de red del cliente la dice el host, y hasta hoy Unity no se enteraba (2026-08-31)
+
+**Contexto.** Hay dos números y sólo uno es una identidad:
+
+- **PROPUESTO** — el `NET_ID` con el que Unity lanza su backend (`NetworkInitializer.LastSelectedNetId`,
+  escrito en `StoreSelectedConfig`). Es una **petición**, y su valor por defecto es **1**.
+- **ASIGNADO** — el que el host acuña en el handshake (`allocate_peer_id`, `network/handlers.rs`) y
+  que el backend del joiner adopta acto seguido (`self.local_id = assigned_id`). Es el que viaja en
+  la cabecera de cada paquete, el que el host estampa en cada `owner_id` y el que usa para
+  deduplicar. **Es la única identidad autoritativa.**
+
+Los dos coinciden en el host —nadie le asigna nada, la suya es la del bind— y pueden no coincidir en
+un joiner: si el propuesto ya estaba cogido, el host asigna otro. **Y nada se lo contaba a Unity.**
+`WorldState` no tenía ningún campo con el id local, y `remote_players` no servía para deducirlo: un
+nodo nunca se registra a sí mismo como peer, así que el id local está ausente de esa lista **por
+construcción**.
+
+Consecuencia: catorce puntos del cliente usaban el propuesto como si fuera el asignado. ADR-110 (rev.
+de la sesión anterior) arregló el síntoma más visible —el segundo filtro de `RemotePlayerManager`, que
+con `NET_ID=1` borraba al host del roster de cada joiner— y dejó anotada la causa como deuda: «llevar
+el id asignado por IPC es wire + ADR». Esto es ese wire y este es ese ADR.
+
+**Los tres daños, por gravedad y no por visibilidad:**
+
+1. **Autoridad de construcción.** `BuildPermission.LocalPeerId()` se compara contra el `owner_id` de
+   las reclamaciones, que el host escribe con el asignado. Un joiner con el propuesto por defecto se
+   declaraba dueño de las reclamaciones **del host** y, a la vez, intruso en las suyas.
+2. **Colisión de ids de petición.** Ocho acuñadores parten el espacio como `id * 1e9 + contador`
+   (`MintDropId`, `NextPlaceId`, `NextAddId`, `NextDemolishId`, `NextHitId`, `NextDropId`,
+   `MakeRequestId`, `EnsurePlaceId`). El host deduplica en un set global: dos clientes con el mismo
+   prefijo hacen que la acción del segundo **se descarte en silencio como duplicada**. Con el
+   propuesto por defecto, dos joiners lanzados sin `NET_ID` en el entorno tienen el mismo prefijo.
+3. **Guarda de auto-golpe del PvP.** `RemotePvpHitbox` descarta el impacto si `attackerId ==
+   _victimId`. Con el propuesto (1), un joiner creía estar pegándose a sí mismo **cada vez que
+   apuntaba al host**.
+
+Los demás usos eran trazas (`MPTRACE self_id=…`), que mentían de forma consistente y por eso
+alargaron el diagnóstico.
+
+**Decisión.**
+
+**D1 — `WorldState` gana `local_player_id: u16` (wire v52 → v53).** Lleva `net.local_id`, o sea la
+verdad que el backend tiene en ese instante. Va en la raíz y no dentro de `local_player` porque no es
+estado del avatar, es la identidad de red del proceso. Sale de `net`, **nunca de `player.id`**: entre
+el ack y el arm de `PeerConnected` que realinea `player.id = net.local_id` el avatar todavía lleva el
+propuesto. Se serializa siempre (no `skip_serializing_if`): un campo ausente decodifica a 0 y sería
+indistinguible de un backend viejo.
+
+**D2 — La ventana anterior al ack reporta el propuesto, y eso es deliberado.** Un joiner, antes de que
+el host le conteste, tiene literalmente el propuesto como `local_id`; el campo dice lo que hay, y se
+corrige solo en el siguiente snapshot. No se manda 0 en ese hueco: 0 no es un `PeerId` y el cliente lo
+trata como «no lo sé». La política del cliente para la ventana es explícita: **el asignado en cuanto
+se conoce, el propuesto mientras tanto, y el propuesto no vuelve a ganar jamás** (`NetIdentity.Resolve`).
+La ventana es de milisegundos y anterior a que el mundo cargue, pero **no es vacía**: un id de petición
+acuñado dentro de ella lleva el prefijo propuesto. Se acepta a sabiendas — cerrarla exigiría que el
+cliente supiera distinguir «aún no hay sesión» de «sesión en solitario», que es la decisión de
+`session_joined` y no la de este ADR.
+
+**D3 — El punto de adopción es el hilo de red, no el consumidor.** `IPCClient` llama a
+`NetIdentity.Adopt` al parsear el snapshot, no al drenarlo en el hilo principal: los acuñadores son
+estáticos y no drenan ninguna cola, y el retraso de un frame es justo la ventana en la que un joiner
+recién asignado seguiría actuando como el host.
+
+**D4 — La identidad se olvida al ABRIR conexión IPC, no al cerrarla.** Cada sesión lanza un backend
+nuevo al que el host puede darle otro id; conservar el anterior es este mismo fallo una partida más
+tarde.
+
+**D5 — `LastSelectedNetId` sobrevive, con su papel recortado por documentación.** Sigue siendo
+legítimo para hablar del LANZAMIENTO (el log de configuración, el HUD de depuración, que ahora enseña
+los dos números etiquetados). Deja de ser legítimo compararlo con cualquier id venido del backend.
+
+**Lo que NO se hace.** No se reactiva el filtro de `RemotePlayerManager`: ahora sería redundante en
+vez de dañino, pero seguiría siendo un segundo dueño de una decisión que ya tiene uno (el backend).
+`RemotePlayerRosterTests` lo fija.
+
+**Consecuencias.**
+
+- `WIRE_SCHEMA_VERSION` 52 → 53 y su espejo `WireSchema.Expected` en el mismo cambio (ADR-061): la
+  puerta exige igualdad, así que separarlos deja el juego inarrancable, no degradado.
+- Un backend anterior a la v53 nunca llega a hablar (la puerta corta antes); aun así el cliente
+  rechaza el 0 explícitamente, porque adoptarlo colapsaría el prefijo de TODOS los clientes al mismo
+  espacio.
+- `Wire v53` es aditivo: ningún campo cambia de forma ni de significado.
+
+---
+
+## ADR-112 — El host abre su propio puerto: UPnP-IGD sí, NAT traversal no (2026-08-31) — ACEPTADA
+
+**Contexto.** Hostear hacia internet exigía hasta hoy que el humano entrara en su router y
+redirigiera un puerto UDP a mano. `NETWORK_ARCHITECTURE_CURRENT.md` lo decía sin adornos: "la IP
+pública del host no basta". Eso es una barrera que la mayoría de la gente no cruza, y el Playtest
+de Steam la iba a encontrar entera.
+
+**Decisión.** El host intenta abrirse el puerto él mismo por **UPnP-IGD**, averigua su IP pública, y
+**sólo anuncia lo que ha podido confirmar**. El transporte no se toca: sigue siendo UDP directo
+entre backends, en estrella (ADR-015).
+
+**Lo que NO se hace, y por qué.** Ni Steam Networking Sockets, ni Steam Datagram Relay, ni STUN, ni
+TURN, ni hole punching. Los cinco son cambios de TRANSPORTE, no de configuración, y ninguno cabe en
+este ADR. Se anota lo que cuesta no tenerlos: **el CGNAT no tiene solución por esta vía** — cuando
+el operador comparte una IP pública entre cientos de abonados no hay puerto que reenviar, y ninguna
+cantidad de UPnP lo arregla. Quien esté ahí no puede hostear, y se le dice.
+
+**D1 — UPnP se implementa a mano, sin dependencia nueva.** SSDP es UDP multicast y el control es
+SOAP sobre HTTP: todo `System.Net`, ya disponible con `apiCompatibilityLevel: 6`. Las alternativas
+se descartan con motivo: `Mono.Nat`/`Open.NAT` meten un DLL de terceros en `Assets/Plugins`, que es
+la misma familia de problema que costó dos sesiones con `steam_api64.dll`; el crate `igd` en Rust
+suma dependencia **más** superficie IPC nueva para devolverle el resultado a Unity, o sea wire y
+ADR, para algo que no es tráfico de juego.
+
+**D2 — Vive entero en Unity, y por eso CERO WIRE.** El puerto UDP lo elige Unity
+(`SelectLaunchConfig`), el lobby de Steam lo publica Unity, y el mapeo se pide desde Unity con la
+dirección de la interfaz de salida como cliente interno. El backend de Rust no se entera de nada y
+no tiene por qué.
+
+**D3 — Pedir un mapeo no es tenerlo.** `AddPortMapping` devolviendo 200 no demuestra nada: hay
+routers que aceptan y aplican otra cosa —otro cliente interno, otro puerto, o deshabilitado—.
+**La confirmación es releerlo** con `GetSpecificPortMappingEntry` y comprobar que el cliente interno
+y el puerto son los nuestros. Por eso el estado es una ESCALERA de cinco peldaños y no un booleano:
+`PublicIpKnown` → `PortMappingRequested` → `PortMappingConfirmed` → `EndpointPublished` →
+`RemotePeerObserved`. Cada uno se enciende por su propia evidencia. Y **ninguno de los cinco
+significa "internet funciona"**: el último lo enciende igual un joiner de la misma LAN.
+
+**D4 — La IP pública sale del router primero.** `GetExternalIPAddress` no depende de terceros y es
+la única fuente que puede delatar un CGNAT: un eco HTTP le contesta una IP pública perfectamente
+normal a una máquina que está detrás del NAT del operador. Los ecos externos son el respaldo, son
+**tres** de dueños distintos (uno caído no puede dejar sin anunciar a nadie), tienen tope de tiempo
+corto, su fallo no es fatal, y se apagan con `BS_NO_PUBLIC_IP_LOOKUP=1`.
+
+**D5 — Precedencia de `connect_ip`.** Manda lo que escribió el humano (puede saber algo que
+nosotros no: un reenvío hecho a mano, un DNS dinámico); si no, la IP pública **con mapeo
+confirmado y sin sospecha de CGNAT**; si no, la dirección local; y si no hay ninguna defendible,
+**la partida no se anuncia**. Esa última regla es de ADR anterior y no se toca: publicar un
+endpoint malo le cuesta 15 s de espera a quien lo elige, no publicarlo no le cuesta nada.
+
+**D6 — `bs_lan_ip`, y por qué el reintento y no el primer intento.** Con la IP pública en
+`connect_ip`, un joiner de la MISMA red sólo llega si el router hace hairpin (NAT loopback), que
+muchos routers domésticos no hacen: la mejora habría roto lo que ya funcionaba. El host publica
+además su dirección LAN en `bs_lan_ip` (metadato de Steam, **no** protocolo) y el joiner la usa en
+el **reintento**. No en el primero, porque desde el joiner no se puede saber si está en la misma red
+que el host —dos casas distintas pueden ser las dos `192.168.1.0/24`— y adivinarlo mandaría a gente
+de fuera a una dirección privada, que es el fallo contrario y peor.
+
+**D7 — El mapeo se pide con caducidad (1 h), no permanente.** Un permanente que sobreviva a un
+cierre sucio se queda en el router para siempre. Los routers que sólo admiten permanentes contestan
+`725` y se reintenta con 0. El teardown lo borra en un `Step` propio, después de retirar el anuncio.
+
+**Consecuencias.**
+
+- Se enmienda `NETWORK_ARCHITECTURE_CURRENT.md`: "hace falta redirigir el puerto a mano" pasa a
+  "se intenta solo, y si no se puede se dice cuál de las cinco causas fue". Los cinco códigos son
+  `UPNP_UNAVAILABLE`, `UPNP_DISABLED`, `UPNP_MAPPING_FAILED`, `CGNAT_SUSPECTED` y
+  `PUBLIC_ENDPOINT_UNKNOWN`, y viajan al log LITERALES para poder buscarlos con grep.
+- **NAT traversal y hole punching siguen fuera.** UPnP es reenvío de puertos explícito, que es otra
+  cosa: no atraviesa nada, le pide permiso al router.
+- **Cero regresión en LAN**: sin mapeo confirmado se anuncia exactamente lo que se anunciaba antes.
+- **El camino de ÉXITO no está validado contra hardware.** En la máquina de desarrollo no hay IGD
+  (M-SEARCH multicast atado a `192.168.1.40` y unicast a `192.168.1.1:1900`: cero respuestas). Lo
+  que está probado contra un router de mentira que habla HTTP de verdad es el comportamiento del
+  cliente; lo que falta es un router real.

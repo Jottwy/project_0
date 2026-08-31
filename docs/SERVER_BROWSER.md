@@ -669,3 +669,101 @@ regex con escape; nunca las dos.
 **Lo que NO se ha verificado desde aquí:** que Steamworks muestre el build en su panel. Eso exige
 entrar en partner.steamgames.com con la cuenta, y no es algo que se haga por terminal. La evidencia
 local es la línea de éxito de SteamPipe con su BuildID.
+
+---
+
+## 17. La puerta a internet: IP pública y UPnP (ADR-112)
+
+Hasta hoy, para que alguien de fuera entrara en tu partida había que meterse en el router y
+redirigir un puerto UDP a mano. Esa barrera se la iba a comer entera el Playtest de Steam.
+
+### Qué hace ahora el host
+
+Al hostear, y **en segundo plano** (no bloquea nada, no se consulta en ningún `Update`):
+
+1. Busca un router UPnP en la red local por SSDP, con el socket **atado a la interfaz de la ruta
+   por defecto**. Esto no es un detalle: esta máquina tiene diez IPv4 —la buena, dos de VPN y seis
+   APIPA— y un socket sin atar puede mandar el descubrimiento por el túnel de la VPN, donde no hay
+   ningún router doméstico escuchando. El síntoma sería idéntico al de "no hay UPnP".
+2. Le pregunta al router su IP de WAN (`GetExternalIPAddress`). Si no hay router, consulta hasta
+   tres ecos HTTP de dueños distintos.
+3. Le pide un reenvío UDP del puerto **realmente elegido** (no el tecleado), con caducidad de una
+   hora.
+4. **Lo relee.** Ver abajo.
+5. Publica en el lobby sólo lo que ha podido confirmar.
+
+### Por qué la relectura no es paranoia
+
+`AddPortMapping` devolviendo 200 **no demuestra que exista el mapeo**. Hay routers que aceptan la
+petición y aplican otra cosa: otro cliente interno, otro puerto, o la dejan deshabilitada. Si
+"confirmado" se dedujera del OK, el host anunciaría una IP pública que reenvía **al PC del vecino**,
+y el joiner que la eligiera se comería quince segundos sin entender nada. La única prueba es
+`GetSpecificPortMappingEntry` comprobando que el cliente interno y el puerto son los nuestros.
+
+Por eso el estado es una escalera de cinco peldaños y no un booleano. Y por eso ninguno de los cinco
+dice "internet funciona": el último —peer remoto observado— lo enciende igual un joiner de la misma
+LAN.
+
+### Qué acaba en `connect_ip`
+
+Precedencia completa, de la que sólo el segundo escalón es nuevo:
+
+1. **Lo que escribió el humano en el panel**, si sirve. Puede saber algo que nosotros no.
+2. **La IP pública con mapeo CONFIRMADO y sin sospecha de CGNAT.**
+3. **La dirección local**, que es lo que se anunciaba antes de todo esto.
+4. **Nada, y la partida no se anuncia.**
+
+`LobbyEndpointPolicy` no cambió: sigue siendo pura y sigue recibiendo los candidatos ya ordenados.
+Lo único nuevo es quién va primero en esa lista.
+
+### `bs_lan_ip`, y por qué el reintento y no el primer intento
+
+Con la IP pública en `connect_ip`, un joiner de la **misma red** sólo llega si el router hace
+hairpin (NAT loopback), y muchos routers domésticos no lo hacen: la mejora habría roto lo que ya
+funcionaba. El host publica además su LAN en `bs_lan_ip` y el joiner la usa en el **[Retry]**.
+
+No en el primer intento, y esto es la decisión: **desde el joiner no se puede saber si está en la
+misma red que el host.** Dos casas distintas pueden ser las dos `192.168.1.0/24`. Adivinarlo
+mandaría a gente de fuera a una dirección privada, que es el fallo contrario y peor. Primero lo
+anunciado, la alternativa después.
+
+La clave está declarada **dos veces** —`SteamLobbyKeys.LanIp` y `SteamLobbyManager.LanIpKey`— con
+su comprobación en `SteamLobbyKeyParity`, como todas las demás: si divergen, el host publica con
+una y el navegador lee con otra, y la lista sale vacía sin un solo error.
+
+### CGNAT: lo que no tiene arreglo
+
+Si el operador te mete detrás de su propio NAT (`100.64.0.0/10`, RFC 6598) compartes IP pública con
+cientos de abonados y **no hay puerto que reenviar**. Ninguna cantidad de UPnP lo arregla. Se
+detecta por tres indicios, en orden de fuerza: WAN del router en ese rango; WAN privada (doble NAT);
+o el router y el mundo no ven la misma dirección. Es una **heurística** y se llama así: demostrarlo
+pediría STUN, y STUN es un cambio de transporte.
+
+Con CGNAT sospechado se avisa, no se anuncia la IP pública, y **no se bloquea nada**: la partida
+sigue sirviendo en LAN y por invitación de Steam a quien alcance.
+
+### Los cinco códigos
+
+`UPNP_UNAVAILABLE`, `UPNP_DISABLED`, `UPNP_MAPPING_FAILED`, `CGNAT_SUSPECTED`,
+`PUBLIC_ENDPOINT_UNKNOWN`. Viajan al log **literales**, para poder buscarlos con grep en el
+`Player.log` de un tester copiando lo que dice esta página. Se filtran por `NATPROBE` y por
+`[HostConnectivity]`.
+
+### Privacidad y interruptores
+
+Al eco externo sale un `GET` sin cuerpo. El servicio ve la dirección desde la que se le pregunta
+—que es lo que se le está preguntando— y nada más: ni nombre, ni identificador de jugador, ni de
+partida. Se apaga con `BS_NO_PUBLIC_IP_LOOKUP=1`; el UPnP entero, con `BS_NO_UPNP=1`. Con los dos
+puestos se hostea en LAN exactamente igual que siempre.
+
+### Lo que NO está validado
+
+**No hay ningún IGD en la máquina de desarrollo.** Medido el 2026-08-31: M-SEARCH multicast atado a
+`192.168.1.40` con el `ST` de `InternetGatewayDevice` y con `ssdp:all` → cero respuestas; unicast a
+`192.168.1.1:1900` → timeout. Así que aquí se ha podido validar **el camino de fallo**, no el de
+éxito con hardware real. Lo que sí está ejecutado es el comportamiento del cliente contra un router
+de mentira que habla HTTP de verdad, incluido el caso del router que acepta el mapeo y aplica otro
+cliente interno.
+
+Lo que falta, con nombre: (a) un host con router UPnP de verdad; (b) un host sin él, comprobando
+que sigue sirviendo en LAN; (c) dos máquinas en redes distintas.
