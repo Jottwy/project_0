@@ -494,7 +494,7 @@ namespace BackroomsSurvival.Net
             entries.RemoveAll(e => collected.Contains((cx, cz, e.Slot)));
         }
 
-        private static void RollCentre(ref DeterministicRng rng, out float cu, out float cv)
+        internal static void RollCentre(ref DeterministicRng rng, out float cu, out float cv)
         {
             cu = CentreMargin + rng.NextFloat() * (1f - 2f * CentreMargin);
             cv = CentreMargin + rng.NextFloat() * (1f - 2f * CentreMargin);
@@ -513,7 +513,7 @@ namespace BackroomsSurvival.Net
         // Weighted pick across the 4 common pools (mirror of StpItemSpawner.RollItemName's shape —
         // weapon roll first, then a pool pick — but the pool pick is now weighted by the zone's
         // profile instead of a flat 1/3-1/3-1/6-1/6 split).
-        private static string RollItemName(ref DeterministicRng rng, ZoneLootProfile profile)
+        internal static string RollItemName(ref DeterministicRng rng, ZoneLootProfile profile)
         {
             // RECORTE TOTAL DE CATÁLOGO (2026-08-17) — ver RestrictedCachePool. Consume UN draw,
             // igual que el que gasta la tirada de arma en la ruta completa, para que levantar el

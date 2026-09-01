@@ -34,12 +34,16 @@
     <Compile Include="$(Repo)\Assets\Scripts\Connectivity\HostEndpointCandidates.cs" />
     <Compile Include="$(Repo)\Assets\Scripts\Lobbies\LobbyEndpointPolicy.cs" />
     <Compile Include="$(Repo)\Assets\Scripts\Network\HostAddressInput.cs" />
+    <!-- El sorteo de loot y el de contenedores: puros por diseno, sin UnityEngine. -->
+    <Compile Include="$(Repo)\Assets\Scripts\Network\ChunkLootRoll.cs" />
+    <Compile Include="$(Repo)\Assets\Scripts\Network\ChunkContainerRoll.cs" />
   </ItemGroup>
 
   <!-- Los ficheros de test REALES, sin tocar. LanFallbackMetadataTests queda fuera: depende de
        SteamLobbyManager, que arrastra Steamworks y UnityEngine. -->
   <ItemGroup>
     <Compile Include="$(Repo)\Assets\Tests\EditMode\FakeUpnpDevice.cs" />
+    <Compile Include="$(Repo)\Assets\Tests\EditMode\ChunkContainerRollTests.cs" />
     <Compile Include="$(Repo)\Assets\Tests\EditMode\NatAddressPolicyTests.cs" />
     <Compile Include="$(Repo)\Assets\Tests\EditMode\HostConnectivityReportTests.cs" />
     <Compile Include="$(Repo)\Assets\Tests\EditMode\CgnatHeuristicTests.cs" />

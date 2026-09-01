@@ -13,6 +13,12 @@ namespace NUnit.Framework
     [AttributeUsage(AttributeTargets.Method)]
     public sealed class TestAttribute : Attribute { }
 
+    /// <summary>Marca de clase de pruebas. El shim no la usa para nada -- el runner descubre por
+    /// los metodos [Test] -- pero tiene que EXISTIR para que un fichero de test real compile sin
+    /// tocarlo, que es la regla de este arnes.</summary>
+    [AttributeUsage(AttributeTargets.Class)]
+    public sealed class TestFixtureAttribute : Attribute { }
+
     [AttributeUsage(AttributeTargets.Method, AllowMultiple = true)]
     public sealed class TestCaseAttribute : Attribute
     {
@@ -92,6 +98,55 @@ namespace NUnit.Framework
         {
             if (actual < limit) Fail($"{actual} no llega a {limit}. {message}");
         }
+
+        public static void Greater(long actual, long limit, string message = null)
+        {
+            if (actual <= limit) Fail($"{actual} no supera a {limit}. {message}");
+        }
+
+        // Sobrecargas en coma flotante: sin ellas un test que compara floats no compila, y
+        // reescribir el test para el arnes seria falsear lo que el arnes dice medir.
+        public static void Less(double actual, double limit, string message = null)
+        {
+            if (actual >= limit) Fail($"{actual} no es menor que {limit}. {message}");
+        }
+
+        public static void GreaterOrEqual(double actual, double limit, string message = null)
+        {
+            if (actual < limit) Fail($"{actual} no llega a {limit}. {message}");
+        }
+
+        public static void Greater(double actual, double limit, string message = null)
+        {
+            if (actual <= limit) Fail($"{actual} no supera a {limit}. {message}");
+        }
+
+        public static void IsNotEmpty(IEnumerable collection, string message = null)
+        {
+            foreach (object unused in collection) return;
+            Fail($"la coleccion estaba vacia. {message}");
+        }
+
+        /// <summary>El unico constraint que usan estos ficheros: `Is.EqualTo(x).Within(t)`.</summary>
+        public static void That(double actual, WithinConstraint constraint, string message = null)
+        {
+            if (Math.Abs(actual - constraint.Expected) <= constraint.Tolerance) return;
+            Fail($"{actual} no esta a {constraint.Tolerance} de {constraint.Expected}. {message}");
+        }
+    }
+
+    /// <summary>`Is.EqualTo(x).Within(t)`, lo minimo para que un test real compile sin cambiarlo.</summary>
+    public sealed class WithinConstraint
+    {
+        public double Expected;
+        public double Tolerance;
+        public WithinConstraint Within(double tolerance) { Tolerance = tolerance; return this; }
+    }
+
+    public static class Is
+    {
+        public static WithinConstraint EqualTo(double expected)
+            => new WithinConstraint { Expected = expected, Tolerance = 0d };
     }
 
     public static class StringAssert
@@ -121,6 +176,45 @@ namespace NUnit.Framework
         {
             foreach (object item in collection)
                 throw new AssertionException($"la coleccion tenia {item}. {message}");
+        }
+
+        private static List<object> ToList(IEnumerable collection)
+        {
+            var list = new List<object>();
+            if (collection != null)
+                foreach (object item in collection) list.Add(item);
+            return list;
+        }
+
+        public static void AreEqual(IEnumerable expected, IEnumerable actual, string message = null)
+        {
+            var a = ToList(expected);
+            var b = ToList(actual);
+            if (a.Count == b.Count)
+            {
+                bool same = true;
+                for (int i = 0; i < a.Count; i++)
+                    if (!Equals(a[i], b[i])) { same = false; break; }
+                if (same) return;
+            }
+            throw new AssertionException($"colecciones distintas ({a.Count} vs {b.Count}). {message}");
+        }
+
+        public static void AreNotEqual(IEnumerable expected, IEnumerable actual, string message = null)
+        {
+            var a = ToList(expected);
+            var b = ToList(actual);
+            if (a.Count != b.Count) return;
+            for (int i = 0; i < a.Count; i++)
+                if (!Equals(a[i], b[i])) return;
+            throw new AssertionException($"las dos colecciones son iguales y no debian. {message}");
+        }
+
+        public static void DoesNotContain(IEnumerable collection, object unexpected, string message = null)
+        {
+            foreach (object item in ToList(collection))
+                if (Equals(item, unexpected))
+                    throw new AssertionException($"la coleccion contiene {unexpected}. {message}");
         }
 
         public static void AllItemsAreUnique(IEnumerable collection, string message = null)
