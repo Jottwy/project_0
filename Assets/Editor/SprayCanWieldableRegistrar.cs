@@ -44,13 +44,21 @@ namespace BackroomsSurvival.EditorTools
         };
 
         [MenuItem("Backrooms/Spray/Registrar bote en el jugador", false, 98)]
-        public static void Register()
+        public static void Register() => RegisterWieldablePrefab(WieldablePath, "BR_Wieldable_SprayCan");
+
+        /// <summary>
+        /// Da de alta CUALQUIER wieldable nuestro en los dos prefabs de jugador, con la misma
+        /// técnica y las mismas guardas que el bote. ADR-114 lo reutiliza para el destornillador:
+        /// el motivo (el diccionario de wieldables se monta a partir de los hijos ya instanciados)
+        /// es el mismo para todos, así que la alta vive en un solo sitio.
+        /// </summary>
+        public static void RegisterWieldablePrefab(string wieldablePath, string nodeName)
         {
-            var wieldable = AssetDatabase.LoadAssetAtPath<GameObject>(WieldablePath);
+            var wieldable = AssetDatabase.LoadAssetAtPath<GameObject>(wieldablePath);
             if (wieldable == null)
             {
-                Debug.LogError($"[SprayCanRegistrar] No hay prefab en '{WieldablePath}'. " +
-                               "Ejecuta antes 'Backrooms/Spray/Crear bote de spray'.");
+                Debug.LogError($"[SprayCanRegistrar] No hay prefab en '{wieldablePath}'. " +
+                               "Ejecuta antes el creador que lo genera.");
                 return;
             }
             if (wieldable.GetComponent<WieldableItem>() == null)
@@ -63,7 +71,7 @@ namespace BackroomsSurvival.EditorTools
             int registered = 0, already = 0, skipped = 0;
             foreach (var playerPath in PlayerPrefabs)
             {
-                switch (RegisterInto(playerPath, wieldable))
+                switch (RegisterInto(playerPath, wieldable, nodeName))
                 {
                     case Result.Registered: registered++; break;
                     case Result.AlreadyThere: already++; break;
@@ -82,7 +90,7 @@ namespace BackroomsSurvival.EditorTools
 
         private enum Result { Registered, AlreadyThere, Skipped }
 
-        private static Result RegisterInto(string playerPath, GameObject wieldable)
+        private static Result RegisterInto(string playerPath, GameObject wieldable, string nodeName)
         {
             var root = PrefabUtility.LoadPrefabContents(playerPath);
             if (root == null)
@@ -115,9 +123,9 @@ namespace BackroomsSurvival.EditorTools
 
                 foreach (var item in existing)
                 {
-                    if (item.name.StartsWith("BR_Wieldable_SprayCan"))
+                    if (item.name.StartsWith(nodeName))
                     {
-                        Debug.Log($"[SprayCanRegistrar] '{playerPath}' ya tenía el bote — intacto.");
+                        Debug.Log($"[SprayCanRegistrar] '{playerPath}' ya tenía '{nodeName}' — intacto.");
                         return Result.AlreadyThere;
                     }
                 }
@@ -131,7 +139,7 @@ namespace BackroomsSurvival.EditorTools
 
                 // Se queda como INSTANCIA de prefab, sin desempaquetar: así, afinar el bote más
                 // adelante (pintura, color, boquilla) se propaga solo a los jugadores.
-                instance.name = "BR_Wieldable_SprayCan";
+                instance.name = nodeName;
                 instance.transform.SetLocalPositionAndRotation(
                     sibling.transform.localPosition, sibling.transform.localRotation);
                 instance.transform.localScale = sibling.transform.localScale;

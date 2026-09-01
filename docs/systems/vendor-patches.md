@@ -26,6 +26,7 @@ admitían esa vía.
 | 4 | Traza MPTRACE de impactos (**temporal**, commit `458263a`) | `MPTRACE` | 4 `.cs` de disparo y melé | Se pierde la traza de atribución de daño PvP. Es andamiaje de diagnóstico: cuando el diagnóstico cierre, sale por decisión, no por reimport |
 | 5 | Alta del bote de spray como wieldable | `BR_Wieldable_SprayCan` | `FPS_Player.prefab` | El bote se recoge y se ve en el inventario pero **no se equipa**, sin ningún error. Cura: menú `Backrooms/Spray/Registrar bote en el jugador` |
 | 6 | Reverb por zona | `Rvb` (7 parámetros expuestos) | `FPS_AudioMixer.mixer` | El reverb se apaga **en silencio**: `ReverbMixerDriver` sondea los nombres una vez, no los encuentra, y se declara mudo (que es su degradación correcta, ver `docs/systems/reverb-mixer.md`) |
+| 7 | Desmontables ADR-114: alta del destornillador y categorías de los materiales | `BR_Wieldable_Screwdriver` · ids `808575401`, `-223572567`, `451259066` | `FPS_Player.prefab`, `FPS_Melee.asset`, `STP_Resources.asset` | El destornillador se recoge y **no se equipa**; tabla y viga dejan de estar en su categoría (`GetWithName` sigue resolviendo). Cura: menú `Backrooms/Create Dismantle Assets` (crear-si-falta: re-registra sin tocar ids) |
 
 ## Trampas conocidas
 

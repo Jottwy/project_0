@@ -1,0 +1,23 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: b8633b4d49a23f649bf4b11c196bc51f, type: 3}
+  m_Name: BR_Desk
+  m_EditorClassIdentifier: 
+  _harvestableName: Escritorio
+  _icon: {fileID: 21300000, guid: 730304b6f465c9a44bc96e79f37f3750, type: 3}
+  _resourceType: 2
+  _requiredPower: 0.5
+  _prefab: {fileID: 2532436298268151256, guid: 858a6ee02bd40fd478cf99b5b7bd0776, type: 3}
+  _respawnDays: 0
+  _harvestBounds:
+    m_Center: {x: 0, y: 0.377546, z: 0.0000005066395}
+    m_Extent: {x: 1.4, y: 0.625, z: 0.76249945}

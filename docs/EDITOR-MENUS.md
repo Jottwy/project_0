@@ -48,6 +48,7 @@ no pisa valores ya ajustados a mano.
 | `Backrooms/Create Zone Loot Table` | `Editor/ZoneLootTableCreator.cs` |
 | `Backrooms/Create Chunk Template` | `Editor/BackroomsEditorMenu.cs` |
 | `Backrooms/Create JoinSession Prefab` | `Editor/JoinSessionPrefabCreator.cs` |
+| `Backrooms/Create Dismantle Assets` | `Editor/BackroomsDismantleAssetsCreator.cs` | ADR-114: destornillador (definición + wieldable + alta en el jugador), `BR_Wooden Plank`, `BR_Metal Beam`, 3 `HarvestableResourceDefinition` y 3 prefabs bajo `Resources/Props/Dismantle/`. **COMMITEAR lo generado** (los ids van en el wire y en los saves). Funciona en headless con el editor cerrado |
 
 > `Create JoinSession Prefab` está marcado en la auditoría como **copia divergida** de
 > `JoinSessionUI.BuildUI`: produce un prefab que no coincide con lo que el runtime construye.
