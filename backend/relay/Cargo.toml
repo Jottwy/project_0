@@ -13,5 +13,7 @@ name = "backrooms_relay"
 path = "src/lib.rs"
 
 # ADR-117 D2: el relay no juega, así que no arrastra nada del juego. `protocol` no tiene NINGUNA
-# dependencia — es aritmética de bytes, y así se puede probar entero sin runtime.
+# dependencia —es aritmética de bytes, y así se puede probar entero sin runtime— y `session`
+# tampoco tiene E/S: sólo registra.
 [dependencies]
+log = "0.4"

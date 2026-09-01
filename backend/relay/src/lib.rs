@@ -15,3 +15,4 @@
 //! El binario ([`main`](../src/main.rs)) es socket y bucle: no decide nada por su cuenta.
 
 pub mod protocol;
+pub mod session;
