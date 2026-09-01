@@ -279,6 +279,16 @@ pub struct NetworkManager {
     pub stp_harvestables: Vec<crate::network::protocol::StpHarvestableInfo>,
     /// Phase B2.6: client-generated harvest-hit ids already processed by the host (dedup).
     pub processed_stp_harvest_hits: BoundedDedupeSet<u64>,
+    /// ADR-114 D5: cuándo se agotó cada harvestable, para devolverlo a la vida 15 min después.
+    ///
+    /// Vive FUERA de `StpHarvestableInfo` a propósito: ese struct es el que viaja por el cable, y
+    /// ADR-114 D3 fija que la regeneración no cuesta ni un byte nuevo — el reloj es de este lado y
+    /// lo único que se replica es el `remaining` volviendo a 1.
+    ///
+    /// EN MEMORIA, no se persiste (D5): un mundo recargado arranca con los muebles agotados que
+    /// guardó y empieza a contar desde la carga. Sólo el host la llena; en un joiner queda vacía
+    /// porque su roster lo escribe el relay, no un golpe.
+    pub depleted_harvestables_at: HashMap<u32, std::time::Instant>,
     /// ADR-068: the world's sprays, indexed by chunk. It lives beside the STP rosters because
     /// it is the same kind of state — host-authoritative, replicated, persisted — but it is
     /// NOT relayed per tick: sprays hydrate with the chunk (`GridChunkData::sprays`) and a new
@@ -533,6 +543,7 @@ impl NetworkManager {
             processed_stp_carryable_drops: BoundedDedupeSet::with_capacity(DEDUPE_CAP),
             stp_harvestables: Vec::new(),
             processed_stp_harvest_hits: BoundedDedupeSet::with_capacity(DEDUPE_CAP),
+            depleted_harvestables_at: HashMap::new(),
             sprays: crate::world::spray::SprayStore::new(),
             processed_spray_places: BoundedDedupeSet::with_capacity(DEDUPE_CAP),
             requested_spray_chunks: std::collections::HashSet::with_capacity(128),

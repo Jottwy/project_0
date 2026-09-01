@@ -290,6 +290,18 @@ namespace BackroomsSurvival.Net
 
             nh.spawnedOnDeplete = true;
 
+            // ADR-114 D7: un mueble desmontable suelta ITEMS (tabla de madera, viga, tela, cuero),
+            // no carryables. Va por `stp_drop` —el camino que ADR-114 no toca y que el Paso 2 ya
+            // dejó validando def_id, cantidad y proximidad en el backend— en vez de por
+            // `stp_carryable_drop`, porque un `ItemDefinition` no es un `CarryableDefinition` y no
+            // hay conversión entre los dos. El SITIO, el momento y la autoridad son los mismos:
+            // sólo el host, una vez, en el flanco a cero (D1).
+            if (nh.itemDrops != null && nh.itemDrops.Count > 0)
+            {
+                SpawnItemDropsOnDeplete(ipc, nh);
+                return;
+            }
+
             if (nh.logDefId < 0 || nh.logCount <= 0)
             {
                 Debug.LogWarning($"[StpHarvestableSyncManager] harvestable id={h.id} depleted but no resource carryable config; nothing spawned.");
@@ -308,6 +320,74 @@ namespace BackroomsSurvival.Net
 
             Debug.Log($"[StpHarvestableSyncManager] depleted id={h.id} → host spawned {n} resource carryables (def={nh.logDefId}).");
         }
+
+        /// ADR-114 D7/D8: reparte los materiales del mueble en el mismo anillo determinista que ya
+        /// usan los troncos, para que todos los clientes los vean en los mismos sitios. Cada unidad
+        /// va como un drop propio (`count = 1`): `ItemStack` clampa la pila al construirla, así que
+        /// pedir N de un item que no apila devolvería 1 y se perderían las otras N-1 en silencio.
+        private void SpawnItemDropsOnDeplete(IPCClient ipc, NetworkHarvestableInstance nh)
+        {
+            Vector3 basePos = nh.transform.position;
+            int total = 0;
+            foreach (var d in nh.itemDrops)
+                total += Mathf.Max(0, d.count);
+
+            if (total <= 0)
+            {
+                Debug.LogWarning($"[StpHarvestableSyncManager] prop id={nh.id} desmontado sin materiales que soltar.");
+                return;
+            }
+
+            int i = 0;
+            foreach (var d in nh.itemDrops)
+            {
+                for (int k = 0; k < d.count; k++, i++)
+                {
+                    float ang = i * Mathf.PI * 2f / total;
+                    Vector3 ring = basePos + new Vector3(Mathf.Cos(ang), 0f, Mathf.Sin(ang)) * spawnRingRadius;
+                    ipc.SendStpDrop(NextDropId(), d.defId, 1, GroundPosition(ring), ang * Mathf.Rad2Deg);
+                }
+            }
+
+            Debug.Log($"[StpHarvestableSyncManager] prop id={nh.id} desmontado → {total} material(es).");
+        }
+
+        /// <summary>
+        /// ADR-114 D2/D9 — da de alta un prop sembrado por <see cref="StpWorldPropSpawner"/>.
+        ///
+        /// Existe porque el registro de escena (`HostRegister`) corre UNA VEZ al arrancar y los
+        /// props llegan después, chunk a chunk, según el jugador explora. El `id` NO lo elige este
+        /// manager: viene ya acuñado de `ChunkDismantleRoll.NetIdFor`, determinista, para que el
+        /// `remaining` guardado siga apuntando al mismo mueble tras recargar.
+        ///
+        /// Devuelve falso si el id ya estaba vinculado — volver a pasar por un chunk no re-vincula
+        /// (duplicaría el componente y con él los avisos de golpe).
+        /// </summary>
+        public bool RegisterHostProp(IPCClient ipc, uint id, HarvestableResource hr,
+            System.Collections.Generic.List<NetworkHarvestableInstance.ItemDrop> drops)
+        {
+            if (!_reflectionOk || ipc == null || hr == null || id == 0)
+                return false;
+            if (_bound.ContainsKey(id))
+                return false;
+
+            if (!_localHarvestables.Contains(hr))
+                _localHarvestables.Add(hr);
+
+            Bind(id, hr);
+            if (_bound.TryGetValue(id, out var nh) && nh != null)
+                nh.itemDrops = drops;
+
+            ipc.SendSetStpHarvestables(new[]
+            {
+                new StpHarvestableSpec { id = id, position = hr.transform.position }
+            });
+            return true;
+        }
+
+        /// <summary>El manager vivo, para que el sembrador de props no tenga que buscarlo por la
+        /// jerarquía (se autoarranca en un objeto `DontDestroyOnLoad` propio).</summary>
+        public static StpHarvestableSyncManager Instance => _instance;
 
         private Vector3 GroundPosition(Vector3 from)
         {

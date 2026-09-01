@@ -13025,3 +13025,202 @@ fn a_non_finite_position_is_rejected() {
         Some("bad_position")
     );
 }
+
+// ── ADR-114: props desmontables ────────────────────────────────────────────────────────────────
+
+fn harvestable_at(id: u32, remaining: f32) -> crate::network::protocol::StpHarvestableInfo {
+    crate::network::protocol::StpHarvestableInfo {
+        id,
+        position: [100.0, 0.0, 100.0],
+        remaining,
+    }
+}
+
+/// ADR-114 D5 — un mueble agotado vuelve entero a los 15 min, y NI UN SEGUNDO ANTES.
+///
+/// El reloj es puro (recibe `now`) por el mismo motivo que `pickup_within_reach` y
+/// `RosterGate::should_send`: probar 15 minutos no puede costar 15 minutos.
+#[test]
+fn a_depleted_prop_comes_back_whole_after_the_regen_window() {
+    let mut roster = vec![harvestable_at(7, 0.0)];
+    let mut clocks = HashMap::new();
+    let t0 = Instant::now();
+
+    // Primer barrido: se le arranca el reloj, no revive.
+    assert_eq!(0, regenerate_harvestables(&mut roster, &mut clocks, t0));
+    assert_eq!(0.0, roster[0].remaining);
+    assert!(
+        clocks.contains_key(&7),
+        "un agotado tiene que arrancar reloj"
+    );
+
+    // Un segundo antes del plazo: sigue agotado. Es el borde que separa "casi" de "ya".
+    let almost = t0 + HARVESTABLE_REGEN - Duration::from_secs(1);
+    assert_eq!(0, regenerate_harvestables(&mut roster, &mut clocks, almost));
+    assert_eq!(0.0, roster[0].remaining);
+
+    // Justo en el plazo.
+    let due = t0 + HARVESTABLE_REGEN;
+    assert_eq!(1, regenerate_harvestables(&mut roster, &mut clocks, due));
+    assert_eq!(1.0, roster[0].remaining);
+    assert!(
+        !clocks.contains_key(&7),
+        "el reloj se retira al revivir, o el siguiente barrido lo revive otra vez"
+    );
+}
+
+/// Un mueble ENTERO no acumula reloj ni se toca. Sin esto, un prop al que le quedara un pelo de
+/// vida arrastraría un reloj de una vida anterior y reviviría a media cosecha.
+#[test]
+fn an_intact_prop_is_never_touched_and_carries_no_clock() {
+    let mut roster = vec![harvestable_at(7, 1.0), harvestable_at(8, 0.5)];
+    let mut clocks = HashMap::new();
+    let t0 = Instant::now();
+
+    assert_eq!(0, regenerate_harvestables(&mut roster, &mut clocks, t0));
+    assert!(clocks.is_empty(), "nadie agotado, ningún reloj");
+    assert_eq!(1.0, roster[0].remaining);
+    assert_eq!(0.5, roster[1].remaining);
+
+    // Y aunque pase el plazo entero: 0,5 no es agotado.
+    let later = t0 + HARVESTABLE_REGEN * 3;
+    assert_eq!(0, regenerate_harvestables(&mut roster, &mut clocks, later));
+    assert_eq!(0.5, roster[1].remaining);
+
+    // Se agota, arranca reloj; le pegan de vuelta a entero antes de vencer → el reloj se cae.
+    roster[1].remaining = 0.0;
+    regenerate_harvestables(&mut roster, &mut clocks, later);
+    assert!(clocks.contains_key(&8));
+    roster[1].remaining = 1.0;
+    regenerate_harvestables(&mut roster, &mut clocks, later);
+    assert!(
+        !clocks.contains_key(&8),
+        "un entero no arrastra reloj viejo"
+    );
+}
+
+/// ADR-114 D5 — el reloj NO se persiste, así que un mundo recargado llega con muebles a cero y sin
+/// reloj ninguno. Tienen que regenerar igual, contando desde la carga. Detectar el agotamiento
+/// mirando el roster (y no en el camino del golpe) es justo lo que da esto gratis.
+#[test]
+fn a_prop_depleted_before_the_save_still_regenerates_after_load() {
+    let mut roster = vec![harvestable_at(7, 0.0)];
+    let mut clocks = HashMap::new(); // como tras hidratar: vacío
+    let load = Instant::now();
+
+    regenerate_harvestables(&mut roster, &mut clocks, load);
+    assert_eq!(0.0, roster[0].remaining, "no revive de golpe al cargar");
+    assert_eq!(
+        1,
+        regenerate_harvestables(&mut roster, &mut clocks, load + HARVESTABLE_REGEN),
+        "cuenta desde la carga, no desde que se agotó en la partida anterior"
+    );
+}
+
+/// Los props se siembran por streaming, así que la tabla de relojes vería pasar todos los chunks
+/// que el jugador visita y deja. Un id que ya no está en el roster no puede dejar su reloj colgado.
+#[test]
+fn clocks_do_not_outlive_the_props_they_belong_to() {
+    let mut roster = vec![harvestable_at(7, 0.0), harvestable_at(8, 0.0)];
+    let mut clocks = HashMap::new();
+    let t0 = Instant::now();
+    regenerate_harvestables(&mut roster, &mut clocks, t0);
+    assert_eq!(2, clocks.len());
+
+    // El chunk del 8 se descarga y su prop sale del roster.
+    roster.retain(|h| h.id == 7);
+    regenerate_harvestables(&mut roster, &mut clocks, t0);
+    assert_eq!(
+        1,
+        clocks.len(),
+        "el reloj del prop que se fue queda colgado"
+    );
+    assert!(clocks.contains_key(&7));
+}
+
+/// ADR-114 D2 — `set_stp_harvestables` AÑADE, y un id ya conocido CONSERVA su salud.
+///
+/// Reemplazar la lista valía con los árboles de una escena, enumerados una vez al arrancar. Con
+/// props sembrados por streaming, cada barrido borraría los del barrido anterior y el mundo
+/// parecería regenerarse solo; y volver a pasar por un chunk devolvería entero un escritorio que
+/// alguien acababa de desmontar.
+#[tokio::test]
+async fn registering_harvestables_adds_without_forgetting_what_was_harvested() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let mut world = World::new(42);
+    let mut player = Player::new(1, "Host");
+    let (tx, _rx) = broadcast::channel(16);
+    let mut processed: BoundedDedupeSet<(u16, u64)> = BoundedDedupeSet::with_capacity(DEDUPE_CAP);
+
+    let register = |ids: Vec<(u32, [f32; 3])>| crate::ipc::PlayerAction {
+        action_type: "set_stp_harvestables".into(),
+        data: serde_json::json!({
+            "harvestables": ids
+                .into_iter()
+                .map(|(id, position)| serde_json::json!({ "id": id, "position": position }))
+                .collect::<Vec<_>>()
+        }),
+    };
+
+    macro_rules! send {
+        ($action:expr) => {{
+            let mut adult_driver = AdultDriver::new(net.world_seed);
+            let mut child_driver = ChildDriver::new(net.world_seed);
+            handle_action(
+                &$action,
+                &mut player,
+                &mut world,
+                &mut net,
+                &mut adult_driver,
+                &mut child_driver,
+                &tx,
+                &mut processed,
+                0,
+                &wg3_off(),
+                &mut wg3_cache(),
+            )
+            .await;
+        }};
+    }
+
+    // Primer chunk: dos muebles, enteros.
+    send!(register(vec![
+        (1, [10.0, 0.0, 10.0]),
+        (2, [12.0, 0.0, 10.0])
+    ]));
+    assert_eq!(2, net.stp_harvestables.len());
+    assert!(net.stp_harvestables.iter().all(|h| h.remaining == 1.0));
+
+    // Alguien desmonta el 1 a medias.
+    net.stp_harvestables
+        .iter_mut()
+        .find(|h| h.id == 1)
+        .unwrap()
+        .remaining = 0.5;
+
+    // Segundo chunk: un mueble nuevo, y el sembrador re-manda el 1 al volver a pasar.
+    send!(register(vec![
+        (1, [10.0, 0.0, 10.0]),
+        (3, [90.0, 0.0, 90.0])
+    ]));
+
+    assert_eq!(
+        3,
+        net.stp_harvestables.len(),
+        "el 2 desapareció: el registro está REEMPLAZANDO en vez de añadir"
+    );
+    assert_eq!(
+        0.5,
+        net.stp_harvestables
+            .iter()
+            .find(|h| h.id == 1)
+            .unwrap()
+            .remaining,
+        "volver a pasar por el chunk resucitó un mueble a medio desmontar"
+    );
+
+    // Y un joiner que mande esto no toca nada: la autoridad del roster es del host.
+    net.is_host = false;
+    send!(register(vec![(99, [0.0, 0.0, 0.0])]));
+    assert_eq!(3, net.stp_harvestables.len(), "un joiner no registra props");
+}

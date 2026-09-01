@@ -20,6 +20,23 @@ namespace BackroomsSurvival.Net
         public int logCount;           // how many carryables to spawn on depletion
         public bool spawnedOnDeplete;  // host: guards one-shot depletion spawn
 
+        /// <summary>ADR-114 D7/D8: los materiales de un mueble desmontable, resueltos a ids de
+        /// `ItemDefinition`. Vacío en un árbol o una roca del vendor, que siguen soltando su
+        /// carryable por `logDefId`/`logCount`.
+        ///
+        /// Son dos listas y no una porque son dos COSAS: un tronco es un `CarryableDefinition` (se
+        /// carga a hombros) y una tabla de madera es un `ItemDefinition` (entra en la bolsa). No
+        /// hay conversión entre ambos, así que quien siembra elige camino según cuál esté puesta.
+        /// </summary>
+        [System.Serializable]
+        public struct ItemDrop
+        {
+            public int defId;
+            public int count;
+        }
+
+        public System.Collections.Generic.List<ItemDrop> itemDrops;
+
         private HarvestableResource _harvestable;
         private bool _subscribed;
         private static uint _hitCounter;

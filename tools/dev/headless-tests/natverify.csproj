@@ -37,6 +37,7 @@
     <!-- El sorteo de loot y el de contenedores: puros por diseno, sin UnityEngine. -->
     <Compile Include="$(Repo)\Assets\Scripts\Network\ChunkLootRoll.cs" />
     <Compile Include="$(Repo)\Assets\Scripts\Network\ChunkContainerRoll.cs" />
+    <Compile Include="$(Repo)\Assets\Scripts\Network\ChunkDismantleRoll.cs" />
   </ItemGroup>
 
   <!-- Los ficheros de test REALES, sin tocar. LanFallbackMetadataTests queda fuera: depende de
@@ -44,6 +45,7 @@
   <ItemGroup>
     <Compile Include="$(Repo)\Assets\Tests\EditMode\FakeUpnpDevice.cs" />
     <Compile Include="$(Repo)\Assets\Tests\EditMode\ChunkContainerRollTests.cs" />
+    <Compile Include="$(Repo)\Assets\Tests\EditMode\ChunkDismantleRollTests.cs" />
     <Compile Include="$(Repo)\Assets\Tests\EditMode\NatAddressPolicyTests.cs" />
     <Compile Include="$(Repo)\Assets\Tests\EditMode\HostConnectivityReportTests.cs" />
     <Compile Include="$(Repo)\Assets\Tests\EditMode\CgnatHeuristicTests.cs" />

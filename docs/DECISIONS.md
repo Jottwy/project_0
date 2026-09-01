@@ -11370,3 +11370,190 @@ fue esa: fue dar por acotado un campo sin CONTARLO, porque el que dominaba el ta
 (`cells`, atado a `LAYOUT_GRID_SIZE`) seguía siendo fijo mientras otro crecía al lado. Regla
 práctica: **en un mensaje con techo, todo `Vec` y todo `String` es una lista ilimitada hasta que se
 demuestre lo contrario**, y la demostración es una medida, no un comentario.
+
+## ADR-114 — Props desmontables: el mueble ES un harvestable, y la herramienta la mira el cliente (2026-09-01)
+
+Estado: **APROBADA (2026-09-01, autorizada en sesión por Joel: «APRUEBO ADR-114 TAL CUAL»).** Desbloquea la
+línea «props desmontables y regenerables» que `docs/FARMING-ROADMAP.md` dejaba fuera pendiente de ADR.
+
+### Contexto — lo que la inspección corrige
+
+`FARMING-ROADMAP` deja «props desmontables y regenerables» fuera con una factura de cuatro partidas:
+*autoridad backend + persistencia por chunk + replicación + guarda «una petición en vuelo»*. **Tres de las
+cuatro ya están pagadas** y la cuarta cuesta menos de lo escrito:
+
+1. **Autoridad:** `process_stp_harvest_hit` (`game_loop.rs`) ya valida duplicado por `hit_id`, número finito,
+   alcance de 8 m contra la pose que el host conoce, y recorta a un cuarto por golpe (`MAX_HARVEST_FRACTION_PER_HIT`,
+   decisión de Joel del 2026-08-28: un recurso aguanta como mínimo cuatro golpes). Escrito, probado, en producción.
+2. **Persistencia:** `net.stp_harvestables` ya entra y sale del save de ADR-032. No hace falta persistencia
+   *por chunk*: hace falta *por prop*, y ya la hay.
+3. **Replicación:** el roster `StpHarvestableList` (0x44) ya reparte `{id, position, remaining}` a 10 Hz.
+4. **Guarda:** `processed_stp_harvest_hits` (dedup por `hit_id`) + mutación solo-host + `spawnedOnDeplete` en
+   el cruce a cero. Las tres capas existen.
+
+Lo que **no** existe: props desmontables en el mundo (los harvestables de hoy son árboles y rocas colocados a
+mano en escenas demo del vendor), el destornillador, dos de los cinco materiales, e ids deterministas.
+
+Y dos restricciones duras que la inspección destapa:
+
+- **`HarvestableResourceType` es un enum CERRADO del vendor** — `{None=-1, Tree=0, Rock=1, Plant=2}`
+  (`IHarvestableResource.cs`). «Mueble» no cabe, y ampliarlo es editar STP, que el proyecto prohíbe por escrito
+  (se pierde en el siguiente reimport).
+- **El drop de hoy es UN item × N**, leído de un componente spawner del vendor que además se destruye al
+  vincular (`StpHarvestableSyncManager.ReadAndStripSpawners`). Un escritorio que da tabla *y* viga no cabe en
+  esa forma.
+
+**Verificación previa exigida por el propio ADR, hecha antes de aprobarlo:** `Plant` está LIBRE. Los únicos dos
+wieldables con `_resourceHarvestProfiles` del catálogo son `STP_Wieldable_HuntingAxe` (`{Tree}`) y
+`STP_Wieldable_SteelPickaxe` (`{Rock, Tree}`). Ninguno declara `Plant`.
+
+### Decisiones
+
+**D1 — Autoridad del desmontaje: la que ya hay, sin ampliar.** El backend es dueño de `remaining` por prop, con
+`process_stp_harvest_hit` **sin un solo cambio**. La concesión de materiales sigue donde ya está: el Unity del
+**host**, en el flanco `remaining > 0 → == 0`, siembra los carryables. Un joiner nunca concede.
+Escrito aquí para que no se descubra después: esto **NO es anti-trampas**, exactamente igual que ADR-064 lo dejó
+escrito para el crafteo. El backend del host corre en la máquina del host. Lo que este modelo compra de verdad
+es que host y joiners vean el mismo mueble en el mismo estado, y que un joiner modificado no pueda vaciar el
+mundo desde lejos ni de un golpe. Nada más.
+
+**D2 — Persistencia: por prop, no por chunk, y con id DETERMINISTA.** Se reutiliza `stp_harvestables` + el save
+de ADR-032. El único cambio real: hoy `HostRegister` reparte ids con `nextId++` sobre el barrido de escena. Para
+props procedurales eso NO vale: al recargar, el orden de barrido cambia y cada escritorio desmontado vuelve
+entero con el `remaining` de otro. El id sale de `(world_seed, cx, cz, slot)` por la misma mezcla de 64 bits que
+ya acuña `StpWorldContainerSpawner.RequestIdFor`, recortada a `u32`.
+
+**D3 — Replicación: CERO cable nuevo.** `StpHarvestableInfo { id, position, remaining }` ya lleva todo. **No se
+bumpea `WIRE_SCHEMA_VERSION`, no se toca `WireSchema.Expected`, no se abre la puerta de ADR-061.** Regeneración
+y estado parcial viajan como cambios de `remaining` sobre el roster que ya corre.
+
+**D4 — Doble desmontaje: nada nuevo.** Las tres capas del contexto bastan: dedup por `hit_id`, mutación
+solo-host, y un único flanco de agotamiento. **Ésa es la guarda «una petición en vuelo»** que el roadmap pedía;
+no hay que construirla, hay que reconocerla.
+
+**D5 — Regeneración: reloj en el backend, en memoria, fuera del cable.** Tabla lateral en el `NetworkManager`:
+`depleted_at: HashMap<u32, Instant>`. Al vencer, `remaining = 1.0` y el roster lo reparte solo. Periodo **fijo y
+único: 15 min reales** para los tres props. El `_respawnDays` del vendor NO se usa: cuenta días de un ciclo que
+el backend no arbitra. El reloj **no se persiste** en Alpha 1: un mundo recargado arranca con los muebles
+agotados que guardó y empieza a contar desde la carga. Persistirlo cambia el schema de guardado, y eso es una
+enmienda futura, no este ADR.
+
+**D6 — Herramienta requerida: la mira el CLIENTE, y por eso ADR-023 queda intacto.** El servidor **nunca aprende
+qué herramienta se usó**: no lee `held_item`, no lo necesita, y por tanto no lo trata como autoritativo.
+- *Puerta de herramienta (cliente):* ya existe entera. `MeleeHarvestAttack` no deja ni empezar el golpe si
+  `ResourceHarvestProfile.HarvestPower < HarvestableResourceDefinition._requiredPower`. Cero código.
+- *Lo que el servidor SÍ defiende:* el **ritmo** (`MAX_HARVEST_FRACTION_PER_HIT = 0.25`, mínimo cuatro golpes) y
+  el **alcance** (8 m contra la pose que el host ya conoce). Las dos son verificables sin saber la herramienta.
+- *El problema del tipo, y su salida sin editar vendor:* el enum es cerrado. Los muebles se declaran de tipo
+  **`Plant`** — el único de los tres que el Backrooms no usa para nada. El destornillador lleva un
+  `ResourceHarvestProfile{Plant}`; el hacha y el pico llevan `{Tree}`/`{Rock}` y por tanto **no pueden desmontar
+  muebles**. Es reutilizar una etiqueta con otro significado, y por eso queda escrito aquí en vez de sólo en un
+  comentario.
+- *Camino de subida, si algún día hace falta puerta de servidor:* validar contra `stp_inventory` (POSESIÓN), no
+  contra `held_item` (MANO). Es otro campo, ya reportado por ADR-032, y ADR-064 ya sentó el precedente — no
+  necesitaría ADR nuevo.
+
+**D7 — La tabla objeto → herramienta → materiales: código nuestro, puro, headless.** Vive junto a
+`ChunkContainerRoll`, con su misma forma: `static`, sin escena, probable sin Unity. **No es un motor
+data-driven ni un asset nuevo**: son tres filas. `NetworkHarvestableInstance` pasa de `(logDefId, logCount)` a
+una lista corta de `(defId, count)`; es archivo nuestro.
+
+**D8 — Cantidades.** Cuatro golpes mínimos por prop (consecuencia de `MAX_HARVEST_FRACTION_PER_HIT`).
+
+| Prop | Materiales |
+|---|---|
+| Escritorio | 2 × Tabla de madera, 1 × Viga de metal |
+| Estantería | 2 × Viga de metal, 1 × Tabla de madera |
+| Silla | 1 × Tabla de madera, 1 × Tela, 1 × Cuero |
+
+**Cinta adhesiva NO sale de desmontar** en Alpha 1: es material sólo de loot, vía contenedores. Razón: si los
+cinco materiales salen del mueble más cercano, el desmontaje deja de rozarse con la exploración, y la dirección
+de escasez tipo DayZ pide al menos un insumo que no se farmee en el sitio.
+
+Mapeo a items reales — cuatro de los cinco ya existen en el catálogo:
+
+| Material | Asset | Estado |
+|---|---|---|
+| Tela | `STP_Cloth` | existe |
+| Cuero | `STP_Leather` | existe |
+| Cinta adhesiva | `STP_Duct Tape` | existe |
+| Tabla de madera | `BR_Wooden Plank` | a autorar |
+| Viga de metal | `BR_Metal Beam` | a autorar |
+
+Más el **destornillador** (`BR_Screwdriver`, wieldable melee con perfil `Plant`) y **tres
+`HarvestableResourceDefinition`** (Escritorio/Estantería/Silla). Siete assets, todos en el editor de Unity, en
+**una sola pasada** — la regla que ADR-064 fijó para no dejar nombres de pool apuntando al vacío.
+
+*Tensión con ADR-064 alternativa (C), resuelta aquí:* aquella rechazó reutilizar items vendor como moneda
+núcleo, «items de supervivencia genérica cuyo tono el recorte de `a0d2a6f` sacó del juego». Cloth/Leather/Duct
+Tape **no son consumibles de supervivencia**: son materiales inertes, sin tono de bosque. Este ADR los admite y
+**acota la objeción de (C) a los cuatro materiales de electrónica** (Metal/Circuit/Battery/Cable), que siguen
+diferidos y sin autorar.
+
+**D9 — Qué props entran en Alpha 1.** Escritorio, Estantería, Silla. Los siembra el mismo camino de host que los
+contenedores, pero con **sorteo y sal propios**: mezclar los dos movería `ContainerChance`, que es un número de
+balance ya en juego. **Un prop es contenedor O desmontable, nunca los dos.** Si lo fuera, el desmontaje tendría
+que decidir qué pasa con el loot de dentro, y ésa es una decisión que este ADR no necesita tomar.
+
+**D10 — Qué queda explícitamente FUERA.** Minería · recetas de crafteo (ADR-064 sigue siendo PROPUESTA) · los
+cuatro materiales de electrónica · desmontar construcciones del jugador (STP building) · desmontar el mobiliario
+de salas autoradas (ADR-083/084) · desmontar contenedores · durabilidad del destornillador · visual de
+desmontaje parcial (`_partiallyHarvestedObject` se deja vacío: el mueble está entero o no está) · persistencia
+del reloj de regeneración · regeneración por ciclo de día · Level 4 · cualquier puerta de herramienta en el
+servidor.
+
+### Alternativas rechazadas
+
+- **(A) Ampliar `HarvestableResourceType` con `Furniture`.** RECHAZADA: es editar código del vendor, que el
+  proyecto prohíbe por escrito y que se pierde en el siguiente reimport.
+- **(B) Sistema de desmontaje propio, al margen del harvest.** RECHAZADA: duplicaría autoridad, replicación,
+  persistencia y HUD de salud que ya funcionan, para modelar lo mismo — golpear algo hasta que se acaba.
+- **(C) `held_item` autoritativo para la puerta de herramienta.** RECHAZADA por ADR-023, que lo prohíbe
+  explícitamente y manda la subida a su propio ADR.
+- **(D) Persistencia por chunk, como pedía el roadmap.** RECHAZADA: la granularidad correcta es el prop, y el
+  save de ADR-032 ya la da. Un índice por chunk sería estructura nueva para el mismo dato.
+- **(E) Regeneración con `_respawnDays` del vendor.** RECHAZADA: el backend no arbitra el ciclo de día, así que
+  el número lo contaría cada cliente por su cuenta.
+- **(F) Meter el desmontable en el mismo sorteo que el contenedor.** RECHAZADA: movería un número de densidad ya
+  validado en partida.
+
+### Dependencias con ADRs existentes
+
+ADR-023 — **respetado sin rozarlo**: el servidor no lee `held_item`. ADR-032 — reutiliza el save
+(`stp_harvestables`) y el `report_inventory` como camino de subida. ADR-061 — **no se activa**: cero cambio de
+wire, cero bump. ADR-064 — precedente de «cliente reporta, no es anti-trampas»; se acota su alternativa (C).
+ADR-108 D4 — el prop desmontable sale del PAPEL del espacio, igual que loot y contenedor. ADR-028 — sin cambios;
+contenedor y desmontable no se mezclan (D9). ADR-083/084 — sin tocar.
+
+### Alcance del cambio
+
+Rust: `game_loop.rs` — tabla `depleted_at` + tick de regeneración; `set_stp_harvestables` pasa de REEMPLAZAR la
+lista a **añadir/actualizar por id** (hoy `net.stp_harvestables = specs` borra lo anterior, y con siembra por
+streaming eso perdería los muebles del chunk que se descarga). Es cambio de semántica de una acción IPC, y por
+eso está en este ADR. Más tests.
+C#: `ChunkDismantleRoll.cs` (NUEVO, sorteo puro + tabla D7/D8), `StpWorldPropSpawner.cs` (NUEVO, siembra y
+registra con id determinista), `StpHarvestableSyncManager.cs` (registro incremental — hoy `_hostRegistered` es
+de una vez — e ids deterministas), `NetworkHarvestableInstance.cs` (lista de drops en vez de un par),
+`ChunkDismantleRollTests.cs` (NUEVO).
+Assets (una sola pasada de editor): `BR_Screwdriver`, `BR_Wooden Plank`, `BR_Metal Beam`, 3 ×
+`HarvestableResourceDefinition`, 3 prefabs de mueble con `HarvestableResource` + collider **en la raíz** (la
+trampa de STP ya documentada).
+
+### Riesgos aceptados
+
+1. `Plant` ocupado — **descartado por medida antes de aprobar** (hacha `{Tree}`, pico `{Rock, Tree}`).
+2. El editor de Unity puede estar bloqueado por otra instancia; los siete assets no se autoran hasta liberarlo, y
+   a mano en YAML es riesgo conocido de truncado silencioso.
+3. `set_stp_harvestables` reemplaza: si se siembra por streaming sin cambiar esa semántica, cada barrido borra
+   los muebles anteriores y el mundo parece regenerarse solo. Es el fallo más probable de la implementación.
+4. Balance sin medir: densidad de desmontables y 15 min de regeneración son placeholders, y mueven la economía
+   de materiales sin que exista todavía crafteo que los consuma. **En Alpha 1 los materiales no sirven para nada
+   todavía: se acumulan.** Es aceptable si se sabe; es un bug reportado si no.
+5. Un mueble desmontado deja hueco visual: `_fullyHarvestedObject` vacío, el mueble desaparece de golpe sin
+   escombro. Feo, no roto.
+
+### Por qué es ADR (reglas duras 7, 9)
+
+Cambia la semántica de una acción del protocolo IPC cliente↔servidor (`set_stp_harvestables`: reemplazar →
+añadir/actualizar) y fija reglas de juego (herramienta, materiales, cantidades, regeneración) que hasta hoy no
+existían en ningún sitio. No cambia el formato de wire ni el schema de guardado.

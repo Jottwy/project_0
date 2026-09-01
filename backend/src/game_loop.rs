@@ -123,6 +123,62 @@ const STP_PICKUP_MAX_DISTANCE: f32 = 8.0;
 /// cuánto es demasiado, no cuánto es correcto.
 const MAX_HARVEST_FRACTION_PER_HIT: f32 = 0.25;
 
+/// ADR-114 D5: cuánto tarda un harvestable agotado en volver entero. **15 min reales, el mismo
+/// número para los tres props**, porque un periodo por prop sería una perilla de balance que
+/// todavía no hay con qué medir.
+///
+/// NO se usa el `_respawnDays` del vendor: cuenta días de un ciclo que este backend no arbitra, así
+/// que cada cliente lo contaría por su cuenta y el mueble volvería en momentos distintos para cada
+/// uno — que es justo lo que la autoridad de host existe para evitar.
+const HARVESTABLE_REGEN: Duration = Duration::from_secs(15 * 60);
+
+/// Por debajo de esto un `remaining` se considera agotado. Mismo umbral que usa el cliente al
+/// decidir que el recurso cayó (`MaybeSpawnOnDeplete`), y por el mismo motivo: `remaining` es un
+/// `f32` que llega de restas sucesivas, así que comparar con cero exacto es una coincidencia, no
+/// una condición.
+const HARVESTABLE_DEPLETED_EPS: f32 = 0.001;
+
+/// ADR-114 D5 — el reloj de regeneración, PURO: recibe `now` en vez de leerlo, igual que
+/// `RosterGate::should_send` y `pickup_within_reach`, para poder probarlo sin levantar un reloj.
+///
+/// Detecta el agotamiento MIRANDO el roster, no en el camino del golpe. Eso deja
+/// `process_stp_harvest_hit` intacto (ADR-114 D1) y encima cubre un caso que el otro sitio no vería:
+/// un mundo hidratado del save llega con muebles ya a cero que nadie acaba de golpear, y también
+/// tienen que volver.
+///
+/// Devuelve cuántos revivió — sólo para el log y los tests; quien lo llama no necesita el número.
+/// No hay que avisar a nadie de que el roster cambió: su puerta de ADR-071 es por hash de
+/// contenido, así que un `remaining` que vuelve a 1 la abre solo.
+fn regenerate_harvestables(
+    harvestables: &mut [crate::network::protocol::StpHarvestableInfo],
+    depleted_at: &mut HashMap<u32, Instant>,
+    now: Instant,
+) -> usize {
+    let mut revived = 0;
+    for h in harvestables.iter_mut() {
+        if h.remaining > HARVESTABLE_DEPLETED_EPS {
+            // Entero (o de vuelta): que no arrastre un reloj de una vida anterior.
+            depleted_at.remove(&h.id);
+            continue;
+        }
+
+        let since = *depleted_at.entry(h.id).or_insert(now);
+        if now.duration_since(since) >= HARVESTABLE_REGEN {
+            h.remaining = 1.0;
+            depleted_at.remove(&h.id);
+            revived += 1;
+        }
+    }
+
+    // Un id que ya no está en el roster no debe dejar su reloj colgado: los props se siembran por
+    // streaming, así que esta tabla crecería sin techo con cada chunk que se visita y se deja.
+    if depleted_at.len() > harvestables.len() {
+        depleted_at.retain(|id, _| harvestables.iter().any(|h| h.id == *id));
+    }
+
+    revived
+}
+
 /// F0.7: la decisión de proximidad del pickup, pura y sin red, para poder probarla sin levantar
 /// un `NetworkManager` ni un socket — el mismo motivo por el que `RosterGate::should_send` recibe
 /// `now` en vez de leer el reloj.
@@ -2298,6 +2354,21 @@ pub async fn run(
                 sync::broadcast_stp_items(&mut net).await;
                 sync::broadcast_stp_buildings(&mut net).await;
                 sync::broadcast_stp_carryables(&mut net).await;
+                // ADR-114 D5: el reloj de regeneración, ANTES del reparto — así el `remaining` que
+                // vuelve a 1 sale en esta misma ronda y no espera a la siguiente. Host-only, como
+                // todo lo que decide estado: en un joiner el roster lo escribe el relay.
+                let revived = regenerate_harvestables(
+                    &mut net.stp_harvestables,
+                    &mut net.depleted_harvestables_at,
+                    std::time::Instant::now(),
+                );
+                if revived > 0 {
+                    info!(
+                        "MPTRACE step=HV event=harvestables_regenerated count={} after_secs={}",
+                        revived,
+                        HARVESTABLE_REGEN.as_secs()
+                    );
+                }
                 sync::broadcast_stp_harvestables(&mut net).await;
                 // ADR-028 Fase E: full corpse roster (host-authoritative, self-healing).
                 sync::broadcast_corpses(&mut net, &world).await;
@@ -5183,6 +5254,13 @@ async fn handle_action(
         }
         // Phase B2.6: the host Unity registers the authoritative scene-harvestable list
         // (host-only; remaining starts full). A joiner sending this is ignored.
+        //
+        // ADR-114 D2: AÑADE O ACTUALIZA por id, ya no reemplaza la lista. Reemplazar valía cuando
+        // los harvestables eran los árboles de una escena, enumerados una vez al arrancar; con los
+        // props sembrados por streaming (D9) cada barrido borraría los muebles del barrido
+        // anterior, y el mundo parecería regenerarse solo. Un id ya conocido CONSERVA su
+        // `remaining`: sin eso, volver a pasar por un chunk devolvería entero un escritorio que
+        // alguien acababa de desmontar.
         "set_stp_harvestables" => {
             if !net.is_host {
                 return;
@@ -5198,17 +5276,29 @@ async fn handle_action(
                 .cloned()
                 .and_then(|v| serde_json::from_value(v).ok())
                 .unwrap_or_default();
-            net.stp_harvestables = specs
-                .into_iter()
-                .map(|s| crate::network::protocol::StpHarvestableInfo {
-                    id: s.id,
-                    position: s.position,
-                    remaining: 1.0,
-                })
-                .collect();
+            let received = specs.len();
+            let mut added = 0;
+            for s in specs {
+                match net.stp_harvestables.iter_mut().find(|h| h.id == s.id) {
+                    // Ya lo conocíamos: la posición se refresca (el sembrador la resuelve con un
+                    // rayo y puede afinarla), pero la salud NO se toca.
+                    Some(existing) => existing.position = s.position,
+                    None => {
+                        net.stp_harvestables
+                            .push(crate::network::protocol::StpHarvestableInfo {
+                                id: s.id,
+                                position: s.position,
+                                remaining: 1.0,
+                            });
+                        added += 1;
+                    }
+                }
+            }
             info!(
-                "MPTRACE step=HV event=host_set_stp_harvestables self_id={} count={}",
+                "MPTRACE step=HV event=host_set_stp_harvestables self_id={} received={} added={} total={}",
                 net.local_id,
+                received,
+                added,
                 net.stp_harvestables.len()
             );
         }

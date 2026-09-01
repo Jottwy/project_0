@@ -121,6 +121,16 @@ namespace NUnit.Framework
             if (actual <= limit) Fail($"{actual} no supera a {limit}. {message}");
         }
 
+        public static void LessOrEqual(long actual, long limit, string message = null)
+        {
+            if (actual > limit) Fail($"{actual} pasa de {limit}. {message}");
+        }
+
+        public static void LessOrEqual(double actual, double limit, string message = null)
+        {
+            if (actual > limit) Fail($"{actual} pasa de {limit}. {message}");
+        }
+
         public static void IsNotEmpty(IEnumerable collection, string message = null)
         {
             foreach (object unused in collection) return;
