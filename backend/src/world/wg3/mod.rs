@@ -15,6 +15,8 @@ pub mod config;
 /// ADR-100 — el relleno: convertir un plan en geometría, sin que la geometría decida nada.
 pub mod fill;
 pub mod hash;
+/// ADR-103 — la identidad de nivel: mezcla de perfiles por celda, función pura de la posición.
+pub mod identity;
 pub mod junction;
 pub mod manifest;
 /// ADR-108 — la navegacion de WG3.
