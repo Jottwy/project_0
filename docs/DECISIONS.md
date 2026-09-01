@@ -11861,3 +11861,38 @@ planta: un veterano que guardó en la planta 2 no puede reaparecer en la planta 
 
 **E1.3 — No cambia nada de la muerte.** El respawn tras morir sigue siendo el de ADR-031 (cama o punto de
 partida). Esta enmienda es sólo sobre **entrar** a la partida.
+
+---
+
+## ADR-045 — Enmienda 2: el respawn tras morir también se resuelve sobre WG3 (2026-09-01)
+
+### Qué se descubrió
+
+La enmienda 1 dejó escrito en E1.3 que la muerte no cambiaba: el respawn seguía siendo el de ADR-031, cama o
+punto de partida. Pero ese resolutor (`resolve_respawn` → `resolve_safe_spawn`) lee los layouts de WG2, y con
+WG3 mandando `world.chunks` son contenedores vacíos cuyo layout por defecto es **todo andable**
+(`empty_chunk_container`, ADR-109 D1). Resultado: cualquier celda vale, la Y sale de la cota base de WG2 y
+nadie pregunta al ráster. Una cama en la planta 2 devuelve a la planta baja debajo de ella, y el origen puede
+caer en macizo. Con el movimiento resuelto por WG3 (ADR-106) eso no deja flotando: deja **atascado** — la misma
+clase de fallo que E1.2 cerró para la entrada, en la otra puerta por la que un jugador vuelve al mundo.
+
+### Decisión
+
+**E2.1 — Con WG3 activo, el respawn tras morir se resuelve sobre el ráster.** Mismo camino que E1.2: la cama
+pasa por `standable_near_bounded(cama, same_storey = true)`, conservando planta; una cama en posición inválida
+o dentro de un macizo se corrige al sitio de pie más cercano **de su misma planta**. Sin cama, o sin sitio de
+pie en 24 m alrededor de la cama, se cae al punto de partida con `same_storey = false` y aviso — el fallback de
+ADR-116 D7, sin inventar un sitio (ADR-106).
+
+**E2.2 — Aplica a las dos rutas que reviven:** `respawn_request` y la reanimación de un save muerto al cargar.
+Son el mismo resolutor, y una sola función lo elige por `Wg3Config::is_enabled()`.
+
+**E2.3 — No cambia nada más de la muerte.** Reset de stats, invulnerabilidad, cadáver, dedupe del botín y el
+evento `player_respawned` quedan como estaban. Con WG3 apagado el resolutor de ADR-031 sigue byte a byte.
+**Cero wire.**
+
+### Verificación
+
+Tests Rust contra el manifiesto real y la semilla servida: cama en la planta 2 renace en la planta 2; cama
+dentro de un macizo se corrige en su planta; sin cama, el origen con sitio de pie; y 50 muertes aleatorias con
+el 100 % de posiciones válidas (suelo bajo los pies y cápsula libre).
