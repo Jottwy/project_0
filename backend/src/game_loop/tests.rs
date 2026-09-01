@@ -12904,3 +12904,124 @@ async fn two_backends_report_two_different_identities() {
         "dos backends con la misma propuesta tienen que reportar identidades distintas"
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// La puerta de `stp_drop`: un joiner modificado no materializa lo que quiera donde quiera.
+//
+// Hasta aqui `process_stp_drop` aceptaba `def_id`, `count` y POSICION del paquete sin mirarlos.
+// Estas pruebas fijan las cuatro puertas y, sobre todo, fijan que el drop LEGITIMO sigue pasando:
+// el modo de fallo caro de este cambio no es dejar entrar basura, es rechazar a un jugador que
+// suelta lo suyo — el cliente ya ha descontado la pila de su inventario cuando el paquete sale.
+// ---------------------------------------------------------------------------------------------
+
+/// El caso legitimo, que es el que hay que no romper. Los tres emisores del cliente
+/// (`StpNativeDropWatcher`, `StpPickupController`, `InventoryRestorer`) sueltan a la altura del
+/// pecho y medio metro delante; se prueba esa geometria, no una comoda.
+#[test]
+fn a_normal_drop_is_not_rejected() {
+    let player = Vec3::new(10.0, 1.8, -4.0);
+    assert_eq!(
+        stp_drop_rejection(1234, 1, [10.5, 1.4, -4.0], Some(player)),
+        None
+    );
+    // Y un def_id NEGATIVO es legitimo: `DataDefinition.Id` se acuña con
+    // `Random.Range(int.MinValue, int.MaxValue)`, asi que medio catalogo del juego es negativo.
+    // Rechazarlos habria roto la mitad de los items sin que ningun test de mecanica lo notara.
+    assert_eq!(
+        stp_drop_rejection(-885_204_113, 3, [10.5, 1.4, -4.0], Some(player)),
+        None
+    );
+}
+
+/// Los dos centinelas, que es TODO lo que se puede descartar por valor sin un manifiesto de items.
+#[test]
+fn the_two_sentinel_def_ids_are_rejected() {
+    let player = Vec3::new(0.0, 1.8, 0.0);
+    assert_eq!(
+        stp_drop_rejection(0, 1, [0.0, 1.8, 0.0], Some(player)),
+        Some("bad_def_id"),
+        "0 es «vacio» en equipment y held_item por todo el proyecto"
+    );
+    assert_eq!(
+        stp_drop_rejection(-1, 1, [0.0, 1.8, 0.0], Some(player)),
+        Some("bad_def_id"),
+        "-1 es el «sin asignar» inicial de DataDefinition"
+    );
+}
+
+/// Cantidad: cero deja un item invisible viajando en el roster para siempre; el tope de higiene
+/// corta lo absurdo sin rozar ninguna pila real (hoy `StackSize = 1` en todo el catalogo).
+#[test]
+fn only_a_plausible_count_is_accepted() {
+    let player = Vec3::new(0.0, 1.8, 0.0);
+    let at = [0.0, 1.8, 0.0];
+    assert_eq!(
+        stp_drop_rejection(77, 0, at, Some(player)),
+        Some("bad_count")
+    );
+    assert_eq!(
+        stp_drop_rejection(77, MAX_STP_DROP_COUNT, at, Some(player)),
+        None,
+        "el tope EXACTO tiene que pasar: un tope que rechaza su propio valor se ajusta a ciegas"
+    );
+    assert_eq!(
+        stp_drop_rejection(77, MAX_STP_DROP_COUNT + 1, at, Some(player)),
+        Some("count_too_large")
+    );
+    assert_eq!(
+        stp_drop_rejection(77, u16::MAX, at, Some(player)),
+        Some("count_too_large")
+    );
+}
+
+/// La puerta con dientes: soltar lejos de uno mismo. Es la que convierte «cualquier punto del
+/// mapa» en «donde estoy», y la unica que un cliente no puede sortear declarando otra cosa — la
+/// posicion del solicitante sale del roster del host, nunca de su paquete.
+#[test]
+fn a_drop_far_from_the_requester_is_rejected() {
+    let player = Vec3::new(0.0, 1.8, 0.0);
+    assert_eq!(
+        stp_drop_rejection(77, 1, [1000.0, 1.8, 1000.0], Some(player)),
+        Some("too_far")
+    );
+    // Justo por debajo del tope compartido con recoger: pasa. El margen de 8 m es de F0.7 y esta
+    // ahi porque la pose relayada va por detras del jugador que corre.
+    assert_eq!(
+        stp_drop_rejection(77, 1, [7.5, 1.8, 0.0], Some(player)),
+        None
+    );
+}
+
+/// EL BYPASS, y es el hallazgo de la revision de este mismo cambio. `process_incoming` despacha
+/// cualquier datagrama sin exigir que su `sender_id` sea un peer registrado, asi que un id
+/// INVENTADO deja `authoritative_requester_pos` en `None`. Si el hueco se dejara pasar —que es lo
+/// que hace la puerta de recoger— falsear el id seria mas barato que falsear cualquier otra cosa
+/// y la puerta entera no existiria. Aqui rechaza, y un `None` legitimo no existe por este camino:
+/// el host se valida contra su propia pose y un joiner con handshake esta en `net.peers`.
+#[test]
+fn a_drop_from_an_unknown_requester_is_rejected() {
+    assert_eq!(
+        stp_drop_rejection(77, 1, [1000.0, 1.8, 1000.0], None),
+        Some("unknown_requester")
+    );
+    // Tampoco por la puerta de al lado: sin pose no se suelta NADA, ni siquiera en el origen.
+    assert_eq!(
+        stp_drop_rejection(77, 1, [0.0, 1.8, 0.0], None),
+        Some("unknown_requester")
+    );
+}
+
+/// Un NaN en la posicion pasaria el filtro de proximidad —toda comparacion con NaN es falsa— y
+/// luego envenenaria el `settling` que persigue el item hasta el suelo.
+#[test]
+fn a_non_finite_position_is_rejected() {
+    let player = Vec3::new(0.0, 1.8, 0.0);
+    assert_eq!(
+        stp_drop_rejection(77, 1, [f32::NAN, 1.8, 0.0], Some(player)),
+        Some("bad_position")
+    );
+    assert_eq!(
+        stp_drop_rejection(77, 1, [0.0, f32::INFINITY, 0.0], Some(player)),
+        Some("bad_position")
+    );
+}

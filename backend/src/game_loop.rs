@@ -164,6 +164,80 @@ fn pickup_within_reach(requester_pos: Option<Vec3>, item_pos: [f32; 3]) -> bool 
     dist <= STP_PICKUP_MAX_DISTANCE
 }
 
+/// Tope de higiene de la cantidad de UN drop, con el mismo argumento que
+/// [`crate::world::corpse::MAX_CORPSE_STACKS`]: está por encima de cualquier pila real del juego
+/// —hoy los items del proyecto llevan `StackSize = 1`— así que llegar aquí es un reporte
+/// malformado o malicioso, nunca un jugador soltando lo suyo.
+///
+/// Se RECHAZA en vez de recortar, al revés que en las pilas de cadáver, y la diferencia importa:
+/// recortar un drop materializaría en el mundo algo distinto de lo que se pidió, y el cliente ya
+/// ha descontado la pila entera de su inventario. Rechazar deja el estado del mundo como estaba.
+const MAX_STP_DROP_COUNT: u16 = 64;
+
+/// Por qué se rechaza una petición de soltar, o `None` si es legítima.
+///
+/// **El agujero que cierra:** `process_stp_drop` metía en `stp_items` el `def_id`, el `count` y la
+/// POSICIÓN que viniera en el paquete, sin mirar ninguno. Un joiner modificado materializaba
+/// cualquier cosa, en cualquier cantidad, en cualquier punto del mapa — incluido a kilómetros de
+/// sí mismo, que es la parte que ni siquiera necesita un cliente sofisticado para hacer daño.
+///
+/// Pura y sin red por el mismo motivo que [`pickup_within_reach`]: se prueba sin levantar un
+/// `NetworkManager` ni un socket.
+///
+/// **LO QUE ESTO NO ES: una validación de catálogo.** No la hay, y no puede haberla hoy: el
+/// `def_id` es `DataDefinition.Id` de STP, que se acuña con
+/// `UnityEngine.Random.Range(int.MinValue, int.MaxValue)` — cualquier `i32` es un id legítimo, así
+/// que no existe rango que separe lo válido de lo inventado. Lo único descartable por valor son
+/// los dos centinelas: `0` («vacío», como en `equipment` y `held_item`) y `-1` («sin asignar», el
+/// inicial de `DataDefinition`). Un catálogo de verdad pide un manifiesto de items horneado desde
+/// Unity —el mismo patrón que el manifiesto de WG3—, y eso es su propio trabajo con su propio ADR.
+///
+/// La validación con dientes de las tres es la PROXIMIDAD: los tres emisores legítimos
+/// (`StpNativeDropWatcher`, `StpPickupController`, `InventoryRestorer`) sueltan a medio metro del
+/// jugador, y el tope compartido con recoger son 8 m.
+///
+/// **Y aquí `requester_pos = None` RECHAZA, al revés que en `pickup_within_reach`.** El
+/// doc-comment de `authoritative_requester_pos` deja esa elección a quien llama, y las dos
+/// respuestas ya conviven en este fichero: la puerta de Level 4 rechaza, la de recoger deja pasar.
+/// Para soltar tiene que rechazar, y el motivo es que `process_incoming` despacha CUALQUIER
+/// datagrama que llegue al socket sin exigir que su `sender_id` sea un peer registrado: dejar
+/// pasar el hueco convertiría un id inventado —trivial en UDP, y más fácil que falsear nada de lo
+/// demás— en el bypass de la puerta entera, poniendo un objeto en cualquier punto del mapa. Un
+/// `None` legítimo no existe por este camino: el host se valida contra su propia pose, y un joiner
+/// que ha hecho el handshake está en `net.peers` desde ese momento. Coste de equivocarse en cada
+/// dirección: rechazar cuesta un objeto que no aparece y una línea de log; aceptar cuesta que la
+/// puerta no exista.
+fn stp_drop_rejection(
+    def_id: i32,
+    count: u16,
+    position: [f32; 3],
+    requester_pos: Option<Vec3>,
+) -> Option<&'static str> {
+    if def_id == 0 || def_id == -1 {
+        return Some("bad_def_id");
+    }
+    if count == 0 {
+        // Un item de cantidad cero es invisible para `corpse_loot_is_empty` y para el jugador, pero
+        // ocupa sitio en el roster y viaja a 10 Hz para siempre.
+        return Some("bad_count");
+    }
+    if count > MAX_STP_DROP_COUNT {
+        return Some("count_too_large");
+    }
+    if !position.iter().all(|c| c.is_finite()) {
+        // Un NaN aquí envenena la distancia (toda comparación con NaN es falsa, así que el filtro
+        // de proximidad lo dejaría pasar) y después el `settling` que lo persigue hasta el suelo.
+        return Some("bad_position");
+    }
+    let Some(from) = requester_pos else {
+        return Some("unknown_requester");
+    };
+    if !pickup_within_reach(Some(from), position) {
+        return Some("too_far");
+    }
+    None
+}
+
 /// Forces the god-traversal COLLISION BYPASS on (the player's claimed pose is trusted without
 /// clamping against the BACKEND world, which doesn't match the rendered ChunkStreamer — the known
 /// world-migration debt). NOTE (ADR-016 slice 1): this no longer gates death — that is a SEPARATE
@@ -2820,8 +2894,19 @@ async fn handle_network_event(
             position,
             rotation,
             velocity,
+            requester_id,
         } => {
             if net.is_host {
+                // La puerta de autoridad del drop. Es el ÚNICO camino por el que un peer que no
+                // es el host mete un objeto en el mundo, y hasta ahora entraba sin mirarse.
+                let requester_pos = authoritative_requester_pos(net, player.position, requester_id);
+                if let Some(reason) = stp_drop_rejection(def_id, count, position, requester_pos) {
+                    info!(
+                        "MPTRACE step=SD event=stp_drop_rejected drop_id={} requester_id={} def_id={} count={} reason={}",
+                        drop_id, requester_id, def_id, count, reason
+                    );
+                    return;
+                }
                 process_stp_drop(drop_id, def_id, count, position, rotation, velocity, net);
             }
         }
@@ -4710,8 +4795,11 @@ async fn handle_action(
                 .data
                 .get("count")
                 .and_then(|v| v.as_u64())
+                // Satura en vez de truncar: `as u16` a secas envuelve, así que un 65 537 llegaba
+                // a la puerta convertido en 1 — un valor imposible entrando como el más normal
+                // de todos, que es la forma que tiene un cast silencioso de anular un tope.
                 .unwrap_or(1)
-                .max(1) as u16;
+                .clamp(1, u16::MAX as u64) as u16;
             let position: [f32; 3] = serde_json::from_value(
                 action
                     .data
@@ -4736,6 +4824,19 @@ async fn handle_action(
             )
             .unwrap_or([0.0, 0.0, 0.0]);
             if net.is_host {
+                // El host se valida contra su propia pose, exactamente como en `stp_pickup`: no
+                // aporta anticheat —nadie se engaña a sí mismo, y su backend corre en su máquina—
+                // pero mantiene UNA sola regla para todos. Si la puerta rechazara algo legítimo,
+                // se ve jugando en el host en vez de esconderse en el camino del joiner.
+                if let Some(reason) =
+                    stp_drop_rejection(def_id, count, position, Some(player.position))
+                {
+                    info!(
+                        "MPTRACE step=SD event=stp_drop_rejected drop_id={} requester_id={} def_id={} count={} reason={}",
+                        drop_id, net.local_id, def_id, count, reason
+                    );
+                    return;
+                }
                 process_stp_drop(drop_id, def_id, count, position, rotation, velocity, net);
             } else {
                 let payload = crate::network::protocol::PacketPayload::StpDropRequest {

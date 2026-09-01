@@ -724,7 +724,10 @@ async fn stp_drop_request_carries_the_throw_velocity_across_the_wire() {
         "host should see the drop request, got: {events:?}"
     );
     if let Some(NetworkEvent::StpDropRequest {
-        position, velocity, ..
+        position,
+        velocity,
+        requester_id,
+        ..
     }) = drop
     {
         assert_eq!(*position, [4.0, 2.1, -6.0]);
@@ -732,6 +735,13 @@ async fn stp_drop_request_carries_the_throw_velocity_across_the_wire() {
             *velocity,
             [1.5, 3.25, -2.75],
             "the impulse must arrive intact — a zeroed one is an invisible downgrade to a dead drop"
+        );
+        // El emisor sale de la CABECERA del datagrama y no del payload —que no lo lleva—, y es lo
+        // que permite medir el drop contra la pose que el host tiene de ESE peer. Si esto se
+        // rellenara con un dato elegido por quien envía, la puerta de proximidad no validaría nada.
+        assert_eq!(
+            *requester_id, 1007,
+            "el drop tiene que llegar atribuido a quien lo mandó"
         );
     }
 }

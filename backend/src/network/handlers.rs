@@ -618,10 +618,29 @@ impl NetworkManager {
                 data,
             }),
 
+            // Sale de la lista 1:1 porque rellena un campo desde la CABECERA, igual que
+            // `VoiceFrame`: el host valida el drop contra la pose que él tiene del emisor, y
+            // ésa se busca por el `sender_id` del datagrama, no por nada que venga dentro.
+            PacketPayload::StpDropRequest {
+                drop_id,
+                def_id,
+                count,
+                position,
+                rotation,
+                velocity,
+            } => Some(NetworkEvent::StpDropRequest {
+                drop_id,
+                def_id,
+                count,
+                position,
+                rotation,
+                velocity,
+                requester_id: sender_id,
+            }),
+
         }
         [
             StpPickupGranted { item_id, def_id, count },
-            StpDropRequest { drop_id, def_id, count, position, rotation, velocity },
             Level4DoorVerdict { request_id, dest },
         ]
         {

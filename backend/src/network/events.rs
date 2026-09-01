@@ -73,6 +73,12 @@ pub enum NetworkEvent {
         position: [f32; 3],
         rotation: f32,
         velocity: [f32; 3],
+        /// Quién lo pidió, tomado de la CABECERA del datagrama y no del payload — igual que
+        /// `speaker` en `VoiceReceived`. El host necesita saberlo para medir la petición contra
+        /// la pose que él tiene de ese peer; un `requester_id` dentro del payload sería un dato
+        /// que elige el propio emisor, y medir contra eso no valida nada. El paquete NO cambia:
+        /// este campo no viaja, se rellena al recibirlo.
+        requester_id: PeerId,
     },
     /// Phase B1: a joiner asks the host to place an STP building piece in the world.
     StpPlaceRequest {
