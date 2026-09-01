@@ -214,9 +214,12 @@ Recetas sobre el log del joiner y del host:
 
 Preocupaciones futuras reconocidas, no implementaciones actuales:
 
-- Servidor dedicado o relay
+- Servidor dedicado (el relay de ADR-117 **no lo es**: transporta datagramas y no simula nada —
+  la autoridad sigue entera en el backend del host)
 - Migración de host (que el host se vaya termina la sesión — ADR-056)
 - NAT traversal / hole punching. **UPnP-IGD (ADR-112) no es esto**: no atraviesa nada, le pide
-  permiso al router. Steam Networking Sockets, Steam Datagram Relay, STUN y TURN siguen fuera, y
-  con ellos la única salida que tendría un host detrás de CGNAT.
+  permiso al router. Steam Networking Sockets, Steam Datagram Relay, STUN y TURN de terceros siguen
+  fuera. Lo que SÍ entra, y sólo eso, es el **relay UDP propio de ADR-117**: la tercera vía de
+  transporte para quien no tiene ninguna directa, que es el caso que dejaba sin salida a un host
+  tras CGNAT o con un router sin UPnP.
 - Cifrado o autenticación (ni en P2P ni en IPC)

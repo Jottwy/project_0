@@ -11931,3 +11931,171 @@ Ids acuñados, en el wire y en los saves — no regenerar: Wooden Plank `-223572
 Screwdriver `808575401`. Vendor tocado por su propia API de registro: `FPS_Player.prefab` (alta del wieldable),
 `FPS_Melee.asset` y `STP_Resources.asset` (miembro de categoría); un reimport lo borra en silencio y la cura es
 volver a ejecutar el menú (inventariado en `docs/systems/vendor-patches.md`).
+
+---
+
+## ADR-117 — Relay UDP propio: una tercera vía de transporte cuando no hay ninguna directa (2026-09-02) — ACEPTADA
+
+**Contexto.** Auditoría del playtest del 2026-09-02, con evidencia de campo y no de laboratorio. El
+navegador de servidores encontraba la partida del host y la anunciaba como
+`A12ex — 192.168.1.168:7778`, una dirección privada que desde otra red no lleva a ninguna parte. La
+auditoría descartó una a una las hipótesis fáciles: la metadata de Steam se publica y se lee con las
+mismas claves, el navegador enseña exactamente lo que el Join usa, y `CONNECT_TO` llega intacto al
+backend. Lo que quedó es lo que ADR-112 D5 manda hacer: sin `PortMappingConfirmed` la IP pública
+**no se publica**, y la precedencia cae al escalón 3, que es la dirección local.
+
+Y una segunda medida, la que decide este ADR: el join **manual** a la IP pública del host,
+`94.73.55.235:7778`, también agotó los 15 s (`connect_attempt_timed_out attempts=9`). O sea que
+publicar la IP pública tampoco habría conectado a nadie. No era un fallo de anuncio: **no había
+ningún camino directo que anunciar**. Ninguno de los dos routers respondió al SSDP
+(`UPNP_UNAVAILABLE`) y ninguno de los dos puertos estaba reenviado.
+
+ADR-112 ya anotó por escrito lo que costaba no tener esto: «el CGNAT no tiene solución por esta
+vía». Lo medido el 2026-09-02 es que la lista de sin-solución es más larga que el CGNAT — un router
+sin UPnP y un usuario que no va a entrar en la configuración de su router bastan. Un juego cuya
+condición de entrada sea «abre un puerto» no tiene playtest.
+
+**Decisión.** Se añade un **relay UDP propio** como capa de transporte de RESPALDO. El gameplay no
+cambia: mismo UDP, misma topología en estrella, mismo backend de Rust como autoridad, mismo wire 55.
+Lo único que cambia es por dónde viajan los datagramas cuando no hay camino directo.
+
+La arquitectura queda:
+
+```
+LAN  →  DIRECT  →  RELAY        (según disponibilidad, en ese orden)
+```
+
+**D1 — Qué prohibición se levanta, y cuál NO.** ADR-112 dice «ni Steam Networking Sockets, ni Steam
+Datagram Relay, ni STUN, ni TURN, ni hole punching», y `NETWORK_ARCHITECTURE_CURRENT.md` lista
+«servidor dedicado o relay» entre lo no incluido. Este ADR supera esa prohibición **únicamente para
+un relay UDP propio de este proyecto**. Siguen fuera de R1, y siguen necesitando su propio ADR:
+Steam Networking Sockets, Steam Datagram Relay, STUN, TURN de terceros y hole punching. La razón de
+levantar sólo ésta es que el relay propio es el único de los seis que **no cambia el transporte**:
+sigue siendo nuestro UDP con nuestro framing, con un salto más.
+
+**D2 — El relay es un binario aparte, y no sabe jugar.** Crate propio (`backend/relay/`), proceso
+propio, sin una línea de simulación dentro. No interpreta el payload de gameplay: para él son bytes
+opacos que van de un peer a otro. Meterlo en `backrooms_server` habría atado el ciclo de vida del
+relay al de una partida, y un relay que se reinicia con cada sesión no es infraestructura.
+
+**D3 — La abstracción mínima son DIRECCIONES SINTÉTICAS, no un tipo de dirección nuevo.** La
+tentación es cambiar `PeerConnection.addr` de `SocketAddr` a un enum `Direct | Relay`. Se rechaza
+medido: esa firma la tocan `handlers.rs`, `roster.rs`, `sync.rs`, `peer.rs` y ~5.000 líneas de
+tests, y eso es el refactor masivo que la regla de scope prohíbe.
+
+En su lugar, un peer alcanzable sólo por relay recibe una `SocketAddr` **sintética** del rango IPv6
+ULA `fd52:5245:4c41:59::/64` (`fd52` + "RELAY" en ASCII), con el `peer_id` dentro. Es una dirección
+válida, no colisiona con nada real, pasa `is_routable_peer_addr`, y **sale ya escrita en el log**:
+un `HBTRACE … endpoint=fd52:…` dice «este peer va por relay» sin ningún campo nuevo. La traducción
+vive en los DOS únicos puntos que tocan el socket: `send_datagram` (la salida) y `receive_loop` (la
+entrada). Nada entre medias se entera, `handle_handshake` incluido.
+
+Esto resuelve además un defecto que el enfoque ingenuo tendría: si todos los joiners llegaran con la
+dirección REAL del relay, el segundo handshake caería en la rama «ya registrado por endpoint»
+(`handlers.rs`) y se tomaría por una reconexión del primero. Con una sintética por `peer_id`, cada
+joiner tiene su propia dirección y la deduplicación por endpoint sigue significando lo que decía.
+
+**D4 — El protocolo del relay es SUYO, y no se mezcla con el del juego.** Sobre propio de 16 B
+(magia, versión, tipo, `session_id`, `src`, `dst`), con sus propios mensajes de control:
+`SessionCreate`, `SessionJoin`, `Auth`, `PeerReady`, `PeerJoined`, `PeerDisconnected`, `Heartbeat`,
+`Data`, `SessionClosed`. **No se reutiliza ningún `PacketPayload` de gameplay para gobernar el
+relay.** Si se reutilizara, cualquier cambio del wire de juego arrastraría al relay y al revés, y el
+relay dejaría de poder ser opaco al payload — que es justo lo que lo mantiene fuera de la autoridad.
+
+**D5 — El techo de 1200 B es del PAYLOAD, no del datagrama en cable.** El sobre del relay son 16 B
+más, así que un datagrama relayado mide hasta **1216 B**. Se acepta y se enmienda ADR-113 para
+decirlo (ver la enmienda 3, abajo). No se baja `SAFE_DATAGRAM_BYTES` a 1184: obligaría a re-medir y
+re-paginar el emisor de chunks, cuya página máxima medida es de **1196 B de 1200** (ADR-113 enm. 2),
+o sea que un techo más bajo rompe hoy mismo algo que funciona, para arreglar un problema que no
+existe — 1216 sigue por debajo de la MTU mínima de IPv6 (1280) y muy por debajo de los 1472 de
+Ethernet. **El relay no fragmenta**: un payload que llegue por encima de 1200 se descarta y se
+cuenta, porque fragmentar en el relay reintroduciría justo el modo de fallo que ADR-113 cerró.
+
+**D6 — La estrella la impone el RELAY, no la confianza en el cliente.** Un slot de joiner sólo puede
+poner `dst = host`; sólo el host puede dirigirse a cualquier miembro. Todo lo demás se descarta con
+contador. ADR-015 y la TAREA 4 del 2026-08-31 ya habían cerrado las superficies joiner→joiner del
+cliente; un relay que reenviara a ciegas las volvería a abrir, y encima con la bendición de la
+infraestructura.
+
+**D7 — Precedencia nueva de `connect_ip`, que SUPERA a ADR-112 D5.** Queda así: (1) lo que escribió
+el humano, si sirve; (2) la IP pública **con mapeo confirmado y sin sospecha de CGNAT**; (3) **vacío**.
+El escalón «dirección local» desaparece de `connect_ip`. Conocer la IP pública sin mapeo confirmado
+sigue sin bastar, y ahora tampoco se rellena con la LAN: **una dirección privada no se publica como
+si fuera un endpoint público**, porque a un desconocido de otra red le cuesta 15 s de espera y no le
+dice nada. `bs_lan_ip` se mantiene, con su significado de siempre: metadata de LAN, no endpoint.
+
+En consecuencia, **un lobby sin `connect_ip` pero con relay ES joinable**. La regla de ADR-112 «sin
+dirección defendible no se anuncia la partida» se conserva en su intención y se cumple mejor: ahora
+hay una dirección defendible que antes no existía, y es el relay.
+
+**D8 — La LAN se intenta cuando hay MOTIVO para creer que es la misma red.** ADR-112 D6 dejó la
+alternativa en el `[Retry]` porque «dos casas distintas pueden ser las dos `192.168.1.0/24`». El
+argumento sigue en pie y por eso la LAN nunca es lo primero que se prueba a ciegas; lo que cambia es
+que ahora hay una etapa explícita para ella, condicionada a que el joiner comparta prefijo con la
+`bs_lan_ip` anunciada. Sigue siendo una heurística y sigue pudiendo fallar; lo que ya no puede es
+mandar a alguien de fuera a una dirección privada como primer y único intento.
+
+**D9 — Autenticación de sesión: token de 16 B, y por qué basta HOY.** Cada sesión lleva un token
+aleatorio de 16 bytes que genera el host, viaja en la metadata del lobby y valida el relay. Sirve
+para lo que tiene que servir: **que el relay no sea un relay abierto**. Quien no ha visto el lobby
+no puede crear ni entrar en sesiones, y el escaneo ciego no encuentra nada. Lo que NO es: una
+defensa contra alguien que sí ve el lobby — exactamente el mismo nivel de confianza que la partida
+tiene hoy, donde ver el lobby es poder entrar. El token **no se escribe en ningún log**, expira al
+cerrar la sesión, y cada peer tiene límite de tasa. La autenticación por tickets de Steam es R2 y
+tendrá su ADR.
+
+**D10 — La secuencia de transporte es explícita, acotada y observable.** `DirectAttempt` (corto) →
+`LanAttempt` (sólo con D8) → `RelayFallback` → `Failed`. **Nada de fallback silencioso infinito**:
+cada etapa tiene su presupuesto, cada transición dice por qué, y el final es `session_ended` con un
+motivo que nombra las etapas y sus tiempos. El log lleva `transport=direct|lan|relay` y
+`fallback_reason=…`, en el mismo formato `clave=valor` de `NETPROBE` y `NATPROBE` para poder
+buscarlo con grep desde el log de un tester.
+
+**D11 — CERO WIRE.** El estado de conectividad viaja a Unity por `GameEvent` de texto libre —el bus
+que ya lleva `session_joined`, `player_joined` y `session_ended`— porque no cambia la forma de
+ningún mensaje. `WIRE_SCHEMA_VERSION` se queda en **55**, y con él `WireSchema.Expected`. El
+`PeerInfo.addr` del roster puede llevar ahora una dirección sintética: no es un cambio de forma y
+ningún cliente envía a esas direcciones (la estrella lo impide desde 2026-08-31), pero queda
+anotado porque `addr` deja de ser siempre una dirección real.
+
+**Consecuencias.**
+
+- El criterio de aceptación es físico y no se declara cumplido sin él: **host y joiner en redes
+  distintas, sin UPnP, sin reenvío de puertos y sin teclear ninguna IP**, entrando desde el
+  navegador de servidores hasta `session_joined` y jugando.
+- **Direct UDP no se retira ni se degrada.** Una partida en LAN y una con puerto abierto siguen
+  yendo directas, sin salto extra y sin latencia añadida. UPnP, detección de IP pública, la escalera
+  de ADR-112 y el navegador de Steam se conservan enteros.
+- **El relay cuesta dinero y tráfico.** Es el primer componente del proyecto que necesita una
+  máquina pública permanente. El pico real es el goteo de chunks del join (~820 datagramas/s
+  medidos), multiplicado por joiners.
+- **Sin relay disponible no se rompe nada**: no se publican las claves de relay, el lobby se anuncia
+  como antes, y quien tenga camino directo entra igual.
+- Un relay caído con la partida en marcha se ve como lo que es: los peers dejan de recibir latidos y
+  salen por `PeerDisconnected` a los 5 s, el camino de teardown de siempre. En R1 no hay
+  reconexión de sesión: volver a entrar es un join nuevo.
+- **La latencia sube**: dos saltos en vez de uno. Aceptable para co-op y muy por debajo del umbral
+  de expulsión por latido (5 s).
+
+---
+
+## ADR-113 — Enmienda 3: el techo de 1200 B es del payload; el datagrama relayado mide hasta 1216 (2026-09-02)
+
+**Contexto.** ADR-117 añade un relay UDP propio que envuelve cada datagrama de gameplay en un sobre
+de 16 B. La invariante de ADR-113 —«ningún datagrama UDP saliente pasa de 1200 B»— se escribió
+cuando salida y payload eran la misma cosa, y con relay dejan de serlo.
+
+**Lo que se aclara.** La invariante es del **payload de gameplay**, y ahí no se toca ni un byte:
+`SAFE_DATAGRAM_BYTES = 1200`, aplicado en `send_datagram` **antes** de envolver, con el mismo
+rechazo y el mismo `error!` de siempre. Lo que se admite es que el datagrama que sale al cable por
+la ruta de relay mida hasta **1216 B** (1200 + 16).
+
+**Por qué 1216 y no bajar el techo a 1184.** Bajar el techo obligaría a re-paginar al emisor de
+chunks, cuya página máxima medida es de **1196 B de 1200** tras la enmienda 2 — o sea, romper hoy
+algo que funciona y está medido, para ganar 16 bytes que nadie necesita. 1216 sigue por debajo de la
+MTU mínima de IPv6 (1280) y muy lejos de los 1472 de Ethernet, así que **no se fragmenta nada**, que
+es el daño real que esta invariante existe para evitar.
+
+**Lo que NO cambia.** El relay **no fragmenta ni reensambla**: un payload que le llegue por encima
+de 1200 se descarta y se cuenta. La fragmentación y la paginación siguen siendo del protocolo
+existente y de sus emisores, exactamente donde ADR-113 las puso.
