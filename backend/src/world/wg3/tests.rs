@@ -10596,3 +10596,134 @@ fn the_identity_mirror_golden_values() {
         f32::from_bits(0x3DFD_C6BC), // 0.12391421
     );
 }
+
+// ── ADR-116 / ADR-045 enm. 1: el reparto y la posición restaurada, contra el mundo servido ──
+
+/// ADR-116 D6 — un punto repartido tiene que poder pisarse, y **en su planta**.
+///
+/// Esta es la sonda que decide si el reparto funciona en la práctica o si el fallback de D7 acaba
+/// siendo el camino normal: `standable_near_bounded(.., same_storey = true)` sólo acepta suelo de la
+/// planta pedida, y un punto sorteado a ciegas puede caer sobre un vacío de la planta baja.
+#[test]
+fn los_puntos_repartidos_tienen_sitio_de_pie() {
+    use crate::world::spawn_distribution::choose_spawn;
+    use crate::world::wg3::collision::Wg3CollisionCache;
+    use crate::world::wg3::plan::storey_of_floor_cm;
+    use crate::world::wg3::world::Wg3WorldCache;
+
+    const PLAYER_BODY_M: f32 = 1.8;
+
+    let m = real_manifest();
+    let mut asignados: Vec<crate::world::Vec3> = Vec::new();
+    let mut con_sitio = 0usize;
+    let unidades = 9;
+
+    for unit in 0..unidades {
+        let Some(p) = choose_spawn(SERVED_SEED, unit, &asignados) else {
+            continue; // sin candidato: D7, y eso ya lo cubre el test puro del módulo
+        };
+        asignados.push(p);
+
+        let mut worlds = Wg3WorldCache::default();
+        let mut cache = Wg3CollisionCache::new();
+        cache.prewarm_for_move(&mut worlds, &m, SERVED_SEED, p, p);
+        let Some(spawn) = cache.standable_near_bounded(p, true) else {
+            println!(
+                "[reparto] unidad {unit} sin sitio de pie en ({:.0},{:.0})",
+                p.x, p.z
+            );
+            continue;
+        };
+
+        assert!(
+            !cache.blocked_at(spawn, crate::world::collision::PLAYER_RADIUS),
+            "unidad {unit}: el punto repartido cayó DENTRO de algo, que con el ráster mandando es \
+             aparecer atascado"
+        );
+        // D6: la planta pedida es la que se conserva. Un reparto que baja de planta sola es el
+        // mismo fallo que ADR-110 D3 arregló en las criaturas.
+        let pedida = storey_of_floor_cm(((p.y - PLAYER_BODY_M) * 100.0).round() as i32);
+        let dada = storey_of_floor_cm(((spawn.y - PLAYER_BODY_M) * 100.0).round() as i32);
+        assert_eq!(
+            pedida, dada,
+            "unidad {unit}: el reparto se cambió de planta"
+        );
+
+        con_sitio += 1;
+        println!(
+            "[reparto] unidad {unit} de pie en ({:.1}, {:.2}, {:.1})",
+            spawn.x, spawn.y, spawn.z
+        );
+    }
+
+    println!("[reparto] {con_sitio} de {unidades} unidades con sitio de pie");
+    // MEDIDO el 2026-09-01 sobre `SERVED_SEED`: **9 de 9**, las nueve en la planta baja. El suelo
+    // se pone en 7 y no en 9 para dejar sitio a que el plan cambie sin volver rojo por un punto,
+    // pero por debajo de eso el fallback de D7 habría dejado de ser la excepción y sería el camino
+    // normal — o sea, todos naciendo en el origen con el reparto puesto.
+    assert!(
+        con_sitio >= 7,
+        "sólo {con_sitio} de {unidades} unidades encontraron sitio (medido 9/9): el reparto se \
+         estaría degradando al fallback de D7"
+    );
+}
+
+/// ADR-045 enm. 1 E1.2 — una posición restaurada DENTRO de un macizo se corrige.
+///
+/// Con WG3 mandando, el macizo no se cruza: no deja flotando, deja ATASCADO. Hasta esta enmienda
+/// ninguna de las dos rutas de restauración pasaba por el ráster.
+#[test]
+fn una_posicion_restaurada_dentro_de_un_macizo_se_corrige() {
+    use crate::world::collision::PLAYER_RADIUS;
+    use crate::world::wg3::collision::Wg3CollisionCache;
+    use crate::world::wg3::world::Wg3WorldCache;
+    use crate::world::Vec3;
+
+    const PLAYER_BODY_M: f32 = 1.8;
+
+    let m = real_manifest();
+    let region = Wg3RegionCoord { x: 0, z: 0 };
+    let (min_x, min_z, max_x, max_z) = region.bounds();
+    let centre = Vec3::new((min_x + max_x) * 0.5, PLAYER_BODY_M, (min_z + max_z) * 0.5);
+
+    let mut worlds = Wg3WorldCache::default();
+    let mut cache = Wg3CollisionCache::new();
+    cache.prewarm_for_move(&mut worlds, &m, SERVED_SEED, centre, centre);
+
+    // Se BUSCA un punto macizo en vez de inventarlo: una posición guardada dentro de una pared es
+    // exactamente esto, y hardcodear coordenadas ataría el test a una semilla concreta del plan.
+    let mut atascado = None;
+    'buscar: for dx in -40..=40 {
+        for dz in -40..=40 {
+            let p = Vec3::new(
+                centre.x + dx as f32 * 1.0,
+                centre.y,
+                centre.z + dz as f32 * 1.0,
+            );
+            if cache.blocked_at(p, PLAYER_RADIUS) {
+                atascado = Some(p);
+                break 'buscar;
+            }
+        }
+    }
+    let Some(atascado) = atascado else {
+        println!("[restaurada] sin macizo a 40 m del centro: nada que corregir en esta semilla");
+        return;
+    };
+
+    let Some(corregida) = cache.standable_near_bounded(atascado, true) else {
+        panic!(
+            "una posición restaurada en ({:.1},{:.1}) no encontró salida: el jugador se quedaría \
+             atascado y eso es justo lo que la enmienda evita",
+            atascado.x, atascado.z
+        );
+    };
+    assert!(
+        !cache.blocked_at(corregida, PLAYER_RADIUS),
+        "la corrección dejó al jugador dentro de otra cosa"
+    );
+    println!(
+        "[restaurada] ({:.1},{:.1}) macizo -> ({:.1},{:.2},{:.1})",
+        atascado.x, atascado.z, corregida.x, corregida.y, corregida.z
+    );
+}

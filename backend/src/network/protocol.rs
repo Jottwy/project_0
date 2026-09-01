@@ -541,6 +541,20 @@ pub enum PacketPayload {
         /// 1.0 (no scaling, same as the env var's own default).
         #[serde(default = "default_phantom_density_scale")]
         phantom_density_scale: f32,
+        /// ADR-116 D3 — el punto donde nace este joiner, elegido por el anfitrión.
+        ///
+        /// El anfitrión es el único que sabe cuántos jugadores hay y dónde están, así que es el
+        /// único que puede repartir sin que dos coincidan. El joiner NO lo sortea por su cuenta:
+        /// dos backends con la misma semilla llegarían al mismo punto y el reparto no existiría.
+        ///
+        /// `None` = sin asignación, y entonces el joiner cae al camino de siempre (origen +
+        /// `standable_near`). Es también lo que decodifica un peer anterior a ADR-116, gracias al
+        /// `serde(default)` — mismo patrón que `phantom_density_scale` (P0-2) y
+        /// `room_manifest_digest` (ADR-083 enm. 1): el desajuste de versiones degrada, no rompe.
+        ///
+        /// Va en `[f32; 3]` y no en `Vec3` por lo mismo que el resto de posiciones del protocolo.
+        #[serde(default)]
+        assigned_spawn: Option<[f32; 3]>,
     },
     /// DEPRECADO por ADR-060 (goteo `WorldSyncChunk`/`WorldSyncEnd`). Ningún emisor queda;
     /// el decode se conserva una versión y luego se retira el variant entero.
@@ -1319,6 +1333,8 @@ mod tests {
             anchors: vec![],
             stabilizers: vec![],
             phantom_density_scale: 2.5,
+            // ADR-116: no-default, para que el round-trip pruebe que el reparto sobrevive al cable.
+            assigned_spawn: Some([900.5, 1.8, -450.25]),
         };
         let header = PacketHeader::new(payload.type_code(), 1, 1, 200);
         let data = encode_packet(&header, &payload);
@@ -1329,11 +1345,15 @@ mod tests {
                 world_seed,
                 peers,
                 phantom_density_scale,
+                assigned_spawn,
                 ..
             } => {
                 assert_eq!(assigned_id, 2);
                 assert_eq!(world_seed, 42);
                 assert_eq!(phantom_density_scale, 2.5);
+                // ADR-116: el punto repartido tiene que llegar intacto, o el joiner nace en el
+                // origen y el reparto se pierde sin un solo error.
+                assert_eq!(assigned_spawn, Some([900.5, 1.8, -450.25]));
                 // ADR-079: the non-default value must survive the round trip.
                 assert!(peers[0].relay_only);
             }

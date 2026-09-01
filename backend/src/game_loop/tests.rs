@@ -5297,6 +5297,79 @@ fn spawn_world_chest_gates_dedupes_and_seeds() {
     assert_eq!(world.corpses.len(), 1);
 }
 
+/// ADR-045 enm. 1 E1.1 — el orden de llegada NO puede decidir dónde nace un veterano.
+///
+/// El fallo que evita: la restauración del fichero de jugador no marcaba el spawn como resuelto, y
+/// el bloque de spawn del joiner —que sólo miraba ese booleano— reubicaba al veterano en el origen
+/// cuando el world_sync terminaba DESPUÉS de la restauración. Los dos órdenes eran alcanzables y
+/// ninguno estaba escrito en ningún ADR.
+#[test]
+fn una_posicion_restaurada_gana_al_spawn_del_origen() {
+    // Orden A: llega primero la identidad (restauración), luego termina el world_sync.
+    let mut state = SpawnState::default();
+    assert!(state.claim(SpawnSource::Restored));
+    assert!(
+        state.is_resolved(),
+        "una restauración RESUELVE el spawn: eso es lo que no hacía"
+    );
+    assert!(
+        !state.claim(SpawnSource::Distributed),
+        "el spawn de la sesión no puede pisar una posición guardada"
+    );
+    assert!(!state.claim(SpawnSource::Origin));
+    assert_eq!(state.source(), Some(SpawnSource::Restored));
+}
+
+/// El orden contrario, que es el que ya funcionaba: la restauración llega tarde y aun así manda.
+#[test]
+fn una_posicion_restaurada_tardia_tampoco_se_pisa() {
+    let mut state = SpawnState::default();
+    assert!(state.claim(SpawnSource::Distributed));
+    assert!(
+        state.claim(SpawnSource::Restored),
+        "una restauración prende SIEMPRE, llegue cuando llegue"
+    );
+    assert_eq!(state.source(), Some(SpawnSource::Restored));
+}
+
+/// Y sin restauración de por medio, el reparto gana al origen y nadie lo pisa dos veces.
+#[test]
+fn el_reparto_resuelve_una_sola_vez() {
+    let mut state = SpawnState::default();
+    assert!(state.claim(SpawnSource::Distributed));
+    assert!(!state.claim(SpawnSource::Distributed));
+    assert!(!state.claim(SpawnSource::Origin));
+    assert_eq!(state.source(), Some(SpawnSource::Distributed));
+}
+
+/// ADR-116 D3/D4 — el anfitrión reparte por peer, y el reparto es IDEMPOTENTE.
+///
+/// El fallo que evita: el handshake tiene tres caminos y los tres mandan un `HandshakeAck`. Sin
+/// memoria por peer, un reintento de conexión —lo normal cuando se pierde el primer datagrama—
+/// gastaría una unidad nueva y le diría al mismo jugador dos sitios distintos.
+#[tokio::test]
+async fn el_reparto_del_anfitrion_es_idempotente_por_peer() {
+    use crate::world::spawn_distribution::MIN_PLAYER_SEPARATION_M;
+
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+
+    let a1 = net.assign_spawn_point(7).expect("el peer 7 recibe punto");
+    let a2 = net
+        .assign_spawn_point(7)
+        .expect("y el MISMO punto al reintentar");
+    assert_eq!(a1, a2);
+    assert_eq!(net.next_spawn_unit, 1, "un reintento no gasta otra unidad");
+
+    let b = net.assign_spawn_point(8).expect("el peer 8 recibe el suyo");
+    assert_ne!((a1.x, a1.z), (b.x, b.z));
+    assert!(
+        a1.distance_xz(b) >= MIN_PLAYER_SEPARATION_M,
+        "dos peers a {:.1} m, por debajo del mínimo",
+        a1.distance_xz(b)
+    );
+    assert_eq!(net.next_spawn_unit, 2);
+}
+
 /// ADR-115, la historia entera de un cofre saqueado y el agujero que cierra.
 ///
 /// Antes de esto un cofre VACIADO desaparecía de `world.corpses`, así que la guardia de

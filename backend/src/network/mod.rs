@@ -304,6 +304,22 @@ pub struct NetworkManager {
     /// completo es `play_time_base_seconds + tick / TICK_HZ`; sin la base, cada reinicio contaría
     /// desde cero y una marca de hace dos horas parecería recién puesta.
     pub play_time_base_seconds: u64,
+    /// ADR-116 — qué punto de reparto le tocó a cada unidad de spawn, en el ANFITRIÓN.
+    ///
+    /// Por peer y no una lista suelta porque el handshake tiene tres caminos (peer nuevo,
+    /// duplicado por id, duplicado por endpoint) y los tres construyen el mismo `HandshakeAck`:
+    /// sin memoria por peer, un reintento de conexión gastaría una unidad nueva y movería el punto
+    /// del mismo jugador entre dos paquetes que deberían decir lo mismo.
+    ///
+    /// En memoria: la asignación sólo manda en el PRIMER spawn (D8), y a partir de ahí la posición
+    /// del jugador la guarda su propio fichero (ADR-045).
+    pub assigned_spawns: std::collections::HashMap<PeerId, crate::utils::Vec3>,
+    /// ADR-116 — la siguiente unidad de spawn a repartir. Hoy unidad = jugador; el día que existan
+    /// squads será unidad = squad, y este contador no cambia (D10).
+    pub next_spawn_unit: u32,
+    /// ADR-116 D3 — el punto que el ANFITRIÓN nos asignó, en un joiner. `None` en el anfitrión
+    /// (que se reparte solo, D9) y en un joiner cuyo anfitrión es anterior a ADR-116.
+    pub assigned_spawn_from_host: Option<crate::utils::Vec3>,
     /// ADR-068: the world's sprays, indexed by chunk. It lives beside the STP rosters because
     /// it is the same kind of state — host-authoritative, replicated, persisted — but it is
     /// NOT relayed per tick: sprays hydrate with the chunk (`GridChunkData::sprays`) and a new
@@ -562,6 +578,9 @@ impl NetworkManager {
             loot_marks: crate::world::loot_marks::LootMarkStore::new(),
             seen_chest_chunks: std::collections::HashSet::new(),
             play_time_base_seconds: 0,
+            assigned_spawns: std::collections::HashMap::new(),
+            next_spawn_unit: 0,
+            assigned_spawn_from_host: None,
             sprays: crate::world::spray::SprayStore::new(),
             processed_spray_places: BoundedDedupeSet::with_capacity(DEDUPE_CAP),
             requested_spray_chunks: std::collections::HashSet::with_capacity(128),

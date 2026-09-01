@@ -367,6 +367,87 @@ fn world_now_seconds(base_play_time_seconds: u64, tick: u64) -> u64 {
     base_play_time_seconds.saturating_add(tick / TICK_HZ)
 }
 
+/// De dónde salió la posición inicial de un jugador. ADR-045 enm. 1 E1.1 ordena estas fuentes:
+/// **restaurada > repartida > origen**.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SpawnSource {
+    /// Del save de mundo (anfitrión) o del fichero de jugador (cualquiera). Gana siempre.
+    Restored,
+    /// Repartida por el anfitrión (ADR-116).
+    Distributed,
+    /// El punto fijo de siempre: centro del chunk (0,0).
+    Origin,
+}
+
+/// ADR-045 enm. 1 E1.1 — quién ganó la posición inicial, y quién puede pisarla.
+///
+/// Era un `bool` (`spawn_resolved`) y por eso el fallo existía: la restauración del fichero de
+/// jugador no lo marcaba, así que el bloque de spawn del joiner —que sólo preguntaba por el
+/// booleano— reubicaba al veterano en el origen si el world_sync terminaba después. Con la fuente
+/// escrita, la precedencia deja de depender del ORDEN DE LLEGADA de dos mensajes de red.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct SpawnState {
+    source: Option<SpawnSource>,
+}
+
+impl SpawnState {
+    pub(crate) fn is_resolved(&self) -> bool {
+        self.source.is_some()
+    }
+
+    pub(crate) fn source(&self) -> Option<SpawnSource> {
+        self.source
+    }
+
+    /// Reclama la posición inicial para `source`. Devuelve si la reclamación PRENDE.
+    ///
+    /// Una restauración prende siempre, incluso sobre una posición ya resuelta: llegue antes o
+    /// después que el spawn de la sesión, la posición guardada es la que manda. Lo demás sólo
+    /// prende sobre un hueco.
+    pub(crate) fn claim(&mut self, source: SpawnSource) -> bool {
+        match (self.source, source) {
+            (_, SpawnSource::Restored) => {
+                self.source = Some(SpawnSource::Restored);
+                true
+            }
+            (None, s) => {
+                self.source = Some(s);
+                true
+            }
+            (Some(_), _) => false,
+        }
+    }
+}
+
+/// ADR-116 D6 / ADR-045 enm. 1 E1.2 — baja un punto al suelo de WG3, conservando planta.
+///
+/// Un único sitio para las CUATRO entradas que existen (spawn del anfitrión, spawn del joiner,
+/// posición restaurada del save de mundo y posición restaurada del fichero de jugador), porque las
+/// cuatro se equivocaban de la misma manera: con el movimiento resuelto por el ráster, un punto que
+/// cae en macizo no deja al jugador flotando, lo deja ATASCADO.
+///
+/// `same_storey` va siempre a `true` en los llamadores de hoy: un veterano que guardó en la planta
+/// 2 no puede reaparecer en la baja, y un spawn repartido debe nacer en la planta que se le asignó.
+///
+/// `None` = WG3 apagado, o no hay sitio de pie en 24 m. **No se inventa un sitio** (ADR-106): quien
+/// llama decide, y las dos respuestas legítimas están en el ADR — conservar la posición (una
+/// restauración) o caer al origen (un reparto, D7).
+fn snap_to_wg3_floor(
+    wg3: &crate::world::wg3::config::Wg3Config,
+    wg3_collision: &mut crate::world::wg3::collision::Wg3CollisionCache,
+    wg3_world: &mut crate::world::wg3::world::Wg3WorldCache,
+    world_seed: u64,
+    preferred: Vec3,
+    same_storey: bool,
+) -> Option<Vec3> {
+    let manifest = wg3.manifest()?;
+    if !wg3.is_enabled() {
+        return None;
+    }
+    wg3_collision.prewarm_for_move(wg3_world, manifest, world_seed, preferred, preferred);
+    wg3_collision.standable_near_bounded(preferred, same_storey)
+}
+
 /// Re-siembra los cuatro asignadores de id de proceso desde los rosters recién cargados.
 /// Devuelve `(drop, building, carryable, group)` ya almacenados, solo para el log.
 ///
@@ -795,7 +876,7 @@ pub async fn run(
     // `spawn_resolved` tracks whether the player has been placed on a validated
     // safe cell yet. The host resolves immediately after generation; a joiner
     // resolves once it has connected and received the host's world.
-    let mut spawn_resolved = false;
+    let mut spawn_state = SpawnState::default();
     if net.is_host {
         world.generate_initial_structures(player.id);
 
@@ -803,7 +884,25 @@ pub async fn run(
             // ADR-032: hydrate persisted state over the freshly-generated deterministic world and
             // KEEP the persisted player position (skip the resolve_safe_spawn override below).
             hydrate_from_save(&mut world, &mut player, &mut net, save);
-            spawn_resolved = true;
+            spawn_state.claim(SpawnSource::Restored);
+            // ADR-045 enm. 1 E1.2 — la posición del save de mundo tampoco pasaba por el ráster.
+            // Con WG3 mandando, aparecer dentro de un macizo no deja flotando: deja ATASCADO.
+            if let Some(p) = snap_to_wg3_floor(
+                &wg3,
+                &mut wg3_collision,
+                &mut wg3_world,
+                net.world_seed,
+                player.position,
+                true,
+            ) {
+                if p != player.position {
+                    info!(
+                        "ADR-045 enm. 1: posición del save ajustada al suelo de WG3 ({:.2},{:.2},{:.2}) -> ({:.2},{:.2},{:.2})",
+                        player.position.x, player.position.y, player.position.z, p.x, p.y, p.z
+                    );
+                }
+                player.position = p;
+            }
             pending_restore_snap = true;
             // ADR-045 Fase 2 fix: see the doc comment on `movement_suppressed_until` above —
             // `tick` is 0 here (before the loop's first iteration), so this protects ticks
@@ -817,44 +916,79 @@ pub async fn run(
             // primero contra su rejilla y luego se corregía; ahora esa rejilla ya no se genera, así
             // que `find_safe_spawn` no encontraría nada y `repair_starter_spawn` acabaría tallando
             // una celda segura en un chunk vacío para tirarla dos líneas después.
+            // ADR-116 D9 — el anfitrión también se reparte: es un jugador, y si no lo hiciera
+            // «repartido» sería mentira en el caso más frecuente, que es la partida en solitario.
+            // Toma la primera unidad, con la lista de ocupados vacía porque todavía no hay nadie.
+            let assigned = net.assign_spawn_point(net.local_id);
             if !wg3.is_enabled() {
                 let res = resolve_safe_spawn(&mut world, preferred_spawn());
                 player.position = res.position;
             } else {
-                player.position = preferred_spawn();
+                player.position = assigned.unwrap_or_else(preferred_spawn);
             }
             // ADR-106 — **y con WG3 mandando, el spawn de WG2 no vale.** Resuelve contra otra
             // rejilla, así que una celda que él da por buena puede tener macizo aquí; y con el
             // movimiento ya resuelto por el ráster, eso no deja al jugador flotando: lo deja
             // ATASCADO. Si no hay nada habitable cerca **no se inventa un sitio** y se conserva el
             // punto preferido, que al menos es el comportamiento conocido.
-            if let (Some(manifest), true) = (wg3.manifest(), wg3.is_enabled()) {
-                wg3_collision.prewarm_for_move(
+            if wg3.is_enabled() {
+                let preferred = player.position;
+                match snap_to_wg3_floor(
+                    &wg3,
+                    &mut wg3_collision,
                     &mut wg3_world,
-                    manifest,
                     net.world_seed,
-                    player.position,
-                    player.position,
-                );
-                match wg3_collision.standable_near(player.position) {
+                    preferred,
+                    true,
+                ) {
                     Some(p) => {
                         info!(
-                            "[wg3] spawn reubicado por ADR-106: ({:.2},{:.2},{:.2}) ->                              ({:.2},{:.2},{:.2})",
-                            player.position.x,
-                            player.position.y,
-                            player.position.z,
-                            p.x,
-                            p.y,
-                            p.z
+                            "[wg3] spawn reubicado por ADR-106: ({:.2},{:.2},{:.2}) -> ({:.2},{:.2},{:.2})",
+                            preferred.x, preferred.y, preferred.z, p.x, p.y, p.z
                         );
                         player.position = p;
                     }
-                    None => log::warn!(
-                        "[wg3] sin sitio de pie a menos de 24 m del spawn — se conserva el de WG2,                          y el jugador puede aparecer atascado"
+                    // ADR-116 D7 — sin sitio de pie donde le tocaba, el anfitrión cae al spawn del
+                    // origen. Aviso y no error: es el comportamiento conocido y nunca impide jugar.
+                    None if assigned.is_some() => {
+                        let origin = preferred_spawn();
+                        let fallback = snap_to_wg3_floor(
+                            &wg3,
+                            &mut wg3_collision,
+                            &mut wg3_world,
+                            net.world_seed,
+                            origin,
+                            false,
+                        )
+                        .unwrap_or(origin);
+                        warn!(
+                            "ADR-116 D7: el punto repartido ({:.1},{:.1},{:.1}) no tiene sitio de pie; \
+                             se cae al spawn del origen",
+                            preferred.x, preferred.y, preferred.z
+                        );
+                        player.position = fallback;
+                    }
+                    None => warn!(
+                        "[wg3] sin sitio de pie a menos de 24 m del spawn — se conserva el punto \
+                         preferido, y el jugador puede aparecer atascado"
                     ),
                 }
             }
-            spawn_resolved = true;
+            spawn_state.claim(match assigned {
+                Some(_) => SpawnSource::Distributed,
+                None => SpawnSource::Origin,
+            });
+            // ADR-116 — **y hay que DECÍRSELO a Unity.** Sin esto el reparto no existe para el
+            // jugador: su cliente pone el personaje en el spawn de la escena y el movimiento es
+            // suyo (ADR-009), así que el punto repartido se quedaría siendo una cifra en el log
+            // mientras los dos mundos divergen. Se reutiliza el snap diferido de ADR-032 tal cual:
+            // su consumidor (`AuthoritativePoseApplier`) sólo pega al jugador local a una posición,
+            // y `RespawnRequester` ignora este tipo a propósito — que es exactamente lo que hace
+            // falta aquí. Cero cambios en el cliente.
+            if assigned.is_some() {
+                pending_restore_snap = true;
+                movement_suppressed_until = Some(tick + RESTORE_SNAP_SUPPRESS_TICKS);
+            }
             // Reload ownership around the validated spawn so the streamed radius is
             // centred on where the player actually stands.
             world.update_ownership(player.position, player.id);
@@ -1593,6 +1727,36 @@ pub async fn run(
                                 {
                                     apply_player_snapshot(&mut player, file.snapshot);
                                     revive_if_dead_on_load(&mut player, &mut world);
+                                    // ADR-045 enm. 1 E1.1 — LA POSICIÓN PERSISTIDA GANA. Sin esta
+                                    // línea, el bloque de spawn del joiner (que sólo mira
+                                    // `!spawn_resolved`) reubicaba al veterano en el origen si el
+                                    // world_sync terminaba después de esta restauración. Los dos
+                                    // órdenes eran alcanzables y ninguno estaba escrito.
+                                    spawn_state.claim(SpawnSource::Restored);
+                                    // E1.2 — y la posición restaurada se baja al suelo de WG3
+                                    // conservando planta. Sin sitio de pie se conserva la guardada,
+                                    // que es el criterio de ADR-106: no se inventa un sitio.
+                                    if let Some(p) = snap_to_wg3_floor(
+                                        &wg3,
+                                        &mut wg3_collision,
+                                        &mut wg3_world,
+                                        net.world_seed,
+                                        player.position,
+                                        true,
+                                    ) {
+                                        if p != player.position {
+                                            info!(
+                                                "ADR-045 enm. 1: posición restaurada ajustada al suelo de WG3 ({:.2},{:.2},{:.2}) -> ({:.2},{:.2},{:.2})",
+                                                player.position.x,
+                                                player.position.y,
+                                                player.position.z,
+                                                p.x,
+                                                p.y,
+                                                p.z
+                                            );
+                                        }
+                                        player.position = p;
+                                    }
                                     pending_restore_snap = true;
                                     // ADR-045 Fase 2 fix: see the doc comment on
                                     // `movement_suppressed_until` above — armed HERE, not at
@@ -1645,29 +1809,69 @@ pub async fn run(
         // (`resolve_safe_spawn` buscaría celda segura entre los chunks que hubieran llegado).
         // La condición es la completitud del goteo: `WorldSyncEnd` recibido Y todos sus chunks
         // aplicados. El monolito deprecado la marca completa de una vez (`note_monolith`).
-        if !spawn_resolved && net.real_peer_count() > 0 && net.world_sync_progress.is_complete() {
+        if !spawn_state.is_resolved()
+            && net.real_peer_count() > 0
+            && net.world_sync_progress.is_complete()
+        {
             // ADR-109 etapa 1 — el que se une va por el mismo camino que el anfitrión. Los chunks
             // que le llegan por el goteo son contenedores vacíos con WG3 mandando, así que
             // preguntarle a `resolve_safe_spawn` le daría la esquina del origen y a menudo dentro de
             // un macizo.
             match (wg3.manifest(), wg3.is_enabled()) {
-                (Some(manifest), true) => {
-                    let preferred = preferred_spawn();
-                    wg3_collision.prewarm_for_move(
+                (Some(_), true) => {
+                    // ADR-116 D3 — el punto lo reparte el ANFITRIÓN y llega en el `HandshakeAck`.
+                    // Sortearlo aquí no valdría: dos backends con la misma semilla llegarían al
+                    // mismo sitio y no habría reparto. `None` = anfitrión anterior a ADR-116 o
+                    // candidatos agotados, y entonces se nace en el origen, como siempre.
+                    let assigned = net.assigned_spawn_from_host;
+                    let preferred = assigned.unwrap_or_else(preferred_spawn);
+                    let placed = snap_to_wg3_floor(
+                        &wg3,
+                        &mut wg3_collision,
                         &mut wg3_world,
-                        manifest,
                         net.world_seed,
                         preferred,
-                        preferred,
+                        true,
                     );
-                    player.position = wg3_collision.standable_near(preferred).unwrap_or(preferred);
+                    player.position = match (placed, assigned) {
+                        (Some(p), _) => p,
+                        // ADR-116 D7: repartido pero sin sitio de pie → spawn del origen, con aviso.
+                        (None, Some(_)) => {
+                            warn!(
+                                "ADR-116 D7: el punto repartido ({:.1},{:.1},{:.1}) no tiene sitio \
+                                 de pie; se cae al spawn del origen",
+                                preferred.x, preferred.y, preferred.z
+                            );
+                            let origin = preferred_spawn();
+                            snap_to_wg3_floor(
+                                &wg3,
+                                &mut wg3_collision,
+                                &mut wg3_world,
+                                net.world_seed,
+                                origin,
+                                false,
+                            )
+                            .unwrap_or(origin)
+                        }
+                        (None, None) => preferred,
+                    };
                 }
                 _ => {
                     let res = resolve_safe_spawn(&mut world, preferred_spawn());
                     player.position = res.position;
                 }
             }
-            spawn_resolved = true;
+            spawn_state.claim(match net.assigned_spawn_from_host {
+                Some(_) => SpawnSource::Distributed,
+                None => SpawnSource::Origin,
+            });
+            // ADR-116 — mismo snap que en el anfitrión, y por el mismo motivo: sin él el joiner
+            // sigue viendo su personaje en el spawn de la escena mientras el backend lo tiene a
+            // kilómetros. Ver el comentario largo en la rama del anfitrión.
+            if net.assigned_spawn_from_host.is_some() {
+                pending_restore_snap = true;
+                movement_suppressed_until = Some(tick + RESTORE_SNAP_SUPPRESS_TICKS);
+            }
         }
 
         // ADR-014: drain reserved pickups whose juicy-frame delay elapsed → remove the item now

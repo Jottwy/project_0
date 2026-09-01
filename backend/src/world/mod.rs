@@ -18,6 +18,8 @@ pub mod levels;
 pub mod loot_marks;
 /// ADR-043 — deterministic, lazy draw of where the world's robapieles live.
 pub mod phantom_spawn;
+/// ADR-116 — dónde nace cada jugador cuando el mundo los reparte.
+pub mod spawn_distribution;
 /// ADR-068 — pintadas de spray, ancladas al chunk y no a coordenadas globales.
 pub mod spray;
 pub mod volumetric_grid;

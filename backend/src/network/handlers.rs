@@ -195,6 +195,7 @@ impl NetworkManager {
                 anchors: _,
                 stabilizers: _,
                 phantom_density_scale,
+                assigned_spawn,
             } => self.handle_handshake_ack(
                 pkt.addr,
                 sender_id,
@@ -202,6 +203,7 @@ impl NetworkManager {
                 world_seed,
                 peers,
                 phantom_density_scale,
+                assigned_spawn,
             ),
 
             PacketPayload::Heartbeat => {
@@ -1142,6 +1144,11 @@ impl NetworkManager {
             self.peer_ids()
         );
 
+        // ADR-116 D3 — el reparto se decide AQUÍ, antes de construir el ack, porque construirlo es
+        // `&self`. Un `None` no es un error: significa candidatos agotados (D7) y el joiner nacerá
+        // en el origen, que es el comportamiento de siempre.
+        let _ = self.assign_spawn_point(assigned_id);
+
         // Send HandshakeAck with world info.
         self.send_handshake_ack(from_addr, sender_id, assigned_id)
             .await;
@@ -1152,6 +1159,10 @@ impl NetworkManager {
         })
     }
 
+    // El octavo argumento es el punto repartido de ADR-116. Son los campos del `HandshakeAck`
+    // desestructurado uno a uno, que es lo que hace legible el sitio de llamada; agruparlos en un
+    // struct sería inventar un tipo para callar a clippy sobre un desempaquetado del protocolo.
+    #[allow(clippy::too_many_arguments)]
     fn handle_handshake_ack(
         &mut self,
         from_addr: SocketAddr,
@@ -1160,9 +1171,21 @@ impl NetworkManager {
         world_seed: u64,
         peers: Vec<PeerInfo>,
         phantom_density_scale: f32,
+        assigned_spawn: Option<[f32; 3]>,
     ) -> Option<NetworkEvent> {
         if self.is_host {
             return None; // Host doesn't receive handshake acks.
+        }
+
+        // ADR-116 D3 — el punto que nos repartió el anfitrión. Se guarda tal cual: bajarlo al
+        // suelo es trabajo de `run()`, que es donde vive el ráster de WG3 (D6). `None` = anfitrión
+        // anterior a ADR-116 o candidatos agotados; en los dos casos se cae al origen (D7).
+        self.assigned_spawn_from_host = assigned_spawn.map(crate::utils::Vec3::from_array);
+        if let Some(p) = self.assigned_spawn_from_host {
+            info!(
+                "ADR-116: el anfitrión reparte a este cliente en ({:.1},{:.1},{:.1})",
+                p.x, p.y, p.z
+            );
         }
 
         info!(
@@ -1281,6 +1304,58 @@ impl NetworkManager {
         endpoints
     }
 
+    /// ADR-116 D3/D4 — el punto de reparto de un peer, elegido una sola vez y recordado.
+    ///
+    /// **Idempotente por peer**: el handshake tiene tres caminos (peer nuevo, duplicado por id,
+    /// duplicado por endpoint) y los tres mandan un `HandshakeAck`. Sin esta memoria, un reintento
+    /// de conexión —que es lo normal cuando se pierde el primer datagrama— gastaría una unidad
+    /// nueva y le diría al mismo jugador dos sitios distintos.
+    ///
+    /// Lo ocupado son los puntos YA repartidos más las posiciones de los peers vivos. Las dos
+    /// cosas: un jugador restaurado de su fichero está donde nadie lo sorteó (D8), así que no
+    /// aparece en la primera lista y tiene que aparecer en la segunda.
+    ///
+    /// `None` = no quedaban candidatos válidos; el joiner aplicará el fallback de D7 por su cuenta.
+    pub fn assign_spawn_point(&mut self, peer: PeerId) -> Option<crate::utils::Vec3> {
+        if let Some(p) = self.assigned_spawns.get(&peer) {
+            return Some(*p);
+        }
+
+        let mut occupied: Vec<crate::utils::Vec3> =
+            self.assigned_spawns.values().copied().collect();
+        occupied.extend(
+            self.peers
+                .values()
+                .filter(|p| !self.is_phantom(p.id) && !p.relay_only)
+                .map(|p| crate::utils::Vec3::from_array(p.position)),
+        );
+
+        let unit = self.next_spawn_unit;
+        let chosen =
+            crate::world::spawn_distribution::choose_spawn(self.world_seed, unit, &occupied);
+        match chosen {
+            Some(p) => {
+                self.next_spawn_unit = unit.saturating_add(1);
+                self.assigned_spawns.insert(peer, p);
+                info!(
+                    "ADR-116: unidad {} -> peer {} en ({:.1},{:.1},{:.1})",
+                    unit, peer, p.x, p.y, p.z
+                );
+                Some(p)
+            }
+            None => {
+                // La unidad se gasta igual: si no se gastara, el siguiente en entrar volvería a
+                // probar la misma secuencia agotada y todos acabarían en el origen a la vez.
+                self.next_spawn_unit = unit.saturating_add(1);
+                warn!(
+                    "ADR-116 D7: sin candidato válido para el peer {peer} (unidad {unit}); \
+                     nacerá en el spawn del origen"
+                );
+                None
+            }
+        }
+    }
+
     /// Build the `HandshakeAck` payload for `assigned_id` from the current peer table.
     /// Single source for the three handshake paths (new peer / duplicate by id / duplicate by
     /// endpoint), which previously carried byte-identical copies of this block.
@@ -1314,6 +1389,10 @@ impl NetworkManager {
             anchors: vec![],
             stabilizers: vec![],
             phantom_density_scale: self.phantom_density_scale,
+            // ADR-116 D3. Se LEE aquí y se ELIGE en `handle_handshake`, porque construir el ack es
+            // `&self`: así los tres caminos del handshake (nuevo, duplicado por id, duplicado por
+            // endpoint) mandan el MISMO punto en vez de sortear uno por datagrama.
+            assigned_spawn: self.assigned_spawns.get(&assigned_id).map(|p| p.to_array()),
         };
         self.trim_handshake_ack(ack)
     }
@@ -1354,6 +1433,7 @@ impl NetworkManager {
             anchors,
             stabilizers,
             phantom_density_scale,
+            assigned_spawn,
         } = ack
         else {
             return ack;
@@ -1369,6 +1449,10 @@ impl NetworkManager {
                 anchors: anchors.clone(),
                 stabilizers: stabilizers.clone(),
                 phantom_density_scale,
+                // ADR-116: el recorte se lleva PEERS, nunca el reparto. Sin punto, el joiner
+                // nacería en el origen y el reparto se perdería justo en la sesión llena, que es
+                // cuando más falta hace.
+                assigned_spawn,
             };
             if wire(&probe) <= budget {
                 warn!(
@@ -1393,6 +1477,7 @@ impl NetworkManager {
             anchors,
             stabilizers,
             phantom_density_scale,
+            assigned_spawn,
         };
         log::error!(
             "MTUPROBE event=handshake_ack_exceeds_budget_bare self_id={} assigned_id={} bytes={} budget={budget}",
