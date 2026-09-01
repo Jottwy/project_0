@@ -27,7 +27,7 @@ fn manifest_path() -> PathBuf {
         .join("wg3_manifest.json")
 }
 
-fn real_manifest() -> Wg3Manifest {
+pub(crate) fn real_manifest() -> Wg3Manifest {
     let path = manifest_path();
     let text = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("no se pudo leer {}: {e}", path.display()));
@@ -1168,7 +1168,7 @@ use super::world::{
 
 /// Semilla de las pruebas del mundo servido. Es la del oráculo con los 32 bits altos puestos: así
 /// el test también ejercita `composer_seed`, que se queda con los bajos.
-const SERVED_SEED: u64 = 0xDEAD_BEEF_0000_002A;
+pub(crate) const SERVED_SEED: u64 = 0xDEAD_BEEF_0000_002A;
 
 /// LO QUE EL ANDAMIO NO PODÍA ROMPER Y ESTO SÍ.
 ///

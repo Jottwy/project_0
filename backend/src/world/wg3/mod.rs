@@ -30,5 +30,7 @@ pub mod scale;
 pub mod segment;
 pub mod world;
 
+// `pub(crate)` para que las pruebas del bucle de juego (ADR-045 enm. 2) monten el mismo mundo servido
+// —manifiesto real y semilla servida— sin duplicar el cargador.
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

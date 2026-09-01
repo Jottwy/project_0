@@ -542,13 +542,28 @@ fn apply_player_snapshot(player: &mut Player, snap: crate::persistence::save::Pl
 /// invulnerability window (tick-relative, meaningless across a restart — see
 /// `apply_player_snapshot`). Done at LOAD, not at save time, so saves that already contain a
 /// dead player are healed too.
-fn revive_if_dead_on_load(player: &mut Player, world: &mut World) {
+fn revive_if_dead_on_load(
+    player: &mut Player,
+    world: &mut World,
+    wg3: &crate::world::wg3::config::Wg3Config,
+    wg3_collision: &mut crate::world::wg3::collision::Wg3CollisionCache,
+    wg3_world: &mut crate::world::wg3::world::Wg3WorldCache,
+    world_seed: u64,
+) {
     if !player.stats.is_dead() {
         return;
     }
     player.stats = crate::player::stats::PlayerStats::on_respawn(&player.stats);
-    let res = resolve_respawn(world, player.respawn_point, player.id);
-    player.position = res.position;
+    // ADR-045 enm. 2 E2.2 — la misma resolución que `respawn_request`: sobre WG3 si manda.
+    player.position = resolve_respawn_position(
+        world,
+        wg3,
+        wg3_collision,
+        wg3_world,
+        world_seed,
+        player.respawn_point,
+        player.id,
+    );
     world.update_ownership(player.position, player.id);
     info!(
         "MPTRACE step=RESPAWN event=dead_save_revived_on_load pos=({:.2},{:.2},{:.2})",
@@ -572,6 +587,10 @@ fn hydrate_from_save(
     player: &mut Player,
     net: &mut NetworkManager,
     save: crate::persistence::save::SaveFile,
+    // ADR-045 enm. 2 — un save muerto revive por el mismo resolutor que `respawn_request`.
+    wg3: &crate::world::wg3::config::Wg3Config,
+    wg3_collision: &mut crate::world::wg3::collision::Wg3CollisionCache,
+    wg3_world: &mut crate::world::wg3::world::Wg3WorldCache,
 ) {
     world.corpses.clear();
     for c in save.corpses {
@@ -633,7 +652,7 @@ fn hydrate_from_save(
 
     if let Some(p) = save.host_player {
         apply_player_snapshot(player, p);
-        revive_if_dead_on_load(player, world);
+        revive_if_dead_on_load(player, world, wg3, wg3_collision, wg3_world, net.world_seed);
     }
 
     if loaded_marks != net.loot_marks.len() {
@@ -883,7 +902,15 @@ pub async fn run(
         if let Some(save) = loaded_save.take() {
             // ADR-032: hydrate persisted state over the freshly-generated deterministic world and
             // KEEP the persisted player position (skip the resolve_safe_spawn override below).
-            hydrate_from_save(&mut world, &mut player, &mut net, save);
+            hydrate_from_save(
+                &mut world,
+                &mut player,
+                &mut net,
+                save,
+                &wg3,
+                &mut wg3_collision,
+                &mut wg3_world,
+            );
             spawn_state.claim(SpawnSource::Restored);
             // ADR-045 enm. 1 E1.2 — la posición del save de mundo tampoco pasaba por el ráster.
             // Con WG3 mandando, aparecer dentro de un macizo no deja flotando: deja ATASCADO.
@@ -1166,6 +1193,7 @@ pub async fn run(
                         tick,
                         &wg3,
                         &mut wg3_world,
+                        &mut wg3_collision,
                     )
                     .await;
                 }
@@ -1726,7 +1754,14 @@ pub async fn run(
                                     crate::persistence::player_save::load_or_fresh(&path)
                                 {
                                     apply_player_snapshot(&mut player, file.snapshot);
-                                    revive_if_dead_on_load(&mut player, &mut world);
+                                    revive_if_dead_on_load(
+                                        &mut player,
+                                        &mut world,
+                                        &wg3,
+                                        &mut wg3_collision,
+                                        &mut wg3_world,
+                                        net.world_seed,
+                                    );
                                     // ADR-045 enm. 1 E1.1 — LA POSICIÓN PERSISTIDA GANA. Sin esta
                                     // línea, el bloque de spawn del joiner (que sólo mira
                                     // `!spawn_resolved`) reubicaba al veterano en el origen si el
@@ -4450,6 +4485,87 @@ fn resolve_respawn(
     res
 }
 
+/// ADR-045 enm. 2 — tolerancia con la que se acepta que la cama DESCANSA sobre el suelo que el
+/// ráster encuentra bajo ella. Es el escalón que el propio ráster admite al buscar suelo. Una cama
+/// cuya cota difiera más de eso del suelo hallado está en el aire o dentro de un macizo, y entonces
+/// la planta se toma de la cota de la cama, no de un suelo que puede ser de otra planta.
+const BED_FLOOR_TOLERANCE_M: f32 = 0.30;
+
+/// ADR-045 enm. 2 E2.1 — el respawn tras morir, resuelto sobre WG3. `None` = WG3 apagado.
+///
+/// Con WG3 mandando, `resolve_respawn` lee layouts de WG2 que son contenedores vacíos con TODO
+/// andable (`empty_chunk_container`), así que cualquier celda vale y nadie pregunta al ráster: una
+/// cama en la planta 2 devolvía a la baja debajo de ella, y el origen podía caer en macizo. Aquí la
+/// cama pasa por `standable_near_bounded` conservando planta, y sin cama —o sin sitio de pie a 24 m
+/// de ella— se cae al punto de partida, que es el fallback de ADR-116 D7. No se inventa un sitio.
+fn resolve_respawn_wg3(
+    wg3: &crate::world::wg3::config::Wg3Config,
+    wg3_collision: &mut crate::world::wg3::collision::Wg3CollisionCache,
+    wg3_world: &mut crate::world::wg3::world::Wg3WorldCache,
+    world_seed: u64,
+    respawn_point: Option<Vec3>,
+) -> Option<Vec3> {
+    use crate::world::wg3::collision::PLAYER_BODY_M;
+
+    let manifest = wg3.manifest()?;
+    if !wg3.is_enabled() {
+        return None;
+    }
+    if let Some(bed) = respawn_point {
+        // La cama guarda la posición de la PIEZA, a ras de suelo (ADR-031); el ráster habla en cota
+        // de cuerpo. Se sube el cuerpo y se comprueba que la cama descansa sobre el suelo que hay
+        // debajo: si no lo hace, la planta se toma de la cota de la cama.
+        let body = Vec3::new(bed.x, bed.y + PLAYER_BODY_M, bed.z);
+        wg3_collision.prewarm_for_move(wg3_world, manifest, world_seed, body, body);
+        let resting = wg3_collision.floor_y(body);
+        let anchor = if (resting - body.y).abs() <= BED_FLOOR_TOLERANCE_M {
+            Vec3::new(body.x, resting, body.z)
+        } else {
+            body
+        };
+        if let Some(p) = wg3_collision.standable_near_bounded(anchor, true) {
+            if p.distance_xz(anchor) > 0.01 {
+                info!(
+                    "MPTRACE step=RESPAWN event=bed_corrected_to_standing_room bed=({:.2},{:.2},{:.2}) pos=({:.2},{:.2},{:.2})",
+                    bed.x, bed.y, bed.z, p.x, p.y, p.z
+                );
+            }
+            return Some(p);
+        }
+        warn!(
+            "MPTRACE step=RESPAWN event=bed_without_standing_room bed=({:.2},{:.2},{:.2}) fallback=origin",
+            bed.x, bed.y, bed.z
+        );
+    }
+    let origin = preferred_spawn();
+    let placed = snap_to_wg3_floor(wg3, wg3_collision, wg3_world, world_seed, origin, false);
+    if placed.is_none() {
+        warn!(
+            "MPTRACE step=RESPAWN event=origin_without_standing_room pos=({:.2},{:.2},{:.2})",
+            origin.x, origin.y, origin.z
+        );
+    }
+    Some(placed.unwrap_or(origin))
+}
+
+/// ADR-045 enm. 2 E2.2 — la posición de reaparición, decidida por el mundo que manda. Un único
+/// punto para las dos rutas que reviven (`respawn_request` y el save muerto al cargar): con WG3
+/// apagado es el resolutor de ADR-031 byte a byte.
+fn resolve_respawn_position(
+    world: &mut World,
+    wg3: &crate::world::wg3::config::Wg3Config,
+    wg3_collision: &mut crate::world::wg3::collision::Wg3CollisionCache,
+    wg3_world: &mut crate::world::wg3::world::Wg3WorldCache,
+    world_seed: u64,
+    respawn_point: Option<Vec3>,
+    player_id: PeerId,
+) -> Vec3 {
+    match resolve_respawn_wg3(wg3, wg3_collision, wg3_world, world_seed, respawn_point) {
+        Some(p) => p,
+        None => resolve_respawn(world, respawn_point, player_id).position,
+    }
+}
+
 /// ADR-009 Option B: apply the client's authoritative-pose input and return the
 /// accepted `input_seq` (`None` when the speed cap rejected the move). The legacy
 /// direction-integration path was removed with the `input_seq` gate — `input_seq`
@@ -4600,6 +4716,8 @@ async fn handle_action(
     // ADR-108 D6 — igual que en `handle_network_event`: el host coloca por aquí.
     wg3: &crate::world::wg3::config::Wg3Config,
     wg3_world: &mut crate::world::wg3::world::Wg3WorldCache,
+    // ADR-045 enm. 2 — el respawn tras morir pregunta al ráster.
+    wg3_collision: &mut crate::world::wg3::collision::Wg3CollisionCache,
 ) {
     match action.action_type.as_str() {
         // ADR-025 Slice B: the client reports REAL local damage (falls, hazards — its
@@ -4767,8 +4885,16 @@ async fn handle_action(
                 player.death_loot_reported = false;
                 // ADR-031: respawn at the player's bed if they placed one, else the fixed starter
                 // spawn (extracted to resolve_respawn so the selection logic is unit-testable).
-                let res = resolve_respawn(world, player.respawn_point, player.id);
-                player.position = res.position;
+                // ADR-045 enm. 2 — y sobre el ráster de WG3 cuando WG3 manda.
+                player.position = resolve_respawn_position(
+                    world,
+                    wg3,
+                    wg3_collision,
+                    wg3_world,
+                    net.world_seed,
+                    player.respawn_point,
+                    player.id,
+                );
                 info!(
                     "MPTRACE step=RESPAWN event=respawn_request_honored pos=({:.2},{:.2},{:.2})",
                     player.position.x, player.position.y, player.position.z

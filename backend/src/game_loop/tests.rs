@@ -17,6 +17,11 @@ fn wg3_cache() -> crate::world::wg3::world::Wg3WorldCache {
     crate::world::wg3::world::Wg3WorldCache::default()
 }
 
+/// ADR-045 enm. 2 — el ráster de colisión, vacío: con WG3 apagado nadie lo consulta.
+fn wg3_collision() -> crate::world::wg3::collision::Wg3CollisionCache {
+    crate::world::wg3::collision::Wg3CollisionCache::new()
+}
+
 /// Sin re-siembra, tras cargar una partida los cuatro asignadores arrancan en su base y el
 /// primer `place` reacuña un id que YA existe en el roster. Como `process_stp_demolish`
 /// resuelve por `position(|b| b.id == …)`, demoler la pieza nueva borra la VIEJA.
@@ -161,7 +166,15 @@ async fn hydrate_rederives_the_occupied_cell_set_for_group_pieces_only() {
 
     let mut save = SaveFile::new(String::from("test"), 42u64);
     save.stp_buildings = vec![grouped, free];
-    hydrate_from_save(&mut world, &mut player, &mut net, save);
+    hydrate_from_save(
+        &mut world,
+        &mut player,
+        &mut net,
+        save,
+        &wg3_off(),
+        &mut wg3_collision(),
+        &mut wg3_cache(),
+    );
 
     assert!(
         net.occupied_stp_cells.contains(&expected_cell),
@@ -202,7 +215,15 @@ async fn hydrate_clears_the_absolute_invulnerability_tick() {
         &[],
         &[],
     );
-    hydrate_from_save(&mut world, &mut player, &mut net, save);
+    hydrate_from_save(
+        &mut world,
+        &mut player,
+        &mut net,
+        save,
+        &wg3_off(),
+        &mut wg3_collision(),
+        &mut wg3_cache(),
+    );
 
     assert_eq!(
         player.stats.invuln_until_tick, 0,
@@ -843,6 +864,7 @@ async fn report_inventory_updates_player_stp_inventory_with_hygiene() {
         0,
         &wg3_off(),
         &mut wg3_cache(),
+        &mut wg3_collision(),
     )
     .await;
 
@@ -875,6 +897,7 @@ async fn report_inventory_updates_player_stp_inventory_with_hygiene() {
         0,
         &wg3_off(),
         &mut wg3_cache(),
+        &mut wg3_collision(),
     )
     .await;
     assert_eq!(player.stp_inventory.len(), 1);
@@ -918,6 +941,7 @@ async fn report_inventory_with_container_and_slot_also_populates_inventory_v2() 
         0,
         &wg3_off(),
         &mut wg3_cache(),
+        &mut wg3_collision(),
     )
     .await;
 
@@ -964,6 +988,7 @@ async fn report_inventory_legacy_only_leaves_inventory_v2_empty() {
         0,
         &wg3_off(),
         &mut wg3_cache(),
+        &mut wg3_collision(),
     )
     .await;
 
@@ -5921,6 +5946,226 @@ fn resolve_respawn_prefers_a_placed_bed() {
     );
 }
 
+// ── ADR-045 enm. 2: el respawn tras morir, sobre WG3 ──
+
+/// Un mundo WG3 encendido como el que se juega: manifiesto real y semilla servida.
+fn wg3_served() -> (
+    crate::world::wg3::config::Wg3Config,
+    crate::world::wg3::collision::Wg3CollisionCache,
+    crate::world::wg3::world::Wg3WorldCache,
+) {
+    (
+        crate::world::wg3::config::Wg3Config::with_manifest(
+            crate::world::wg3::tests::real_manifest(),
+        ),
+        crate::world::wg3::collision::Wg3CollisionCache::new(),
+        crate::world::wg3::world::Wg3WorldCache::default(),
+    )
+}
+
+const WG3_SEED: u64 = crate::world::wg3::tests::SERVED_SEED;
+const STOREY_M: f32 = crate::world::wg3::plan::STOREY_HEIGHT_CM as f32 / 100.0;
+
+fn storey_of(p: Vec3) -> i32 {
+    crate::world::wg3::plan::storey_of_floor_cm(
+        ((p.y - crate::world::wg3::collision::PLAYER_BODY_M) * 100.0).round() as i32,
+    )
+}
+
+/// «Posición válida» = suelo justo bajo los pies y cápsula libre. `Some` con el motivo si no lo es.
+fn not_standing_because(
+    cache: &crate::world::wg3::collision::Wg3CollisionCache,
+    p: Vec3,
+) -> Option<String> {
+    use crate::world::collision::PLAYER_RADIUS;
+    use crate::world::wg3::collision::PLAYER_BODY_M;
+    if cache.blocked_at(p, PLAYER_RADIUS) {
+        return Some(format!("cápsula bloqueada en {p:?}"));
+    }
+    let feet = p.y - PLAYER_BODY_M;
+    match cache.floor_below_m(p.x, p.z, feet) {
+        None => Some(format!("sin suelo bajo {p:?}")),
+        Some(floor) if (floor - feet).abs() > 0.31 => Some(format!(
+            "no apoya en el suelo: pies a {feet:.2}, suelo a {floor:.2}"
+        )),
+        Some(_) => None,
+    }
+}
+
+fn assert_standing(cache: &crate::world::wg3::collision::Wg3CollisionCache, p: Vec3, why: &str) {
+    if let Some(motivo) = not_standing_because(cache, p) {
+        panic!("{why}: {motivo}");
+    }
+}
+
+/// Un sitio de pie en la planta pedida, dentro de la región (0,0). Sondea a paso de 5 m y deja que
+/// el propio `standable_near_bounded` conserve la planta: se BUSCA en vez de hardcodear coordenadas
+/// que atarían el test a una semilla concreta del plan.
+fn standing_spot_on_storey(
+    cache: &mut crate::world::wg3::collision::Wg3CollisionCache,
+    worlds: &mut crate::world::wg3::world::Wg3WorldCache,
+    manifest: &crate::world::wg3::manifest::Wg3Manifest,
+    storey: i32,
+) -> Option<Vec3> {
+    let region = crate::world::wg3::world::Wg3RegionCoord { x: 0, z: 0 };
+    let (min_x, min_z, max_x, max_z) = region.bounds();
+    let y = storey as f32 * STOREY_M + crate::world::wg3::collision::PLAYER_BODY_M;
+    let mut x = min_x + 5.0;
+    while x < max_x - 5.0 {
+        let mut z = min_z + 5.0;
+        while z < max_z - 5.0 {
+            let probe = Vec3::new(x, y, z);
+            cache.prewarm_for_move(worlds, manifest, WG3_SEED, probe, probe);
+            if let Some(p) = cache.standable_near_bounded(probe, true) {
+                if storey_of(p) == storey {
+                    return Some(p);
+                }
+            }
+            z += 5.0;
+        }
+        x += 5.0;
+    }
+    None
+}
+
+/// E2.1 — sin cama se cae al punto de partida, y el punto de partida tiene sitio de pie.
+#[test]
+fn sin_cama_el_respawn_wg3_cae_al_origen_con_sitio_de_pie() {
+    let (wg3, mut cache, mut worlds) = wg3_served();
+    let p = resolve_respawn_wg3(&wg3, &mut cache, &mut worlds, WG3_SEED, None)
+        .expect("con WG3 encendido el resolutor contesta");
+    assert_standing(&cache, p, "sin cama");
+    assert!(
+        p.distance_xz(preferred_spawn()) <= 24.5,
+        "sin cama se renace en el origen o a 24 m de él, no en {p:?}"
+    );
+}
+
+/// E2.1 — una cama en la planta 2 devuelve a la planta 2, y en la cama.
+#[test]
+fn una_cama_en_la_planta_2_renace_en_la_planta_2() {
+    let (wg3, mut cache, mut worlds) = wg3_served();
+    let manifest = crate::world::wg3::tests::real_manifest();
+    let spot = standing_spot_on_storey(&mut cache, &mut worlds, &manifest, 2).expect(
+        "la región (0,0) de la semilla servida tiene planta 2 (medido: ninguna región baja de 3)",
+    );
+    // La pieza se guarda a ras de suelo (ADR-031), no a cota de cuerpo.
+    let bed = Vec3::new(
+        spot.x,
+        spot.y - crate::world::wg3::collision::PLAYER_BODY_M,
+        spot.z,
+    );
+
+    let p = resolve_respawn_wg3(&wg3, &mut cache, &mut worlds, WG3_SEED, Some(bed))
+        .expect("con WG3 encendido el resolutor contesta");
+
+    assert_eq!(
+        storey_of(p),
+        2,
+        "la cama está en la planta 2 y se renació en {p:?}"
+    );
+    assert!(
+        p.distance_xz(bed) <= 0.5,
+        "la cama tiene sitio de pie: se renace EN ella, no a {:.1} m",
+        p.distance_xz(bed)
+    );
+    assert_standing(&cache, p, "cama en planta 2");
+}
+
+/// E2.1 — una cama dentro de un macizo (o de una pared) se corrige al sitio de pie más cercano
+/// DE SU PLANTA. Se busca el macizo en vez de inventarlo, como en la prueba de restauración.
+#[test]
+fn una_cama_dentro_de_un_macizo_renace_en_su_planta() {
+    use crate::world::collision::PLAYER_RADIUS;
+    use crate::world::wg3::collision::PLAYER_BODY_M;
+
+    let (wg3, mut cache, mut worlds) = wg3_served();
+    let manifest = crate::world::wg3::tests::real_manifest();
+    let spot = standing_spot_on_storey(&mut cache, &mut worlds, &manifest, 2)
+        .expect("la región (0,0) de la semilla servida tiene planta 2");
+
+    let mut atascado = None;
+    'buscar: for dx in -40..=40 {
+        for dz in -40..=40 {
+            let q = Vec3::new(spot.x + dx as f32, spot.y, spot.z + dz as f32);
+            cache.prewarm_for_move(&mut worlds, &manifest, WG3_SEED, q, q);
+            if cache.blocked_at(q, PLAYER_RADIUS) {
+                atascado = Some(q);
+                break 'buscar;
+            }
+        }
+    }
+    let atascado = atascado.expect("a 40 m de un sitio de pie de la planta 2 hay alguna pared");
+    let bed = Vec3::new(atascado.x, atascado.y - PLAYER_BODY_M, atascado.z);
+
+    let p = resolve_respawn_wg3(&wg3, &mut cache, &mut worlds, WG3_SEED, Some(bed))
+        .expect("con WG3 encendido el resolutor contesta");
+
+    assert_eq!(
+        storey_of(p),
+        2,
+        "la cama estaba en la planta 2 y la corrección la cambió de planta: {p:?}"
+    );
+    assert!(
+        p.distance_xz(bed) <= 24.5,
+        "la corrección busca a 24 m como mucho, no a {:.1}",
+        p.distance_xz(bed)
+    );
+    assert_standing(&cache, p, "cama en macizo");
+}
+
+/// Verificación de la enmienda: 50 muertes aleatorias sobre la semilla servida —camas al azar en
+/// cuatro plantas, y una de cada diez sin cama— y las 50 renacen de pie.
+#[test]
+fn cincuenta_muertes_aleatorias_renacen_de_pie_sobre_la_semilla_servida() {
+    let (wg3, mut cache, mut worlds) = wg3_served();
+    let region = crate::world::wg3::world::Wg3RegionCoord { x: 0, z: 0 };
+    let (min_x, min_z, _, _) = region.bounds();
+    let side_dm = (crate::world::wg3::world::REGION_M * 10.0) as u64;
+
+    // xorshift64: determinista, sin dependencias.
+    let mut rng: u64 = 0x5EED_0045_0002_0001;
+    let mut next = move || {
+        rng ^= rng << 13;
+        rng ^= rng >> 7;
+        rng ^= rng << 17;
+        rng
+    };
+
+    let mut de_pie = 0;
+    let mut al_origen = 0;
+    let mut fallos = Vec::new();
+    for i in 0..50 {
+        let bed = if i % 10 == 9 {
+            None
+        } else {
+            let x = min_x + (next() % side_dm) as f32 / 10.0;
+            let z = min_z + (next() % side_dm) as f32 / 10.0;
+            let storey = (next() % 4) as f32;
+            Some(Vec3::new(x, storey * STOREY_M, z))
+        };
+        let p = resolve_respawn_wg3(&wg3, &mut cache, &mut worlds, WG3_SEED, bed)
+            .expect("con WG3 encendido el resolutor contesta");
+        match not_standing_because(&cache, p) {
+            None => de_pie += 1,
+            Some(motivo) => fallos.push(format!("muerte {i} cama={bed:?}: {motivo}")),
+        }
+        if let Some(b) = bed {
+            if b.distance_xz(preferred_spawn()) > 30.0 && p.distance_xz(preferred_spawn()) <= 24.5 {
+                al_origen += 1;
+            }
+        }
+    }
+    println!("[respawn] {de_pie}/50 de pie; {al_origen} camas sin sitio cayeron al origen");
+    assert!(
+        fallos.is_empty(),
+        "{} de 50 muertes NO renacen de pie:\n{}",
+        fallos.len(),
+        fallos.join("\n")
+    );
+    assert_eq!(de_pie, 50);
+}
+
 // ── ADR-069: la cama arma el respawn al CONSTRUIRSE, no al plantar el fantasma ──
 
 /// El bug que ADR-069 corrige, escrito como contrato: plantar el fantasma solo puede armar el
@@ -6021,7 +6266,14 @@ fn a_dead_snapshot_revives_on_load() {
     let mut player = Player::new(1, "Host");
     let mut world = crate::world::World::new(1);
     apply_player_snapshot(&mut player, PlayerSnapshot::from_player(&dead));
-    revive_if_dead_on_load(&mut player, &mut world);
+    revive_if_dead_on_load(
+        &mut player,
+        &mut world,
+        &wg3_off(),
+        &mut wg3_collision(),
+        &mut wg3_cache(),
+        1,
+    );
 
     assert!(
         !player.stats.is_dead(),
@@ -6066,7 +6318,14 @@ fn a_dead_snapshot_revives_at_the_bed_when_one_is_placed() {
     let mut world = crate::world::World::new(1);
     insert_clean_flat_chunk(&mut world, (10, 10));
     apply_player_snapshot(&mut player, PlayerSnapshot::from_player(&dead));
-    revive_if_dead_on_load(&mut player, &mut world);
+    revive_if_dead_on_load(
+        &mut player,
+        &mut world,
+        &wg3_off(),
+        &mut wg3_collision(),
+        &mut wg3_cache(),
+        1,
+    );
 
     assert!(!player.stats.is_dead());
     let chunk = (
@@ -6095,7 +6354,14 @@ fn an_alive_snapshot_hydrates_untouched() {
     let mut player = Player::new(1, "Host");
     let mut world = crate::world::World::new(1);
     apply_player_snapshot(&mut player, PlayerSnapshot::from_player(&hurt));
-    revive_if_dead_on_load(&mut player, &mut world);
+    revive_if_dead_on_load(
+        &mut player,
+        &mut world,
+        &wg3_off(),
+        &mut wg3_collision(),
+        &mut wg3_cache(),
+        1,
+    );
 
     assert!((player.stats.health - 61.0).abs() < 1e-4);
     assert!((player.stats.hunger - 5.0).abs() < 1e-4);
@@ -6770,6 +7036,7 @@ async fn stp_demolish_of_the_bed_clears_the_respawn_point() {
         0,
         &wg3_off(),
         &mut wg3_cache(),
+        &mut wg3_collision(),
     )
     .await;
 
@@ -6826,6 +7093,7 @@ async fn stp_demolish_of_another_bed_keeps_the_respawn_point() {
         0,
         &wg3_off(),
         &mut wg3_cache(),
+        &mut wg3_collision(),
     )
     .await;
 
@@ -7224,7 +7492,15 @@ async fn a_painted_wall_survives_saving_and_reloading() {
     let mut fresh_world = World::new(42);
     let mut fresh_player = Player::new(1, "Host");
     assert_eq!(fresh_net.sprays.len(), 0, "arranca sin nada pintado");
-    hydrate_from_save(&mut fresh_world, &mut fresh_player, &mut fresh_net, loaded);
+    hydrate_from_save(
+        &mut fresh_world,
+        &mut fresh_player,
+        &mut fresh_net,
+        loaded,
+        &wg3_off(),
+        &mut wg3_collision(),
+        &mut wg3_cache(),
+    );
 
     // 4. Y el chunk vuelve a servirlas, en orden de render y con los trazos intactos.
     let served = fresh_net.sprays.chunk((2, -2, 0));
@@ -7427,7 +7703,15 @@ async fn loading_a_painted_world_never_reuses_a_spray_id() {
         }],
     }];
 
-    hydrate_from_save(&mut world, &mut player, &mut net, saved);
+    hydrate_from_save(
+        &mut world,
+        &mut player,
+        &mut net,
+        saved,
+        &wg3_off(),
+        &mut wg3_collision(),
+        &mut wg3_cache(),
+    );
     assert_eq!(net.sprays.len(), 1, "la pintada guardada debe hidratarse");
 
     let at = [10.0, 1.6, 10.0];
@@ -11864,6 +12148,7 @@ async fn report_death_loot_subtracts_pending_theft_deduction_from_stale_snapshot
         0,
         &wg3_off(),
         &mut wg3_cache(),
+        &mut wg3_collision(),
     )
     .await;
 
@@ -11929,6 +12214,7 @@ async fn report_inventory_clears_pending_theft_deductions() {
         0,
         &wg3_off(),
         &mut wg3_cache(),
+        &mut wg3_collision(),
     )
     .await;
 
@@ -13468,6 +13754,7 @@ async fn registering_harvestables_adds_without_forgetting_what_was_harvested() {
                 0,
                 &wg3_off(),
                 &mut wg3_cache(),
+                &mut wg3_collision(),
             )
             .await;
         }};

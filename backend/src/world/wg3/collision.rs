@@ -36,7 +36,7 @@ const MAX_CACHED_RASTERS: usize = 64;
 /// Alto del cuerpo del jugador, en metros. Mismo valor que la cota a la que reporta su transform
 /// estando de pie sobre un suelo a cero (`collision::PLAYER_BASE_Y`), y por la misma razón: es lo que
 /// mide de los pies a la cabeza.
-const PLAYER_BODY_M: f32 = 1.8;
+pub const PLAYER_BODY_M: f32 = 1.8;
 
 /// Cuánto se permite subir sin saltar al buscar el suelo, en metros.
 ///
