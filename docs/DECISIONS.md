@@ -11700,3 +11700,164 @@ D6/P5 no es opcional.
 Cambia el schema de guardado (`loot_marks`, campo nuevo persistido) y fija una regla de juego —cuánto dura el
 saqueo— que hasta hoy no existía en ningún sitio, además de congelar un invariante de siembra (un cofre por
 columna). No cambia el formato de wire.
+
+---
+
+## ADR-116 — Spawn repartido: cada jugador nace en su propia celda de identidad (2026-09-01)
+
+**Estado:** ACEPTADA. Aprobada punto por punto (Q1–Q6) tras la auditoría de spawn/distribución del Paso 6.
+
+### Contexto
+
+Todo jugador —anfitrión y unido— nace hoy en el mismo punto: `preferred_spawn()`, el centro del chunk (0,0),
+corregido por `standable_near` de WG3 (ADR-106). No es una decisión de diseño: es el punto fijo que quedó
+cuando ADR-109 etapa 1 unificó los dos caminos. El mundo es procedural, infinito y determinista por semilla,
+pero la partida empieza siempre en el mismo metro cuadrado.
+
+Para Alpha 1 se quiere lo contrario: jugadores repartidos por el mundo. Con 8–12 domésticos y relay en estrella
+(SCALING-ROADMAP, etapa E0 cerrada) esto no es un problema de rendimiento — es de experiencia: encontrarse
+tiene que costar algo.
+
+### Decisión
+
+**D1 — La unidad de reparto es la celda de identidad de WG3: 900 m.** `IDENTITY_CELL_M` de ADR-103, que ya
+existe y ya es múltiplo exacto de la región (150 m), así que una frontera de identidad es siempre frontera de
+región. No se inventa una rejilla nueva.
+
+Ojo a lo que la celda **no** garantiza: dos jugadores en celdas contiguas pueden acabar a diez metros si sus
+puntos caen pegados al borde. Por eso la separación mínima de D4 se mide sobre el **punto**, nunca sobre la
+celda.
+
+**D2 — El sorteo es determinista por semilla del mundo.** La secuencia de celdas candidatas y el punto dentro
+de cada una salen de `(world_seed, sal, k)` con **sal propia**, como todos los sorteos desde ADR-043. La misma
+semilla reparte igual siempre.
+
+**D3 — El anfitrión decide, siempre.** Es el único que sabe cuántos jugadores hay y dónde están. El punto
+asignado a un joiner **viaja en `HandshakeAck`**, añadido al final con `serde(default)`, exactamente el patrón
+de `phantom_density_scale` (P0-2) y `room_manifest_digest` (ADR-083 enm. 1). No hay mensaje nuevo y no hay bump
+de `WIRE_SCHEMA_VERSION`: eso versiona el IPC con Unity, y esto es el protocolo entre backends.
+
+Un anfitrión anterior a este ADR omite el campo; el joiner lo decodifica a «sin asignación» y **cae al camino
+de hoy** (origen + `standable_near`). El desajuste de versiones degrada, no rompe.
+
+**D4 — Cada jugador recibe un punto distinto, y hay separación mínima.** El anfitrión lleva la lista de puntos
+ya asignados en esta sesión y descarta cualquier candidato a menos de `MIN_PLAYER_SEPARATION_M` de un punto ya
+asignado **o de la posición actual de un jugador vivo**. Las dos comprobaciones, porque un jugador restaurado
+desde su fichero puede estar en cualquier parte y no ocupa ninguna celda sorteada.
+
+**D5 — Si un candidato no vale, se prueba el siguiente.** Un candidato se descarta si (a) cae demasiado cerca
+según D4, (b) su celda ya está asignada en esta sesión, o (c) el colocador de D6 no encuentra sitio de pie. La
+secuencia es determinista (D2) y está acotada por `MAX_SPAWN_CANDIDATES`.
+
+**D6 — El punto final pasa siempre por `standable_near_bounded(punto, same_storey = true)`.** Reutiliza el
+colocador de ADR-106 / ADR-110 D3 tal cual: anillos de 24 m, `SPAWN_MIN_HEADROOM_M = 2.0`, conservando planta.
+`SPAWN_SEARCH_RADIUS_M` **no se toca** — es de WG3 y lo comparten las criaturas; un candidato que cae en un
+vacío se resuelve pidiendo **otro candidato**, no ensanchando la búsqueda de todos.
+
+**D7 — Qué ocurre si no queda ningún candidato válido.** Agotados los `MAX_SPAWN_CANDIDATES`, el jugador nace
+en el spawn del origen de hoy (`preferred_spawn()` + `standable_near`) y se registra un **aviso**, no un error.
+Tres razones: es el comportamiento conocido, nunca bloquea la entrada a la partida, y el caso sólo puede darse
+con muchos jugadores o un mundo hostil — justo cuando lo último que se quiere es no poder jugar.
+
+Consecuencia aceptada y explícita: **por ese camino dos jugadores pueden compartir punto**. La separación
+mínima es una regla del reparto, no un invariante del mundo.
+
+**D8 — La asignación sólo manda en el PRIMER spawn.** Después manda la posición persistida del jugador
+(ADR-045 y su enmienda 1, que fija esa precedencia por escrito).
+
+Con una asimetría que hay que decir en voz alta: el fichero de jugador lo escribe el backend de cada jugador,
+en su propia máquina, así que **el anfitrión no puede saber si un joiner es un veterano**. Por eso siempre le
+manda un punto, y el joiner lo usa **sólo si no tiene posición guardada**. El anfitrión gasta candidatos que a
+veces nadie usa, y la separación mínima frente a jugadores restaurados es **el mejor esfuerzo posible**, no una
+garantía. Es el precio de que la persistencia por jugador sea local, y ADR-045 lo eligió así por buenas razones.
+
+**D9 — El anfitrión también se reparte** (Q4). Es un jugador; toma el primer candidato de la secuencia. Si no,
+«repartido» sería mentira en el caso más frecuente —una partida en solitario— y todos los mundos volverían a
+empezar en el mismo sitio.
+
+**D10 — Ni squads ni party en Alpha 1, pero el diseño los admite sin rehacerse.** La regla que lo hace posible
+es que D4 no separa *jugadores*: separa **unidades de spawn**.
+
+- Un jugador sin squad **es** una unidad de spawn (hoy, todos).
+- Un squad futuro será **una sola** unidad de spawn.
+- Los miembros de un mismo squad **compartirán candidato** y aparecerán juntos.
+- La separación mínima se aplicará **entre unidades**, nunca entre miembros de la misma.
+
+Lo único que cambiará el día que existan es quién forma una unidad; el sorteo, la separación, el colocador y el
+fallback siguen intactos. **No se implementa nada de esto ahora**: no hay tipo de squad, ni campo, ni agrupación.
+
+**D11 — Cero arquitectura nueva.** Se reutiliza la celda de identidad de ADR-103, el patrón de sorteo con sal
+de ADR-043, `standable_near_bounded` de ADR-106/110, `HandshakeAck` de la conexión y el fichero por jugador de
+ADR-045. Lo único que se añade es una función que elige punto y una lista de asignados en el anfitrión.
+
+**D12 — La interacción con `PHANTOM_ACTIVE_CAP = 6`, leída en el código y no supuesta.** El barrido de
+robapieles recorre bloques alrededor de **cada** jugador y todos los candidatos compiten en **una sola lista
+global**, ordenada por distancia al jugador más cercano y cortada por un cap de 6.
+
+Repartir jugadores **no** deja al lejano sin criaturas: divide los mismos 6 entre todos. Juntos, un jugador
+puede tener hasta 6 cerca; con 8 repartidos, la aritmética garantiza que al menos dos tengan cero. Es un cambio
+de experiencia real que llega de rebote.
+
+Para Alpha 1 **el cap se queda en 6** (Q5) y la consecuencia queda declarada. Es una perilla ya medida
+(ADR-043, ADR-109) y moverla a ciegas cambiaría la densidad del mundo para todos. Queda escrito el disparador
+que obliga a revisarla: si un playtest con ≥4 jugadores repartidos mide jugadores con **cero** robapieles
+durante sesiones enteras, el cap deja de ser global y pasa a escalar con el número de jugadores reales — y eso
+será enmienda con su medición delante. `PHANTOM_ACTIVE_CAP` ya es sobreescribible por entorno, así que ese
+playtest no necesita código.
+
+### Parámetros
+
+Tres, y ninguno se deduce del código — los tres son decisión humana (Q1–Q3):
+
+| Parámetro | Valor | Por qué ése |
+|---|---|---|
+| `MIN_PLAYER_SEPARATION_M` | **150.0** | El anillo de streaming del cliente es radio 1 = 3×3 chunks de 50 m. Por debajo de 150 m dos jugadores comparten columnas cargadas y «repartidos» no significa nada. |
+| `DISTRIBUTION_RADIUS_CELLS` | **1** | 3×3 celdas de 900 m = 2,7 km de lado, nueve celdas para 8–12 jugadores. Radio 2 daría 4,5 km y jugadores que no se cruzan nunca. |
+| `MAX_SPAWN_CANDIDATES` | **8** | **Sin medir.** Cada candidato cuesta precalentar el ráster más un barrido de 24 m en pasos de 0,5, y ocurre al ENTRAR. El número correcto sale de medir un candidato; 8 es el orden de magnitud. |
+
+`IDENTITY_CELL_M` (900), `SPAWN_SEARCH_RADIUS_M` (24) y `SPAWN_MIN_HEADROOM_M` (2,0) no son parámetros nuevos:
+existen y no se tocan.
+
+### Consecuencias
+
+Encontrarse pasa a costar. Una partida en solitario empieza en un sitio distinto por mundo, siempre el mismo
+para la misma semilla. El anfitrión sirve N anillos de streaming disjuntos en vez de uno compartido — la línea
+base de E0 se midió sin distinguir los dos casos, así que ese número está por medir. Y las criaturas se diluyen
+(D12).
+
+### Por qué es ADR (reglas duras 7, 9)
+
+Añade un campo al protocolo entre backends, fija una regla de juego que no existía (dónde nace un jugador y a
+qué distancia de otro) y establece una precedencia entre dos ADR ya aceptados (ADR-045 frente a ADR-031/106)
+que hasta hoy no estaba escrita en ninguna parte.
+
+---
+
+## ADR-045 — Enmienda 1: la posición persistida gana al spawn inicial (2026-09-01)
+
+### Qué se descubrió
+
+ADR-045 Fase 2 guarda la posición de cada jugador en su propio fichero. ADR-031 y ADR-106 deciden dónde nace un
+jugador que no tiene ninguna. **Ningún ADR dice cuál de los dos gana**, y el código tiene los dos caminos.
+
+En un joiner, la restauración del fichero **no marca `spawn_resolved`**, y el bloque de spawn del joiner sólo
+pregunta por `!spawn_resolved`. Según llegue antes `set_identity` o el final del world_sync, la posición
+guardada se respeta o **se pisa con el spawn del origen**. Los dos órdenes son alcanzables y ningún test los
+cubre. El síntoma —«al entrar me teletransporta al origen»— se lee como un fallo de red, no de persistencia.
+
+Y en las dos rutas de restauración (fichero de jugador y save de mundo) la posición hidratada **no pasa por
+`standable_near`**. Con WG3 mandando eso no deja al jugador flotando: lo deja **atascado**, porque el macizo no
+se cruza.
+
+### Decisión
+
+**E1.1 — Precedencia, por escrito: posición persistida > spawn asignado (ADR-116) > spawn del origen.** Una
+posición hidratada de un fichero de jugador o de un save de mundo cuenta como spawn resuelto, en cualquier rol
+y llegue cuando llegue. Ningún camino posterior puede reubicar a un jugador restaurado.
+
+**E1.2 — Toda posición restaurada pasa por `standable_near_bounded(pos, same_storey = true)`.** Conservando
+planta: un veterano que guardó en la planta 2 no puede reaparecer en la planta baja. Si no hay sitio de pie en
+24 m **se conserva la posición guardada** y se avisa — no se inventa un sitio, mismo criterio que ADR-106.
+
+**E1.3 — No cambia nada de la muerte.** El respawn tras morir sigue siendo el de ADR-031 (cama o punto de
+partida). Esta enmienda es sólo sobre **entrar** a la partida.
