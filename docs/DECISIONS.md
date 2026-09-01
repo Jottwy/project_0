@@ -11896,3 +11896,38 @@ evento `player_respawned` quedan como estaban. Con WG3 apagado el resolutor de A
 Tests Rust contra el manifiesto real y la semilla servida: cama en la planta 2 renace en la planta 2; cama
 dentro de un macizo se corrige en su planta; sin cama, el origen con sitio de pie; y 50 muertes aleatorias con
 el 100 % de posiciones válidas (suelo bajo los pies y cápsula libre).
+
+---
+
+## ADR-114 — Enmienda 1: los siete assets autorados, y lo que la implementación real de items obligó a aclarar (2026-09-02)
+
+Los siete assets del ADR existen (`Backrooms/Create Dismantle Assets`, `BackroomsDismantleAssetsCreator.cs`,
+crear-si-falta, ejecutado en headless con el editor cerrado — el riesgo 2 queda cerrado). Tres aclaraciones
+puntuales, ninguna cambia una decisión:
+
+**E1.1 — Los materiales son `ItemDefinition` (bolsa), no `CarryableDefinition` (hombro), y no hay conversión
+entre los dos.** Por eso el mueble suelta por `stp_drop` —la acción que ya valida def_id, cantidad y proximidad
+en el backend y materializa un objeto del MUNDO en `stp_items`— y no por `stp_carryable_drop`. Donde D1 dice
+«siembra los carryables» léase «siembra los materiales como items del mundo». `NetworkHarvestableInstance`
+lleva las dos listas (D7) y elige camino según cuál esté puesta; un árbol del vendor sigue soltando su tronco.
+Cada unidad va como drop propio: `ItemStack` clampa la pila al construirla y los items propios no apilan
+(FARMING-ROADMAP D1).
+
+**E1.2 — Los números de la puerta D6, escritos.** Destornillador: `ResourceHarvestProfile{Plant, HarvestPower
+0,5, YieldPerHit 0,25}` — un cuarto por golpe, que es el mínimo de cuatro golpes que el servidor impone (D8).
+Los tres muebles: `_requiredPower 0,5`, `_respawnDays 0` (el vendor no resucita por ciclo de día: el reloj es
+D5), `_partiallyHarvestedObject` = el mismo visual que entero (como la roca del vendor; con nulo el primer golpe
+esconde el mueble) y sin `SaveableObject` (el estado es del backend, D2). Hacha y pico siguen sin perfil `Plant`
+y un test lo afirma. El destornillador no lleva durabilidad (D10) ni `CraftingData` (ADR-064 sigue en
+propuesta).
+
+**E1.3 — Visuales y placeholders.** Escritorio y silla salen del pack de oficina (`Desk 1`, `Chair 1`); la
+estantería es `SM_WarehouseShelfSingle` del pack de supermercado, porque `Shelf 1` mide 4,98 × 3,46 m —pieza de
+pared de dos tiles— y atraviesa los 2,80 m libres de servicio y almacén, que es justo donde el sorteo la pone.
+El destornillador lleva el arte del hacha y las tablas el pickup de la chatarra: prestado, declarado. Pesos de
+primera pasada: tabla 1,5, viga 3,0, destornillador 0,5 (`TODO(balance)`).
+
+Ids acuñados, en el wire y en los saves — no regenerar: Wooden Plank `-223572567`, Metal Beam `451259066`,
+Screwdriver `808575401`. Vendor tocado por su propia API de registro: `FPS_Player.prefab` (alta del wieldable),
+`FPS_Melee.asset` y `STP_Resources.asset` (miembro de categoría); un reimport lo borra en silencio y la cura es
+volver a ejecutar el menú (inventariado en `docs/systems/vendor-patches.md`).
