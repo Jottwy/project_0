@@ -11298,3 +11298,75 @@ uno. Un techo que se aplica en el punto de salida y una decisión de encolar que
 sitios distintos son la misma clase de fragilidad que I14 cerró para los destinos. Queda anotado
 como deuda: unificar «enviar y encolar un fiable» en una sola función es un refactor, y un refactor
 no cabe en una auditoría de integración.
+
+---
+
+## ADR-113 — Enmienda 2: la cabecera de un chunk tampoco tenía tamaño acotado (2026-09-01)
+
+**Contexto.** Primera sesión física por internet con UPnP funcionando y un joiner real detrás de un
+NAT ajeno (2026-08-31, 19:02–19:17 UTC). El log del host trae **1.176
+`datagram_refused_over_budget`** hacia ese único joiner, de 1612 a 1910 B, repartidos en tres
+`kind`: 1.172 `broadcast_unreliable`, 3 `deferred_reliable`, 1 `reliable`. Los tres salen del MISMO
+productor, y cada rechazo va precedido 1:1 por su `chunk_header_exceeds_budget`.
+
+**El hueco.** `split_chunk_pages` (ADR-113) pagina `entities` e `items` porque son «las únicas
+partes de tamaño ilimitado». No lo son. `ChunkLayoutV1.inter_layer_volumes` es un
+`Vec<InterLayerVolumeV0>` sin cota, y cada volumen lleva **dos `String`** (`safety_type`,
+`future_audio_hint`) más un **`Vec<String>`** de pistas visuales, con literales de 30-35 caracteres
+(`"BACKEND_AUTHORED_BLOCKED_SHAFT_NO_FALL"`, `"service_shaft_hum_from_lower_layer"`). Los siete
+volúmenes que el generador cuelga de un chunk conector suman **~1.160 B** sobre los ~750 de la
+cabecera real medida.
+
+Como la cabecera se REPITE en todas las páginas, ninguna cantidad de páginas lo salvaba: la función
+detectaba que ni la cabecera desnuda cabía, devolvía el chunk entero, y el techo de salida lo
+rechazaba nombrándolo. El propio comentario de la función afirmaba que eso «solo puede ocurrir si
+`layout` crece más allá de lo medido (hoy `LAYOUT_GRID_SIZE` es 10 y fijo)» — miraba al campo
+equivocado.
+
+**Lo que costó, y por qué era peor que una pérdida.** El `ChunkState` a 10 Hz es la vía que CURA una
+pérdida, y sale del mismo paginador. Así que los chunks `(-4,-1)` y `(-4,-2)` no llegaron **jamás**
+a ese cliente: ni por el goteo fiable del join, ni por el broadcast que debería reponerlos. Quince
+minutos de partida con dos agujeros permanentes en el mundo, y nadie se lo dijo al jugador.
+
+**Decisión.** `inter_layer_volumes` se reparte como **tercera lista paginada**, con la maquinaria
+que ya existía: `page`/`page_count`/`generation`, `lean_continuation`, `ChunkPageAssembler`. El
+campo ya viajaba y ya llevaba `#[serde(default)]`.
+
+**D1 — Sin protocolo nuevo, sin bump.** No hay opcode nuevo ni campo nuevo: lo único que cambia es
+en qué página viaja cada elemento de un `Vec` que ya se enviaba. `WIRE_SCHEMA_VERSION` se queda en
+55.
+
+**D2 — Los volúmenes se llenan PRIMERO.** Antes que entidades e ítems, para que el caso común —los
+que caben enteros en la página 0— produzca exactamente los mismos bytes que antes de esta enmienda.
+La corrección solo cambia el comportamiento donde antes no se enviaba nada.
+
+**D3 — El ensamblador los CONCATENA, no los hereda.** `merged.layout.inter_layer_volumes` se limpia
+y se extiende desde todas las páginas en orden, igual que `entities`/`items`. Heredar la lista de la
+página 0 —que es lo que hacía, por venir dentro de la cabecera— devolvería una lista truncada: el
+mismo fallo con más pasos.
+
+**Interoperabilidad sin bump, y por qué es segura.** Un par con el paginador anterior que recibiera
+páginas nuevas tomaría los volúmenes solo de la página 0. Eso únicamente ocurre cuando los volúmenes
+desbordan, y en ese caso el emisor anterior **no enviaba nada en absoluto**. Peor que «no llega
+nunca» no hay, así que no existe regresión posible contra un par viejo.
+
+**Medida.** Página máxima sobre el peor chunk construible (siete volúmenes reales **y** 40
+entidades, por los tres portadores): **1196 B de 1200**. Hay un test que la mide y falla si algún día
+se cruza.
+
+**Prueba.** `a_chunk_whose_layout_carries_inter_layer_volumes_never_fragments`,
+`the_inter_layer_volumes_survive_the_round_trip_through_the_assembler`,
+`volumes_entities_and_items_all_reassemble_from_the_same_pages`,
+`two_generations_of_volume_pages_never_splice_into_one_chunk`,
+`no_carrier_produces_an_oversized_page_from_a_volume_heavy_chunk`,
+`a_volume_heavy_chunk_travels_whole_through_the_reliable_path`,
+`the_worst_page_the_paginator_can_produce_stays_under_the_ceiling`. Cinco de ellos en rojo antes del
+cambio; el primero con una página de **2.701 B**, peor que los 1.910 de campo porque los chunks
+reales llevaban menos volúmenes que los siete del generador.
+
+**Lo que esto dice del proceso.** ADR-113 cerró «el techo lo aplica el emisor» y dejó escrito que
+cada productor sin cota pagina o se acota antes de llegar al punto de salida. La premisa que falló no
+fue esa: fue dar por acotado un campo sin CONTARLO, porque el que dominaba el tamaño cuando se midió
+(`cells`, atado a `LAYOUT_GRID_SIZE`) seguía siendo fijo mientras otro crecía al lado. Regla
+práctica: **en un mensaje con techo, todo `Vec` y todo `String` es una lista ilimitada hasta que se
+demuestre lo contrario**, y la demostración es una medida, no un comentario.
