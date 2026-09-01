@@ -11557,3 +11557,146 @@ trampa de STP ya documentada).
 Cambia la semántica de una acción del protocolo IPC cliente↔servidor (`set_stp_harvestables`: reemplazar →
 añadir/actualizar) y fija reglas de juego (herramienta, materiales, cantidades, regeneración) que hasta hoy no
 existían en ningún sitio. No cambia el formato de wire ni el schema de guardado.
+
+---
+
+## ADR-115 — El saqueo deja marca: memoria persistente con caducidad, propiedad del backend (2026-09-01)
+
+**Estado:** ACEPTADA. Aprobada punto por punto (P1–P6) tras la auditoría de regeneración posterior a ADR-114.
+
+### Contexto
+
+Tras ADR-114 la regeneración del mundo tiene cuatro políticas y ninguna tabla:
+
+| Familia | Cadencia | Dónde vive el reloj | Sobrevive al reinicio |
+|---|---|---|---|
+| Props desmontables | 15 min | `depleted_harvestables_at` (backend, memoria) | salud sí, reloj no |
+| Carryables | 30 min | `_collectedCarry` (cliente, memoria) | no |
+| Items sueltos | ∞ en sesión | `_collectedItems` (cliente, memoria) | no |
+| Cofres | nunca, por diseño | `_settled` + cofre vivo | no |
+
+Las cuatro memorias son de sesión. El resultado no es «falta regeneración»: es que **el relog ya es un
+regenerador universal, instantáneo y gratuito**. Salir y entrar devuelve todo el loot no llevado encima, y un
+cofre vaciado se borra de `world.corpses`, con lo que `chest_already_seeded` —que compara contra cofres
+**vivos**— deja de bloquear y el sorteo determinista lo vuelve a sembrar con botín nuevo.
+
+Contradice de frente la dirección de escasez registrada, y no se arregla con un temporizador: se arregla
+haciendo que el saqueo sea una **presencia** persistida en lugar de una **ausencia** en RAM.
+
+### Decisión
+
+**D1 — Qué es una marca de saqueo.** Un registro que dice «este punto de loot ya se lo llevaron, y a qué hora
+de mundo». Una familia de marcas, dos clases de punto:
+
+- `LootMark { cx, cz, slot, kind, taken_at }` — un slot de loot suelto.
+- Cofre vaciado — la misma estructura con `kind = Chest` y `slot` fijo, para no duplicar roster ni poda.
+
+`kind` distingue el canal (item / carryable / cofre) porque los canales sortean por separado y comparten la
+tripleta `(cx, cz, slot)`.
+
+**D2 — Qué identifica la marca.** La clave es **el sorteo, nunca el objeto**. Loot suelto:
+`(cx, cz, slot, kind)`, la misma tripleta que ya usa `_collectedItems`, estable entre sesiones porque sale de
+`ChunkLootRoll` sobre `(worldSeed, cx, cz)`. Cofre: `(cx, cz)` a secas.
+
+No se usa el net id (se reasigna por sesión) ni la posición en float (viaja por f32 de ida y vuelta;
+`same_chest_spot` necesita `EPS = 0.5 m` justamente por eso, y una tolerancia lineal no es clave de hash).
+
+**P6, congelado:** **máximo un cofre por columna/chunk**. `StpWorldContainerSpawner` ya sella `_settled` por
+columna, así que la regla describe el código de hoy; a partir de este ADR es invariante, no accidente. Sembrar
+dos cofres en un chunk invalidaría la clave `(cx, cz)` y exige enmienda.
+
+**D3 — Qué timestamp se persiste.** `taken_at` en **segundos de tiempo de mundo**, el mismo contador que el
+backend ya deriva para `play_time_seconds` (`base.play_time_seconds + tick / TICK_HZ`). No reloj de pared y no
+`Time.unscaledTime`.
+
+El reloj de pared reintroduce el exploit por la puerta de atrás —desconectar ocho horas y volver equivaldría a
+saquear un mundo virgen— y ata el balance al reloj del anfitrión. `Time.unscaledTime` arranca en 0 cada
+proceso, que es exactamente por lo que hoy nada de esto se puede persistir.
+
+**D4 — Caducidad.** Una sola constante para todo el sistema de marcas: `LOOT_MARK_TTL_SECONDS = 7200`
+(2 h de tiempo de mundo). **Sin medir**, declarado como placeholder con la misma disciplina que los 15 min de
+ADR-114.
+
+Una constante y no tres porque el mandato del Paso 5 es *unificar* cadencias. Las cadencias de props (15 min) y
+carryables (30 min) **no se tocan**: son otro mecanismo —regeneran el recurso— y no éste, que recuerda el
+saqueo.
+
+**D5 — Qué ocurre al expirar.** La marca se borra y el punto vuelve a estar disponible. Nada más: expirar es
+volver al estado de hoy. En el cliente, quitar la entrada del set y **des-sellar la columna**, que es
+literalmente el camino `SelectExpired` + `_generated*Chunks.Remove(...)` de `ExpireCarryables`, ya probado en
+partida y atómico por construcción. En el cofre, sin marca `chest_already_seeded` deja de bloquear y el
+sembrador siembra en su siguiente pasada.
+
+**D6 — Qué ocurre al reiniciar o cargar.** Las marcas viajan en el save. Al cargar, el backend las restaura y
+el cliente-anfitrión hidrata sus sets **antes de la primera pasada de siembra**. Como el reloj es de mundo, una
+marca de hace diez minutos de juego sigue teniendo diez minutos tras el reinicio: el tiempo con el servidor
+apagado no cuenta.
+
+**P5, aprobado:** **puerta explícita de arranque**. La siembra no corre hasta que las marcas estén hidratadas.
+`warmupSeconds` es un margen, no una garantía, y el fallo que evita —sembrar sobre puntos ya marcados y regalar
+loot en el primer segundo de partida— es silencioso.
+
+**D7 — Poda.** Dos mecanismos, ninguno nuevo:
+
+1. **Caducidad por barrido.** Un recorrido periódico borra las marcas con `taken_at + TTL <= world_now`.
+   Barrido y no un temporizador por marca: el patrón de `regenerate_harvestables` (ADR-114 D5), que además hace
+   que las marcas hidratadas del save caduquen gratis.
+2. **Techo duro.** `MAX_LOOT_MARKS = 4096`; al superarlo se descartan **las más antiguas primero** (las más
+   próximas a caducar) y se **registra aviso en el log** cuando la poda por techo se activa, para que un save
+   que crezca de más se note en vez de degradarse en silencio.
+
+Sin el techo, un jugador que recorra diez mil chunks hace crecer el save sin límite. Es la misma deuda que hoy
+tiene `net.stp_harvestables`, que este ADR **no** resuelve pero tampoco repite.
+
+**D8 — Compatibilidad con saves anteriores.** Campo nuevo `loot_marks` en `SaveFile` con `#[serde(default)]`.
+Un save anterior carga con lista vacía, que es exactamente el comportamiento de hoy. Sin bump de versión de
+save: ADR-032 punto 5 cubre este caso.
+
+**P2, aprobado:** el tráfico cliente↔backend va por el **canal JSON de acciones** que ya usan `set_stp_items` y
+`spawn_world_chest`. No toca el formato binario y por tanto no bumpea wire. **Si la implementación demuestra
+que no cabe limpiamente en ese canal, se detiene y se reporta el bloqueo ANTES de tocar el wire** — modificar
+el formato binario obligaría a bumpear `WIRE_SCHEMA_VERSION` y su espejo `WireSchema.Expected` en C#, y sin los
+dos el juego no arranca (no avisa).
+
+**D9 — Autoridad.** Backend, sin ambigüedad. El cliente informa «me llevé `(cx, cz, slot)`»; el backend estampa
+el reloj, guarda y poda. El cliente conserva su set en memoria como caché del barrido, pero deja de ser la
+fuente de verdad. Motivo doble: el reloj de mundo sólo lo conoce el backend, y el save es suyo. Coherente con
+ADR-114 D1 (la salud del prop la manda el backend aunque el mueble no viaje por el cable).
+
+**D10 — Multijugador y replicación.** Las marcas son **del mundo**, no del jugador: un joiner que saquea marca
+el punto para todos. No hace falta replicación nueva — sólo el anfitrión siembra loot y sólo el anfitrión
+guarda, y el joiner deja de ver ese loot porque el anfitrión deja de emitirlo (modelo full-replace de
+`set_stp_items`).
+
+Ojo con la asimetría respecto a ADR-114: el sembrador de **props** corre en todos los clientes (D3, el mueble
+no viaja por el cable), pero los de **loot y cofres** son sólo del anfitrión.
+
+**D11 — Dedupe.** Dos capas, las dos ya existentes:
+
+1. **Por request-id**, con `processed_interactions.insert((player_id, request_id))`, igual que
+   `handle_spawn_world_chest`.
+2. **Por clave, idempotente**: volver a marcar un punto ya marcado **no re-estampa** `taken_at`; se conserva el
+   primero. Sin esto, un informe repetido renovaría la caducidad indefinidamente y el punto no volvería jamás.
+   Es el fallo silencioso más probable de todo el diseño.
+
+**D12 — Balance (P4, aprobado).** Los items sueltos pasan de «∞ en sesión, 0 al relog» a «TTL de 2 h, sobrevive
+al relog». Es un cambio de cadencia deliberado, no una corrección técnica: estrictamente más escaso que hoy en
+la práctica, porque hoy el relog los devuelve todos.
+
+**D13 — Fuera de alcance.** No se toca ADR-114 ni sus 15 min. No se toca el reloj de 30 min de los carryables
+(sigue en memoria hasta que haya playtest que justifique moverlo). No hay marcas por jugador: esto es estado de
+mundo, no progresión personal. No entra regeneración de criaturas ni cultivos, no entra el crecimiento sin
+techo de `stp_harvestables`, no entran Level 4 ni spawn distribuido.
+
+### Consecuencias
+
+Un chunk saqueado sigue saqueado tras reiniciar, que es el objetivo entero. A cambio, el save crece con el
+terreno recorrido (acotado por D7), y aparece un modo de fallo nuevo: si la hidratación de D6 llega tarde, el
+anfitrión siembra sobre puntos ya marcados y regala loot en el primer segundo de partida. Por eso la puerta de
+D6/P5 no es opcional.
+
+### Por qué es ADR (reglas duras 7, 9)
+
+Cambia el schema de guardado (`loot_marks`, campo nuevo persistido) y fija una regla de juego —cuánto dura el
+saqueo— que hasta hoy no existía en ningún sitio, además de congelar un invariante de siembra (un cofre por
+columna). No cambia el formato de wire.
