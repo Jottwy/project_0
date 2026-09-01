@@ -70,6 +70,7 @@ async fn id_allocators_reseed_inside_their_own_range() {
 fn world_chest_is_not_reseeded_over_one_already_loaded() {
     let mut world = World::new(42);
     let mut processed: BoundedDedupeSet<(u16, u64)> = BoundedDedupeSet::with_capacity(DEDUPE_CAP);
+    let no_marks = crate::world::loot_marks::LootMarkStore::new();
     let spot = Vec3::new(10.0, 0.0, 20.0);
     let loot = vec![crate::world::corpse::CorpseStack {
         item_id: 1,
@@ -86,6 +87,7 @@ fn world_chest_is_not_reseeded_over_one_already_loaded() {
         spot,
         loot.clone(),
         &mut processed,
+        &no_marks,
     );
     assert!(first.is_ok(), "la primera siembra debe entrar: {first:?}");
 
@@ -101,6 +103,7 @@ fn world_chest_is_not_reseeded_over_one_already_loaded() {
         spot,
         loot.clone(),
         &mut fresh_dedupe,
+        &no_marks,
     );
     assert_eq!(second, Err("chest_already_seeded"));
     assert_eq!(
@@ -118,6 +121,7 @@ fn world_chest_is_not_reseeded_over_one_already_loaded() {
         Vec3::new(200.0, 0.0, 200.0),
         loot,
         &mut fresh_dedupe,
+        &no_marks,
     );
     assert!(elsewhere.is_ok(), "otro cofre lejos debe poder sembrarse");
 }
@@ -195,6 +199,7 @@ async fn hydrate_clears_the_absolute_invulnerability_tick() {
         &[],
         &[],
         1.0,
+        &[],
         &[],
     );
     hydrate_from_save(&mut world, &mut player, &mut net, save);
@@ -5219,6 +5224,7 @@ fn spawn_world_chest_gates_dedupes_and_seeds() {
 
     let mut world = World::new(42);
     let mut processed: BoundedDedupeSet<(u16, u64)> = BoundedDedupeSet::with_capacity(DEDUPE_CAP);
+    let no_marks = crate::world::loot_marks::LootMarkStore::new();
     let pos = Vec3::new(10.0, 1.8, 20.0);
     let loot = || {
         vec![CorpseStack {
@@ -5230,29 +5236,239 @@ fn spawn_world_chest_gates_dedupes_and_seeds() {
 
     // Non-host never seeds (joiners mirror via CorpseList instead).
     assert_eq!(
-        handle_spawn_world_chest(&mut world, false, 1, 1, pos, loot(), &mut processed),
+        handle_spawn_world_chest(
+            &mut world,
+            false,
+            1,
+            1,
+            pos,
+            loot(),
+            &mut processed,
+            &no_marks
+        ),
         Err("not_host")
     );
     assert!(world.corpses.is_empty());
 
     // Host seeds once; the entry is flagged as a chest.
-    let id = handle_spawn_world_chest(&mut world, true, 1, 1, pos, loot(), &mut processed)
-        .expect("first seed must succeed");
+    let id = handle_spawn_world_chest(
+        &mut world,
+        true,
+        1,
+        1,
+        pos,
+        loot(),
+        &mut processed,
+        &no_marks,
+    )
+    .expect("first seed must succeed");
     assert!(world.corpses[&id].is_chest);
 
     // Same (player, request_id) re-sent → duplicate, nothing new seeded.
     assert_eq!(
-        handle_spawn_world_chest(&mut world, true, 1, 1, pos, loot(), &mut processed),
+        handle_spawn_world_chest(
+            &mut world,
+            true,
+            1,
+            1,
+            pos,
+            loot(),
+            &mut processed,
+            &no_marks
+        ),
         Err("duplicate")
     );
     assert_eq!(world.corpses.len(), 1);
 
     // Fresh request_id but empty loot → skipped (immortal-empty-container rule).
     assert_eq!(
-        handle_spawn_world_chest(&mut world, true, 1, 2, pos, vec![], &mut processed),
+        handle_spawn_world_chest(
+            &mut world,
+            true,
+            1,
+            2,
+            pos,
+            vec![],
+            &mut processed,
+            &no_marks
+        ),
         Err("empty_loot")
     );
     assert_eq!(world.corpses.len(), 1);
+}
+
+/// ADR-115, la historia entera de un cofre saqueado y el agujero que cierra.
+///
+/// Antes de esto un cofre VACIADO desaparecía de `world.corpses`, así que la guardia de
+/// `chest_already_seeded` —que compara contra cofres VIVOS— no lo veía: reiniciar volvía a
+/// sembrarlo con botín nuevo. La marca es lo que distingue "aquí no hay cofre" de "aquí ya se lo
+/// llevaron".
+#[test]
+fn un_cofre_vaciado_no_se_resiembra_tras_reiniciar() {
+    use crate::world::corpse::CorpseStack;
+    use crate::world::loot_marks::{self, LootMarkKind, LootMarkStore, CHEST_SLOT};
+
+    let mut world = World::new(42);
+    let mut processed: BoundedDedupeSet<(u16, u64)> = BoundedDedupeSet::with_capacity(DEDUPE_CAP);
+    let mut marks = LootMarkStore::new();
+    let mut seen = std::collections::HashSet::new();
+    let spot = Vec3::new(10.0, 1.8, 20.0);
+    let loot = || {
+        vec![CorpseStack {
+            item_id: -5498592,
+            quantity: 2,
+            props: Vec::new(),
+        }]
+    };
+
+    let chest_id = handle_spawn_world_chest(
+        &mut world,
+        true,
+        1,
+        5000,
+        spot,
+        loot(),
+        &mut processed,
+        &marks,
+    )
+    .expect("la primera siembra debe entrar");
+
+    // Ronda 1 con el cofre vivo: nada se marca (arrancar no es vaciar).
+    let live = |w: &World| -> Vec<(i32, i32)> {
+        w.corpses
+            .values()
+            .filter(|c| c.is_chest)
+            .map(|c| loot_marks::chunk_of(c.position))
+            .collect()
+    };
+    assert_eq!(
+        loot_marks::reconcile_chest_marks(live(&world), &mut seen, &mut marks, 100),
+        0
+    );
+
+    // Se vacía: `take_corpse_item` borra la entrada al llevarse la última pila.
+    world
+        .take_corpse_item(
+            chest_id,
+            0,
+            2,
+            spot,
+            crate::world::corpse::CORPSE_LOOT_MAX_DISTANCE,
+        )
+        .expect("la toma debe entrar");
+    assert!(
+        !world.corpses.contains_key(&chest_id),
+        "un cofre vacío se va del mapa: ESE es el dato que se perdía"
+    );
+
+    // Ronda 2: el cofre ya no está → marca.
+    assert_eq!(
+        loot_marks::reconcile_chest_marks(live(&world), &mut seen, &mut marks, 250),
+        1
+    );
+    let (cx, cz) = loot_marks::chunk_of(spot);
+    assert!(marks.contains(LootMarkKind::Chest, cx, cz, CHEST_SLOT));
+
+    // Reinicio: dedupe vacío y el MISMO request_id, como en un relanzamiento real. Sin la marca
+    // esto sembraba un cofre nuevo, lleno.
+    let mut fresh_dedupe: BoundedDedupeSet<(u16, u64)> =
+        BoundedDedupeSet::with_capacity(DEDUPE_CAP);
+    assert_eq!(
+        handle_spawn_world_chest(
+            &mut world,
+            true,
+            1,
+            5000,
+            spot,
+            loot(),
+            &mut fresh_dedupe,
+            &marks,
+        ),
+        Err("chest_recently_looted")
+    );
+    assert!(world.corpses.is_empty());
+
+    // Y cuando la marca caduca, el mundo vuelve a poder poner un cofre ahí.
+    marks.prune(250 + loot_marks::LOOT_MARK_TTL_SECONDS);
+    let mut fresh_dedupe2: BoundedDedupeSet<(u16, u64)> =
+        BoundedDedupeSet::with_capacity(DEDUPE_CAP);
+    assert!(
+        handle_spawn_world_chest(
+            &mut world,
+            true,
+            1,
+            5000,
+            spot,
+            loot(),
+            &mut fresh_dedupe2,
+            &marks,
+        )
+        .is_ok(),
+        "pasadas las 2 h de mundo el cofre vuelve"
+    );
+}
+
+/// Una marca de OTRA columna no puede bloquear la siembra: la clave es la columna, no un cierre
+/// global.
+#[test]
+fn la_marca_de_otra_columna_no_bloquea_la_siembra() {
+    use crate::world::corpse::CorpseStack;
+    use crate::world::loot_marks::{LootMarkKind, LootMarkStore, CHEST_SLOT};
+
+    let mut world = World::new(42);
+    let mut processed: BoundedDedupeSet<(u16, u64)> = BoundedDedupeSet::with_capacity(DEDUPE_CAP);
+    let mut marks = LootMarkStore::new();
+    marks.mark(LootMarkKind::Chest, 99, 99, CHEST_SLOT, 10);
+
+    let loot = vec![CorpseStack {
+        item_id: 1,
+        quantity: 1,
+        props: Vec::new(),
+    }];
+    assert!(handle_spawn_world_chest(
+        &mut world,
+        true,
+        1,
+        1,
+        Vec3::new(10.0, 1.8, 20.0),
+        loot,
+        &mut processed,
+        &marks,
+    )
+    .is_ok());
+}
+
+/// ADR-115 D3: el reloj de mundo es lo que traía el save MÁS lo que lleva esta sesión. Sin la
+/// base, cada reinicio contaría desde cero y una marca de hace dos horas parecería recién puesta.
+#[test]
+fn el_reloj_de_mundo_arranca_donde_lo_dejo_el_save() {
+    assert_eq!(world_now_seconds(0, 0), 0);
+    assert_eq!(world_now_seconds(0, TICK_HZ), 1);
+    assert_eq!(world_now_seconds(3600, 0), 3600, "un save de una hora");
+    assert_eq!(world_now_seconds(3600, TICK_HZ * 30), 3630);
+    // Y no desborda con un contador absurdo.
+    assert_eq!(world_now_seconds(u64::MAX, TICK_HZ), u64::MAX);
+}
+
+/// La caducidad tiene que alcanzar también a las marcas que llegan HIDRATADAS del save, sin que
+/// nadie las dé de alta. Es el motivo por el que la poda es un barrido y no un temporizador.
+#[test]
+fn una_marca_hidratada_caduca_sin_darla_de_alta() {
+    use crate::world::loot_marks::{LootMark, LootMarkKind, LootMarkStore, LOOT_MARK_TTL_SECONDS};
+
+    let mut store = LootMarkStore::from_marks(vec![LootMark {
+        cx: 4,
+        cz: 4,
+        slot: 0,
+        kind: LootMarkKind::Item,
+        taken_at: 1_000,
+    }]);
+    assert!(store.contains(LootMarkKind::Item, 4, 4, 0));
+
+    // La sesión sigue donde el save la dejó: a 1_000 + TTL la marca se va sola.
+    let out = store.prune(1_000 + LOOT_MARK_TTL_SECONDS);
+    assert_eq!(out.expired, 1);
+    assert!(store.is_empty());
 }
 
 #[test]
@@ -6923,6 +7139,7 @@ async fn a_painted_wall_survives_saving_and_reloading() {
         &[],
         1.0,
         &painted,
+        &[],
     );
     save.save_to(&path).expect("el guardado debe escribir");
 

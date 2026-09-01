@@ -353,8 +353,18 @@ fn save_meta_now(
 ) -> crate::persistence::save::SaveMeta {
     crate::persistence::save::SaveMeta {
         created_at: base.created_at.clone(),
-        play_time_seconds: base.play_time_seconds.saturating_add(tick / TICK_HZ),
+        play_time_seconds: world_now_seconds(base.play_time_seconds, tick),
     }
+}
+
+/// ADR-115 D3 — el reloj de mundo en segundos: lo que traía el save más lo que lleva corriendo
+/// esta sesión. Es el MISMO número que se persiste como `play_time_seconds`, y por eso las marcas
+/// de saqueo pueden compararse contra sellos escritos hace tres reinicios.
+///
+/// No es reloj de pared a propósito: con uno, desconectar ocho horas y volver equivaldría a
+/// saquear un mundo virgen, que es el agujero que ADR-115 cierra.
+fn world_now_seconds(base_play_time_seconds: u64, tick: u64) -> u64 {
+    base_play_time_seconds.saturating_add(tick / TICK_HZ)
 }
 
 /// Re-siembra los cuatro asignadores de id de proceso desde los rosters recién cargados.
@@ -497,6 +507,12 @@ fn hydrate_from_save(
     net.stp_buildings = save.stp_buildings;
     net.stp_carryables = save.stp_carryables;
     net.stp_harvestables = save.stp_harvestables;
+    // ADR-115 D6: el saqueo vuelve con el mundo. `from_marks` sanea lo que carga (duplicados y
+    // techo) en vez de confiar en el fichero; la caducidad la aplica luego la poda de tick, que
+    // no distingue entre una marca recién puesta y una hidratada — ese es justo el motivo de
+    // que la poda sea un barrido y no un temporizador por marca.
+    let loaded_marks = save.loot_marks.len();
+    net.loot_marks = crate::world::loot_marks::LootMarkStore::from_marks(save.loot_marks);
 
     // ADR-068: el índice por chunk se reconstruye aquí, descartando lo que ya no valide.
     let (sprays, dropped_sprays) = crate::world::spray::SprayStore::from_sprays(save.sprays);
@@ -538,6 +554,18 @@ fn hydrate_from_save(
         apply_player_snapshot(player, p);
         revive_if_dead_on_load(player, world);
     }
+
+    if loaded_marks != net.loot_marks.len() {
+        warn!(
+            "ADR-115: {} marcas de saqueo del save descartadas al hidratar (duplicadas o por encima del techo)",
+            loaded_marks - net.loot_marks.len()
+        );
+    }
+
+    info!(
+        "ADR-115: loot marks hydrated (marks={})",
+        net.loot_marks.len()
+    );
 
     info!(
         "ADR-032: world hydrated from save (corpses={}, buildings={}, items={}, carryables={}, harvestables={}, next_corpse_id={}, next_drop_id=0x{:08x}, next_building_id=0x{:08x}, next_carryable_id=0x{:08x}, next_group_id={}, occupied_cells={})",
@@ -688,6 +716,11 @@ pub async fn run(
         .as_ref()
         .map(crate::persistence::save::SaveMeta::from_loaded)
         .unwrap_or_default();
+    // ADR-115 D3: la misma base, guardada donde los manejadores de acción puedan leerla. Sin
+    // esto el reloj de mundo arrancaría en cero tras cada reinicio y una marca de hace dos horas
+    // parecería recién puesta — o sea, el mundo volvería a regenerarse al relogear, que es el
+    // agujero que este ADR cierra.
+    net.play_time_base_seconds = save_meta_base.play_time_seconds;
 
     let dt = 1.0 / TICK_HZ as f32;
     let entity_dt = dt * ENTITY_TICK_EVERY as f32;
@@ -940,6 +973,7 @@ pub async fn run(
                                 &net.stp_harvestables,
                                 net.phantom_density_scale,
                                 &net.sprays.all(),
+                                net.loot_marks.all(),
                             ) {
                                 Ok(()) => info!(
                                     "ADR-032: save-on-shutdown written to {}",
@@ -1419,6 +1453,7 @@ pub async fn run(
                     &net.stp_harvestables,
                     net.phantom_density_scale,
                     &net.sprays.all(),
+                    net.loot_marks.all(),
                 ) {
                     Ok(()) => info!(
                         "ADR-032: world save on local IPC disconnect written to {}",
@@ -2370,6 +2405,49 @@ pub async fn run(
                     );
                 }
                 sync::broadcast_stp_harvestables(&mut net).await;
+                // ADR-115 — el saqueo, en el mismo sitio y por el mismo motivo que la línea de
+                // arriba: por barrido del roster, no en el camino de la toma. Dos pasos:
+                //   1. Un cofre que ya no está es un cofre que alguien vació (el mapa de
+                //      `corpses` no se poda por ninguna otra razón), así que deja marca.
+                //   2. Caducidad y techo. Aquí caducan también las marcas que llegaron del save,
+                //      sin que nadie tenga que darlas de alta.
+                let world_now = world_now_seconds(net.play_time_base_seconds, tick);
+                let live_chests: Vec<(i32, i32)> = world
+                    .corpses
+                    .values()
+                    .filter(|c| c.is_chest)
+                    .map(|c| crate::world::loot_marks::chunk_of(c.position))
+                    .collect();
+                let chest_marks = crate::world::loot_marks::reconcile_chest_marks(
+                    live_chests,
+                    &mut net.seen_chest_chunks,
+                    &mut net.loot_marks,
+                    world_now,
+                );
+                if chest_marks > 0 {
+                    info!(
+                        "MPTRACE step=LM event=chests_emptied_marked count={chest_marks} world_now={world_now}"
+                    );
+                }
+                let pruned = net.loot_marks.prune(world_now);
+                if pruned.expired > 0 {
+                    info!(
+                        "MPTRACE step=LM event=loot_marks_expired count={} ttl_secs={} remaining={}",
+                        pruned.expired,
+                        crate::world::loot_marks::LOOT_MARK_TTL_SECONDS,
+                        net.loot_marks.len()
+                    );
+                }
+                if pruned.over_cap > 0 {
+                    // Aviso y no `info`: el techo recortando significa que el mundo saqueado ya
+                    // no cabe entero en el save, y eso tiene que NOTARSE en vez de degradarse en
+                    // silencio (ADR-115 D7/P3).
+                    warn!(
+                        "ADR-115: techo de marcas de saqueo alcanzado; {} marcas antiguas descartadas (max={})",
+                        pruned.over_cap,
+                        crate::world::loot_marks::MAX_LOOT_MARKS
+                    );
+                }
                 // ADR-028 Fase E: full corpse roster (host-authoritative, self-healing).
                 sync::broadcast_corpses(&mut net, &world).await;
                 // ADR-093 (E4): si tocó avanzar epoch, hazlo ANTES del broadcast de abajo —
@@ -2492,6 +2570,7 @@ pub async fn run(
                 &net.stp_harvestables,
                 net.phantom_density_scale,
                 &net.sprays.all(),
+                net.loot_marks.all(),
             ) {
                 Ok(()) => info!("ADR-032: autosave written to {}", save_path.display()),
                 Err(e) => warn!("ADR-032: autosave failed: {e}"),
@@ -4611,6 +4690,7 @@ async fn handle_action(
                 position,
                 items,
                 processed_interactions,
+                &net.loot_marks,
             ) {
                 Ok(chest_id) => info!(
                     "MPTRACE step=CHEST event=chest_seeded chest_id={} pos=({:.2},{:.2},{:.2}) request_id={}",
@@ -4620,6 +4700,97 @@ async fn handle_action(
                     "MPTRACE step=CHEST event=chest_seed_ignored reason={reason} request_id={request_id}"
                 ),
             }
+        }
+        // ADR-115 D9 — el cliente dice QUÉ punto de loot se llevó; el backend estampa CUÁNDO.
+        //
+        // El reparto es así porque ninguno de los dos sabe las dos mitades: la tripleta
+        // `(cx, cz, slot)` sale del sorteo que corre en `ChunkLootManager` y el backend no la ve
+        // (por el cable sólo viajan ids), mientras que el reloj de mundo sólo existe aquí.
+        //
+        // Host-only, como todo lo que decide estado. Va en lote porque el cliente absorbe varios
+        // pickups en un mismo barrido, y un `request_id` por lote basta para el dedupe.
+        "report_loot_taken" => {
+            if !net.is_host {
+                return;
+            }
+            let request_id = json_u64(&action.data, "request_id").unwrap_or(0);
+            if !processed_interactions.insert((player.id, request_id)) {
+                return;
+            }
+            let now = world_now_seconds(net.play_time_base_seconds, tick);
+            let mut marked = 0usize;
+            let mut skipped = 0usize;
+            if let Some(arr) = action.data.get("marks").and_then(|v| v.as_array()) {
+                for m in arr {
+                    let (Some(cx), Some(cz), Some(slot), Some(kind)) = (
+                        m.get("cx").and_then(|v| v.as_i64()),
+                        m.get("cz").and_then(|v| v.as_i64()),
+                        m.get("slot").and_then(|v| v.as_i64()),
+                        m.get("kind")
+                            .and_then(|v| v.as_i64())
+                            .and_then(crate::world::loot_marks::LootMarkKind::from_wire),
+                    ) else {
+                        // Un canal desconocido o un campo que falta se DESCARTA en vez de
+                        // degradar a un valor por defecto: marcar el punto equivocado esconde
+                        // loot que nadie se llevó, y eso no se nota nunca.
+                        skipped += 1;
+                        continue;
+                    };
+                    if net
+                        .loot_marks
+                        .mark(kind, cx as i32, cz as i32, slot as i32, now)
+                    {
+                        marked += 1;
+                    }
+                }
+            }
+            info!(
+                "MPTRACE step=LM event=loot_taken_reported marked={} skipped={} total={} world_now={}",
+                marked,
+                skipped,
+                net.loot_marks.len(),
+                now
+            );
+        }
+        // ADR-115 D6/P5 — la puerta de arranque. El cliente pide las marcas antes de sembrar
+        // nada; hasta que llega esta respuesta no siembra, y por eso la respuesta se manda
+        // SIEMPRE, también cuando la lista está vacía: un mundo sin saquear tiene que poder
+        // decirlo, o el cliente esperaría para siempre.
+        //
+        // Viaja como `GameEvent` de texto libre —el bus que ya lleva `session_joined` y
+        // `player_joined`— para no tocar `WIRE_SCHEMA_VERSION` por un dato que no cambia la forma
+        // de ningún mensaje (ADR-115 D8/P2).
+        "request_loot_marks" => {
+            if !net.is_host {
+                return;
+            }
+            let marks: Vec<serde_json::Value> = net
+                .loot_marks
+                .all()
+                .iter()
+                .map(|m| {
+                    serde_json::json!({
+                        "cx": m.cx,
+                        "cz": m.cz,
+                        "slot": m.slot,
+                        "kind": m.kind.to_wire(),
+                        "taken_at": m.taken_at,
+                    })
+                })
+                .collect();
+            let now = world_now_seconds(net.play_time_base_seconds, tick);
+            info!(
+                "MPTRACE step=LM event=loot_marks_sent count={} world_now={}",
+                marks.len(),
+                now
+            );
+            let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                event_type: "loot_marks".into(),
+                // `world_now` va con la lista y no se deduce en el cliente: allí el reloj es
+                // `Time.unscaledTime`, que arranca en cero en cada proceso. Con los dos números
+                // el cliente traduce cada sello a "hace cuánto", que es lo único que necesita.
+                data: serde_json::json!({ "world_now": now, "marks": marks }),
+            }));
         }
         // ADR-028 Fase A: loot one stack from a corpse. The server only keeps the container
         // accounting (the granted stack's destination — the looter's STP inventory — lives
@@ -7224,6 +7395,10 @@ fn json_vec3(value: &serde_json::Value, key: &str) -> Option<[f32; 3]> {
 /// action, extracted so host-gate/dedupe/empty-loot rules are unit-testable without a live
 /// NetworkManager. Dedupe rides the SAME `processed_interactions` set `world_interact` uses,
 /// keyed (player, request_id).
+// El octavo argumento son las marcas de ADR-115. Agruparlos en un struct sería inventar un tipo
+// para callar a clippy: los ocho son entradas de una decisión pura, y esa pureza es lo que hace
+// que esta función sea la única parte de la siembra de cofres que se puede probar sin red.
+#[allow(clippy::too_many_arguments)]
 fn handle_spawn_world_chest(
     world: &mut World,
     is_host: bool,
@@ -7232,6 +7407,10 @@ fn handle_spawn_world_chest(
     position: Vec3,
     items: Vec<crate::world::corpse::CorpseStack>,
     processed_interactions: &mut BoundedDedupeSet<(u16, u64)>,
+    // ADR-115 — las marcas de saqueo. La puerta contra resembrar un cofre ya vaciado vive AQUÍ y
+    // no en el cliente: el sembrador corre en el Unity del host, y una guarda que sólo existe
+    // allí se cae con cualquier fallo suyo. Además el cliente no conoce el reloj de mundo.
+    loot_marks: &crate::world::loot_marks::LootMarkStore,
 ) -> Result<u32, &'static str> {
     if !is_host {
         return Err("not_host");
@@ -7261,6 +7440,18 @@ fn handle_spawn_world_chest(
         .any(|c| c.is_chest && same_chest_spot(c.position, position))
     {
         return Err("chest_already_seeded");
+    }
+    // ADR-115 — y este es el caso que la guardia de arriba NO puede ver: un cofre VACIADO ya no
+    // está en `world.corpses`, así que "no hay cofre aquí" y "aquí ya se lo llevaron" eran
+    // indistinguibles. De ahí que reiniciar resembrara con botín nuevo cada cofre saqueado.
+    let (cx, cz) = crate::world::loot_marks::chunk_of(position);
+    if loot_marks.contains(
+        crate::world::loot_marks::LootMarkKind::Chest,
+        cx,
+        cz,
+        crate::world::loot_marks::CHEST_SLOT,
+    ) {
+        return Err("chest_recently_looted");
     }
     Ok(world.spawn_chest(position, items))
 }

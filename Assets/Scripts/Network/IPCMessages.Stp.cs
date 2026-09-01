@@ -58,6 +58,36 @@ namespace BackroomsSurvival.Net
     }
 
     /// <summary>
+    /// ADR-115 — el canal que sorteó un punto de loot. Los valores son de CABLE: tienen que
+    /// coincidir con <c>LootMarkKind::from_wire</c> del backend, que descarta cualquier otro
+    /// número en vez de degradarlo a un canal por defecto.
+    /// </summary>
+    public enum LootMarkKind
+    {
+        Item = 0,
+        Carryable = 1,
+        Chest = 2,
+    }
+
+    /// <summary>
+    /// ADR-115 D1/D2 — un punto de loot ya saqueado. La clave es el SORTEO, no el objeto: el net
+    /// id se reasigna en cada sesión, así que identificar por id no sobreviviría a un reinicio,
+    /// que es exactamente lo que esto tiene que hacer.
+    ///
+    /// `takenAt` va en segundos de TIEMPO DE MUNDO y sólo lo rellena el backend al devolver las
+    /// marcas: este lado nunca lo estampa (su reloj, `Time.unscaledTime`, arranca en cero en cada
+    /// proceso), sólo lo traduce a "hace cuánto".
+    /// </summary>
+    public struct LootMarkSpec
+    {
+        public int cx;
+        public int cz;
+        public int slot;
+        public LootMarkKind kind;
+        public long takenAt;
+    }
+
+    /// <summary>
     /// Phase B1 — one host-authoritative STP building piece replicated in
     /// world_state.stp_buildings. id = network instance id (host-assigned); defId =
     /// STP BuildingPieceDefinition id (stable across instances).

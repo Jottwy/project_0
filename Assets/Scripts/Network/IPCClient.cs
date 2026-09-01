@@ -1224,6 +1224,49 @@ namespace BackroomsSurvival.Net
         }
 
         /// <summary>
+        /// ADR-115 D6/P5 — pide al backend las marcas de saqueo del mundo cargado. La respuesta
+        /// llega como evento <c>loot_marks</c> (bus de texto libre: NO toca el wire binario, así
+        /// que no hay bump de esquema ni espejo que sincronizar).
+        ///
+        /// Es la puerta de arranque: <see cref="ChunkLootManager"/> no siembra nada hasta que la
+        /// respuesta llega. Sin ella, el host regalaría en el primer segundo de partida todo el
+        /// loot que el save ya daba por saqueado.
+        /// </summary>
+        public void SendRequestLootMarks()
+        {
+            SendActionFrame(ProtocolActionTypes.RequestLootMarks, 0, _ => { });
+        }
+
+        /// <summary>
+        /// ADR-115 D9 — informa de los puntos de loot que el jugador acaba de llevarse. El reparto
+        /// es: este lado sabe QUÉ punto (la tripleta del sorteo, que no viaja por el cable) y el
+        /// backend sabe CUÁNDO (el reloj de mundo, que sólo existe allí).
+        ///
+        /// En lote porque un barrido absorbe varios pickups a la vez; un <paramref name="requestId"/>
+        /// por lote basta para el dedupe del backend.
+        /// </summary>
+        public void SendReportLootTaken(long requestId, System.Collections.Generic.IReadOnlyList<LootMarkSpec> marks)
+        {
+            if (marks == null || marks.Count == 0)
+                return;
+
+            SendActionFrame(ProtocolActionTypes.ReportLootTaken, 2, w =>
+            {
+                w.WriteString("request_id"); w.WriteInt(requestId);
+                w.WriteString("marks"); w.WriteArrayHeader(marks.Count);
+                for (int i = 0; i < marks.Count; i++)
+                {
+                    var m = marks[i];
+                    w.WriteMapHeader(4);
+                    w.WriteString("cx"); w.WriteInt(m.cx);
+                    w.WriteString("cz"); w.WriteInt(m.cz);
+                    w.WriteString("slot"); w.WriteInt(m.slot);
+                    w.WriteString("kind"); w.WriteInt((int)m.kind);
+                }
+            });
+        }
+
+        /// <summary>
         /// ADR-028 Fase D: report a loot withdrawal from a corpse's container. The actual item
         /// move (corpse → looter's inventory) already happened locally via StorageStationUI; this
         /// only mirrors it to the server's CorpseData so despawn-when-empty and a future cross-

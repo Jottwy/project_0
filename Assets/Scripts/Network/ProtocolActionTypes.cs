@@ -37,6 +37,15 @@ namespace BackroomsSurvival.Net
         /// <summary>ADR-028 amendment (world chests): host seeds one supply chest (position +
         /// loot picked client-side; host-only server-side, deduped by request_id).</summary>
         public const string SpawnWorldChest = "spawn_world_chest";
+        /// <summary>ADR-115 D9: informa de QUÉ punto de loot se llevó el jugador —la tripleta
+        /// (cx, cz, slot) del sorteo, que sólo conoce este lado— para que el backend le ponga
+        /// sello de tiempo de mundo y lo guarde. En lote: un barrido puede absorber varios
+        /// pickups, y un request_id por lote basta para el dedupe.</summary>
+        public const string ReportLootTaken = "report_loot_taken";
+        /// <summary>ADR-115 D6/P5: pide las marcas de saqueo al arrancar. Hasta que llega la
+        /// respuesta (evento <c>loot_marks</c>) no se siembra NADA, o el host regalaría en el
+        /// primer segundo de partida el loot que ya estaba saqueado.</summary>
+        public const string RequestLootMarks = "request_loot_marks";
         /// <summary>ADR-029 Fase 1: report a candidate PvP hit. Unity never applies PvP damage.</summary>
         public const string PvpHitCandidate = "pvp_hit_candidate";
         /// <summary>ADR-030: report a consumed item (eat/drink) so the server-authoritative

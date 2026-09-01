@@ -289,6 +289,21 @@ pub struct NetworkManager {
     /// guardó y empieza a contar desde la carga. Sólo el host la llena; en un joiner queda vacía
     /// porque su roster lo escribe el relay, no un golpe.
     pub depleted_harvestables_at: HashMap<u32, std::time::Instant>,
+    /// ADR-115 — qué puntos de loot ya se llevaron, y cuándo (en segundos de tiempo de mundo).
+    ///
+    /// A diferencia de `depleted_harvestables_at`, esto SÍ se persiste: es la pieza entera del
+    /// ADR. Vive aquí, junto a los rosters STP, porque es el mismo tipo de estado —del host,
+    /// guardado, y consultado por las mismas rutas— y porque `build_save` ya recoge de aquí.
+    pub loot_marks: crate::world::loot_marks::LootMarkStore,
+    /// ADR-115 — las columnas con cofre VIVO en la ronda anterior. Diferencia contra la ronda
+    /// actual = cofres vaciados = marcas nuevas. En memoria a propósito: tras cargar arranca
+    /// vacío y la primera ronda no marca nada, que es justo lo que debe pasar (un cofre que
+    /// llega del save no es un cofre que alguien acaba de vaciar).
+    pub seen_chest_chunks: std::collections::HashSet<(i32, i32)>,
+    /// ADR-115 D3 — el tiempo jugado que traía el save, la BASE del reloj de mundo. El reloj
+    /// completo es `play_time_base_seconds + tick / TICK_HZ`; sin la base, cada reinicio contaría
+    /// desde cero y una marca de hace dos horas parecería recién puesta.
+    pub play_time_base_seconds: u64,
     /// ADR-068: the world's sprays, indexed by chunk. It lives beside the STP rosters because
     /// it is the same kind of state — host-authoritative, replicated, persisted — but it is
     /// NOT relayed per tick: sprays hydrate with the chunk (`GridChunkData::sprays`) and a new
@@ -544,6 +559,9 @@ impl NetworkManager {
             stp_harvestables: Vec::new(),
             processed_stp_harvest_hits: BoundedDedupeSet::with_capacity(DEDUPE_CAP),
             depleted_harvestables_at: HashMap::new(),
+            loot_marks: crate::world::loot_marks::LootMarkStore::new(),
+            seen_chest_chunks: std::collections::HashSet::new(),
+            play_time_base_seconds: 0,
             sprays: crate::world::spray::SprayStore::new(),
             processed_spray_places: BoundedDedupeSet::with_capacity(DEDUPE_CAP),
             requested_spray_chunks: std::collections::HashSet::with_capacity(128),

@@ -103,10 +103,15 @@ namespace BackroomsSurvival.Net
         private readonly HashSet<(int cx, int cz)> _generatedItemChunks = new HashSet<(int, int)>();
         private readonly HashSet<(int cx, int cz)> _generatedCarryChunks = new HashSet<(int, int)>();
 
-        // Session pickup memory (host-side, never persisted). A collected slot is skipped when its
-        // chunk regenerates.
+        // Pickup memory (host-side). A collected slot is skipped when its chunk regenerates.
         //
-        // ITEMS: permanent for the session (no timed respawn) → plain set.
+        // ADR-115: los DOS canales llevan ahora sello de tiempo, y los dos SOBREVIVEN al reinicio
+        // (el backend guarda la marca; esto es la copia de trabajo del barrido). Antes de ese ADR
+        // esto era memoria de sesión pura: reiniciar devolvía el mundo entero sin tocar, o sea que
+        // el relog era el regenerador universal del juego.
+        //
+        // ITEMS: caducan a LootMarkTtlSeconds (ADR-115 D4/D12). Antes: nunca dentro de la sesión,
+        // siempre al relogear.
         // CARRYABLES (construction materials): timed respawn (2026-07-07 balance). Each collected
         // slot stores WHEN it was taken; after CarryableRespawnSeconds it EXPIRES from this set,
         // its chunk is un-sealed and its still-live loot forgotten, so the next scan re-rolls the
@@ -114,10 +119,15 @@ namespace BackroomsSurvival.Net
         // (This is why carryables key on time, not just presence: the "confirmed" set the previous
         // slice added is untouched — a respawned material simply gets a NEW id and re-confirms
         // normally; the behavioural change lives entirely in this collected set.)
-        private readonly HashSet<(int cx, int cz, int slot)> _collectedItems = new HashSet<(int, int, int)>();
+        // Sus 30 min NO se tocan (ADR-115 D13): lo único que cambia es que el reloj ya no empieza
+        // de cero en cada arranque.
+        private readonly Dictionary<(int cx, int cz, int slot), float> _collectedItems = new Dictionary<(int, int, int), float>();
         private readonly Dictionary<(int cx, int cz, int slot), float> _collectedCarry = new Dictionary<(int, int, int), float>();
         // TODO(balance): 30 min. Only construction-material carryables respawn on this timer.
         private const float CarryableRespawnSeconds = 1800f;
+        /// <summary>ADR-115 D4. Una sola definición en este lado, en <see cref="LootMarkClock"/>,
+        /// que es donde vive la aritmética que sí se puede probar sin Unity.</summary>
+        private const float LootMarkTtlSeconds = LootMarkClock.TtlSeconds;
 
         // network id → (chunk, slot) of loot WE placed and that is still live. This is our authority on
         // which mirror ids are ours (the mirror carries no chunk/slot info) — used for pickup-diff,
@@ -141,6 +151,26 @@ namespace BackroomsSurvival.Net
         private readonly HashSet<(int, int, int)> _desiredScratch = new HashSet<(int, int, int)>();
         private readonly HashSet<(int cx, int cz)> _desiredColumns = new HashSet<(int, int)>();
 
+        // ── ADR-115: marcas de saqueo ─────────────────────────────────────────────────────────
+        /// <summary>Nombre del evento con el que el backend contesta a `request_loot_marks`.</summary>
+        private const string LootMarksEvent = "loot_marks";
+        /// <summary>P5, la puerta de arranque: mientras esto sea false NO se siembra nada. Sin
+        /// ella, el host regalaría en el primer segundo de partida el loot que el save ya daba por
+        /// saqueado, y `warmupSeconds` es un margen, no una garantía.</summary>
+        private bool _marksHydrated;
+        private float _nextMarksRequestAt;
+        /// <summary>Se reintenta la petición: el backend puede no estar listo en el primer envío,
+        /// y quedarse esperando en silencio sería un mundo sin loot para siempre.</summary>
+        private const float MarksRequestRetrySeconds = 2f;
+        private IPCClient _listeningTo;
+        /// <summary>Base de `request_id` de los informes de saqueo, distinta de la de los otros
+        /// emisores porque el dedupe del backend es `(player_id, request_id)` y comparten set.</summary>
+        private const long LootReportIdBase = 0x4C_4D_41_52_4B_53L << 8; // "LMARKS"
+        private long _nextLootReportId;
+        /// <summary>Marcas absorbidas este barrido, pendientes de informar. Se mandan en lote:
+        /// un barrido puede recoger varios pickups a la vez.</summary>
+        private readonly List<LootMarkSpec> _pendingMarkReports = new List<LootMarkSpec>();
+
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void Bootstrap()
         {
@@ -156,6 +186,11 @@ namespace BackroomsSurvival.Net
 
         private void OnDestroy()
         {
+            if (_listeningTo != null)
+            {
+                _listeningTo.RemoveEventListener(OnLootMarksEvent);
+                _listeningTo = null;
+            }
             if (_instance == this)
                 _instance = null;
         }
@@ -187,6 +222,20 @@ namespace BackroomsSurvival.Net
                 _warmedUp = true;
             }
 
+            // ADR-115 D6/P5 — la puerta de arranque. Nada se siembra hasta que el backend haya
+            // contestado con las marcas del mundo cargado. La respuesta llega SIEMPRE, también
+            // vacía, así que esto no puede quedarse colgado por un mundo virgen.
+            EnsureMarkListener(ipc);
+            if (!_marksHydrated)
+            {
+                if (Time.unscaledTime >= _nextMarksRequestAt)
+                {
+                    _nextMarksRequestAt = Time.unscaledTime + MarksRequestRetrySeconds;
+                    ipc.SendRequestLootMarks();
+                }
+                return;
+            }
+
             var cam = Camera.main;
             if (cam == null)
                 return; // no local camera yet (host not in a playable scene)
@@ -195,6 +244,10 @@ namespace BackroomsSurvival.Net
             // the same scan it leaves the ring is remembered as taken (not forgotten-and-regenerated).
             AbsorbItemPickups(state.stpItems);
             AbsorbCarryPickups(state.stpCarryables);
+            // ADR-115 D9: lo absorbido se informa AQUÍ, en un lote, antes de tocar el mundo. El
+            // backend le pone el sello de tiempo — este lado no tiene reloj que sobreviva al
+            // proceso, y ese es justo el motivo de que la autoridad sea suya.
+            FlushLootReports(ipc);
 
             // STEP 1: current ring → desired columns (reuse ChunkStreamer's public ring; layerCount=1
             // gives the (cx,cz) column ring directly — placement is single-layer).
@@ -235,7 +288,11 @@ namespace BackroomsSurvival.Net
             foreach (var id in _idRemovalScratch)
             {
                 var v = _liveItems[id];
-                _collectedItems.Add((v.cx, v.cz, v.slot));
+                // ADR-115 D12: los items dejaron de ser "para siempre en esta sesión" y pasaron a
+                // llevar sello, igual que los materiales. Lo que cambia de verdad no es el reloj:
+                // es que el sello ahora se persiste, así que salir y entrar ya no lo devuelve.
+                _collectedItems[(v.cx, v.cz, v.slot)] = _now;
+                QueueMarkReport(LootMarkKind.Item, v.cx, v.cz, v.slot);
                 _liveItems.Remove(id);
                 _confirmedItems.Remove(id);
             }
@@ -258,6 +315,7 @@ namespace BackroomsSurvival.Net
             {
                 var v = _liveCarry[id];
                 _collectedCarry[(v.cx, v.cz, v.slot)] = _now; // stamp WHEN taken → drives the respawn timer
+                QueueMarkReport(LootMarkKind.Carryable, v.cx, v.cz, v.slot);
                 _liveCarry.Remove(id);
                 _confirmedCarry.Remove(id);
             }
@@ -268,9 +326,14 @@ namespace BackroomsSurvival.Net
         {
             _removedIds.Clear();
             CollectUnloads(_generatedItemChunks, _liveItems); // appends to _removedIds, prunes generated+live
+            // ADR-115 D5/D12 — mismo mecanismo que los materiales, y en el MISMO orden y por la
+            // misma razón: descargar primero (mientras la columna sigue en `_generated…`) y
+            // caducar después, o una columna que caduque y salga del anillo en el mismo barrido
+            // dejaría sus ids huérfanos en el broadcast.
+            ExpireItems();
             foreach (var id in _removedIds) _confirmedItems.Remove(id);
             LiveSlotsOf(_liveItems);
-            CollectLoads(_generatedItemChunks, _collectedItems, ChunkLootRoll.RollItems,
+            CollectLoads(_generatedItemChunks, _collectedItems.Keys, ChunkLootRoll.RollItems,
                          ChunkLootRoll.RollItemsByStyle, rayY);
 
             if (_removedIds.Count == 0 && _pendingPlacements.Count == 0)
@@ -677,6 +740,124 @@ namespace BackroomsSurvival.Net
                 _collectedCarry.Remove(key);
                 _generatedCarryChunks.Remove((key.cx, key.cz)); // un-seal → CollectLoads re-rolls it
             }
+        }
+
+        /// <summary>ADR-115 D5 — gemelo exacto de <see cref="ExpireCarryables"/> para el canal de
+        /// items, con su propio TTL. Se copia el mecanismo entero en vez de generalizarlo: son dos
+        /// canales con dos cadencias que el ADR mantiene separadas a propósito, y compartir el
+        /// código invitaría a compartir también el número.</summary>
+        private void ExpireItems()
+        {
+            if (_collectedItems.Count == 0) return;
+
+            SelectExpired(_collectedItems, _now, LootMarkTtlSeconds, _expiredScratch);
+            if (_expiredScratch.Count == 0) return;
+
+            foreach (var key in _expiredScratch)
+            {
+                _collectedItems.Remove(key);
+                _generatedItemChunks.Remove((key.cx, key.cz)); // un-seal → CollectLoads re-rolls it
+            }
+        }
+
+        // ── ADR-115: informe y puerta de arranque ─────────────────────────────────────────────
+
+        /// <summary>Se engancha una sola vez, y de nuevo si la conexión cambia de instancia: una
+        /// reconexión trae otro `IPCClient` y el oyente viejo dejaría al mundo esperando marcas que
+        /// ya no van a llegar.</summary>
+        private void EnsureMarkListener(IPCClient ipc)
+        {
+            if (ReferenceEquals(_listeningTo, ipc)) return;
+
+            if (_listeningTo != null)
+                _listeningTo.RemoveEventListener(OnLootMarksEvent);
+            ipc.AddEventListener(OnLootMarksEvent);
+            _listeningTo = ipc;
+            // Otra conexión = otra sesión del backend: hay que volver a pedir las marcas antes de
+            // sembrar, aunque ya se hubieran hidratado con la anterior.
+            _marksHydrated = false;
+            _nextMarksRequestAt = 0f;
+            // Y los `request_id` arrancan en otro tramo, porque el dedupe del backend
+            // (`processed_interactions`) sobrevive a la reconexión si el proceso no se ha ido.
+            _nextLootReportId = LootReportIdBase + (long)ipc.ConnectionEpoch * 1000000L;
+        }
+
+        /// <summary>
+        /// ADR-115 D6 — hidrata la memoria de saqueo desde el mundo guardado.
+        ///
+        /// El sello llega en segundos de TIEMPO DE MUNDO y aquí el reloj es `Time.unscaledTime`,
+        /// que arranca en cero en cada proceso: los dos números no son comparables. Lo que se
+        /// traduce es el TRANSCURRIDO —`world_now - taken_at`— y se resta del reloj local, con lo
+        /// que una marca de hace 40 min queda sellada 40 min en el pasado y las dos caducidades
+        /// (30 min de materiales, 2 h de items) siguen midiendo lo que siempre midieron.
+        /// </summary>
+        private void OnLootMarksEvent(GameEventMsg ev)
+        {
+            if (ev == null || ev.eventType != LootMarksEvent)
+                return;
+
+            var data = ev.data as Dictionary<string, object>;
+            if (data == null)
+            {
+                // Sin payload no hay nada que hidratar, pero la puerta SÍ se abre: quedarse
+                // esperando dejaría el mundo sin loot para siempre, que es peor que sembrar de más.
+                _marksHydrated = true;
+                Debug.LogWarning("[ChunkLootManager] evento loot_marks sin payload; se siembra sin memoria de saqueo.");
+                return;
+            }
+
+            long worldNow = IPCParse.ToLong(IPCParse.Get(data, "world_now"));
+            float now = Time.unscaledTime;
+            int items = 0, carry = 0, chests = 0;
+
+            if (IPCParse.Get(data, "marks") is List<object> marks)
+            {
+                foreach (var raw in marks)
+                {
+                    if (!(raw is Dictionary<string, object> m)) continue;
+                    int cx = (int)IPCParse.ToLong(IPCParse.Get(m, "cx"));
+                    int cz = (int)IPCParse.ToLong(IPCParse.Get(m, "cz"));
+                    int slot = (int)IPCParse.ToLong(IPCParse.Get(m, "slot"));
+                    long kind = IPCParse.ToLong(IPCParse.Get(m, "kind"));
+                    long takenAt = IPCParse.ToLong(IPCParse.Get(m, "taken_at"));
+
+                    float stamp = LootMarkClock.StampFromWorldTime(now, worldNow, takenAt);
+                    switch ((LootMarkKind)kind)
+                    {
+                        case LootMarkKind.Item:
+                            _collectedItems[(cx, cz, slot)] = stamp;
+                            items++;
+                            break;
+                        case LootMarkKind.Carryable:
+                            _collectedCarry[(cx, cz, slot)] = stamp;
+                            carry++;
+                            break;
+                        default:
+                            // Los cofres NO se hidratan aquí: su puerta vive en el backend
+                            // (`chest_recently_looted`), que es quien siembra la decisión y quien
+                            // conoce el reloj. Se cuentan sólo para el log.
+                            chests++;
+                            break;
+                    }
+                }
+            }
+
+            _marksHydrated = true;
+            Debug.Log($"[ChunkLootManager] marcas de saqueo hidratadas: {items} items, {carry} materiales, " +
+                      $"{chests} cofres (world_now={worldNow}).");
+        }
+
+        private void QueueMarkReport(LootMarkKind kind, int cx, int cz, int slot)
+        {
+            _pendingMarkReports.Add(new LootMarkSpec { cx = cx, cz = cz, slot = slot, kind = kind });
+        }
+
+        private void FlushLootReports(IPCClient ipc)
+        {
+            if (_pendingMarkReports.Count == 0) return;
+
+            ipc.SendReportLootTaken(_nextLootReportId++, _pendingMarkReports);
+            _pendingMarkReports.Clear();
         }
 
         /// <summary>Pure: collect keys whose stamped time is at least <paramref name="ttlSeconds"/>

@@ -120,6 +120,14 @@ pub struct SaveFile {
     /// dispara, este es el primer sitio donde mirar.
     #[serde(default)]
     pub sprays: Vec<crate::world::spray::Spray>,
+    /// ADR-115 — qué puntos de loot ya se llevaron, y en qué segundo de tiempo de mundo. Este
+    /// campo ES el ADR: sin él, el saqueo vive sólo en la RAM del cliente y reiniciar devuelve el
+    /// mundo entero sin tocar.
+    ///
+    /// `#[serde(default)]` = un save anterior a ADR-115 carga con la lista vacía, o sea con el
+    /// comportamiento de hoy exactamente, sin migración ni `.bak` (ADR-032 punto 5).
+    #[serde(default)]
+    pub loot_marks: Vec<crate::world::loot_marks::LootMark>,
 }
 
 fn default_phantom_density_scale() -> f32 {
@@ -176,6 +184,7 @@ impl SaveFile {
             stp_harvestables: Vec::new(),
             phantom_density_scale: 1.0,
             sprays: Vec::new(),
+            loot_marks: Vec::new(),
         }
     }
 
@@ -280,6 +289,9 @@ pub fn build_save(
     // ADR-068. Ultimo, y no junto a los rosters STP, a proposito: asi los ~11 sitios que ya
     // llamaban a esto anaden un argumento al final en vez de reordenar los que tenian.
     sprays: &[crate::world::spray::Spray],
+    // ADR-115. Al final por la misma razon que `sprays`, y con el mismo resultado: los sitios que
+    // ya llamaban a esto anaden `&[]` y siguen diciendo lo mismo que decian.
+    loot_marks: &[crate::world::loot_marks::LootMark],
 ) -> SaveFile {
     let mut corpses: Vec<CorpseData> = world.corpses.values().cloned().collect();
     // Stable ordering for a deterministic file (mirrors visible_corpse_views' sort rationale).
@@ -301,6 +313,7 @@ pub fn build_save(
     save.stp_harvestables = stp_harvestables.to_vec();
     save.phantom_density_scale = phantom_density_scale;
     save.sprays = sprays.to_vec();
+    save.loot_marks = loot_marks.to_vec();
     save
 }
 
@@ -318,6 +331,7 @@ pub fn save_world<P: AsRef<Path>>(
     stp_harvestables: &[StpHarvestableInfo],
     phantom_density_scale: f32,
     sprays: &[crate::world::spray::Spray],
+    loot_marks: &[crate::world::loot_marks::LootMark],
 ) -> std::io::Result<()> {
     let mut save = build_save(
         session_name,
@@ -330,6 +344,7 @@ pub fn save_world<P: AsRef<Path>>(
         stp_harvestables,
         phantom_density_scale,
         sprays,
+        loot_marks,
     );
     save.save_to(path)
 }
@@ -442,6 +457,7 @@ mod tests {
             &carryables,
             &harvestables,
             2.5,
+            &[],
             &[],
         )
         .expect("save should succeed");
@@ -559,6 +575,7 @@ mod tests {
             &[],
             &[],
             2.5,
+            &[],
             &[],
         )
         .expect("save should succeed");
@@ -704,6 +721,7 @@ mod tests {
             &[],
             1.0,
             &[],
+            &[],
         )
         .expect("first save");
 
@@ -719,6 +737,7 @@ mod tests {
             &[],
             &[],
             1.0,
+            &[],
             &[],
         )
         .expect("second save");
@@ -755,6 +774,7 @@ mod tests {
             &[],
             1.0,
             &[],
+            &[],
         )
         .expect("first save");
         let first = load_or_fresh(&path).expect("first save must load");
@@ -778,6 +798,7 @@ mod tests {
             &[],
             &[],
             1.0,
+            &[],
             &[],
         )
         .expect("second save");
@@ -803,6 +824,7 @@ mod tests {
             &[],
             &[],
             1.0,
+            &[],
             &[],
         )
         .expect("third save");
@@ -919,6 +941,7 @@ mod tests {
                 &[],
                 1.0,
                 &sprays,
+                &[],
             );
 
             // Serialización sola, que es la parte que se queda dentro del tick pase lo que pase.
@@ -974,6 +997,86 @@ mod tests {
         }
     }
 
+    /// ADR-115: el saqueo tiene que sobrevivir al ciclo de guardado. Si este test cae, el mundo
+    /// vuelve a regenerarse entero al relogear, que es el agujero que el ADR cierra.
+    #[test]
+    fn loot_marks_round_trip_through_the_save_file() {
+        use crate::world::loot_marks::{LootMark, LootMarkKind};
+
+        let world = seeded_world();
+        let player = Player::new(1, "Host");
+        let path = scratch_path("loot_marks_round_trip");
+        let marks = vec![
+            LootMark {
+                cx: 3,
+                cz: -7,
+                slot: 2,
+                kind: LootMarkKind::Item,
+                taken_at: 1_234,
+            },
+            LootMark {
+                cx: 0,
+                cz: 0,
+                slot: -1,
+                kind: LootMarkKind::Chest,
+                taken_at: 9_999,
+            },
+        ];
+
+        save_world(
+            &path,
+            "s",
+            &world,
+            &player,
+            &SaveMeta::default(),
+            &[],
+            &[],
+            &[],
+            &[],
+            1.0,
+            &[],
+            &marks,
+        )
+        .expect("save with loot marks must succeed");
+
+        let loaded = load_or_fresh(&path).expect("save with loot marks must load");
+        assert_eq!(
+            loaded.loot_marks, marks,
+            "las marcas deben volver con su canal y su sello intactos"
+        );
+    }
+
+    /// ADR-032 punto 5 / ADR-115 D8: un save escrito ANTES de que el campo existiera carga con la
+    /// lista vacía —o sea, con el comportamiento de siempre— y no por la vía del `.bak`.
+    #[test]
+    fn a_save_without_loot_marks_loads_with_none() {
+        let path = scratch_path("pre_adr115_save");
+        std::fs::create_dir_all(path.parent().unwrap()).ok();
+        let json = r#"{
+            "version": "0.1.0",
+            "world_seed": 42,
+            "session_name": "old",
+            "created_at": "2026-01-01T00:00:00Z",
+            "last_saved": "2026-01-01T00:00:00Z",
+            "play_time_seconds": 120,
+            "config": {
+                "max_players": 50,
+                "teleport_interval_min": 300,
+                "teleport_interval_max": 900,
+                "entity_scaling": 1.0
+            }
+        }"#;
+        std::fs::write(&path, json).expect("write legacy save");
+
+        let loaded = load_or_fresh(&path).expect("un save anterior debe cargar tal cual");
+        assert!(loaded.loot_marks.is_empty());
+        assert_eq!(loaded.play_time_seconds, 120);
+        assert!(
+            !path.with_extension("bak").exists(),
+            "un campo nuevo NO es un save corrupto"
+        );
+    }
+
     #[test]
     fn sprays_round_trip_through_the_save_file() {
         // El blob de puntos es lo delicado: en wire viaja como `bin`, pero JSON no tiene tipo
@@ -996,6 +1099,7 @@ mod tests {
             &[],
             1.0,
             &sprays,
+            &[],
         )
         .expect("save with sprays must succeed");
 
