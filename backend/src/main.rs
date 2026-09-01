@@ -188,7 +188,12 @@ async fn main() {
                 info!("Connecting to peer at {addr_str}");
             }
             Err(e) => {
+                // Registrarlo y seguir era el fallo: sin `initiate_connection` no arranca el
+                // presupuesto de `CONNECT_TIMEOUT`, así que este proceso se quedaba sirviendo un
+                // mundo en solitario sin decirle NUNCA nada a Unity. Ver
+                // `NetworkEvent::ConnectTargetInvalid`.
                 error!("Invalid CONNECT_TO address '{addr_str}': {e}");
+                net.reject_invalid_connect_target(&addr_str, &e.to_string());
             }
         }
     }

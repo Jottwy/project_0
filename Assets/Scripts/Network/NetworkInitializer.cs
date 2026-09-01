@@ -275,6 +275,35 @@ namespace BackroomsSurvival.Net
                     "Sal de la actual antes de arrancar otra.");
                 return;
             }
+            // La higiene del destino va AQUÍ y no en el panel porque éste es el embudo por el que
+            // pasan las tres rutas de join —manual, [Retry] y navegador de Steam—, así que una
+            // sola comprobación las cubre y ninguna futura se queda fuera. Ver
+            // `HostAddressInput`: en la sesión del 2026-08-31 una dirección PEGADA con un salto de
+            // línea produjo `CONNECT_TO=31.4.149.48\n:7778`, que no parsea.
+            //
+            // El rechazo es ANTES de `TerminateLeftoverBackend` y antes de lanzar nada: matar el
+            // backend anterior y arrancar otro condenado para que falle dentro es exactamente el
+            // camino largo que costó el diagnóstico.
+            string host = HostAddressInput.NormalizeOrDefault(serverIP);
+            if (!HostAddressInput.IsUsable(host, out string hostProblem))
+            {
+                CurrentRole = Role.None;
+                StatusMessage = $"Dirección inválida: {hostProblem}";
+                Debug.LogError($"[NetworkInitializer] Join abortado, {hostProblem}");
+                SessionState.Current.NotifyFailed(hostProblem);
+                return;
+            }
+            if (!string.Equals(host, serverIP, StringComparison.Ordinal))
+            {
+                // Que quede dicho: un valor que cambia al limpiarlo es el síntoma de un pegado, y
+                // sin esta línea el log enseña la dirección ya limpia y nadie sabría que venía
+                // sucia.
+                Debug.LogWarning(
+                    $"[NetworkInitializer] La dirección del host venía con espacio en blanco y se ha " +
+                    $"limpiado: {serverIP.Replace("\r", "\\r").Replace("\n", "\\n")} -> {host}");
+            }
+            serverIP = host;
+
             TerminateLeftoverBackend("arranque de joiner");
 
             CurrentRole = Role.Joiner;

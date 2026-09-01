@@ -23,7 +23,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use log::{debug, info, warn};
+use log::{debug, error, info, warn};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 
@@ -641,6 +641,23 @@ impl NetworkManager {
             self.local_id
         );
         self.send_handshake(addr).await;
+    }
+
+    /// El gemelo de `initiate_connection` para cuando NO hay dirección a la que conectarse.
+    ///
+    /// `pub` y no `pub(super)` —a diferencia de `push_pending_event`— porque su único llamante
+    /// legítimo está fuera del módulo: es `main.rs`, en la rama en la que `CONNECT_TO` no parsea.
+    /// El nombre acota el permiso: no es «empuja el evento que quieras», es «este destino no
+    /// vale». Ver `NetworkEvent::ConnectTargetInvalid` para lo que costaba no tenerlo.
+    pub fn reject_invalid_connect_target(&mut self, raw: &str, error: &str) {
+        error!(
+            "NETPROBE event=connect_target_invalid self_id={} raw={raw:?} error={error}",
+            self.local_id
+        );
+        self.push_pending_event(NetworkEvent::ConnectTargetInvalid {
+            raw: raw.to_string(),
+            error: error.to_string(),
+        });
     }
 
     async fn send_handshake(&mut self, addr: SocketAddr) {

@@ -2670,6 +2670,29 @@ async fn handle_network_event(
             }));
         }
 
+        NetworkEvent::ConnectTargetInvalid { raw, error } => {
+            // Mismo destino que sus dos hermanos, y por la misma razón: no se llegó a entrar en
+            // ningún mundo, así que no hay nada que persistir, y `session_ended` es el teardown
+            // que Unity YA sabe recorrer (ADR-056).
+            //
+            // La diferencia con ellos es CUÁNDO: éste se emite en el primer tick, no tras 15 s de
+            // presupuesto, porque no hay nada que esperar — la dirección no existe. Ese adelanto
+            // es justo lo que faltaba: antes el jugador esperaba 25 s a un backstop que no sabía
+            // decirle qué había pasado.
+            //
+            // El valor literal va ENTRECOMILLADO en el motivo, y eso no es estilo: es lo que hace
+            // visible un espacio en blanco al final, que es exactamente el fallo medido.
+            warn!("CONNECT_TO inválido {raw:?}: {error}");
+            let reason = format!(
+                "la dirección del host no es válida: {raw:?} ({error}) — revísala en el panel; \
+                 si la pegaste, puede llevar un espacio o un salto de línea invisible"
+            );
+            let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                event_type: "session_ended".into(),
+                data: serde_json::json!({ "reason": reason }),
+            }));
+        }
+
         NetworkEvent::RemotePlayerUpdate {
             id,
             position,

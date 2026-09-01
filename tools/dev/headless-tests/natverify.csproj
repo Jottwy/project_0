@@ -33,6 +33,7 @@
     <Compile Include="$(Repo)\Assets\Scripts\Connectivity\HostConnectivityService.cs" />
     <Compile Include="$(Repo)\Assets\Scripts\Connectivity\HostEndpointCandidates.cs" />
     <Compile Include="$(Repo)\Assets\Scripts\Lobbies\LobbyEndpointPolicy.cs" />
+    <Compile Include="$(Repo)\Assets\Scripts\Network\HostAddressInput.cs" />
   </ItemGroup>
 
   <!-- Los ficheros de test REALES, sin tocar. LanFallbackMetadataTests queda fuera: depende de
@@ -47,6 +48,7 @@
     <Compile Include="$(Repo)\Assets\Tests\EditMode\PublicIpResolverTests.cs" />
     <Compile Include="$(Repo)\Assets\Tests\EditMode\HostConnectivityServiceTests.cs" />
     <Compile Include="$(Repo)\Assets\Tests\EditMode\HostEndpointPrecedenceTests.cs" />
+    <Compile Include="$(Repo)\Assets\Tests\EditMode\HostAddressInputTests.cs" />
   </ItemGroup>
 
 </Project>

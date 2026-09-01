@@ -394,4 +394,25 @@ pub enum NetworkEvent {
         attempts: u32,
         elapsed_ms: u64,
     },
+    /// `CONNECT_TO` no es una dirección. El tercer modo de fallo del arranque de un joiner, y el
+    /// único que no tenía camino: los otros dos —rechazo y silencio— acaban en `session_ended`,
+    /// y éste acababa en un `error!` en el log y nada más.
+    ///
+    /// Lo que costaba: sin dirección no hay `initiate_connection`, así que `pending_connect_addr`
+    /// se queda en `None` y el presupuesto de `CONNECT_TIMEOUT` **nunca arranca**. El backend
+    /// seguía sirviéndole a Unity un mundo local en solitario, perfectamente sano, mientras el
+    /// panel esperaba una confirmación que no iba a llegar jamás. El único que se enteraba era el
+    /// backstop de 25 s del cliente, que solo sabe decir «no session confirmation».
+    ///
+    /// Medido en la sesión física del 2026-08-31: `CONNECT_TO=31.4.149.48\n:7778` — un salto de
+    /// línea entre la IP y el puerto, de pegar la dirección en el campo del panel.
+    ///
+    /// Interno como sus dos hermanos: no cruza el cable, lo produce el arranque local.
+    ConnectTargetInvalid {
+        /// El valor literal, sin sanear. Es el dato accionable: enseña el espacio en blanco, la
+        /// coma o el `http://` que lo rompió, cosa que un mensaje redactado esconde.
+        raw: String,
+        /// Lo que dijo el parser.
+        error: String,
+    },
 }

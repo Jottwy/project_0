@@ -2352,6 +2352,64 @@ async fn silent_handshake_gives_up_after_the_connect_budget() {
     );
 }
 
+/// **REPRODUCE «Could not connect: no session confirmation» (sesión física, 2026-08-31 20:52).**
+///
+/// El valor real que llegó al backend, copiado byte a byte de su cabecera de log:
+/// `CONNECT_TO=31.4.149.48\n:7778`. Un salto de línea entre la IP y el puerto, porque
+/// `JoinSessionUI` lee `_ipField.text` sin `Trim()` y `NetworkInitializer` lo interpola tal cual.
+///
+/// Lo que este test fija NO es el parseo —que falla y debe fallar— sino **el silencio que viene
+/// después**: `main.rs` registra el error y sigue, así que `initiate_connection` no se llama,
+/// `pending_connect_addr` se queda en `None`, y el presupuesto de `CONNECT_TIMEOUT` **nunca
+/// arranca**. El backend jamás emite `ConnectTimedOut`, o sea que Unity nunca recibe
+/// `session_ended` ni `session_joined`: se queda 25 s en «Joining…» hasta que salta el backstop,
+/// que es la única cosa en todo el sistema que llega a enterarse.
+///
+/// Una configuración fatal degradaba a un cuelgue mudo de 25 segundos en vez de a un fallo
+/// inmediato y con nombre. Eso es lo que este test exige; el `Trim()` del lado Unity solo quita
+/// este disparador concreto, y por eso no basta con él.
+#[tokio::test]
+async fn an_unparseable_connect_target_ends_the_session_instead_of_going_silent() {
+    let from_the_field = "31.4.149.48\n:7778";
+    let err = from_the_field
+        .parse::<SocketAddr>()
+        .expect_err("setup: es exactamente el valor que main.rs rechazó en campo");
+
+    let mut joiner = NetworkManager::bind(0, 2, 42, false).await.unwrap();
+    joiner.reject_invalid_connect_target(from_the_field, &err.to_string());
+
+    // Nada de lo que sigue puede arrancar un intento: no hay destino que valga.
+    assert_eq!(joiner.pending_connect_addr, None);
+    assert_eq!(
+        joiner.handshake_attempts, 0,
+        "no se manda un handshake a una dirección que no existe"
+    );
+
+    let events = joiner.process_incoming().await;
+    let named = events.iter().find_map(|e| match e {
+        NetworkEvent::ConnectTargetInvalid { raw, error } => Some((raw.clone(), error.clone())),
+        _ => None,
+    });
+    let (raw, error) = named.expect(
+        "un destino imparseable tiene que producir un veredicto INMEDIATO: sin él, Unity espera \
+         25 s y le dice al jugador «no session confirmation», que no señala a nada",
+    );
+    assert_eq!(raw, from_the_field, "el motivo enseña el valor literal");
+    assert!(
+        !error.is_empty(),
+        "y por qué no parseó, que es lo accionable"
+    );
+
+    // Y el veredicto se emite UNA vez: no puede convertirse en un goteo por tick.
+    let again = joiner.process_incoming().await;
+    assert!(
+        !again
+            .iter()
+            .any(|e| matches!(e, NetworkEvent::ConnectTargetInvalid { .. })),
+        "el veredicto es único, no un latido"
+    );
+}
+
 #[tokio::test]
 async fn connect_budget_does_not_expire_early() {
     let mut joiner = NetworkManager::bind(0, 2, 42, false).await.unwrap();
