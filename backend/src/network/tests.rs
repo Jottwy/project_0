@@ -3100,6 +3100,377 @@ fn dense_chunk_world(entities_per_chunk: usize) -> crate::world::World {
     world
 }
 
+/// Los volúmenes entre capas que el generador REAL cuelga de un chunk conector
+/// (`world::levels::level_0::v30a_showcase::add_connector_inter_layer_volumes`). Se reproducen
+/// aquí con sus cadenas literales porque el generador es privado y lo que rompe es el TAMAÑO de
+/// esas cadenas, no la lógica que las elige: copiarlas es copiar exactamente lo que viaja.
+fn showcase_inter_layer_volumes(target_layer: i8) -> Vec<crate::world::chunk::InterLayerVolumeV0> {
+    use crate::world::chunk::{InterLayerVolumeKindV0 as K, InterLayerVolumeV0};
+    let mk = |index: u32,
+              kind: K,
+              min: [u8; 2],
+              max: [u8; 2],
+              safety: &str,
+              audio: &str,
+              hints: &[&str]| InterLayerVolumeV0 {
+        volume_id: index,
+        kind,
+        base_chunk: [-4, -2],
+        involved_layers: vec![0, target_layer],
+        footprint_cell_min: min,
+        footprint_cell_max: max,
+        safety_type: safety.into(),
+        future_audio_hint: audio.into(),
+        visual_flags: 0x0f,
+        visual_hints: hints.iter().map(|h| (*h).to_string()).collect(),
+    };
+    vec![
+        mk(
+            0,
+            K::ServiceShaft,
+            [2, 0],
+            [8, 10],
+            "BACKEND_AUTHORED_VISUAL_NO_FALL",
+            "service_shaft_hum_from_lower_layer",
+            &["shaft_walls", "railing_runs", "matched_receiving_space"],
+        ),
+        mk(
+            1,
+            K::StackedCorridorPair,
+            [2, 0],
+            [8, 10],
+            "BACKEND_AUTHORED_ALIGNMENT",
+            "stacked_corridor_air_path",
+            &["matching_corridor_axis", "ceiling_floor_alignment"],
+        ),
+        mk(
+            2,
+            K::UnderfloorServiceZone,
+            [1, 1],
+            [9, 9],
+            "VISUAL_HINT_ONLY",
+            "underfloor_service_void",
+            &["open_floor_service_grates", "subfloor_cable_trays"],
+        ),
+        mk(
+            3,
+            K::AtriumStack,
+            [1, 1],
+            [9, 9],
+            "BACKEND_AUTHORED_BLOCKED_SHAFT_NO_FALL",
+            "atrium_vertical_reverb",
+            &["shared_opening", "shaft_wall_panels", "lower_room_cues"],
+        ),
+        mk(
+            4,
+            K::OverlookRoom,
+            [1, 1],
+            [9, 9],
+            "VISUAL_OVERLOOK_WITH_RAILING",
+            "lower_room_floor_reflection",
+            &[
+                "visible_lower_room",
+                "overlook_railings",
+                "depth_floor_patch",
+            ],
+        ),
+        mk(
+            5,
+            K::GiantPillarSpan,
+            [1, 1],
+            [9, 9],
+            "STRUCTURAL_VISUAL_SUPPORT",
+            "pillar_span_occlusion",
+            &[
+                "layer_spanning_pillars",
+                "pillar_caps_visible_across_layers",
+            ],
+        ),
+        mk(
+            6,
+            K::CeilingActivityZone,
+            [1, 1],
+            [9, 9],
+            "VISUAL_HINT_ONLY",
+            "muffled_ceiling_activity",
+            &["ceiling_service_panels", "upper_layer_activity_hint"],
+        ),
+    ]
+}
+
+/// **EL FALLO MEDIDO EN LA SESIÓN FÍSICA POR INTERNET DEL 2026-08-31 (19:02–19:17 UTC).**
+///
+/// 1.176 `datagram_refused_over_budget` hacia un solo joiner (31.4.151.22:7695), de 1612 a 1910 B,
+/// y cada uno precedido 1:1 por su `chunk_header_exceeds_budget`. Dos chunks —(-4,-1) y (-4,-2)—
+/// no llegaron NUNCA: ni por el goteo fiable del join, ni por el `ChunkState` a 10 Hz que debería
+/// curarlo.
+///
+/// La causa no es la densidad de entidades, que es lo que `split_chunk_pages` sabe partir. Es que
+/// la CABECERA del chunk no es de tamaño fijo: `ChunkLayoutV1.inter_layer_volumes` es un `Vec`
+/// sin cota, y cada volumen lleva DOS `String` (`safety_type`, `future_audio_hint`) más un
+/// `Vec<String>` de pistas visuales. Siete volúmenes —lo que el generador cuelga de un chunk
+/// conector— suman ~1.160 B sobre los ~750 de la cabecera medida cuando se escribió la
+/// paginación, y el comentario de `split_chunk_pages` que dice que esto «solo puede ocurrir si
+/// `layout` crece más allá de lo medido (hoy `LAYOUT_GRID_SIZE` es 10 y fijo)» mira al campo
+/// equivocado: `layout` creció por otro sitio.
+///
+/// Vaciar `entities`/`items` es deliberado: aísla los volúmenes como ÚNICA causa del desborde.
+/// Antes de la corrección este test fallaba con una página de 2.701 B — peor que los 1.910 de
+/// campo, porque los chunks reales llevaban menos volúmenes que los siete del generador.
+#[test]
+fn a_chunk_whose_layout_carries_inter_layer_volumes_never_fragments() {
+    let mut world = dense_chunk_world(0);
+    for chunk in world.chunks.values_mut() {
+        chunk.entities.clear();
+        chunk.items.clear();
+        chunk.layout.inter_layer_volumes = showcase_inter_layer_volumes(-1);
+    }
+
+    for chunk in world.chunks.values() {
+        for page in &sync::chunk_to_sync_pages(chunk, 1) {
+            let bytes = encoded_bytes(page);
+            assert!(
+                bytes <= protocol::SAFE_DATAGRAM_BYTES,
+                "un chunk con {} volúmenes entre capas produce una página de {bytes} B > {} B: \
+                 `send_datagram` la RECHAZA y el chunk no llega jamás — ni por el goteo fiable \
+                 ni por el ChunkState que debería curarlo",
+                chunk.layout.inter_layer_volumes.len(),
+                protocol::SAFE_DATAGRAM_BYTES
+            );
+        }
+    }
+}
+
+/// No perder nada es la mitad del contrato; la otra mitad es reunirlo IGUAL. Un volumen que se
+/// pierde o se reordena entre páginas no rompe ningún test de tamaño y deja al cliente pintando
+/// una arquitectura que el servidor no tiene.
+#[test]
+fn the_inter_layer_volumes_survive_the_round_trip_through_the_assembler() {
+    let mut world = dense_chunk_world(0);
+    for chunk in world.chunks.values_mut() {
+        chunk.entities.clear();
+        chunk.items.clear();
+        chunk.layout.inter_layer_volumes = showcase_inter_layer_volumes(-1);
+    }
+
+    for chunk in world.chunks.values() {
+        let original = sync::chunk_to_sync_data(chunk);
+        let pages = sync::chunk_to_sync_pages(chunk, 1);
+        assert!(
+            pages.len() > 1,
+            "setup: siete volúmenes no caben en una página"
+        );
+
+        let mut asm = sync::ChunkPageAssembler::default();
+        let mut merged = None;
+        for page in &pages {
+            if let Some(done) = asm.offer(1, page.clone()) {
+                merged = Some(done);
+            }
+        }
+        let merged = merged.expect("con todas las páginas tiene que ensamblar");
+
+        assert_eq!(
+            merged.layout.inter_layer_volumes, original.layout.inter_layer_volumes,
+            "los volúmenes se reúnen exactamente, en su orden y con sus cadenas"
+        );
+        assert_eq!(merged.layout.cells, original.layout.cells);
+        assert_eq!(merged.layout.edges_v, original.layout.edges_v);
+        assert_eq!(merged.layout.edges_h, original.layout.edges_h);
+    }
+}
+
+/// Las tres listas a la vez. Paginarlas por separado es fácil; lo que rompe es que compartan
+/// presupuesto — una página puede acabar llevando el último volumen y las tres primeras entidades.
+#[test]
+fn volumes_entities_and_items_all_reassemble_from_the_same_pages() {
+    let mut world = dense_chunk_world(40);
+    for chunk in world.chunks.values_mut() {
+        chunk.layout.inter_layer_volumes = showcase_inter_layer_volumes(-2);
+    }
+
+    for chunk in world.chunks.values() {
+        let original = sync::chunk_to_sync_data(chunk);
+        let pages = sync::chunk_to_sync_pages(chunk, 1);
+        for page in &pages {
+            let bytes = encoded_bytes(page);
+            assert!(
+                bytes <= protocol::SAFE_DATAGRAM_BYTES,
+                "página de {bytes} B con volúmenes Y entidades"
+            );
+        }
+
+        let mut asm = sync::ChunkPageAssembler::default();
+        let mut merged = None;
+        for page in &pages {
+            if let Some(done) = asm.offer(1, page.clone()) {
+                merged = Some(done);
+            }
+        }
+        let merged = merged.expect("ensambla");
+
+        let got: Vec<u32> = merged.entities.iter().map(|e| e.id).collect();
+        let want: Vec<u32> = original.entities.iter().map(|e| e.id).collect();
+        assert_eq!(got, want, "las entidades no se pierden ni se reordenan");
+        assert_eq!(merged.items.len(), original.items.len());
+        assert_eq!(
+            merged.layout.inter_layer_volumes, original.layout.inter_layer_volumes,
+            "y los volúmenes tampoco"
+        );
+    }
+}
+
+/// La quimera que `generation` existe para impedir, ahora que también parte los volúmenes: coser
+/// la página 0 de una ronda con la 1 de otra produciría una lista de volúmenes que nunca existió.
+#[test]
+fn two_generations_of_volume_pages_never_splice_into_one_chunk() {
+    let mut world = dense_chunk_world(0);
+    for chunk in world.chunks.values_mut() {
+        chunk.entities.clear();
+        chunk.items.clear();
+        chunk.layout.inter_layer_volumes = showcase_inter_layer_volumes(-1);
+    }
+    let chunk = world.chunks.values().next().expect("hay chunks");
+
+    let data = sync::chunk_to_sync_data(chunk);
+    let round_a = sync::chunk_state_pages(data.clone(), 7);
+    let mut altered = data;
+    altered.layout.inter_layer_volumes[0].safety_type = "DIFFERENT_IN_ROUND_B".into();
+    let round_b = sync::chunk_state_pages(altered, 9);
+    assert!(
+        round_a.len() > 1 && round_b.len() > 1,
+        "setup: ambas parten"
+    );
+
+    let mut asm = sync::ChunkPageAssembler::default();
+    // Página 0 de A, luego TODA la ronda B. Lo único que puede salir es B entera.
+    assert!(
+        asm.offer(7, round_a[0].clone()).is_none(),
+        "una página suelta no ensambla nada"
+    );
+    let mut merged = None;
+    for page in &round_b {
+        if let Some(done) = asm.offer(9, page.clone()) {
+            merged = Some(done);
+        }
+    }
+    let merged = merged.expect("la ronda B completa sí ensambla");
+    assert_eq!(
+        merged.layout.inter_layer_volumes[0].safety_type, "DIFFERENT_IN_ROUND_B",
+        "el resultado es B ENTERA: ni un volumen de la ronda A se ha colado"
+    );
+    assert_eq!(
+        asm.pending_len(),
+        0,
+        "y el parcial de la ronda vieja no se queda ocupando sitio"
+    );
+}
+
+/// El techo, medido sobre el sobre REAL de cada portador y no solo sobre el de `WorldSyncChunk`:
+/// `ChunkState` es el que emitió los 1.172 rechazos de la sesión física.
+#[test]
+fn no_carrier_produces_an_oversized_page_from_a_volume_heavy_chunk() {
+    let mut world = dense_chunk_world(12);
+    for chunk in world.chunks.values_mut() {
+        chunk.layout.inter_layer_volumes = showcase_inter_layer_volumes(-1);
+    }
+
+    for chunk in world.chunks.values() {
+        let data = sync::chunk_to_sync_data(chunk);
+        let budget = protocol::SAFE_DATAGRAM_BYTES;
+
+        for page in &sync::chunk_state_pages(data.clone(), 3) {
+            let len = sync::ChunkCarrier::State.encoded_len(page);
+            assert!(len <= budget, "ChunkState: {len} B > {budget} B");
+        }
+        for page in &sync::chunk_transfer_pages(data.clone(), 3) {
+            let len = sync::ChunkCarrier::Transfer.encoded_len(page);
+            assert!(len <= budget, "ChunkTransfer: {len} B > {budget} B");
+        }
+        for page in &sync::chunk_to_sync_pages(chunk, 1) {
+            let len = sync::ChunkCarrier::WorldSync { world_revision: 1 }.encoded_len(page);
+            assert!(len <= budget, "WorldSyncChunk: {len} B > {budget} B");
+        }
+    }
+}
+
+/// El otro extremo del contrato, extremo a extremo por el camino FIABLE real
+/// (`send_chunk_transfer` → `send_reliable_queued`): un chunk con los siete volúmenes sale ENTERO,
+/// en varias páginas, sin que el techo rechace ni una.
+///
+/// **Lo que este test NO demuestra**, y por eso se dice aquí: con la ventana holgada las páginas
+/// salen directas, así que no llega a ejercitar la rama de aparcado. Lo que cubre el aparcado es
+/// `a_deferred_reliable_refused_by_the_ceiling_is_never_queued_either` (ADR-113 enm. 1). Los dos
+/// juntos son la comprobación que pide la regla 13: ni se toca `send_reliable_queued` ni
+/// `pump_deferred_reliable`, se demuestra que ya no tienen nada sobredimensionado que manejar.
+#[tokio::test]
+async fn a_volume_heavy_chunk_travels_whole_through_the_reliable_path() {
+    let (mut host, _joiner) = connected_pair().await;
+    let peer_id = *host.peers.keys().next().expect("hay un peer");
+
+    let mut world = dense_chunk_world(0);
+    for chunk in world.chunks.values_mut() {
+        chunk.entities.clear();
+        chunk.items.clear();
+        chunk.layout.inter_layer_volumes = showcase_inter_layer_volumes(-1);
+    }
+    let chunk = world.chunks.values().next().expect("hay chunks").clone();
+
+    sync::send_chunk_transfer(&mut host, peer_id, &chunk).await;
+    host.pump_deferred_reliable().await;
+
+    assert_eq!(
+        host.refused_datagram_count(),
+        0,
+        "ni una página del handoff de un chunk con volúmenes cruza el techo"
+    );
+    assert_eq!(
+        host.peers[&peer_id].deferred_reliable.len(),
+        0,
+        "y no queda ninguna aparcada"
+    );
+    assert!(
+        host.peers[&peer_id].reliable_queue.len() > 1,
+        "setup: el chunk se partió de verdad, así que hay varias páginas en vuelo"
+    );
+}
+
+/// La medida que la tarea pide como evidencia: el tamaño MÁXIMO que produce el paginador sobre el
+/// peor chunk que sabemos construir —siete volúmenes reales Y 40 entidades— por los tres
+/// portadores. Falla si algún día se acerca al techo, que es cuando hay que mirar otra vez.
+#[test]
+fn the_worst_page_the_paginator_can_produce_stays_under_the_ceiling() {
+    let mut world = dense_chunk_world(40);
+    for chunk in world.chunks.values_mut() {
+        chunk.layout.inter_layer_volumes = showcase_inter_layer_volumes(-1);
+    }
+
+    let mut worst = 0usize;
+    for chunk in world.chunks.values() {
+        let data = sync::chunk_to_sync_data(chunk);
+        for page in &sync::chunk_state_pages(data.clone(), 3) {
+            worst = worst.max(sync::ChunkCarrier::State.encoded_len(page));
+        }
+        for page in &sync::chunk_transfer_pages(data.clone(), 3) {
+            worst = worst.max(sync::ChunkCarrier::Transfer.encoded_len(page));
+        }
+        for page in &sync::chunk_to_sync_pages(chunk, 1) {
+            worst =
+                worst.max(sync::ChunkCarrier::WorldSync { world_revision: 1 }.encoded_len(page));
+        }
+    }
+
+    println!(
+        "PAGINA MAXIMA OBSERVADA: {worst} B (techo {})",
+        protocol::SAFE_DATAGRAM_BYTES
+    );
+    assert!(
+        worst <= protocol::SAFE_DATAGRAM_BYTES,
+        "página máxima {worst} B > {} B",
+        protocol::SAFE_DATAGRAM_BYTES
+    );
+}
+
 fn encoded_bytes(data: &protocol::ChunkSyncData) -> usize {
     let payload = PacketPayload::WorldSyncChunk {
         world_revision: 1,

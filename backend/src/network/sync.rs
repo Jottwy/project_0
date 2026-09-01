@@ -195,6 +195,29 @@ fn lean_continuation(page0: &ChunkSyncData) -> ChunkSyncData {
 /// chunk) y de cadenas de longitud variable dentro de cada entidad e ítem (`entity_type`, `state`,
 /// `item_type`). Una estimación por conteo se desviaría justo en los chunks densos, que son
 /// exactamente los que rompen.
+///
+/// # Las TRES listas de tamaño ilimitado, y la que faltaba
+///
+/// Esto se escribió partiendo `entities` e `items` y dando por hecho que el resto —la
+/// «cabecera»— tenía tamaño acotado, con `layout` dominado por una rejilla `LAYOUT_GRID_SIZE`
+/// fija de 10. **Esa premisa era falsa**, y la sesión física por internet del 2026-08-31 la
+/// desmintió: 1.176 `datagram_refused_over_budget` de 1612 a 1910 B hacia un solo joiner, todos
+/// de los mismos dos chunks, cada uno precedido por su `chunk_header_exceeds_budget`.
+///
+/// El campo que no estaba acotado es `layout.inter_layer_volumes`: un `Vec<InterLayerVolumeV0>`
+/// donde cada volumen lleva DOS `String` (`safety_type`, `future_audio_hint`) más un
+/// `Vec<String>` de pistas visuales, con literales de 30-35 caracteres. Los siete volúmenes que
+/// el generador cuelga de un chunk conector suman ~1.160 B sobre los ~750 de la cabecera real.
+///
+/// Ningún número de páginas salvaba eso, porque la cabecera se REPITE en todas: el chunk se
+/// devolvía entero y el techo de salida lo rechazaba. Y como el `ChunkState` a 10 Hz —la vía que
+/// cura una pérdida— venía del mismo paginador, tampoco llegaba: el chunk no aparecía JAMÁS en
+/// el cliente.
+///
+/// Hoy los volúmenes se reparten como una tercera lista, con el mismo mecanismo y sin protocolo
+/// nuevo: el campo ya viajaba, `page`/`page_count`/`generation` ya existían, y el ensamblador los
+/// concatena igual que a las otras dos. Lo que queda de verdad acotado en la cabecera son `cells`
+/// y `edges_v`/`edges_h`, que sí dependen solo de `grid_size`.
 fn split_chunk_pages(
     full: ChunkSyncData,
     carrier: ChunkCarrier,
@@ -209,13 +232,19 @@ fn split_chunk_pages(
         return vec![full];
     }
 
-    // La cabecera sola no cabe: partir las listas no puede salvarlo. Se devuelve entera y el techo
-    // de `send_datagram` la rechazará nombrándola — callarlo sería perder el chunk en silencio,
-    // que es lo único peor que perderlo a gritos. Solo puede ocurrir si `layout` crece más allá de
-    // lo medido (hoy `LAYOUT_GRID_SIZE` es 10 y fijo).
+    // La cabecera DESNUDA —sin ninguna de las tres listas de tamaño ilimitado— es lo que se mide
+    // aquí: si ni eso cabe, partir no puede salvarlo. Se devuelve entera y el techo de
+    // `send_datagram` la rechazará nombrándola — callarlo sería perder el chunk en silencio, que
+    // es lo único peor que perderlo a gritos.
+    //
+    // `inter_layer_volumes` se vacía junto a `entities`/`items` y no con ellas por casualidad: es
+    // la tercera lista sin cota, y dejarla dentro de la cabecera es exactamente lo que hacía que
+    // un chunk conector no llegara nunca (ver el doc-comment de esta función). Lo que queda es
+    // `cells` + `edges_v`/`edges_h`, acotados por `grid_size`.
     let mut head = full.clone();
     head.entities.clear();
     head.items.clear();
+    head.layout.inter_layer_volumes.clear();
     // Se mide con los índices en su PEOR valor: msgpack escribe un entero con el prefijo más
     // corto que le sirva, así que `page = 0` ocupa un byte y `page = 300` ocupa tres, y los
     // índices reales no se conocen hasta el final. Estimar con 0/1 y estampar después dejaba
@@ -237,10 +266,12 @@ fn split_chunk_pages(
     let mut pages: Vec<ChunkSyncData> = Vec::new();
     let mut entities = full.entities.clone();
     let mut items = full.items.clone();
+    let mut volumes = full.layout.inter_layer_volumes.clone();
     entities.reverse(); // se consumen con pop(), así se conserva el orden original
     items.reverse();
+    volumes.reverse();
 
-    while !entities.is_empty() || !items.is_empty() || pages.is_empty() {
+    while !entities.is_empty() || !items.is_empty() || !volumes.is_empty() || pages.is_empty() {
         // Página 0 con la cabecera real; el resto con la vacía.
         let mut page = if pages.is_empty() {
             head.clone()
@@ -249,6 +280,22 @@ fn split_chunk_pages(
         };
         // Llenado voraz, verificando tras cada añadido: en cuanto uno se pasa, se devuelve a la
         // cola y la página se cierra. Nunca se emite una página que no se haya medido.
+        //
+        // Los volúmenes van PRIMERO a propósito: son parte de la arquitectura del chunk, y
+        // ponerlos delante hace que el caso común —los que caben enteros en la página 0— salga
+        // byte a byte como salía antes de esta corrección.
+        while let Some(v) = volumes.pop() {
+            page.layout.inter_layer_volumes.push(v);
+            if carrier.encoded_len(&page) > budget {
+                let back = page
+                    .layout
+                    .inter_layer_volumes
+                    .pop()
+                    .expect("acabamos de meterlo");
+                volumes.push(back);
+                break;
+            }
+        }
         while let Some(e) = entities.pop() {
             page.entities.push(e);
             if carrier.encoded_len(&page) > budget {
@@ -267,15 +314,20 @@ fn split_chunk_pages(
         }
         // Una página vacía con cosas pendientes significaría que un solo elemento no cabe ni con
         // la cabecera: se fuerza para no entrar en bucle infinito, y el techo de salida lo grita.
-        if page.entities.is_empty() && page.items.is_empty() {
-            if let Some(e) = entities.pop() {
+        if page.entities.is_empty()
+            && page.items.is_empty()
+            && page.layout.inter_layer_volumes.is_empty()
+        {
+            if let Some(v) = volumes.pop() {
+                page.layout.inter_layer_volumes.push(v);
+            } else if let Some(e) = entities.pop() {
                 page.entities.push(e);
             } else if let Some(i) = items.pop() {
                 page.items.push(i);
             }
         }
         pages.push(page);
-        if entities.is_empty() && items.is_empty() {
+        if entities.is_empty() && items.is_empty() && volumes.is_empty() {
             break;
         }
     }
@@ -379,12 +431,22 @@ impl ChunkPageAssembler {
 
         // La cabecera sale de la página 0: todas la repiten idéntica, pero fijar cuál manda deja
         // el resultado determinista aunque alguna vez dejaran de serlo.
+        //
+        // `inter_layer_volumes` se reúne con las otras dos y NO se hereda de la página 0: desde
+        // que el paginador lo reparte (es la tercera lista sin cota), la página 0 solo trae los
+        // que le cupieron. Tomarlo de la cabecera devolvería una lista truncada — que es
+        // precisamente el fallo, con más pasos.
         let mut merged = ordered[0].1.clone();
         merged.entities.clear();
         merged.items.clear();
+        merged.layout.inter_layer_volumes.clear();
         for (_, page) in &ordered {
             merged.entities.extend(page.entities.iter().cloned());
             merged.items.extend(page.items.iter().cloned());
+            merged
+                .layout
+                .inter_layer_volumes
+                .extend(page.layout.inter_layer_volumes.iter().cloned());
         }
         merged.page = 0;
         merged.page_count = 1;
