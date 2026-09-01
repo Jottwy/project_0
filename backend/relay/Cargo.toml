@@ -1,0 +1,17 @@
+[package]
+name = "backrooms_relay"
+version = "0.1.0"
+edition = "2021"
+description = "Backrooms Survival — relay UDP de respaldo (ADR-117). Transporta datagramas; no simula nada."
+authors = ["Backrooms Survival Team"]
+
+# Es una lib ANTES que un binario, y ése es el punto: `backrooms_server` comparte el framing por
+# `path` en vez de tener una segunda copia del sobre que se pueda desincronizar en silencio.
+# El binario del relay llega con la tabla de sesiones (ADR-117 D2).
+[lib]
+name = "backrooms_relay"
+path = "src/lib.rs"
+
+# ADR-117 D2: el relay no juega, así que no arrastra nada del juego. `protocol` no tiene NINGUNA
+# dependencia — es aritmética de bytes, y así se puede probar entero sin runtime.
+[dependencies]

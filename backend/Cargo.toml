@@ -1,3 +1,10 @@
+# ADR-117: el relay UDP de respaldo es un binario APARTE (D2), así que esto pasa a ser un
+# workspace de dos miembros. La raíz sigue siendo `backrooms_server` y `target/` sigue estando
+# aquí, o sea que `CopyReleaseBackendToBuild.ps1` y `cargo build --release` no cambian de ruta.
+# `cargo test` desde este directorio corre ahora las dos suites, que es lo que se quiere.
+[workspace]
+members = [".", "relay"]
+
 [package]
 name = "backrooms_server"
 version = "0.1.0"
