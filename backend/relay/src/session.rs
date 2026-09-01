@@ -189,6 +189,11 @@ impl RelayTable {
         self.by_addr.len()
     }
 
+    /// Las sesiones vivas. La usa el apagado para despedirse de todas.
+    pub fn session_ids(&self) -> Vec<SessionId> {
+        self.sessions.keys().copied().collect()
+    }
+
     /// Los peers de una sesión, ordenados. Para los tests y para el volcado de métricas.
     pub fn session_peers(&self, id: SessionId) -> Vec<PeerId> {
         let mut ids: Vec<PeerId> = self

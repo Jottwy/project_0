@@ -6,14 +6,27 @@ description = "Backrooms Survival — relay UDP de respaldo (ADR-117). Transport
 authors = ["Backrooms Survival Team"]
 
 # Es una lib ANTES que un binario, y ése es el punto: `backrooms_server` comparte el framing por
-# `path` en vez de tener una segunda copia del sobre que se pueda desincronizar en silencio.
-# El binario del relay llega con la tabla de sesiones (ADR-117 D2).
+# `path` en vez de tener una segunda copia del sobre que se pueda desincronizar en silencio, y el
+# bucle del servidor se puede arrancar desde un test (un bucle dentro de `fn main` no se puede).
 [lib]
 name = "backrooms_relay"
 path = "src/lib.rs"
 
+[[bin]]
+name = "backrooms_relay"
+path = "src/main.rs"
+
 # ADR-117 D2: el relay no juega, así que no arrastra nada del juego. `protocol` no tiene NINGUNA
-# dependencia —es aritmética de bytes, y así se puede probar entero sin runtime— y `session`
-# tampoco tiene E/S: sólo registra.
+# dependencia —es aritmética de bytes— y `session` sólo registra; tokio aparece únicamente en
+# `server` y `main`. Las tres son las mismas que el backend ya usa: el workspace no gana ni una.
 [dependencies]
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "net",
+    "macros",
+    "time",
+    "signal",
+    "sync",
+] }
 log = "0.4"
+env_logger = "0.11"
