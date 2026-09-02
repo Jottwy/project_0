@@ -608,6 +608,13 @@ fn probe_architecture_metrics() {
     let mut sight_sum = 0.0f64;
     let mut sight_n = 0usize;
     let mut regions_n = 0usize;
+    let mut halls_big = 0usize;
+    let mut halls_with_pillars = 0usize;
+    let mut pillars_in_rooms = 0usize;
+    let mut per_room_hist = [0usize; 10];
+    let mut spacing_sum = 0.0f64;
+    let mut spacing_n = 0usize;
+    let mut spacing_min = i32::MAX;
 
     for &seed in &seeds {
         for &(rx, rz) in &regions {
@@ -625,6 +632,58 @@ fn probe_architecture_metrics() {
 
             for s in &inside.filled.segments {
                 *height_hist.entry(s.height_cm).or_default() += 1;
+            }
+
+            // PILARES (ADR-119 enm. 1): cuántas naves los llevan, cuántos por nave, y a qué
+            // separación real quedan. La separación es la del vecino MÁS PRÓXIMO y no el paso de la
+            // retícula: con desorden y omisiones, el paso sorteado ya no es lo que se anda.
+            let pillars: Vec<&super::segment::Wg3Solid> = inside
+                .filled
+                .solids
+                .iter()
+                .filter(|s| s.size_x_cm == 200 && s.size_z_cm == 200)
+                .collect();
+            for st in inside.building.storeys.iter() {
+                for (_, sp) in st.built() {
+                    if sp.role != SpaceRole::Hall || sp.rect.area_m2() < 300.0 {
+                        continue;
+                    }
+                    halls_big += 1;
+                    let inside_n = pillars
+                        .iter()
+                        .filter(|p| {
+                            p.bottom_y_cm == sp.floor_y_cm
+                                && p.x_cm >= sp.rect.min_x_cm
+                                && p.x_cm < sp.rect.max_x_cm
+                                && p.z_cm >= sp.rect.min_z_cm
+                                && p.z_cm < sp.rect.max_z_cm
+                        })
+                        .count();
+                    if inside_n > 0 {
+                        halls_with_pillars += 1;
+                        per_room_hist[inside_n.min(9)] += 1;
+                        pillars_in_rooms += inside_n;
+                    }
+                }
+            }
+            for (a, p) in pillars.iter().enumerate() {
+                let mut best = i32::MAX;
+                for (b, q) in pillars.iter().enumerate() {
+                    if a == b || p.bottom_y_cm != q.bottom_y_cm {
+                        continue;
+                    }
+                    let d = (p.x_cm - q.x_cm).abs().max((p.z_cm - q.z_cm).abs());
+                    if d < best {
+                        best = d;
+                    }
+                }
+                if best < i32::MAX {
+                    spacing_sum += best as f64;
+                    spacing_n += 1;
+                    if best < spacing_min {
+                        spacing_min = best;
+                    }
+                }
             }
 
             for (n, plan) in inside.building.storeys.iter().enumerate() {
@@ -800,6 +859,33 @@ fn probe_architecture_metrics() {
         "  pilares por región: {:.2}",
         pillars_total as f32 / regions_n.max(1) as f32
     );
+    println!(
+        "  naves ≥300 m²: {}, con pilares {} ({:.1} %), {:.1} pilares por nave con pilares",
+        halls_big,
+        halls_with_pillars,
+        pc(halls_with_pillars, halls_big),
+        pillars_in_rooms as f32 / halls_with_pillars.max(1) as f32
+    );
+    for (i, n) in per_room_hist.iter().enumerate() {
+        if *n > 0 {
+            println!(
+                "    {}{} pilares: {:>5} naves  {:>5.1} %",
+                i,
+                if i == 9 { "+" } else { " " },
+                n,
+                pc(*n, halls_with_pillars)
+            );
+        }
+    }
+    println!(
+        "  separación al pilar más próximo: media {:.0} cm, mínima {} cm",
+        spacing_sum / spacing_n.max(1) as f64,
+        if spacing_min == i32::MAX {
+            0
+        } else {
+            spacing_min
+        }
+    );
     println!("alturas libres de tramo (cm → cuántos):");
     for (h, n) in &height_hist {
         println!("  {:>5} cm: {:>6}  {:>5.1} %", h, n, pc(*n, segments_total));
@@ -954,4 +1040,140 @@ fn probe_islands() {
         under_stair,
         under_stair as f32 * 100.0 / island_cells.max(1) as f32
     );
+}
+
+/// ADR-119 enmienda 1 — **las invariantes duras de los pilares**, sobre varias semillas.
+///
+/// El barrido de niveles ya dice que el mundo con pilares sigue siendo andable (mancha mayor y nav);
+/// esto dice que cada pilar está donde tiene que estar. Son las cuatro cosas que, si se rompen, no
+/// producen un test rojo en ningún otro sitio: el ráster los estampa macizos sin quejarse y el
+/// síntoma es una puerta tapiada o dos columnas pegadas cien metros más allá.
+#[test]
+fn pillars_land_where_the_grammar_says() {
+    use super::plan::{PlanRect, SpaceRole};
+
+    let m = real_manifest();
+    let seeds = validate::sweep_seeds(sweep_seed_count(3));
+    // `PILLAR_SPACING_MIN_CM` (700) menos el desorden de los dos vecinos (2 × `PILLAR_JITTER_MAX_CM`).
+    const MIN_GAP_CM: i32 = 700 - 2 * 55;
+    // `PILLAR_DOOR_CLEAR_CM`, con un centímetro de tolerancia por el redondeo del centro.
+    const DOOR_CLEAR_CM: i32 = 400;
+
+    let mut seen = 0usize;
+    for &seed in &seeds {
+        for &(rx, rz) in NEAR_REGIONS.iter() {
+            let region = Wg3RegionCoord { x: rx, z: rz };
+            let inside = validate::region_inside(&m, seed, region);
+            let pillars: Vec<&super::segment::Wg3Solid> = inside
+                .filled
+                .solids
+                .iter()
+                .filter(|s| s.size_x_cm == 200 && s.size_z_cm == 200)
+                .collect();
+            seen += pillars.len();
+
+            for p in &pillars {
+                let rect = PlanRect {
+                    min_x_cm: p.x_cm,
+                    min_z_cm: p.z_cm,
+                    max_x_cm: p.x_cm + p.size_x_cm,
+                    max_z_cm: p.z_cm + p.size_z_cm,
+                };
+                let (mid_x, mid_z) = (p.x_cm + 100, p.z_cm + 100);
+
+                // 1 — todo pilar cae DENTRO de una nave construida y a la cota de su planta.
+                let mut host = None;
+                for (n, st) in inside.building.storeys.iter().enumerate() {
+                    for (i, sp) in st.built() {
+                        if sp.floor_y_cm == p.bottom_y_cm && sp.rect.contains_rect(&rect) {
+                            host = Some((n, i, sp));
+                        }
+                    }
+                }
+                let Some((n, i, sp)) = host else {
+                    panic!(
+                        "semilla {seed:#x} región ({rx},{rz}): pilar en ({},{}) cota {} fuera de \
+                         todo espacio construido",
+                        p.x_cm, p.z_cm, p.bottom_y_cm
+                    );
+                };
+                assert_eq!(
+                    sp.role,
+                    SpaceRole::Hall,
+                    "semilla {seed:#x} región ({rx},{rz}): pilar en un espacio {} y no en una nave",
+                    sp.role.name()
+                );
+                assert_eq!(
+                    sp.rise_cm, 0,
+                    "semilla {seed:#x} región ({rx},{rz}): pilar en un espacio con desnivel"
+                );
+
+                // 2 — ningún pilar delante de una puerta. Un vano tapiado por un macizo es
+                //     exactamente el fallo mudo que ADR-118 persiguió una auditoría entera.
+                let plan = &inside.building.storeys[n];
+                for (dx, dz) in plan
+                    .links
+                    .iter()
+                    .filter(|l| l.a == i || l.b == i)
+                    .map(|l| (l.at_x_cm, l.at_z_cm))
+                    .chain(
+                        plan.gates
+                            .iter()
+                            .filter(|g| g.space == i)
+                            .map(|g| (g.x_cm, g.z_cm)),
+                    )
+                {
+                    assert!(
+                        (dx - mid_x).abs() >= DOOR_CLEAR_CM || (dz - mid_z).abs() >= DOOR_CLEAR_CM,
+                        "semilla {seed:#x} región ({rx},{rz}): pilar en ({mid_x},{mid_z}) a menos \
+                         de {DOOR_CLEAR_CM} cm de la puerta ({dx},{dz})"
+                    );
+                }
+
+                // 3 — ni encima del aterrizaje de una escalera: deja el cuerpo clavado a media
+                //     subida, y con dos plantas el barrido no podía verlo.
+                for w in inside
+                    .building
+                    .wells
+                    .iter()
+                    .filter(|w| w.storey_below + 1 == n)
+                {
+                    assert!(
+                        !w.rect.shrunk(-50).overlaps(&rect),
+                        "semilla {seed:#x} región ({rx},{rz}): pilar sobre el rellano del pozo en \
+                         ({},{})",
+                        w.rect.min_x_cm,
+                        w.rect.min_z_cm
+                    );
+                }
+            }
+
+            // 4 — dos pilares de la misma cota nunca se juntan por debajo del mínimo. El paso entre
+            //     dos pilares es lo que se anda, y el ráster conservador ya se come medio metro por
+            //     cada cara (ADR-105 D6).
+            for (a, p) in pillars.iter().enumerate() {
+                for q in pillars.iter().skip(a + 1) {
+                    if p.bottom_y_cm != q.bottom_y_cm {
+                        continue;
+                    }
+                    let d = (p.x_cm - q.x_cm).abs().max((p.z_cm - q.z_cm).abs());
+                    assert!(
+                        d >= MIN_GAP_CM,
+                        "semilla {seed:#x} región ({rx},{rz}): pilares a {d} cm en ({},{}) y \
+                         ({},{})",
+                        p.x_cm,
+                        p.z_cm,
+                        q.x_cm,
+                        q.z_cm
+                    );
+                }
+            }
+        }
+    }
+    assert!(
+        seen > 100,
+        "sólo {seen} pilares en {} regiones: la gramática no está emitiendo",
+        seeds.len() * NEAR_REGIONS.len()
+    );
+    println!("[pilares] {seen} pilares revisados");
 }

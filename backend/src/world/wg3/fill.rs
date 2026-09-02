@@ -258,6 +258,11 @@ pub fn fill_building(building: &RegionBuilding, manifest: &Wg3Manifest) -> Fille
     out.carves.extend(hole_carves(building));
     out.carves.extend(well_mouth_carves(building));
     out.solids.extend(atrium_solids(building));
+    // ADR-119 enm. 1 — los pilares, que ya no son sólo del atrio. Va DESPUÉS del bucle de plantas
+    // porque necesita saber qué espacios acabaron resueltos con una pieza del catálogo, y eso no se
+    // sabe hasta que están todos rellenados.
+    let placed = out.placements.clone();
+    out.solids.extend(hall_pillars(building, manifest, &placed));
     out
 }
 
@@ -562,57 +567,285 @@ fn atrium_solids(building: &RegionBuilding) -> Vec<Wg3Solid> {
                     at = end;
                 }
             }
+        }
+    }
+    out
+}
 
-            // ---- MEGAPILARES ----
+/// Separación entre pilares, mínimo y máximo de centro a centro, en centímetros.
+///
+/// **El rango es la mitad de la variedad**, y por eso son dos números y no uno: `PILLAR_SPACING_CM`
+/// era una constante y producía la retícula perfecta que ADR-119 enm. 1 viene a quitar. Se sortea
+/// una separación por EJE y por SALA, así que una nave puede tener las filas juntas y las columnas
+/// separadas — que es el arquetipo `UNEVEN_ROWS` sin una sola línea dedicada a él.
+///
+/// El suelo son 7 m porque un pilar de 2 m maciza sus cuatro celdas de ráster y otro medio metro por
+/// el rasterizado conservador: con 6 m de separación el paso libre baja de 3,50 m y una nave con
+/// pilares empieza a leerse como un laberinto de pilares.
+const PILLAR_SPACING_MIN_CM: i32 = 700;
+const PILLAR_SPACING_MAX_CM: i32 = 1300;
+
+/// Franja contra la pared donde no va pilar, en centímetros. Es el primer vano del edificio.
+///
+/// FIJA, y no medio paso como en la primera versión. Con medio paso, una separación sorteada de
+/// 13 m dejaba 6,5 m muertos contra cada muro y en una nave de 300 m² ya no cabía más que UN pilar:
+/// medido, el 57,9 % de las naves con pilares tenían uno o dos. **Un pilar suelto no es una sala de
+/// pilares; es una sala con una columna**, y eso se lee como un descuido, no como arquitectura.
+const PILLAR_WALL_MARGIN_CM: i32 = 350;
+
+/// Pilares mínimos por eje para que una nave lleve retícula.
+///
+/// Dos, o ninguno. Una fila sola no articula el espacio ni produce las líneas de visión que se
+/// buscaban: se lee como un obstáculo. Una nave que no llega a dos por los dos ejes se queda
+/// diáfana, que además es lo que hace que las que sí la tienen signifiquen algo.
+const PILLAR_MIN_PER_AXIS: i32 = 2;
+
+/// Cuánto puede moverse un pilar de su sitio en la retícula, en centímetros.
+///
+/// `SLIGHTLY_IRREGULAR` y `SHIFTED_PILLAR` del encargo, y son el mismo número: una retícula perfecta
+/// se lee como generada, y medio metro de desorden basta para que no lo parezca sin que el sitio
+/// deje de tener orden. Se sortea por PILAR con su propia posición, así que dos regiones vecinas no
+/// comparten el desorden y el mismo pilar está siempre donde estaba.
+const PILLAR_JITTER_MAX_CM: i32 = 55;
+
+/// Probabilidad máxima de que a un pilar de la retícula le toque NO existir.
+///
+/// `MISSING_PILLAR`. Se sortea un tope por sala y luego pilar a pilar, así que hay naves completas y
+/// naves a las que les faltan tres columnas. **Nunca llega a 1**: una nave que sortea 20 % pierde
+/// uno de cada cinco, no la mitad, y sigue leyéndose como una retícula con huecos y no como ruido.
+const PILLAR_OMIT_MAX: f32 = 0.20;
+
+/// Qué proporción de las naves que CABEN llevan pilares.
+///
+/// No todas, y es una decisión del encargo: «no poner pilares en todas las salas». Una nave diáfana
+/// al lado de una nave con pilares es lo que hace que la segunda signifique algo.
+const PILLAR_ROOM_CHANCE: f32 = 0.62;
+
+/// Distancia mínima entre un pilar y el punto de un vano, en centímetros.
+///
+/// Medio vano ancho (250) más el medio pilar (100) más holgura. Un pilar plantado en la boca de una
+/// puerta no es arquitectura: es el paso cortado, y el ráster lo estampa macizo sin quejarse — que es
+/// exactamente el modo de fallo que ADR-118 pasó una auditoría entera persiguiendo.
+const PILLAR_DOOR_CLEAR_CM: i32 = 400;
+
+/// Sal de la gramática de pilares de una SALA.
+const SALT_PILLAR_ROOM: u32 = 0xB1_11_A0_00;
+/// Sal del sorteo de CADA pilar.
+const SALT_PILLAR_ONE: u32 = 0xB1_11_A0_01;
+
+/// ADR-105 enmienda 1 (ADR-119 enm. 1 en el registro) — **EL PILAR SALE DEL ATRIO.**
+///
+/// # Qué cambia respecto a ADR-105 D5
+///
+/// La tabla de casos de ADR-105 era cerrada —pretil y megapilar de atrio— y decía con todas las
+/// letras que ampliarla es una enmienda. Ésta es la enmienda, y la razón es medible: tras ADR-119 el
+/// papel `Hall` cubre el 19,5 % de los espacios y el 21,5 % del mundo pasa de 300 m², pero los
+/// pilares seguían encerrados en `is_atrium`, o sea en las naves que además tienen vacío
+/// intencionado justo encima. Una nave de 800 m² completamente vacía no se lee como un espacio: se
+/// lee como que falta contenido, que es la queja que abrió la Fase 2.
+///
+/// **Lo que NO cambia**: sigue siendo un [`Wg3Solid`], sigue siendo inmune a los vanos (D2), sigue
+/// viajando por el chunk de su centro (D3) y sigue pagando el peaje del ráster (D6). No hay canal
+/// nuevo ni tipo nuevo: lo que se amplía es DÓNDE se emite, que era lo único que estaba cerrado.
+///
+/// # La gramática, y por qué no hay un caso por variante
+///
+/// El encargo pide ocho variantes (retícula, retícula desplazada, ligeramente irregular, pilar
+/// ausente, pilar desplazado, filas desiguales, zona densa, zona abierta). **Ninguna es una rama de
+/// código.** Salen de cuatro números sorteados por SALA —separación en X, separación en Z, si las
+/// filas impares van a media separación, y cuánto se omite— más dos sorteados por PILAR —si existe y
+/// cuánto se desplaza—. Ocho nombres, seis números, cero `match`.
+///
+/// Y las dos últimas —`DENSE_SECTION` y `OPEN_SECTION`— salen del campo de densidad, que hasta hoy
+/// no tenía consumidor (ADR-118 D4 lo dejó así a propósito): dentro de la MISMA nave, un pilar que
+/// cae en zona vacía o dispersa tiene el doble de probabilidades de no existir. Eso da claros y
+/// espesuras dentro de una sola sala sin inventar un segundo campo espacial, que es justo lo que ese
+/// campo se escribió para evitar.
+///
+/// # Todo sorteo parte de la POSICIÓN (R3)
+///
+/// El de la sala, del centro de la sala; el del pilar, del sitio del pilar. Ni un índice ni un
+/// contador: dos regiones vecinas tienen que producir el mismo pilar en el mismo sitio sin hablarse,
+/// y un `for` con contador rompe eso en cuanto cambia el número de salas.
+fn hall_pillars(
+    building: &RegionBuilding,
+    manifest: &Wg3Manifest,
+    placements: &[Wg3Placement],
+) -> Vec<Wg3Solid> {
+    let mut out = Vec::new();
+    let seed = building.seed;
+
+    // Huellas ya ocupadas por una pieza del catálogo: una pieza trae su interior horneado y un pilar
+    // dentro es un bloque en mitad de un salón que nadie dibujó.
+    let taken: Vec<(f32, f32, f32, f32)> = placements
+        .iter()
+        .filter_map(|p| {
+            manifest
+                .pieces
+                .get(p.piece as usize)
+                .map(|piece| p.bounds(piece))
+        })
+        .collect();
+
+    for (n, plan) in building.storeys.iter().enumerate() {
+        // Rellanos que ATERRIZAN en esta planta, con medio metro de margen: el cuerpo del jugador
+        // (radio 0,35) más holgura. Un pilar encima de la salida de una escalera deja el cuerpo
+        // clavado a media subida — ya pasó, y está anotado en `atrium_solids`.
+        let landings: Vec<super::plan::PlanRect> = building
+            .wells
+            .iter()
+            .filter(|w| w.storey_below + 1 == n)
+            .map(|w| w.rect.shrunk(-50))
+            .collect();
+        // Y los huecos de escalera que ARRANCAN en ésta: su boca es un pozo abierto.
+        let wells_here: Vec<super::plan::PlanRect> = building
+            .wells
+            .iter()
+            .filter(|w| w.storey_below == n)
+            .map(|w| w.rect.shrunk(-50))
+            .collect();
+
+        for (i, s) in plan.built() {
+            if s.role != SpaceRole::Hall || s.rise_cm != 0 {
+                continue;
+            }
+            let r = s.rect;
             if r.area_m2() < PILLAR_MIN_AREA_M2 {
                 continue;
             }
-            // Se reparten dejando un pilar de margen contra la pared: un pilar pegado al muro no
-            // articula nada y sí estrecha el paso.
-            // **Y NUNCA SOBRE LA SALIDA DE UNA ESCALERA.** Una escalera puede aterrizar en una nave
-            // (`dig_wells` sólo pide un espacio construido y plano), y con tres plantas o más las
-            // naves intermedias SÍ reciben pilares — con dos nunca los tuvieron, porque este bucle
-            // exige planta encima, así que el barrido a `STOREYS = 2` no podía verlo. Salió en
-            // `(0,1)` al servir diez: un megapilar de 2 × 2 sentado encima del pozo, y el cuerpo
-            // clavado a media subida con 1,53 m de techo. El medio metro de margen es el cuerpo
-            // (radio 0,35) más holgura.
-            let landings: Vec<super::plan::PlanRect> = building
-                .wells
+
+            let (cx, cz) = r.centre_m();
+            let mut room = super::hash::stream_at(seed, cx, cz, SALT_PILLAR_ROOM);
+            if room.next01() >= PILLAR_ROOM_CHANCE {
+                continue;
+            }
+            let span = (PILLAR_SPACING_MAX_CM - PILLAR_SPACING_MIN_CM) as f32;
+            let step_x = PILLAR_SPACING_MIN_CM + (room.next01() * span) as i32;
+            let step_z = PILLAR_SPACING_MIN_CM + (room.next01() * span) as i32;
+            let stagger = room.next01() < 0.45;
+            let omit = room.next01() * PILLAR_OMIT_MAX;
+
+            // **LA SEPARACIÓN SE AJUSTA A LA SALA, no al revés.** Es como se dimensiona un vano
+            // de verdad: se elige cuántos caben y se reparten a partes iguales, así que el último
+            // queda a la misma distancia del muro que el primero. Dibujar un paso fijo y ver qué
+            // cae dentro deja siempre una franja muerta contra una de las paredes.
+            //
+            // `step_x` y `step_z` sorteados son el paso DESEADO; lo que manda es el número entero
+            // de vanos que más se le acerca, con el suelo de `PILLAR_SPACING_MIN_CM` para que el
+            // peaje del ráster no cierre el paso entre dos pilares (ADR-105 D6).
+            let usable_x = r.width_cm() - 2 * PILLAR_WALL_MARGIN_CM - PILLAR_SIDE_CM;
+            let usable_z = r.depth_cm() - 2 * PILLAR_WALL_MARGIN_CM - PILLAR_SIDE_CM;
+            if usable_x <= 0 || usable_z <= 0 {
+                continue;
+            }
+            let bays = |usable: i32, want: i32| -> i32 {
+                let n = ((usable as f32 / want as f32).round() as i32).max(1);
+                // Y si al repartir salen vanos por debajo del mínimo, se quitan vanos.
+                let mut n = n;
+                while n > 1 && usable / n < PILLAR_SPACING_MIN_CM {
+                    n -= 1;
+                }
+                n
+            };
+            let bays_x = bays(usable_x, step_x);
+            let bays_z = bays(usable_z, step_z);
+            let (count_x, count_z) = (bays_x + 1, bays_z + 1);
+            if count_x < PILLAR_MIN_PER_AXIS || count_z < PILLAR_MIN_PER_AXIS {
+                continue;
+            }
+            let step_x = usable_x / bays_x;
+            let step_z = usable_z / bays_z;
+            // **Y con UN vano el mínimo tampoco se negocia.** `bays` no puede bajar de uno, así que
+            // una sala estrecha salía con dos pilares a la distancia que fuera: medido, 15 cm entre
+            // vecinos. Si ni con un solo vano se llega al mínimo, la sala no admite retícula y se
+            // queda diáfana — que es la respuesta correcta para una nave de 12 m de ancho.
+            if step_x < PILLAR_SPACING_MIN_CM || step_z < PILLAR_SPACING_MIN_CM {
+                continue;
+            }
+            let (margin_x, margin_z) = (PILLAR_WALL_MARGIN_CM, PILLAR_WALL_MARGIN_CM);
+
+            // Los puntos por los que se entra a esta sala: enlaces del plan y puertas de junta.
+            let doors: Vec<(i32, i32)> = plan
+                .links
                 .iter()
-                .filter(|w| w.storey_below + 1 == n)
-                .map(|w| super::plan::PlanRect {
-                    min_x_cm: w.rect.min_x_cm - 50,
-                    min_z_cm: w.rect.min_z_cm - 50,
-                    max_x_cm: w.rect.max_x_cm + 50,
-                    max_z_cm: w.rect.max_z_cm + 50,
-                })
+                .filter(|l| l.a == i || l.b == i)
+                .map(|l| (l.at_x_cm, l.at_z_cm))
+                .chain(
+                    plan.gates
+                        .iter()
+                        .filter(|g| g.space == i)
+                        .map(|g| (g.x_cm, g.z_cm)),
+                )
                 .collect();
-            let mut px = r.min_x_cm + PILLAR_SPACING_CM;
-            while px + PILLAR_SIDE_CM <= r.max_x_cm - PILLAR_SPACING_CM / 2 {
-                let mut pz = r.min_z_cm + PILLAR_SPACING_CM;
-                while pz + PILLAR_SIDE_CM <= r.max_z_cm - PILLAR_SPACING_CM / 2 {
-                    let pillar = super::plan::PlanRect {
-                        min_x_cm: px,
-                        min_z_cm: pz,
-                        max_x_cm: px + PILLAR_SIDE_CM,
-                        max_z_cm: pz + PILLAR_SIDE_CM,
-                    };
-                    if landings.iter().any(|l| l.overlaps(&pillar)) {
-                        pz += PILLAR_SPACING_CM;
+
+            let clear = clear_height_cm(s);
+            let mut row = 0i32;
+            let mut pz = r.min_z_cm + margin_z;
+            while pz + PILLAR_SIDE_CM <= r.max_z_cm - margin_z {
+                // Filas impares a media separación: `OFFSET_GRID`. Con `stagger` apagado sale la
+                // retícula recta, que también tiene que existir o no hay contra qué leer la otra.
+                let shift = if stagger && row % 2 == 1 {
+                    step_x / 2
+                } else {
+                    0
+                };
+                let mut px = r.min_x_cm + margin_x + shift;
+                while px + PILLAR_SIDE_CM <= r.max_x_cm - margin_x {
+                    let (mx, mz) = (px as f32 / CM_PER_M, pz as f32 / CM_PER_M);
+                    let mut one = super::hash::stream_at(seed, mx, mz, SALT_PILLAR_ONE);
+                    // `DENSE_SECTION` / `OPEN_SECTION`: en zona vacía o dispersa se cae el doble.
+                    let thin = matches!(
+                        super::density::class_at(seed, mx, mz),
+                        super::density::DENSITY_EMPTY | super::density::DENSITY_SPARSE
+                    );
+                    let chance = if thin { omit * 2.0 } else { omit };
+                    if one.next01() < chance {
+                        px += step_x;
                         continue;
                     }
-                    out.push(Wg3Solid {
-                        x_cm: px,
-                        z_cm: pz,
-                        size_x_cm: PILLAR_SIDE_CM,
-                        size_z_cm: PILLAR_SIDE_CM,
-                        bottom_y_cm: s.floor_y_cm,
-                        top_y_cm: s.floor_y_cm + ATRIUM_CLEAR_CM,
-                        style,
-                    });
-                    pz += PILLAR_SPACING_CM;
+                    let jx = (one.next01() * 2.0 - 1.0) * PILLAR_JITTER_MAX_CM as f32;
+                    let jz = (one.next01() * 2.0 - 1.0) * PILLAR_JITTER_MAX_CM as f32;
+                    let x = (px + jx as i32)
+                        .clamp(r.min_x_cm + PILLAR_SIDE_CM, r.max_x_cm - 2 * PILLAR_SIDE_CM);
+                    let z = (pz + jz as i32)
+                        .clamp(r.min_z_cm + PILLAR_SIDE_CM, r.max_z_cm - 2 * PILLAR_SIDE_CM);
+                    let pillar = super::plan::PlanRect {
+                        min_x_cm: x,
+                        min_z_cm: z,
+                        max_x_cm: x + PILLAR_SIDE_CM,
+                        max_z_cm: z + PILLAR_SIDE_CM,
+                    };
+
+                    let blocked = landings.iter().any(|l| l.overlaps(&pillar))
+                        || wells_here.iter().any(|w| w.overlaps(&pillar))
+                        || doors.iter().any(|&(dx, dz)| {
+                            (dx - (x + PILLAR_SIDE_CM / 2)).abs() < PILLAR_DOOR_CLEAR_CM
+                                && (dz - (z + PILLAR_SIDE_CM / 2)).abs() < PILLAR_DOOR_CLEAR_CM
+                        })
+                        || taken.iter().any(|&(x0, z0, x1, z1)| {
+                            let (a0, b0, a1, b1) = (
+                                x as f32 / CM_PER_M,
+                                z as f32 / CM_PER_M,
+                                (x + PILLAR_SIDE_CM) as f32 / CM_PER_M,
+                                (z + PILLAR_SIDE_CM) as f32 / CM_PER_M,
+                            );
+                            a0 < x1 && a1 > x0 && b0 < z1 && b1 > z0
+                        });
+                    if !blocked {
+                        out.push(Wg3Solid {
+                            x_cm: x,
+                            z_cm: z,
+                            size_x_cm: PILLAR_SIDE_CM,
+                            size_z_cm: PILLAR_SIDE_CM,
+                            bottom_y_cm: s.floor_y_cm,
+                            top_y_cm: s.floor_y_cm + clear,
+                            style: style_of(s.role),
+                        });
+                    }
+                    px += step_x;
                 }
-                px += PILLAR_SPACING_CM;
+                pz += step_z;
+                row += 1;
             }
         }
     }

@@ -12425,3 +12425,109 @@ región SUBIÓ de 2,6 a 2,9 en el mismo cambio.
 - **Cliente**: `Wg3ScaleField.cs` y `Wg3ScaleFieldTests.cs` compilan en el arnés headless
   (`CompileCheckClient.sh`, 0 errores en `BackroomsSurvival` y `EditModeTests`); la suite EditMode no
   se ha ejecutado en el editor.
+
+---
+
+## ADR-105 — Enmienda 2: el pilar sale del atrio (Fase 2 PASS 2) (2026-09-02) — ACEPTADA (implementada y medida)
+
+### Contexto y qué prohibición se levanta
+
+ADR-105 D5 cerró la tabla de casos del macizo con dos entradas —el pretil de un balcón y el megapilar
+de un atrio— y lo dijo con todas las letras: *«un canal que acepta cajas arbitrarias es, sin acotar,
+un segundo sistema de geometría sin disciplina… Añadir un caso aquí es una enmienda al ADR, no una
+tarde.»* Ésta es la enmienda, aprobada por Joel antes de escribir una línea.
+
+La razón es medible. Tras ADR-119 el papel `Hall` cubre el **19,5 %** de los espacios y el **21,5 %**
+del mundo pasa de 300 m², pero los pilares seguían encerrados en `is_atrium`: sólo las naves que
+además tienen vacío intencionado justo encima. Resultado, 16,1 pilares por región. **Una nave de
+800 m² completamente vacía no se lee como un espacio: se lee como que falta contenido**, que es
+exactamente la queja que abrió la Fase 2.
+
+### D1 — Tercer caso: el PILAR ESTRUCTURAL de una nave
+
+Se añade a la tabla de ADR-105 D5. **Lo que no cambia es todo lo demás**: sigue siendo un
+`Wg3Solid`, sigue siendo inmune a los vanos (D2), sigue viajando por el chunk de su centro (D3),
+sigue rasterizándose como cualquier macizo y sigue pagando el peaje de D6. No hay canal nuevo, ni
+tipo nuevo, ni campo de wire nuevo. Lo único que se amplía es **dónde** se emite, que era lo único
+que la tabla tenía cerrado.
+
+El bucle de megapilares sale de `atrium_solids` —que se queda sólo con los pretiles— y pasa a
+`hall_pillars`, que recorre **todas** las plantas. El atrio deja de ser un caso aparte: es una nave
+como las demás, y su altura sigue saliendo de `clear_height_cm`, o sea 6,40 m si es atrio y 3,08 /
+4,50 si no. De paso se arregla un efecto secundario que nadie había pedido: el bucle viejo exigía
+`storeys.get(n + 1)`, así que **la última planta nunca tenía pilares**.
+
+### D2 — Ocho arquetipos, seis números, cero `match`
+
+El encargo pide ocho variantes: retícula, retícula desplazada, ligeramente irregular, pilar ausente,
+pilar desplazado, filas desiguales, zona densa y zona abierta. **Ninguna es una rama de código.**
+Salen de cuatro números sorteados por SALA —separación deseada en X, separación deseada en Z, si las
+filas impares van a media separación, y cuánto se omite— más dos por PILAR —si existe y cuánto se
+desplaza (±55 cm)—.
+
+Todo sorteo parte de la POSICIÓN (regla R3): el de la sala del centro de la sala, el del pilar del
+sitio del pilar. Ni un índice ni un contador — dos regiones vecinas tienen que producir el mismo
+pilar en el mismo sitio sin hablarse, y un `for` con contador rompe eso en cuanto cambia el número
+de salas.
+
+Y no todas las naves llevan: `PILLAR_ROOM_CHANCE = 0,62` sobre las que además caben. Una nave
+diáfana al lado de una con pilares es lo que hace que la segunda signifique algo.
+
+### D3 — La separación se ajusta a la SALA, no al revés
+
+La primera versión dibujaba un paso fijo con margen de medio paso contra la pared y colocaba lo que
+cayera dentro. **Medido: el 57,9 % de las naves con pilares tenían uno o dos.** Un pilar suelto no es
+una sala de pilares; es una sala con una columna, y se lee como un descuido.
+
+Ahora se dimensiona como un vano de verdad: margen fijo de 350 cm contra el muro, y del hueco que
+queda se elige el **número entero de vanos** que más se acerca al paso deseado, repartidos a partes
+iguales. El último pilar queda a la misma distancia del muro que el primero. Si no salen al menos
+dos por eje, la nave se queda diáfana — una fila sola no articula el espacio, es un obstáculo.
+
+Y el mínimo de separación no se negocia ni con un solo vano: `bays` no puede bajar de uno, así que
+una sala estrecha salía con **dos pilares a 15 cm** —medido— antes de la guarda que descarta la sala
+cuando ni con un vano se llega a los 700 cm. Setecientos porque un pilar de 2 m maciza sus cuatro
+celdas de ráster y otro medio metro por el rasterizado conservador (D6): por debajo de eso el paso
+libre baja de 3,50 m y una nave con pilares se lee como un laberinto de pilares.
+
+### D4 — El campo de densidad estrena consumidor
+
+`DENSE_SECTION` y `OPEN_SECTION` piden claros y espesuras **dentro de la misma nave**. Eso es un
+segundo campo espacial… que ya existe: `wg3::density`, que ADR-118 D4 dejó a propósito sin
+consumidor. Un pilar que cae en zona vacía o dispersa tiene el doble de probabilidades de no
+existir. Cero código de campo nuevo, y el campo deja de ser una promesa.
+
+Es un adelanto parcial de lo que el encargo llama PASS 10; lo que se usa aquí es sólo la modulación
+de la omisión, no el resto de la influencia arquitectónica.
+
+### D5 — Dónde NO va un pilar, y por qué cada exclusión existe
+
+- **Delante de una puerta** (400 cm del punto del vano, enlaces del plan y puertas de junta). Un
+  macizo en la boca de una puerta la tapia y el ráster lo estampa sin quejarse: es el fallo mudo que
+  ADR-118 persiguió una auditoría entera.
+- **Sobre el aterrizaje de una escalera** (rellano inflado 50 cm) y **sobre la boca de un pozo**. Lo
+  primero ya estaba en `atrium_solids` y está anotado allí: deja el cuerpo clavado a media subida.
+- **Dentro de la huella de una pieza del catálogo.** Una pieza trae su interior horneado; un pilar
+  dentro es un bloque en mitad de un salón que nadie dibujó. Por eso `hall_pillars` se llama después
+  del bucle de plantas: hasta que no están todas rellenadas no se sabe qué espacios acabaron con
+  pieza.
+- **En un espacio con desnivel** (`rise_cm != 0`) y en cualquier papel que no sea `Hall`.
+
+### Verificaciones
+
+- **`cargo test --bin backrooms_server` 1357/1357**, clippy `--all-targets -D warnings` y fmt
+  limpios. Barrido en release de 30 semillas: **270/270 regiones válidas** a los siete niveles.
+- **Test nuevo `pillars_land_where_the_grammar_says`**: con 30 semillas revisa **14 365 pilares** y
+  exige las cuatro invariantes de D5 más la separación mínima. Ninguna de ellas produce un test rojo
+  en otro sitio si se rompe — el síntoma sería una puerta tapiada cien metros más allá.
+- **Pilares por región 16,1 → 52,5.** De las naves de ≥ 300 m², el **38,4 %** lleva retícula, con
+  **5,5 pilares de media** y sólo el 9,1 % con uno o dos (era el 57,9 % antes de D3). Separación real
+  al vecino más próximo: media **919 cm**, mínima **604 cm**.
+- **Peaje del ráster, medido y pequeño**: las cotas pisables de una región bajan de 117 164 a
+  116 201 (**−0,8 %**); mancha mayor **99,8 %**, islas 1,4, nav 100 % — sin cambio frente a ADR-119.
+- **Coste de generación sin cambio**: plan 0,3 ms, relleno 0,2 ms, ráster de nueve chunks 9 ms.
+- **Línea de visión media 21,7 → 20,9 m**, y los rayos de menos de 5 m suben del 21,4 % al 22,6 %.
+  Es el precio de que haya masa en las naves y está dentro de lo esperado; queda anotado porque si
+  una iteración futura sube la densidad de pilares, **este es el número que se rompe primero**.
+- **Sin cambio de wire** (55), sin `SpaceRole` nuevo, sin tocar el cliente: el canal de macizos ya
+  existía y `Wg3SceneAssembler` ya los monta desde ADR-105.
