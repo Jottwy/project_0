@@ -12,6 +12,9 @@ pub mod chunk;
 pub mod collision;
 pub mod compose;
 pub mod config;
+/// Auditoria 2026-09-02, Fase 6 - el campo de densidad ambiental (vacio, disperso, estructurado,
+/// denso, anomalo), funcion pura de la posicion y espejo de Wg3DensityField en C#.
+pub mod density;
 /// ADR-100 — el relleno: convertir un plan en geometría, sin que la geometría decida nada.
 pub mod fill;
 pub mod hash;
@@ -28,9 +31,14 @@ pub mod raster;
 pub mod route;
 pub mod scale;
 pub mod segment;
+/// Auditoría 2026-09-02 — la validación por niveles: plan, edificio, relleno, geometría, ráster,
+/// navegación y determinismo, para cualquier semilla y cualquier región.
+pub mod validate;
 pub mod world;
 
 // `pub(crate)` para que las pruebas del bucle de juego (ADR-045 enm. 2) monten el mismo mundo servido
 // —manifiesto real y semilla servida— sin duplicar el cargador.
 #[cfg(test)]
 pub(crate) mod tests;
+#[cfg(test)]
+mod validate_tests;
