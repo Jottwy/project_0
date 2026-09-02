@@ -36,8 +36,8 @@ namespace BackroomsSurvival.Net
     ///    vaciarse y la guarda que impide re-sembrar donde ya hay uno;
     ///  · el CONTENIDO sale del mismo catálogo que las cachés del suelo.
     ///
-    /// LO QUE ESTE SORTEO NO HACE, A PROPÓSITO: agua de almendras. Las 4 botellas de toda la
-    /// partida salen de los 4 cofres de <c>StpChestSpawner</c>, y esa cuenta está medida contra
+    /// LO QUE ESTE SORTEO NO HACE, A PROPÓSITO: agua de almendras. Las botellas de toda la
+    /// partida (una por cofre, `ChestCount` en <c>StpChestSpawner</c>) salen sólo de ahí, y esa cuenta está medida contra
     /// los drenajes de sed. Un contenedor que sirviera agua movería un balance de supervivencia
     /// que ya está validado en partida; éste sirve lo mismo que el suelo, en otro envase.
     /// </summary>

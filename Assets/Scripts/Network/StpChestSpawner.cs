@@ -35,7 +35,10 @@ namespace BackroomsSurvival.Net
         // partida entera y se siembran alrededor del HOST al arrancar (radio 5–200 m) — no hay
         // re-siembra ni cofres lejos de ese punto. Con el agua de almendras chest-only, esos 4
         // cofres son la ÚNICA fuente de agua del juego: ver la nota de RollChestLoot.
-        private const int ChestCount = 4;
+        // 2026-09-02 (Joel): 4 → 6 para que el destornillador salga más. Con el reparto 80/15/5 y
+        // el slot extra a medias con el bote, 6 cofres dan ~0,6 destornilladores por partida (antes
+        // ~0,4). Es el dial correcto: la nota de RollChestLoot dice que la herramienta no va al suelo.
+        private const int ChestCount = 6;
         private const float ScatterMinRadius = 5f;
         private const float ScatterMaxRadius = 200f;
         // Placement attempts + ray geometry live in LootPlacement (shared with the item and
@@ -198,13 +201,14 @@ namespace BackroomsSurvival.Net
         /// se siembra una vez. Compartir el helper obligaría a arrastrar el rng determinista hasta
         /// aquí para nada. Si se toca uno, tocar el otro.
         ///
-        /// ⚠ CUENTA DE AGUA DE TODA LA PARTIDA: 4 cofres × 1 botella = **4 aguas de almendras**,
-        /// sembradas de una sola vez alrededor del host y sin re-siembra. No hay ninguna otra
-        /// fuente (ChunkLootRoll solo da botes de spray por la enmienda de ADR-030).
+        /// ⚠ CUENTA DE AGUA DE TODA LA PARTIDA: 6 cofres × 1 botella = **6 aguas de almendras**
+        /// (4 hasta el 2026-09-02; se subió a 6 por el destornillador, no por el agua), sembradas
+        /// de una sola vez alrededor del host y sin re-siembra. No hay ninguna otra fuente
+        /// (ChunkLootRoll solo da botes de spray por la enmienda de ADR-030).
         ///
         /// ACTUALIZADO 2026-08-17 tras la rebaja de drenajes (sed −0,007/s): el depósito lleno da
-        /// 3 h 58 min y cada botella (+60 de sed) otras 2 h 22 min, así que los 4 cofres cubren
-        /// ~13 h 30 min de sed. **Esta cuenta pasó de brutal a irrelevante**: la escasez de agua ya
+        /// 3 h 58 min y cada botella (+60 de sed) otras 2 h 22 min, así que los 4 cofres de entonces
+        /// cubrían ~13 h 30 min de sed (6 cofres: ~18 h). **Esta cuenta pasó de brutal a irrelevante**: la escasez de agua ya
         /// no es lo que limita una sesión. La cuenta anterior (−0,07/s ⇒ 24 min de barra, 45 min–1 h
         /// por partida) queda aquí a propósito para que nadie balancee contra ella por error.
         ///

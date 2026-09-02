@@ -155,7 +155,7 @@ namespace BackroomsSurvival.Tests
             Assert.Greater(seen, 0, "no se sorteó ni un contenedor en todo el barrido");
         }
 
-        /// <summary>Y NUNCA agua de almendras. Las 4 botellas de la partida salen de los cofres de
+        /// <summary>Y NUNCA agua de almendras. Las botellas de la partida (una por cofre) salen de los cofres de
         /// `StpChestSpawner` y esa cuenta está medida contra los drenajes de sed; un mueble que
         /// sirviera agua movería un balance ya validado en partida.</summary>
         [Test]
