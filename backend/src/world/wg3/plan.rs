@@ -78,6 +78,14 @@ const SALT_TERRACE: u32 = 0x9A17_0005;
 const SALT_STOREY: u32 = 0x9A17_0006;
 /// Sal de la elección de hueco de escalera.
 const SALT_WELL: u32 = 0x9A17_0007;
+/// Sal del ensanche de una banda (repetición con variación, auditoría 2026-09-02).
+const SALT_BAND: u32 = 0x9A17_0008;
+/// Sal del sorteo de corredor ciego en un corte profundo.
+const SALT_STUB: u32 = 0x9A17_0009;
+/// Sal de dónde cae una puerta a lo largo de la pared que comparten dos espacios.
+const SALT_DOOR: u32 = 0x9A17_000A;
+/// Sal del empuje hacia `Weird` de las plantas altas.
+const SALT_WEIRD_UP: u32 = 0x9A17_000B;
 
 /// Plantas que se sirven por región (ADR-102 D3).
 ///
@@ -102,7 +110,45 @@ pub const REGION_STOREYS: usize = 10;
 /// Es media puerta (120) + media banda de corredor (160) + una jamba (60), y los tres sumandos hacen
 /// falta: sin el segundo la banda cae encima de la puerta y la deja con 40 cm de jamba, por debajo de
 /// lo que [`Planner::touches_border_point`] acepta, así que se pierde igual.
-const GATE_CLEARANCE_CM: i32 = DOORWAY_CM / 2 + BAND_WIDTH_CM[0] / 2 + 60;
+const GATE_CLEARANCE_CM: i32 = DOORWAY_CM / 2 + (BAND_WIDTH_CM[0] + BAND_EXTRA_MAX_CM) / 2 + 60;
+
+/// **Ensanche de una banda, sorteado por su posición** (auditoría 2026-09-02, Fase 5: repetición
+/// con variación). Cada corte que talla corredor suma uno de estos a su anchura base; en zona
+/// `Weird`, uno de los de la segunda fila. Nunca resta —ADR-103 D6: el suelo de 240 es del ráster—
+/// y el mayor entra en [`GATE_CLEARANCE_CM`], que tiene que despejar la banda MÁS ancha posible.
+/// Es lo que hace que dos espinas de dos regiones no midan lo mismo, y que un pasillo salga «un
+/// poco demasiado ancho» de vez en cuando sin que ningún corredor baje del mínimo.
+///
+/// **Medido**: cada 40 cm de banda de más se pagan en salas más pequeñas, o sea en menos sitios donde
+/// cabe una escalera de 12,6 m. Con 0/0/40/80 el barrido perdió 0,3 plantas de media; por eso la tabla
+/// normal sólo ensancha una de cada cuatro bandas y la rara se queda en 120.
+const BAND_EXTRA_CM: [i32; 4] = [0, 0, 0, 40];
+const BAND_EXTRA_WEIRD_CM: [i32; 4] = [0, 40, 80, 120];
+const BAND_EXTRA_MAX_CM: i32 = 120;
+
+/// Probabilidad de que un corte PROFUNDO (≥ [`CORRIDOR_DEPTH`]) talle banda igualmente: un
+/// corredor entre dos salas hermanas que sólo se conecta por donde toque. Es la regla
+/// `CORRIDOR → BRANCH | DEAD_END` de la gramática: la mayoría acaban con una sola salida
+/// (medido con `PlanStats::dead_corridors`), y son el «pasillo que no lleva a nada» de un
+/// Backrooms. Baja a propósito: por encima el mundo vuelve a ser «todo pasillos».
+const STUB_CHANCE: f32 = 0.10;
+/// La misma, en zona `Weird`.
+const STUB_CHANCE_WEIRD: f32 = 0.22;
+/// Área mínima de un bloque para que se le pueda tallar un corredor ciego, en m².
+const STUB_MIN_AREA_M2: f32 = 400.0;
+
+/// Probabilidad de que una puerta caiga CENTRADA en la pared que comparten dos espacios. El resto
+/// se reparte a lo largo de la pared, sorteado por posición: «una puerta en un sitio raro» de vez en
+/// cuando, sin que deje de caber (jambas de [`DOOR_JAMB_CM`] a cada lado).
+const DOOR_CENTRED_CHANCE: f32 = 0.55;
+/// Jamba mínima entre una puerta descentrada y la esquina de la pared.
+const DOOR_JAMB_CM: i32 = 30;
+
+/// Cuánto sube, por planta a partir de la segunda, la probabilidad de que una zona `Large` se lea
+/// como `Weird`. Fase 7: la progresión del jugador es la PROFUNDIDAD (plantas), así que la rareza
+/// crece con ella y no con la distancia al origen, que en un mundo infinito no significa nada.
+const WEIRD_PER_STOREY: f32 = 0.10;
+const WEIRD_STOREY_CAP: f32 = 0.40;
 
 /// **CONTRAHUELLA, y el número NO es de comodidad: es el grosor de la losa.**
 ///
@@ -710,6 +756,35 @@ impl RegionPlan {
                     ));
                 }
             }
+
+            // **Auditoría 2026-09-02 — EL PUNTO DEL PASO TIENE QUE ESTAR EN UNA PARED DE LOS DOS.**
+            //
+            // Es lo único que el relleno necesita de un enlace, y era lo único que nadie comprobaba:
+            // un espacio recortado por una escalera se quedaba con enlaces en paredes que ya no
+            // tenía, `fill` los apuntaba como fallidos y el edificio pasaba `problems()` con una
+            // docena de salas selladas dentro. Un `Route` queda fuera: no tiene pared, tiene
+            // enrutador.
+            if l.kind != LinkKind::Route {
+                for (who, s) in [(l.a, a), (l.b, b)] {
+                    if !door_fits_on(&s.rect, l.at_x_cm, l.at_z_cm) {
+                        out.push(format!(
+                            "enlace {i}: su paso en ({},{}) no cae en ninguna pared del espacio \
+                             {who} — el relleno no puede abrirlo",
+                            l.at_x_cm, l.at_z_cm
+                        ));
+                    }
+                }
+            }
+        }
+        for (i, g) in self.gates.iter().enumerate() {
+            match self.spaces.get(g.space) {
+                Some(s) if door_fits_on(&s.rect, g.x_cm, g.z_cm) => {}
+                Some(_) => out.push(format!(
+                    "puerta de junta {i}: su punto ({},{}) no cae en ninguna pared del espacio {}",
+                    g.x_cm, g.z_cm, g.space
+                )),
+                None => out.push(format!("puerta de junta {i}: espacio fuera de rango")),
+            }
         }
         out
     }
@@ -813,7 +888,7 @@ pub fn plan_storey(
     // obligaría a rehacer el grafo.
     let gates = planner.attach_gates(gates);
     planner.link_all();
-    planner.ensure_connected();
+    planner.ensure_connected(&gates.iter().map(|g| g.space).collect::<Vec<_>>());
     planner.retag_dead_ends();
     if may_sink {
         planner.sink_dead_ends(&gates);
@@ -855,6 +930,11 @@ pub struct StairWell {
 pub struct RegionBuilding {
     pub storeys: Vec<RegionPlan>,
     pub wells: Vec<StairWell>,
+    /// La semilla con la que se planificó, para los sorteos que se hacen al RELLENAR (los agujeros
+    /// de forjado). Auditoría 2026-09-02: `fill::hole_carves` sorteaba con semilla 0, así que dos
+    /// mundos distintos ponían los agujeros en el mismo sitio si un espacio caía igual — y ningún
+    /// test lo veía porque el resultado seguía siendo determinista.
+    pub seed: i32,
 }
 
 impl RegionBuilding {
@@ -1020,7 +1100,15 @@ pub fn plan_building(
             })
             .collect();
         let mut plan = plan;
-        let mut dug = dig_wells(&mut out[n - 1], &plan, n - 1, seed, &landings);
+        // **Una planta de UN solo espacio no es una planta** (auditoría 2026-09-02). Sin enlaces no
+        // tiene ni una puerta, y un espacio sin puertas no se construye (`fill::emit_space` no emite
+        // cajas macizas): el pozo subía a una losa que no existía. Pasaba en la torre, cuya huella
+        // de 18 × 18 cabe entera en el área objetivo de una zona `Large`.
+        let mut dug = if plan.links.is_empty() {
+            Vec::new()
+        } else {
+            dig_wells(&mut out[n - 1], &plan, n - 1, seed, &landings)
+        };
         // **LA TORRE ES UN REINTENTO, no una rama** (VERTICALITY-ROADMAP D1). Medido antes de
         // escribirla: con la torre sólo como sustituto de `upper_bounds` la distribución de 49
         // regiones no movió ni una — lo que rompe la subida casi nunca es que no quede huella,
@@ -1038,9 +1126,11 @@ pub fn plan_building(
                     false,
                     &atria,
                 );
-                dug = dig_wells(&mut out[n - 1], &retry, n - 1, seed, &landings);
-                if !dug.is_empty() {
-                    plan = retry;
+                if !retry.links.is_empty() {
+                    dug = dig_wells(&mut out[n - 1], &retry, n - 1, seed, &landings);
+                    if !dug.is_empty() {
+                        plan = retry;
+                    }
                 }
             }
         }
@@ -1055,6 +1145,7 @@ pub fn plan_building(
     RegionBuilding {
         storeys: out,
         wells,
+        seed,
     }
 }
 
@@ -1175,7 +1266,29 @@ fn tower_bounds(below: &RegionPlan) -> Option<(f32, f32, f32, f32)> {
 /// «los bounds lo contienen y todo lo que solapa es construido, plano y no-escalera». Salir de una
 /// escalera a un pasillo es arquitectura normal; la pared que cruce la boca la recorta `fill`
 /// (`well_mouth_carves`), que es quien pone y quita paredes.
-fn landing_over(above: &RegionPlan, stair: &PlanRect) -> Option<usize> {
+fn landing_over(above: &RegionPlan, stair: &PlanRect, entry_side: u8) -> Option<usize> {
+    // **EL RELLANO TIENE QUE CABER ENTERO EN UN SOLO ESPACIO DE ARRIBA, con una celda de holgura**
+    // (auditoría 2026-09-02). Mide dos tiras —120 cm, dos celdas del ráster— y las dos se pueden
+    // perder: una pared de la planta de arriba que cruce el pozo a 8 cm de su extremo infla la celda
+    // del rellano que toca, y la pared lateral del primer peldaño infla la otra por un centímetro.
+    // Medido en una de 270 regiones: un rellano de 2 × 7 celdas cerrado por los cuatro lados y la
+    // planta entera al 0 %. Una pared cruzando el TIRO la recorta `well_mouth_carves`; cruzando el
+    // rellano no hay recorte que valga, así que ahí no puede haber pared.
+    let landing = landing_zone(stair, entry_side);
+    let landing_grown = PlanRect {
+        min_x_cm: landing.min_x_cm - 50,
+        min_z_cm: landing.min_z_cm - 50,
+        max_x_cm: landing.max_x_cm + 50,
+        max_z_cm: landing.max_z_cm + 50,
+    };
+    if !above.spaces.iter().any(|t| {
+        t.role.is_built()
+            && t.rise_cm == 0
+            && t.role != SpaceRole::Stair
+            && t.rect.contains_rect(&landing_grown)
+    }) {
+        return None;
+    }
     let grown = PlanRect {
         min_x_cm: stair.min_x_cm - STAIR_MARGIN_CM,
         min_z_cm: stair.min_z_cm - STAIR_MARGIN_CM,
@@ -1185,12 +1298,27 @@ fn landing_over(above: &RegionPlan, stair: &PlanRect) -> Option<usize> {
     if !above.bounds_cm?.contains_rect(&grown) {
         return None;
     }
+    // **Auditoría 2026-09-02 — LA UNIÓN VALE, PERO EL POZO NO PUEDE PARTIR LO QUE ATRAVIESA.**
+    //
+    // Con la regla de unión sin más, un tiro de 9 × 3,6 m podía cruzar la ESPINA de la planta de
+    // arriba de lado a lado: el vano del forjado se llevaba el suelo del corredor en toda su
+    // anchura y la planta quedaba en dos mitades unidas sólo por el rellano — y la puerta del
+    // corredor caía dentro del agujero, dos metros por encima del peldaño. Medido en la semilla en
+    // vivo, región (0,0): la planta 4 entera con el 0 % alcanzable y todos los contadores en verde.
+    //
+    // Tres cosas que un espacio de arriba pisado por el pozo no puede ser: circulación (una banda
+    // de 2,4-3,2 m nunca sobrevive a un hueco de 3,6), partido en dos por el hueco, ni tener un
+    // hueco de puerta sobre él. Lo que sí puede: ser varias salas que comparten pared sobre el
+    // tiro, que es lo que la unión vino a permitir y `well_mouth_carves` resuelve.
     let mut best: Option<(i64, usize)> = None;
     for (idx, t) in above.spaces.iter().enumerate() {
         if !t.rect.overlaps(&grown) {
             continue;
         }
         if !t.role.is_built() || t.rise_cm != 0 || t.role == SpaceRole::Stair {
+            return None;
+        }
+        if t.role.is_circulation() || hole_severs(&t.rect, stair) {
             return None;
         }
         let ox = (t.rect.max_x_cm.min(grown.max_x_cm) - t.rect.min_x_cm.max(grown.min_x_cm)) as i64;
@@ -1200,7 +1328,57 @@ fn landing_over(above: &RegionPlan, stair: &PlanRect) -> Option<usize> {
             best = Some((area, idx));
         }
     }
+    // Ningún paso de la planta de arriba puede caer sobre el hueco: se abriría al aire.
+    let danger = PlanRect {
+        min_x_cm: stair.min_x_cm - DOORWAY_CM / 2,
+        min_z_cm: stair.min_z_cm - DOORWAY_CM / 2,
+        max_x_cm: stair.max_x_cm + DOORWAY_CM / 2,
+        max_z_cm: stair.max_z_cm + DOORWAY_CM / 2,
+    };
+    if above
+        .links
+        .iter()
+        .any(|l| danger.contains_point(l.at_x_cm, l.at_z_cm))
+    {
+        return None;
+    }
     best.map(|(_, idx)| idx)
+}
+
+/// Las dos últimas tiras de un tiro: donde se pisa al salir. El tiro corre desde la puerta (lado
+/// `entry_side`) hacia la pared de enfrente, así que el rellano está en el extremo opuesto a la
+/// puerta — la misma cuenta que hace `fill::emit_stair` con `from_max`.
+fn landing_zone(stair: &PlanRect, entry_side: u8) -> PlanRect {
+    let len = 2 * STAIR_TREAD_CM;
+    match entry_side % 4 {
+        0 => PlanRect {
+            max_z_cm: stair.min_z_cm + len,
+            ..*stair
+        },
+        1 => PlanRect {
+            max_x_cm: stair.min_x_cm + len,
+            ..*stair
+        },
+        2 => PlanRect {
+            min_z_cm: stair.max_z_cm - len,
+            ..*stair
+        },
+        _ => PlanRect {
+            min_x_cm: stair.max_x_cm - len,
+            ..*stair
+        },
+    }
+}
+
+/// ¿Parte este agujero la sala en dos? Lo hace si la cruza de pared a pared por alguno de los dos
+/// ejes sin dejar paso a un lado: un vano más una celda de ráster, que es lo mínimo que se anda.
+fn hole_severs(room: &PlanRect, hole: &PlanRect) -> bool {
+    const PASS_CM: i32 = super::segment::MIN_GENERATED_WIDTH_CM + 50;
+    let spans_x =
+        hole.min_x_cm <= room.min_x_cm + PASS_CM && hole.max_x_cm >= room.max_x_cm - PASS_CM;
+    let spans_z =
+        hole.min_z_cm <= room.min_z_cm + PASS_CM && hole.max_z_cm >= room.max_z_cm - PASS_CM;
+    spans_x || spans_z
 }
 
 /// Convierte espacios de la planta de abajo en huecos de escalera. Vacío = no se puede subir.
@@ -1236,8 +1414,8 @@ fn dig_wells(
         doors[g.space].push((g.x_cm, g.z_cm));
     }
 
-    let mut candidates: Vec<(u64, usize, usize, u8)> = Vec::new();
-    let (mut k_run, mut k_band, mut k_land, mut k_door) = (0u32, 0u32, 0u32, 0u32);
+    let mut candidates: Vec<(u64, usize, usize, u8, bool)> = Vec::new();
+    let (mut k_run, mut k_band, mut k_door) = (0u32, 0u32, 0u32);
     for (i, s) in below.spaces.iter().enumerate() {
         if !s.role.is_built() || s.role.is_circulation() || s.rise_cm != 0 {
             continue;
@@ -1268,39 +1446,40 @@ fn dig_wells(
                 k_run += 1;
                 continue;
             }
-            // Y ningún hueco puede caer DENTRO de la franja que se va a volver escalera: ahí la cota sube
-            // hasta 332, y una puerta a media escalera es un vano que se dibuja y no se pasa.
-            if doors[i]
-                .iter()
-                .any(|&(x, z)| band_of(&s.rect, side, run_cm).contains_point(x, z))
-            {
+            // **Los DOS lados del recorte, el sorteado primero** (auditoría 2026-09-02). Con las
+            // puertas repartidas por la pared, la mitad de las laterales cae sobre la franja por el
+            // lado en que el sorteo puso la escalera — y por el otro lado hubiera cabido. Probar el
+            // segundo recupera candidatos que son escasos, y sigue siendo función pura de la posición.
+            let (cx, cz) = s.rect.centre_m();
+            let first_low = hash::stream_at(seed, cx, cz, SALT_WELL).next01() < 0.5;
+            let mut chosen: Option<(PlanRect, usize, bool)> = None;
+            for low in [first_low, !first_low] {
+                let (stair, flank) = stair_and_flank(&s.rect, side, run_cm, low);
+                // Todo hueco tiene que caber en lo que queda de sala o en el costado; sobre la
+                // franja de la escalera, el candidato muere por este lado.
+                let remaining = room_after_band(&s.rect, side, run_cm);
+                if doors[i].iter().any(|&(x, z)| {
+                    !door_fits_on(&remaining, x, z)
+                        && !flank.is_some_and(|f| door_fits_on(&f, x, z))
+                }) {
+                    continue;
+                }
+                // Una banda nueva no pisa una boca vieja (ver abajo).
+                if landings.iter().any(|l| l.overlaps(&stair)) {
+                    continue;
+                }
+                if let Some(j) = landing_over(above, &stair, side) {
+                    chosen = Some((stair, j, low));
+                    break;
+                }
+            }
+            let Some((stair, j, low)) = chosen else {
                 k_band += 1;
                 continue;
-            }
-            // El sitio al que se sale, y contra la franja RECORTADA: lo que tiene que caber dentro de un
-            // espacio de arriba es el hueco, no la sala entera de la que se recorta.
-            let (stair, _) = stair_and_flank(&s.rect, side, run_cm, seed);
-            // **UNA BANDA NUEVA NO PISA UNA BOCA VIEJA, y esto sólo muerde con tres plantas o
-            // más.** La franja que se va a volver escalera no puede solapar el aterrizaje de un
-            // pozo que ya llega a esta planta: sales de una escalera dentro de la franja de la
-            // siguiente. Con dos plantas nunca hay segunda pasada, así que el barrido de 49
-            // regiones a `STOREYS = 2` no podía verlo — salió en `(-1,-3)` al servir diez. Se
-            // comprueba la GEOMETRÍA y no el índice del espacio: con el aterrizaje repartido en
-            // varios espacios, partir uno lejos de la boca es legal y bloquearlo entero sobraba.
-            if landings.iter().any(|l| l.overlaps(&stair)) {
-                continue;
-            }
-            // Y el sitio al que se sale tiene que ser PLANO. Un espacio hundido de la planta de arriba
-            // baja sus peldaños de 12 en 12 justo dentro del pozo: la escalera sube sus trece perfectos y
-            // los ocho de arriba se quedan con menos de un metro de techo, colgando de la terraza de
-            // encima. Salió en `(1,0)` como una escalera que se andaba hasta la mitad.
-            let Some(j) = landing_over(above, &stair) else {
-                k_land += 1;
-                continue;
             };
+            let _ = stair;
             // Sorteo por posición, que es lo que hace que el orden no dependa del orden del vector.
-            let (cx, cz) = s.rect.centre_m();
-            candidates.push((hash::at_position(seed, cx, cz, SALT_WELL), i, j, side));
+            candidates.push((hash::at_position(seed, cx, cz, SALT_WELL), i, j, side, low));
             // Una orientación por espacio: la sala se parte una sola vez.
             break;
         }
@@ -1314,7 +1493,7 @@ fn dig_wells(
             }
         }
         eprintln!(
-            "[well] {} espacios, {} candidatas — muertes: tiro {k_run}, puerta-en-banda {k_band}, aterrizaje {k_land}, sin-puerta {k_door}",
+            "[well] {} espacios, {} candidatas — muertes: tiro {k_run}, puerta-o-aterrizaje {k_band}, sin-puerta {k_door}",
             below.spaces.len(),
             candidates.len()
         );
@@ -1323,8 +1502,8 @@ fn dig_wells(
     // todas juntas en una esquina la mitad de la región sigue sin salida aunque el contador diga seis.
     // Se toman por orden de sorteo y se descarta la que caiga cerca de una ya tomada.
     candidates.sort_unstable_by_key(|&(k, i, ..)| (k, i));
-    let mut taken: Vec<(usize, usize, u8)> = Vec::new();
-    for &(_, i, j, side) in &candidates {
+    let mut taken: Vec<(usize, usize, u8, bool)> = Vec::new();
+    for &(_, i, j, side, low) in &candidates {
         if taken.len() >= WELLS_PER_REGION {
             break;
         }
@@ -1335,7 +1514,7 @@ fn dig_wells(
             dx * dx + dz * dz >= (WELL_SPACING_CM * WELL_SPACING_CM) as f32
         });
         if far {
-            taken.push((i, j, side));
+            taken.push((i, j, side, low));
         }
     }
 
@@ -1344,8 +1523,8 @@ fn dig_wells(
     // espacio se parte una sola vez, así que los índices de los demás siguen valiendo.
     taken
         .into_iter()
-        .map(|(i, j, side)| {
-            let space_below = split_for_stair(below, i, side, run_cm, seed);
+        .map(|(i, j, side, low)| {
+            let space_below = split_for_stair(below, i, side, run_cm, low);
             StairWell {
                 rect: below.spaces[space_below].rect,
                 storey_below,
@@ -1482,12 +1661,10 @@ fn stair_and_flank(
     rect: &PlanRect,
     side: u8,
     run_cm: i32,
-    seed: i32,
+    low: bool,
 ) -> (PlanRect, Option<PlanRect>) {
     let band = band_of(rect, side, run_cm);
     let across_x = side.is_multiple_of(2);
-    let (cx, cz) = rect.centre_m();
-    let low = hash::stream_at(seed, cx, cz, SALT_WELL).next01() < 0.5;
 
     let (stair, flank) = match (across_x, low) {
         (true, true) => (
@@ -1560,30 +1737,12 @@ fn stair_and_flank(
 /// ya apuntaban a `i` siguen siendo correctos sin tocar uno solo: se comprobó antes de llegar aquí que
 /// ninguno cae dentro de la franja, así que todos están en pared de la sala. Hacerlo al revés
 /// obligaría a repuntar el grafo entero y a acertar con cada uno.
-fn split_for_stair(plan: &mut RegionPlan, i: usize, side: u8, run_cm: i32, seed: i32) -> usize {
+fn split_for_stair(plan: &mut RegionPlan, i: usize, side: u8, run_cm: i32, low: bool) -> usize {
     let original = plan.spaces[i];
-    let band = band_of(&original.rect, side, run_cm);
-    let (stair, flank) = stair_and_flank(&original.rect, side, run_cm, seed);
+    let (stair, flank) = stair_and_flank(&original.rect, side, run_cm, low);
 
     // La sala se queda con lo que no es franja.
-    plan.spaces[i].rect = match side % 4 {
-        0 => PlanRect {
-            min_z_cm: band.max_z_cm,
-            ..original.rect
-        },
-        1 => PlanRect {
-            min_x_cm: band.max_x_cm,
-            ..original.rect
-        },
-        2 => PlanRect {
-            max_z_cm: band.min_z_cm,
-            ..original.rect
-        },
-        _ => PlanRect {
-            max_x_cm: band.min_x_cm,
-            ..original.rect
-        },
-    };
+    plan.spaces[i].rect = room_after_band(&original.rect, side, run_cm);
 
     let s = plan.spaces.len();
     plan.spaces.push(PlannedSpace {
@@ -1606,9 +1765,74 @@ fn split_for_stair(plan: &mut RegionPlan, i: usize, side: u8, run_cm: i32, seed:
             rect: f,
             ..original
         });
+        // **Los huecos que quedaron en la pared del costado pasan a ser SUYOS** (auditoría
+        // 2026-09-02). `dig_wells` ya comprobó que todo hueco de la sala cabe en la sala recortada o
+        // en el costado; los del costado siguen apuntando a `i`, y `i` ya no tiene pared ahí. Sin
+        // esta reasignación el relleno los declara fallidos y el vecino nace sellado.
+        let remaining = plan.spaces[i].rect;
+        for l in &mut plan.links {
+            let moves = !door_fits_on(&remaining, l.at_x_cm, l.at_z_cm)
+                && door_fits_on(&f, l.at_x_cm, l.at_z_cm);
+            if !moves {
+                continue;
+            }
+            if l.a == i {
+                l.a = k;
+            } else if l.b == i {
+                l.b = k;
+            }
+        }
+        for g in &mut plan.gates {
+            if g.space == i
+                && !door_fits_on(&remaining, g.x_cm, g.z_cm)
+                && door_fits_on(&f, g.x_cm, g.z_cm)
+            {
+                g.space = k;
+            }
+        }
         link_along(plan, i, k);
     }
     s
+}
+
+/// Lo que queda de una sala cuando se le recorta la franja de escalera de `run_cm` contra el lado
+/// `side`. Una sola función para el candidato y para el corte: dos cálculos del mismo rectángulo
+/// son un rectángulo de más.
+fn room_after_band(rect: &PlanRect, side: u8, run_cm: i32) -> PlanRect {
+    let band = band_of(rect, side, run_cm);
+    match side % 4 {
+        0 => PlanRect {
+            min_z_cm: band.max_z_cm,
+            ..*rect
+        },
+        1 => PlanRect {
+            min_x_cm: band.max_x_cm,
+            ..*rect
+        },
+        2 => PlanRect {
+            max_z_cm: band.min_z_cm,
+            ..*rect
+        },
+        _ => PlanRect {
+            max_x_cm: band.min_x_cm,
+            ..*rect
+        },
+    }
+}
+
+/// ¿Cabe un hueco centrado en este punto en alguna pared de `r`?
+///
+/// **La misma pregunta que hace `fill::wall_side`, y tiene que ser la misma**: sobre una de las
+/// cuatro paredes, con medio vano mínimo a cada lado dentro de esa pared. Un hueco que pase aquí y
+/// no allí sería un enlace del plan que el relleno no puede cumplir — que es exactamente la clase de
+/// fallo que la auditoría del 2026-09-02 encontró a razón de una docena por región.
+pub fn door_fits_on(r: &PlanRect, x_cm: i32, z_cm: i32) -> bool {
+    const EPS: i32 = 2;
+    let half = super::segment::MIN_GENERATED_WIDTH_CM / 2;
+    let on_x_wall = (r.min_x_cm - x_cm).abs() <= EPS || (r.max_x_cm - x_cm).abs() <= EPS;
+    let on_z_wall = (r.min_z_cm - z_cm).abs() <= EPS || (r.max_z_cm - z_cm).abs() <= EPS;
+    (on_x_wall && z_cm - half >= r.min_z_cm && z_cm + half <= r.max_z_cm)
+        || (on_z_wall && x_cm - half >= r.min_x_cm && x_cm + half <= r.max_x_cm)
 }
 
 /// Une la sala con lo que le acaba de nacer al otro lado del corte de la franja.
@@ -1833,14 +2057,39 @@ impl Planner {
         if depth >= MAX_DEPTH {
             return None;
         }
-        let band_cm = if depth < CORRIDOR_DEPTH {
+        let (cx, cz) = rect.centre_m();
+        let class = self.scale_class(cx, cz);
+        let weird = class == scale::SCALE_WEIRD;
+
+        let base_band = if depth < CORRIDOR_DEPTH {
             BAND_WIDTH_CM[depth as usize]
+        } else if rect.area_m2() >= STUB_MIN_AREA_M2 {
+            // Un corte profundo talla corredor sólo si le toca: es el corredor ciego.
+            let chance = if weird {
+                STUB_CHANCE_WEIRD
+            } else {
+                STUB_CHANCE
+            };
+            if hash::stream_at(self.seed, cx, cz, SALT_STUB).next01() < chance {
+                BAND_WIDTH_CM[CORRIDOR_DEPTH as usize - 1]
+            } else {
+                0
+            }
         } else {
             0
         };
-
-        let (cx, cz) = rect.centre_m();
-        let class = scale::scale_at(self.seed, cx, cz);
+        let band_cm = if base_band > 0 {
+            let table = if weird {
+                BAND_EXTRA_WEIRD_CM
+            } else {
+                BAND_EXTRA_CM
+            };
+            let k = (hash::stream_at(self.seed, cx, cz, SALT_BAND).next01() * table.len() as f32)
+                as usize;
+            base_band + table[k.min(table.len() - 1)]
+        } else {
+            0
+        };
 
         // El área objetivo es lo que para la subdivisión, y es donde el campo de escala pasa a
         // decidir tamaños de espacio en vez de sesgar un sorteo de pieza.
@@ -1980,7 +2229,7 @@ impl Planner {
             // La cota la hereda del bloque: una sala es plana, y el desnivel vive en la escalera que
             // separa dos bloques. Sin esa regla haría falta un escalón en cada puerta.
             let (cx, cz) = rect.centre_m();
-            let class = scale::scale_at(self.seed, cx, cz);
+            let class = self.scale_class(cx, cz);
             let area = rect.area_m2();
 
             let mut s = hash::stream_at(self.seed, cx, cz, SALT_ROLE);
@@ -2350,7 +2599,7 @@ impl Planner {
     /// edificio en dos no es un patio; devolverlo a sala es más barato y más honesto que tender un
     /// pasillo generado por encima de él. Sólo si no hay ningún vacío que sirva de puente se recurre
     /// a un [`LinkKind::Route`], que es el encargo explícito al enrutador.
-    fn ensure_connected(&mut self) {
+    fn ensure_connected(&mut self, gates_in: &[usize]) {
         for _ in 0..self.spaces.len() {
             let mut uf = UnionFind::new(self.spaces.len());
             for l in &self.links {
@@ -2437,6 +2686,26 @@ impl Planner {
             let Some((a, b)) = self.closest_pair_between(&uf, main, &roots) else {
                 return;
             };
+            // **Un bolsillo de una o dos salas sin puente se declara VACÍO** (auditoría 2026-09-02).
+            // El enrutador no garantiza nada —una pared enfrentada más corta que un vano y no hay
+            // ruta— y lo que dejaba era una sala construida, con suelo y sin una sola puerta: la
+            // peor versión de «aquí no hay nada». Un vacío intencionado es lo mismo que se quería
+            // decir, dicho de verdad. Los bolsillos grandes siguen yendo al enrutador: perder tres
+            // salas por no tender un pasillo sí sería tapar un fallo.
+            let root_b = uf.find(b);
+            let pocket: Vec<usize> = (0..self.spaces.len())
+                .filter(|&i| self.spaces[i].role.is_built() && uf.find(i) == root_b)
+                .collect();
+            let has_gate = pocket.iter().any(|&i| gates_in.contains(&i));
+            if pocket.len() <= 2 && !has_gate {
+                for i in pocket {
+                    self.spaces[i].role = SpaceRole::Void;
+                }
+                self.links.retain(|l| {
+                    self.spaces[l.a].role.is_built() && self.spaces[l.b].role.is_built()
+                });
+                continue;
+            }
             let (ax, az) = self.spaces[a].rect.centre_m();
             let (bx, bz) = self.spaces[b].rect.centre_m();
             self.links.push(PlannedLink {
@@ -2491,13 +2760,43 @@ impl Planner {
         let mut out = Vec::new();
         for i in 0..self.spaces.len() {
             for j in (i + 1)..self.spaces.len() {
-                if let Some((w, x, z)) = rects_share_wall(self.spaces[i].rect, self.spaces[j].rect)
-                {
+                let (ra, rb) = (self.spaces[i].rect, self.spaces[j].rect);
+                if let Some((w, x, z)) = rects_share_wall(ra, rb) {
+                    // **La puerta no siempre va al centro** (auditoría 2026-09-02, Fase 5). A una
+                    // nave sí: su vano puede ser ancho y tiene que caber. Al resto, sorteo por la
+                    // posición de la pared: una puerta pegada a la esquina de vez en cuando es la
+                    // «posición extraña» que se pidió, y sigue cabiendo porque se deja jamba.
+                    // Y entre dos BANDAS tampoco: su cruce es tan ancho como el solape (hasta
+                    // 500), y un cruce descentrado tres centímetros ya no cabe en su pared — el
+                    // primer barrido lo pagó con un corredor de 12 m sin construir.
+                    let big = ra.area_m2() >= HALL_AREA_M2 || rb.area_m2() >= HALL_AREA_M2;
+                    let both_bands = self.spaces[i].role.is_circulation()
+                        && self.spaces[j].role.is_circulation();
+                    let (x, z) = if big || both_bands {
+                        (x, z)
+                    } else {
+                        door_along_wall(self.seed, ra, rb, w, x, z)
+                    };
                     out.push((i, j, w, x, z));
                 }
             }
         }
         out
+    }
+
+    /// La clase de escala de un punto, con el EMPUJE de las plantas altas (Fase 7): a partir de
+    /// la segunda planta, una zona `Large` puede leerse como `Weird` con probabilidad creciente.
+    /// Función pura de la posición, la semilla y la planta, como todo lo demás.
+    fn scale_class(&self, cx: f32, cz: f32) -> u8 {
+        let class = scale::scale_at(self.seed, cx, cz);
+        let storey = storey_of_floor_cm(self.base_y_cm).max(0) as f32;
+        if class == scale::SCALE_LARGE && storey >= 2.0 {
+            let chance = ((storey - 1.0) * WEIRD_PER_STOREY).min(WEIRD_STOREY_CAP);
+            if hash::stream_at(self.seed, cx, cz, SALT_WEIRD_UP).next01() < chance {
+                return scale::SCALE_WEIRD;
+            }
+        }
+        class
     }
 
     fn linked(&self, i: usize, j: usize) -> bool {
@@ -2522,7 +2821,7 @@ impl Planner {
             // del planificador sigue trabajando en su propio cero y no se entera de a qué altura está.
             floor_y_cm: self.base_y_cm + floor_y_cm,
             role,
-            scale: scale::scale_at(self.seed, cx, cz),
+            scale: self.scale_class(cx, cz),
             depth,
             rise_cm,
             // El lado de entrada lo pone `sink_dead_ends` cuando hunde el espacio; aquí no se sabe
@@ -2582,6 +2881,35 @@ pub fn rects_share_wall(a: PlanRect, b: PlanRect) -> Option<(i32, i32, i32)> {
         }
     }
     None
+}
+
+/// Dónde cae la puerta a lo largo de la pared que comparten `a` y `b`: en el centro con
+/// [`DOOR_CENTRED_CHANCE`], y si no en cualquier punto del solape que deje medio vano más jamba a
+/// cada lado. `(w, x, z)` es lo que devolvió [`rects_share_wall`]: el solape y su centro.
+///
+/// Sorteado por la POSICIÓN del centro de la pared (R3), así que la misma pared da la misma
+/// puerta en cualquier proceso y en cualquier orden de recorrido.
+fn door_along_wall(seed: i32, a: PlanRect, b: PlanRect, w: i32, x: i32, z: i32) -> (i32, i32) {
+    let margin = DOORWAY_CM / 2 + DOOR_JAMB_CM;
+    if w < 2 * margin + 1 {
+        return (x, z);
+    }
+    let mut st = hash::stream_at(seed, x as f32 / CM_PER_M, z as f32 / CM_PER_M, SALT_DOOR);
+    if st.next01() < DOOR_CENTRED_CHANCE {
+        return (x, z);
+    }
+    let t = st.next01();
+    // ¿Corre la pared en X (los dos se tocan por N/S) o en Z?
+    let vertical = (a.max_x_cm - b.min_x_cm).abs() <= 1 || (b.max_x_cm - a.min_x_cm).abs() <= 1;
+    if vertical {
+        let lo = a.min_z_cm.max(b.min_z_cm) + margin;
+        let hi = a.max_z_cm.min(b.max_z_cm) - margin;
+        (x, lo + ((hi - lo) as f32 * t) as i32)
+    } else {
+        let lo = a.min_x_cm.max(b.min_x_cm) + margin;
+        let hi = a.max_x_cm.min(b.max_x_cm) - margin;
+        (lo + ((hi - lo) as f32 * t) as i32, z)
+    }
 }
 
 /// Union-find con compresión de caminos. Propio y no el de `route.rs` porque aquél es privado de

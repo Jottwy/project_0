@@ -8374,7 +8374,19 @@ fn on_the_upper_storey_wg3_does_not_freeze_you() {
     let mut checked = 0usize;
 
     for (rx, rz) in AUDIT_REGIONS {
-        let b = building_of(rx, rz);
+        // **El edificio SERVIDO, no el de dos plantas del test** (auditoría 2026-09-02). El ráster
+        // contra el que se pregunta es el de `plan_region`, que levanta `REGION_STOREYS`; con un
+        // edificio de dos plantas aquí, una sala de la planta 1 podía ser en el mundo servido el
+        // pozo de la escalera a la planta 2, y el test medía dos mundos distintos.
+        let region = Wg3RegionCoord { x: rx, z: rz };
+        let bounds = region.bounds();
+        let gates = junction::gates_of_region(composer_seed(SERVED_SEED), rx, rz, bounds);
+        let b = plan::plan_building(
+            region.composer_seed(SERVED_SEED),
+            bounds,
+            &gates,
+            plan::REGION_STOREYS,
+        );
         // La planta ALTA: es la que congelaba. Sin ella no hay nada que probar.
         let Some(upper) = b.storeys.get(1) else {
             continue;
@@ -8388,7 +8400,11 @@ fn on_the_upper_storey_wg3_does_not_freeze_you() {
                 && s.rect.width_cm() > 600
                 && s.rect.depth_cm() > 600
         }) {
+            // FUERA del centro: ADR-104 D4 abre el agujero de forjado justo en el centro de la
+            // sala, y caer por él es geometría correcta, no un fallo del ráster. Metro y medio a un
+            // lado sigue a más de un metro de cualquier pared en una sala de más de seis.
             let (cx, cz) = space.rect.centre_m();
+            let cx = cx + 1.5;
             let feet = space.floor_y_cm as f32 / 100.0;
             let pos = Vec3::new(cx, feet + PLAYER_BASE_Y, cz);
 

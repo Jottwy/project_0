@@ -115,6 +115,9 @@ fn is_atrium(space: &PlannedSpace) -> bool {
     space.void_above && space.role == SpaceRole::Hall
 }
 
+/// Discriminante de `Wg3VolumeKind::Step`: una caja de peldaño en la chuleta de una pieza.
+const KIND_STEP: u8 = 5;
+
 /// Cuánto puede sobrar entre la huella de una pieza y la del espacio para que se considere que
 /// encaja, en centímetros y por eje.
 ///
@@ -230,8 +233,26 @@ pub fn fill(plan: &RegionPlan, manifest: &Wg3Manifest) -> FilledRegion {
 /// puesta en cada espacio.
 pub fn fill_building(building: &RegionBuilding, manifest: &Wg3Manifest) -> FilledRegion {
     let mut out = FilledRegion::default();
-    for plan in &building.storeys {
-        out.absorb(fill(plan, manifest));
+    for (n, plan) in building.storeys.iter().enumerate() {
+        // **Donde aterriza un pozo no va una pieza del catálogo** (auditoría 2026-09-02). El
+        // rellano es el suelo de la planta de llegada y sale al espacio que lo rodea; una pieza
+        // trae su interior horneado —pilares, bloques, sus propias escaleras— que el plan no ve, y
+        // el rellano nacía dentro de un `room_core` con doce celdas de suelo y ninguna salida: la
+        // planta entera al 0 %. Esos espacios se construyen generados, que es geometría que el plan
+        // controla.
+        let landings: Vec<super::plan::PlanRect> = building
+            .wells
+            .iter()
+            .filter(|w| w.storey_below + 1 == n)
+            .map(|w| w.rect)
+            .collect();
+        out.absorb(fill_storey(
+            plan,
+            manifest,
+            true,
+            &RouteSettings::default(),
+            &landings,
+        ));
     }
     out.carves.extend(atrium_carves(building));
     out.carves.extend(hole_carves(building));
@@ -249,8 +270,14 @@ const WELL_MOUTH_CLEAR_CM: i32 = 240;
 /// ellos puede cruzar por encima del tiro — y esa frontera es una pared que `fill` emite sin saber
 /// que debajo hay una escalera. El recorte va DENTRO de la huella, quince centímetros por dentro,
 /// para que las paredes que BORDEAN el pozo sigan enteras: lo que se abre es el paso sobre la boca,
-/// no una barandilla. El suelo no se toca (el vano del forjado ya lo puso `carve_for_well`), así que
-/// el recorte arranca un centímetro por encima de la cota de llegada.
+/// no una barandilla. El suelo no se toca: `carve_box` deja intacto todo tramo cuya cara de arriba
+/// quede EN la cota de arranque o por debajo, así que la losa `[984, 996]` sobrevive a un recorte que
+/// arranca en 996.
+///
+/// **Y arranca EN la cota, no un centímetro por encima** (auditoría 2026-09-02). Con `floor + 1`, la
+/// pared que cruzaba la boca dejaba una lengüeta de `[996, 997]` sobre el rellano: el último peldaño
+/// pasaba de 26 a 27 cm, justo el tope que sube el jugador, y con el redondeo del ráster la planta
+/// entera quedaba inalcanzable —medido en una de 27 regiones del barrido— sin que el plan viera nada.
 fn well_mouth_carves(building: &RegionBuilding) -> Vec<Wg3Carve> {
     const INSET_CM: i32 = 15;
     building
@@ -264,7 +291,7 @@ fn well_mouth_carves(building: &RegionBuilding) -> Vec<Wg3Carve> {
                 z_cm: w.rect.min_z_cm + INSET_CM,
                 size_x_cm: w.rect.width_cm() - 2 * INSET_CM,
                 size_z_cm: w.rect.depth_cm() - 2 * INSET_CM,
-                bottom_y_cm: floor + 1,
+                bottom_y_cm: floor,
                 top_y_cm: floor + WELL_MOUTH_CLEAR_CM,
             }
         })
@@ -331,7 +358,7 @@ fn hole_carves(building: &RegionBuilding) -> Vec<Wg3Carve> {
             }
 
             let (cx, cz) = s.rect.centre_m();
-            let mut st = super::hash::stream_at(0, cx, cz, SALT_HOLE);
+            let mut st = super::hash::stream_at(building.seed, cx, cz, SALT_HOLE);
             if st.next01() >= HOLE_CHANCE {
                 continue;
             }
@@ -613,6 +640,18 @@ pub fn fill_full(
     use_catalogue: bool,
     route_settings: &RouteSettings,
 ) -> FilledRegion {
+    fill_storey(plan, manifest, use_catalogue, route_settings, &[])
+}
+
+/// El relleno de UNA planta, con los rectángulos en los que no puede ir una pieza del catálogo
+/// (los aterrizajes de los pozos que llegan a ella). Ver [`fill_building`].
+fn fill_storey(
+    plan: &RegionPlan,
+    manifest: &Wg3Manifest,
+    use_catalogue: bool,
+    route_settings: &RouteSettings,
+    keep_generated: &[super::plan::PlanRect],
+) -> FilledRegion {
     let mut out = FilledRegion::default();
 
     // Lo primero, repartir las puertas: cada espacio tiene que saber TODOS sus huecos antes de
@@ -720,14 +759,31 @@ pub fn fill_full(
         // diciendo que no. Costó tres de 42 hundidos en la primera medida, y el síntoma era un
         // agujero con puerta — se dibuja abierto y no se entra.
         let flat = space.rise_cm == 0;
-        if let Some(p) = fitting_piece(space, manifest).filter(|_| use_catalogue && flat) {
+        let free_of_landings = !keep_generated.iter().any(|r| r.overlaps(&space.rect));
+        if let Some(p) =
+            fitting_piece(space, manifest).filter(|_| use_catalogue && flat && free_of_landings)
+        {
+            let piece = manifest
+                .piece(p.piece)
+                .expect("la pieza acaba de salir del catálogo");
+            let footprint = footprint_cm(piece, p.rotation);
             out.placements.push(p);
             out.spaces_by_piece += 1;
             // Y se le abren las puertas del plan, porque las suyas están donde las puso quien la
             // dibujó y no donde hace falta. Ver `FilledRegion::carves`.
+            //
+            // **Contra la pared de la PIEZA y la del vecino a la vez** (auditoría 2026-09-02). El
+            // vano se centraba en la línea del plan, y la pared de una pieza más pequeña que su
+            // espacio quedaba fuera de la caja: la puerta se abría en el vecino y la pieza nacía
+            // sellada — medido como un bolsillo de cinco salas y una puerta de junta sin salida.
             for w in &wanted[i] {
-                out.carves
-                    .push(carve_for(w, space.floor_y_cm, clear_height_cm(space)));
+                out.carves.push(carve_for_piece(
+                    w,
+                    space,
+                    (p.origin_x_cm, p.origin_z_cm),
+                    footprint,
+                    clear_height_cm(space),
+                ));
                 out.openings_built += 1;
             }
             continue;
@@ -876,22 +932,63 @@ fn wall_side(space: &PlannedSpace, x_cm: i32, z_cm: i32) -> Option<u8> {
 fn fitting_piece(space: &PlannedSpace, manifest: &Wg3Manifest) -> Option<Wg3Placement> {
     let want_x = space.rect.width_cm();
     let want_z = space.rect.depth_cm();
+    // **La pieza tiene que caber también en ALTURA** (auditoría 2026-09-02). Una pieza de 4,50 m
+    // bajo una planta de 3,32 plantaba su techo y sus paredes 1,18 m por encima del suelo de la
+    // sala de arriba: la sala de arriba se dibujaba, tenía su suelo, y no cabía nadie de pie en
+    // el 60-90 % de sus celdas. Medido en tres semillas del barrido, siempre debajo de una
+    // `room_pillars` o una `hall_large`. El tope es el mismo que respeta un tramo generado.
+    let max_h_cm = if space.max_clear_cm > 0 {
+        space.max_clear_cm
+    } else {
+        i32::MAX
+    };
+    // **Un ATRIO no se resuelve con una pieza** (auditoría 2026-09-02). `atrium_carves` abre el
+    // atrio por arriba quitando todo lo que haya entre la planta de encima y los 6,40 m — y una
+    // pieza trae su techo a su altura (3,60 en `room_core`), justo dentro de esa banda. El techo
+    // desaparecía, encima había vacío intencionado, y el atrio quedaba ABIERTO AL CIELO: una nave
+    // de 430 m² sin techo, con el suelo contando como azotea y cero celdas pisables. Un atrio es
+    // geometría planificada y la construye el relleno a la altura que el plan pide.
+    if is_atrium(space) {
+        return None;
+    }
 
     for piece in &manifest.pieces {
         // Un tapón o un callejón no representa un espacio: existe para sellar una boca.
         if piece.dead_end {
             continue;
         }
+        if (piece.height_meters * CM_PER_M).round() as i32 > max_h_cm {
+            continue;
+        }
+        // **Una pieza con PELDAÑOS no es plana**, y el plan sólo pone piezas en espacios planos
+        // (auditoría 2026-09-02). `cor_ramp` mide 8 × 2,4 y cabe clavada en un corredor generado; su
+        // rampa subía el suelo un metro dentro de un espacio que el plan declaraba a cota cero, y la
+        // mitad de sus celdas dejaba de ser pisable a la cota de sus puertas. El plan no sabe lo que
+        // hay dentro de una pieza, así que el criterio es el de la chuleta: cualquier caja `Step`.
+        if piece.collision.iter().any(|b| b.kind == KIND_STEP) {
+            continue;
+        }
         for rotation in 0..4u8 {
             let (w, d) = footprint_cm(piece, rotation);
-            if (w - want_x).abs() > PIECE_FIT_SLACK_CM || (d - want_z).abs() > PIECE_FIT_SLACK_CM {
+            // **Nunca MÁS grande que el espacio** (auditoría 2026-09-02). La tolerancia era
+            // simétrica y una pieza 40 cm mayor metía su pared 40 cm dentro de la sala de al lado:
+            // geometría cruzada que el ráster estampa maciza y que ningún contador ve.
+            if w > want_x
+                || d > want_z
+                || want_x - w > PIECE_FIT_SLACK_CM
+                || want_z - d > PIECE_FIT_SLACK_CM
+            {
                 continue;
             }
+            // **Y CENTRADA**, no pegada a la esquina mínima. Pegada, el hueco entre su pared y la
+            // del vecino llegaba a los 50 cm por el lado opuesto: una celda entera del ráster sin
+            // suelo justo en la puerta. Centrada, sobran como mucho 25 cm por lado, que caen en una
+            // celda que también toca suelo y que la cápsula del jugador no puede atravesar.
             return Some(Wg3Placement {
                 piece: piece.index,
                 rotation,
-                origin_x_cm: space.rect.min_x_cm,
-                origin_z_cm: space.rect.min_z_cm,
+                origin_x_cm: space.rect.min_x_cm + (want_x - w) / 2,
+                origin_z_cm: space.rect.min_z_cm + (want_z - d) / 2,
                 origin_y_cm: space.floor_y_cm,
             });
         }
@@ -993,6 +1090,20 @@ fn emit_space(index: usize, space: &PlannedSpace, wanted: &[Wanted], out: &mut F
                 }
             }
 
+            // **Un espacio de UN solo tramo se rescata aquí mismo** (auditoría 2026-09-02). Si su
+            // única puerta no cuadra —un cruce tan ancho como la pared y tres centímetros
+            // descentrado— el tramo se saltaba, no quedaba ninguno sobre el que rescatarla, y el
+            // espacio entero desaparecía: sin suelo, sin paredes, con su puerta en el plano.
+            if openings.is_empty() && nx == 1 && nz == 1 {
+                for (k, w) in wanted.iter().enumerate() {
+                    if let Some(o) = clamped_opening_in(w, x0, z0, x1, z1) {
+                        openings.push(o);
+                        out.openings_built += 1;
+                        placed[k] = true;
+                    }
+                }
+            }
+
             if openings.is_empty() {
                 // Un tramo sin bocas es una caja maciza, y `Wg3Segment::problems` lo prohíbe con
                 // razón. Sólo puede pasar en un espacio de un solo tramo al que el plan no le dio
@@ -1075,6 +1186,51 @@ fn carve_for(w: &Wanted, floor_y_cm: i32, height_cm: i32) -> Wg3Carve {
         top_y_cm: floor_y_cm + height_cm,
     }
 }
+
+/// El vano de una PIEZA del catálogo: la caja de [`carve_for`] alargada para cubrir la pared de la
+/// pieza —que puede estar hasta [`PIECE_FIT_SLACK_CM`] / 2 por dentro de la línea del plan— y la del
+/// vecino, que está en la línea. Medio metro más allá de cada una, como siempre.
+fn carve_for_piece(
+    w: &Wanted,
+    space: &PlannedSpace,
+    origin_cm: (i32, i32),
+    footprint_cm: (i32, i32),
+    height_cm: i32,
+) -> Wg3Carve {
+    let depth = (CARVE_DEPTH_M * CM_PER_M) as i32;
+    let half = w.width_cm / 2;
+    let r = space.rect;
+    // La línea del plan y la de la pieza, en el eje normal a la pared.
+    let (plan_line, piece_line) = match w.side % 4 {
+        0 => (r.max_z_cm, origin_cm.1 + footprint_cm.1),
+        1 => (r.max_x_cm, origin_cm.0 + footprint_cm.0),
+        2 => (r.min_z_cm, origin_cm.1),
+        _ => (r.min_x_cm, origin_cm.0),
+    };
+    let lo = plan_line.min(piece_line) - depth;
+    let hi = plan_line.max(piece_line) + depth;
+    let (x_cm, z_cm, size_x_cm, size_z_cm) = if w.side.is_multiple_of(2) {
+        (w.at_x_cm - half, lo, w.width_cm, hi - lo)
+    } else {
+        (lo, w.at_z_cm - half, hi - lo, w.width_cm)
+    };
+    Wg3Carve {
+        x_cm,
+        z_cm,
+        size_x_cm,
+        size_z_cm,
+        bottom_y_cm: space.floor_y_cm + CARVE_FLOOR_GUARD_CM,
+        // **Hasta el dintel, no hasta el techo** (auditoría 2026-09-02). La caja cubre medio metro
+        // del lado del VECINO, y hasta la altura libre de la pieza se llevaba también el techo del
+        // vecino cuando éste era más bajo (un servicio de 2,80 o una sala con planta encima, 3,08):
+        // un agujero de 50 cm en el techo justo sobre la puerta, abierto al forjado o al cielo. Una
+        // puerta mide 2,40 de paso; por encima queda la pared, que es el dintel de toda la vida.
+        top_y_cm: space.floor_y_cm + height_cm.min(PIECE_DOOR_CLEAR_CM),
+    }
+}
+
+/// Altura del paso de un vano excavado en una pieza, en centímetros. Por encima queda dintel.
+const PIECE_DOOR_CLEAR_CM: i32 = 240;
 
 /// **EL HUECO DEL FORJADO** (ADR-102 D5): el trozo de suelo de la planta de arriba que se lleva la
 /// escalera por delante.
