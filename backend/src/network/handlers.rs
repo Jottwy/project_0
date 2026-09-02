@@ -30,6 +30,41 @@ impl NetworkManager {
         self.is_host || self.host_peer_id.is_none() || self.host_peer_id == Some(sender_id)
     }
 
+    /// P7.3 (2026-09-02): ¿aceptamos de este emisor un estado AUTORITATIVO (rosters STP,
+    /// `ChunkState`) que sustituye al nuestro?
+    ///
+    /// Un host NUNCA espeja: él es la autoridad. Un joiner sólo espeja a su host, con la misma
+    /// ventana de arranque que `may_ack_sender` —los rosters pueden adelantar al `HandshakeAck`—.
+    ///
+    /// El fallo que cierra, medido en playtest: el host recibió rosters vacíos de otro nodo de
+    /// esta misma máquina estampados con `sender_id = 1` (su propio id) y los aplicó tal cual —
+    /// `stp_harvestables` y `stp_items` quedaron a cero a 10 Hz, los golpes al mueble dieron
+    /// `stp_harvest_hit_no_target` y el desmontaje nunca soltó nada. Los brazos decían «joiners
+    /// mirror it» y lo aplicaban a cualquiera.
+    fn accepts_authority_from(&self, sender_id: PeerId) -> bool {
+        !self.is_host && (self.host_peer_id.is_none() || self.host_peer_id == Some(sender_id))
+    }
+
+    /// Traza del rechazo, acotada a una línea por segundo y emisor. Reutiliza el throttle de los
+    /// latidos a propósito: no añade campos al `NetworkManager`, y un emisor que nos manda estado
+    /// ajeno a 10 Hz llenaría el log en segundos sin la cota.
+    fn note_authority_ignored(&mut self, sender_id: PeerId, kind: &str) {
+        let should_log = self
+            .last_keepalive_trace_at
+            .get(&sender_id)
+            .map(|last| last.elapsed() >= Duration::from_secs(1))
+            .unwrap_or(true);
+        if !should_log {
+            return;
+        }
+        self.last_keepalive_trace_at
+            .insert(sender_id, Instant::now());
+        warn!(
+            "MPTRACE step=AUTH event=authoritative_state_ignored self_id={} sender_id={} kind={} is_host={} host_peer_id={:?}",
+            self.local_id, sender_id, kind, self.is_host, self.host_peer_id
+        );
+    }
+
     pub(super) async fn handle_packet(&mut self, pkt: IncomingPacket) -> Option<NetworkEvent> {
         let sender_id = pkt.header.sender_id;
 
@@ -325,6 +360,10 @@ impl NetworkManager {
                 //
                 // ADR-060 (d): el reemplazo verbatim se conserva, pero solo cuando la generación
                 // está COMPLETA — una página suelta no puede sustituir al roster entero.
+                if !self.accepts_authority_from(sender_id) {
+                    self.note_authority_ignored(sender_id, "stp_items");
+                    return None;
+                }
                 if let Some(complete) =
                     self.roster_assemblers
                         .items
@@ -344,6 +383,10 @@ impl NetworkManager {
                 // Host-authoritative STP building roster: joiners mirror it verbatim so
                 // their build_world_state replicates the same pieces. (Phase B1.)
                 // ADR-060 (d): reemplazo solo con la generación completa.
+                if !self.accepts_authority_from(sender_id) {
+                    self.note_authority_ignored(sender_id, "stp_buildings");
+                    return None;
+                }
                 if let Some(complete) =
                     self.roster_assemblers
                         .buildings
@@ -516,6 +559,10 @@ impl NetworkManager {
             } => {
                 // Host-authoritative carryable roster: joiners mirror it verbatim. (B2.5)
                 // ADR-060 (d): reemplazo solo con la generación completa.
+                if !self.accepts_authority_from(sender_id) {
+                    self.note_authority_ignored(sender_id, "stp_carryables");
+                    return None;
+                }
                 if let Some(complete) = self.roster_assemblers.carryables.accept(
                     generation,
                     page,
@@ -543,6 +590,10 @@ impl NetworkManager {
             } => {
                 // Host-authoritative harvestable health roster: joiners mirror it. (B2.6)
                 // ADR-060 (d): reemplazo solo con la generación completa.
+                if !self.accepts_authority_from(sender_id) {
+                    self.note_authority_ignored(sender_id, "stp_harvestables");
+                    return None;
+                }
                 if let Some(complete) = self.roster_assemblers.harvestables.accept(
                     generation,
                     page,
@@ -816,6 +867,13 @@ impl NetworkManager {
             // el receptor da por buena. La clave es `(generación, pos, capa)`: una ronda nueva
             // desaloja lo que quedara a medias de la anterior.
             PacketPayload::ChunkState { data } => {
+                // P7.3: misma puerta que los rosters. Un `ChunkState` es emisión SÓLO de host y
+                // su aplicación es `entities.clear()` + reconstruir: aplicado en un host, borra
+                // las entidades que él mismo gobierna.
+                if !self.accepts_authority_from(sender_id) {
+                    self.note_authority_ignored(sender_id, "chunk_state");
+                    return None;
+                }
                 let pages = data.page_count;
                 let generation = data.generation as u64;
                 self.chunk_state_pages
@@ -1548,5 +1606,143 @@ impl NetworkManager {
             self.next_peer_id = 2;
         }
         assigned_id
+    }
+}
+
+/// P7.3 — la puerta de autoridad de los rosters. Viven aquí y no en `tests.rs` por el índice
+/// compartido: aquel fichero lo tiene sucio otra sesión y un hunk mío dentro acabaría en su commit.
+#[cfg(test)]
+mod authority_tests {
+    use std::net::SocketAddr;
+
+    use super::super::protocol::{
+        PacketHeader, PacketPayload, PacketType, StpHarvestableInfo, StpItemInfo,
+    };
+    use super::super::{IncomingPacket, NetworkManager};
+
+    fn harvestable(id: u32) -> StpHarvestableInfo {
+        StpHarvestableInfo {
+            id,
+            position: [18.9, 0.0, 77.8],
+            remaining: 1.0,
+        }
+    }
+
+    fn item(id: u32) -> StpItemInfo {
+        StpItemInfo {
+            id,
+            def_id: 808575401,
+            count: 1,
+            position: [26.2, 0.1, 26.8],
+            rotation: 0.0,
+            settling: false,
+        }
+    }
+
+    /// Una generación completa de UNA página: lo que un roster de verdad manda casi siempre.
+    fn empty_harvestable_roster(sender_id: u16, addr: SocketAddr) -> IncomingPacket {
+        IncomingPacket {
+            addr,
+            header: PacketHeader::new(PacketType::StpHarvestableList as u16, sender_id, 0, 0),
+            payload: PacketPayload::StpHarvestableList {
+                harvestables: Vec::new(),
+                generation: 1,
+                page: 0,
+                page_count: 1,
+            },
+        }
+    }
+
+    fn empty_item_roster(sender_id: u16, addr: SocketAddr) -> IncomingPacket {
+        IncomingPacket {
+            addr,
+            header: PacketHeader::new(PacketType::StpItemList as u16, sender_id, 0, 0),
+            payload: PacketPayload::StpItemList {
+                items: Vec::new(),
+                generation: 1,
+                page: 0,
+                page_count: 1,
+            },
+        }
+    }
+
+    /// El caso medido en el playtest del 2026-09-02: el host tenía la silla y sus propios
+    /// destornilladores, y le llegaron rosters vacíos de otro nodo estampados con SU id.
+    #[tokio::test]
+    async fn un_host_nunca_espeja_un_roster_ajeno() {
+        let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        host.stp_harvestables = vec![harvestable(143236849)];
+        host.stp_items = vec![item(1073741824)];
+        let elsewhere: SocketAddr = "192.168.1.33:64078".parse().unwrap();
+
+        // Con su propio id, con el de un joiner cualquiera, y con uno desconocido.
+        for sender in [1u16, 2, 39] {
+            let ev = host
+                .handle_packet(empty_harvestable_roster(sender, elsewhere))
+                .await;
+            assert!(ev.is_none());
+            let ev = host
+                .handle_packet(empty_item_roster(sender, elsewhere))
+                .await;
+            assert!(ev.is_none());
+        }
+
+        assert_eq!(
+            host.stp_harvestables.len(),
+            1,
+            "el host es la autoridad: un roster ajeno no puede vaciarle los muebles"
+        );
+        assert_eq!(host.stp_harvestables[0].id, 143236849);
+        assert_eq!(
+            host.stp_items.len(),
+            1,
+            "ni los objetos que él mismo materializó"
+        );
+    }
+
+    #[tokio::test]
+    async fn un_joiner_solo_espeja_a_su_host() {
+        let mut joiner = NetworkManager::bind(0, 2, 42, false).await.unwrap();
+        let host_addr: SocketAddr = "127.0.0.1:9812".parse().unwrap();
+        joiner.host_peer_id = Some(1);
+        joiner.stp_harvestables = vec![harvestable(7)];
+
+        // De otro que no es su host: intacto.
+        joiner
+            .handle_packet(empty_harvestable_roster(9, host_addr))
+            .await;
+        assert_eq!(
+            joiner.stp_harvestables.len(),
+            1,
+            "un joiner no espeja a cualquiera, sólo a su host"
+        );
+
+        // De su host: se aplica, como siempre.
+        joiner
+            .handle_packet(empty_harvestable_roster(1, host_addr))
+            .await;
+        assert!(
+            joiner.stp_harvestables.is_empty(),
+            "el roster del host sí sustituye al del joiner — esto NO cambia"
+        );
+    }
+
+    /// La ventana de arranque de `may_ack_sender`, respetada: antes del `HandshakeAck` el joiner
+    /// no sabe quién es su host, y un roster puede adelantar al ack. Cerrar la puerta ahí
+    /// costaría una ronda entera de roster por cada uno que llegara antes.
+    #[tokio::test]
+    async fn antes_del_ack_el_joiner_sigue_aceptando() {
+        let mut joiner = NetworkManager::bind(0, 2, 42, false).await.unwrap();
+        let host_addr: SocketAddr = "127.0.0.1:9813".parse().unwrap();
+        assert!(joiner.host_peer_id.is_none());
+        joiner.stp_harvestables = vec![harvestable(7)];
+
+        joiner
+            .handle_packet(empty_harvestable_roster(1, host_addr))
+            .await;
+        assert!(
+            joiner.stp_harvestables.is_empty(),
+            "sin host conocido todavía, el roster se aplica (ventana pre-ack)"
+        );
     }
 }

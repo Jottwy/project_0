@@ -392,6 +392,31 @@ registra al host) y el roster autoritativo llega por el relay en los ~100 ms sig
 como trampa anotada:** el día que alguien empiece a leerla, un recorte silencioso es un joiner con
 media sesión. Cada recorte deja línea de log; esa línea es la única defensa.
 
+## I18 — Un host nunca espeja estado autoritativo, y un joiner sólo el de su host
+
+Los cinco portadores de estado que sustituyen al local en bloque —`StpItemList`,
+`StpBuildingList`, `StpCarryableList`, `StpHarvestableList` y `ChunkState`— pasan por
+`accepts_authority_from(sender)`: `!is_host && (host_peer_id.is_none() || host_peer_id == sender)`.
+Es la simétrica de `may_ack_sender` (I15), con la misma ventana pre-ack: un roster puede adelantar
+al `HandshakeAck` y cerrar la puerta ahí costaría una ronda entera por cada uno que llegara antes.
+
+**Por qué es una invariante y no una obviedad:** los brazos decían «joiners mirror it» y lo
+aplicaban a cualquiera. Medido en el playtest del 2026-09-02 (P7.3): el host recibió de otro nodo
+de su misma máquina rosters vacíos estampados con `sender_id = 1` —su propio id— y **se vació
+`stp_harvestables` y `stp_items` a 10 Hz**. El síntoma estaba tres capas más allá: los golpes al
+mueble daban `stp_harvest_hit_no_target` y el desmontaje nunca soltaba materiales. El save del
+cierre lo confirma (`[]` y `[]`).
+
+**Impone:** `handlers.rs`, los cinco brazos; el rechazo deja `authoritative_state_ignored`, acotado a
+una línea por segundo y emisor.
+
+**Prueba:** `authority_tests::{un_host_nunca_espeja_un_roster_ajeno, un_joiner_solo_espeja_a_su_host,
+antes_del_ack_el_joiner_sigue_aceptando}` (inline en `handlers.rs`).
+
+**Lo que NO cierra:** la puerta de entrada. `handle_packet` sigue procesando paquetes de emisores
+no registrados y de paquetes estampados con el id propio (ver R9). Esta invariante garantiza que ya
+no pueden pisar estado; no que no lleguen.
+
 ## Riesgos abiertos (invariantes que NO existen todavía)
 
 | # | Hueco | Evidencia |
@@ -404,3 +429,4 @@ media sesión. Cada recorte deja línea de log; esa línea es la única defensa.
 | R7 | **Ventana de peer duplicado** — ver R5. No se cierra sin decidir qué identifica a un jugador entre reconexiones, y eso hoy no existe: el handshake sólo tiene `sender_id` (propuesto) y la dirección de origen | ídem |
 | R4 | La paginación de WorldSync está validada por test, no por una partida real que la ejerza: los mundos probados en físico no tenían chunks lo bastante densos | `chunk_page_buffered = 0` en la corrida de dos procesos |
 | R8 | **La legalidad del destino se comprueba al ENCOLAR, no al reenviar.** `pump_deferred_reliable` y `process_retransmits` mandan a `peer.addr` sin volver a pasar por `is_gameplay_destination`. Hoy no es alcanzable —un peer que desaparece del mapa deja de iterarse, y ambos bucles recorren `peers.keys()`—, pero un peer que se marque `relay_only` **después** de encolar seguiría recibiendo sus reenvíos hasta agotarlos. Cerrarlo bien es unificar «enviar y encolar un fiable» en una sola función, o sea un refactor: ver ADR-113 enmienda 1 | análisis del código durante la auditoría de integración; no reproducido |
+| R9 | **`handle_packet` procesa cargas útiles de emisores no registrados y de paquetes con el id PROPIO.** `HEARTBEAT_RECEIVED_FROM_UNKNOWN` sólo lo anota; el despacho sigue. I18 impide que pisen estado autoritativo, pero un `PlayerUpdate` con `sender_id = local_id`, o un `PeerList` ajeno, siguen entrando (medido: la tabla del host saltó de 9 a 30 peers, ids 2 y 20–39, en un solo segundo). Cerrarlo exige decidir qué paquetes admite un peer no registrado antes del handshake, y es de la misma familia que R5/R6 | `backend_host_20260902_021409`: `receive_player_update peer_id=1 sender_id=1 endpoint=192.168.1.33:64078`, `chunk_state_applied from_peer=1` ×36 |
