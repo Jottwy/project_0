@@ -5511,3 +5511,88 @@ async fn si_el_relay_no_esta_el_intento_termina_con_un_motivo_y_no_cuelga() {
         "todavía dentro del presupuesto"
     );
 }
+
+// ─── ADR-117 D10: la secuencia, ya cableada al reintento ────────────────────────────────────
+//
+// El AVANCE por presupuesto se prueba en `connect_tests` con el tiempo inyectado, que es donde se
+// puede hacer sin esperar ocho segundos de reloj. Aquí se prueba lo otro: que el `NetworkManager`
+// la arranca, la respeta, y que sin ella todo sigue igual que antes.
+
+use crate::network::connect::{ConnectSequence, ConnectStage};
+
+#[tokio::test]
+async fn arrancar_una_secuencia_empieza_por_la_via_directa() {
+    let mut joiner = NetworkManager::bind(0, 0, 0, false).await.unwrap();
+    let directa: SocketAddr = "203.0.113.10:7778".parse().unwrap();
+    let lan: SocketAddr = "192.168.1.168:7778".parse().unwrap();
+
+    joiner
+        .initiate_sequence(ConnectSequence::new(Some(directa), Some(lan), None))
+        .await;
+
+    assert_eq!(joiner.connect_stage(), Some(ConnectStage::Direct));
+}
+
+#[tokio::test]
+async fn una_secuencia_sin_ninguna_via_falla_en_el_acto_en_vez_de_esperar() {
+    // Es el caso del lobby sin `connect_ip` y sin relay: no hay nada que intentar, y decirlo en el
+    // primer tick es infinitamente mejor que veinte segundos de «Conectando…».
+    let mut joiner = NetworkManager::bind(0, 0, 0, false).await.unwrap();
+
+    joiner
+        .initiate_sequence(ConnectSequence::new(None, None, None))
+        .await;
+
+    let events = joiner.process_incoming().await;
+    let fallo = events
+        .iter()
+        .find_map(|e| match e {
+            NetworkEvent::ConnectFailed { reason } => Some(reason.clone()),
+            _ => None,
+        })
+        .expect("tenía que fallar ya");
+    assert!(fallo.contains("ninguna dirección"), "{fallo}");
+    assert_eq!(joiner.connect_stage(), None);
+}
+
+#[tokio::test]
+async fn sin_secuencia_el_reintento_es_exactamente_el_de_siempre() {
+    // La garantía de no regresión del camino que ya funcionaba: `initiate_connection` a secas no
+    // crea secuencia, así que `retry_pending_connection` va por la rama de toda la vida.
+    let mut joiner = NetworkManager::bind(0, 0, 0, false).await.unwrap();
+    joiner
+        .initiate_connection("127.0.0.1:1".parse().unwrap())
+        .await;
+
+    assert_eq!(joiner.connect_stage(), None, "no hay secuencia");
+    joiner.retry_pending_connection().await; // no debe entrar en pánico ni cambiar de vía
+    assert_eq!(joiner.connect_stage(), None);
+}
+
+#[tokio::test]
+async fn un_relay_configurado_no_cambia_nada_hasta_que_el_relay_contesta() {
+    // Cablear el relay no puede alterar una partida directa mientras el registro está en vuelo:
+    // sin `PeerReady` no hay enlace, y sin enlace `send_datagram` no envuelve nada.
+    let (_relay, relay_addr) = fake_relay().await;
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    host.connect_relay(relay_config(relay_addr, 0x77, true));
+
+    assert!(host.relay_link().is_none(), "todavía no admitido");
+    assert_eq!(host.relay_state().unwrap().name(), "REGISTERING");
+
+    let host_addr = loopback_addr(&host);
+    let mut joiner = NetworkManager::bind(0, 0, 0, false).await.unwrap();
+    joiner.initiate_connection(host_addr).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    host.process_incoming().await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let events = joiner.process_incoming().await;
+
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, NetworkEvent::PeerConnected { .. })),
+        "el joiner directo entra igual, con el registro del relay a medias"
+    );
+}

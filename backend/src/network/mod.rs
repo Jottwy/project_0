@@ -534,6 +534,9 @@ pub struct NetworkManager {
     pub(crate) relay: Option<transport::RelayLink>,
     /// ADR-117: quien mantiene el registro y el latido contra el relay. `None` = sesión directa.
     relay_client: Option<relay_client::RelayClient>,
+    /// ADR-117 D10: las vías por las que intentar entrar, en orden. `None` = un solo destino, que
+    /// es el comportamiento de siempre.
+    connect_sequence: Option<connect::ConnectSequence>,
     /// Los mensajes de CONTROL del relay que ha ido recogiendo el `receive_loop`. Van por un canal
     /// aparte del de gameplay a propósito: un `PeerReady` no es un paquete de juego y no puede
     /// pasar por `decode_packet`, que lo descartaría como ilegible.
@@ -660,6 +663,7 @@ impl NetworkManager {
             last_transform_trace_at: HashMap::new(),
             relay: None,
             relay_client: None,
+            connect_sequence: None,
             relay_control_rx,
         })
     }
@@ -886,6 +890,14 @@ impl NetworkManager {
             return;
         }
 
+        // ADR-117 D10: con secuencia manda ella —tiene un presupuesto POR ETAPA y varias vías—.
+        // Sin secuencia, el camino de abajo es exactamente el de siempre, que es lo que mantiene
+        // intactos los tests que llaman a `initiate_connection` a secas.
+        if self.connect_sequence.is_some() {
+            self.retry_with_sequence().await;
+            return;
+        }
+
         let Some(addr) = self.pending_connect_addr else {
             return;
         };
@@ -926,6 +938,91 @@ impl NetworkManager {
 
         if should_retry {
             self.send_handshake(addr).await;
+        }
+    }
+
+    /// Arranca una conexión por etapas (ADR-117 D10) en vez de contra un solo destino.
+    ///
+    /// La primera etapa sale ya. Las demás sólo se prueban si la anterior agota su presupuesto.
+    pub async fn initiate_sequence(&mut self, sequence: connect::ConnectSequence) {
+        let mut sequence = sequence;
+        sequence.start(Instant::now());
+
+        let Some(first) = sequence.current() else {
+            let reason = sequence.describe_failure();
+            warn!(
+                "CONNECTIVITY event=no_candidates self_id={} reason={reason}",
+                self.local_id
+            );
+            self.push_pending_event(NetworkEvent::ConnectFailed { reason });
+            return;
+        };
+
+        info!(
+            "CONNECTIVITY transport={} stage=start target={} self_id={}",
+            first.stage.name(),
+            first.addr,
+            self.local_id
+        );
+        self.connect_sequence = Some(sequence);
+        self.initiate_connection(first.addr).await;
+    }
+
+    /// La vía por la que se está intentando entrar ahora mismo, si hay secuencia.
+    pub fn connect_stage(&self) -> Option<connect::ConnectStage> {
+        self.connect_sequence.as_ref().and_then(|s| s.stage())
+    }
+
+    /// El reintento cuando manda la secuencia: o se insiste en la etapa de ahora, o se salta a la
+    /// siguiente, o se acaba. Nunca se queda callado insistiendo para siempre.
+    async fn retry_with_sequence(&mut self) {
+        let now = Instant::now();
+        let advance = match &mut self.connect_sequence {
+            Some(sequence) => sequence.advance_if_expired(now),
+            None => return,
+        };
+
+        match advance {
+            connect::Advance::Stay => {
+                // Mismo ritmo de reintento que el camino de siempre: uno por segundo.
+                let Some(addr) = self.pending_connect_addr else {
+                    return;
+                };
+                let should_retry = self
+                    .last_handshake_sent_at
+                    .map(|sent| sent.elapsed() >= Duration::from_secs(1))
+                    .unwrap_or(true);
+                if should_retry {
+                    self.send_handshake(addr).await;
+                }
+            }
+
+            connect::Advance::Moved { to, reason } => {
+                info!(
+                    "CONNECTIVITY transport={} stage=fallback target={} fallback_reason={reason} self_id={}",
+                    to.stage.name(),
+                    to.addr,
+                    self.local_id
+                );
+                self.push_pending_event(NetworkEvent::ConnectStageChanged {
+                    stage: to.stage.name(),
+                    addr: to.addr,
+                    reason,
+                });
+                // Reinicia el presupuesto y los contadores del intento: la etapa nueva empieza de
+                // cero, no hereda los quince segundos de la anterior.
+                self.initiate_connection(to.addr).await;
+            }
+
+            connect::Advance::Exhausted { reason } => {
+                warn!(
+                    "CONNECTIVITY event=exhausted self_id={} reason={reason}",
+                    self.local_id
+                );
+                self.pending_connect_addr = None;
+                self.pending_connect_started_at = None;
+                self.push_pending_event(NetworkEvent::ConnectFailed { reason });
+            }
         }
     }
 

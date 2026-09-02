@@ -72,6 +72,69 @@ fn log_runtime_identity(world_seed: u64) {
     }
 }
 
+/// Una dirección opcional del entorno. Una que no parsea **se dice**: tragársela en silencio y
+/// seguir sin ella es cómo se pierden veinte minutos buscando por qué no se intentó una vía que
+/// estaba configurada.
+fn parse_optional_addr(key: &str) -> Option<std::net::SocketAddr> {
+    let raw = std::env::var(key).ok()?;
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    match raw.parse() {
+        Ok(addr) => Some(addr),
+        Err(e) => {
+            error!("CONNECTIVITY event=bad_config key={key} value={raw:?} error={e}");
+            None
+        }
+    }
+}
+
+/// La configuración del relay, o `None` si esta partida no lo usa (ADR-117).
+///
+/// **Un relay mal configurado no impide jugar.** Falta una variable, el token no es hexadecimal,
+/// la dirección no parsea: se nombra el problema y se sigue sin relay, porque la partida directa
+/// y la de LAN no tienen por qué caerse con él.
+fn read_relay_config(is_host: bool) -> Option<network::relay_client::RelayConfig> {
+    let relay_addr = parse_optional_addr("RELAY_ADDR")?;
+
+    let session_raw = std::env::var("RELAY_SESSION").ok()?;
+    let session_raw = session_raw.trim();
+    let session_id = match session_raw.strip_prefix("0x") {
+        Some(hex) => u64::from_str_radix(hex, 16).ok(),
+        None => session_raw.parse::<u64>().ok(),
+    };
+    let Some(session_id) = session_id else {
+        error!("CONNECTIVITY event=bad_config key=RELAY_SESSION value={session_raw:?}");
+        return None;
+    };
+
+    let token_raw = std::env::var("RELAY_TOKEN").ok()?;
+    // El VALOR no se registra ni cuando está mal: un token roto sigue siendo un secreto.
+    let Some(token) = backrooms_relay::protocol::SessionToken::from_hex(&token_raw) else {
+        error!(
+            "CONNECTIVITY event=bad_config key=RELAY_TOKEN reason=no_son_32_hex len={}",
+            token_raw.trim().len()
+        );
+        return None;
+    };
+
+    info!(
+        "CONNECTIVITY event=relay_configured relay={relay_addr} session={session_id:#x} role={}",
+        if is_host { "host" } else { "joiner" }
+    );
+
+    Some(network::relay_client::RelayConfig {
+        relay_addr,
+        session_id,
+        token,
+        // La MISMA versión que viaja en el handshake del juego. El relay la usa para no dejar
+        // entrar a un build que no sabría leer el mundo que sirve este host.
+        wire_version: ipc::server::WIRE_SCHEMA_VERSION as u16,
+        as_host: is_host,
+    })
+}
+
 #[tokio::main]
 async fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -97,7 +160,21 @@ async fn main() {
 
     log_runtime_identity(world_seed);
     let connect_to = std::env::var("CONNECT_TO").ok();
-    let is_host = connect_to.is_none();
+    // ADR-117 D7: con un lobby relay-only NO hay `CONNECT_TO` —el host no publicó ningún endpoint
+    // directo porque no tenía ninguno defendible— y hasta aquí el rol se deducía SÓLO de esa
+    // variable: sin ella, host. O sea que un joiner por relay habría arrancado como host y se
+    // habría puesto a servir un mundo en solitario, que es exactamente el fallo mudo que ADR-111
+    // y el `session_joined` de ADR-056 vinieron a cerrar.
+    //
+    // `RELAY_ROLE` desempata. Ausente, todo se comporta como siempre.
+    let relay_role = std::env::var("RELAY_ROLE")
+        .ok()
+        .map(|v| v.trim().to_lowercase());
+    let is_host = match relay_role.as_deref() {
+        Some("joiner") => false,
+        Some("host") => true,
+        _ => connect_to.is_none(),
+    };
     let ipc_addr_env = std::env::var("IPC_ADDR").ok();
     let ipc_port_env = std::env::var("IPC_PORT").ok();
     let ipc_addr = ipc::resolve_ipc_addr();
@@ -180,11 +257,31 @@ async fn main() {
         net_port, net_id, is_host, world_seed
     );
 
+    // ADR-117: el relay de respaldo. Sin `RELAY_ADDR` esto no hace absolutamente nada y todo lo
+    // de abajo se comporta como antes de este ADR.
+    let relay = read_relay_config(is_host);
+    if let Some(config) = relay.clone() {
+        net.connect_relay(config);
+    }
+
     // If joining an existing session, initiate handshake.
     if let Some(addr_str) = connect_to {
-        match addr_str.parse() {
+        match addr_str.parse::<std::net::SocketAddr>() {
             Ok(addr) => {
-                net.initiate_connection(addr).await;
+                // ADR-117 D10: con relay o con LAN alternativa hay SECUENCIA; sin ninguna de las
+                // dos, un solo destino y el mismo presupuesto de siempre.
+                let lan = parse_optional_addr("CONNECT_LAN");
+                let relay_target = net.relay_host_addr();
+                if lan.is_some() || relay_target.is_some() {
+                    net.initiate_sequence(network::connect::ConnectSequence::new(
+                        Some(addr),
+                        lan,
+                        relay_target,
+                    ))
+                    .await;
+                } else {
+                    net.initiate_connection(addr).await;
+                }
                 info!("Connecting to peer at {addr_str}");
             }
             Err(e) => {
@@ -195,6 +292,17 @@ async fn main() {
                 error!("Invalid CONNECT_TO address '{addr_str}': {e}");
                 net.reject_invalid_connect_target(&addr_str, &e.to_string());
             }
+        }
+    } else if !is_host {
+        // Sin `CONNECT_TO` pero con relay: es el lobby relay-only de ADR-117 D7, donde el host no
+        // publicó ningún endpoint directo porque no tenía ninguno defendible.
+        if let Some(target) = net.relay_host_addr() {
+            net.initiate_sequence(network::connect::ConnectSequence::new(
+                None,
+                parse_optional_addr("CONNECT_LAN"),
+                Some(target),
+            ))
+            .await;
         }
     }
 

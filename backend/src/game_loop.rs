@@ -2718,6 +2718,15 @@ pub async fn run(
 
         // Heartbeat every 1s.
         if tick.is_multiple_of(HEARTBEAT_EVERY) {
+            // ADR-117: el latido del enlace con el relay va ANTES del reintento de conexión. El
+            // orden importa el primer segundo de un joiner por relay: sin registro no hay enlace,
+            // y sin enlace su handshake a la dirección sintética se rechazaría por
+            // `send_without_link`. Es barato — sin relay configurado devuelve la lista vacía sin
+            // tocar nada.
+            for event in net.pump_relay().await {
+                report_relay_event(&event, &to_clients);
+            }
+
             net.retry_pending_connection().await;
             net.send_heartbeats().await;
 
@@ -2965,6 +2974,53 @@ fn apply_level4_reposition(player: &mut Player, world: &mut World, dest: [f32; 3
     world.update_ownership(player.position, player.id);
 }
 
+/// Traduce lo que le pasa al enlace con el relay a algo que Unity pueda enseñar (ADR-117).
+///
+/// Va por `GameEvent` de texto libre —el bus que ya lleva `session_joined` y `session_ended`—
+/// para no tocar `WIRE_SCHEMA_VERSION` por un dato que no cambia la forma de ningún mensaje.
+///
+/// **Aquí no se toma ninguna decisión de conexión.** Un `Denied` no aborta nada: la secuencia
+/// (`ConnectSequence`) es quien decide qué pasa cuando una vía no sirve, y lo hará por su
+/// presupuesto. Esto sólo cuenta lo que pasó.
+fn report_relay_event(
+    event: &crate::network::relay_client::RelayClientEvent,
+    to_clients: &broadcast::Sender<ServerMessage>,
+) {
+    use crate::network::relay_client::RelayClientEvent;
+
+    let (stage, detail) = match event {
+        RelayClientEvent::Ready { my_peer, host_peer } => {
+            info!("RELAY event=ready my_peer={my_peer} host_peer={host_peer}");
+            ("relay_ready", format!("peer {my_peer} de {host_peer}"))
+        }
+        RelayClientEvent::Denied(status) => {
+            warn!("RELAY event=denied reason={}", status.name());
+            ("relay_denied", status.name().to_string())
+        }
+        RelayClientEvent::TimedOut => {
+            warn!("RELAY event=timed_out");
+            ("relay_timeout", "el relay no respondió".to_string())
+        }
+        RelayClientEvent::PeerJoined(peer) => ("relay_peer_joined", peer.to_string()),
+        RelayClientEvent::PeerLeft(peer, reason) => {
+            ("relay_peer_left", format!("{peer} ({})", reason.name()))
+        }
+        RelayClientEvent::Closed(reason) => {
+            warn!("RELAY event=session_closed reason={}", reason.name());
+            ("relay_closed", reason.name().to_string())
+        }
+    };
+
+    let _ = to_clients.send(ServerMessage::Event(GameEvent {
+        event_type: "connectivity".into(),
+        data: serde_json::json!({
+            "stage": stage,
+            "transport": "relay",
+            "detail": detail,
+        }),
+    }));
+}
+
 // El octavo parámetro es el canal de voz de ADR-046, que existe precisamente para NO ir
 // mezclado con `to_clients`. Agruparlos en un struct desharía esa separación en la firma justo
 // donde importa que se lea. Mismo criterio que los `too_many_arguments` ya presentes en
@@ -2998,6 +3054,23 @@ async fn handle_network_event(
     match event {
         NetworkEvent::PeerConnected { id, name } => {
             info!("Peer connected id={} name={}", id, name);
+            // ADR-117 D10: por dónde se acabó entrando. Es la línea que contesta «¿esta partida va
+            // por relay o directa?» sin tener que reconstruirlo de las anteriores, y la que hace
+            // medible cuánta gente necesita el relay de verdad.
+            if let Some(stage) = net.connect_stage() {
+                info!(
+                    "CONNECTIVITY transport={} stage=connected peer_id={id} self_id={}",
+                    stage.name(),
+                    net.local_id
+                );
+                let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                    event_type: "connectivity".into(),
+                    data: serde_json::json!({
+                        "stage": "connected",
+                        "transport": stage.name(),
+                    }),
+                }));
+            }
             info!(
                 "MPTRACE step=G event=peer_registry_after_connected self_id={} sender_id=<event> assigned_id=<event> peer_id={} endpoint=<registered> peer_count={} remote_players_count=<n/a> remote_players_ids={:?}",
                 net.local_id,
@@ -3127,6 +3200,39 @@ async fn handle_network_event(
                 elapsed_ms / 1000,
                 addr.port()
             );
+            let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                event_type: "session_ended".into(),
+                data: serde_json::json!({ "reason": reason }),
+            }));
+        }
+
+        NetworkEvent::ConnectStageChanged {
+            stage,
+            addr,
+            reason,
+        } => {
+            // ADR-117 D10. No es un fallo: es «sigo intentándolo, ahora por aquí». Sin esto, un
+            // joiner que acaba entrando por relay habría visto veinte segundos de nada — que es
+            // indistinguible de un cuelgue, y es el modo de fallo que costó la sesión del
+            // 2026-08-31.
+            info!("CONNECTIVITY transport={stage} target={addr} fallback_reason={reason}");
+            let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                event_type: "connectivity".into(),
+                data: serde_json::json!({
+                    "stage": stage,
+                    "transport": stage,
+                    "target": addr.to_string(),
+                    "fallback_reason": reason,
+                }),
+            }));
+        }
+
+        NetworkEvent::ConnectFailed { reason } => {
+            // Mismo destino que `ConnectTimedOut` y por el mismo motivo: nunca se entró en ningún
+            // mundo, así que no hay nada que persistir y `session_ended` es el teardown que Unity
+            // ya sabe recorrer (ADR-056). Lo que cambia es el MOTIVO: aquí cuenta las tres vías
+            // intentadas con sus direcciones, no una sola.
+            warn!("CONNECTIVITY event=connect_failed reason={reason}");
             let _ = to_clients.send(ServerMessage::Event(GameEvent {
                 event_type: "session_ended".into(),
                 data: serde_json::json!({ "reason": reason }),

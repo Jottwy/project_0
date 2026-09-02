@@ -591,14 +591,34 @@ impl NetworkManager {
     /// rama ni una copia. Aquí sí hay una copia del payload, y está justificada en `RelayLink::wrap`.
     async fn send_via_relay(&self, data: &[u8], synthetic: SocketAddr, kind: &str) -> bool {
         let Some(link) = &self.relay else {
-            // Una dirección sintética sin enlace de relay significa que alguien registró un peer
-            // relayado y luego se soltó el enlace. No puede pasar y por eso se grita: en silencio
-            // sería un peer que deja de recibir sin motivo visible.
-            log::error!(
-                "RELAY event=send_without_link self_id={} kind={kind} dest={synthetic} — hay un peer \
-                 relayado registrado pero esta sesión no tiene enlace con el relay",
-                self.local_id
+            // Hay dos situaciones aquí y son muy distintas, así que no se registran igual.
+            //
+            // La NORMAL, medida en la prueba en vivo del 2026-09-02: la secuencia arranca la etapa
+            // de relay y manda el primer handshake en el mismo instante, cuando el registro
+            // todavía está en vuelo (tarda un latido). No es un fallo — el reintento de un segundo
+            // después lo manda ya con enlace, que es exactamente lo que pasó— y sacarlo como
+            // ERROR sería enseñar un problema donde no lo hay.
+            //
+            // La ANORMAL: hay un peer con dirección sintética y NO hay ningún registro en curso.
+            // Eso sí es un defecto, y en silencio sería un peer que deja de recibir sin motivo
+            // visible.
+            let registrando = matches!(
+                self.relay_client.as_ref().map(|c| c.state()),
+                Some(crate::network::relay_client::RelayClientState::Registering)
             );
+            if registrando {
+                log::debug!(
+                    "RELAY event=send_deferred self_id={} kind={kind} dest={synthetic} — el registro \
+                     con el relay sigue en vuelo; se reintentará",
+                    self.local_id
+                );
+            } else {
+                log::error!(
+                    "RELAY event=send_without_link self_id={} kind={kind} dest={synthetic} — hay un \
+                     peer relayado registrado pero esta sesión no tiene enlace con el relay",
+                    self.local_id
+                );
+            }
             return false;
         };
 

@@ -400,6 +400,24 @@ pub enum NetworkEvent {
         attempts: u32,
         elapsed_ms: u64,
     },
+    /// ADR-117 D10: se agotó el presupuesto de una vía y se pasa a la siguiente.
+    ///
+    /// **No es un fallo**: es el aviso de que se está probando otra cosa, y existe para que el
+    /// jugador vea movimiento en vez de veinte segundos de nada. Viaja a Unity como `GameEvent`
+    /// de texto libre, sin tocar `WIRE_SCHEMA_VERSION`.
+    ConnectStageChanged {
+        /// `direct`, `lan` o `relay` — el vocabulario de `transport=` del log.
+        stage: &'static str,
+        addr: SocketAddr,
+        /// Por qué se dejó la anterior. Es el `fallback_reason` del encargo.
+        reason: String,
+    },
+    /// ADR-117 D10: se acabaron todas las vías. Sustituye a `ConnectTimedOut` cuando hubo una
+    /// secuencia, porque «no contestó esta dirección» no describe un intento de tres etapas.
+    ConnectFailed {
+        /// La historia entera, con las direcciones. Se enseña tal cual en el panel.
+        reason: String,
+    },
     /// `CONNECT_TO` no es una dirección. El tercer modo de fallo del arranque de un joiner, y el
     /// único que no tenía camino: los otros dos —rechazo y silencio— acaban en `session_ended`,
     /// y éste acababa en un `error!` en el log y nada más.
