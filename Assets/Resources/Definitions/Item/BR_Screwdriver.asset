@@ -14,11 +14,11 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   _id: 808575401
   _parentGroup: {fileID: 11400000, guid: e795e49d036de2c47805aebb271686bb, type: 2}
-  _icon: {fileID: 21300000, guid: 255955853bacd0b439478eb97ffa25d9, type: 3}
+  _icon: {fileID: 21300000, guid: 1d49a4f8d39d3f3419dd82da4e460539, type: 3}
   _description: "Destornillador de electricista. Lo \xFAnico que afloja lo que sujeta
     este sitio."
   _longDescription: 
-  _pickup: {fileID: 375143188622409950, guid: 5bba0681021dfce4b9f7769795c9aea3, type: 3}
+  _pickup: {fileID: 375143188622409950, guid: d158411a80cfcb94398190c929c7030f, type: 3}
   _stackPickup: {fileID: 5039848590447293739, guid: 60f7bf66f2292d34d86470c5b3928e92, type: 3}
   _weight: 0.5
   _stackSize: 1
