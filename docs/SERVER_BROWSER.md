@@ -767,3 +767,97 @@ cliente interno.
 
 Lo que falta, con nombre: (a) un host con router UPnP de verdad; (b) un host sin él, comprobando
 que sigue sirviendo en LAN; (c) dos máquinas en redes distintas.
+
+## 18. La tercera vía: el relay de respaldo (ADR-117)
+
+El playtest del 2026-09-02 midió lo que faltaba. El navegador anunciaba
+`A12ex — 192.168.1.168:7778` —una IP privada— y el join fallaba. Pero la auditoría midió algo más
+importante: el join **manual** a la IP pública del host también agotó los 15 s. No faltaba un
+anuncio mejor; **no había ningún camino directo que anunciar**. Ninguno de los dos routers
+respondió al SSDP y ninguno de los dos puertos estaba reenviado.
+
+UPnP (§17) arregla el caso del router que colabora. El relay arregla el resto.
+
+### Qué es y qué no
+
+Un proceso aparte (`backrooms_relay`) que reenvía datagramas entre el host y sus joiners. **No
+simula nada**: el payload es opaco, la autoridad sigue entera en el backend del host (ADR-015), y
+el wire del juego no cambia ni un byte. Sigue siendo nuestro UDP, con un salto más.
+
+No es NAT traversal ni hole punching. Steam Networking Sockets, Steam Datagram Relay, STUN y TURN
+de terceros siguen fuera de R1.
+
+### Las tres vías, en orden
+
+```
+Direct ──5 s──▶ Lan ──3 s──▶ Relay ──12 s──▶ Failed
+```
+
+Las etapas que no existen se saltan. Una partida en LAN de siempre tiene una sola etapa y se
+comporta exactamente como antes. Cada salto escribe su `fallback_reason`, y el fallo final nombra
+las tres vías con sus direcciones — el jugador ve en el panel qué se intentó sin abrir un log.
+
+Los presupuestos no son redondeos: con el puerto abierto el `HandshakeAck` vuelve en decenas de
+milisegundos incluso entre continentes, así que 5 s distinguen «lento» de «no está»; el relay
+necesita 12 porque tiene dos pasos, registrarse y luego el handshake.
+
+### Las cinco claves nuevas del lobby
+
+| clave | qué lleva |
+|---|---|
+| `bs_relay_addr` | dónde está el relay |
+| `bs_relay_session` | el id de sesión que generó el host |
+| `bs_relay_token` | 32 hexadecimales, el secreto de sesión |
+
+Valen **como un bloque**: o están las tres, con el token de la longitud que el backend exige, o no
+hay relay. Media sesión no sirve para entrar, y admitirla convertiría un lobby mal publicado en uno
+que promete algo que no puede cumplir.
+
+Y `connect_ip` cambia de significado: **una IP privada ya no se publica ahí cuando hay relay**. Se
+queda en `bs_lan_ip`, donde significa lo que es. Sin relay sí se publica, y eso no es incoherencia:
+una partida en LAN pura no tiene otra forma de anunciarse, y quitársela para cumplir una regla
+pensada para internet sería romper lo que ya funcionaba.
+
+**Un lobby sin `connect_ip` pero con relay es entrable.** Antes salía como `InvalidEndpoint` con el
+botón apagado; es exactamente lo que le pasó a Alejandro.
+
+### El token, y por qué está en metadata pública
+
+Impide que el relay sea un **relay abierto**: sin token no se crea ni se entra en ninguna sesión,
+así que nadie que no haya visto la lista puede usarlo de reflector. Lo que NO hace es defender de
+quien sí ve el lobby — que es justo quien tiene derecho a entrar. Es el mismo nivel de confianza
+que la partida ya tenía. Tickets de Steam es R2.
+
+No se escribe en ningún log: el tipo que lo transporta se niega a imprimirlo, en Rust y en C#.
+
+### Cómo se enciende
+
+El relay por defecto está **vacío** a propósito: sin máquina que lo aloje, una dirección inventada
+haría que cada host gastara 10 s de registro contra un puerto que no existe. Se enciende poniendo
+la dirección en `RelaySessionCredentials.DefaultRelayAddress` o en la variable `BS_RELAY_ADDR`.
+
+El relay se lanza con `cargo run -p backrooms_relay`; escucha en `0.0.0.0:7790` y se configura con
+`RELAY_BIND`, `RELAY_MAX_SESSIONS`, `RELAY_MAX_PEERS`, `RELAY_PEER_TIMEOUT_SECS`,
+`RELAY_IDLE_TIMEOUT_SECS` y `RELAY_HANDSHAKES_PER_SEC`.
+
+### Qué buscar en el log
+
+`CONNECTIVITY transport=direct|lan|relay`, con `stage=start|fallback|connected` y
+`fallback_reason=…`. Y del lado del relay, `RELAY event=session_created|peer_joined|ready|denied`.
+La línea que contesta «¿esta partida fue por relay?» es la de `stage=connected`.
+
+Un peer alcanzable sólo por relay aparece en las trazas con una dirección de este aspecto:
+
+```
+HBTRACE event=LIVENESS_SCAN peer_id=7 endpoint=[fd52:5245:4c41:5900::beef]:3
+```
+
+No es una IPv6 de verdad: es una dirección sintética (ADR-117 D3) que deletrea `RELAY` en ASCII y
+lleva dentro la sesión y el peer. Verla ya dice que ese peer va por relay.
+
+### Lo que NO está validado
+
+**Nadie ha entrado todavía por un relay que esté en internet.** Lo probado es: el relay real con
+tres procesos en una máquina (host, joiner y relay, con el joiner sin conocer ninguna dirección del
+host), y toda la lógica en tests. Falta desplegarlo en una máquina pública y repetir el playtest
+que originó todo esto, con las dos personas en redes distintas.

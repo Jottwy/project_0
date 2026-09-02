@@ -2,6 +2,33 @@
 > Actualizado por /checkpoint al cierre de cada sesión. Leído al inicio de cada sesión.
 
 ## Última sesión
+- Fecha: 2026-09-02, 11.ª tanda (**R1: EL RELAY DE RESPALDO — auditoría, ADR-117 y diez commits**) — validación: **`cargo test --workspace` 1338 + 49 + 7 verdes, clippy `--workspace --all-targets -D warnings` y fmt limpios, `CompileCheckClient` 0 errores en las 4 asambleas, arnés headless **324/324** (ampliado con los 6 ficheros de `Lobbies`), y la prueba en vivo con TRES PROCESOS reales. WIRE 55 sin tocar en ninguno de los diez.**
+
+0. **De dónde salió.** De la auditoría del playtest: el navegador anunciaba `192.168.1.168:7778`. Pero la medida que decidió todo fue otra — el join **manual** a la IP pública del host también agotó los 15 s (`connect_attempt_timed_out attempts=9`). No faltaba un anuncio mejor: **no había ningún camino directo que anunciar**. Ninguno de los dos routers contestó al SSDP y ninguno de los dos puertos estaba reenviado.
+
+1. **ADR-117, y qué prohibición levanta.** Un relay UDP propio, y SÓLO eso: Steam Networking Sockets, Steam Datagram Relay, STUN, TURN de terceros y hole punching siguen fuera. Es el único de los seis que no cambia el transporte — sigue siendo nuestro UDP con nuestro framing, con un salto más. Enmienda 3 de ADR-113: el techo de 1200 B es del PAYLOAD; en el cable, 1216 con el sobre.
+
+2. **La abstracción que evitó el refactor masivo (D3).** En vez de cambiar `PeerConnection.addr` a un enum —que tocaba handlers, roster, sync, peer y ~5.000 líneas de tests—, un peer por relay recibe una `SocketAddr` de verdad de un rango que no usa nadie: `fd52:5245:4c41:5900::/64`, que deletrea RELAY en ASCII. La traducción vive en los DOS únicos puntos que tocan el socket. **El peer id va en el PUERTO**, y eso no es estética: es lo que da a cada joiner una dirección distinta. Con la del relay compartida, el segundo handshake caería en «ya registrado por endpoint» y esa persona no entraría jamás.
+
+3. **La separación relay/gameplay es exacta POR CONSTRUCCIÓN.** Todo `PacketType` cabe en un byte y el campo viaja como u16 big-endian, así que el primer byte de un paquete de juego es siempre `0x00` y el de un sobre de relay es `0x42`. No hay colisión posible, y un test lo fija con `sender_id = u16::MAX`.
+
+4. **DOS FALLOS QUE SÓLO APARECIERON AL EJECUTARLO.** (a) `is_host` se deducía únicamente de `CONNECT_TO`: un joiner de lobby relay-only no la recibe, así que habría arrancado **como host sirviendo un mundo en solitario** — el mismo fallo mudo de ADR-111 colándose por una puerta nueva. De ahí `RELAY_ROLE`. (b) El primer handshake de la etapa de relay sale con el registro en vuelo y se registraba como ERROR; ahora se distingue de un fallo real. Un ERROR esperado en el log es peor que no tenerlo.
+
+5. **Matiz sobre D7, y por qué no se aplicó al pie de la letra.** «`connect_ip` vacío sin endpoint confirmado» habría dejado sin anunciar **las partidas en LAN pura**: no tienen IP pública y su única dirección es privada. Así que la LAN se sigue publicando cuando NO hay relay (ADR-112 intacto, cero regresión) y deja de publicarse en cuanto lo hay. El objetivo se cumple donde importa: nadie ve `192.168.x.x` como endpoint público habiendo otra vía.
+
+6. **Probado en vivo, no sólo en tests.** Relay + host + joiner, tres procesos, con el joiner **sin `CONNECT_TO`**: `RELAY event=session_created` → `peer_joined` → `Handshake ACK received from [fd52:5245:4c41:5900::face:1234]:1 world_seed=42` → `MPTRACE step=F2 event=joiner_session_joined`. El joiner arrancó con `WORLD_SEED=999` y terminó con 42: la autoridad del host manda igual que en directo.
+
+7. **Un rojo intermitente, DECLARADO.** `game_loop::tests::phantom_sprints_after_patience_exceeded` falló 1 de 6 suites completas y pasa 4/4 aislado. No toca red y `game_loop/phantom.rs` no está modificado. Encaja con el defecto de aislamiento entre tests en paralelo ya documentado. Si vuelve a salir, empezar por ahí y no por el relay.
+
+8. **LO QUE FALTA PARA CERRAR R1, con nombre.** (a) **No hay VPS**: `RelaySessionCredentials.DefaultRelayAddress` está vacío a propósito —una dirección inventada haría que cada host gastara 10 s contra un puerto inexistente— y rellenarlo (o `BS_RELAY_ADDR`) es lo que enciende todo. (b) La suite **EditMode completa** no se ha corrido: el editor bloquea el lockfile; lo que sí se ejecutó es el arnés headless, ampliado a los ficheros de `Lobbies`. (c) **Nadie ha entrado todavía por un relay que esté en internet**: falta repetir el playtest con las dos personas en redes distintas.
+
+**Próximo paso único:** desplegar `backrooms_relay` en una máquina pública, poner su dirección, y repetir el playtest del 2026-09-02 con Joel y Alejandro en sus redes.
+
+**NO tocar:** el reparto de bits de las direcciones sintéticas (el peer va en el puerto por la razón del punto 2); la regla «sin endpoint NI relay no se publica» del publicador; y el orden `pump_relay` antes de `retry_pending_connection` en el tick.
+
+---
+
+## Sesión anterior
 - Fecha: 2026-09-01, 10.ª tanda (**DOS FALLOS DE CAMPO, Y LOS DOS ERAN LO MISMO: el sistema sabía lo que pasaba y no lo decía**) — validación: **`cargo test` 1236/1236, clippy `--all-targets -D warnings` y fmt limpios, `CompileCheckClient` 0 errores en las 4 asambleas, arnés headless 212/212, **EditMode completa 1209 / 1195 verdes / 14 rojos** (uno MENOS que la baseline). Commits `68167dac`, `4c5a250e` y `6c699351`. Backend desplegado desde HEAD limpio. WIRE 55 sin tocar en ninguno de los dos.**
 
 0. **De dónde salen los dos.** De los logs de la sesión física por internet del 2026-08-31 — la primera con UPnP funcionando y un joiner real al otro lado de un NAT. Ninguno de los dos se habría encontrado en local: uno necesita un chunk conector servido a un peer remoto, el otro necesita a alguien PEGANDO una IP en el panel.
