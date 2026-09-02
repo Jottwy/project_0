@@ -13,6 +13,13 @@ description = "Backrooms Survival — distributed P2P co-op survival horror back
 authors = ["Backrooms Survival Team"]
 
 [dependencies]
+# ─── El relay de respaldo (ADR-117) ───
+# Sólo por su `protocol`: el sobre se declara UNA vez y los dos lados lo comparten. Una segunda
+# copia del framing aquí se desincronizaría de la del relay sin que nadie lo notase hasta que un
+# datagrama dejara de entenderse en producción. La dependencia va en este sentido —el juego usa el
+# protocolo del relay— y nunca al revés: el relay no sabe nada del juego (ADR-117 D2).
+backrooms_relay = { path = "relay" }
+
 # ─── Async runtime ───
 tokio = { version = "1", features = ["full"] }
 

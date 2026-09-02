@@ -95,6 +95,7 @@ dependencies = [
 name = "backrooms_server"
 version = "0.1.0"
 dependencies = [
+ "backrooms_relay",
  "chrono",
  "env_logger",
  "fd-lock",

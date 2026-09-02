@@ -15,6 +15,9 @@ pub mod reliability;
 pub mod roster;
 mod send;
 pub mod sync;
+/// ADR-117: las direcciones sintéticas con las que un peer alcanzable sólo por relay se parece a
+/// cualquier otro. Aquí no hay E/S: es la traducción, no el transporte.
+pub mod transport;
 
 pub use events::NetworkEvent;
 
