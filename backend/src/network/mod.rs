@@ -5,6 +5,9 @@
 //! `NetworkManager` owns the UDP socket, tracks peer connections, handles the
 //! reliability layer, and produces `NetworkEvent`s for the game loop.
 
+/// ADR-117 D10: la secuencia de conexión de un joiner —directa, LAN, relay— con su presupuesto
+/// por etapa y su motivo por escrito.
+pub mod connect;
 mod events;
 mod faceling;
 mod handlers;
