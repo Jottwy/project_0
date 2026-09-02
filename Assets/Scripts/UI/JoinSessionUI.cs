@@ -113,6 +113,12 @@ namespace BackroomsSurvival.UI
             /// La alternativa ya se ha usado. Un solo reintento por ella; a partir de ahí [Retry]
             /// vuelve a ser lo que era, o sea repetir el mismo intento.
             public bool FallbackUsed;
+
+            /// <summary>
+            /// ADR-117: la sesión de relay del lobby. El [Retry] tiene que conservarla o el
+            /// segundo intento perdería la única vía que funcionaba.
+            /// </summary>
+            public Lobbies.LobbyRelay Relay;
         }
         private Attempt _lastAttempt;
 
@@ -612,7 +618,10 @@ namespace BackroomsSurvival.UI
                 }
 
                 BeginAttemptUi(PanelState.Joining, $"Connecting to {_lastAttempt.Ip}:{_lastAttempt.Port}…");
-                init.StartAsJoiner(_lastAttempt.Ip, _lastAttempt.Port, _lastAttempt.PlayerName);
+                // El relay viaja con el reintento: sin él, el segundo intento perdería la única
+                // vía que podía funcionar (ADR-117).
+                init.StartAsJoiner(_lastAttempt.Ip, _lastAttempt.Port, _lastAttempt.PlayerName,
+                    _lastAttempt.Relay);
                 ApplySelectedLocalConfigToUi(init, updateServerPort: false);
             }
             else
@@ -698,20 +707,29 @@ namespace BackroomsSurvival.UI
         /// el mismo método en ambos casos, nunca un segundo camino de conexión.
         /// </summary>
         public static bool TryBeginSteamJoin(string ip, int port, string playerName) =>
-            TryBeginSteamJoin(ip, port, playerName, null);
+            TryBeginSteamJoin(ip, port, playerName, null, default);
 
         /// <summary>
         /// Igual, con la dirección alternativa que anunció el host (`bs_lan_ip`). Ver
         /// <see cref="Attempt.FallbackIp"/>: el primer intento va SIEMPRE a lo anunciado.
         /// </summary>
-        public static bool TryBeginSteamJoin(string ip, int port, string playerName, string fallbackIp)
+        public static bool TryBeginSteamJoin(string ip, int port, string playerName, string fallbackIp) =>
+            TryBeginSteamJoin(ip, port, playerName, fallbackIp, default);
+
+        /// <summary>
+        /// Igual, con la sesión de relay del lobby (ADR-117). Con `relay` válido se puede entrar
+        /// aunque `ip` esté vacía: es el lobby relay-only de D7.
+        /// </summary>
+        public static bool TryBeginSteamJoin(string ip, int port, string playerName, string fallbackIp,
+            Lobbies.LobbyRelay relay)
         {
             if (_instance == null) return false;
-            _instance.BeginSteamJoin(ip, port, playerName, fallbackIp);
+            _instance.BeginSteamJoin(ip, port, playerName, fallbackIp, relay);
             return true;
         }
 
-        private void BeginSteamJoin(string ip, int port, string playerName, string fallbackIp = null)
+        private void BeginSteamJoin(string ip, int port, string playerName, string fallbackIp = null,
+            Lobbies.LobbyRelay relay = default)
         {
             CancelAutoHostBecauseUserInteracted();
             var init = EnsureInitializer();
@@ -727,15 +745,22 @@ namespace BackroomsSurvival.UI
             if (_nameField != null) _nameField.SetTextWithoutNotify(playerName);
 
             Debug.Log("[JoinSessionUI] role efectivo=joiner (steam)");
-            Debug.Log($"[JoinSessionUI] CONNECT_TO={ip}:{port}");
+            // ADR-117: con relay-only no hay `CONNECT_TO` y no es un error — el backend arranca
+            // por la etapa de relay. Decirlo aquí evita que el log parezca un destino perdido.
+            Debug.Log(string.IsNullOrWhiteSpace(ip)
+                ? $"[JoinSessionUI] CONNECT_TO=<none>, sólo relay {relay}"
+                : $"[JoinSessionUI] CONNECT_TO={ip}:{port} (relay {relay})");
 
             _lastAttempt = new Attempt
             {
                 IsJoin = true, Ip = ip, Port = port, PlayerName = playerName, Valid = true,
                 FallbackIp = string.Equals(fallbackIp, ip, StringComparison.OrdinalIgnoreCase) ? null : fallbackIp,
+                Relay = relay,
             };
-            BeginAttemptUi(PanelState.Joining, $"Connecting to {ip}:{port} (Steam)…");
-            init.StartAsJoiner(ip, port, playerName);
+            BeginAttemptUi(PanelState.Joining, relay.IsValid && string.IsNullOrWhiteSpace(ip)
+                ? "Connecting through relay…"
+                : $"Connecting to {ip}:{port} (Steam)…");
+            init.StartAsJoiner(ip, port, playerName, relay);
             ApplySelectedLocalConfigToUi(init, updateServerPort: false);
         }
 

@@ -29,6 +29,14 @@ namespace BackroomsSurvival.Lobbies
         /// en la misma red; ver <see cref="LobbyEndpoint.Alternate"/>.
         public string LanIp;
 
+        /// ADR-117: las tres del relay, tal cual salen de Steam. Vacías cuando el host no tiene
+        /// relay, que es un lobby perfectamente normal.
+        public string RelayAddr;
+
+        public string RelaySession;
+
+        public string RelayToken;
+
         /// Lo que Steam sabe por sí mismo, sin metadatos. Es el respaldo cuando el host no
         /// publicó contadores.
         public int MemberCount;
@@ -103,6 +111,10 @@ namespace BackroomsSurvival.Lobbies
                 // parecerlo. Lo único que se hace con ella es reintentar cuando la principal no
                 // contestó, y para entonces no hay nada que perder.
                 record.LanIp,
+                // ADR-117: la sesión de relay, si el host publicó las tres claves. `LobbyRelay`
+                // se encarga de que dos de tres no cuenten — media sesión de relay no sirve para
+                // entrar y anunciarla como si sirviera sería peor que no tenerla.
+                new LobbyRelay(record.RelayAddr, record.RelaySession, record.RelayToken),
                 out lobby);
         }
 

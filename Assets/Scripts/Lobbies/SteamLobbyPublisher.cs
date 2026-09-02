@@ -62,7 +62,11 @@ namespace BackroomsSurvival.Lobbies
 
         public bool Publish(LobbyPublication publication, int players, LobbyStatus status, double nowUnix)
         {
-            if (!publication.Endpoint.IsValid) return false;
+            // ADR-117: la regla pasa de «endpoint válido» a «alguna vía de entrada». Un lobby
+            // relay-only no tiene endpoint y se entra igual; uno sin endpoint NI relay sigue sin
+            // publicarse, que es la defensa de ADR-112 intacta — publicar algo a lo que nadie
+            // puede entrar le cuesta al jugador el tiempo de descubrirlo y no le ahorra nada.
+            if (!publication.Endpoint.IsValid && !publication.HasRelay) return false;
             if (publication.MaxPlayers <= 0) return false;
 
             if (IsPublishing)
@@ -118,8 +122,12 @@ namespace BackroomsSurvival.Lobbies
             if (safePlayers > _publication.MaxPlayers) safePlayers = _publication.MaxPlayers;
 
             _host.SetData(SteamLobbyKeys.Game, SteamLobbyKeys.GameValue);
-            _host.SetData(SteamLobbyKeys.ConnectIp, _publication.Endpoint.Host);
-            _host.SetData(SteamLobbyKeys.ConnectPort, Num(_publication.Endpoint.Port));
+            // ADR-117 D7: sin endpoint directo la clave va VACÍA, no con un relleno. Steam
+            // devuelve cadena vacía para una clave ausente, así que las dos formas se leen igual
+            // en el navegador; escribirla vacía deja además el rastro de que el host la consideró.
+            _host.SetData(SteamLobbyKeys.ConnectIp, _publication.Endpoint.Host ?? "");
+            _host.SetData(SteamLobbyKeys.ConnectPort,
+                _publication.Endpoint.IsValid ? Num(_publication.Endpoint.Port) : "");
             _host.SetData(SteamLobbyKeys.Name, _publication.Name);
             _host.SetData(SteamLobbyKeys.WireVersion, _publication.Version);
             _host.SetData(SteamLobbyKeys.Players, Num(safePlayers));
@@ -151,6 +159,31 @@ namespace BackroomsSurvival.Lobbies
         /// llame a esa IP pública sólo llega si el router hace hairpin/NAT loopback, cosa que
         /// muchos routers domésticos no hacen. Esta clave es el respaldo para ese caso.
         public const string LanIp = "bs_lan_ip";
+
+        /// <summary>
+        /// El relay de ADR-117, en tres claves. Se publican SÓLO cuando el backend del host
+        /// confirma que el relay le ha admitido (`relay_ready`); antes no existen, y un lobby sin
+        /// ellas es exactamente lo que era antes de ADR-117.
+        ///
+        /// Van aparte de `connect_ip` a propósito: un endpoint directo y una sesión de relay no
+        /// son la misma cosa ni se sustituyen. Un lobby puede tener las dos —lo normal cuando el
+        /// host tiene UPnP y además relay—, sólo una, o ninguna.
+        /// </summary>
+        public const string RelayAddr = "bs_relay_addr";
+
+        public const string RelaySession = "bs_relay_session";
+
+        /// <summary>
+        /// El secreto de sesión, en 32 hexadecimales (ADR-117 D9).
+        ///
+        /// **Está en la metadata PÚBLICA del lobby, y eso es deliberado en R1.** No defiende de
+        /// quien ve el lobby —que es justo quien tiene derecho a entrar— sino de que el relay sea
+        /// un relay abierto: sin token no se crea ni se entra en ninguna sesión, así que nadie que
+        /// no haya visto la lista puede usarlo de reflector. Es el mismo nivel de confianza que la
+        /// partida ya tenía. La autenticación por tickets de Steam es R2 y tendrá su ADR.
+        /// </summary>
+        public const string RelayToken = "bs_relay_token";
+
         public const string HostName = "host_name";
         public const string Name = "bs_name";
         public const string WireVersion = "bs_wire";

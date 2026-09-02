@@ -143,8 +143,10 @@ namespace BackroomsSurvival.Tests
         }
 
         [Test]
-        public void RejectsAPublicationWithoutAUsableEndpoint()
+        public void RejectsAPublicationWithoutAnyWayIn()
         {
+            // ADR-117 cambió la regla de «endpoint válido» a «alguna vía de entrada», pero NO la
+            // relajó: sin endpoint y sin relay se sigue sin publicar, que es la defensa de ADR-112.
             var host = new FakeSteamHost();
             var publisher = new SteamLobbyPublisher(host);
 
@@ -152,6 +154,24 @@ namespace BackroomsSurvival.Tests
             Assert.IsFalse(publisher.Publish(Publication(ip: ""), 1, LobbyStatus.Waiting, 1000d));
             Assert.IsFalse(publisher.Publish(Publication(maxPlayers: 0), 1, LobbyStatus.Waiting, 1000d));
             Assert.AreEqual(0, host.EnsureCalls, "no se crea un lobby para anunciar una dirección muerta");
+        }
+
+        [Test]
+        public void PublishesARelayOnlyLobbyWithNoDirectEndpoint()
+        {
+            // ADR-117 D7: es el host sin UPnP ni reenvío de puertos — o sea, el caso normal, y el
+            // que el playtest del 2026-09-02 dejó fuera de la partida.
+            var host = new FakeSteamHost();
+            var publisher = new SteamLobbyPublisher(host);
+
+            var relayOnly = new LobbyPublication("A12ex", "55", 50, "Level0", "Unknown",
+                LobbyPrivacy.Public, false, LobbyEndpoint.None, Lobby.DefaultTtlSeconds, true);
+
+            Assert.IsTrue(publisher.Publish(relayOnly, 1, LobbyStatus.Waiting, 1000d));
+            Assert.AreEqual(1, host.EnsureCalls);
+            Assert.AreEqual("", host.Data[SteamLobbyKeys.ConnectIp],
+                "sin endpoint directo la clave va vacía, no con un relleno");
+            Assert.AreEqual("", host.Data[SteamLobbyKeys.ConnectPort]);
         }
 
         // ─── Latido ───

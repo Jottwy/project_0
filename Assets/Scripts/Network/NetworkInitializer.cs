@@ -236,6 +236,11 @@ namespace BackroomsSurvival.Net
             AddIpcAddressEnv(env, config.IpcAddress, config.IpcPort);
             AddRoomManifestEnv(env);
             AddWorldGen3Env(env);
+            // ADR-117: el host abre su sesión de relay al arrancar, sin esperar a saber si le hará
+            // falta. Cuesta un registro y dos datagramas por segundo, y a cambio el relay ya está
+            // listo cuando entra el primer joiner que no puede por vía directa — que es la mayoría.
+            // Sin relay configurado en la build esto no hace nada.
+            AddRelayEnv(env, Connectivity.RelaySessionCredentials.Current(), asHost: true);
 
             // Fase 6B (Slice 1): debug-spawn the robapieles on the host. The backend reads
             // DEBUG_SPAWN_PHANTOM from its env (inherited from Unity via UseShellExecute=false);
@@ -263,7 +268,17 @@ namespace BackroomsSurvival.Net
             _startupTimer = 0f;
         }
 
-        public void StartAsJoiner(string serverIP, int serverNetPort, string playerName)
+        public void StartAsJoiner(string serverIP, int serverNetPort, string playerName) =>
+            StartAsJoiner(serverIP, serverNetPort, playerName, default);
+
+        /// <summary>
+        /// Igual, con la sesión de relay que anunció el lobby (ADR-117).
+        ///
+        /// Con `relay` válido, `serverIP` puede venir vacío: es el lobby relay-only de D7, y
+        /// entonces el backend arranca directamente por la etapa de relay.
+        /// </summary>
+        public void StartAsJoiner(string serverIP, int serverNetPort, string playerName,
+            Lobbies.LobbyRelay relay)
         {
             // Mismo embudo que el host: ver el comentario en StartAsHost. Cubre el doble clic en
             // Join, el Join durante un Joining y el auto-join de Steam llegando encima de uno
@@ -284,8 +299,14 @@ namespace BackroomsSurvival.Net
             // El rechazo es ANTES de `TerminateLeftoverBackend` y antes de lanzar nada: matar el
             // backend anterior y arrancar otro condenado para que falle dentro es exactamente el
             // camino largo que costó el diagnóstico.
-            string host = HostAddressInput.NormalizeOrDefault(serverIP);
-            if (!HostAddressInput.IsUsable(host, out string hostProblem))
+            // ADR-117 D7: un lobby relay-only no anuncia `connect_ip`, así que aquí llega vacío —y
+            // eso NO es un campo sin rellenar, es un host que no tenía ningún endpoint defendible.
+            // Sin esta rama, `NormalizeOrDefault` lo convertiría en `127.0.0.1` y el backend
+            // gastaría los cinco segundos de la etapa directa disparando contra su propio loopback.
+            bool relayOnly = string.IsNullOrWhiteSpace(serverIP) && relay.IsValid;
+
+            string host = relayOnly ? null : HostAddressInput.NormalizeOrDefault(serverIP);
+            if (!relayOnly && !HostAddressInput.IsUsable(host, out string hostProblem))
             {
                 CurrentRole = Role.None;
                 StatusMessage = $"Dirección inválida: {hostProblem}";
@@ -293,7 +314,7 @@ namespace BackroomsSurvival.Net
                 SessionState.Current.NotifyFailed(hostProblem);
                 return;
             }
-            if (!string.Equals(host, serverIP, StringComparison.Ordinal))
+            if (!relayOnly && !string.Equals(host, serverIP, StringComparison.Ordinal))
             {
                 // Que quede dicho: un valor que cambia al limpiarlo es el síntoma de un pegado, y
                 // sin esta línea el log enseña la dirección ya limpia y nadie sabría que venía
@@ -314,7 +335,7 @@ namespace BackroomsSurvival.Net
             var config = SelectLaunchConfig("joiner", ipcPort + joinerNetPortOffset, netPort + joinerNetPortOffset, joinerNetId);
             StoreSelectedConfig(config);
             LastEffectiveRole = "joiner";
-            LastConnectTo = $"{serverIP}:{serverNetPort}";
+            LastConnectTo = relayOnly ? "<relay>" : $"{serverIP}:{serverNetPort}";
             ConfigureIpcClient(config.IpcAddress, config.IpcPort);
             ArmSessionEndHandler();
             ResetSessionScopedRegistries();
@@ -325,9 +346,17 @@ namespace BackroomsSurvival.Net
                 ["NET_PORT"] = config.NetPort.ToString(),
                 ["NET_ID"] = config.NetId.ToString(),
                 ["NET_NAME"] = playerName,
-                ["CONNECT_TO"] = $"{serverIP}:{serverNetPort}",
                 ["RUST_LOG"] = "info",
             };
+
+            // ADR-117 D7: sin endpoint directo NO se pone `CONNECT_TO`. Ponerlo vacío o en
+            // loopback haría que el backend gastara la etapa directa contra sí mismo.
+            if (!relayOnly)
+            {
+                env["CONNECT_TO"] = $"{serverIP}:{serverNetPort}";
+            }
+
+            AddRelayEnv(env, relay, asHost: false);
             AddIpcAddressEnv(env, config.IpcAddress, config.IpcPort);
             AddRoomManifestEnv(env);
             AddWorldGen3Env(env);
@@ -364,6 +393,31 @@ namespace BackroomsSurvival.Net
         /// explicit application config, declared per-launch by the caller — never inherited.
         /// </summary>
         private static readonly string[] EssentialPassthroughEnvKeys = { "SystemRoot" };
+
+        /// <summary>
+        /// Mete la sesión de relay en el entorno del backend (ADR-117).
+        ///
+        /// **`RELAY_ROLE` no es redundante con `CONNECT_TO`.** El backend deducía el rol SÓLO de
+        /// esa variable: sin ella, host. Un joiner de un lobby relay-only no la recibe, así que sin
+        /// `RELAY_ROLE` habría arrancado como host y se habría puesto a servir un mundo en
+        /// solitario — el mismo fallo mudo que ADR-111 vino a cerrar, colándose por otra puerta.
+        ///
+        /// El token va aquí y **no se escribe en ningún log**: el entorno del proceso hijo es la
+        /// vía por la que ya viajan `NET_NAME` y las rutas de manifiesto, y no aparece en la línea
+        /// de comandos.
+        /// </summary>
+        private static void AddRelayEnv(Dictionary<string, string> env, Lobbies.LobbyRelay relay, bool asHost)
+        {
+            if (!relay.IsValid) return;
+
+            env["RELAY_ADDR"] = relay.Address;
+            env["RELAY_SESSION"] = relay.Session;
+            env["RELAY_TOKEN"] = relay.Token;
+            env["RELAY_ROLE"] = asHost ? "host" : "joiner";
+
+            Debug.Log($"[NetworkInitializer] RELAY_ADDR={relay.Address} RELAY_SESSION={relay.Session} " +
+                      $"RELAY_ROLE={(asHost ? "host" : "joiner")} (token oculto)");
+        }
 
         /// <summary>
         /// Builds the CLOSED set of environment variables the child backend process receives:

@@ -41,6 +41,16 @@
     <!-- ADR-115: la traduccion del sello de mundo al reloj local, extraida justamente para
          poder probarla sin editor. -->
     <Compile Include="$(Repo)\Assets\Scripts\Network\LootMarkClock.cs" />
+    <!-- ADR-117: el modelo de lobby y la publicacion. Ninguno toca UnityEngine ni Steamworks -la
+         costura contra Steam es una interfaz- y son justo donde vive la regla que R1 cambia: que
+         un lobby con relay y sin connect_ip SI se puede publicar y SI se puede entrar. -->
+    <Compile Include="$(Repo)\Assets\Scripts\Lobbies\Lobby.cs" />
+    <Compile Include="$(Repo)\Assets\Scripts\Lobbies\ILobbyPublisher.cs" />
+    <Compile Include="$(Repo)\Assets\Scripts\Lobbies\SteamLobbyPublisher.cs" />
+    <Compile Include="$(Repo)\Assets\Scripts\Lobbies\HostAnnouncementDriver.cs" />
+    <Compile Include="$(Repo)\Assets\Scripts\Lobbies\LobbyJoinRouter.cs" />
+    <Compile Include="$(Repo)\Assets\Scripts\Lobbies\SteamLobbyRecord.cs" />
+    <Compile Include="$(Repo)\Assets\Scripts\Lobbies\LobbyList.cs" />
   </ItemGroup>
 
   <!-- Los ficheros de test REALES, sin tocar. LanFallbackMetadataTests queda fuera: depende de
@@ -58,6 +68,13 @@
     <Compile Include="$(Repo)\Assets\Tests\EditMode\PublicIpResolverTests.cs" />
     <Compile Include="$(Repo)\Assets\Tests\EditMode\HostConnectivityServiceTests.cs" />
     <Compile Include="$(Repo)\Assets\Tests\EditMode\HostEndpointPrecedenceTests.cs" />
+    <!-- ADR-117. `ServerBrowserSessionGateTests` y `LanFallbackMetadataTests` siguen fuera: usan
+         SessionState y SteamLobbyManager, que arrastran UnityEngine y Steamworks. -->
+    <Compile Include="$(Repo)\Assets\Tests\EditMode\LobbyModelTests.cs" />
+    <Compile Include="$(Repo)\Assets\Tests\EditMode\SteamLobbyMapperTests.cs" />
+    <Compile Include="$(Repo)\Assets\Tests\EditMode\SteamLobbyPublisherTests.cs" />
+    <Compile Include="$(Repo)\Assets\Tests\EditMode\LobbyJoinRouterTests.cs" />
+    <Compile Include="$(Repo)\Assets\Tests\EditMode\RelayLobbyTests.cs" />
     <Compile Include="$(Repo)\Assets\Tests\EditMode\HostAddressInputTests.cs" />
   </ItemGroup>
 

@@ -90,6 +90,56 @@ namespace BackroomsSurvival.Lobbies
         public override string ToString() => IsValid ? Host + ":" + Port : "<invalid>";
     }
 
+    /// <summary>
+    /// La sesión de relay que anuncia un lobby (ADR-117), o nada.
+    ///
+    /// **Las tres claves valen como un bloque: o están las tres o no hay relay.** Media sesión no
+    /// sirve para entrar —sin token el relay deniega, sin id de sesión no hay a qué entrar— y
+    /// tratarla como válida convertiría un lobby mal publicado en uno que promete algo que no puede
+    /// cumplir, que es exactamente lo que ADR-112 evita al no publicar endpoints malos.
+    /// </summary>
+    public readonly struct LobbyRelay : IEquatable<LobbyRelay>
+    {
+        public static readonly LobbyRelay None = default;
+
+        /// 16 bytes en hexadecimal. Espejo de `TOKEN_BYTES` del relay.
+        public const int TokenLength = 32;
+
+        /// `ip:puerto` del relay, tal cual lo publicó el host.
+        public readonly string Address;
+
+        /// El id de sesión, como cadena: viaja así por Steam y así se le pasa al backend, que es
+        /// quien lo parsea. Convertirlo aquí sólo añadiría un sitio donde equivocarse de base.
+        public readonly string Session;
+
+        /// 32 hexadecimales. **No se registra en ningún log** (ADR-117 D9).
+        public readonly string Token;
+
+        public LobbyRelay(string address, string session, string token)
+        {
+            Address = string.IsNullOrWhiteSpace(address) ? null : address.Trim();
+            Session = string.IsNullOrWhiteSpace(session) ? null : session.Trim();
+            Token = string.IsNullOrWhiteSpace(token) ? null : token.Trim();
+        }
+
+        /// Hay relay utilizable: las tres, y el token con la longitud que el backend exige.
+        public bool IsValid =>
+            Address != null && Session != null && Token != null && Token.Length == TokenLength;
+
+        public bool Equals(LobbyRelay other) =>
+            string.Equals(Address, other.Address, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(Session, other.Session, StringComparison.Ordinal);
+
+        public override bool Equals(object obj) => obj is LobbyRelay other && Equals(other);
+
+        public override int GetHashCode() =>
+            ((Address == null ? 0 : StringComparer.OrdinalIgnoreCase.GetHashCode(Address)) * 397) ^
+            (Session == null ? 0 : Session.GetHashCode());
+
+        /// **Sin el token**: esto se pinta y se registra.
+        public override string ToString() => IsValid ? Address + "#" + Session : "<sin relay>";
+    }
+
     /// <summary>Visibilidad declarada por quien publica. El navegador NO la deduce.</summary>
     public enum LobbyPrivacy
     {
@@ -170,6 +220,15 @@ namespace BackroomsSurvival.Lobbies
         public readonly float TtlSeconds;
         public readonly LobbyStatus Status;
 
+        /// <summary>
+        /// ADR-117: la sesión de relay que anuncia el host, o <see cref="LobbyRelay.None"/>.
+        ///
+        /// Es la SEGUNDA vía de entrada, no un adorno del endpoint: un lobby con relay se puede
+        /// entrar aunque <see cref="Endpoint"/> no valga, que es justo el caso del host sin UPnP
+        /// del playtest del 2026-09-02.
+        /// </summary>
+        public readonly LobbyRelay Relay;
+
         public Lobby(
             LobbyId id,
             string name,
@@ -185,7 +244,29 @@ namespace BackroomsSurvival.Lobbies
             double updatedAtUnix,
             float ttlSeconds,
             LobbyStatus status)
+            : this(id, name, version, players, maxPlayers, map, region, pingMs, privacy,
+                requiresPassword, endpoint, updatedAtUnix, ttlSeconds, status, LobbyRelay.None)
         {
+        }
+
+        public Lobby(
+            LobbyId id,
+            string name,
+            string version,
+            int players,
+            int maxPlayers,
+            string map,
+            string region,
+            int pingMs,
+            LobbyPrivacy privacy,
+            bool requiresPassword,
+            LobbyEndpoint endpoint,
+            double updatedAtUnix,
+            float ttlSeconds,
+            LobbyStatus status,
+            LobbyRelay relay)
+        {
+            Relay = relay;
             Id = id;
             Name = name;
             Version = version;
@@ -203,6 +284,16 @@ namespace BackroomsSurvival.Lobbies
         }
 
         public bool HasPing => PingMs >= 0;
+
+        /// <summary>
+        /// Hay por dónde entrar: un endpoint directo, una sesión de relay, o las dos. Es lo que
+        /// sustituye al viejo «¿el endpoint vale?» desde ADR-117 D7.
+        /// </summary>
+        public bool HasSomeWayIn => Endpoint.IsValid || Relay.IsValid;
+
+        /// <summary>Sólo se puede entrar por relay: el host no anunció ningún endpoint directo.</summary>
+        public bool IsRelayOnly => !Endpoint.IsValid && Relay.IsValid;
+
         public bool IsFull => Players >= MaxPlayers;
         public bool IsEmpty => Players <= 0;
         public int FreeSlots => MaxPlayers - Players < 0 ? 0 : MaxPlayers - Players;
@@ -227,7 +318,10 @@ namespace BackroomsSurvival.Lobbies
             if (IsExpired(nowUnix)) return LobbyJoinability.Expired;
             if (Status == LobbyStatus.Closed) return LobbyJoinability.Closed;
             if (Privacy == LobbyPrivacy.Private) return LobbyJoinability.Private;
-            if (!Endpoint.IsValid) return LobbyJoinability.InvalidEndpoint;
+            // ADR-117 D7: hay DOS vías, y basta con una. Un lobby sin `connect_ip` pero con relay
+            // es entrable, y ése es el caso del host sin UPnP ni reenvío de puertos — o sea, la
+            // mayoría. Antes se marcaba `InvalidEndpoint` y el botón salía apagado.
+            if (!HasSomeWayIn) return LobbyJoinability.InvalidEndpoint;
             if (!IsCompatibleWith(clientVersion)) return LobbyJoinability.VersionMismatch;
             if (IsFull) return LobbyJoinability.Full;
             if (RequiresPassword && !passwordSupplied) return LobbyJoinability.PasswordRequired;
@@ -237,12 +331,12 @@ namespace BackroomsSurvival.Lobbies
         /// <summary>Copia con otro ping. Es lo único que se remide sin volver a anunciar.</summary>
         public Lobby WithPing(int pingMs) => new Lobby(
             Id, Name, Version, Players, MaxPlayers, Map, Region, pingMs,
-            Privacy, RequiresPassword, Endpoint, UpdatedAtUnix, TtlSeconds, Status);
+            Privacy, RequiresPassword, Endpoint, UpdatedAtUnix, TtlSeconds, Status, Relay);
 
         /// <summary>Copia con otro sello de tiempo. Es lo que hace un anuncio repetido.</summary>
         public Lobby WithUpdatedAt(double updatedAtUnix) => new Lobby(
             Id, Name, Version, Players, MaxPlayers, Map, Region, PingMs,
-            Privacy, RequiresPassword, Endpoint, updatedAtUnix, TtlSeconds, Status);
+            Privacy, RequiresPassword, Endpoint, updatedAtUnix, TtlSeconds, Status, Relay);
 
         /// <summary>
         /// La única puerta por la que deben entrar datos de OTRA máquina. Lo que hoy sanea al
@@ -273,7 +367,8 @@ namespace BackroomsSurvival.Lobbies
             LobbyStatus status,
             out Lobby lobby) =>
             TryCreate(id, name, version, players, maxPlayers, map, region, pingMs, privacy,
-                requiresPassword, host, port, updatedAtUnix, ttlSeconds, status, null, out lobby);
+                requiresPassword, host, port, updatedAtUnix, ttlSeconds, status, null,
+                LobbyRelay.None, out lobby);
 
         /// <summary>
         /// Igual, con una dirección alternativa del mismo host (ver
@@ -301,6 +396,34 @@ namespace BackroomsSurvival.Lobbies
             float ttlSeconds,
             LobbyStatus status,
             string alternateHost,
+            out Lobby lobby) =>
+            TryCreate(id, name, version, players, maxPlayers, map, region, pingMs, privacy,
+                requiresPassword, host, port, updatedAtUnix, ttlSeconds, status, alternateHost,
+                LobbyRelay.None, out lobby);
+
+        /// <summary>
+        /// Igual, con la sesión de relay del host (ADR-117). Tercera sobrecarga por el mismo
+        /// motivo que la segunda: `out lobby` va al final y C# no admite un opcional delante de un
+        /// obligatorio.
+        /// </summary>
+        public static bool TryCreate(
+            string id,
+            string name,
+            string version,
+            int players,
+            int maxPlayers,
+            string map,
+            string region,
+            int pingMs,
+            LobbyPrivacy privacy,
+            bool requiresPassword,
+            string host,
+            int port,
+            double updatedAtUnix,
+            float ttlSeconds,
+            LobbyStatus status,
+            string alternateHost,
+            LobbyRelay relay,
             out Lobby lobby)
         {
             lobby = null;
@@ -324,7 +447,7 @@ namespace BackroomsSurvival.Lobbies
             lobby = new Lobby(
                 lobbyId, safeName, safeVersion, safePlayers, safeMax, safeMap, safeRegion,
                 safePing, privacy, requiresPassword, new LobbyEndpoint(host, port, alternateHost),
-                safeUpdated, safeTtl, status);
+                safeUpdated, safeTtl, status, relay);
             return true;
         }
 

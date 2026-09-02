@@ -47,6 +47,15 @@ namespace BackroomsSurvival.Net
         /// pública, ésta es la que sirve a un joiner de la misma red.
         public const string LanIpKey = "bs_lan_ip";
 
+        /// ADR-117: las tres del relay. Espejo de `SteamLobbyKeys.Relay*`, y `SteamLobbyKeyParity`
+        /// comprueba que no se separen — si divergen, el host publicaría con unas claves y el
+        /// navegador leería con otras, y el relay quedaría invisible sin un solo error.
+        public const string RelayAddrKey = "bs_relay_addr";
+
+        public const string RelaySessionKey = "bs_relay_session";
+
+        public const string RelayTokenKey = "bs_relay_token";
+
         /// Tope de resultados de una consulta. Steam no promete devolverlos todos.
         public const int DefaultMaxQueryResults = 50;
 
@@ -172,6 +181,9 @@ namespace BackroomsSurvival.Net
                         State = lobby.GetData(StateKey),
                         AnnouncedAt = lobby.GetData(AnnouncedAtKey),
                         LanIp = lobby.GetData(LanIpKey),
+                        RelayAddr = lobby.GetData(RelayAddrKey),
+                        RelaySession = lobby.GetData(RelaySessionKey),
+                        RelayToken = lobby.GetData(RelayTokenKey),
                         MemberCount = lobby.MemberCount,
                         MemberCapacity = lobby.MaxMembers,
                     });

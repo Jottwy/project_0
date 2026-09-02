@@ -49,8 +49,15 @@ namespace BackroomsSurvival.Lobbies
     /// </summary>
     public interface ILobbyJoinSink
     {
-        /// <summary>Arranca el intento. `failure` explica el no cuando devuelve false.</summary>
-        bool TryJoin(LobbyEndpoint endpoint, string playerName, out string failure);
+        /// <summary>
+        /// Arranca el intento. `failure` explica el no cuando devuelve false.
+        ///
+        /// ADR-117: `relay` puede ser la vía ÚNICA —un lobby sin `connect_ip`— o el respaldo de
+        /// `endpoint`. Quien implemente esto tiene que pasárselo al backend siempre que valga, no
+        /// sólo cuando el endpoint falte: el orden de las vías lo decide la secuencia del backend,
+        /// no el navegador.
+        /// </summary>
+        bool TryJoin(LobbyEndpoint endpoint, LobbyRelay relay, string playerName, out string failure);
     }
 
     /// <summary>
@@ -100,14 +107,18 @@ namespace BackroomsSurvival.Lobbies
                     "No hay camino de conexión conectado al navegador.");
             }
 
-            if (!_sink.TryJoin(lobby.Endpoint, playerName, out string failure))
+            if (!_sink.TryJoin(lobby.Endpoint, lobby.Relay, playerName, out string failure))
             {
                 return new LobbyJoinRequestResult(LobbyJoinRequestStatus.SinkRefused, verdict,
                     string.IsNullOrEmpty(failure) ? "No se pudo iniciar la conexión." : failure);
             }
 
+            // Con relay-only no hay endpoint que enseñar, y decir "Conectando a <invalid>…" sería
+            // peor que no decir nada.
             return new LobbyJoinRequestResult(LobbyJoinRequestStatus.Started, verdict,
-                "Conectando a " + lobby.Endpoint + "…");
+                lobby.IsRelayOnly
+                    ? "Conectando por relay…"
+                    : "Conectando a " + lobby.Endpoint + "…");
         }
 
         public static string Explain(LobbyJoinability verdict)

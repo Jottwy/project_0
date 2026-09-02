@@ -21,8 +21,23 @@ namespace BackroomsSurvival.Lobbies
         public readonly string Map;
         public readonly LobbyStatus Status;
 
+        /// <summary>
+        /// ADR-117: hay relay configurado para esta build, así que la partida se puede anunciar
+        /// aunque no haya endpoint directo — se entra por el relay.
+        /// </summary>
+        public readonly bool HasRelay;
+
+        /// <summary>Sin relay. Es la forma que tenía este tipo antes de ADR-117.</summary>
         public HostAnnouncementState(bool isHost, bool isEstablished, LobbyEndpoint endpoint,
             string name, string wireVersion, int players, int maxPlayers, string map, LobbyStatus status)
+            : this(isHost, isEstablished, endpoint, name, wireVersion, players, maxPlayers, map,
+                status, false)
+        {
+        }
+
+        public HostAnnouncementState(bool isHost, bool isEstablished, LobbyEndpoint endpoint,
+            string name, string wireVersion, int players, int maxPlayers, string map,
+            LobbyStatus status, bool hasRelay)
         {
             IsHost = isHost;
             IsEstablished = isEstablished;
@@ -33,9 +48,15 @@ namespace BackroomsSurvival.Lobbies
             MaxPlayers = maxPlayers;
             Map = map;
             Status = status;
+            HasRelay = hasRelay;
         }
 
-        public bool ShouldAnnounce => IsHost && IsEstablished && Endpoint.IsValid;
+        /// <summary>
+        /// Se anuncia si hay POR DÓNDE ENTRAR, que desde ADR-117 son dos cosas y no una. Sin
+        /// ninguna sigue sin anunciarse: publicar un lobby al que nadie puede entrar le cuesta al
+        /// jugador el tiempo de descubrirlo y no le ahorra nada (ADR-112).
+        /// </summary>
+        public bool ShouldAnnounce => IsHost && IsEstablished && (Endpoint.IsValid || HasRelay);
     }
 
     /// <summary>
@@ -109,7 +130,8 @@ namespace BackroomsSurvival.Lobbies
                 if (nowUnix < _nextActionUnix) return;
 
                 var publication = new LobbyPublication(state.Name, state.WireVersion, state.MaxPlayers,
-                    state.Map, "Unknown", LobbyPrivacy.Public, false, state.Endpoint);
+                    state.Map, "Unknown", LobbyPrivacy.Public, false, state.Endpoint,
+                    Lobby.DefaultTtlSeconds, state.HasRelay);
 
                 bool ok = _publisher.Publish(publication, state.Players, state.Status, nowUnix);
                 _publishPending = !ok;

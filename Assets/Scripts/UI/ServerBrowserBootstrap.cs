@@ -158,10 +158,12 @@ namespace BackroomsSurvival.UI
                     ResolvePlayerCount(),
                     SessionMaxPlayers,
                     string.IsNullOrEmpty(session.WorldScene) ? "Unknown" : session.WorldScene,
-                    session.Phase == SessionPhase.InGame ? LobbyStatus.InProgress : LobbyStatus.Waiting),
+                    session.Phase == SessionPhase.InGame ? LobbyStatus.InProgress : LobbyStatus.Waiting,
+                    Connectivity.RelaySessionCredentials.IsConfigured),
                 Time.unscaledTimeAsDouble);
 
             PublishLanFallback();
+            PublishRelaySession();
         }
 
         /// Lo último que se escribió en `bs_lan_ip`, para no llamar a `SetData` sesenta veces por
@@ -194,6 +196,51 @@ namespace BackroomsSurvival.UI
 
             if (string.Equals(lan, _publishedLanIp, StringComparison.Ordinal)) return;
             if (SteamLobbyManager.TrySetHostedData(SteamLobbyKeys.LanIp, lan)) _publishedLanIp = lan;
+        }
+
+        /// Lo último que se publicó como sesión de relay, para no reescribirlo 60 veces por segundo.
+        private static string _publishedRelaySession;
+
+        /// <summary>
+        /// Publica la sesión de relay del host (ADR-117).
+        ///
+        /// **Se publica en cuanto el host la tiene, no cuando el relay confirma.** La alternativa
+        /// —esperar al `relay_ready` del backend— exigiría un dato que hoy no cruza el IPC, y el
+        /// coste de equivocarse es asimétrico: si el relay no admitiera al host, el joiner que lo
+        /// intente pierde los 12 s de esa etapa y sigue con las demás; si no se publicara,
+        /// **nadie** podría entrar en el caso que ADR-117 existe para arreglar. El backend del
+        /// host, además, se registra desde su arranque, así que para cuando alguien lee este lobby
+        /// la sesión lleva rato abierta.
+        ///
+        /// El token va aquí porque el joiner lo necesita para que el relay le admita. Es metadata
+        /// pública del lobby y eso es deliberado en R1 — ver `SteamLobbyKeys.RelayToken`.
+        /// </summary>
+        private static void PublishRelaySession()
+        {
+            if (!SteamLobbyManager.HasHostedLobby)
+            {
+                _publishedRelaySession = null;
+                return;
+            }
+
+            LobbyRelay relay = Connectivity.RelaySessionCredentials.Current();
+            if (!relay.IsValid)
+            {
+                _publishedRelaySession = null;
+                return;
+            }
+
+            if (string.Equals(relay.Session, _publishedRelaySession, StringComparison.Ordinal)) return;
+
+            bool ok = SteamLobbyManager.TrySetHostedData(SteamLobbyKeys.RelayAddr, relay.Address)
+                      && SteamLobbyManager.TrySetHostedData(SteamLobbyKeys.RelaySession, relay.Session)
+                      && SteamLobbyManager.TrySetHostedData(SteamLobbyKeys.RelayToken, relay.Token);
+
+            if (!ok) return;
+
+            _publishedRelaySession = relay.Session;
+            // El token NO: `LobbyRelay.ToString` tampoco lo enseña (ADR-117 D9).
+            Debug.Log($"[ServerBrowser] Sesión de relay publicada: {relay}.");
         }
 
         /// <summary>
@@ -272,7 +319,27 @@ namespace BackroomsSurvival.UI
 
             if (host == null)
             {
-                AnnouncementBlockReason = reason;
+                // ADR-117: sin dirección defendible ya NO es el final del camino. Si hay relay, la
+                // partida se anuncia igual y se entra por él — es exactamente el host sin UPnP ni
+                // reenvío del playtest del 2026-09-02.
+                AnnouncementBlockReason = Connectivity.RelaySessionCredentials.IsConfigured
+                    ? null
+                    : reason;
+                return LobbyEndpoint.None;
+            }
+
+            // ADR-117 D7: **una dirección privada no se publica como si fuera un endpoint
+            // público** cuando hay una vía mejor. Con relay configurado, la LAN se queda en
+            // `bs_lan_ip` —donde significa lo que es— y `connect_ip` queda vacío, así que el
+            // navegador deja de enseñar `192.168.x.x` a gente de otra red.
+            //
+            // Sin relay sí se publica, y eso NO es incoherencia: es la regla de ADR-112 intacta.
+            // Una partida en LAN pura no tiene ninguna otra forma de anunciarse, y quitársela para
+            // cumplir una regla pensada para internet sería romper lo que ya funcionaba.
+            if (Connectivity.RelaySessionCredentials.IsConfigured &&
+                NatAddressPolicy.IsPrivateLan(host))
+            {
+                AnnouncementBlockReason = null;
                 return LobbyEndpoint.None;
             }
 

@@ -25,10 +25,13 @@ namespace BackroomsSurvival.Tests
             public int Calls;
             public LobbyEndpoint LastEndpoint;
 
-            public bool TryJoin(LobbyEndpoint endpoint, string playerName, out string failure)
+            public LobbyRelay LastRelay;
+
+            public bool TryJoin(LobbyEndpoint endpoint, LobbyRelay relay, string playerName, out string failure)
             {
                 Calls++;
                 LastEndpoint = endpoint;
+                LastRelay = relay;
                 failure = Accept ? null : Refusal;
                 return Accept;
             }

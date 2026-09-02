@@ -30,11 +30,13 @@ namespace BackroomsSurvival.UI
     /// </summary>
     public sealed class JoinSessionLobbyJoinSink : ILobbyJoinSink
     {
-        public bool TryJoin(LobbyEndpoint endpoint, string playerName, out string failure)
+        public bool TryJoin(LobbyEndpoint endpoint, LobbyRelay relay, string playerName, out string failure)
         {
-            if (!endpoint.IsValid)
+            // ADR-117 D7: basta con UNA de las dos vías. Un lobby sin `connect_ip` pero con relay
+            // es entrable — es el caso del host sin UPnP ni reenvío, o sea el normal.
+            if (!endpoint.IsValid && !relay.IsValid)
             {
-                failure = "El servidor anuncia una dirección inválida.";
+                failure = "El servidor no anuncia ninguna forma de entrar.";
                 return false;
             }
 
@@ -45,16 +47,20 @@ namespace BackroomsSurvival.UI
             }
 
             string name = string.IsNullOrWhiteSpace(playerName) ? "Player" : playerName.Trim();
-            // `endpoint.Alternate` es la LAN que anunció el host (`bs_lan_ip`). El primer intento
-            // va SIEMPRE a lo anunciado; la alternativa sólo la usa el [Retry].
+            // `endpoint.Alternate` es la LAN que anunció el host (`bs_lan_ip`). El orden de las
+            // vías —directa, LAN, relay— lo decide la secuencia del BACKEND (ADR-117 D10), no
+            // esto: aquí sólo se le entregan todas las que el lobby anunció.
             if (!JoinSessionUI.TryBeginSteamJoin(endpoint.Host, endpoint.Port, name,
-                    endpoint.HasAlternate ? endpoint.Alternate : null))
+                    endpoint.HasAlternate ? endpoint.Alternate : null, relay))
             {
                 failure = "No hay panel de conexión vivo.";
                 return false;
             }
 
-            Debug.Log($"[ServerBrowser] Join solicitado a {endpoint} como '{name}'.");
+            // El token NO se registra (ADR-117 D9); `LobbyRelay.ToString` no lo enseña.
+            Debug.Log(endpoint.IsValid
+                ? $"[ServerBrowser] Join solicitado a {endpoint} como '{name}' (relay {relay})."
+                : $"[ServerBrowser] Join solicitado SOLO por relay {relay} como '{name}'.");
             failure = null;
             return true;
         }

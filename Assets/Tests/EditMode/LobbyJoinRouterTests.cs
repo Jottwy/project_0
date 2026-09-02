@@ -20,10 +20,14 @@ namespace BackroomsSurvival.Tests
             public LobbyEndpoint LastEndpoint;
             public string LastPlayerName;
 
-            public bool TryJoin(LobbyEndpoint endpoint, string playerName, out string failure)
+            /// ADR-117: el router entrega también la sesión de relay del lobby.
+            public LobbyRelay LastRelay;
+
+            public bool TryJoin(LobbyEndpoint endpoint, LobbyRelay relay, string playerName, out string failure)
             {
                 Calls++;
                 LastEndpoint = endpoint;
+                LastRelay = relay;
                 LastPlayerName = playerName;
                 failure = Accept ? null : Refusal;
                 return Accept;

@@ -20,9 +20,19 @@ namespace BackroomsSurvival.Lobbies
 
         public readonly float TtlSeconds;
 
+        /// <summary>
+        /// ADR-117: esta partida ofrece relay, así que se puede anunciar aunque
+        /// <see cref="Endpoint"/> no valga.
+        ///
+        /// Está aquí y no sólo en `HostAnnouncementState` para que el publicador conserve su
+        /// defensa: sin este dato tendría que aceptar cualquier publicación sin endpoint —incluida
+        /// una sin ninguna vía— y un lobby al que nadie puede entrar volvería a ser posible.
+        /// </summary>
+        public readonly bool HasRelay;
+
         public LobbyPublication(string name, string version, int maxPlayers, string map,
             string region, LobbyPrivacy privacy, bool requiresPassword, LobbyEndpoint endpoint,
-            float ttlSeconds = Lobby.DefaultTtlSeconds)
+            float ttlSeconds = Lobby.DefaultTtlSeconds, bool hasRelay = false)
         {
             Name = name;
             Version = version;
@@ -33,6 +43,7 @@ namespace BackroomsSurvival.Lobbies
             RequiresPassword = requiresPassword;
             Endpoint = endpoint;
             TtlSeconds = ttlSeconds;
+            HasRelay = hasRelay;
         }
     }
 
