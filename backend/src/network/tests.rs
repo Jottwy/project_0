@@ -5055,3 +5055,230 @@ async fn a_full_broadcast_round_puts_nothing_oversized_on_the_wire() {
         protocol::SAFE_DATAGRAM_BYTES
     );
 }
+
+// ─── ADR-117: los dos hooks del relay ──────────────────────────────────────────────────────
+//
+// Aquí se prueba lo que `transport` no puede: que el datagrama envuelto SALE de verdad por el
+// socket hacia el relay, y que uno que ENTRA envuelto acaba tratado como un peer normal. El papel
+// del relay lo hace un socket cualquiera que se limita a mirar y a hablar — no hace falta el relay
+// de verdad para probar los hooks, y meterlo aquí mezclaría dos cosas que fallan por motivos
+// distintos.
+
+use backrooms_relay::protocol::{
+    MessageType as RelayMessageType, RelayFrame, RelayMessage, ENVELOPE_BYTES,
+};
+use tokio::net::UdpSocket as TestUdpSocket;
+
+const TEST_RELAY_SESSION: u64 = 0x00C0_FFEE;
+
+/// Un socket que hace de relay: recibe lo que el backend le manda y le contesta.
+async fn fake_relay() -> (TestUdpSocket, SocketAddr) {
+    let socket = TestUdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let addr = socket.local_addr().unwrap();
+    (socket, addr)
+}
+
+fn test_link(relay_addr: SocketAddr, my_peer: u16) -> transport::RelayLink {
+    transport::RelayLink {
+        relay_addr,
+        session_id: TEST_RELAY_SESSION,
+        my_peer,
+    }
+}
+
+#[tokio::test]
+async fn un_datagrama_a_un_peer_relayado_sale_envuelto_hacia_el_relay() {
+    let (relay, relay_addr) = fake_relay().await;
+
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    host.attach_relay(test_link(
+        relay_addr,
+        backrooms_relay::session::HOST_PEER_ID,
+    ));
+
+    // Un joiner que sólo se alcanza por relay: su `addr` es sintética.
+    let joiner_addr = transport::synthetic_addr(TEST_RELAY_SESSION, 2);
+    host.peers.insert(
+        2,
+        peer::PeerConnection::new(2, "Joiner".into(), joiner_addr),
+    );
+
+    host.send_unreliable_to(2, &PacketPayload::Heartbeat).await;
+
+    let mut buf = [0u8; 2048];
+    let (n, from) = tokio::time::timeout(Duration::from_secs(2), relay.recv_from(&mut buf))
+        .await
+        .expect("el datagrama tenía que llegar al relay")
+        .unwrap();
+    assert_eq!(from, loopback_addr(&host), "sale por el socket del backend");
+
+    let frame = RelayFrame::decode(&buf[..n]).expect("tiene que ser un sobre de relay legible");
+    assert_eq!(frame.session_id, TEST_RELAY_SESSION);
+    assert_eq!(frame.dst, 2, "va dirigido al peer 2 del relay");
+    assert_eq!(frame.message.message_type(), RelayMessageType::Data);
+
+    // Y dentro va el paquete de juego intacto: el relay no lo mira, pero nosotros sí, para
+    // comprobar que nadie lo ha tocado por el camino.
+    let RelayMessage::Data { payload } = frame.message else {
+        panic!("tenía que ser Data");
+    };
+    let (header, decoded) = protocol::decode_packet(&payload).expect("el gameplay sigue entero");
+    assert_eq!(header.sender_id, 1);
+    assert!(matches!(decoded, PacketPayload::Heartbeat));
+    assert_eq!(
+        payload.len() + ENVELOPE_BYTES,
+        n,
+        "16 B de sobre, ni uno más"
+    );
+}
+
+#[tokio::test]
+async fn una_direccion_sintetica_jamas_sale_cruda_por_el_socket() {
+    // Si una sintética llegara a `send_to`, el sistema intentaría enrutar una IPv6 desde un socket
+    // atado a 0.0.0.0 y fallaría con un error que no señala a nada. Sin enlace de relay el envío
+    // se RECHAZA, que es ruidoso y diagnosticable.
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    assert!(host.relay_link().is_none());
+
+    host.peers.insert(
+        2,
+        peer::PeerConnection::new(
+            2,
+            "Fantasma".into(),
+            transport::synthetic_addr(TEST_RELAY_SESSION, 2),
+        ),
+    );
+
+    // No revienta ni cuelga: se registra y se sigue sirviendo.
+    host.send_unreliable_to(2, &PacketPayload::Heartbeat).await;
+}
+
+#[tokio::test]
+async fn un_handshake_que_llega_por_el_relay_registra_al_peer_con_su_direccion_sintetica() {
+    // EL CAMINO COMPLETO DE ENTRADA. El host no sabe que existe un relay más allá de su enlace:
+    // `handle_handshake` registra al peer, le asigna id y le contesta, exactamente igual que con
+    // un joiner directo.
+    let (relay, relay_addr) = fake_relay().await;
+
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let host_addr = loopback_addr(&host);
+    host.attach_relay(test_link(
+        relay_addr,
+        backrooms_relay::session::HOST_PEER_ID,
+    ));
+
+    let handshake = protocol::encode_packet(
+        &protocol::PacketHeader::new(
+            protocol::PacketType::Handshake as u16,
+            77, // el `sender_id` que el joiner se pone a sí mismo
+            0,
+            0,
+        ),
+        &PacketPayload::Handshake {
+            player_name: "Alejandro".into(),
+            version: crate::ipc::server::WIRE_SCHEMA_VERSION.to_string(),
+            room_manifest_digest: String::new(),
+        },
+    );
+    let envuelto = RelayFrame::to_peer(
+        TEST_RELAY_SESSION,
+        2,
+        backrooms_relay::session::HOST_PEER_ID,
+        RelayMessage::Data { payload: handshake },
+    )
+    .encode()
+    .unwrap();
+    relay.send_to(&envuelto, host_addr).await.unwrap();
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let events = host.process_incoming().await;
+
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, NetworkEvent::PeerConnected { .. })),
+        "el host tiene que admitirlo como a cualquier otro joiner"
+    );
+
+    let registrado = host
+        .peers
+        .values()
+        .find(|p| p.name == "Alejandro")
+        .expect("el peer tiene que estar registrado");
+    assert_eq!(
+        registrado.addr,
+        transport::synthetic_addr(TEST_RELAY_SESSION, 2),
+        "y con la dirección SINTÉTICA, que es por donde se le contesta"
+    );
+
+    // La prueba de que el circuito se cierra: el HandshakeAck vuelve al relay, envuelto y dirigido
+    // al peer 2.
+    let mut buf = [0u8; 2048];
+    let (n, _) = tokio::time::timeout(Duration::from_secs(2), relay.recv_from(&mut buf))
+        .await
+        .expect("el ack tenía que salir hacia el relay")
+        .unwrap();
+    let respuesta = RelayFrame::decode(&buf[..n]).unwrap();
+    assert_eq!(respuesta.dst, 2);
+}
+
+#[tokio::test]
+async fn el_control_del_relay_no_llega_a_los_eventos_de_juego() {
+    let (relay, relay_addr) = fake_relay().await;
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let host_addr = loopback_addr(&host);
+    host.attach_relay(test_link(relay_addr, 1));
+
+    let control = RelayFrame::to_peer(
+        TEST_RELAY_SESSION,
+        0,
+        1,
+        RelayMessage::PeerJoined { peer: 5 },
+    )
+    .encode()
+    .unwrap();
+    relay.send_to(&control, host_addr).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let events = host.process_incoming().await;
+    assert!(events.is_empty(), "un PeerJoined del relay no es gameplay");
+
+    let control = host.drain_relay_control();
+    assert_eq!(
+        control.len(),
+        1,
+        "y sí tiene que llegar por su propio canal"
+    );
+    assert_eq!(control[0].message, RelayMessage::PeerJoined { peer: 5 });
+    assert!(
+        host.drain_relay_control().is_empty(),
+        "vaciar el canal lo deja vacío"
+    );
+}
+
+#[tokio::test]
+async fn el_camino_directo_no_cambia_con_un_enlace_de_relay_puesto() {
+    // La regresión que más importa: un host CON relay atado tiene que seguir sirviendo a un joiner
+    // DIRECTO exactamente igual que antes de ADR-117.
+    let (_relay, relay_addr) = fake_relay().await;
+
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    host.attach_relay(test_link(relay_addr, 1));
+    let host_addr = loopback_addr(&host);
+
+    let mut joiner = NetworkManager::bind(0, 0, 0, false).await.unwrap();
+    joiner.initiate_connection(host_addr).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    host.process_incoming().await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let events = joiner.process_incoming().await;
+
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, NetworkEvent::PeerConnected { .. })),
+        "el joiner directo entra igual que siempre"
+    );
+    assert_eq!(joiner.world_seed, 42, "y adopta el mundo del host");
+}

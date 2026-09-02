@@ -520,6 +520,16 @@ pub struct NetworkManager {
     /// RELTRACE: última foto de la cola reliable emitida por peer (throttle 1/s).
     last_reliable_queue_log_at: HashMap<PeerId, Instant>,
     last_transform_trace_at: HashMap<PeerId, Instant>,
+    /// ADR-117: el enlace con el relay, o `None` si esta sesión va directa.
+    ///
+    /// **`None` es el caso de siempre y no cambia ni un byte de comportamiento**: `send_datagram`
+    /// sólo lo consulta cuando el destino es una dirección sintética, y sin enlace no hay peers
+    /// con direcciones sintéticas.
+    pub(crate) relay: Option<transport::RelayLink>,
+    /// Los mensajes de CONTROL del relay que ha ido recogiendo el `receive_loop`. Van por un canal
+    /// aparte del de gameplay a propósito: un `PeerReady` no es un paquete de juego y no puede
+    /// pasar por `decode_packet`, que lo descartaría como ilegible.
+    relay_control_rx: mpsc::Receiver<backrooms_relay::protocol::RelayFrame>,
 }
 
 impl NetworkManager {
@@ -549,8 +559,11 @@ impl NetworkManager {
         );
 
         let (tx, rx) = mpsc::channel::<IncomingPacket>(512);
+        // ADR-117: el canal de CONTROL del relay. Pequeño a propósito — por aquí pasan
+        // `PeerReady`, `Auth` y `SessionClosed`, que son unos pocos por sesión, no tráfico.
+        let (relay_tx, relay_control_rx) = mpsc::channel(32);
         let recv_socket = socket.clone();
-        tokio::spawn(receive_loop(recv_socket, tx));
+        tokio::spawn(receive_loop(recv_socket, tx, relay_tx));
 
         Ok(Self {
             socket,
@@ -637,7 +650,41 @@ impl NetworkManager {
             last_keepalive_trace_at: HashMap::new(),
             last_reliable_queue_log_at: HashMap::new(),
             last_transform_trace_at: HashMap::new(),
+            relay: None,
+            relay_control_rx,
         })
+    }
+
+    /// Ata este backend a un relay ya autenticado (ADR-117).
+    ///
+    /// A partir de aquí, todo destino con dirección sintética sale envuelto hacia
+    /// `link.relay_addr`. **No cambia nada del camino directo**: los peers con dirección real
+    /// siguen recibiendo sus datagramas por donde siempre.
+    pub fn attach_relay(&mut self, link: transport::RelayLink) {
+        info!(
+            "RELAY event=link_attached self_id={} relay={} session={:#x} my_peer={}",
+            self.local_id, link.relay_addr, link.session_id, link.my_peer
+        );
+        self.relay = Some(link);
+    }
+
+    /// El enlace de relay, si lo hay. Para el log y para los tests.
+    pub fn relay_link(&self) -> Option<&transport::RelayLink> {
+        self.relay.as_ref()
+    }
+
+    /// Recoge los mensajes de control del relay que hayan llegado. No bloquea.
+    ///
+    /// Devuelve marcos crudos: quién los interpreta es el cliente de relay del commit siguiente.
+    /// Vaciar el canal aquí ya importa hoy — si nadie lo consumiera, un relay hablador acabaría
+    /// llenándolo y bloqueando el `receive_loop`, que es el hilo por el que entra TODO el
+    /// gameplay.
+    pub fn drain_relay_control(&mut self) -> Vec<backrooms_relay::protocol::RelayFrame> {
+        let mut out = Vec::new();
+        while let Ok(frame) = self.relay_control_rx.try_recv() {
+            out.push(frame);
+        }
+        out
     }
 
     /// Cuántos datagramas FIABLES han salido por encima de `SAFE_DATAGRAM_BYTES`. La invariante
@@ -1154,7 +1201,11 @@ impl NetworkManager {
 const NETPROBE_THROTTLE: Duration = Duration::from_secs(5);
 
 /// Background task: read UDP datagrams, parse, and forward to the NetworkManager.
-async fn receive_loop(socket: Arc<UdpSocket>, tx: mpsc::Sender<IncomingPacket>) {
+async fn receive_loop(
+    socket: Arc<UdpSocket>,
+    tx: mpsc::Sender<IncomingPacket>,
+    relay_tx: mpsc::Sender<backrooms_relay::protocol::RelayFrame>,
+) {
     let mut buf = vec![0u8; protocol::MAX_PACKET_SIZE];
     let local = socket
         .local_addr()
@@ -1184,17 +1235,49 @@ async fn receive_loop(socket: Arc<UdpSocket>, tx: mpsc::Sender<IncomingPacket>) 
                     );
                 }
 
-                if len < HEADER_SIZE {
+                // ─── ADR-117: LA ENTRADA POR RELAY ───
+                //
+                // El otro de los dos únicos puntos que saben que el relay existe. Se decide por la
+                // MAGIA del sobre y no por la dirección de origen, y eso importa: este bucle se
+                // lanza en `bind`, antes de que nadie sepa si esta sesión va a usar relay.
+                //
+                // La separación es exacta por construcción — ver `transport::classify_inbound`.
+                let (packet_bytes, source_addr) = match transport::classify_inbound(&buf[..len]) {
+                    transport::Inbound::Direct => (&buf[..len], addr),
+                    transport::Inbound::Relayed {
+                        from,
+                        payload_offset,
+                    } => {
+                        // El gameplay empieza detrás del sobre. `from` es la dirección SINTÉTICA
+                        // del emisor, así que a partir de aquí todo el backend ve un peer normal.
+                        (&buf[payload_offset..len], from)
+                    }
+                    transport::Inbound::Control(frame) => {
+                        if relay_tx.send(frame).await.is_err() {
+                            break; // Canal cerrado: el manager se ha soltado.
+                        }
+                        continue;
+                    }
+                    transport::Inbound::Junk(why) => {
+                        warn!(
+                            "RELAY event=datagram_dropped reason=bad_envelope local={local} from={addr} bytes={len} error={why}"
+                        );
+                        continue;
+                    }
+                };
+
+                if packet_bytes.len() < HEADER_SIZE {
                     // NETPROBE: antes se descartaba en silencio absoluto.
                     warn!(
-                        "NETPROBE event=datagram_dropped reason=shorter_than_header local={local} from={addr} bytes={len} header_size={HEADER_SIZE}"
+                        "NETPROBE event=datagram_dropped reason=shorter_than_header local={local} from={source_addr} bytes={} header_size={HEADER_SIZE}",
+                        packet_bytes.len()
                     );
                     continue;
                 }
-                match decode_packet(&buf[..len]) {
+                match decode_packet(packet_bytes) {
                     Ok((header, payload)) => {
                         let pkt = IncomingPacket {
-                            addr,
+                            addr: source_addr,
                             header,
                             payload,
                         };

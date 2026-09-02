@@ -43,7 +43,11 @@
 
 use std::net::{Ipv6Addr, SocketAddr, SocketAddrV6};
 
-use backrooms_relay::protocol::{PeerId as RelayPeerId, SessionId};
+use backrooms_relay::protocol::{
+    EncodeError as RelayEncodeError, Envelope, MessageType as RelayMessageType,
+    PeerId as RelayPeerId, RelayFrame, RelayMessage, SessionId,
+    ENVELOPE_BYTES as RELAY_ENVELOPE_BYTES, RELAY_MAGIC,
+};
 
 /// Los 8 primeros bytes de toda dirección sintética: `fd52:5245:4c41:5900`.
 ///
@@ -88,6 +92,95 @@ pub fn synthetic_parts(addr: &SocketAddr) -> Option<(SessionId, RelayPeerId)> {
 /// Sólo el id de peer del relay.
 pub fn synthetic_peer(addr: &SocketAddr) -> Option<RelayPeerId> {
     synthetic_parts(addr).map(|(_, peer)| peer)
+}
+
+/// El enlace con el relay de esta sesión. `None` en `NetworkManager` significa «esta partida va
+/// directa», que es el caso de siempre y el que no puede cambiar de comportamiento.
+#[derive(Debug, Clone)]
+pub struct RelayLink {
+    /// La dirección REAL del relay: la única a la que este backend manda datagramas relayados.
+    pub relay_addr: SocketAddr,
+
+    pub session_id: SessionId,
+
+    /// El id que el relay nos asignó. El relay lo reescribe igualmente al reenviar —no se fía del
+    /// emisor— así que esto es informativo para el otro extremo y para el log.
+    pub my_peer: RelayPeerId,
+}
+
+impl RelayLink {
+    /// Mete un datagrama de gameplay en un sobre de relay dirigido a `dst`.
+    ///
+    /// Copia el payload una vez. Se podría evitar escribiendo el sobre delante de un búfer
+    /// reutilizable, pero `send_datagram` toma `&self` y esto son ~50 ns sobre un camino que hoy
+    /// no existe; optimizarlo antes de medirlo sería justo lo que la regla de scope prohíbe.
+    pub fn wrap(&self, payload: &[u8], dst: RelayPeerId) -> Result<Vec<u8>, RelayEncodeError> {
+        RelayFrame::to_peer(
+            self.session_id,
+            self.my_peer,
+            dst,
+            RelayMessage::Data {
+                payload: payload.to_vec(),
+            },
+        )
+        .encode()
+    }
+}
+
+/// Qué era el datagrama que acaba de llegar.
+#[derive(Debug)]
+pub enum Inbound {
+    /// Sin sobre de relay: el camino de siempre, byte por byte como antes de ADR-117.
+    Direct,
+
+    /// Gameplay que viene por el relay. `from` es la dirección sintética del emisor y
+    /// `payload_offset` dice dónde empieza el paquete de juego dentro del búfer.
+    Relayed {
+        from: SocketAddr,
+        payload_offset: usize,
+    },
+
+    /// Un mensaje de control del relay (`PeerReady`, `Auth`, `SessionClosed`…). No es gameplay y
+    /// no puede pasar por el decodificador del juego.
+    Control(RelayFrame),
+
+    /// Lleva nuestro sobre pero no se puede leer.
+    Junk(String),
+}
+
+/// Decide si un datagrama viene envuelto por el relay, **sin necesidad de saber la dirección del
+/// relay**.
+///
+/// La separación es por la MAGIA del sobre, y es exacta por construcción, no por suerte: todos los
+/// `PacketType` del juego caben en un byte, y el campo del tipo viaja como `u16` big-endian, así
+/// que el primer byte de un paquete de gameplay es **siempre `0x00`**. El primer byte de un sobre
+/// de relay es `0x42` (`'B'`). No hay valor de `packet_type` que pueda producir la magia, ni
+/// habrá mientras los tipos quepan en un byte — y de eso se ocupa
+/// `un_paquete_de_gameplay_nunca_se_confunde_con_un_sobre_de_relay`.
+///
+/// Que no haga falta configurar la dirección del relay para reconocerlo importa: el
+/// `receive_loop` se lanza en `bind`, antes de que nadie sepa si esta sesión va a usar relay.
+pub fn classify_inbound(buf: &[u8]) -> Inbound {
+    if buf.len() < 2 || buf[0..2] != RELAY_MAGIC {
+        return Inbound::Direct;
+    }
+
+    let env = match Envelope::peek(buf) {
+        Ok(env) => env,
+        Err(e) => return Inbound::Junk(e.to_string()),
+    };
+
+    if env.msg_type != RelayMessageType::Data {
+        return match RelayFrame::decode(buf) {
+            Ok(frame) => Inbound::Control(frame),
+            Err(e) => Inbound::Junk(e.to_string()),
+        };
+    }
+
+    Inbound::Relayed {
+        from: synthetic_addr(env.session_id, env.src),
+        payload_offset: RELAY_ENVELOPE_BYTES,
+    }
 }
 
 #[cfg(test)]
@@ -171,6 +264,130 @@ mod tests {
             synthetic_addr(7, backrooms_relay::session::HOST_PEER_ID).port(),
             1
         );
+    }
+
+    #[test]
+    fn un_paquete_de_gameplay_nunca_se_confunde_con_un_sobre_de_relay() {
+        // LA INVARIANTE QUE SOSTIENE `classify_inbound`, y es exacta por construcción: todos los
+        // `PacketType` caben en un byte y el campo viaja como u16 big-endian, así que el primer
+        // byte de un paquete de juego es SIEMPRE 0x00, y el de un sobre de relay es 0x42.
+        use crate::network::protocol::{encode_packet, PacketHeader, PacketPayload};
+
+        for payload in [
+            PacketPayload::Heartbeat,
+            PacketPayload::Handshake {
+                player_name: "Jottwy".into(),
+                version: "55".into(),
+                room_manifest_digest: String::new(),
+            },
+            PacketPayload::Ack {
+                acked_sequence: 0xFFFF_FFFF,
+            },
+        ] {
+            // `sender_id` al máximo a propósito: es el campo que ocupa los bytes 2 y 3, que son
+            // los que el sobre usa para versión y tipo. Si la separación dependiera de ELLOS, este
+            // caso la rompería.
+            let header = PacketHeader::new(payload.type_code(), u16::MAX, u32::MAX, u32::MAX);
+            let bytes = encode_packet(&header, &payload);
+
+            assert_eq!(bytes[0], 0x00, "el primer byte de gameplay es siempre cero");
+            assert!(
+                matches!(classify_inbound(&bytes), Inbound::Direct),
+                "un paquete de juego tiene que seguir el camino de siempre"
+            );
+        }
+    }
+
+    #[test]
+    fn un_data_relayado_se_desenvuelve_a_su_emisor_sintetico() {
+        let frame = RelayFrame::to_peer(
+            0xBEEF,
+            3,
+            1,
+            RelayMessage::Data {
+                payload: vec![1, 2, 3, 4],
+            },
+        );
+        let bytes = frame.encode().unwrap();
+
+        match classify_inbound(&bytes) {
+            Inbound::Relayed {
+                from,
+                payload_offset,
+            } => {
+                assert_eq!(
+                    from,
+                    synthetic_addr(0xBEEF, 3),
+                    "viene del peer 3 del relay"
+                );
+                assert_eq!(&bytes[payload_offset..], &[1, 2, 3, 4]);
+            }
+            other => panic!("tenía que ser Relayed, fue {other:?}"),
+        }
+    }
+
+    #[test]
+    fn el_control_del_relay_no_pasa_por_el_decodificador_del_juego() {
+        // Un `PeerReady` metido en `decode_packet` sería un paquete de gameplay ilegible y se
+        // descartaría con un `datagram_dropped reason=decode_failed`: la sesión de relay no se
+        // establecería nunca y el log culparía al codificador.
+        let bytes = RelayFrame::to_peer(
+            1,
+            0,
+            2,
+            RelayMessage::PeerReady {
+                assigned_peer: 2,
+                host_peer: 1,
+            },
+        )
+        .encode()
+        .unwrap();
+
+        assert!(matches!(classify_inbound(&bytes), Inbound::Control(_)));
+    }
+
+    #[test]
+    fn un_sobre_nuestro_pero_roto_se_nombra_en_vez_de_colarse() {
+        let mut bytes = RelayFrame::to_relay(1, 1, RelayMessage::Heartbeat)
+            .encode()
+            .unwrap();
+        bytes[3] = 250; // tipo que no existe
+
+        assert!(matches!(classify_inbound(&bytes), Inbound::Junk(_)));
+    }
+
+    #[test]
+    fn envolver_y_desenvolver_devuelve_el_payload_intacto() {
+        let link = RelayLink {
+            relay_addr: "203.0.113.9:7790".parse().unwrap(),
+            session_id: 0xABCD,
+            my_peer: 4,
+        };
+        let payload: Vec<u8> = (0..1200u16).map(|i| i as u8).collect();
+
+        let wrapped = link.wrap(&payload, 1).expect("1200 B es el techo, cabe");
+        assert_eq!(wrapped.len(), 1216, "1200 de gameplay + 16 de sobre");
+
+        match classify_inbound(&wrapped) {
+            Inbound::Relayed {
+                from,
+                payload_offset,
+            } => {
+                assert_eq!(from, synthetic_addr(0xABCD, 4));
+                assert_eq!(&wrapped[payload_offset..], &payload[..]);
+            }
+            other => panic!("tenía que ser Relayed, fue {other:?}"),
+        }
+    }
+
+    #[test]
+    fn envolver_algo_por_encima_del_techo_falla_en_vez_de_fragmentar() {
+        let link = RelayLink {
+            relay_addr: "203.0.113.9:7790".parse().unwrap(),
+            session_id: 1,
+            my_peer: 2,
+        };
+        assert!(link.wrap(&vec![0u8; 1201], 1).is_err());
     }
 
     #[test]

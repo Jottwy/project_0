@@ -546,6 +546,19 @@ impl NetworkManager {
         // ser imposible. Lo rechazado ya lleva su propia línea con su tamaño.
         self.note_datagram_size(data.len(), kind, addr);
 
+        // ─── ADR-117: LA SALIDA POR RELAY ───
+        //
+        // Es uno de los dos únicos puntos del backend que saben que el relay existe. Una dirección
+        // sintética NO se puede pasar a `send_to`: el socket hace bind en `0.0.0.0` (IPv4) y el
+        // sistema fallaría al enrutar una IPv6 con un error que no señala a nada.
+        //
+        // La comprobación va AQUÍ y no en los llamantes porque los llamantes son decenas y los
+        // puntos de salida son dos. El techo de ADR-113 ya se ha aplicado arriba, sobre el payload
+        // de gameplay: el sobre suma 16 B y el datagrama en el cable llega a 1216 (enmienda 3).
+        if crate::network::transport::is_synthetic(&addr) {
+            return self.send_via_relay(data, addr, kind).await;
+        }
+
         let Err(e) = self.socket.send_to(data, addr).await else {
             return true;
         };
@@ -570,6 +583,66 @@ impl NetworkManager {
         // El socket falló: no salió. Distinto del rechazo por techo (que es culpa del emisor) pero
         // el retorno es el mismo, y por lo mismo — encolar un fiable que no salió no lo arregla.
         false
+    }
+
+    /// Mete el datagrama en un sobre de relay y lo manda a la dirección REAL del relay.
+    ///
+    /// Separado de `send_datagram` para que el camino directo —el que hoy funciona— no gane ni una
+    /// rama ni una copia. Aquí sí hay una copia del payload, y está justificada en `RelayLink::wrap`.
+    async fn send_via_relay(&self, data: &[u8], synthetic: SocketAddr, kind: &str) -> bool {
+        let Some(link) = &self.relay else {
+            // Una dirección sintética sin enlace de relay significa que alguien registró un peer
+            // relayado y luego se soltó el enlace. No puede pasar y por eso se grita: en silencio
+            // sería un peer que deja de recibir sin motivo visible.
+            log::error!(
+                "RELAY event=send_without_link self_id={} kind={kind} dest={synthetic} — hay un peer \
+                 relayado registrado pero esta sesión no tiene enlace con el relay",
+                self.local_id
+            );
+            return false;
+        };
+
+        let Some(dst) = crate::network::transport::synthetic_peer(&synthetic) else {
+            return false;
+        };
+
+        let wrapped = match link.wrap(data, dst) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                // El techo ya se comprobó en `send_datagram`, así que esto sólo puede saltar si
+                // las dos constantes se separan. Es exactamente el fallo que el test de espejo
+                // `el_techo_del_payload_es_el_de_adr_113` existe para impedir.
+                log::error!(
+                    "RELAY event=wrap_failed self_id={} kind={kind} dest_peer={dst} error={e}",
+                    self.local_id
+                );
+                return false;
+            }
+        };
+
+        if let Err(e) = self.socket.send_to(&wrapped, link.relay_addr).await {
+            use std::sync::atomic::Ordering;
+            let now_ms = self.session_start.elapsed().as_millis() as u64;
+            let last = self.last_send_error_log_ms.load(Ordering::Relaxed);
+            if now_ms.saturating_sub(last) >= 1000
+                && self
+                    .last_send_error_log_ms
+                    .compare_exchange(last, now_ms, Ordering::Relaxed, Ordering::Relaxed)
+                    .is_ok()
+            {
+                warn!(
+                    "RELAY event=send_failed self_id={} kind={kind} relay={} dest_peer={dst} \
+                     payload_bytes={} wire_bytes={} err={e}",
+                    self.local_id,
+                    link.relay_addr,
+                    data.len(),
+                    wrapped.len(),
+                );
+            }
+            return false;
+        }
+
+        true
     }
 
     /// Send a raw encoded packet to an address (used for handshake responses
