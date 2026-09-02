@@ -5282,3 +5282,232 @@ async fn el_camino_directo_no_cambia_con_un_enlace_de_relay_puesto() {
     );
     assert_eq!(joiner.world_seed, 42, "y adopta el mundo del host");
 }
+
+// ─── ADR-117: R1 de extremo a extremo, con un relay de VERDAD ───────────────────────────────
+//
+// Los tests de arriba prueban los hooks con un socket que hace de relay. Éstos levantan el relay
+// real —el mismo binario que va a correr en el VPS, por su lib— y le hacen atravesar dos
+// `NetworkManager` completos. Es la prueba de que R1 funciona; lo único que le falta para ser el
+// criterio de aceptación es que las dos máquinas estén en redes distintas, y eso no se puede
+// simular desde aquí.
+
+use backrooms_relay::protocol::SessionToken;
+use backrooms_relay::session::{RelayLimits, RelayTable};
+
+/// Levanta el relay real en un puerto libre. El `Sender` que devuelve lo apaga al soltarse.
+async fn real_relay() -> (SocketAddr, tokio::sync::oneshot::Sender<()>) {
+    let socket = TestUdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let addr = socket.local_addr().unwrap();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        backrooms_relay::server::serve(socket, RelayTable::new(RelayLimits::default()), async {
+            let _ = rx.await;
+        })
+        .await;
+    });
+    (addr, tx)
+}
+
+fn relay_config(relay_addr: SocketAddr, session: u64, as_host: bool) -> relay_client::RelayConfig {
+    relay_client::RelayConfig {
+        relay_addr,
+        session_id: session,
+        token: SessionToken::new([0x5A; 16]),
+        wire_version: crate::ipc::server::WIRE_SCHEMA_VERSION as u16,
+        as_host,
+    }
+}
+
+/// Bombea los dos enlaces hasta que los dos estén admitidos, o se rinde.
+async fn pump_until_ready(host: &mut NetworkManager, joiner: &mut NetworkManager) {
+    for _ in 0..60 {
+        host.pump_relay().await;
+        joiner.pump_relay().await;
+        if host.relay_link().is_some() && joiner.relay_link().is_some() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    panic!(
+        "los dos tenían que quedar admitidos; host={:?} joiner={:?}",
+        host.relay_state(),
+        joiner.relay_state()
+    );
+}
+
+#[tokio::test]
+async fn dos_backends_se_encuentran_por_el_relay_sin_ninguna_ruta_directa() {
+    // ESTE ES R1. El joiner no sabe la dirección del host y no podría alcanzarla aunque la
+    // supiera: lo único que conoce es el relay y el identificador de la sesión.
+    let (relay_addr, _shutdown) = real_relay().await;
+    let session = 0x1234_5678_9ABC_DEF0u64;
+
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    host.connect_relay(relay_config(relay_addr, session, true));
+
+    let mut joiner = NetworkManager::bind(0, 0, 0, false).await.unwrap();
+    joiner.connect_relay(relay_config(relay_addr, session, false));
+
+    pump_until_ready(&mut host, &mut joiner).await;
+
+    // El relay repartió los ids: el host es el 1 por contrato, el joiner el siguiente.
+    assert_eq!(host.relay_link().unwrap().my_peer, 1);
+    assert_eq!(joiner.relay_link().unwrap().my_peer, 2);
+
+    // Y ahora el handshake de JUEGO, contra la dirección sintética del host. A partir de aquí no
+    // hay nada específico del relay: es el mismo `initiate_connection` de siempre.
+    let host_addr = joiner.relay_host_addr().expect("el joiner sabe a dónde ir");
+    assert!(transport::is_synthetic(&host_addr));
+    joiner.initiate_connection(host_addr).await;
+
+    let mut connected = false;
+    for _ in 0..60 {
+        host.process_incoming().await;
+        let events = joiner.process_incoming().await;
+        if events
+            .iter()
+            .any(|e| matches!(e, NetworkEvent::PeerConnected { .. }))
+        {
+            connected = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+
+    assert!(
+        connected,
+        "el joiner tenía que entrar a la sesión por el relay"
+    );
+    assert_eq!(
+        joiner.world_seed, 42,
+        "y adoptar el mundo del host, como en una conexión directa"
+    );
+    assert_eq!(
+        joiner.host_peer_id,
+        Some(1),
+        "el host es su peer 1 de juego"
+    );
+
+    // El host lo ve como a cualquier otro joiner, con su dirección sintética.
+    let registrado = host.peers.values().next().expect("el host lo registró");
+    assert!(
+        transport::is_synthetic(&registrado.addr),
+        "endpoint={} — tiene que ser sintética",
+        registrado.addr
+    );
+}
+
+#[tokio::test]
+async fn el_gameplay_viaja_en_los_dos_sentidos_por_el_relay() {
+    let (relay_addr, _shutdown) = real_relay().await;
+    let session = 0x0F0E_0D0C_0B0A_0908u64;
+
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    host.connect_relay(relay_config(relay_addr, session, true));
+    let mut joiner = NetworkManager::bind(0, 0, 0, false).await.unwrap();
+    joiner.connect_relay(relay_config(relay_addr, session, false));
+    pump_until_ready(&mut host, &mut joiner).await;
+
+    joiner
+        .initiate_connection(joiner.relay_host_addr().unwrap())
+        .await;
+    for _ in 0..60 {
+        host.process_incoming().await;
+        if !joiner.process_incoming().await.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    assert_eq!(host.peer_count(), 1, "el joiner está dentro");
+
+    // Del host al joiner, en el sentido que NO ha probado el handshake. Se usa `Disconnect`
+    // porque produce un evento inequívoco al otro lado: si llega, el camino de bajada funciona.
+    let joiner_peer = *host.peers.keys().next().unwrap();
+    host.send_unreliable_to(
+        joiner_peer,
+        &PacketPayload::Disconnect {
+            reason: "prueba de bajada".into(),
+        },
+    )
+    .await;
+
+    let mut recibido = false;
+    for _ in 0..40 {
+        let events = joiner.process_incoming().await;
+        if events
+            .iter()
+            .any(|e| matches!(e, NetworkEvent::PeerDisconnected { .. }))
+        {
+            recibido = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(
+        recibido,
+        "lo que manda el host tiene que llegar al joiner por el relay"
+    );
+
+    // Cero datagramas rechazados por el techo: el sobre del relay NO come presupuesto de gameplay.
+    assert_eq!(host.refused_datagram_count(), 0);
+    assert_eq!(joiner.refused_datagram_count(), 0);
+}
+
+#[tokio::test]
+async fn un_token_que_no_es_deja_al_joiner_fuera_con_un_motivo() {
+    // El fallo tiene que tener nombre, no ser un silencio de 15 s (ADR-117 D10).
+    let (relay_addr, _shutdown) = real_relay().await;
+    let session = 0x0102_0304_0506_0708u64;
+
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    host.connect_relay(relay_config(relay_addr, session, true));
+
+    let mut intruso = NetworkManager::bind(0, 0, 0, false).await.unwrap();
+    let mut config = relay_config(relay_addr, session, false);
+    config.token = SessionToken::new([0xFF; 16]);
+    intruso.connect_relay(config);
+
+    let mut denegado = false;
+    for _ in 0..40 {
+        host.pump_relay().await;
+        let events = intruso.pump_relay().await;
+        if events
+            .iter()
+            .any(|e| matches!(e, relay_client::RelayClientEvent::Denied(_)))
+        {
+            denegado = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+
+    assert!(
+        denegado,
+        "el relay tiene que decir que no, y decirlo pronto"
+    );
+    assert!(intruso.relay_link().is_none(), "y no abrirle el enlace");
+    assert_eq!(intruso.relay_state().unwrap().name(), "DENIED");
+}
+
+#[tokio::test]
+async fn si_el_relay_no_esta_el_intento_termina_con_un_motivo_y_no_cuelga() {
+    // Un puerto donde no hay nadie. Lo que no puede pasar es que se reintente para siempre en
+    // silencio, que es exactamente el modo de fallo que ADR-117 D10 prohíbe.
+    let vacio: SocketAddr = "127.0.0.1:1".parse().unwrap();
+    let mut joiner = NetworkManager::bind(0, 0, 0, false).await.unwrap();
+    joiner.connect_relay(relay_config(vacio, 0xDEAD, false));
+
+    // No se esperan 10 s de reloj: se comprueba que el presupuesto EXISTE y que mientras corre no
+    // hay enlace. El vencimiento en sí lo prueba `relay_client_tests` sumando tiempo.
+    for _ in 0..5 {
+        joiner.pump_relay().await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    assert!(joiner.relay_link().is_none());
+    assert_eq!(joiner.relay_state().unwrap().name(), "REGISTERING");
+    assert!(
+        !joiner.relay_state().unwrap().is_final(),
+        "todavía dentro del presupuesto"
+    );
+}

@@ -11,6 +11,9 @@ mod handlers;
 pub mod peer;
 mod phantom;
 pub mod protocol;
+/// ADR-117: el lado cliente del relay — registro, latido y estado del enlace. Sin sockets: quien
+/// manda los bytes que decide es `NetworkManager::pump_relay`.
+pub mod relay_client;
 pub mod reliability;
 pub mod roster;
 mod send;
@@ -526,6 +529,8 @@ pub struct NetworkManager {
     /// sólo lo consulta cuando el destino es una dirección sintética, y sin enlace no hay peers
     /// con direcciones sintéticas.
     pub(crate) relay: Option<transport::RelayLink>,
+    /// ADR-117: quien mantiene el registro y el latido contra el relay. `None` = sesión directa.
+    relay_client: Option<relay_client::RelayClient>,
     /// Los mensajes de CONTROL del relay que ha ido recogiendo el `receive_loop`. Van por un canal
     /// aparte del de gameplay a propósito: un `PeerReady` no es un paquete de juego y no puede
     /// pasar por `decode_packet`, que lo descartaría como ilegible.
@@ -651,6 +656,7 @@ impl NetworkManager {
             last_reliable_queue_log_at: HashMap::new(),
             last_transform_trace_at: HashMap::new(),
             relay: None,
+            relay_client: None,
             relay_control_rx,
         })
     }
@@ -671,6 +677,89 @@ impl NetworkManager {
     /// El enlace de relay, si lo hay. Para el log y para los tests.
     pub fn relay_link(&self) -> Option<&transport::RelayLink> {
         self.relay.as_ref()
+    }
+
+    /// Arranca el registro contra un relay (ADR-117). No bloquea y no manda nada todavía: el
+    /// primer datagrama sale en el siguiente [`pump_relay`](Self::pump_relay).
+    pub fn connect_relay(&mut self, config: relay_client::RelayConfig) {
+        info!(
+            "RELAY event=connect_requested relay={} session={:#x} role={} self_id={}",
+            config.relay_addr,
+            config.session_id,
+            if config.as_host { "host" } else { "joiner" },
+            self.local_id
+        );
+        self.relay_client = Some(relay_client::RelayClient::new(config));
+    }
+
+    /// El estado del registro, o `None` si esta sesión no usa relay.
+    pub fn relay_state(&self) -> Option<&relay_client::RelayClientState> {
+        self.relay_client.as_ref().map(|c| c.state())
+    }
+
+    /// La dirección sintética del host de la sesión de relay. Es a donde un joiner manda su
+    /// handshake de JUEGO una vez el relay lo ha admitido.
+    pub fn relay_host_addr(&self) -> Option<SocketAddr> {
+        self.relay_client.as_ref().map(|c| c.host_synthetic_addr())
+    }
+
+    /// Un latido del enlace con el relay: procesa el control recibido y manda lo que toque.
+    ///
+    /// Lo llama el bucle de juego. Es barato y no bloquea: en el caso normal —enlace establecido y
+    /// sin control pendiente— son dos comprobaciones de reloj y ningún envío.
+    ///
+    /// **Los datagramas del relay NO pasan por `send_datagram`**: no son gameplay, así que no les
+    /// toca ni el techo de ADR-113 ni los contadores de tamaño, y sobre todo no pueden pasar por
+    /// el envoltorio —serían un sobre dentro de otro sobre—.
+    pub async fn pump_relay(&mut self) -> Vec<relay_client::RelayClientEvent> {
+        if self.relay_client.is_none() {
+            return Vec::new();
+        }
+
+        let now = Instant::now();
+        let mut events = Vec::new();
+
+        for frame in self.drain_relay_control() {
+            if let Some(client) = &mut self.relay_client {
+                if let Some(event) = client.on_control(frame, now) {
+                    events.push(event);
+                }
+            }
+        }
+
+        // El enlace se abre y se cierra AQUÍ, en un solo sitio, a partir del estado del cliente.
+        // Que `send_datagram` no pueda envolver nada sin `PeerReady` es exactamente esta línea.
+        let link = self.relay_client.as_ref().and_then(|c| c.link());
+        match (&self.relay, &link) {
+            (None, Some(open)) => self.attach_relay(open.clone()),
+            (Some(_), None) => {
+                warn!(
+                    "RELAY event=link_dropped self_id={} state={}",
+                    self.local_id,
+                    self.relay_state().map(|s| s.name()).unwrap_or("<none>")
+                );
+                self.relay = None;
+            }
+            _ => {}
+        }
+
+        let outgoing = self
+            .relay_client
+            .as_mut()
+            .and_then(|c| c.poll(now))
+            .zip(self.relay_client.as_ref().map(|c| c.config().relay_addr));
+
+        if let Some((datagram, relay_addr)) = outgoing {
+            if let Err(e) = self.socket.send_to(&datagram, relay_addr).await {
+                warn!(
+                    "RELAY event=send_failed self_id={} relay={relay_addr} kind=control bytes={} err={e}",
+                    self.local_id,
+                    datagram.len()
+                );
+            }
+        }
+
+        events
     }
 
     /// Recoge los mensajes de control del relay que hayan llegado. No bloquea.
