@@ -370,10 +370,29 @@ El guardado del contenedor va por `ISaveableComponent` del vendor, como cualquie
 
 ## 3. Bloque A — farmeo de metal «pilas de chatarra» (1–1,5 días, sin ADR)
 
-**Pendiente de dos decisiones de Joel** (A1 zonas, A3 costes) — marcadas. El resto está cerrado.
+> **ESTADO 2026-09-02 — A1, A2, A3 y A4 HECHOS. Queda A5 (playtest).** Las dos decisiones de Joel
+> se tomaron en sesión: A1 = **solo el papel 4** (servicio/almacén), chance 0,35; A3 = **marco de
+> puerta a 2 Metal**, entrada completa 5.
+>
+> **Corrección importante sobre lo escrito abajo:** A1 decía tocar `ZoneLootTable.asset`, y eso
+> **habría sido un no-op**. Con WG3 mandando (ADR-108 D4) la puerta del loot es el **papel** del
+> espacio (`style` 0-6), no el `zone_kind` de WG2, y el campo `styleProfiles` del asset está
+> **vacío** — o sea que lo que se sirve son los valores de código de
+> `ChunkLootRoll.DefaultStyleLootProfiles()`. Ahí es donde se encendió. Los 13 perfiles de
+> `zone_kind` del asset siguen a cero y así se quedan: esa ruta ya no la anda nadie.
+>
+> Medido con una sonda sobre el código real (`ChunkLootRoll` no depende de `UnityEngine`, así que
+> se compila fuera del editor): 4.000 chunks con perfil de almacén → 34,6 % sortean pila, 6 piezas
+> por pila, **8.304 piezas, cero que no sean Metal**, dispersión máxima 3,9 m desde el centroide
+> (radio sorteado 3 m). Lo que NO está medido: cada cuánto aparece un espacio de papel 4 en el
+> mundo real — eso es A5.
 
 ### A1. Encender carryables solo-metal en zonas destino (½ día)
-- `Assets/Resources/Loot/ZoneLootTable.asset` (12 perfiles 1:1 con `zone_kind`):
+- [x] **2026-09-02** — hecho en `ChunkLootRoll.DefaultStyleLootProfiles()`, papel 4:
+  `carryableZoneChance = 0.35f`, `metalWeight = 100`, `log/stone = 0`. Los otros seis papeles
+  siguen a cero. Test que lo fija: `A1_SoloElAlmacenSueltaChatarra_YEsMetalPuro`.
+- El texto original (histórico, ver la corrección de la cabecera):
+  `Assets/Resources/Loot/ZoneLootTable.asset` (12 perfiles 1:1 con `zone_kind`):
   `carryableZoneChance > 0` **solo** en las zonas que leen como almacén/mantenimiento
   (propuesta: `ZONE_STORAGE` y `ZONE_MAINTENANCE`; **decisión de Joel**), `metalWeight = 100`,
   `logWeight = stoneWeight = 0`. El resto sigue a 0: las pilas son destino de farmeo, no alfombra
@@ -382,7 +401,11 @@ El guardado del contenedor va por `ISaveableComponent` del vendor, como cualquie
 - Verificar: `ChunkLootRollTests` en verde; en juego, zona STORAGE con pila visible.
 
 ### A2. Que lea como pila Backrooms, no como scatter (½ día)
-- `ChunkLootRoll.cs:129` `CarryablesPerZone` 16 → **6**; `:138` `ZoneSpreadRadius` 12 m → **2–3 m**
+- [x] **2026-09-02** — `CarryablesPerZone` 16 → **6**, `ZoneSpreadRadius` 12 m → **3 m**. El
+  reintento de andabilidad de `ChunkLootManager` se estrecha con ello (reusa la constante), que es
+  lo que su propia regla pide. Lo cosmético (`BR_Scrap Metal` propio) NO se hizo: el `STP_Metal`
+  del vendor sigue valiendo.
+- Texto original: `ChunkLootRoll.cs:129` `CarryablesPerZone` 16 → **6**; `:138` `ZoneSpreadRadius` 12 m → **2–3 m**
   (normalizado sobre 50 m). Cambiar el count es legal pre-alpha (reindexa `(cx,cz,slot)` de
   `_collectedCarry`; no hay save de loot que romper) — dejar comentario de fecha.
 - Opcional cosmético, solo si sobra tiempo: `CarryableDefinition` propia `BR_Scrap Metal` con el
@@ -392,12 +415,23 @@ El guardado del contenedor va por `ISaveableComponent` del vendor, como cualquie
   volver a 5: el loot flotante del 2026-07-07 fue eso).
 
 ### A3. Costes de acceso (15 min) — **decisión de Joel**
+- [x] **2026-09-02, decidido: la propuesta.** `DoorFrameMetalCost` 5 → **2** en
+  `BackroomsBuildingPieceCreator.cs`, y el mismo valor aplicado a mano en
+  `BR_BuildingPiece_GridDoorFrame.prefab` (`RequiredAmount: 5` → `2`) — `EnsureDoorFrameCost` NO lo
+  habría reaplicado: solo escribe si `_requirements` está vacío, y desde E4 ya no lo está.
+  Entrada completa = 1 + 2 + 2 = **5 Metal**, una pila de 6 con una de sobra.
 - Propuesta: marco de pared 1 · marco de puerta **2** · puerta 2 ⇒ una entrada completa = 5 Metal
   ≈ una pila de 6 (A2). Si se prefiere el 5 del script, una pila no da para una entrada —
   decidir junto con A2. Se aplica en E4 (`DoorFrameMetalCost`).
 
 ### A4. Distancia server-side en el pickup de carryables (½ día, backend)
-- `backend/src/game_loop.rs:5275` `process_stp_carryable_pickup`: copiar el check de distancia
+- [x] **2026-09-02** — `process_stp_carryable_pickup` recibe `requester_pos: Option<Vec3>` y llama
+  a `pickup_within_reach` **antes** del `remove`, con la misma constante que los items
+  (`STP_PICKUP_MAX_DISTANCE = 8 m`). Los dos llamadores rellenan la pose igual que el camino de
+  items: `net.peers` para el joiner, `player.position` para el host. Sin pose conocida se concede
+  (mismo criterio que F0.7). 3 tests nuevos en `game_loop/tests.rs` que assertean sobre el
+  ROSTER, no sobre el log: un rechazo no puede haber tocado el mundo.
+- Texto original: `backend/src/game_loop.rs:5275` `process_stp_carryable_pickup`: copiar el check de distancia
   de `process_stp_pickup` (`:5360`, posición del peer desde `net.peers`). Sin wire.
 - Test Rust: pickup a distancia > umbral rechazado; a distancia válida aceptado. `cargo test`
   verde (desde 2026-08-22 todo rojo es nuevo).

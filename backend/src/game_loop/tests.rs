@@ -7835,6 +7835,89 @@ fn an_unknown_requester_position_grants_instead_of_rejecting() {
     );
 }
 
+// ─── FARMING-ROADMAP A4: el pickup de CARRYABLES valida la misma distancia ───
+
+/// Sembrar un carryable en el roster del host, que es lo único que estas tres pruebas necesitan.
+fn push_carryable(net: &mut NetworkManager, id: u32, position: [f32; 3]) {
+    net.stp_carryables
+        .push(crate::network::protocol::StpCarryableInfo {
+            id,
+            def_id: 7,
+            position,
+            rotation: 0.0,
+        });
+}
+
+/// EL AGUJERO QUE CIERRA A4 (auditoría 2026-08-18, punto 1b): `process_stp_carryable_pickup` no
+/// comprobaba distancia ninguna mientras su gemelo de items sí, así que un cliente modificado
+/// podía recoger la chatarra del mapa entero sin moverse — justo cuando el bloque A convierte esa
+/// chatarra en la única fuente de metal del mundo suelto.
+///
+/// Se assertea sobre el ROSTER y no sobre el log: el rechazo tiene que dejar el mundo intacto, y
+/// el carryable seguir ahí para quien vaya de verdad a por él.
+#[tokio::test]
+async fn a_carryable_pickup_from_across_the_map_is_rejected() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let (tx, _rx) = broadcast::channel(16);
+    push_carryable(&mut net, STP_CARRYABLE_ID_BASE + 1, [100.0, 1.8, 100.0]);
+
+    process_stp_carryable_pickup(
+        STP_CARRYABLE_ID_BASE + 1,
+        1,
+        Some(Vec3::new(0.0, 1.8, 0.0)), // ~141 m
+        &mut net,
+        &tx,
+    )
+    .await;
+
+    assert_eq!(
+        net.stp_carryables.len(),
+        1,
+        "un pickup a 141 m no puede retirar el carryable del mundo"
+    );
+}
+
+/// El control positivo, que importa tanto como el negativo: recoger la pieza que tienes al lado
+/// tiene que seguir funcionando. Un radio mal puesto rompe el farmeo entero de forma mucho más
+/// visible que el cheat que evita.
+#[tokio::test]
+async fn a_carryable_pickup_at_arms_length_is_granted() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let (tx, _rx) = broadcast::channel(16);
+    push_carryable(&mut net, STP_CARRYABLE_ID_BASE + 2, [10.0, 1.8, 10.0]);
+
+    process_stp_carryable_pickup(
+        STP_CARRYABLE_ID_BASE + 2,
+        net.local_id,
+        Some(Vec3::new(10.5, 1.8, 11.0)), // ~1,1 m
+        &mut net,
+        &tx,
+    )
+    .await;
+
+    assert!(
+        net.stp_carryables.is_empty(),
+        "recoger algo que tienes al lado tiene que concederse siempre"
+    );
+}
+
+/// Sin pose conocida se CONCEDE, igual que en el camino de items: el host no puede afirmar que
+/// alguien esté lejos cuando todavía no sabe dónde está, y negar ahí expulsaría del farmeo a un
+/// joiner recién entrado.
+#[tokio::test]
+async fn a_carryable_pickup_without_a_known_pose_is_granted() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let (tx, _rx) = broadcast::channel(16);
+    push_carryable(&mut net, STP_CARRYABLE_ID_BASE + 3, [500.0, 1.8, 500.0]);
+
+    process_stp_carryable_pickup(STP_CARRYABLE_ID_BASE + 3, 1, None, &mut net, &tx).await;
+
+    assert!(
+        net.stp_carryables.is_empty(),
+        "sin pose del solicitante no se puede rechazar por distancia"
+    );
+}
+
 // ── ADR-080 — Presencia v3 ───────────────────────────────────────────────────────────────────────
 
 /// SONDA REPRODUCIBLE (`#[ignore]`, mismo patrón que las de `perf-baseline.md`): ¿cuánto mide de

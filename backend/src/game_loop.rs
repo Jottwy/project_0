@@ -3601,7 +3601,20 @@ async fn handle_network_event(
             requester_id,
         } => {
             if net.is_host {
-                process_stp_carryable_pickup(carryable_id, requester_id, net, to_clients).await;
+                // A4: la pose relayada del joiner es lo que el host sabe de él. Va por detrás
+                // (10 Hz + RTT), y por eso el radio lleva margen — igual que en `StpPickupRequest`.
+                let requester_pos = net
+                    .peers
+                    .get(&requester_id)
+                    .map(|p| Vec3::from_array(p.position));
+                process_stp_carryable_pickup(
+                    carryable_id,
+                    requester_id,
+                    requester_pos,
+                    net,
+                    to_clients,
+                )
+                .await;
             }
         }
 
@@ -5812,7 +5825,16 @@ async fn handle_action(
                 return;
             }
             if net.is_host {
-                process_stp_carryable_pickup(carryable_id, net.local_id, net, to_clients).await;
+                // A4: el host se valida contra su propia pose, que es exacta y local. No aporta
+                // anticheat (nadie se engaña a sí mismo) pero mantiene UNA sola regla para todos.
+                process_stp_carryable_pickup(
+                    carryable_id,
+                    net.local_id,
+                    Some(player.position),
+                    net,
+                    to_clients,
+                )
+                .await;
             } else {
                 let payload = crate::network::protocol::PacketPayload::StpCarryablePickupRequest {
                     carryable_id,
@@ -7444,6 +7466,11 @@ fn process_stp_carryable_drop(
 async fn process_stp_carryable_pickup(
     carryable_id: u32,
     requester_id: crate::network::PeerId,
+    // FARMING-ROADMAP A4: dónde está el solicitante según el host. `None` cuando aún no se conoce
+    // su pose, y entonces se concede — mismo criterio que `process_stp_pickup` (F0.7): esto es
+    // anticheat, no una guarda de estado, y rechazar por falta de datos del host expulsaría a un
+    // jugador legítimo recién entrado.
+    requester_pos: Option<Vec3>,
     net: &mut NetworkManager,
     to_clients: &broadcast::Sender<ServerMessage>,
 ) {
@@ -7457,6 +7484,19 @@ async fn process_stp_carryable_pickup(
             return;
         }
     };
+
+    // FARMING-ROADMAP A4 (2026-09-02): proximidad, el mismo radio y la misma función que los items
+    // (F0.7). Hasta hoy cualquier cliente podía pedir CUALQUIER carryable del mapa desde cualquier
+    // distancia y el host se lo concedía — el agujero que la auditoría del 2026-08-18 dejó anotado
+    // (punto 1b). Se comprueba ANTES del `remove`: un rechazo no puede haber tocado el mundo.
+    let carryable_pos = net.stp_carryables[pos].position;
+    if !pickup_within_reach(requester_pos, carryable_pos) {
+        info!(
+            "MPTRACE step=CY event=stp_carryable_pickup_rejected carryable_id={} requester_id={} reason=too_far max={:.2}",
+            carryable_id, requester_id, STP_PICKUP_MAX_DISTANCE
+        );
+        return;
+    }
 
     let carryable = net.stp_carryables.remove(pos);
     info!(
