@@ -311,11 +311,24 @@ const MAX_ASPECT: f32 = 2.6;
 /// sonda es lo que lo dijo: con 70/150/360 salían 268 espacios por región de los que 81 eran
 /// trasteros de menos de 55 m² y CERO naves — variedad en el papel, todo pequeño en la práctica. Un
 /// mínimo y un máximo separados no son variedad; hay que mirar el reparto.
+///
+/// # ADR-119 D2 — subidos, y el reparto de TAMANOS no lo decide el area de cada clase
+///
+/// **El numero de hojas de una zona es `area / objetivo`, no `area`.** Con 110/240/700/380 una zona
+/// estrecha producia seis veces mas hojas por metro cuadrado que una grande, asi que el 18,6 % de
+/// superficie `Large` de ADR-095 se convertia en un 5 % de los ESPACIOS y el mundo medido salia con
+/// el 93,3 % por debajo de 300 m2 y una media de 145 m2 — la queja de «demasiadas salas pequenas»,
+/// que resulta ser aritmetica y no gusto.
+///
+/// Estos valores se eligieron con el reparto nuevo de `scale_at` delante y la calibracion medida de
+/// que **una hoja mide de media 0,71 veces su objetivo** (la subdivision para cuando el area cae por
+/// debajo, no cuando lo alcanza). Prediccion antes de correr nada: media ~270 m2 y ~25 % de espacios
+/// por encima de 300 m2. Lo que valga de verdad lo dice `probe_architecture_metrics`.
 const TARGET_AREA_M2: [f32; 4] = [
-    110.0, // SCALE_NARROW — despachos
-    240.0, // SCALE_MEDIUM — oficinas normales
-    700.0, // SCALE_LARGE  — naves, salas diáfanas
-    380.0, // SCALE_WEIRD  — ver `WEIRD_SPREAD`: aquí el número no manda solo
+    150.0,  // SCALE_NARROW — despachos
+    360.0,  // SCALE_MEDIUM — oficinas normales
+    1100.0, // SCALE_LARGE  — naves, salas diáfanas de un chunk de lado
+    700.0,  // SCALE_WEIRD  — ver `WEIRD_SPREAD`: aquí el número no manda solo
 ];
 
 /// Cuánto puede desviarse el área objetivo en una zona `Weird`, como factor.

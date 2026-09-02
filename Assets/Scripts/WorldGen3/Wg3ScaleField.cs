@@ -39,13 +39,26 @@ namespace BackroomsSurvival.WorldGen3
             return coarse * 0.66f + fine * 0.34f;
         }
 
+        /// <summary>
+        /// Umbrales de clase, en el valor crudo del campo. ESPEJO EXACTO de `scale.rs`
+        /// (ADR-119 D1): si estos tres numeros se separan de los de Rust, el cliente y el servidor
+        /// dejan de pedir el mismo tamano de espacio en el mismo sitio y nadie da un error.
+        ///
+        /// Los de ADR-095 eran 0,34 / 0,70 / 0,92 y repartian el mundo en estrecho 25,8 %,
+        /// medio 54,2 %, grande 18,6 % y raro 1,4 %. Estos son los cuantiles 0,16 / 0,58 / 0,91 del
+        /// mismo campo: estrecho 16,2 %, medio 41,4 %, grande 33,5 %, raro 8,9 %.
+        /// </summary>
+        public const float ClassNarrowBelow = 0.27f;
+        public const float ClassMediumBelow = 0.55f;
+        public const float ClassLargeBelow = 0.80f;
+
         /// <summary>Clase de escala que el mundo pide en ese punto.</summary>
         public static Wg3Scale ScaleAt(int worldSeed, float x, float z)
         {
             float v = ValueAt(worldSeed, x, z);
-            if (v < 0.34f) return Wg3Scale.Narrow;
-            if (v < 0.70f) return Wg3Scale.Medium;
-            if (v < 0.92f) return Wg3Scale.Large;
+            if (v < ClassNarrowBelow) return Wg3Scale.Narrow;
+            if (v < ClassMediumBelow) return Wg3Scale.Medium;
+            if (v < ClassLargeBelow) return Wg3Scale.Large;
             return Wg3Scale.Weird;
         }
 

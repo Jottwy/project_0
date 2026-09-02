@@ -43,7 +43,19 @@ const FACELING_WG3_KEEP_SALT: u64 = 0xFACE_1109_0FF1_0000;
 ///
 /// El 8:1 entre dentro y fuera de oficina sí se conserva: es lo que ADR-094 enmienda 5 dejó
 /// calibrado, y es la mitad de lo que hace que entrar en una oficina signifique algo.
-const FACELING_WG3_OFFICE_KEEP: f32 = 0.23;
+///
+/// # Recalibrado de 0,23 a 0,44 por ADR-119 D5
+///
+/// **Este número está atado al REPARTO DE PAPELES del plan, no a WG3 en abstracto**, y ADR-119 D1
+/// movió ese reparto: al subir el tamaño medio de sala, el papel `Office` bajó del 40,8 % de los
+/// espacios al 27,0 %, y sobre los huecos sorteados de la sonda del 39 % al **19,8 %**. Con 0,23 la
+/// población de la planta baja cayó de 72 a 36 —la mitad—, que es exactamente el cambio de balance
+/// que este número existe para impedir. `probe_faceling_draw_under_wg3` lo cazó y su propia
+/// aserción dice qué hacer: recalibrar.
+///
+/// La cuenta, con los números de esa sonda (576 huecos, 77 sin espacio, 114 en oficina):
+/// `quedan = 114·k + 385·0,125·k = 162,1·k`, y `72 / 162,1 = 0,44`.
+const FACELING_WG3_OFFICE_KEEP: f32 = 0.44;
 
 /// ADR-110 D3 / T2 — **LA DENSIDAD DE UNA PLANTA DE WG3, QUE YA NO ES LA DE UNA CAPA DE WG2.**
 ///

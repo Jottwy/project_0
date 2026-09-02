@@ -13207,9 +13207,19 @@ async fn the_ground_floor_cannot_monopolise_the_cap_of_an_upper_storey() {
     net.world_seed = AUDIT_SEED;
     let mut worlds = wg3_cache();
 
+    // **Las plantas altas se buscan en VARIAS regiones, no en la (0,0)** (ADR-119 D6). Cuantas
+    // plantas levanta una region depende de que la semilla de sitio a un tiro recto de 12,6 m, asi
+    // que atar esta prueba a una sola region la ata a la suerte de ese sorteo: al subir el tamano
+    // medio de sala, la (0,0) de esta semilla paso de tres plantas a dos y el test se cayo sin que
+    // nada de lo que mide —quien ocupa el cap— hubiera cambiado. La media de plantas por region
+    // SUBIO de 2,6 a 2,9 en el mismo cambio.
+    const REGIONES: [(i32, i32); 3] = [(0, 0), (1, 0), (0, 1)];
     let mut probadas = 0usize;
     for storey in 1..4i32 {
-        let Some(here) = a_spot_on_storey(&mut worlds, &m, (0, 0), storey) else {
+        let Some(here) = REGIONES
+            .iter()
+            .find_map(|&r| a_spot_on_storey(&mut worlds, &m, r, storey))
+        else {
             continue;
         };
         let mut driver = AdultDriver::new(net.world_seed);

@@ -563,3 +563,395 @@ fn probe_region_inside() {
         );
     }
 }
+
+/// AUDITORÍA FASE 2 (2026-09-02) — la LÍNEA BASE arquitectónica, antes de tocar nada.
+///
+/// Sólo mide. No cambia el generador, y por eso vive en el módulo de tests: lo que se quiere saber
+/// es qué reparto de espacios produce hoy WG3, para poder decir después si la Fase 2 lo movió.
+///
+/// `WG3_METRICS_SEEDS=N` (por defecto 8), `WG3_METRICS_REGIONS=N` (por defecto 9).
+#[test]
+#[ignore = "sonda de medida; se pide a mano"]
+fn probe_architecture_metrics() {
+    use super::plan::SpaceRole;
+
+    let m = real_manifest();
+    let seeds = validate::sweep_seeds(
+        std::env::var("WG3_METRICS_SEEDS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(8),
+    );
+    let region_n: usize = std::env::var("WG3_METRICS_REGIONS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(9);
+    let regions: Vec<(i32, i32)> = NEAR_REGIONS.iter().copied().take(region_n).collect();
+
+    // Cubetas de área en m²: trastero, despacho, oficina, sala, nave, nave grande.
+    const AREA_EDGES: [f32; 5] = [50.0, 120.0, 300.0, 700.0, 1500.0];
+    let mut area_hist = [0usize; 6];
+    let mut role_hist = [0usize; 10];
+    let mut entry_hist = [0usize; 6]; // 0,1,2,3,4,5+
+    let mut big_entry_hist = [0usize; 6]; // sólo espacios ≥ 300 m²
+    let mut height_hist = std::collections::BTreeMap::<i32, usize>::new();
+    let mut sight_hist = [0usize; 8]; // 0-5,5-10,10-15,15-20,20-30,30-45,45-70,70+ m
+
+    let mut spaces_total = 0usize;
+    let mut area_sum = 0.0f64;
+    let mut area_max = 0.0f32;
+    let mut aspect_sum = 0.0f64;
+    let mut solids_total = 0usize;
+    let mut pillars_total = 0usize;
+    let mut segments_total = 0usize;
+    let mut sight_max = 0.0f32;
+    let mut sight_sum = 0.0f64;
+    let mut sight_n = 0usize;
+    let mut regions_n = 0usize;
+
+    for &seed in &seeds {
+        for &(rx, rz) in &regions {
+            let region = Wg3RegionCoord { x: rx, z: rz };
+            let inside = validate::region_inside(&m, seed, region);
+            regions_n += 1;
+            solids_total += inside.filled.solids.len();
+            pillars_total += inside
+                .filled
+                .solids
+                .iter()
+                .filter(|s| s.size_x_cm == 200 && s.size_z_cm == 200)
+                .count();
+            segments_total += inside.filled.segments.len();
+
+            for s in &inside.filled.segments {
+                *height_hist.entry(s.height_cm).or_default() += 1;
+            }
+
+            for (n, plan) in inside.building.storeys.iter().enumerate() {
+                for (i, sp) in plan.built() {
+                    spaces_total += 1;
+                    let a = sp.rect.area_m2();
+                    area_sum += a as f64;
+                    if a > area_max {
+                        area_max = a;
+                    }
+                    let (w, d) = (sp.rect.width_cm() as f32, sp.rect.depth_cm() as f32);
+                    aspect_sum += (w.max(d) / w.min(d).max(1.0)) as f64;
+
+                    let mut k = AREA_EDGES.len();
+                    for (j, e) in AREA_EDGES.iter().enumerate() {
+                        if a < *e {
+                            k = j;
+                            break;
+                        }
+                    }
+                    area_hist[k] += 1;
+
+                    role_hist[match sp.role {
+                        SpaceRole::Spine => 0,
+                        SpaceRole::Corridor => 1,
+                        SpaceRole::Stair => 2,
+                        SpaceRole::Junction => 3,
+                        SpaceRole::Hall => 4,
+                        SpaceRole::Office => 5,
+                        SpaceRole::Service => 6,
+                        SpaceRole::Storage => 7,
+                        SpaceRole::DeadEnd => 8,
+                        SpaceRole::Void => 9,
+                    }] += 1;
+
+                    let mut e = plan.links.iter().filter(|l| l.a == i || l.b == i).count();
+                    if n == 0 {
+                        e += plan.gates.iter().filter(|g| g.space == i).count();
+                    }
+                    entry_hist[e.min(5)] += 1;
+                    if a >= 300.0 {
+                        big_entry_hist[e.min(5)] += 1;
+                    }
+                }
+            }
+
+            // LÍNEAS DE VISIÓN en la planta baja: el rayo libre más largo a la altura de los ojos
+            // desde cada celda pisable, en los dos ejes. Es lo que decide si una nave se lee como
+            // espacio o como cuarto grande.
+            let (min_x, min_z, _, _) = region.bounds();
+            let eye = 160i16;
+            // Libre a la altura de los ojos Y CON SUELO DEBAJO. Sin lo segundo el rayo se va por
+            // el terreno sin construir y la metrica mide descampado, no arquitectura: la primera
+            // version daba 62 m de media y un 26 % por encima de 70 m, que es el tamano de la region.
+            let free = |x: f32, z: f32| -> bool {
+                inside.grid.blob_at(x, z, 0.0).is_some()
+                    && !inside
+                        .rasters
+                        .column(x, z)
+                        .iter()
+                        .any(|&(lo, hi)| lo <= eye && eye < hi)
+            };
+            let step = 2.0f32;
+            let mut z = min_z + 1.0;
+            while z < min_z + 149.0 {
+                let mut x = min_x + 1.0;
+                while x < min_x + 149.0 {
+                    if free(x, z) {
+                        for (dx, dz) in [(step, 0.0f32), (0.0f32, step)] {
+                            let mut run = 0.0f32;
+                            let (mut px, mut pz) = (x + dx, z + dz);
+                            while run < 200.0 && free(px, pz) {
+                                run += step;
+                                px += dx;
+                                pz += dz;
+                            }
+                            sight_sum += run as f64;
+                            sight_n += 1;
+                            if run > sight_max {
+                                sight_max = run;
+                            }
+                            let b = match run {
+                                r if r < 5.0 => 0,
+                                r if r < 10.0 => 1,
+                                r if r < 15.0 => 2,
+                                r if r < 20.0 => 3,
+                                r if r < 30.0 => 4,
+                                r if r < 45.0 => 5,
+                                r if r < 70.0 => 6,
+                                _ => 7,
+                            };
+                            sight_hist[b] += 1;
+                        }
+                    }
+                    x += step;
+                }
+                z += step;
+            }
+        }
+    }
+
+    let pc = |n: usize, total: usize| -> f32 {
+        if total == 0 {
+            0.0
+        } else {
+            n as f32 * 100.0 / total as f32
+        }
+    };
+    println!("=== LÍNEA BASE ARQUITECTÓNICA WG3 ===");
+    println!(
+        "semillas {} × regiones {} = {} regiones, {} espacios construidos",
+        seeds.len(),
+        regions.len(),
+        regions_n,
+        spaces_total
+    );
+    println!(
+        "área: media {:.0} m², máx {:.0} m², proporción media {:.2}",
+        area_sum / spaces_total.max(1) as f64,
+        area_max,
+        aspect_sum / spaces_total.max(1) as f64
+    );
+    let names = ["<50", "50-120", "120-300", "300-700", "700-1500", ">1500"];
+    for (i, n) in area_hist.iter().enumerate() {
+        println!(
+            "  área {:>9} m²: {:>6}  {:>5.1} %",
+            names[i],
+            n,
+            pc(*n, spaces_total)
+        );
+    }
+    let rnames = [
+        "spine", "corridor", "stair", "junction", "hall", "office", "service", "storage",
+        "dead_end", "void",
+    ];
+    for (i, n) in role_hist.iter().enumerate() {
+        println!(
+            "  papel {:>9}: {:>6}  {:>5.1} %",
+            rnames[i],
+            n,
+            pc(*n, spaces_total)
+        );
+    }
+    for (i, n) in entry_hist.iter().enumerate() {
+        println!(
+            "  entradas {}{}: {:>6}  {:>5.1} %",
+            i,
+            if i == 5 { "+" } else { " " },
+            n,
+            pc(*n, spaces_total)
+        );
+    }
+    let big: usize = big_entry_hist.iter().sum();
+    for (i, n) in big_entry_hist.iter().enumerate() {
+        println!(
+            "  entradas ≥300 m² {}{}: {:>6}  {:>5.1} %",
+            i,
+            if i == 5 { "+" } else { " " },
+            n,
+            pc(*n, big)
+        );
+    }
+    println!(
+        "  espacios ≥300 m²: {} ({:.1} %)",
+        big,
+        pc(big, spaces_total)
+    );
+    println!(
+        "  tramos {}, macizos {}, de ellos pilares {}",
+        segments_total, solids_total, pillars_total
+    );
+    println!(
+        "  pilares por región: {:.2}",
+        pillars_total as f32 / regions_n.max(1) as f32
+    );
+    println!("alturas libres de tramo (cm → cuántos):");
+    for (h, n) in &height_hist {
+        println!("  {:>5} cm: {:>6}  {:>5.1} %", h, n, pc(*n, segments_total));
+    }
+    let snames = [
+        "0-5", "5-10", "10-15", "15-20", "20-30", "30-45", "45-70", ">70",
+    ];
+    println!(
+        "líneas de visión (planta baja, ojos a 1,60 m): media {:.1} m, máx {:.0} m, {} rayos",
+        sight_sum / sight_n.max(1) as f64,
+        sight_max,
+        sight_n
+    );
+    for (i, n) in sight_hist.iter().enumerate() {
+        println!("  {:>6} m: {:>7}  {:>5.1} %", snames[i], n, pc(*n, sight_n));
+    }
+}
+
+/// AUDITORÍA FASE 2 — DE DÓNDE SALEN LAS ISLAS.
+///
+/// La fracción de mancha mayor es la puerta que más cuesta pasar del validador, y hasta ahora sólo
+/// decía CUÁNTAS islas hay. Esto dice DÓNDE están: cuántas cotas, a qué altura, y en qué espacio del
+/// plan cae su centro. Sin eso no se puede distinguir «una sala sellada» de «la cavidad bajo un tiro
+/// de escalera», que son el mismo número y problemas distintos.
+///
+/// `WG3_PROBE_SEED` y `WG3_PROBE_REGION` como en `probe_region_inside`.
+#[test]
+#[ignore = "sonda de medida; se pide a mano"]
+fn probe_islands() {
+    let m = real_manifest();
+    let seed = std::env::var("WG3_PROBE_SEED")
+        .ok()
+        .and_then(|v| {
+            let t = v.trim().to_string();
+            if let Some(h) = t.strip_prefix("0x") {
+                u64::from_str_radix(h, 16).ok()
+            } else {
+                t.parse().ok()
+            }
+        })
+        .unwrap_or(SERVED_SEED);
+    let (rx, rz) = std::env::var("WG3_PROBE_REGION")
+        .ok()
+        .and_then(|v| {
+            let mut it = v.split(',');
+            Some((
+                it.next()?.trim().parse().ok()?,
+                it.next()?.trim().parse().ok()?,
+            ))
+        })
+        .unwrap_or((0, 0));
+    let region = Wg3RegionCoord { x: rx, z: rz };
+    let inside = validate::region_inside(&m, seed, region);
+    let g = &inside.grid;
+
+    // Censo: por mancha, cuántas cotas, el rango de alturas y el centro de masas.
+    let n = g.sizes.len();
+    let mut ymin = vec![f32::MAX; n];
+    let mut ymax = vec![f32::MIN; n];
+    let mut sx = vec![0.0f64; n];
+    let mut sz = vec![0.0f64; n];
+    for c in 0..g.floors.len() {
+        let (ix, iz) = (c % g.cells, c / g.cells);
+        let x = g.min_x + (ix as f32 + 0.5) * 0.5;
+        let z = g.min_z + (iz as f32 + 0.5) * 0.5;
+        for (li, y) in g.floors[c].iter().enumerate() {
+            let b = g.blob_of[c][li];
+            if b < 0 {
+                continue;
+            }
+            let b = b as usize;
+            ymin[b] = ymin[b].min(*y);
+            ymax[b] = ymax[b].max(*y);
+            sx[b] += x as f64;
+            sz[b] += z as f64;
+        }
+    }
+
+    let mut order: Vec<usize> = (0..n).filter(|&b| g.sizes[b] >= 40).collect();
+    order.sort_by_key(|&b| std::cmp::Reverse(g.sizes[b]));
+
+    let total: usize = g.sizes.iter().sum();
+    println!(
+        "[islas] seed {:#x} región ({},{}): {} cotas, {} manchas, mayor {} ({:.1} %)",
+        seed,
+        rx,
+        rz,
+        total,
+        n,
+        g.sizes[g.main.max(0) as usize],
+        g.sizes[g.main.max(0) as usize] as f32 * 100.0 / total.max(1) as f32
+    );
+    let mut island_cells = 0usize;
+    let mut under_stair = 0usize;
+    for &b in order.iter().take(30) {
+        if b as i32 == g.main {
+            continue;
+        }
+        island_cells += g.sizes[b];
+        let (cx, cz) = (
+            (sx[b] / g.sizes[b] as f64) as f32,
+            (sz[b] / g.sizes[b] as f64) as f32,
+        );
+        // ¿En qué espacio del plan cae el centro, y en qué planta?
+        let mut owner = String::from("—");
+        for (n_st, plan) in inside.building.storeys.iter().enumerate() {
+            for (i, s) in plan.spaces.iter().enumerate() {
+                let (x0, z0, x1, z1) = s.rect.bounds_m();
+                if cx >= x0 && cx < x1 && cz >= z0 && cz < z1 {
+                    let tag = format!(
+                        "p{} {}:{} rise {} cota {}",
+                        n_st,
+                        i,
+                        s.role.name(),
+                        s.rise_cm,
+                        s.floor_y_cm
+                    );
+                    if owner == "—" {
+                        owner = tag;
+                    } else {
+                        owner.push_str(" | ");
+                        owner.push_str(&tag);
+                    }
+                }
+            }
+        }
+        // Bajo un tiro: el centro cae en un espacio `stair` que SUBE, y la isla está por debajo de
+        // su cota de llegada.
+        let is_under_stair =
+            owner.contains("stair") && owner.contains("rise ") && !owner.contains("rise 0");
+        if is_under_stair {
+            under_stair += g.sizes[b];
+        }
+        println!(
+            "[islas]   {:>6} cotas  y {:.2}..{:.2}  centro ({:.0},{:.0})  {}{}",
+            g.sizes[b],
+            ymin[b],
+            ymax[b],
+            cx,
+            cz,
+            owner,
+            if is_under_stair {
+                "  <-- BAJO TIRO"
+            } else {
+                ""
+            }
+        );
+    }
+    println!(
+        "[islas] islas ≥40 celdas: {} cotas, de ellas {} bajo un tiro de escalera ({:.0} %)",
+        island_cells,
+        under_stair,
+        under_stair as f32 * 100.0 / island_cells.max(1) as f32
+    );
+}

@@ -12272,3 +12272,156 @@ toque, con cero wire.
 - Cliente: `Wg3DensityField.cs` y `Wg3DensityFieldTests.cs` compilan en el arnés headless
   (`CompileCheckClient.sh`, 0 errores en `BackroomsSurvival` y `EditModeTests`); la suite EditMode
   no se ha ejecutado en el editor.
+
+---
+
+## ADR-119 — Fase 2 PASS 1: el mundo era pequeño por aritmética, no por gusto (2026-09-02) — ACEPTADA (implementada y medida)
+
+### Contexto
+
+ADR-118 dejó WorldGen3 correcto: 270 de 270 regiones válidas a los siete niveles, determinismo
+verificado, suite en verde. La queja que quedaba no era de corrección sino de identidad: *«el mundo
+funciona, pero todavía no parece Backrooms»* — demasiados corredores, demasiadas salas pequeñas, poca
+escala, techos planos.
+
+La auditoría previa a este ADR midió la línea base con una sonda nueva
+(`probe_architecture_metrics`, 8 semillas × 9 regiones = 15 867 espacios):
+
+| | Antes |
+|---|---|
+| Área media de un espacio | **145 m²** |
+| Espacios por debajo de 300 m² | **93,3 %** |
+| Papel `Hall` | 4,3 % |
+| Línea de visión media (planta baja, ojos a 1,60 m) | 19,1 m |
+| Pilares por región | 3,5, **todos dentro de un atrio** |
+
+Y encontró la causa, que no era una perilla mal puesta sino una cuenta que nadie había hecho.
+
+### D1 — El reparto del campo de escala: la rareza vivía en el 1,4 % del mundo
+
+`scale::value_at` suma dos ruidos de celda con pesos 0,66 y 0,34, así que su densidad **no es
+uniforme**: es un trapecio con la meseta en `[0,34 , 0,66]` y las colas flacas. Con los umbrales de
+ADR-095 —0,34 / 0,70 / 0,92— eso repartía el mundo, medido sobre tres millones de muestras, en
+**estrecho 25,8 %, medio 54,2 %, grande 18,6 % y raro 1,4 %**.
+
+**El 1,4 % es el número que importaba.** Todas las perillas liminales que ADR-118 D3 añadió —los
+corredores ciegos, las bandas ensanchadas, el vacío extra, `WEIRD_SPREAD`— se disparan en zona
+`Weird`. Estaban puestas sobre una centésima parte del mundo.
+
+Los umbrales pasan a **0,27 / 0,55 / 0,80**, que son los cuantiles 0,16 / 0,58 / 0,91 de ese mismo
+trapecio: **estrecho 16,1 %, medio 41,2 %, grande 33,7 %, raro 8,9 %** (medido, no estimado). **No se
+tocan ni los pesos ni el tamaño de celda**: eso movería la TRAMA, que es lo que impide que el campo
+se lea como cuadrícula. Sólo se mueve dónde se corta.
+
+`Wg3ScaleField.cs` lleva los mismos tres números y **por primera vez hay valores atados entre los dos
+idiomas**: `the_scale_mirror_golden_values` y `Wg3ScaleFieldTests.TheScaleMirrorGoldenValues`
+afirman diez puntos bit a bit —el valor crudo Y la clase—, más un test de reparto a cada lado. Hasta
+hoy el campo estaba escrito dos veces desde ADR-095 sin un solo golden común: los dos lados podían
+derivar juntos y seguir en verde, y este campo decide el TAMAÑO de los espacios.
+
+### D2 — El número de hojas de una zona es `área / objetivo`, no `área`
+
+Aquí está la aritmética que explica la queja entera. Una zona estrecha con objetivo 110 m² produce
+**seis veces más hojas por metro cuadrado** que una zona grande con objetivo 700. Así que el 18,6 %
+de superficie `Large` se convertía en un 5 % de los ESPACIOS, y el mundo salía con el 93,3 % por
+debajo de 300 m². **Demasiadas salas pequeñas no era gusto: era una media ponderada.**
+
+`TARGET_AREA_M2` pasa de `[110, 240, 700, 380]` a **`[150, 360, 1100, 700]`**, elegidos con el reparto
+nuevo delante y con la calibración medida de que **una hoja mide de media 0,71 veces su objetivo** —
+la subdivisión para cuando el área cae por debajo, no cuando lo alcanza.
+
+### D3 — La holgura de un tramo tiene que ser el PEOR caso, no una estimación
+
+`emit_space` trocea un espacio grande en una rejilla de tramos de ≤ 21 m con las paredes interiores
+abiertas enteras, y luego `shift_cuts` mueve los cortes para no partir puertas. La holgura sobre el
+tope de 25 m eran 400 cm. **El peor caso son 560**: un corte se mueve hasta `width/2 + 30` = 280 cm
+con una boca ancha, y **dos cortes contiguos pueden moverse en sentidos opuestos**.
+
+Con salas de un solo tramo el caso no existía —`nx` valía 1 y no había cortes que mover—. En cuanto
+D1 y D2 subieron el tamaño medio salieron tramos de **2558 × 634 cm** contra un tope de 2500, en 3 de
+270 regiones. Un tramo por encima del tope rompe el reparto por chunk: se dibuja en el chunk de su
+centro y asoma más allá de los vecinos inmediatos, o sea que un cliente con radio 1 puede no verlo
+entero. La holgura pasa a 600 cm.
+
+### D4 — El validador contaba TEJADOS como islas, y era el 95 % del ruido
+
+La puerta de la mancha mayor bajó del 98,1 % al 95,9 % y las islas subieron de 8,9 a 16,6 por región,
+con una región de 270 por debajo del 90 %. Parecía una regresión de conectividad. **No lo era.**
+
+El inundado recorre el ráster entero, y el ráster tiene superficies pisables que no son sitios: el
+tejado de la última planta y, sobre todo, **el techo de una sala que tiene un `Void` intencionado
+encima** — 3,20 m de hueco sellado entre esa losa y el forjado de la planta siguiente, invisible e
+inalcanzable *por construcción*, porque el vacío intencionado no se conecta a nada y eso es su
+definición. Al subir el tamaño de sala, esos techos crecieron hasta tapar la señal.
+
+El censo de la región que hizo saltar la puerta (`0xcc80f8f4d472c3a6`, región (-1,1), 4 plantas):
+**17 432 cotas en islas, de las cuales 884 (5 %) estaban bajo un tiro de escalera** —la deuda real de
+ADR-118 D5— y el resto eran techos.
+
+`interior_mask` restringe el recuento a las cotas que caen **dentro de un espacio construido del plan
+y a la altura de su planta** (60 cm de holgura, y el recorrido entero de un desnivel si lo hay). La
+cavidad bajo un tiro SIGUE contando, que es justo lo que se quiere: es deuda, y tiene que verse.
+Resultado: **mancha mayor 99,8 %, 1,4 islas por región.**
+
+### D5 — Dos perillas estaban expresadas «por espacio» y decían otra cosa al cambiar el tamaño
+
+Las dos se cazaron con tests que ya existían, y las dos son recalibración, no arreglo:
+
+- **`HOLE_CHANCE` 0,10 → 0,26.** Los agujeros de suelo se sortean por espacio de planta alta. Con 163
+  espacios por región en vez de 263 la densidad POR REGIÓN cayó un 38 %, de 8+ a 5 en las cuatro
+  regiones de referencia. Y no bastaba con reescalar por el número de espacios: los candidatos
+  cayeron más que ellos —de ~80 a ~31— porque con salas más grandes hay más `Void` y más atrios
+  debajo, y un agujero sobre vacío no se emite. Con 0,26 salen 11.
+- **`FACELING_WG3_OFFICE_KEEP` 0,23 → 0,44.** Este número está atado al reparto de PAPELES, no a WG3
+  en abstracto: `Office` bajó del 40,8 % de los espacios al 27,0 %, y sobre los huecos sorteados del
+  39 % al 19,8 %. La población de la planta baja se partió por la mitad (72 → 36), que es exactamente
+  el cambio de balance que ese número existe para impedir. La aserción de
+  `probe_faceling_draw_under_wg3` dice literalmente qué hacer cuando el cambio es a propósito.
+
+### D6 — Un test atado a una región es un test atado a la suerte de un sorteo
+
+`the_ground_floor_cannot_monopolise_the_cap_of_an_upper_storey` buscaba plantas altas sólo en la
+región (0,0). Cuántas plantas levanta una región depende de que la semilla dé sitio a un tiro recto
+de 12,6 m, así que esa región pasó de tres plantas a dos y el test se cayó **sin que nada de lo que
+mide —quién ocupa el cap— hubiera cambiado**. Ahora busca en tres regiones. La media de plantas por
+región SUBIÓ de 2,6 a 2,9 en el mismo cambio.
+
+### D7 — Lo que NO se ha hecho, y qué queda pendiente
+
+- **El oráculo de composición (`wg3_composition_oracle.json`) queda por reexportar.** Fija el mundo
+  que compone `Wg3Composer` en C# con los umbrales viejos, y `compose.rs` —legado desde ADR-100, sin
+  consumidores del mundo servido— lo reproduce. No es una deriva entre idiomas: los dos lados llevan
+  D1. Es una grabación caducada, y sólo Unity puede rehacerla («Backrooms ▸ WorldGen3 ▸ Exportar
+  oráculo de composición», con el editor abierto).
+- **`SpaceRole::Junction` sigue sin producirse en ningún sitio** — el vocabulario del plan declara la
+  intersección y nadie la asigna. Candidato prioritario de PASS 5: es lo que rompe el patrón
+  sala→corredor→sala.
+- **Los pilares siguen encerrados dentro de `is_atrium`** (16,1 por región, todos de atrio). Sacarlos
+  a las salas grandes es PASS 2 y necesita la enmienda a ADR-105 D5 que ya está aprobada.
+- **Las salas grandes tienen MENOS entradas, no más**: con una sola entrada, 21,1 % → 31,6 % de los
+  espacios ≥ 300 m². Es consecuencia directa de que `link_all` paso 2 se queda con **la mejor pared y
+  sólo una**, y es el trabajo de PASS 3.
+- **La proporción media subió de 3,70 a 5,04.** Objetivos de área más altos paran la subdivisión
+  antes y dejan rectángulos más alargados. No rompe nada medido, pero es el número a vigilar si
+  aparecen salas que se leen como pasillos anchos.
+- **El catálogo se ha quedado fuera**: 2,3 piezas por región → 0,6. Las 19 piezas autoradas miden
+  para el mundo viejo y ya casi ninguna cabe con la holgura de 50 cm. Es el cuello que el escalón 3
+  de `WG3-ROADMAP.md` ya anticipaba.
+- Sin cambio de wire, sin `SpaceRole` nuevo, sin decoración ni props.
+
+### Verificaciones
+
+- **Suite completa del backend: 1352 pasan, 0 fallan** salvo el oráculo caducado de D7. `cargo clippy
+  --bin backrooms_server --all-targets -D warnings` y `cargo fmt --all` limpios.
+- **Barrido en release, 30 semillas × 9 regiones: 270 de 270 válidas** a los siete niveles, y 750 de
+  750 en plan/relleno. Medias: **2,9 plantas** (antes 2,6), 163 espacios, 186 enlaces, 4,6 pozos, 361
+  tramos; suelo de planta baja 90 %; mancha mayor **99,8 %**, 1,4 islas; nav 100 %.
+- **Coste (release, por región de 3 × 3 chunks)**: plan 0,3 ms, relleno 0,2 ms, ráster de los nueve
+  chunks 9 ms. Sin cambio apreciable frente a ADR-118.
+- **Arquitectura, 72 regiones**, antes → después: área media **145 → 236 m²**; espacios ≥ 300 m²
+  **6,7 % → 21,5 %**; papel `Hall` **4,3 % → 19,5 %**; tramos a 6,40 m (atrio) **2,5 % → 9,2 %**;
+  línea de visión media **19,1 → 21,7 m**, por debajo de 5 m **25,7 % → 21,4 %**, por encima de 30 m
+  **21,2 % → 25,7 %**.
+- **Cliente**: `Wg3ScaleField.cs` y `Wg3ScaleFieldTests.cs` compilan en el arnés headless
+  (`CompileCheckClient.sh`, 0 errores en `BackroomsSurvival` y `EditModeTests`); la suite EditMode no
+  se ha ejecutado en el editor.

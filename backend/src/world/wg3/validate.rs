@@ -84,7 +84,9 @@ impl Default for ValidateOptions {
 /// Cifras del ráster andado.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct WalkStats {
-    /// Cotas pisables en total (una celda con suelo en dos plantas cuenta dos).
+    /// Cotas pisables DENTRO de un espacio construido (una celda con suelo en dos plantas cuenta
+    /// dos). Ver [`interior_mask`]: el tejado y el techo bajo un `Void` intencionado no cuentan,
+    /// porque no son sitios de los que no se salga — son sitios que no existen (ADR-119 D4).
     pub standable_levels: usize,
     /// Manchas conexas con el escalón del jugador.
     pub blobs: usize,
@@ -758,6 +760,41 @@ impl WalkGrid {
     }
 }
 
+/// La máscara de INTERIOR: para cada cota pisable, si cae dentro de un espacio construido del plan
+/// y a la altura de la planta de ese espacio.
+///
+/// Ver la nota larga en [`walk_region`]. En corto: el inundado recorre el ráster entero y el ráster
+/// tiene tejados; un tejado no es un sitio del que no se salga, es un sitio que no existe.
+///
+/// La holgura de 60 cm cubre el peldaño del jugador y el grosor de la losa. Un espacio con desnivel
+/// (`rise_cm`) cuenta TODO su recorrido, que es lo que mantiene visible la cavidad bajo un tiro.
+fn interior_mask(grid: &WalkGrid, building: &RegionBuilding) -> Vec<Vec<bool>> {
+    let cells = grid.cells;
+    let mut mask: Vec<Vec<bool>> = grid.floors.iter().map(|l| vec![false; l.len()]).collect();
+    for storey in building.storeys.iter() {
+        for (_, s) in storey.built() {
+            let r = s.rect;
+            let lo_y = (s.floor_y_cm.min(s.floor_y_cm + s.rise_cm) - 60) as f32 / 100.0;
+            let hi_y = (s.floor_y_cm.max(s.floor_y_cm + s.rise_cm) + 60) as f32 / 100.0;
+            let ix0 = ((r.min_x_cm as f32 / 100.0 - grid.min_x) / WG3_CELL_M).floor() as i32;
+            let ix1 = ((r.max_x_cm as f32 / 100.0 - grid.min_x) / WG3_CELL_M).ceil() as i32;
+            let iz0 = ((r.min_z_cm as f32 / 100.0 - grid.min_z) / WG3_CELL_M).floor() as i32;
+            let iz1 = ((r.max_z_cm as f32 / 100.0 - grid.min_z) / WG3_CELL_M).ceil() as i32;
+            for iz in ix_range(iz0, iz1, cells) {
+                for ix in ix_range(ix0, ix1, cells) {
+                    let c = iz * cells + ix;
+                    for (li, y) in grid.floors[c].iter().enumerate() {
+                        if *y >= lo_y && *y <= hi_y {
+                            mask[c][li] = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    mask
+}
+
 /// Nivel 5: contar sobre el ráster inundado.
 fn walk_region(
     grid: &WalkGrid,
@@ -780,9 +817,53 @@ fn walk_region(
         problems.push("ni una celda pisable en la región".into());
         return (stats, problems);
     }
-    let main = grid.main;
-    stats.main_blob = sizes[main as usize];
-    for (i, n) in sizes.iter().enumerate() {
+    // **SOLO CUENTA LO QUE ESTA DENTRO DEL EDIFICIO** (ADR-119 D4).
+    //
+    // El inundado recorre el raster entero, y el raster tiene superficies pisables que no son
+    // sitios: el TEJADO de la ultima planta, y sobre todo **el techo de una sala que tiene un
+    // `Void` intencionado encima** — 3,20 m de hueco sellado entre esa losa y el forjado de la
+    // planta siguiente, invisible e inalcanzable por construccion, porque el vacio intencionado no
+    // se conecta a nada y eso es su definicion.
+    //
+    // Contarlas como islas mezclaba dos cosas distintas bajo el mismo numero. Medido en la region
+    // que hizo saltar la puerta (`0xcc80f8f4d472c3a6`, region (-1,1), 4 plantas): 17 432 cotas en
+    // islas de las cuales **884 (5 %) estaban bajo un tiro de escalera** —la deuda real de ADR-118
+    // D5— y el resto eran techos. Con el mundo de ADR-119 D1, que tiene salas mas grandes y por
+    // tanto techos mas grandes, ese ruido crecio hasta tapar la senal.
+    //
+    // El criterio: una cota cuenta si cae dentro de un espacio CONSTRUIDO de alguna planta y a la
+    // altura de esa planta (con 60 cm de holgura, y el recorrido entero de un desnivel si lo hay).
+    // La cavidad bajo un tiro SIGUE contando —esta dentro del espacio `stair` y dentro de su
+    // recorrido—, que es justo lo que se quiere: es deuda, y tiene que seguir viendose.
+    let inside = interior_mask(grid, building);
+    let mut interior_sizes = vec![0usize; sizes.len()];
+    let mut interior_total = 0usize;
+    for c in 0..cells * cells {
+        for li in 0..floors[c].len() {
+            if !inside[c][li] {
+                continue;
+            }
+            let b = blob_of[c][li];
+            if b >= 0 {
+                interior_sizes[b as usize] += 1;
+                interior_total += 1;
+            }
+        }
+    }
+    stats.standable_levels = interior_total;
+    if interior_total == 0 {
+        problems.push("ni una celda pisable DENTRO de un espacio construido".into());
+        return (stats, problems);
+    }
+    // La mancha mayor se elige por cotas INTERIORES: un tejado grande no puede ser el edificio.
+    let main = interior_sizes
+        .iter()
+        .enumerate()
+        .max_by_key(|(i, n)| (**n, std::cmp::Reverse(*i)))
+        .map(|(i, _)| i as i32)
+        .unwrap_or(-1);
+    stats.main_blob = interior_sizes[main as usize];
+    for (i, n) in interior_sizes.iter().enumerate() {
         if i as i32 != main && *n >= ISLAND_MIN_CELLS {
             stats.islands += 1;
             stats.island_levels += n;
@@ -890,7 +971,8 @@ fn walk_region(
         }
     }
 
-    let main_fraction = stats.main_blob as f32 / standable_levels as f32;
+    // Sobre las cotas INTERIORES (ADR-119 D4), que es lo que `stats.standable_levels` guarda ya.
+    let main_fraction = stats.main_blob as f32 / stats.standable_levels.max(1) as f32;
     if main_fraction < MAIN_BLOB_MIN_FRACTION {
         problems.push(format!(
             "la mancha mayor sólo cubre el {:.1} % de lo pisable ({} manchas, {} islas de ≥ {} \

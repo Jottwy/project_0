@@ -310,7 +310,17 @@ const HOLE_SIDE_CM: i32 = 200;
 ///
 /// Bajo a propósito: un agujero es una trampa sin aviso mientras no haya pretil (ver ADR-104
 /// enmienda 1), así que la primera versión pone pocos y se mira. Subirlo es cambiar este número.
-const HOLE_CHANCE: f32 = 0.10;
+///
+/// **Recalibrado en ADR-119 D5, y el motivo es que este numero no dice agujeros: dice agujeros POR
+/// ESPACIO.** Al subir el tamano medio de sala (D1 y D2) una region paso de 263 espacios a 163, asi
+/// que con 0,10 los agujeros por region cayeron un 38 % sin que nadie tocara la regla — de 8+ a 5 en
+/// las cuatro regiones de referencia, por debajo del suelo que fija
+/// `a_hole_drops_you_a_whole_storey`. Y no bastaba con reescalar por el numero de espacios: los
+/// candidatos cayeron mas que ellos (de ~80 a ~31 en las cuatro regiones de referencia) porque con
+/// salas mas grandes hay mas `Void` y mas atrios debajo, y un agujero sobre vacio no se emite.
+/// 0,26 devuelve la densidad POR REGION que ADR-104 D4 eligio, que es la magnitud que de verdad se
+/// miro jugando.
+const HOLE_CHANCE: f32 = 0.26;
 
 /// Sal del sorteo de agujeros.
 const SALT_HOLE: u32 = 0xA9_04_01;
@@ -1020,10 +1030,19 @@ fn emit_space(index: usize, space: &PlannedSpace, wanted: &[Wanted], out: &mut F
     // División con techo escrita a mano: `i32::div_ceil` sigue siendo inestable en el toolchain del
     // proyecto, y no se va a encender una feature de nightly por una cuenta de dos operaciones.
     //
-    // El divisor deja HOLGURA sobre el tope de tramo (21 m contra 25) porque los cortes se van a
-    // mover para no partir puertas, y un corte movido alarga el tramo de al lado.
+    // El divisor deja HOLGURA sobre el tope de tramo porque los cortes se van a mover para no partir
+    // puertas, y un corte movido alarga el tramo de al lado.
+    //
+    // **Y la holgura tiene que ser el PEOR caso, no una estimacion** (ADR-119 D3). Eran 400 cm y el
+    // peor caso son 560: `shift_cuts` mueve un corte hasta `width/2 + JAMB` = 280 cm con una boca
+    // ancha (`WIDE_DOORWAY_CM`), y **dos cortes contiguos pueden moverse en sentidos opuestos**, asi
+    // que el tramo de en medio crece el doble. Con salas de una hoja el caso no existia —`nx` valia
+    // 1 y no habia cortes que mover—; en cuanto ADR-119 D1 subio el tamano medio salieron tramos de
+    // 2558 × 634 cm contra un tope de 2500, y un tramo por encima del tope rompe el reparto por
+    // chunk: se dibuja en el chunk de su centro y asoma mas alla de los vecinos inmediatos, o sea
+    // que un cliente con radio 1 puede no verlo entero.
     let ceil_div = |v: i32, by: i32| (v + by - 1) / by;
-    let budget = max_cm - 400;
+    let budget = max_cm - 600;
     let nx = ceil_div(r.width_cm(), budget).max(1);
     let nz = ceil_div(r.depth_cm(), budget).max(1);
 
