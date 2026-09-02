@@ -12099,3 +12099,176 @@ es el daño real que esta invariante existe para evitar.
 **Lo que NO cambia.** El relay **no fragmenta ni reensambla**: un payload que le llegue por encima
 de 1200 se descarta y se cuenta. La fragmentación y la paginación siguen siendo del protocolo
 existente y de sus emisores, exactamente donde ADR-113 las puso.
+
+---
+
+## ADR-118 — Auditoría de WorldGen3: el validador por niveles, once fallos de construcción que ningún test veía, y las primeras perillas liminales (2026-09-02) — ACEPTADA (implementada y medida)
+
+### Contexto
+
+El encargo era convertir WG3 en un generador robusto de espacios liminales sin reescribirlo: auditar,
+cubrir con tests multi-semilla, corregir causas y sólo después empujar la sensación Backrooms. Lo que
+había al empezar, medido y no supuesto:
+
+- **124 tests verdes y 30 sondas**, casi todos sobre UNA semilla y cuatro regiones. Y esa semilla
+  —`SERVED_SEED = 0xDEAD_BEEF_0000_002A`— es **la misma que la de la partida en vivo (42)** porque
+  `composer_seed` se queda con los 32 bits bajos: toda la validación de WG3 miraba un solo mundo.
+- La única prueba que exigía `links_failed == 0` planificaba **una planta sin pozos**; el mundo
+  servido levanta hasta diez. Con diez, **296 de 300 regiones** (12 semillas × 25) tenían enlaces del
+  plan que el relleno no podía construir —de 8 a 18 por región—, salas sin construir y puertas de
+  junta tapiadas. El único rastro era un `warn!` en el log del backend.
+- Cada nivel del pipeline (plan → edificio → relleno → geometría → ráster → navegación) tenía sus
+  contadores, pero **nadie los encadenaba** sobre muchas semillas, y un contador que sólo cuenta lo que
+  sobrevivió da cero cuando lo que importa desapareció antes.
+
+### D1 — `wg3::validate` es la puerta: cualquier semilla, cualquier región, todos los niveles
+
+`validate_region(manifest, seed, region)` produce un `RegionReport` con la lista de problemas de
+cada nivel y sus cifras; `validate_sweep` lo repite sobre semillas × regiones y agrupa. Lo que exige
+cada nivel es un INVARIANTE, no un gusto:
+
+| Nivel | Exige |
+|---|---|
+| plan / edificio | `RegionPlan::problems` + `RegionBuilding::problems`, más: ningún espacio construido sin conexión (enlace, puerta de junta o pozo que aterriza), ningún espacio más estrecho que un vano, y **todo paso de enlace y toda puerta de junta CAEN en una pared de sus dos espacios** (nuevo en `problems()`, es lo único que el relleno necesita y lo único que nadie comprobaba) |
+| relleno | cero espacios sin construir, cero huecos perdidos, cero enlaces fallidos, cero puertas de junta sin abrir |
+| geometría | todo tramo válido, ninguna pareja de tramos pisándose a la misma cota (salvo el pozo, que atraviesa el forjado a propósito), ninguno fuera de la región |
+| ráster andado | mancha mayor ≥ 90 % de las cotas pisables, cada planta servida alcanzable al menos a la mitad, cada puerta de junta con suelo alcanzable por dentro, ningún espacio construido con suelo en menos de la mitad de sus celdas (descontando pozos) |
+| navegación | el grafo de las criaturas alcanza ≥ 50 % de las celdas navegables del chunk central |
+| determinismo | plan, edificio y relleno idénticos en dos llamadas |
+
+La suite corre 4 regiones de referencia + 9 de la semilla en vivo + 3 semillas × 9 regiones a todos
+los niveles, y 12 semillas × 25 regiones a plan/relleno/geometría. Los barridos grandes se piden con
+`WG3_SWEEP_SEEDS=N` y `--release`. La cota de cabeza del validador es la del cuerpo (1,8 m), no el
+metro de las sondas viejas: con un metro, la cavidad bajo cada tiro de escalera contaba como isla.
+La sonda `probe_region_inside` (`WG3_PROBE_SEED=0x… WG3_PROBE_REGION=x,z`) dibuja cada pozo cota a
+cota, el mapa de suelo de cada espacio hueco y las columnas del ráster en cada puerta: es lo que
+localizó los once fallos de D2.
+
+### D2 — Once fallos de construcción, cada uno con su síntoma medido
+
+1. **`dig_wells` comprobaba los huecos con `contains_point`, que excluye los bordes — y un hueco
+   está SIEMPRE en el borde.** Nunca detectaba nada: un espacio recortado por una escalera conservaba
+   enlaces en paredes que ya no tenía. Ahora todo hueco tiene que caber en lo que queda de sala o en
+   el costado (al que se reasigna en `split_for_stair`); si cae sobre la franja, el candidato muere.
+   Efecto: 296/300 → 4/300 regiones con enlaces fallidos.
+2. **El pozo podía PARTIR la planta de arriba.** La unión de espacios (VERTICALITY-ROADMAP D1) dejaba
+   que un tiro de 9 × 3,6 cruzara la espina de lado a lado; el vano del forjado se llevaba el suelo del
+   corredor y la planta quedaba en dos mitades unidas por un rellano, con la puerta del corredor dos
+   metros sobre un peldaño. `landing_over` rechaza ahora circulación, cualquier espacio al que el hueco
+   parta de pared a pared, y cualquier paso de la planta de arriba sobre el hueco.
+3. **Las piezas del catálogo, cinco reglas nuevas en `fill`:** nunca mayor que su espacio (la
+   tolerancia era simétrica y una pieza 40 cm mayor metía su pared en la sala vecina); **centrada**
+   (pegada a la esquina dejaba una celda entera sin suelo en la puerta); el vano se excava contra la
+   pared de la PIEZA y la del vecino a la vez (`carve_for_piece`; antes una pieza 40 cm más pequeña
+   nacía sellada); **nunca más alta que el tope de su espacio** (una `room_pillars` de 3,60 bajo una
+   planta de 3,32 asomaba techo y paredes dentro de la sala de arriba: 60-90 % de sus celdas sin sitio
+   de pie); **nunca en un atrio** (el vano del atrio se llevaba el techo de la pieza y la nave quedaba
+   abierta al cielo, 430 m² con cero celdas pisables); **nunca donde aterriza un pozo** (el rellano
+   nacía dentro de un `room_core`, con doce celdas de suelo y ninguna salida).
+4. **`well_mouth_carves` arrancaba un centímetro por encima de la cota** y dejaba una lengüeta
+   `[996, 997]` sobre el rellano: el último peldaño pasaba de 26 a 27 cm, el tope exacto, y con el
+   redondeo del ráster una planta entera quedaba inalcanzable.
+5. **`hole_carves` sorteaba con semilla 0**: dos mundos ponían los agujeros de forjado en el mismo
+   sitio si un espacio caía igual. `RegionBuilding` lleva ahora su semilla.
+6. **Una planta de UN solo espacio no es una planta**: sin enlaces no tiene puertas y un espacio sin
+   puertas no se construye, así que el pozo subía a una losa que no existía. Pasaba en la torre.
+7. **Un espacio de un solo tramo cuya única puerta no cuadraba desaparecía entero** (el rescate sólo
+   recorría tramos ya emitidos). Ahora se rescata sobre el propio tramo.
+8. **Un bolsillo de una o dos salas sin puente de vacío se declara VACÍO** en `ensure_connected` en
+   vez de encargarse al enrutador: el enrutador no garantiza nada (una pared enfrentada más corta que
+   un vano y no hay ruta) y lo que dejaba era una sala construida sin una sola puerta. Los bolsillos
+   grandes y los que tienen puerta de junta siguen yendo al enrutador.
+9. **Las piezas con peldaños (`cor_ramp`, `room_stair`) nunca van a un espacio plano**: la chuleta
+   dice `Step`, y el plan sólo pone piezas en espacios planos. Y `dig_wells` prueba los DOS lados del
+   recorte del pozo (el sorteado primero) antes de descartar un candidato.
+10. **El rellano tiene que caber ENTERO en un solo espacio de arriba, con una celda de holgura.**
+   Mide dos tiras (120 cm = dos celdas) y las dos se perdían: una pared de la planta de arriba que
+   cruzaba el pozo a 8 cm de su extremo inflaba una celda, y la pared lateral del primer peldaño
+   inflaba la otra por un centímetro. Un rellano de 2 × 7 celdas cerrado por los cuatro lados y la
+   planta entera al 0 % (1 de 270 en release).
+11. **El vano de una pieza llega hasta el dintel (2,40), no hasta el techo.** La caja cubría medio
+   metro del vecino hasta la altura libre de la pieza, y si el vecino era más bajo (servicio de 2,80,
+   sala con planta encima a 3,08) se llevaba su techo: un agujero de 50 cm sobre cada puerta de
+   pieza, abierto al forjado o al cielo. Es el fallo visual que el validador cazó como «puerta de
+   junta sin suelo alcanzable» porque una celda sin techo cuenta como azotea.
+
+Y un test viejo (`on_the_upper_storey_wg3_does_not_freeze_you`) muestreaba el CENTRO de cada sala
+alta contra el edificio de dos plantas del test: el centro es donde ADR-104 D4 abre el agujero de
+forjado, y el edificio del test no era el servido. Muestrea ahora fuera del centro y contra
+`REGION_STOREYS`.
+
+### D3 — Las perillas liminales (Fases 4, 5 y 7), medidas antes y después
+
+Todas por posición y semilla (R3), ninguna toca el wire, ninguna baja del mínimo del ráster:
+
+- **Ensanche de banda** (`BAND_EXTRA_CM`): cada corte que talla corredor suma 0/0/0/40 cm (en zona
+  `Weird` 0/40/80/120; empezó en 0/0/40/80 y costaba 0,3 plantas). `GATE_CLEARANCE_CM` despeja la
+  banda MÁS ancha posible (ADR-103 D6).
+- **Corredor ciego** (`STUB_CHANCE` 0,10 / 0,22 en `Weird`, sólo bloques ≥ 400 m²): un corte profundo
+  talla banda igualmente. Es `CORRIDOR → BRANCH | DEAD_END` de la gramática: se conecta por donde toque
+  y la mayoría acaba con una sola salida.
+- **Puerta descentrada** (`DOOR_CENTRED_CHANCE` 0,55): entre dos salas, o entre sala y banda, la
+  puerta se reparte a lo largo de la pared con jamba. Nunca entre dos bandas (su cruce mide lo que la
+  pared) ni en una nave (su vano es ancho).
+- **Rareza por planta** (`WEIRD_PER_STOREY` 0,10, tope 0,40): a partir de la segunda planta una zona
+  `Large` puede leerse como `Weird`. La progresión del jugador es la profundidad, no la distancia.
+
+Medido sobre el barrido de la suite (27 regiones, 3 semillas), antes → después:
+
+| | antes (sólo D2) | después (D2 + D3) |
+|---|---|---|
+| plantas de media (27 regiones) | 2,0 | **2,4** |
+| pozos de escalera por región | 1,7 | **2,8** |
+| espacios / circulación / corredores ciegos | 224 / 14 / 0 | 244 / 25 / 0-1 |
+| puertas descentradas | 2 | 92 |
+| mancha mayor / islas ≥ 40 celdas | 98,5 % / 6,1 | 98,4 % / 7,3 |
+| regiones válidas | 27 / 27 | 27 / 27 |
+| las 4 de referencia (semilla 42): plantas / pozos | 3,2 / 3,2 | 3,0 / 4,0 |
+
+Aislado perilla a perilla sobre el mismo barrido: **las puertas descentradas y la rareza por planta no
+cuestan plantas**; el corredor ciego y el ensanche de banda costaban 0,3-0,4 cada uno (salas más
+pequeñas, menos sitios con tiro de 12,6 m), y se compensan con creces porque `dig_wells` prueba ahora
+los DOS lados del recorte del pozo: +0,6 plantas y casi el doble de pozos, de los que la regla del
+rellano contenido (D2.10) devuelve 0,2. Los corredores ciegos destaparon además que `cor_ramp` —8 × 2,4
+con peldaños— cabía clavada en un corredor generado y subía el suelo un metro dentro de un espacio
+plano: de ahí la regla de D2.9 sobre las piezas con `Step`.
+
+### D4 — El campo de densidad (Fase 6): `wg3::density` y `Wg3DensityField`
+
+`vacío → disperso → estructurado → denso → anómalo`, función pura de la posición con el grano
+escalonado del campo de escala (celda gruesa 38 m, fina 13 m); en zona `Weird` todo lo que no es vacío
+sube un escalón. **El vacío es la clase más probable a propósito.** Espejo C# con golden values bit a
+bit en las dos suites. Reparto medido: vacío 24 %, disperso 43 %, estructurado 28 %, denso 4 %,
+anómalo 0,6 %; una clase aguanta 22,6 m de media andando en línea recta. **Ningún consumidor lo lee
+todavía**: el vestido por densidad —mobiliario, cables, cajas, manchas, señales— entra por aquí cuando
+toque, con cero wire.
+
+### D5 — Lo que NO se ha hecho, y por qué
+
+- **Sin cambio de wire, sin `SpaceRole` nuevo, sin entidades ni props** (reglas 7 y 8 del encargo).
+- **El hueco bajo cada tiro de escalera queda abierto** (cavidad de 1-3 m entre el techo de abajo y
+  la cara inferior de los peldaños, visible desde la planta de llegada). Cerrarlo pide un macizo, y
+  ADR-105 D5 cierra la tabla a pretil y megapilar: es una enmienda a ADR-105, no una tarde.
+- **La planta alta sigue dependiendo de que la semilla dé sitio a un tiro recto de 12,6 m.** Las
+  reglas de D2.2 y D2.10 son más estrictas con el aterrizaje y las compensa probar los dos lados del
+  recorte; el techo real lo pone la escalera recta. Doblarla (ida y vuelta, media huella) es lo único
+  que lo sube, y sigue parado.
+- **El rendimiento en Unity no se ha medido en runtime**; lo que hay son cuentas del servidor (abajo)
+  y una estimación de objetos por chunk leyendo `Wg3ChunkStreamer`: ~40 tramos por chunk, cada uno un
+  `GameObject` con malla, hasta 2 × 2 luces y sus luminarias.
+
+### Verificaciones
+
+- `cargo test --bin backrooms_server world::wg3`: **134 verdes, 0 rojos, 31 sondas** (124 de antes +
+  5 del validador + 5 del campo de densidad). `cargo clippy --all-targets -D warnings` y `fmt` limpios.
+- Barrido en **release, 30 semillas**: plan/relleno/geometría **750 de 750** regiones limpias; los siete
+  niveles **270 de 270 regiones válidas (100 %)**. Medias: 2,6 plantas, 3,2 pozos, 263 espacios, 386
+  tramos, 2,3 piezas de catálogo por región; suelo construido en planta baja 91 %; mancha mayor 98,1 %
+  de lo pisable, 8,9 islas ≥ 40 celdas (bajo escalera y rellanos sueltos); nav 100 %.
+- Coste medido (release, por región de 3 × 3 chunks): plan 0,5 ms, relleno 0,2 ms, ráster de los nueve
+  chunks 8 ms (~0,9 ms por chunk). En debug: 2 / 1 / 55 ms.
+- Punto de partida, misma batería: **296 de 300** regiones con fallos de relleno y **0 de 27** válidas
+  a todos los niveles con la semilla en vivo.
+- Cliente: `Wg3DensityField.cs` y `Wg3DensityFieldTests.cs` compilan en el arnés headless
+  (`CompileCheckClient.sh`, 0 errores en `BackroomsSurvival` y `EditModeTests`); la suite EditMode
+  no se ha ejecutado en el editor.
