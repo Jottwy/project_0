@@ -687,7 +687,7 @@ namespace BackroomsSurvival.Net
             return PlaceResult.Unwalkable;
         }
 
-        // Reuses ChunkLootRoll.ZoneSpreadRadius (12 m normalized) for both channels — items use
+        // Reuses ChunkLootRoll.ZoneSpreadRadius (3 m normalized desde A2, 2026-09-02) for both channels — items use
         // a tighter CacheClusterRadius for their original cluster, so an item retry can wander
         // slightly further than that cluster, but never further than the zone itself; safe, not
         // worth a second constant here.

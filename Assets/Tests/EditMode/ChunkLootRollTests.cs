@@ -86,7 +86,8 @@ namespace BackroomsSurvival.Tests
         {
             // 2026-07-07: a zone now MIXES Log/Stone/Metal per slot (was one type per whole zone).
             // Find the first chunk that rolls a zone in a band and assert its materials are not all
-            // identical. (16 slots weighted 40/35/25 → a single-material zone is astronomically rare.)
+            // identical. (6 slots weighted 40/35/25 desde A2 — el sorteo es determinista por seed,
+            // así que esto no es un flake potencial: pasa o no pasa siempre igual.)
             List<ChunkLootRoll.Entry> zone = null;
             for (int cx = 0; cx < 200; cx++)
             {
@@ -566,8 +567,8 @@ namespace BackroomsSurvival.Tests
             }
         }
 
-        /// <summary>Los siete papeles existen y la densidad NO se ha tocado: todos llevan el
-        /// `itemCacheChance` de la prueba de escasez, salvo la escalera, que no deja nada.
+        /// <summary>Los siete papeles existen y la densidad de CACHÉS no se ha tocado: todos llevan
+        /// el `itemCacheChance` de la prueba de escasez, salvo la escalera, que no deja nada.
         /// Si alguien sube uno de estos números, que sea a sabiendas y no de rebote.</summary>
         [Test]
         public void DefaultStyleProfiles_KeepTodaysScarcity()
@@ -576,10 +577,56 @@ namespace BackroomsSurvival.Tests
             Assert.AreEqual(7, t.Length, "un perfil por style de fill::style_of (0-6)");
             for (int i = 0; i < t.Length; i++)
             {
-                Assert.AreEqual(0f, t[i].carryableZoneChance, $"papel {i}: los transportables siguen apagados");
                 float expected = i == 6 ? 0f : ZoneLootProfile.Default.itemCacheChance;
                 Assert.AreEqual(expected, t[i].itemCacheChance, 1e-6f, $"papel {i}: la densidad no cambia con esta tarea");
             }
+        }
+
+        /// <summary>
+        /// FARMING-ROADMAP A1 (2026-09-02) — el bloque A ENCENDIDO, y encendido en UN SOLO SITIO.
+        /// Este test es el que se rompe si alguien vuelve a apagar la única fuente de metal del
+        /// mundo suelto, o si la enciende en un papel más "por probar": los otros seis a cero es
+        /// la decisión, no un descuido. El papel 4 lleva además log/stone a cero — una pila de
+        /// chatarra que suelte leña no es una pila de chatarra.
+        /// </summary>
+        [Test]
+        public void A1_SoloElAlmacenSueltaChatarra_YEsMetalPuro()
+        {
+            const int ServicioAlmacen = 4;
+            var t = ChunkLootRoll.DefaultStyleLootProfiles();
+
+            for (int i = 0; i < t.Length; i++)
+            {
+                if (i == ServicioAlmacen) continue;
+                Assert.AreEqual(0f, t[i].carryableZoneChance,
+                    $"papel {i}: los transportables siguen apagados fuera del almacén (A1)");
+            }
+
+            Assert.Greater(t[ServicioAlmacen].carryableZoneChance, 0f,
+                "el papel 4 es el destino de farmeo del bloque A: apagarlo deja el juego sin metal");
+            Assert.AreEqual(0f, t[ServicioAlmacen].logWeight, "la pila es de chatarra, no de leña");
+            Assert.AreEqual(0f, t[ServicioAlmacen].stoneWeight, "la pila es de chatarra, no de piedra");
+            Assert.Greater(t[ServicioAlmacen].metalWeight, 0f, "sin peso de metal la pila no sale de metal");
+        }
+
+        /// <summary>
+        /// FARMING-ROADMAP A2 — la pila cabe en una entrada. No se afirma el literal 6 sino la
+        /// RELACIÓN que decidió el número: una pila tiene que pagar una entrada completa (marco de
+        /// pared 1 + marco de puerta 2 + puerta 2 = 5 Metal, A3). Si mañana el coste sube, este
+        /// test señala la pila que dejó de alcanzar, que es la consecuencia que importa.
+        /// </summary>
+        [Test]
+        public void A2_UnaPilaPagaUnaEntradaCompleta()
+        {
+            const int CosteDeUnaEntrada = 5; // 1 marco de pared + 2 marco de puerta + 2 puerta
+            var pila = ChunkLootRoll.RollCarryables(Seed, 40, -40, RichCarryProfile);
+            if (pila.Count == 0) pila = ChunkLootRoll.RollCarryables(Seed, 41, -40, RichCarryProfile);
+            Assume.That(pila.Count, Is.GreaterThan(0));
+
+            Assert.GreaterOrEqual(pila.Count, CosteDeUnaEntrada,
+                "una pila que no paga una entrada rompe el bucle del bloque A");
+            Assert.LessOrEqual(pila.Count, 8,
+                "y una pila demasiado grande deja de leerse como hallazgo — el recorte de escasez manda");
         }
 
         /// <summary>El campo nuevo llega VACÍO a un asset que ya estaba serializado, y eso es lo

@@ -140,9 +140,15 @@ namespace BackroomsSurvival.EditorTools
         private const float DoorFrameNativeHeight = 1.3553f;
         private const float DoorFrameNativeThickness = 0.1811f;
 
-        // TODO(balance): first pass, never played. Between the wall (4) and the claim marker (6) —
-        // a door disturbs the wall row it sits in more than a bare panel, less than claiming ground.
-        private const int DoorFrameMetalCost = 5;
+        // FARMING-ROADMAP A3 (2026-09-02, decisión de Joel): 5 → 2. El número no sale de comparar
+        // piezas entre sí, sale del BUCLE: una pila de chatarra trae 6 unidades (A2) y una entrada
+        // completa cuesta marco de pared 1 + marco de puerta 2 + puerta 2 = 5, así que encontrar
+        // UNA pila paga UNA entrada. Con el 5 anterior hacían falta dos pilas y el bucle tardaba
+        // el doble en devolver algo.
+        //
+        // El TODO(balance) de la primera pasada («entre la pared (4) y el claim marker (6)») queda
+        // superado: aquella escala nunca se jugó y esta sí tiene una medida detrás.
+        private const int DoorFrameMetalCost = 2;
 
         // RECONCILED 2026-08-18: Joel widened the frame's jamb/header colliders by hand in the editor
         // after the first generation (the original symmetric ±0.45/2.5 read too tight against the
@@ -828,7 +834,7 @@ namespace BackroomsSurvival.EditorTools
         /// Idempotent patch, FARMING-ROADMAP.md E4: the committed door frame prefab has
         /// <c>_requirements: []</c> — free to place — a leftover from commit 78451db7 reconciling the
         /// frame with a manual edit, which the CREATOR's own <see cref="DoorFrameMetalCost"/> constant
-        /// (5) never actually reaches once the frame already exists (crear-si-falta skips
+        /// never actually reaches once the frame already exists (crear-si-falta skips
         /// <c>CreateDoorFramePrefab</c>, the only place that calls <c>ConfigureConstructable</c> for
         /// it). Fixes it in place ONLY if <c>_requirements</c> is still empty — a nonzero requirement
         /// count means someone (Joel) already set a cost on purpose, and this must not clobber it.

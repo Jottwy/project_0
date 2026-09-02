@@ -127,7 +127,16 @@ namespace BackroomsSurvival.Net
         // TODO(balance): construction-material abundance test (2026-07-07) — carryable zones are
         // 100% construction materials (Log/Stone/Metal). Chance 0.30→0.60 and per-zone 8→16
         // (~x4 more materials). Not tuned final values.
-        private const int CarryablesPerZone = 16;
+        //
+        // FARMING-ROADMAP A2 (2026-09-02): 16 → 6. Dieciséis piezas repartidas en 12 m no leían
+        // como una pila sino como scatter, y seis es además la unidad de diseño del bloque A —
+        // una pila paga una entrada completa (marco de pared 1 + marco de puerta 2 + puerta 2 =
+        // 5 Metal, decisión de Joel en A3), con una de sobra.
+        //
+        // Cambiar el COUNT es legal aquí y solo aquí porque es PRE-ALPHA: reindexa las claves
+        // `(cx,cz,slot)` de `_collectedCarry`, y esa memoria es de sesión (no hay save de loot que
+        // romper). Con un save de loot en disco esto ya no sería un número, sería una migración.
+        private const int CarryablesPerZone = 6;
         // Cluster tightness in chunk-normalized units (chunk side = 1.0). Item caches stay a tight
         // 1.5 m pile. Carryable zones: SPREAD widened 6 m → 12 m (2026-07-07) so the same 16
         // materials cover ~4× the area (≈1/4 the per-m² density) instead of a heavy concentrated
@@ -136,7 +145,12 @@ namespace BackroomsSurvival.Net
         // internal, not private: ChunkLootManager's walkability-retry jitter (Fix priorizado
         // worldgen Alpha 1) reuses this instead of a duplicated magic number — a retry should
         // never wander further than the zone's own spread.
-        internal const float ZoneSpreadRadius = 12.0f / 50f;
+        //
+        // FARMING-ROADMAP A2 (2026-09-02): 12 m → 3 m. Con 6 piezas (antes 16) el radio ancho de
+        // 2026-07-07 dejaba las piezas a más de un cuerpo unas de otras y no se leía como pila.
+        // El reintento de andabilidad de ChunkLootManager se estrecha con esto, y es lo correcto:
+        // su regla es «nunca más lejos que la propia dispersión de la zona», no «12 m».
+        internal const float ZoneSpreadRadius = 3.0f / 50f;
         // Keep cluster centres off the chunk seams so a cache/zone never straddles two chunks.
         private const float CentreMargin = 0.18f;
 
@@ -213,8 +227,12 @@ namespace BackroomsSurvival.Net
         /// material, un cuarto de servicio da utilidad, un callejón sin salida paga el rodeo con
         /// mejor arma. Ajustar la densidad por papel es autorado y se hace en el asset.
         ///
-        /// `carryableZoneChance` sigue a CERO en los siete, igual que en las trece zonas de WG2 —
-        /// apagado por la misma prueba de escasez, no por esta migración.
+        /// `carryableZoneChance` estuvo a CERO en los siete desde la prueba de escasez del
+        /// 2026-08-17. **Desde el 2026-09-02 el papel 4 (servicio/almacén) lo tiene a 0,35**
+        /// (FARMING-ROADMAP A1): es la única fuente de metal del mundo suelto y el destino de
+        /// farmeo del bloque A. Los otros seis siguen a cero A PROPÓSITO — una pila en todas
+        /// partes es alfombra, no hallazgo. Las trece zonas de WG2 (`DefaultZoneLootProfiles`)
+        /// siguen apagadas: esa ruta ya no la anda nadie con WG3 mandando.
         /// </summary>
         public static ZoneLootProfile[] DefaultStyleLootProfiles() => new[]
         {
@@ -237,11 +255,18 @@ namespace BackroomsSurvival.Net
                 consumableWeight = 1f, medicalWeight = 2f, ammoWeight = 3f, materialWeight = 1f,
                 logWeight = 30f, stoneWeight = 30f, metalWeight = 40f,
             },
+            // BLOQUE A ENCENDIDO (2026-09-02, FARMING-ROADMAP A1 — decisión de Joel: SOLO este
+            // papel). Es el único de los siete que lee como almacén/mantenimiento, y una pila
+            // dentro de un papel poco frecuente se BUSCA en vez de tropezarse (antídoto 1 del memo
+            // de escasez: el mundo infinito + displacement impiden memorizar el sitio).
+            // `metalWeight = 100` con log/stone a 0 no es una preferencia, es la definición de la
+            // pila: chatarra, no leña ni piedra. Ojo — `RollMaterialName` normaliza pesos
+            // RELATIVOS, así que estos tres números solo tienen sentido juntos.
             new ZoneLootProfile // 4  SERVICIO/ALMACÉN — es LO QUE ES: material y medicina
             {
-                itemCacheChance = 0.04f, carryableZoneChance = 0f, weaponRollChance = 0.05f,
+                itemCacheChance = 0.04f, carryableZoneChance = 0.35f, weaponRollChance = 0.05f,
                 consumableWeight = 2f, medicalWeight = 3f, ammoWeight = 1f, materialWeight = 4f,
-                logWeight = 25f, stoneWeight = 25f, metalWeight = 50f,
+                logWeight = 0f, stoneWeight = 0f, metalWeight = 100f,
             },
             new ZoneLootProfile // 5  CALLEJÓN SIN SALIDA — el rodeo se paga, o no se anda
             {

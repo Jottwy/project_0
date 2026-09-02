@@ -153,7 +153,7 @@ MonoBehaviour:
   _requirements:
   - BuildMaterialId: -2823548
     CurrentAmount: 0
-    RequiredAmount: 5
+    RequiredAmount: 2
 --- !u!114 &8273658205749383446
 MonoBehaviour:
   m_ObjectHideFlags: 0
