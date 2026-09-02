@@ -38,6 +38,8 @@
     <Compile Include="$(Repo)\Assets\Scripts\Network\ChunkLootRoll.cs" />
     <Compile Include="$(Repo)\Assets\Scripts\Network\ChunkContainerRoll.cs" />
     <Compile Include="$(Repo)\Assets\Scripts\Network\ChunkDismantleRoll.cs" />
+    <!-- Playtest 2026-09-02: el almacen de muebles, puro como los tres de arriba. -->
+    <Compile Include="$(Repo)\Assets\Scripts\Network\ChunkDepotRoll.cs" />
     <!-- ADR-115: la traduccion del sello de mundo al reloj local, extraida justamente para
          poder probarla sin editor. -->
     <Compile Include="$(Repo)\Assets\Scripts\Network\LootMarkClock.cs" />
@@ -59,6 +61,7 @@
     <Compile Include="$(Repo)\Assets\Tests\EditMode\FakeUpnpDevice.cs" />
     <Compile Include="$(Repo)\Assets\Tests\EditMode\ChunkContainerRollTests.cs" />
     <Compile Include="$(Repo)\Assets\Tests\EditMode\ChunkDismantleRollTests.cs" />
+    <Compile Include="$(Repo)\Assets\Tests\EditMode\ChunkDepotRollTests.cs" />
     <Compile Include="$(Repo)\Assets\Tests\EditMode\LootMarkClockTests.cs" />
     <Compile Include="$(Repo)\Assets\Tests\EditMode\NatAddressPolicyTests.cs" />
     <Compile Include="$(Repo)\Assets\Tests\EditMode\HostConnectivityReportTests.cs" />

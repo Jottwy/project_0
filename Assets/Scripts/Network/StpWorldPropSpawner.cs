@@ -51,6 +51,18 @@ namespace BackroomsSurvival.Net
             new Dictionary<DismantleProp, GameObject>();
         private readonly HashSet<DismantleProp> _warned = new HashSet<DismantleProp>();
 
+        /// <summary>SÓLO PLAYTEST — estado del almacén de muebles por celda de 200 m
+        /// (<see cref="ChunkDepotRoll"/>): hasta qué candidato se ha mirado y si ya está decidido.
+        /// Se vacía con la semilla, como <see cref="_settled"/>.</summary>
+        private sealed class DepotState
+        {
+            public int NextCandidate;
+            public bool Done;
+        }
+
+        private readonly Dictionary<(int cx, int cz), DepotState> _depots =
+            new Dictionary<(int cx, int cz), DepotState>();
+
         private float _warmupEnd;
         private bool _warmedUp;
         private float _nextScanAt;
@@ -117,6 +129,7 @@ namespace BackroomsSurvival.Net
             if (worldSeed != _settledSeed)
             {
                 _settled.Clear();
+                _depots.Clear();
                 _settledSeed = worldSeed;
             }
 
@@ -124,6 +137,112 @@ namespace BackroomsSurvival.Net
             bool isHost = init != null && init.CurrentRole == NetworkInitializer.Role.Host;
 
             Scan(ipc, streamer, cam.transform.position, worldSeed, isHost);
+            if (ChunkDepotRoll.DepotEnabled)
+                ScanDepots(ipc, streamer, cam.transform.position, worldSeed, isHost);
+        }
+
+        /// <summary>
+        /// SÓLO PLAYTEST — el almacén de muebles: en cada celda de 200 m alrededor del jugador
+        /// (3×3), recorre los candidatos de <see cref="ChunkDepotRoll"/> EN ORDEN y acepta el
+        /// primero cuyo espacio sea elegible y grande. Un candidato cuyo chunk no está montado
+        /// detiene la celda —no se salta, porque saltarlo haría que dos clientes eligieran salas
+        /// distintas según qué chunks hubieran visto—; se reintenta en el barrido siguiente.
+        /// </summary>
+        private void ScanDepots(IPCClient ipc, Wg3ChunkStreamer streamer, Vector3 around, long worldSeed,
+            bool isHost)
+        {
+            int pcx = ChunkDepotRoll.CellOf(around.x);
+            int pcz = ChunkDepotRoll.CellOf(around.z);
+
+            for (int dx = -1; dx <= 1; dx++)
+            {
+                for (int dz = -1; dz <= 1; dz++)
+                {
+                    var cell = (cx: pcx + dx, cz: pcz + dz);
+                    if (!_depots.TryGetValue(cell, out var st))
+                    {
+                        st = new DepotState();
+                        _depots[cell] = st;
+                    }
+                    if (st.Done)
+                        continue;
+
+                    while (st.NextCandidate < ChunkDepotRoll.CandidateCount)
+                    {
+                        var c = ChunkDepotRoll.CandidateAt(worldSeed, cell.cx, cell.cz, st.NextCandidate);
+                        // A la altura del jugador, como el sorteo normal: con plantas, una cota fija
+                        // contestaría siempre por la baja.
+                        var probe = new Vector3(c.X, around.y, c.Z);
+                        if (!streamer.ChunkIsBuilt(probe))
+                            break; // todavía no: se espera, no se salta
+
+                        bool accepted = false;
+                        if (streamer.TryGetSpace(probe, out Bounds box, out byte style) &&
+                            ChunkDepotRoll.StyleIsEligible(style))
+                        {
+                            var slots = ChunkDepotRoll.Layout(worldSeed, cell.cx, cell.cz,
+                                box.min.x, box.min.z, box.max.x, box.max.z);
+                            if (slots.Count > 0)
+                            {
+                                PlaceDepot(ipc, cell.cx, cell.cz, box.min.y, slots, worldSeed, isHost);
+                                accepted = true;
+                            }
+                        }
+
+                        st.NextCandidate++;
+                        if (accepted)
+                        {
+                            st.Done = true;
+                            break;
+                        }
+                    }
+
+                    if (!st.Done && st.NextCandidate >= ChunkDepotRoll.CandidateCount)
+                    {
+                        st.Done = true;
+                        Debug.LogWarning($"[StpWorldPropSpawner] celda de almacén ({cell.cx},{cell.cz}): ninguno " +
+                                         $"de los {ChunkDepotRoll.CandidateCount} candidatos cae en un espacio " +
+                                         "elegible y grande; esta celda se queda sin almacén.");
+                    }
+                }
+            }
+        }
+
+        /// <summary>Instancia los muebles del almacén a ras del suelo del espacio (la caja del
+        /// espacio tiene el suelo en `min.y`) y, sólo en el host, los da de alta con id determinista
+        /// por (celda, slot). Mismo camino que <see cref="Place"/> mueble a mueble.</summary>
+        private void PlaceDepot(IPCClient ipc, int cellX, int cellZ, float floorY,
+            List<ChunkDepotRoll.Slot> slots, long worldSeed, bool isHost)
+        {
+            var sync = StpHarvestableSyncManager.Instance;
+            int placed = 0, registered = 0;
+            for (int i = 0; i < slots.Count; i++)
+            {
+                var s = slots[i];
+                var prefab = PrefabFor(s.Prop);
+                if (prefab == null)
+                    continue;
+
+                var at = new Vector3(s.X, floorY, s.Z);
+                var go = Instantiate(prefab, at, Quaternion.Euler(0f, s.Rotation, 0f));
+                go.name = $"[Depot]{s.Prop}_{cellX}_{cellZ}_{i}";
+                placed++;
+
+                var hr = go.GetComponent<HarvestableResource>();
+                if (hr == null || !isHost || sync == null)
+                    continue;
+
+                var drops = ResolveMaterials(s.Prop);
+                if (drops.Count == 0)
+                    continue;
+
+                uint id = ChunkDepotRoll.NetIdFor(worldSeed, cellX, cellZ, i);
+                if (sync.RegisterHostProp(ipc, id, hr, drops))
+                    registered++;
+            }
+
+            Debug.Log($"[StpWorldPropSpawner] almacén de muebles en la celda ({cellX},{cellZ}): " +
+                      $"{placed} muebles a cota {floorY:F2}, {registered} registrados.");
         }
 
         private void Scan(IPCClient ipc, Wg3ChunkStreamer streamer, Vector3 around, long worldSeed,
