@@ -83,7 +83,13 @@ namespace BackroomsSurvival.Net
         // Pool completa previa al recorte de 2026-08-17:
         //   "Stick", "Rope", "Cloth", "Leather", "Metal Shard", "Stone Shard", "Feather",
         //   "Duct Tape", "Wooden Torch", "Spray Can"
-        private static readonly string[] MaterialPool = { "Spray Can" };
+        //
+        // 2026-09-02 (Joel): el DESTORNILLADOR entra aquí y NO en ChunkLootRoll — primera
+        // ruptura deliberada de la paridad cofre/mundo. Es la herramienta que abre los
+        // desmontables (ADR-114 D6) y, como el agua, tiene que leerse como "encontrado": loot
+        // concentrado, no un objeto tirado por el suelo. Con el reparto 80/15/5 de
+        // RollObjectCount sale en ~1 de cada 10 cofres (el slot extra, a medias con el bote).
+        private static readonly string[] MaterialPool = { "Spray Can", "Screwdriver" };
         // WeaponPool RETIRADA por el recorte, misma razón que MedicalPool: era
         // { "Bone Club", "Steel Pickaxe" } — lo que quedaba tras el recorte de catálogo vendor de
         // 2026-08-10, que ya había sacado armas de fuego/caza y el kit de cazador.
