@@ -6447,7 +6447,12 @@ fn cutting_the_stair_out_of_a_room_loses_no_floor() {
         let b = building_of(rx, rz);
         for (n, plan) in b.storeys.iter().enumerate() {
             let region = plan.bounds_cm.expect("la planta tiene caja");
-            let sum: f64 = plan.spaces.iter().map(|s| s.rect.area_m2() as f64).sum();
+            // **Por la HUELLA, no por la envolvente** (ADR-120 D1), y así el test dice más que
+            // antes: desde que dos hojas se entrelazan sus envolventes se pisan a propósito, pero la
+            // suma de las HUELLAS tiene que seguir siendo exactamente la región. Es la comprobación
+            // que caza cualquier error de la transferencia de un plumazo — si un mordisco se pierde
+            // o se duplica un centímetro cuadrado, sale aquí.
+            let sum: f64 = plan.spaces.iter().map(|s| s.area_m2() as f64).sum();
             let want = region.area_m2() as f64;
             assert!(
                 (sum - want).abs() < 1.0,
@@ -6937,37 +6942,44 @@ fn the_fill_is_deterministic() {
 fn plan_with_a_gap(blocked: bool) -> plan::RegionPlan {
     use plan::{LinkKind, PlanRect, PlannedLink, PlannedSpace, SpaceRole};
 
-    let room = |x0: i32, x1: i32| PlannedSpace {
-        rect: PlanRect {
+    let room = |x0: i32, x1: i32| {
+        let rect = PlanRect {
             min_x_cm: x0,
             min_z_cm: 0,
             max_x_cm: x1,
             max_z_cm: 1200,
-        },
-        floor_y_cm: 0,
-        role: SpaceRole::Office,
-        scale: 1,
-        depth: 3,
-        rise_cm: 0,
-        rise_from_side: 0,
-        rise_step_cm: plan::STEP_RISE_CM,
-        max_clear_cm: 0,
-        void_above: false,
+        };
+        PlannedSpace {
+            rect,
+            parts: [rect; plan::MAX_PARTS],
+            part_count: 1,
+            floor_y_cm: 0,
+            role: SpaceRole::Office,
+            scale: 1,
+            depth: 3,
+            rise_cm: 0,
+            rise_from_side: 0,
+            rise_step_cm: plan::STEP_RISE_CM,
+            max_clear_cm: 0,
+            void_above: false,
+        }
     };
 
     let mut spaces = vec![room(0, 1200), room(3000, 4200)];
     if blocked {
         // Un tercer espacio tapando el hueco entero: no hay por dónde pasar, y el enrutador tiene
         // que DECIRLO en vez de inventarse otra conexión.
-        spaces.push(PlannedSpace {
-            rect: PlanRect {
+        // Por `of_rect` y no con `rect:` suelto: desde ADR-120 `rect` es la envolvente y la huella
+        // vive en `parts`, así que pisar sólo el campo dejaría al espacio diciendo dos cosas.
+        spaces.push(PlannedSpace::of_rect(
+            PlanRect {
                 min_x_cm: 1300,
                 min_z_cm: -600,
                 max_x_cm: 2900,
                 max_z_cm: 1800,
             },
-            ..room(1300, 2900)
-        });
+            room(1300, 2900),
+        ));
     }
 
     plan::RegionPlan {
@@ -7449,10 +7461,35 @@ fn dump_served_maps() {
 
     let dir = std::env::var("WG3_MAP_DIR").expect("WG3_MAP_DIR: carpeta donde escribir los planos");
     let m = real_manifest();
+    // **Y con semilla y region a eleccion.** Un fallo del barrido sale con su semilla y su region en
+    // el log, y hasta hoy no habia forma de PINTAR esa: el volcado solo sabia dibujar las cuatro de
+    // referencia del mundo servido, que son justo las que ya pasan.
+    // `WG3_SEED=0x...` y `WG3_REGION=x,z`.
+    let seed = match std::env::var("WG3_SEED") {
+        Ok(v) => {
+            let t = v.trim().trim_start_matches("0x");
+            u64::from_str_radix(t, 16).unwrap_or_else(|_| v.trim().parse().expect("WG3_SEED"))
+        }
+        Err(_) => SERVED_SEED,
+    };
+    let regions: Vec<(i32, i32)> = match std::env::var("WG3_REGION") {
+        Ok(v) => {
+            let mut it = v.split(',');
+            let x = it.next().unwrap().trim().parse().expect("WG3_REGION x");
+            let z = it
+                .next()
+                .expect("WG3_REGION z")
+                .trim()
+                .parse()
+                .expect("WG3_REGION z");
+            vec![(x, z)]
+        }
+        Err(_) => AUDIT_REGIONS.to_vec(),
+    };
 
-    for (rx, rz) in AUDIT_REGIONS {
+    for (rx, rz) in regions {
         let region = Wg3RegionCoord { x: rx, z: rz };
-        let world = Wg3ServedWorld::plan_region(&m, SERVED_SEED, region);
+        let world = Wg3ServedWorld::plan_region(&m, seed, region);
         let (min_x, min_z, _, _) = region.bounds();
 
         let side = REGION_CHUNKS as usize;
@@ -7606,10 +7643,46 @@ fn dump_served_maps() {
 fn dump_region_plans() {
     const PX: f32 = 4.0;
     let dir = std::env::var("WG3_MAP_DIR").expect("WG3_MAP_DIR: carpeta donde escribir los planos");
-    let m = real_manifest();
+    // Mismas perillas que `dump_served_maps`: un fallo del barrido sale con su semilla y su region,
+    // y hay que poder pintar ESA. `WG3_SEED=0x...`, `WG3_REGION=x,z`, `WG3_STOREY=n`.
+    let seed_over = std::env::var("WG3_SEED").ok().map(|v| {
+        let t = v.trim().trim_start_matches("0x").to_string();
+        u64::from_str_radix(&t, 16).unwrap_or_else(|_| v.trim().parse().expect("WG3_SEED"))
+    });
+    let storey_n: usize = std::env::var("WG3_STOREY")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(0);
+    let regions: Vec<(i32, i32)> = match std::env::var("WG3_REGION") {
+        Ok(v) => {
+            let mut it = v.split(',');
+            let x = it.next().unwrap().trim().parse().expect("WG3_REGION x");
+            let z = it
+                .next()
+                .expect("WG3_REGION z")
+                .trim()
+                .parse()
+                .expect("WG3_REGION z");
+            vec![(x, z)]
+        }
+        Err(_) => AUDIT_REGIONS.to_vec(),
+    };
 
-    for (rx, rz) in AUDIT_REGIONS {
-        let p = plan_of(&m, rx, rz);
+    for (rx, rz) in regions {
+        // **La planta baja del EDIFICIO, no `plan_of`** (ADR-120). La composicion de huellas vive
+        // en `plan_building` -tiene que correr despues de los pozos-, asi que una planta pedida
+        // suelta con `plan_region` sale SIN deformar: este volcado estuvo dibujando un mundo que no
+        // es el que se sirve, y con eso no se puede juzgar nada.
+        let building = match seed_over {
+            Some(sd) => {
+                let region = Wg3RegionCoord { x: rx, z: rz };
+                let bounds = region.bounds();
+                let gates = junction::gates_of_region(composer_seed(sd), rx, rz, bounds);
+                plan::plan_building(region.composer_seed(sd), bounds, &gates, STOREYS)
+            }
+            None => building_of(rx, rz),
+        };
+        let p = building.storeys[storey_n.min(building.storeys.len() - 1)].clone();
         let region = Wg3RegionCoord { x: rx, z: rz };
         let (min_x, min_z, _, _) = region.bounds();
         let w = REGION_M * PX;
@@ -7625,8 +7698,6 @@ fn dump_region_plans() {
         );
 
         for s in &p.spaces {
-            let (x0, z0, x1, z1) = s.rect.bounds_m();
-            let (px, py) = to_px(x0, z1);
             let (fill, stroke, dash) = match s.role {
                 SpaceRole::Spine => ("#f59e0b", "#fbbf24", ""),
                 SpaceRole::Corridor => ("#b45309", "#fbbf24", ""),
@@ -7641,13 +7712,40 @@ fn dump_region_plans() {
                 SpaceRole::DeadEnd => ("#7f1d1d", "#f87171", ""),
                 SpaceRole::Void => ("none", "#3f3f46", " stroke-dasharray=\"5 4\""),
             };
-            svg += &format!(
-                "<rect x=\"{px:.1}\" y=\"{py:.1}\" width=\"{:.1}\" height=\"{:.1}\" \
-                 fill=\"{fill}\" fill-opacity=\"0.55\" stroke=\"{stroke}\" \
-                 stroke-width=\"1.2\"{dash}/>\n",
-                (x1 - x0) * PX,
-                (z1 - z0) * PX
-            );
+            // **UN RECTANGULO POR PARTE, no la envolvente** (ADR-120 D1). Dibujar `rect` haria que
+            // este volcado -que es el criterio de aceptacion de ADR-100- mintiera exactamente sobre
+            // lo que ADR-120 viene a cambiar: pintaria una L como una caja, y ademas pintaria dos
+            // cajas pisandose donde hay dos espacios entrelazados que no comparten un centimetro.
+            for r in s.parts() {
+                let (x0, z0, x1, z1) = r.bounds_m();
+                let (px, py) = to_px(x0, z1);
+                svg += &format!(
+                    "<rect x=\"{px:.1}\" y=\"{py:.1}\" width=\"{:.1}\" height=\"{:.1}\" \
+                     fill=\"{fill}\" fill-opacity=\"0.55\" stroke=\"{stroke}\" \
+                     stroke-width=\"1.2\"{dash}/>\n",
+                    (x1 - x0) * PX,
+                    (z1 - z0) * PX
+                );
+            }
+            // Y el contorno de la HUELLA por encima, para que el quiebro se lea: sin el, dos partes
+            // pegadas se ven como dos salas con una pared en medio que no existe.
+            if s.is_composite() {
+                let mut d = String::new();
+                for r in s.parts() {
+                    let (x0, z0, x1, z1) = r.bounds_m();
+                    let (ax, ay) = to_px(x0, z1);
+                    d += &format!(
+                        "M{ax:.1} {ay:.1} h{:.1} v{:.1} h{:.1} Z ",
+                        (x1 - x0) * PX,
+                        (z1 - z0) * PX,
+                        -(x1 - x0) * PX
+                    );
+                }
+                svg += &format!(
+                    "<path d=\"{d}\" fill=\"none\" stroke=\"{stroke}\" stroke-width=\"2.2\" \
+                     opacity=\"0.9\"/>\n"
+                );
+            }
         }
 
         for l in &p.links {
@@ -7963,7 +8061,12 @@ fn an_atrium_is_two_storeys_tall_in_the_raster() {
 
         for storey in &b.storeys {
             for s in &storey.spaces {
-                if !(s.void_above && s.role == SpaceRole::Hall) {
+                // La condición es la de `fill::is_atrium`, **compuesta incluida** (ADR-120 D5): una
+                // nave deformada NO es atrio en esta tanda, porque el pretil se traza metiendo la
+                // envolvente hacia dentro y el vano del forjado se recorta sobre ella — los dos
+                // caerían sobre el suelo del vecino. Pedirle aquí 6,40 m sería exigir un atrio que se
+                // decidió no construir.
+                if !(s.void_above && s.role == SpaceRole::Hall && !s.is_composite()) {
                     continue;
                 }
                 let r = s.rect;
@@ -8081,7 +8184,12 @@ fn from_the_upper_storey_the_atrium_is_open() {
 
         for storey in &b.storeys {
             for s in &storey.spaces {
-                if !(s.void_above && s.role == SpaceRole::Hall) {
+                // La condición es la de `fill::is_atrium`, **compuesta incluida** (ADR-120 D5): una
+                // nave deformada NO es atrio en esta tanda, porque el pretil se traza metiendo la
+                // envolvente hacia dentro y el vano del forjado se recorta sobre ella — los dos
+                // caerían sobre el suelo del vecino. Pedirle aquí 6,40 m sería exigir un atrio que se
+                // decidió no construir.
+                if !(s.void_above && s.role == SpaceRole::Hall && !s.is_composite()) {
                     continue;
                 }
                 let r = s.rect;

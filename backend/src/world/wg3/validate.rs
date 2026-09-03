@@ -773,19 +773,22 @@ fn interior_mask(grid: &WalkGrid, building: &RegionBuilding) -> Vec<Vec<bool>> {
     let mut mask: Vec<Vec<bool>> = grid.floors.iter().map(|l| vec![false; l.len()]).collect();
     for storey in building.storeys.iter() {
         for (_, s) in storey.built() {
-            let r = s.rect;
             let lo_y = (s.floor_y_cm.min(s.floor_y_cm + s.rise_cm) - 60) as f32 / 100.0;
             let hi_y = (s.floor_y_cm.max(s.floor_y_cm + s.rise_cm) + 60) as f32 / 100.0;
-            let ix0 = ((r.min_x_cm as f32 / 100.0 - grid.min_x) / WG3_CELL_M).floor() as i32;
-            let ix1 = ((r.max_x_cm as f32 / 100.0 - grid.min_x) / WG3_CELL_M).ceil() as i32;
-            let iz0 = ((r.min_z_cm as f32 / 100.0 - grid.min_z) / WG3_CELL_M).floor() as i32;
-            let iz1 = ((r.max_z_cm as f32 / 100.0 - grid.min_z) / WG3_CELL_M).ceil() as i32;
-            for iz in ix_range(iz0, iz1, cells) {
-                for ix in ix_range(ix0, ix1, cells) {
-                    let c = iz * cells + ix;
-                    for (li, y) in grid.floors[c].iter().enumerate() {
-                        if *y >= lo_y && *y <= hi_y {
-                            mask[c][li] = true;
+            // Por partes (ADR-120 D5): marcar la envolvente daria por interior de ESTE espacio la
+            // muesca, que es del vecino y puede estar a otra cota.
+            for r in s.parts() {
+                let ix0 = ((r.min_x_cm as f32 / 100.0 - grid.min_x) / WG3_CELL_M).floor() as i32;
+                let ix1 = ((r.max_x_cm as f32 / 100.0 - grid.min_x) / WG3_CELL_M).ceil() as i32;
+                let iz0 = ((r.min_z_cm as f32 / 100.0 - grid.min_z) / WG3_CELL_M).floor() as i32;
+                let iz1 = ((r.max_z_cm as f32 / 100.0 - grid.min_z) / WG3_CELL_M).ceil() as i32;
+                for iz in ix_range(iz0, iz1, cells) {
+                    for ix in ix_range(ix0, ix1, cells) {
+                        let c = iz * cells + ix;
+                        for (li, y) in grid.floors[c].iter().enumerate() {
+                            if *y >= lo_y && *y <= hi_y {
+                                mask[c][li] = true;
+                            }
                         }
                     }
                 }
@@ -925,30 +928,37 @@ fn walk_region(
             .map(|w| w.rect)
             .collect();
         for (i, s) in storey.built() {
-            let r = s.rect.shrunk(60);
-            if r.width_cm() <= 0 || r.depth_cm() <= 0 {
-                continue;
-            }
             let lo_y = (s.floor_y_cm.min(s.floor_y_cm + s.rise_cm) - 30) as f32 / 100.0;
             let hi_y = (s.floor_y_cm.max(s.floor_y_cm + s.rise_cm) + 30) as f32 / 100.0;
-            let ix0 = ((r.min_x_cm as f32 / 100.0 - rasters.min_x) / WG3_CELL_M).floor() as i32;
-            let ix1 = ((r.max_x_cm as f32 / 100.0 - rasters.min_x) / WG3_CELL_M).ceil() as i32;
-            let iz0 = ((r.min_z_cm as f32 / 100.0 - rasters.min_z) / WG3_CELL_M).floor() as i32;
-            let iz1 = ((r.max_z_cm as f32 / 100.0 - rasters.min_z) / WG3_CELL_M).ceil() as i32;
             let (mut total, mut with_floor) = (0usize, 0usize);
-            for iz in ix_range(iz0, iz1, cells) {
-                for ix in ix_range(ix0, ix1, cells) {
-                    let cx_cm = ((rasters.min_x + (ix as f32 + 0.5) * WG3_CELL_M) * 100.0) as i32;
-                    let cz_cm = ((rasters.min_z + (iz as f32 + 0.5) * WG3_CELL_M) * 100.0) as i32;
-                    if wells.iter().any(|w| w.contains_point(cx_cm, cz_cm)) {
-                        continue;
-                    }
-                    total += 1;
-                    if floors[iz * cells + ix]
-                        .iter()
-                        .any(|y| *y >= lo_y && *y <= hi_y)
-                    {
-                        with_floor += 1;
+            // **Por PARTES de la huella, no por la envolvente** (ADR-120 D5). La envolvente de una
+            // sala en L cubre la muesca, que es suelo del VECINO y a la cota que a el le toque: se
+            // contaria como suelo que le falta a esta, y una sala perfecta saldria hueca.
+            for part in s.parts() {
+                let r = part.shrunk(60);
+                if r.width_cm() <= 0 || r.depth_cm() <= 0 {
+                    continue;
+                }
+                let ix0 = ((r.min_x_cm as f32 / 100.0 - rasters.min_x) / WG3_CELL_M).floor() as i32;
+                let ix1 = ((r.max_x_cm as f32 / 100.0 - rasters.min_x) / WG3_CELL_M).ceil() as i32;
+                let iz0 = ((r.min_z_cm as f32 / 100.0 - rasters.min_z) / WG3_CELL_M).floor() as i32;
+                let iz1 = ((r.max_z_cm as f32 / 100.0 - rasters.min_z) / WG3_CELL_M).ceil() as i32;
+                for iz in ix_range(iz0, iz1, cells) {
+                    for ix in ix_range(ix0, ix1, cells) {
+                        let cx_cm =
+                            ((rasters.min_x + (ix as f32 + 0.5) * WG3_CELL_M) * 100.0) as i32;
+                        let cz_cm =
+                            ((rasters.min_z + (iz as f32 + 0.5) * WG3_CELL_M) * 100.0) as i32;
+                        if wells.iter().any(|w| w.contains_point(cx_cm, cz_cm)) {
+                            continue;
+                        }
+                        total += 1;
+                        if floors[iz * cells + ix]
+                            .iter()
+                            .any(|y| *y >= lo_y && *y <= hi_y)
+                        {
+                            with_floor += 1;
+                        }
                     }
                 }
             }

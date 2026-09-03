@@ -112,7 +112,11 @@ const ATRIUM_CLEAR_CM: i32 = 2 * STOREY_HEIGHT_CM - 2 * SLAB_THICKNESS_CM;
 /// datos que nadie va a leer como intención. El papel es lo que separa «el plan quiso un atrio» de
 /// «aquí arriba resultó no haber nada».
 fn is_atrium(space: &PlannedSpace) -> bool {
-    space.void_above && space.role == SpaceRole::Hall
+    // **Y rectangular** (ADR-120 D5). El pretil se traza metiendo la envolvente hacia dentro y el
+    // vano del forjado se recorta sobre ella: en una L los dos caerían sobre el suelo del vecino —
+    // un pretil flotando en la sala de al lado y un agujero en SU techo. Un atrio de huella compuesta
+    // es trabajo aparte, y hasta entonces una nave deformada es una nave de altura normal.
+    space.void_above && space.role == SpaceRole::Hall && !space.is_composite()
 }
 
 /// Discriminante de `Wg3VolumeKind::Step`: una caja de peldaño en la chuleta de una pieza.
@@ -398,8 +402,15 @@ fn hole_carves(building: &RegionBuilding) -> Vec<Wg3Carve> {
             let lands_on_floor = building.storeys[n - 1]
                 .spaces
                 .iter()
-                .any(|t| t.role.is_built() && t.role != SpaceRole::Stair && t.rect.overlaps(&hole));
+                .any(|t| t.role.is_built() && t.role != SpaceRole::Stair && t.hits_rect(&hole));
             if !lands_on_floor {
+                continue;
+            }
+            // **Y el agujero tiene que estar ENTERO sobre suelo de este espacio** (ADR-120 D5). El
+            // centro de la envolvente de una L cae en la muesca —o sea, en la sala del vecino—, y
+            // ahí un vano de forjado no abre un hueco de dos plantas: le quita el techo al de al
+            // lado, que no ha decidido nada.
+            if !s.covers_rect(&hole) {
                 continue;
             }
 
@@ -715,7 +726,7 @@ fn hall_pillars(
                 continue;
             }
             let r = s.rect;
-            if r.area_m2() < PILLAR_MIN_AREA_M2 {
+            if s.area_m2() < PILLAR_MIN_AREA_M2 {
                 continue;
             }
 
@@ -821,7 +832,19 @@ fn hall_pillars(
                         max_z_cm: z + PILLAR_SIDE_CM,
                     };
 
-                    let blocked = landings.iter().any(|l| l.overlaps(&pillar))
+                    // **Y el pilar tiene que apoyar en suelo de ESTA sala, CON SU MARGEN** (ADR-120
+                    // D5). La retícula se traza sobre la envolvente, así que en una L caen puntos
+                    // dentro de la muesca: un macizo es inmune a los vanos, o sea que un pilar ahí es
+                    // una columna permanente plantada en mitad de la sala del vecino.
+                    //
+                    // Y con el margen, no sólo el pilar: la muesca es pared, y `PILLAR_WALL_MARGIN_CM`
+                    // existe para que un pilar no nazca pegado a una. Sin el margen se midieron dos
+                    // pilares de salas distintas a 498 cm — por debajo del mínimo de separación, que
+                    // es el número que impide que el peaje del ráster cierre el paso entre los dos.
+                    let with_margin =
+                        pillar.shrunk(-(PILLAR_WALL_MARGIN_CM - PILLAR_JITTER_MAX_CM));
+                    let blocked = !s.covers_rect(&with_margin)
+                        || landings.iter().any(|l| l.overlaps(&pillar))
                         || wells_here.iter().any(|w| w.overlaps(&pillar))
                         || doors.iter().any(|&(dx, dz)| {
                             (dx - (x + PILLAR_SIDE_CM / 2)).abs() < PILLAR_DOOR_CLEAR_CM
@@ -1067,7 +1090,7 @@ fn interior_partitions(
                 continue;
             }
             let r = s.rect;
-            if r.area_m2() < PARTITION_MIN_AREA_M2 {
+            if s.area_m2() < PARTITION_MIN_AREA_M2 {
                 continue;
             }
 
@@ -1076,7 +1099,7 @@ fn interior_partitions(
             if room.next01() >= PARTITION_ROOM_CHANCE {
                 continue;
             }
-            let want = ((r.area_m2() / PARTITION_AREA_PER_ONE_M2).round() as i32)
+            let want = ((s.area_m2() / PARTITION_AREA_PER_ONE_M2).round() as i32)
                 .clamp(1, PARTITION_MAX_PER_SPACE);
 
             // Los puntos por los que se entra: enlaces del plan y puertas de junta, igual que en la
@@ -1102,12 +1125,32 @@ fn interior_partitions(
             let mut split_used = false;
 
             for _ in 0..want {
+                // **La división se sortea dentro de una PARTE, no de la envolvente** (ADR-120 D5).
+                //
+                // Sobre una L, la envolvente cubre terreno del vecino: la tirada caía ahí y la
+                // división se descartaba después por `covers_rect`. Medido al subir el rendimiento de
+                // la composición de huellas: el recuento de divisiones del barrido bajó de más de mil
+                // a 858 — o sea que cada mordisco que PASS 1 ponía le quitaba a PASS 2 su sala. La
+                // parte se elige con el mismo flujo, y con una sola parte no se sortea nada: ahí la
+                // envolvente y la huella son lo mismo y la secuencia no se mueve.
+                // Y la parte es la MAYOR, no una sorteada: sobre una L con un brazo de tres metros
+                // media tirada caía en el brazo, no cabía un tramo y se perdía la división entera —
+                // el barrido se quedaba en 919 de las mil que la gramática tiene que emitir. La
+                // mayor es además donde una división se LEE, que es para lo que está.
+                let host = if s.is_composite() {
+                    *s.parts()
+                        .iter()
+                        .max_by_key(|p| p.area_m2() as i64)
+                        .unwrap_or(&r)
+                } else {
+                    r
+                };
                 // El eje se sortea; el vano que cruza es el lado perpendicular al tabique.
                 let across_x = room.next01() < 0.5;
                 let (span, room_side) = if across_x {
-                    (r.depth_cm(), r.width_cm())
+                    (host.depth_cm(), host.width_cm())
                 } else {
-                    (r.width_cm(), r.depth_cm())
+                    (host.width_cm(), host.depth_cm())
                 };
                 if span < PARTITION_MIN_SPAN_CM {
                     continue;
@@ -1116,14 +1159,22 @@ fn interior_partitions(
                 if free <= 0 {
                     continue;
                 }
-                let at_base = if across_x { r.min_x_cm } else { r.min_z_cm };
+                let at_base = if across_x {
+                    host.min_x_cm
+                } else {
+                    host.min_z_cm
+                };
                 let at = at_base + PARTITION_WALL_MARGIN_CM + (room.next01() * free as f32) as i32;
 
                 // Isla, espolón o partición. La partición sólo puede salir una vez por espacio: dos
                 // que se cruzan dejan cuadrantes, y un cuadrante con un solo hueco es la isla que el
                 // validador caza.
                 let kind = room.next01();
-                let from_base = if across_x { r.min_z_cm } else { r.min_x_cm };
+                let from_base = if across_x {
+                    host.min_z_cm
+                } else {
+                    host.min_x_cm
+                };
                 let (run_from, run_to, gap): PartitionRun = if kind < PARTITION_ISLAND_BELOW {
                     let f = PARTITION_ISLAND_SPAN.0
                         + room.next01() * (PARTITION_ISLAND_SPAN.1 - PARTITION_ISLAND_SPAN.0);
@@ -1199,7 +1250,27 @@ fn interior_partitions(
                     max_x_cm: r.min_x_cm + (r.width_cm() + HOLE_SIDE_CM) / 2,
                     max_z_cm: r.min_z_cm + (r.depth_cm() + HOLE_SIDE_CM) / 2,
                 };
-                let blocked = landings.iter().any(|l| l.overlaps(&foot))
+                // Y ENTERA sobre suelo propio, **CON SU PASO ALREDEDOR** (ADR-120 D5).
+                //
+                // La tirada se calcula sobre la envolvente, así que en una L una isla puede nacer
+                // flotando en la sala del vecino —y un macizo es inmune a los vanos, o sea que ahí se
+                // queda—; ése es el primer motivo. El segundo es peor y sólo aparece con huellas
+                // compuestas: la isla se separa de las paredes de la ENVOLVENTE, no de las reales, así
+                // que dentro del brazo estrecho de una L puede tapar el brazo entero. El síntoma no
+                // es un macizo mal puesto: son mil metros cuadrados de región que dejan de alcanzarse
+                // —medido, 2 regiones de 270 con la puerta de junta dentro de la isla—.
+                //
+                // Se exige que la división MÁS su holgura de paso quepa en la huella. Con una sola
+                // parte no cambia nada: ahí la envolvente y la huella son lo mismo.
+                // **Y el paso alrededor se le exige a la ISLA, no a todo.** Una isla flota y por eso
+                // necesita suelo propio a los cuatro lados; un espolón y una partición nacen PEGADOS
+                // a una pared, así que inflarlos los saca del espacio por definición y se descartaban
+                // todos: sobre huella compuesta se perdían las dos terceras partes de la gramática.
+                let with_gap = foot.shrunk(-PARTITION_ISLAND_CLEAR_CM);
+                let is_island = kind < PARTITION_ISLAND_BELOW;
+                let blocked = !s.covers_rect(&foot)
+                    || (s.is_composite() && is_island && !s.covers_rect(&with_gap))
+                    || landings.iter().any(|l| l.overlaps(&foot))
                     || (n > 0 && hole.shrunk(-50).overlaps(&foot))
                     || wells_here.iter().any(|w| w.overlaps(&foot))
                     || mine.iter().any(|m| m.overlaps(&foot))
@@ -1249,9 +1320,15 @@ fn interior_partitions(
                 .filter(|(a, b)| b - a >= PARTITION_STUB_MIN_CM)
                 .collect();
                 for (a, b) in runs {
+                    // **Y el troceado es a PARTES IGUALES, no a mordiscos de 20 m.** Cortando
+                    // avaricioso, una tirada de 20,30 m sale como un trozo de 20 m y un MUÑÓN de
+                    // 30 × 30 — un poste, no un tabique. Sale 1 vez cada 30 semillas y el test lo
+                    // caza; repartir el resto entre todos los trozos lo hace imposible.
+                    let len = b - a;
+                    let n = (len + MAX_SOLID_CM - 1) / MAX_SOLID_CM;
                     let mut cut = a;
-                    while cut < b {
-                        let end = (cut + MAX_SOLID_CM).min(b);
+                    for k in 1..=n {
+                        let end = a + (len * k) / n;
                         let (x, z, sx, sz) = if across_x {
                             (at, cut, PARTITION_T_CM, end - cut)
                         } else {
@@ -1518,7 +1595,29 @@ fn mouth_on(
     width_cm: i32,
 ) -> Option<Mouth> {
     let s = &plan.spaces[space];
-    let r = s.rect;
+    // **La boca va en la parte que de verdad tiene esa pared** (ADR-120 D5). Sobre una huella
+    // compuesta, la envolvente ofrece una pared exterior que en el rincón de la L no existe: el
+    // conector moriría contra el suelo del vecino. Se elige la parte que más se asoma por ese lado, y
+    // a igualdad la más cercana a donde va la ruta. Con una sola parte es la de siempre.
+    let r = *s
+        .parts()
+        .iter()
+        .max_by_key(|p| {
+            let out = match side % 4 {
+                0 => p.max_z_cm,
+                1 => p.max_x_cm,
+                2 => -p.min_z_cm,
+                _ => -p.min_x_cm,
+            };
+            let (c_x, c_z) = p.centre_m();
+            let near = if side.is_multiple_of(2) {
+                -((c_x - towards.0).abs() * CM_PER_M) as i32
+            } else {
+                -((c_z - towards.1).abs() * CM_PER_M) as i32
+            };
+            (out, near)
+        })
+        .expect("todo espacio tiene al menos una parte");
     let half = width_cm / 2;
     let (x_cm, z_cm) = match side % 4 {
         0 => (
@@ -1566,25 +1665,15 @@ fn clamp_side(target_m: f32, min_cm: i32, max_cm: i32, half_cm: i32) -> Option<i
 /// una puerta cae exactamente sobre la línea que comparten dos: no hay nada que buscar, sólo que
 /// reconocer.
 fn wall_side(space: &PlannedSpace, x_cm: i32, z_cm: i32) -> Option<u8> {
-    const EPS: i32 = 2;
-    let r = space.rect;
     // Dentro del tramo del lado, o el hueco se saldría de la pared. Se comprueba con el vano mínimo
     // y no con el pedido: un hueco de 5 m centrado a 30 cm de la esquina no cabe por mucho que la
     // pared mida 20 m.
-    let half = MIN_GENERATED_WIDTH_CM / 2;
-    if (r.max_z_cm - z_cm).abs() <= EPS && x_cm - half >= r.min_x_cm && x_cm + half <= r.max_x_cm {
-        return Some(0);
-    }
-    if (r.max_x_cm - x_cm).abs() <= EPS && z_cm - half >= r.min_z_cm && z_cm + half <= r.max_z_cm {
-        return Some(1);
-    }
-    if (r.min_z_cm - z_cm).abs() <= EPS && x_cm - half >= r.min_x_cm && x_cm + half <= r.max_x_cm {
-        return Some(2);
-    }
-    if (r.min_x_cm - x_cm).abs() <= EPS && z_cm - half >= r.min_z_cm && z_cm + half <= r.max_z_cm {
-        return Some(3);
-    }
-    None
+    //
+    // **Y la responde el plan, no este módulo** (ADR-120 D5). El plan declara ilegal el enlace que
+    // no cae en pared y el relleno lo abre: si las dos comprobaciones se escriben aparte, un día
+    // dicen cosas distintas y el edificio nace con salas selladas que ningún contador ve. Ahora es
+    // literalmente la misma función.
+    space.wall_side_of(x_cm, z_cm, MIN_GENERATED_WIDTH_CM / 2)
 }
 
 /// La pieza del catálogo que representa este espacio, si alguna encaja.
@@ -1596,6 +1685,13 @@ fn wall_side(space: &PlannedSpace, x_cm: i32, z_cm: i32) -> Option<u8> {
 /// A igualdad, gana la de menor índice: el mundo no puede depender de en qué orden se recorrió el
 /// catálogo.
 fn fitting_piece(space: &PlannedSpace, manifest: &Wg3Manifest) -> Option<Wg3Placement> {
+    // **Una pieza es un rectángulo, así que sobre una huella compuesta se DESCARTA** (ADR-120 D6).
+    // No es una limitación que haya que quitar: es la respuesta correcta. Encajar aquí quiere decir
+    // LLENAR el espacio, y ninguna caja llena una L — forzarla sería devolverle al catálogo el poder
+    // de imponer cuadrícula, que es justo lo que este trabajo viene a quitarle.
+    if space.is_composite() {
+        return None;
+    }
     let want_x = space.rect.width_cm();
     let want_z = space.rect.depth_cm();
     // **La pieza tiene que caber también en ALTURA** (auditoría 2026-09-02). Una pieza de 4,50 m
@@ -1682,7 +1778,6 @@ fn emit_space(index: usize, space: &PlannedSpace, wanted: &[Wanted], out: &mut F
         return;
     }
     let max_cm = (MAX_SEGMENT_M * CM_PER_M) as i32;
-    let r = space.rect;
     // División con techo escrita a mano: `i32::div_ceil` sigue siendo inestable en el toolchain del
     // proyecto, y no se va a encender una feature de nightly por una cuenta de dos operaciones.
     //
@@ -1697,24 +1792,22 @@ fn emit_space(index: usize, space: &PlannedSpace, wanted: &[Wanted], out: &mut F
     // 2558 × 634 cm contra un tope de 2500, y un tramo por encima del tope rompe el reparto por
     // chunk: se dibuja en el chunk de su centro y asoma mas alla de los vecinos inmediatos, o sea
     // que un cliente con radio 1 puede no verlo entero.
-    let ceil_div = |v: i32, by: i32| (v + by - 1) / by;
     let budget = max_cm - 600;
-    let nx = ceil_div(r.width_cm(), budget).max(1);
-    let nz = ceil_div(r.depth_cm(), budget).max(1);
 
-    let edge = |i: i32, n: i32, from: i32, size: i32| -> i32 {
-        if i == n {
-            from + size
-        } else {
-            from + (size * i) / n
-        }
-    };
-    let mut xs: Vec<i32> = (0..=nx)
-        .map(|i| edge(i, nx, r.min_x_cm, r.width_cm()))
-        .collect();
-    let mut zs: Vec<i32> = (0..=nz)
-        .map(|i| edge(i, nz, r.min_z_cm, r.depth_cm()))
-        .collect();
+    // **ADR-120 D4 — LA REJILLA COMÚN Y SU MÁSCARA.**
+    //
+    // Las líneas de rejilla son las CARAS DE LAS PARTES más los cortes que exige el tope de tramo, y
+    // se emite la celda cuyo centro cae dentro de alguna parte. Tres propiedades, y las tres son la
+    // razón de hacerlo así y no con vanos parciales:
+    //
+    // 1. Con UNA sola parte, las líneas son exactamente las de antes, en el mismo orden y con las
+    //    mismas bocas: la salida es idéntica. El mundo sin deformar no se entera de este cambio.
+    // 2. Las caras de celda coinciden siempre con las caras de parte, así que una celda viva y su
+    //    vecina viva comparten el lado ENTERO — sigue siendo `full_side` o nada, y no hace falta
+    //    ninguna matemática de vanos nueva.
+    // 3. La máscara es lo único que distingue una L de un rectángulo. La geometría no cambia.
+    let (mut xs, hard_x) = grid_lines(space.parts(), true, budget);
+    let (mut zs, hard_z) = grid_lines(space.parts(), false, budget);
 
     // **LOS CORTES SE APARTAN DE LAS PUERTAS, y esto no es un refinamiento: es corrección.**
     //
@@ -1723,8 +1816,25 @@ fn emit_space(index: usize, space: &PlannedSpace, wanted: &[Wanted], out: &mut F
     // la sala nace sellada con su puerta dibujada en el plano. Se ve como manchas andables sueltas —
     // 22 en la primera medida de una región—, que es la fragmentación de siempre reaparecida por
     // dentro. Mover el corte cuesta dos restas y lo quita de raíz.
-    shift_cuts(&mut xs, wanted, true);
-    shift_cuts(&mut zs, wanted, false);
+    //
+    // **Pero una cara de parte NO se mueve** (ADR-120 D4): moverla cambiaría la forma emitida sin
+    // cambiar la huella del plan, y entonces las métricas, el validador y el mundo dejarían de hablar
+    // de lo mismo. Se corre sólo lo de dentro de cada tramo entre caras, que con una sola parte es
+    // todo el vector y da la llamada de siempre.
+    shift_between(&mut xs, &hard_x, wanted, true);
+    shift_between(&mut zs, &hard_z, wanted, false);
+
+    // La máscara: qué celdas de la rejilla son suelo de este espacio.
+    let (nx, nz) = (xs.len() - 1, zs.len() - 1);
+    let mut alive = vec![false; nx * nz];
+    for iz in 0..nz {
+        for ix in 0..nx {
+            let cx = (xs[ix] + xs[ix + 1]) / 2;
+            let cz = (zs[iz] + zs[iz + 1]) / 2;
+            alive[iz * nx + ix] = space.parts().iter().any(|p| p.contains_point(cx, cz));
+        }
+    }
+    let live_cells = alive.iter().filter(|&&a| a).count();
 
     let height = clear_height_cm(space);
     // Qué huecos ha alojado alguien. Un `false` al terminar es una puerta perdida, y hay que contarla.
@@ -1735,24 +1845,31 @@ fn emit_space(index: usize, space: &PlannedSpace, wanted: &[Wanted], out: &mut F
 
     for iz in 0..nz {
         for ix in 0..nx {
-            let (x0, x1) = (xs[ix as usize], xs[ix as usize + 1]);
-            let (z0, z1) = (zs[iz as usize], zs[iz as usize + 1]);
+            if !alive[iz * nx + ix] {
+                continue;
+            }
+            let (x0, x1) = (xs[ix], xs[ix + 1]);
+            let (z0, z1) = (zs[iz], zs[iz + 1]);
 
             let mut openings = Vec::new();
 
             // **Las paredes INTERIORES del espacio se abren enteras.** Un espacio partido en cuatro
             // tramos tiene que seguir siendo un sitio; dejar la pared de por medio lo convertiría en
             // cuatro salas que nadie pidió, y ésa es justo la fragmentación de la que se viene.
-            if ix + 1 < nx {
+            //
+            // Con la máscara, «interior» pasa a querer decir «la celda de al lado también es suelo
+            // mío»: es el rincón de la L el que deja pared, y no hay ningún caso especial que
+            // escribir para que lo haga.
+            if ix + 1 < nx && alive[iz * nx + ix + 1] {
                 openings.push(full_side(1, z1 - z0));
             }
-            if ix > 0 {
+            if ix > 0 && alive[iz * nx + ix - 1] {
                 openings.push(full_side(3, z1 - z0));
             }
-            if iz + 1 < nz {
+            if iz + 1 < nz && alive[(iz + 1) * nx + ix] {
                 openings.push(full_side(0, x1 - x0));
             }
-            if iz > 0 {
+            if iz > 0 && alive[(iz - 1) * nx + ix] {
                 openings.push(full_side(2, x1 - x0));
             }
 
@@ -1769,7 +1886,7 @@ fn emit_space(index: usize, space: &PlannedSpace, wanted: &[Wanted], out: &mut F
             // única puerta no cuadra —un cruce tan ancho como la pared y tres centímetros
             // descentrado— el tramo se saltaba, no quedaba ninguno sobre el que rescatarla, y el
             // espacio entero desaparecía: sin suelo, sin paredes, con su puerta en el plano.
-            if openings.is_empty() && nx == 1 && nz == 1 {
+            if openings.is_empty() && live_cells == 1 {
                 for (k, w) in wanted.iter().enumerate() {
                     if let Some(o) = clamped_opening_in(w, x0, z0, x1, z1) {
                         openings.push(o);
@@ -1830,6 +1947,22 @@ fn emit_space(index: usize, space: &PlannedSpace, wanted: &[Wanted], out: &mut F
         if !rescued {
             out.openings_dropped += 1;
             out.openings_dropped_at.push((index, w.at_x_cm, w.at_z_cm));
+            // Un hueco perdido es una sala sellada con la puerta dibujada en el plano, y el
+            // contador no dice por que. `WG3_DROP_DEBUG=1` escupe la rejilla entera del espacio, que
+            // es lo unico con lo que se puede decidir si sobra una linea o falta un rescate.
+            if std::env::var("WG3_DROP_DEBUG").is_ok() {
+                eprintln!(
+                    "[drop] espacio {index} lado {} en ({},{}) de {} cm | partes {:?} | xs {:?} | \
+                     zs {:?} | vivas {live_cells}",
+                    w.side,
+                    w.at_x_cm,
+                    w.at_z_cm,
+                    w.width_cm,
+                    space.parts(),
+                    xs,
+                    zs,
+                );
+            }
         }
     }
 }
@@ -1968,6 +2101,55 @@ fn clamped_opening_in(w: &Wanted, x0: i32, z0: i32, x1: i32, z1: i32) -> Option<
 /// S, que son los que corren en X). El corte se mueve al borde del hueco más la jamba, por el lado
 /// más cercano, y nunca más allá de sus vecinos: un corte que adelantara a otro daría un tramo de
 /// tamaño negativo.
+/// ADR-120 D4 — las líneas de rejilla de un eje, y cuáles de ellas son CARAS DE PARTE.
+///
+/// Devuelve `(líneas, índices duros)`. Las duras son las caras: no se mueven nunca, porque son la
+/// forma. Las de en medio las mete el tope de tramo y sí se pueden correr para no partir una puerta.
+///
+/// Con una sola parte hay exactamente dos líneas duras —los dos extremos— y el reparto de en medio es
+/// el mismo `from + size * i / n` de siempre, así que sale el vector de antes.
+fn grid_lines(
+    parts: &[super::plan::PlanRect],
+    along_x: bool,
+    budget: i32,
+) -> (Vec<i32>, Vec<usize>) {
+    let ceil_div = |v: i32, by: i32| (v + by - 1) / by;
+    let mut faces: Vec<i32> = Vec::with_capacity(parts.len() * 2);
+    for p in parts {
+        if along_x {
+            faces.push(p.min_x_cm);
+            faces.push(p.max_x_cm);
+        } else {
+            faces.push(p.min_z_cm);
+            faces.push(p.max_z_cm);
+        }
+    }
+    faces.sort_unstable();
+    faces.dedup();
+
+    let mut lines = vec![faces[0]];
+    let mut hard = vec![0usize];
+    for w in faces.windows(2) {
+        let (from, size) = (w[0], w[1] - w[0]);
+        let n = ceil_div(size, budget).max(1);
+        for i in 1..n {
+            lines.push(from + (size * i) / n);
+        }
+        lines.push(w[1]);
+        hard.push(lines.len() - 1);
+    }
+    (lines, hard)
+}
+
+/// Corre los cortes de dentro de cada tramo entre caras, dejando las caras quietas.
+///
+/// Con una sola parte el tramo es el vector entero y esto ES [`shift_cuts`] tal cual.
+fn shift_between(lines: &mut [i32], hard: &[usize], wanted: &[Wanted], along_x: bool) {
+    for w in hard.windows(2) {
+        shift_cuts(&mut lines[w[0]..=w[1]], wanted, along_x);
+    }
+}
+
 fn shift_cuts(cuts: &mut [i32], wanted: &[Wanted], along_x: bool) {
     /// Jamba mínima entre el borde de una puerta y el corte. Por debajo, el tramo hermana empieza
     /// dentro del vano y la pared que lo forma se parte en dos.
@@ -2204,6 +2386,12 @@ fn emit_stair(index: usize, space: &PlannedSpace, wanted: &[Wanted], out: &mut F
         if !rescued {
             out.openings_dropped += 1;
             out.openings_dropped_at.push((index, w.at_x_cm, w.at_z_cm));
+            if std::env::var("WG3_DROP_DEBUG").is_ok() {
+                eprintln!(
+                    "[drop-stair] espacio {index} lado {} en ({},{}) de {} cm | rect {:?}",
+                    w.side, w.at_x_cm, w.at_z_cm, w.width_cm, space.rect,
+                );
+            }
         }
     }
 }

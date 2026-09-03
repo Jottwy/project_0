@@ -564,6 +564,92 @@ fn probe_region_inside() {
     }
 }
 
+/// ADR-120 — clasifica la huella de un espacio y devuelve `(clase, perímetro en metros)`.
+///
+/// La clase sale de la MÁSCARA sobre la rejilla de las caras de las partes, que es exactamente la
+/// rejilla con la que el relleno emite (ADR-120 D4): así lo que se cuenta aquí es lo que se construye
+/// allí. Contar las casillas MUERTAS de esa rejilla —las que quedan dentro de la envolvente y fuera
+/// de la huella— dice la forma sin necesidad de reconocer ninguna:
+///
+/// - ninguna → un rectángulo;
+/// - una en esquina → una L;
+/// - una en el lado → una T o una U;
+/// - dos en el mismo lado y a distinta profundidad → una Z o una escalonada.
+fn shape_of(sp: &super::plan::PlannedSpace) -> (usize, f32) {
+    let parts = sp.parts();
+    let mut xs: Vec<i32> = parts
+        .iter()
+        .flat_map(|p| [p.min_x_cm, p.max_x_cm])
+        .collect();
+    let mut zs: Vec<i32> = parts
+        .iter()
+        .flat_map(|p| [p.min_z_cm, p.max_z_cm])
+        .collect();
+    xs.sort_unstable();
+    xs.dedup();
+    zs.sort_unstable();
+    zs.dedup();
+    let (nx, nz) = (xs.len() - 1, zs.len() - 1);
+    let mut alive = vec![false; nx * nz];
+    for iz in 0..nz {
+        for ix in 0..nx {
+            let (cx, cz) = ((xs[ix] + xs[ix + 1]) / 2, (zs[iz] + zs[iz + 1]) / 2);
+            alive[iz * nx + ix] = parts.iter().any(|p| p.contains_point(cx, cz));
+        }
+    }
+
+    // Perímetro: cada cara de celda viva que no da a otra celda viva.
+    let mut perim_cm = 0i64;
+    for iz in 0..nz {
+        for ix in 0..nx {
+            if !alive[iz * nx + ix] {
+                continue;
+            }
+            let (w, d) = ((xs[ix + 1] - xs[ix]) as i64, (zs[iz + 1] - zs[iz]) as i64);
+            if ix + 1 == nx || !alive[iz * nx + ix + 1] {
+                perim_cm += d;
+            }
+            if ix == 0 || !alive[iz * nx + ix - 1] {
+                perim_cm += d;
+            }
+            if iz + 1 == nz || !alive[(iz + 1) * nx + ix] {
+                perim_cm += w;
+            }
+            if iz == 0 || !alive[(iz - 1) * nx + ix] {
+                perim_cm += w;
+            }
+        }
+    }
+    let perim_m = perim_cm as f32 / 100.0;
+
+    let dead: Vec<(usize, usize)> = (0..nz)
+        .flat_map(|iz| (0..nx).map(move |ix| (ix, iz)))
+        .filter(|&(ix, iz)| !alive[iz * nx + ix])
+        .collect();
+    let corner = |ix: usize, iz: usize| (ix == 0 || ix + 1 == nx) && (iz == 0 || iz + 1 == nz);
+    let klass = match dead.len() {
+        0 => 0,
+        1 => {
+            if corner(dead[0].0, dead[0].1) {
+                1
+            } else {
+                2
+            }
+        }
+        2 => {
+            let same_row = dead[0].1 == dead[1].1;
+            let same_col = dead[0].0 == dead[1].0;
+            if same_row || same_col {
+                3
+            } else {
+                4
+            }
+        }
+        _ => 4,
+    };
+    (klass, perim_m)
+}
+
 /// AUDITORÍA FASE 2 (2026-09-02) — la LÍNEA BASE arquitectónica, antes de tocar nada.
 ///
 /// Sólo mide. No cambia el generador, y por eso vive en el módulo de tests: lo que se quiere saber
@@ -621,6 +707,18 @@ fn probe_architecture_metrics() {
     let mut built_spaces = 0usize;
     let mut spaces_with_mass = 0usize;
     let mut parts_total = 0usize;
+
+    // ADR-120 — LA RECTANGULARIDAD, medida. Es la métrica que da sentido a esta tanda, y ninguna de
+    // las que ya había la veía: un mundo de cajas y un mundo de eles dan las mismas áreas, los mismos
+    // papeles y las mismas entradas.
+    let mut part_hist = [0usize; super::plan::MAX_PARTS + 1];
+    // I (rectángulo), L, T/U, Z/escalonada, otra.
+    let mut shape_hist = [0usize; 5];
+    let mut compacity_sum = 0f64;
+    let mut bulge_area = 0f64;
+    let mut footprint_area = 0f64;
+    // Saltos de escala entre vecinos: un enlace cuyos dos lados difieren en área por 3× o más.
+    let (mut jump_links, mut total_links) = (0usize, 0usize);
     let mut part_cm = 0i64;
 
     for &seed in &seeds {
@@ -717,8 +815,36 @@ fn probe_architecture_metrics() {
             }
 
             for (n, plan) in inside.building.storeys.iter().enumerate() {
+                for l in &plan.links {
+                    let (pa, pb) = (
+                        plan.spaces[l.a].area_m2().max(1.0),
+                        plan.spaces[l.b].area_m2().max(1.0),
+                    );
+                    total_links += 1;
+                    if pa.max(pb) / pa.min(pb) >= 3.0 {
+                        jump_links += 1;
+                    }
+                }
                 for (i, sp) in plan.built() {
                     spaces_total += 1;
+                    part_hist[sp.parts().len().min(super::plan::MAX_PARTS)] += 1;
+                    let (klass, perim) = shape_of(sp);
+                    shape_hist[klass] += 1;
+                    let fp = sp.area_m2() as f64;
+                    footprint_area += fp;
+                    // Compacidad: perímetro² / (16·área). Vale 1 para un cuadrado y sube con cada
+                    // quiebro, así que es el escalar único de «esto ya no es una caja».
+                    compacity_sum += (perim as f64 * perim as f64) / (16.0 * fp.max(1.0));
+                    // Área en bultos: todo lo que no es la parte mayor. Dice si la deformación es
+                    // grande de verdad o una mordida decorativa.
+                    if sp.is_composite() {
+                        let biggest = sp
+                            .parts()
+                            .iter()
+                            .map(|p| p.area_m2() as f64)
+                            .fold(0.0, f64::max);
+                        bulge_area += fp - biggest;
+                    }
                     let a = sp.rect.area_m2();
                     area_sum += a as f64;
                     if a > area_max {
@@ -880,6 +1006,40 @@ fn probe_architecture_metrics() {
         "  espacios ≥300 m²: {} ({:.1} %)",
         big,
         pc(big, spaces_total)
+    );
+    // ---- ADR-120: la rectangularidad ----
+    println!(
+        "  HUELLA: rectangulares {} de {} ({:.1} %), compuestas {:.1} %",
+        part_hist[1],
+        spaces_total,
+        pc(part_hist[1], spaces_total),
+        pc(spaces_total - part_hist[1], spaces_total)
+    );
+    for (k, n) in part_hist.iter().enumerate().skip(1) {
+        println!("    {k} parte(s): {n:6}  {:5.1} %", pc(*n, spaces_total));
+    }
+    const SHAPES: [&str; 5] = ["I (caja)", "L", "T/U", "Z/escalonada", "otra"];
+    for (k, n) in shape_hist.iter().enumerate() {
+        println!(
+            "    forma {:<14} {:6}  {:5.1} %",
+            SHAPES[k],
+            n,
+            pc(*n, spaces_total)
+        );
+    }
+    println!(
+        "  compacidad media (perímetro²/16·área, 1,0 = cuadrado): {:.3}",
+        compacity_sum / spaces_total.max(1) as f64
+    );
+    println!(
+        "  área en bultos: {:.1} % del área construida",
+        100.0 * bulge_area / footprint_area.max(1.0)
+    );
+    println!(
+        "  saltos de escala (enlaces con razón de áreas ≥ 3): {} de {} ({:.1} %)",
+        jump_links,
+        total_links,
+        pc(jump_links, total_links)
     );
     println!(
         "  tramos {}, macizos {}, de ellos pilares {}",
@@ -1114,7 +1274,12 @@ fn partitions_land_where_the_grammar_says() {
                 .filled
                 .solids
                 .iter()
-                .filter(|s| s.size_x_cm == T_CM || s.size_z_cm == T_CM)
+                // **Por el eje FINO, no por cualquiera de los dos.** Un pretil mide 20 cm de grueso
+                // y su tramo puede salir de 30 de largo: con el filtro por «alguno de los dos vale
+                // 30» ese pretil entraba aquí como si fuera un tabique y se estrellaba contra la
+                // comprobación de altura —110 cm, que es la del pretil— en 1 de 30 semillas. El eje
+                // fino de una división vale 30 por construcción; el de un pretil, 20.
+                .filter(|s| s.size_x_cm.min(s.size_z_cm) == T_CM)
                 .collect();
             seen += parts.len();
 
@@ -1132,7 +1297,11 @@ fn partitions_land_where_the_grammar_says() {
                 let mut host = None;
                 for (n, st) in inside.building.storeys.iter().enumerate() {
                     for (i, sp) in st.built() {
-                        if sp.floor_y_cm == p.bottom_y_cm && sp.rect.contains_rect(&rect) {
+                        // Por la HUELLA (ADR-120 D1): desde que dos espacios se entrelazan sus
+                        // envolventes se pisan, así que preguntando por `rect` el macizo se le
+                        // atribuye al vecino y el test mide la sala equivocada. Las huellas son
+                        // disjuntas, así que dueño hay exactamente uno.
+                        if sp.floor_y_cm == p.bottom_y_cm && sp.covers_rect(&rect) {
                             host = Some((n, i, sp));
                         }
                     }
@@ -1282,15 +1451,38 @@ fn pillars_land_where_the_grammar_says() {
                 let mut host = None;
                 for (n, st) in inside.building.storeys.iter().enumerate() {
                     for (i, sp) in st.built() {
-                        if sp.floor_y_cm == p.bottom_y_cm && sp.rect.contains_rect(&rect) {
+                        // Por la HUELLA (ADR-120 D1): desde que dos espacios se entrelazan sus
+                        // envolventes se pisan, así que preguntando por `rect` el macizo se le
+                        // atribuye al vecino y el test mide la sala equivocada. Las huellas son
+                        // disjuntas, así que dueño hay exactamente uno.
+                        if sp.floor_y_cm == p.bottom_y_cm && sp.covers_rect(&rect) {
                             host = Some((n, i, sp));
                         }
                     }
                 }
                 let Some((n, i, sp)) = host else {
+                    let near: Vec<String> = inside
+                        .building
+                        .storeys
+                        .iter()
+                        .enumerate()
+                        .flat_map(|(n, st)| {
+                            st.built()
+                                .filter(|(_, sp)| sp.rect.overlaps(&rect))
+                                .map(move |(i, sp)| {
+                                    format!(
+                                        "planta {n} espacio {i} ({}) cota {} partes {:?}",
+                                        sp.role.name(),
+                                        sp.floor_y_cm,
+                                        sp.parts()
+                                    )
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .collect();
                     panic!(
                         "semilla {seed:#x} región ({rx},{rz}): pilar en ({},{}) cota {} fuera de \
-                         todo espacio construido",
+                         todo espacio construido — envolventes que lo pisan: {near:?}",
                         p.x_cm, p.z_cm, p.bottom_y_cm
                     );
                 };
