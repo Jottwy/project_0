@@ -21,6 +21,9 @@ pub mod hash;
 /// ADR-103 — la identidad de nivel: mezcla de perfiles por celda, función pura de la posición.
 pub mod identity;
 pub mod junction;
+/// Metricas de layout (space syntax): isovista, occlusivity, jaggedness, clustering de VGA, drift y
+/// entropia del reparto de tiles. Solo lectura sobre el mundo servido.
+pub mod layout_metrics;
 pub mod manifest;
 /// ADR-108 — la navegacion de WG3.
 pub mod nav;
@@ -31,6 +34,9 @@ pub mod raster;
 pub mod route;
 pub mod scale;
 pub mod segment;
+/// Resumen del lote de metricas de layout (media, mediana, desviacion, p10, p90 por chunk). Solo
+/// lee el CSV que escribe `layout_metrics`.
+pub mod summarize_metrics;
 /// Auditoría 2026-09-02 — la validación por niveles: plan, edificio, relleno, geometría, ráster,
 /// navegación y determinismo, para cualquier semilla y cualquier región.
 pub mod validate;
