@@ -236,6 +236,18 @@ pub fn fill(plan: &RegionPlan, manifest: &Wg3Manifest) -> FilledRegion {
 /// aquí: nada de este módulo aprende una tercera coordenada, porque la planta ya viene con su cota
 /// puesta en cada espacio.
 pub fn fill_building(building: &RegionBuilding, manifest: &Wg3Manifest) -> FilledRegion {
+    fill_building_with(building, manifest, OCCLUDER_DENSITY)
+}
+
+/// [`fill_building`] con la densidad de oclusores intra-espacio como parámetro.
+///
+/// Existe para lo mismo que `plan_storey_with`: poder medir la pasada contra sí misma APAGADA
+/// (`occluder_density = 0.0`) sin tocar nada más. Lo servido entra siempre por [`fill_building`].
+pub fn fill_building_with(
+    building: &RegionBuilding,
+    manifest: &Wg3Manifest,
+    occluder_density: f32,
+) -> FilledRegion {
     let mut out = FilledRegion::default();
     for (n, plan) in building.storeys.iter().enumerate() {
         // **Donde aterriza un pozo no va una pieza del catálogo** (auditoría 2026-09-02). El
@@ -269,8 +281,18 @@ pub fn fill_building(building: &RegionBuilding, manifest: &Wg3Manifest) -> Fille
     let pillars = hall_pillars(building, manifest, &placed);
     // ADR-105 enm. 3 — la masa interior. Va DESPUES de los pilares porque los esquiva: dos macizos
     // que se pisan son una caja rara, no dos elementos.
-    out.solids
-        .extend(interior_partitions(building, manifest, &placed, &pillars));
+    let partitions = interior_partitions(building, manifest, &placed, &pillars);
+    // Los oclusores intra-espacio van los ÚLTIMOS porque esquivan a todos los anteriores: la masa
+    // que ya existe manda, y lo que esta pasada añade es lo que quede sitio para añadir.
+    out.solids.extend(interior_occluders(
+        building,
+        manifest,
+        &placed,
+        &pillars,
+        &partitions,
+        occluder_density,
+    ));
+    out.solids.extend(partitions);
     out.solids.extend(pillars);
     out
 }
@@ -1364,6 +1386,415 @@ fn interior_partitions(
                         });
                         cut = end;
                     }
+                }
+            }
+        }
+    }
+    out
+}
+
+// ─────────────────── oclusores intra-espacio (2026-09-04) ───────────────────
+//
+// La medida que abre esta pasada: con la masa interior de ADR-105 enm. 3 ya puesta, la isovista
+// mediana del mundo servido sigue en 249 m² y el clustering de VGA en 0,797 — o sea, salas-caja
+// convexas: desde cualquier punto se ve casi todo lo que hay, y lo que se ve se ve entre sí. La
+// masa existente entra en espacios de 90 m² y sólo con `PARTITION_ROOM_CHANCE` 0,80 y una división
+// por cada 170 m², así que la sala normal se queda con UNA pieza de obra y el resto es aire.
+//
+// Esto no sustituye a aquello: se añade por debajo, en el tramo de 60 a 90 m² que aquélla no toca y
+// dentro de las grandes que ya llevan división, con piezas más pequeñas y más numerosas.
+
+/// Superficie mínima para que un espacio admita oclusores, en m². El encargo pide «> 60 m²».
+const OCCLUDER_MIN_AREA_M2: f32 = 60.0;
+
+/// Grosor de un divisor u oclusor de esta pasada, en centímetros.
+///
+/// **Cuarenta, y NO los treinta de una división de ADR-105 enm. 3.** El grosor es lo que identifica
+/// a cada emisor de macizos en los tests ya validados —el pretil mide 20, el pilar 200 y la división
+/// 30, y `partitions_land_where_the_grammar_says` filtra por el eje fino igual a 30—. Un oclusor de
+/// 30 entraría en ese filtro y se mediría con la gramática de otra pasada. Cuarenta lo deja fuera
+/// sin tocar un solo test.
+const OCCLUDER_T_CM: i32 = 40;
+
+/// Lado de un pilar de esta pasada, en centímetros. Ochenta por el mismo motivo que el grosor: el
+/// pilar de nave mide 200 y los tests lo filtran por ese número exacto.
+const OCCLUDER_PILLAR_CM: i32 = 80;
+
+/// Paso libre que se le exige a un divisor en su extremo suelto, en centímetros.
+///
+/// El encargo pide 120 cm a cada lado. **Se usan 400**, que es lo que `PARTITION_GAP_CM` tiene
+/// medido sobre el ráster servido: con 150 cm salían hasta 2 islas y la mancha mayor bajaba al
+/// 98,0 %, con 400 la mancha es del 100 %. 120 es el suelo del encargo, no un objetivo, y quedarse
+/// en el suelo es exactamente cómo se fabrica una región partida en dos.
+const OCCLUDER_CLEAR_CM: i32 = 400;
+
+/// Lo que un oclusor exento deja libre alrededor, en centímetros. Mismo criterio que
+/// `PARTITION_ISLAND_CLEAR_CM`: no es un paso entre dos mitades, es el rodeo alrededor de una pieza
+/// que ya se bordea por los cuatro lados.
+const OCCLUDER_ISLAND_CLEAR_CM: i32 = 250;
+
+/// Longitud mínima y máxima de un divisor, en centímetros. Por debajo del mínimo no oculta nada;
+/// por encima del máximo deja de ser parcial y parte la sala, que es lo que esta pasada NO hace.
+const OCCLUDER_MIN_LEN_CM: i32 = 250;
+const OCCLUDER_MAX_LEN_CM: i32 = 900;
+
+/// Fracción del vano que recorre un divisor anclado a pared, mínimo y máximo.
+///
+/// **Es el corazón del encargo**: «un pilar en el centro apenas oculta nada; un divisor parcial que
+/// nace de una pared y avanza hacia el interior oculta mucho». Un espolón que recorre más de la
+/// mitad del vano corta toda línea de visión que cruce ese eje sin cerrar el paso, porque el otro
+/// extremo sigue abierto.
+const OCCLUDER_SPUR_SPAN: (f32, f32) = (0.40, 0.70);
+
+/// Reparto acumulado de los tres tipos: DIVISOR ANCLADO, MEDIA PARED y PILAR.
+///
+/// Manda el divisor anclado, por lo que dice el encargo. La media pared —exenta, a media altura—
+/// es la que rompe la convexidad en mitad de la sala sin cerrar la lectura del volumen, y el pilar
+/// va el último porque es el que menos oculta.
+const OCCLUDER_SPUR_BELOW: f32 = 0.55;
+const OCCLUDER_HALFWALL_BELOW: f32 = 0.85;
+
+/// Altura de una media pared, en centímetros. Por encima de los ojos (1,60 m), así que corta la
+/// línea de visión entera; por debajo del techo, así que el volumen de la sala se sigue leyendo.
+const OCCLUDER_HALFWALL_H_CM: i32 = 210;
+
+/// Distancia mínima entre un oclusor y el punto de un vano, en centímetros. Mismo criterio y mismo
+/// motivo que `PARTITION_DOOR_CLEAR_CM`: obra delante de una puerta la tapia sin que nada se entere.
+const OCCLUDER_DOOR_CLEAR_CM: i32 = 350;
+
+/// Margen contra la pared paralela, en centímetros: lo que queda de sala al otro lado.
+const OCCLUDER_WALL_MARGIN_CM: i32 = 250;
+
+/// Tope de oclusores por espacio. Un espacio con más obra que esto no es una sala con oclusores:
+/// es un laberinto, y el encargo pide romper la convexidad, no cerrar el sitio.
+const OCCLUDER_MAX_PER_SPACE: i32 = 6;
+
+/// **Metros cuadrados de espacio por oclusor, POR PAPEL** — la densidad que el encargo pide exponer
+/// «por RoomType». Cuanto más bajo, más obra.
+///
+/// El reparto no es de gusto: sale de para qué sirve cada sitio. Un almacén está lleno de estantes
+/// y es donde más se justifica la obra suelta; una oficina lleva mamparas; un callejón sin salida es
+/// el sitio raro y se le deja densidad alta para que lo sea de verdad. Una nave (`Hall`) va más
+/// suelta porque ya lleva retícula de pilares, y la circulación no lleva NINGUNO —un oclusor en la
+/// espina es el fallo de conectividad de siempre con otro nombre—.
+fn occluder_area_per_one_m2(role: SpaceRole) -> Option<f32> {
+    match role {
+        SpaceRole::Office => Some(38.0),
+        SpaceRole::Storage => Some(30.0),
+        SpaceRole::Service => Some(34.0),
+        SpaceRole::DeadEnd => Some(32.0),
+        SpaceRole::Hall => Some(55.0),
+        // Circulación, escaleras y vacío: nunca.
+        SpaceRole::Spine
+        | SpaceRole::Corridor
+        | SpaceRole::Junction
+        | SpaceRole::Stair
+        | SpaceRole::Void => None,
+    }
+}
+
+/// Multiplicador global de la densidad de oclusores. 1.0 es lo servido; 0.0 apaga la pasada entera.
+pub const OCCLUDER_DENSITY: f32 = 1.0;
+
+/// Sal de la gramática de oclusores de un ESPACIO.
+const SALT_OCCLUDER_SPACE: u32 = 0xB1_11_A0_03;
+/// Sal del sorteo de CADA oclusor.
+const SALT_OCCLUDER_ONE: u32 = 0xB1_11_A0_04;
+
+/// **Oclusores intra-espacio**: divisores anclados a una pared, medias paredes exentas y pilares
+/// pequeños, dentro de los espacios de más de [`OCCLUDER_MIN_AREA_M2`].
+///
+/// # Qué rompe, y por qué no es «más masa»
+///
+/// Lo que se busca no es llenar: es que desde un punto de la sala no se vea la sala entera. Un pilar
+/// en el centro deja cuatro cuadrantes que se ven todos entre sí y el clustering de VGA no se mueve;
+/// un divisor que NACE DE UNA PARED y avanza hacia dentro parte el conjunto visible en dos mitades
+/// que no se ven entre ellas, y ésa es la métrica que el encargo pide bajar. Por eso el reparto de
+/// tipos manda el espolón ([`OCCLUDER_SPUR_BELOW`]) y el pilar es el residuo.
+///
+/// # La conectividad no se confía
+///
+/// Ningún oclusor de esta pasada cruza su vano: el anclado deja [`OCCLUDER_CLEAR_CM`] en su extremo
+/// suelto, y el exento deja [`OCCLUDER_ISLAND_CLEAR_CM`] a los cuatro lados. No hay un solo tipo que
+/// pueda partir un espacio, que es la diferencia con la partición de ADR-105 enm. 3 —aquélla sí
+/// cruza, y por eso hay como mucho una por espacio—.
+///
+/// # Todo sorteo parte de (chunk, espacio, índice)
+///
+/// El encargo lo pide así y la regla R3 del módulo pide que parta de la POSICIÓN: se cumplen las
+/// dos, porque el «espacio» entra como el centro de su huella —que es su posición— y el chunk sale
+/// de ese mismo centro. El índice sólo separa un oclusor del siguiente DENTRO del mismo espacio. No
+/// hay ningún contador global: dos regiones vecinas producen el mismo oclusor en el mismo sitio sin
+/// hablarse.
+fn interior_occluders(
+    building: &RegionBuilding,
+    manifest: &Wg3Manifest,
+    placements: &[Wg3Placement],
+    pillars: &[Wg3Solid],
+    partitions: &[Wg3Solid],
+    density: f32,
+) -> Vec<Wg3Solid> {
+    let mut out = Vec::new();
+    if density <= 0.0 {
+        return out;
+    }
+    let seed = building.seed;
+
+    let taken: Vec<(f32, f32, f32, f32)> = placements
+        .iter()
+        .filter_map(|p| {
+            manifest
+                .pieces
+                .get(p.piece as usize)
+                .map(|piece| p.bounds(piece))
+        })
+        .collect();
+    // Los macizos que ya existen, como rectángulos de centímetros: un oclusor encima de un pilar o
+    // de una división es una caja rara, no dos elementos.
+    let solid_rect = |s: &Wg3Solid| super::plan::PlanRect {
+        min_x_cm: s.x_cm,
+        min_z_cm: s.z_cm,
+        max_x_cm: s.x_cm + s.size_x_cm,
+        max_z_cm: s.z_cm + s.size_z_cm,
+    };
+    let existing: Vec<super::plan::PlanRect> =
+        pillars.iter().chain(partitions).map(&solid_rect).collect();
+
+    for (n, plan) in building.storeys.iter().enumerate() {
+        let landings: Vec<super::plan::PlanRect> = building
+            .wells
+            .iter()
+            .filter(|w| w.storey_below + 1 == n)
+            .map(|w| w.rect.shrunk(-50))
+            .collect();
+        let wells_here: Vec<super::plan::PlanRect> = building
+            .wells
+            .iter()
+            .filter(|w| w.storey_below == n)
+            .map(|w| w.rect.shrunk(-50))
+            .collect();
+        // Las mismas dos renuncias que `interior_partitions`, por las mismas medidas: el espacio al
+        // que LLEGA una escalera y el que abre una puerta de junta se dejan enteros en paz. Aquí
+        // ningún oclusor cruza, así que en teoría no haría falta; se mantiene porque lo que encierra
+        // la celda de una puerta de junta no es la obra sola, es la obra MÁS el borde de la región.
+        let arrivals: Vec<usize> = building
+            .wells
+            .iter()
+            .filter(|w| w.storey_below + 1 == n)
+            .map(|w| w.space_above)
+            .collect();
+        let gated: Vec<usize> = plan.gates.iter().map(|g| g.space).collect();
+
+        for (i, s) in plan.built() {
+            let Some(area_per_one) = occluder_area_per_one_m2(s.role) else {
+                continue;
+            };
+            if s.rise_cm != 0 || arrivals.contains(&i) || gated.contains(&i) {
+                continue;
+            }
+            if s.area_m2() < OCCLUDER_MIN_AREA_M2 {
+                continue;
+            }
+
+            // La cuenta de oclusores del espacio sale de su ÁREA y su papel, no de un dado: la
+            // densidad es el parámetro que el encargo pide exponer, y sortear además cuántos pone
+            // metería una segunda perilla que nadie podría ajustar por separado. Lo que se sortea es
+            // dónde y de qué tipo va cada uno, oclusor a oclusor.
+            let want = ((s.area_m2() * density / area_per_one).round() as i32)
+                .clamp(1, OCCLUDER_MAX_PER_SPACE);
+
+            let doors: Vec<(i32, i32)> = plan
+                .links
+                .iter()
+                .filter(|l| l.a == i || l.b == i)
+                .map(|l| (l.at_x_cm, l.at_z_cm))
+                .chain(
+                    plan.gates
+                        .iter()
+                        .filter(|g| g.space == i)
+                        .map(|g| (g.x_cm, g.z_cm)),
+                )
+                .collect();
+
+            let clear = clear_height_cm(s);
+            let style = style_of(s.role);
+            // El agujero de forjado del centro, que `hole_carves` estampa siempre centrado: un
+            // macizo es inmune a los vanos, así que obra ahí sale ENCIMA del hueco.
+            let r = s.rect;
+            let hole = super::plan::PlanRect {
+                min_x_cm: r.min_x_cm + (r.width_cm() - HOLE_SIDE_CM) / 2,
+                min_z_cm: r.min_z_cm + (r.depth_cm() - HOLE_SIDE_CM) / 2,
+                max_x_cm: r.min_x_cm + (r.width_cm() + HOLE_SIDE_CM) / 2,
+                max_z_cm: r.min_z_cm + (r.depth_cm() + HOLE_SIDE_CM) / 2,
+            };
+            let mut mine: Vec<super::plan::PlanRect> = Vec::new();
+
+            // Las partes de mayor a menor, una por oclusor y en círculo: mismo reparto que la masa
+            // interior, y por la misma razón medida —sorteando la parte, media tirada cae en el
+            // brazo estrecho de una L y se pierde el oclusor entero—.
+            let mut hosts: Vec<super::plan::PlanRect> = s.parts().to_vec();
+            hosts.sort_unstable_by_key(|p| -(p.area_m2() as i64));
+
+            for k in 0..want as usize {
+                let host = hosts[k % hosts.len()];
+                // El índice entra en el sorteo de CADA oclusor, y sólo ahí: separa el oclusor k del
+                // k+1 dentro del mismo espacio sin que ningún contador global cruce de sala a sala.
+                let mut one = super::hash::stream_at(
+                    seed.wrapping_add(k as i32),
+                    host.centre_m().0,
+                    host.centre_m().1,
+                    SALT_OCCLUDER_ONE,
+                );
+                let kind = one.next01();
+                let across_x = one.next01() < 0.5;
+                // `span` es el vano que el oclusor cruzaría de lado a lado; `room_side` el
+                // perpendicular, sobre el que se elige a qué altura de la sala se planta.
+                let (span, room_side) = if across_x {
+                    (host.depth_cm(), host.width_cm())
+                } else {
+                    (host.width_cm(), host.depth_cm())
+                };
+                let free = room_side - 2 * OCCLUDER_WALL_MARGIN_CM - OCCLUDER_T_CM;
+                if free <= 0 || span < OCCLUDER_MIN_LEN_CM + OCCLUDER_CLEAR_CM {
+                    continue;
+                }
+                let at_base = if across_x {
+                    host.min_x_cm
+                } else {
+                    host.min_z_cm
+                };
+                let at = at_base + OCCLUDER_WALL_MARGIN_CM + (one.next01() * free as f32) as i32;
+                let from_base = if across_x {
+                    host.min_z_cm
+                } else {
+                    host.min_x_cm
+                };
+
+                let (run_from, run_to, thickness_along) = if kind < OCCLUDER_SPUR_BELOW {
+                    // DIVISOR ANCLADO: nace en una de las dos paredes del vano y avanza hacia
+                    // dentro. Nunca llega a la de enfrente: `OCCLUDER_CLEAR_CM` es el paso que
+                    // queda, y es lo que hace que no pueda desconectar nada.
+                    let f = OCCLUDER_SPUR_SPAN.0
+                        + one.next01() * (OCCLUDER_SPUR_SPAN.1 - OCCLUDER_SPUR_SPAN.0);
+                    let len = ((span as f32 * f) as i32)
+                        .min(span - OCCLUDER_CLEAR_CM)
+                        .min(OCCLUDER_MAX_LEN_CM);
+                    if len < OCCLUDER_MIN_LEN_CM {
+                        continue;
+                    }
+                    if one.next01() < 0.5 {
+                        (from_base, from_base + len, OCCLUDER_T_CM)
+                    } else {
+                        (from_base + span - len, from_base + span, OCCLUDER_T_CM)
+                    }
+                } else if kind < OCCLUDER_HALFWALL_BELOW {
+                    // MEDIA PARED: exenta, despegada de las dos paredes del vano. Rompe la línea de
+                    // visión en mitad de la sala y se bordea por los dos extremos.
+                    let f = OCCLUDER_SPUR_SPAN.0
+                        + one.next01() * (OCCLUDER_SPUR_SPAN.1 - OCCLUDER_SPUR_SPAN.0);
+                    let len = ((span as f32 * f) as i32)
+                        .min(span - 2 * OCCLUDER_ISLAND_CLEAR_CM)
+                        .min(OCCLUDER_MAX_LEN_CM);
+                    if len < OCCLUDER_MIN_LEN_CM {
+                        continue;
+                    }
+                    let slack = span - len - 2 * OCCLUDER_ISLAND_CLEAR_CM;
+                    let a =
+                        from_base + OCCLUDER_ISLAND_CLEAR_CM + (one.next01() * slack as f32) as i32;
+                    (a, a + len, OCCLUDER_T_CM)
+                } else {
+                    // PILAR: el residuo. Cuadrado, exento, y por eso mismo el que menos oculta.
+                    let slack = span - 2 * OCCLUDER_ISLAND_CLEAR_CM - OCCLUDER_PILLAR_CM;
+                    if slack < 0 {
+                        continue;
+                    }
+                    let a =
+                        from_base + OCCLUDER_ISLAND_CLEAR_CM + (one.next01() * slack as f32) as i32;
+                    (a, a + OCCLUDER_PILLAR_CM, OCCLUDER_PILLAR_CM)
+                };
+
+                let is_spur = kind < OCCLUDER_SPUR_BELOW;
+                let foot = if across_x {
+                    super::plan::PlanRect {
+                        min_x_cm: at,
+                        min_z_cm: run_from,
+                        max_x_cm: at + thickness_along,
+                        max_z_cm: run_to,
+                    }
+                } else {
+                    super::plan::PlanRect {
+                        min_x_cm: run_from,
+                        min_z_cm: at,
+                        max_x_cm: run_to,
+                        max_z_cm: at + thickness_along,
+                    }
+                };
+
+                // La media pared y el pilar flotan, así que se les exige suelo propio alrededor. Al
+                // divisor anclado NO: nace pegado a una pared, e inflarlo lo saca del espacio por
+                // definición — es la misma nota que `interior_partitions` dejó escrita tras perder
+                // dos tercios de la gramática sobre huella compuesta.
+                let with_gap = foot.shrunk(-OCCLUDER_ISLAND_CLEAR_CM);
+                let near_door = foot.shrunk(-OCCLUDER_DOOR_CLEAR_CM);
+                let overlaps_taken = |x0: f32, z0: f32, x1: f32, z1: f32| {
+                    let (a0, b0, a1, b1) = (
+                        foot.min_x_cm as f32 / CM_PER_M,
+                        foot.min_z_cm as f32 / CM_PER_M,
+                        foot.max_x_cm as f32 / CM_PER_M,
+                        foot.max_z_cm as f32 / CM_PER_M,
+                    );
+                    a0 < x1 && a1 > x0 && b0 < z1 && b1 > z0
+                };
+                let blocked = !s.covers_rect(&foot)
+                    || (!is_spur && !s.covers_rect(&with_gap))
+                    || landings.iter().any(|l| l.overlaps(&foot))
+                    || wells_here.iter().any(|w| w.overlaps(&foot))
+                    || (n > 0 && hole.shrunk(-50).overlaps(&foot))
+                    || mine
+                        .iter()
+                        .any(|m| m.shrunk(-OCCLUDER_CLEAR_CM).overlaps(&foot))
+                    || existing
+                        .iter()
+                        .any(|e| e.shrunk(-OCCLUDER_CLEAR_CM).overlaps(&foot))
+                    || doors
+                        .iter()
+                        .any(|&(dx, dz)| near_door.contains_point(dx, dz))
+                    || taken
+                        .iter()
+                        .any(|&(x0, z0, x1, z1)| overlaps_taken(x0, z0, x1, z1));
+                if blocked {
+                    continue;
+                }
+                mine.push(foot);
+
+                let top = if (OCCLUDER_SPUR_BELOW..OCCLUDER_HALFWALL_BELOW).contains(&kind) {
+                    s.floor_y_cm + OCCLUDER_HALFWALL_H_CM.min(clear)
+                } else {
+                    s.floor_y_cm + clear
+                };
+
+                // A cajas de `MAX_SOLID_CM`, a partes iguales: un macizo se dibuja en el chunk de su
+                // centro, y cortar avaricioso deja muñones (ver la nota de `interior_partitions`).
+                let along = run_to - run_from;
+                let boxes = (along + MAX_SOLID_CM - 1) / MAX_SOLID_CM;
+                let mut cut = run_from;
+                for b in 1..=boxes {
+                    let end = run_from + (along * b) / boxes;
+                    let (x, z, sx, sz) = if across_x {
+                        (at, cut, thickness_along, end - cut)
+                    } else {
+                        (cut, at, end - cut, thickness_along)
+                    };
+                    out.push(Wg3Solid {
+                        x_cm: x,
+                        z_cm: z,
+                        size_x_cm: sx,
+                        size_z_cm: sz,
+                        bottom_y_cm: s.floor_y_cm,
+                        top_y_cm: top,
+                        style,
+                    });
+                    cut = end;
                 }
             }
         }
@@ -2469,5 +2900,176 @@ fn style_of(role: SpaceRole) -> u8 {
         // de encontrarla. Es el número que más falta hacía de los seis.
         SpaceRole::Stair => 6,
         _ => 0,
+    }
+}
+
+#[cfg(test)]
+mod occluder_tests {
+    use super::*;
+    use crate::world::wg3::plan::{plan_building, PlanRect};
+
+    const BOUNDS: (f32, f32, f32, f32) = (0.0, 0.0, 150.0, 150.0);
+    const STOREYS: usize = 2;
+
+    fn manifest() -> Wg3Manifest {
+        crate::world::wg3::tests::real_manifest()
+    }
+
+    fn rect_of(s: &Wg3Solid) -> PlanRect {
+        PlanRect {
+            min_x_cm: s.x_cm,
+            min_z_cm: s.z_cm,
+            max_x_cm: s.x_cm + s.size_x_cm,
+            max_z_cm: s.z_cm + s.size_z_cm,
+        }
+    }
+
+    /// Los macizos que emite ESTA pasada: se reconocen por el eje fino, que es 40 (divisor y media
+    /// pared) u 80 (pilar) y no lo produce ningun otro emisor -- pretil 20, division 30, pilar de
+    /// nave 200.
+    fn ours(f: &FilledRegion) -> Vec<&Wg3Solid> {
+        f.solids
+            .iter()
+            .filter(|s| {
+                let thin = s.size_x_cm.min(s.size_z_cm);
+                thin == OCCLUDER_T_CM || (thin == OCCLUDER_PILLAR_CM && s.size_x_cm == s.size_z_cm)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_pass_inserts_occluders_and_the_knob_turns_it_off() {
+        let m = manifest();
+        let mut with = 0usize;
+        for seed in 1..=12 {
+            let b = plan_building(seed, BOUNDS, &[], STOREYS);
+            let on = fill_building_with(&b, &m, OCCLUDER_DENSITY);
+            let off = fill_building_with(&b, &m, 0.0);
+            with += ours(&on).len();
+            assert!(
+                ours(&off).is_empty(),
+                "semilla {seed}: con densidad 0 salieron {} oclusores",
+                ours(&off).len()
+            );
+            assert!(
+                on.solids.len() > off.solids.len(),
+                "semilla {seed}: la pasada no anadio ni un macizo"
+            );
+        }
+        assert!(
+            with > 0,
+            "la pasada no emitio un solo oclusor en 12 semillas"
+        );
+    }
+
+    #[test]
+    fn occluders_change_nothing_but_the_solids() {
+        let m = manifest();
+        for seed in 1..=12 {
+            let b = plan_building(seed, BOUNDS, &[], STOREYS);
+            let on = fill_building_with(&b, &m, OCCLUDER_DENSITY);
+            let off = fill_building_with(&b, &m, 0.0);
+
+            for st in &b.storeys {
+                assert!(
+                    st.problems().is_empty(),
+                    "semilla {seed}: {:?}",
+                    st.problems()
+                );
+            }
+            assert_eq!(
+                on.segments, off.segments,
+                "semilla {seed}: cambiaron los tramos"
+            );
+            assert_eq!(
+                on.carves, off.carves,
+                "semilla {seed}: cambiaron los recortes"
+            );
+            assert_eq!(
+                on.placements, off.placements,
+                "semilla {seed}: cambiaron las piezas"
+            );
+            assert_eq!(
+                on.links_failed, off.links_failed,
+                "semilla {seed}: cambiaron los enlaces fallidos"
+            );
+            assert_eq!(
+                on.gates_built, off.gates_built,
+                "semilla {seed}: cambiaron las puertas de junta"
+            );
+            for s in &off.solids {
+                assert!(
+                    on.solids.contains(s),
+                    "semilla {seed}: la pasada se comio un macizo previo"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn occluders_keep_their_clearances() {
+        let m = manifest();
+        for seed in 1..=12 {
+            let b = plan_building(seed, BOUNDS, &[], STOREYS);
+            let f = fill_building_with(&b, &m, OCCLUDER_DENSITY);
+            let mine = ours(&f);
+            for s in &mine {
+                let r = rect_of(s);
+                let mut host = None;
+                for st in &b.storeys {
+                    for (_, sp) in st.built() {
+                        if sp.floor_y_cm == s.bottom_y_cm && sp.covers_rect(&r) {
+                            host = Some(sp);
+                        }
+                    }
+                }
+                let Some(sp) = host else {
+                    panic!(
+                        "semilla {seed}: oclusor en ({},{}) cota {} fuera de todo espacio",
+                        s.x_cm, s.z_cm, s.bottom_y_cm
+                    )
+                };
+                assert!(
+                    occluder_area_per_one_m2(sp.role).is_some(),
+                    "semilla {seed}: oclusor en un espacio {}, que no lleva",
+                    sp.role.name()
+                );
+                assert!(
+                    sp.area_m2() >= OCCLUDER_MIN_AREA_M2,
+                    "semilla {seed}: oclusor en un espacio de {:.1} m2",
+                    sp.area_m2()
+                );
+                let (w, d) = (sp.rect.width_cm(), sp.rect.depth_cm());
+                let (rw, rd) = (r.width_cm(), r.depth_cm());
+                assert!(
+                    rw <= w - OCCLUDER_CLEAR_CM || rd <= d - OCCLUDER_CLEAR_CM,
+                    "semilla {seed}: oclusor {rw}x{rd} en una sala {w}x{d}: no deja paso"
+                );
+                let h = s.top_y_cm - s.bottom_y_cm;
+                assert!(h > 0, "semilla {seed}: oclusor de altura {h}");
+            }
+            for (i, a) in mine.iter().enumerate() {
+                for b2 in mine.iter().skip(i + 1) {
+                    if a.bottom_y_cm != b2.bottom_y_cm {
+                        continue;
+                    }
+                    assert!(
+                        !rect_of(a).overlaps(&rect_of(b2)),
+                        "semilla {seed}: dos oclusores se pisan"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn occluders_are_deterministic() {
+        let m = manifest();
+        for seed in [3, 77, 1234] {
+            let b = plan_building(seed, BOUNDS, &[], STOREYS);
+            let a = fill_building_with(&b, &m, OCCLUDER_DENSITY);
+            let c = fill_building_with(&b, &m, OCCLUDER_DENSITY);
+            assert_eq!(a.solids, c.solids, "semilla {seed}");
+        }
     }
 }
