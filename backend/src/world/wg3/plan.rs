@@ -3654,9 +3654,9 @@ fn compose_shapes(
         // Si sólo uno puede ceder, el sentido no se sortea: lo impone el papel. Y entonces no hay
         // segundo intento, porque el segundo es el sentido prohibido.
         let first = if !can_j {
-            (j, i, pj, pi)
-        } else if !can_i {
             (i, j, pi, pj)
+        } else if !can_i {
+            (j, i, pj, pi)
         } else if ratio >= 1.6 {
             if aa > ab {
                 (j, i, pj, pi)
