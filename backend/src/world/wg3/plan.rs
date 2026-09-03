@@ -84,6 +84,8 @@ const SALT_BAND: u32 = 0x9A17_0008;
 const SALT_STUB: u32 = 0x9A17_0009;
 /// Sal de dónde cae una puerta a lo largo de la pared que comparten dos espacios.
 const SALT_DOOR: u32 = 0x9A17_000A;
+/// Desalineación de vanos (2026-09-03): el sorteo de si un vano alineado con otro se mueve, y adónde.
+const SALT_MISALIGN: u32 = 0x9A17_000D;
 /// Sal del empuje hacia `Weird` de las plantas altas.
 const SALT_WEIRD_UP: u32 = 0x9A17_000B;
 /// ADR-120 — sal de la composición de huellas: si dispara, quién cede, y qué mordisco sale.
@@ -221,6 +223,18 @@ const STUB_MIN_AREA_M2: f32 = 400.0;
 /// se reparte a lo largo de la pared, sorteado por posición: «una puerta en un sitio raro» de vez en
 /// cuando, sin que deje de caber (jambas de [`DOOR_JAMB_CM`] a cada lado).
 const DOOR_CENTRED_CHANCE: f32 = 0.55;
+
+/// **Probabilidad de DESALINEAR un vano** que ha quedado en el mismo eje que otro del mismo espacio
+/// (2026-09-03). Dos vanos enfrentados y alineados dejan ver de sala en sala en línea recta: la
+/// planta se lee como un pasillo con paredes de quita y pon. Con esta probabilidad el vano que se
+/// creó más tarde se corre por su pared hasta salir del eje del otro. Sorteo por posición, nunca
+/// RNG compartido: la misma pared da el mismo resultado en cualquier proceso.
+pub const DOOR_MISALIGN_CHANCE: f32 = 0.75;
+
+/// Dos vanos sobre paredes PARALELAS de un mismo espacio se consideran alineados si sus centros
+/// distan menos de esto a lo largo de la pared: un vano y una jamba, o sea, cuando los huecos se
+/// solapan en proyección y se ve a través.
+const DOOR_ALIGN_TOL_CM: i32 = DOORWAY_CM + DOOR_JAMB_CM;
 /// Jamba mínima entre una puerta descentrada y la esquina de la pared.
 const DOOR_JAMB_CM: i32 = 30;
 
@@ -1381,6 +1395,28 @@ pub fn plan_storey(
     may_sink: bool,
     atria_below: &[PlanRect],
 ) -> RegionPlan {
+    plan_storey_with(
+        seed,
+        bounds,
+        gates,
+        base_y_cm,
+        may_sink,
+        atria_below,
+        DOOR_MISALIGN_CHANCE,
+    )
+}
+
+/// [`plan_storey`] con la probabilidad de desalineación de vanos como parámetro. Es lo que permite
+/// medir la pasada contra sí misma apagada; lo servido entra siempre por [`plan_storey`].
+pub fn plan_storey_with(
+    seed: i32,
+    bounds: (f32, f32, f32, f32),
+    gates: &[Wg3Gate],
+    base_y_cm: i32,
+    may_sink: bool,
+    atria_below: &[PlanRect],
+    misalign_chance: f32,
+) -> RegionPlan {
     let root = PlanRect {
         min_x_cm: (bounds.0 * CM_PER_M).round() as i32,
         min_z_cm: (bounds.1 * CM_PER_M).round() as i32,
@@ -1422,6 +1458,9 @@ pub fn plan_storey(
     let gates = planner.attach_gates(gates);
     planner.link_all();
     planner.ensure_connected(&gates.iter().map(|g| g.space).collect::<Vec<_>>());
+    // Con el grafo YA cerrado: sólo se mueven vanos por su propia pared, nunca se quita ni se añade
+    // un enlace, así que la conectividad que acaba de asegurarse no cambia.
+    planner.misalign_doorways(misalign_chance);
     planner.retag_dead_ends();
     if may_sink {
         planner.sink_dead_ends(&gates);
@@ -3544,6 +3583,141 @@ impl Planner {
         class
     }
 
+    /// **Desalineación de vanos** (2026-09-03). Para cada espacio, dos vanos suyos sobre paredes
+    /// paralelas distintas y a menos de [`DOOR_ALIGN_TOL_CM`] a lo largo de la pared son un eje
+    /// recto: se corre el que se creó más tarde con [`DOOR_MISALIGN_CHANCE`].
+    ///
+    /// Lo que NO toca: la partición, el número de enlaces, los `Route` (no tienen pared), los cruces
+    /// de bandas (un cruce descentrado no cabe en su pared, ver `adjacencies`), los vanos anchos y
+    /// las escaleras (su puerta la recoloca `sink_dead_ends` contra las tiras de peldaño). El vano se
+    /// mueve SÓLO dentro de la pared que los dos espacios comparten, con jamba a cada lado, y se
+    /// vuelve a comprobar que cae en pared de ambos — si no, se queda donde estaba.
+    fn misalign_doorways(&mut self, chance: f32) {
+        for s in 0..self.spaces.len() {
+            if self.spaces[s].role == SpaceRole::Stair {
+                continue;
+            }
+            // Los vanos de este espacio: (enlace, ¿pared vertical?, coordenada de la pared,
+            // coordenada a lo largo de la pared).
+            let mut mine: Vec<(usize, bool, i32, i32)> = Vec::new();
+            for (k, l) in self.links.iter().enumerate() {
+                if l.kind == LinkKind::Route || (l.a != s && l.b != s) {
+                    continue;
+                }
+                let half = l.width_cm / 2 + DOOR_JAMB_CM;
+                let Some(side) = self.spaces[s].wall_side_of(l.at_x_cm, l.at_z_cm, half) else {
+                    continue;
+                };
+                let vertical = side % 2 == 1;
+                let (wall, along) = if vertical {
+                    (l.at_x_cm, l.at_z_cm)
+                } else {
+                    (l.at_z_cm, l.at_x_cm)
+                };
+                mine.push((k, vertical, wall, along));
+            }
+            for i in 0..mine.len() {
+                for j in (i + 1)..mine.len() {
+                    let (ki, vi, wi, ci) = mine[i];
+                    let (kj, vj, wj, cj) = mine[j];
+                    if vi != vj || wi == wj || (ci - cj).abs() >= DOOR_ALIGN_TOL_CM {
+                        continue;
+                    }
+                    // El que se creó más tarde es el que se mueve: el acceso al corredor manda.
+                    let (mover, other_c) = if ki > kj { (i, cj) } else { (j, ci) };
+                    let k = mine[mover].0;
+                    if let Some((x, z)) = self.misaligned_door(k, vi, other_c, chance) {
+                        self.links[k].at_x_cm = x;
+                        self.links[k].at_z_cm = z;
+                        mine[mover].3 = if vi { z } else { x };
+                    }
+                }
+            }
+        }
+    }
+
+    /// Adónde se corre el vano `k` para salir del eje de `other_c`, o `None` si el sorteo dice que
+    /// no, si el vano no es de los que se mueven, o si su pared no tiene sitio fuera del eje.
+    fn misaligned_door(
+        &self,
+        k: usize,
+        vertical: bool,
+        other_c: i32,
+        chance: f32,
+    ) -> Option<(i32, i32)> {
+        let l = self.links[k];
+        let (a, b) = (&self.spaces[l.a], &self.spaces[l.b]);
+        if l.kind == LinkKind::Junction
+            || l.width_cm > DOORWAY_CM
+            || a.role == SpaceRole::Stair
+            || b.role == SpaceRole::Stair
+        {
+            return None;
+        }
+        let mut st = hash::stream_at(
+            self.seed,
+            l.at_x_cm as f32 / CM_PER_M,
+            l.at_z_cm as f32 / CM_PER_M,
+            SALT_MISALIGN,
+        );
+        if st.next01() >= chance {
+            return None;
+        }
+        let t = st.next01();
+
+        // La pared compartida sobre la que está el vano: el par de partes cuya pared común contiene
+        // el punto actual. El recorrido a lo largo de esa pared, con jamba, es donde puede caer.
+        const EPS: i32 = 2;
+        let margin = l.width_cm / 2 + DOOR_JAMB_CM;
+        let mut range: Option<(i32, i32)> = None;
+        for ra in a.parts() {
+            for rb in b.parts() {
+                let Some((_, x, z)) = rects_share_wall(*ra, *rb) else {
+                    continue;
+                };
+                let (lo, hi) = if vertical {
+                    if (x - l.at_x_cm).abs() > EPS {
+                        continue;
+                    }
+                    (ra.min_z_cm.max(rb.min_z_cm), ra.max_z_cm.min(rb.max_z_cm))
+                } else {
+                    if (z - l.at_z_cm).abs() > EPS {
+                        continue;
+                    }
+                    (ra.min_x_cm.max(rb.min_x_cm), ra.max_x_cm.min(rb.max_x_cm))
+                };
+                let along = if vertical { l.at_z_cm } else { l.at_x_cm };
+                if along < lo || along > hi {
+                    continue;
+                }
+                range = Some((lo + margin, hi - margin));
+            }
+        }
+        let (lo, hi) = range?;
+        if hi <= lo {
+            return None;
+        }
+
+        // Fuera del eje: a un lado o al otro de `other_c`, el tramo que tenga más sitio.
+        let left = (lo, (other_c - DOOR_ALIGN_TOL_CM).min(hi));
+        let right = ((other_c + DOOR_ALIGN_TOL_CM).max(lo), hi);
+        let len = |(p, q): (i32, i32)| (q - p).max(-1);
+        let pick = if len(left) >= len(right) { left } else { right };
+        if len(pick) < 0 {
+            return None;
+        }
+        let along = pick.0 + ((pick.1 - pick.0) as f32 * t) as i32;
+        let (x, z) = if vertical {
+            (l.at_x_cm, along)
+        } else {
+            (along, l.at_z_cm)
+        };
+        if !door_fits_in(a, x, z) || !door_fits_in(b, x, z) {
+            return None;
+        }
+        Some((x, z))
+    }
+
     fn linked(&self, i: usize, j: usize) -> bool {
         self.links
             .iter()
@@ -4828,6 +5002,98 @@ impl UnionFind {
         let (ra, rb) = (self.find(a), self.find(b));
         if ra != rb {
             self.parent[rb] = ra;
+        }
+    }
+}
+
+#[cfg(test)]
+mod misalign_tests {
+    use super::*;
+
+    const BOUNDS: (f32, f32, f32, f32) = (0.0, 0.0, 150.0, 150.0);
+
+    /// Pares de vanos de un mismo espacio sobre paredes paralelas distintas y en el mismo eje: lo
+    /// que la pasada existe para quitar.
+    fn aligned_pairs(plan: &RegionPlan) -> usize {
+        let mut n = 0;
+        for (s, space) in plan.spaces.iter().enumerate() {
+            let mut mine: Vec<(bool, i32, i32)> = Vec::new();
+            for l in &plan.links {
+                if l.kind == LinkKind::Route || (l.a != s && l.b != s) {
+                    continue;
+                }
+                let half = l.width_cm / 2 + DOOR_JAMB_CM;
+                let Some(side) = space.wall_side_of(l.at_x_cm, l.at_z_cm, half) else {
+                    continue;
+                };
+                let v = side % 2 == 1;
+                mine.push(if v {
+                    (v, l.at_x_cm, l.at_z_cm)
+                } else {
+                    (v, l.at_z_cm, l.at_x_cm)
+                });
+            }
+            for i in 0..mine.len() {
+                for j in (i + 1)..mine.len() {
+                    let (vi, wi, ci) = mine[i];
+                    let (vj, wj, cj) = mine[j];
+                    if vi == vj && wi != wj && (ci - cj).abs() < DOOR_ALIGN_TOL_CM {
+                        n += 1;
+                    }
+                }
+            }
+        }
+        n
+    }
+
+    #[test]
+    fn misalignment_moves_doors_off_axis_without_touching_the_graph() {
+        let mut aligned_off = 0;
+        let mut aligned_on = 0;
+        let mut moved = 0;
+        for seed in 1..=12 {
+            let off = plan_storey_with(seed, BOUNDS, &[], 0, true, &[], 0.0);
+            let on = plan_storey_with(seed, BOUNDS, &[], 0, true, &[], 1.0);
+            assert_eq!(
+                off.spaces.len(),
+                on.spaces.len(),
+                "semilla {seed}: la partición cambió"
+            );
+            assert_eq!(
+                off.links.len(),
+                on.links.len(),
+                "semilla {seed}: el grafo cambió"
+            );
+            for (a, b) in off.links.iter().zip(&on.links) {
+                assert_eq!(
+                    (a.a, a.b, a.kind, a.width_cm),
+                    (b.a, b.b, b.kind, b.width_cm)
+                );
+                if (a.at_x_cm, a.at_z_cm) != (b.at_x_cm, b.at_z_cm) {
+                    moved += 1;
+                }
+            }
+            assert!(
+                on.problems().is_empty(),
+                "semilla {seed}: {:?}",
+                on.problems()
+            );
+            aligned_off += aligned_pairs(&off);
+            aligned_on += aligned_pairs(&on);
+        }
+        assert!(moved > 0, "la pasada no movió ni un vano");
+        assert!(
+            aligned_on < aligned_off,
+            "alineados: {aligned_on} con la pasada, {aligned_off} sin ella"
+        );
+    }
+
+    #[test]
+    fn misalignment_is_deterministic() {
+        for seed in [3, 77, 1234] {
+            let a = plan_storey_with(seed, BOUNDS, &[], 0, true, &[], 1.0);
+            let b = plan_storey_with(seed, BOUNDS, &[], 0, true, &[], 1.0);
+            assert_eq!(a.links, b.links, "semilla {seed}");
         }
     }
 }
