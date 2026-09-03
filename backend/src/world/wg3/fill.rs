@@ -83,7 +83,7 @@ fn clear_height_by_role(role: SpaceRole) -> i32 {
 ///
 /// El tope lo pone el PLAN y no esta función, porque saber si hay algo encima es cosa del edificio y
 /// no del papel del espacio. Cero quiere decir que no hay nada encima, y entonces la nave es una nave.
-fn clear_height_cm(space: &PlannedSpace) -> i32 {
+pub(super) fn clear_height_cm(space: &PlannedSpace) -> i32 {
     if is_atrium(space) {
         return ATRIUM_CLEAR_CM;
     }
@@ -262,7 +262,12 @@ pub fn fill_building(building: &RegionBuilding, manifest: &Wg3Manifest) -> Fille
     // porque necesita saber qué espacios acabaron resueltos con una pieza del catálogo, y eso no se
     // sabe hasta que están todos rellenados.
     let placed = out.placements.clone();
-    out.solids.extend(hall_pillars(building, manifest, &placed));
+    let pillars = hall_pillars(building, manifest, &placed);
+    // ADR-105 enm. 3 — la masa interior. Va DESPUES de los pilares porque los esquiva: dos macizos
+    // que se pisan son una caja rara, no dos elementos.
+    out.solids
+        .extend(interior_partitions(building, manifest, &placed, &pillars));
+    out.solids.extend(pillars);
     out
 }
 
@@ -846,6 +851,424 @@ fn hall_pillars(
                 }
                 pz += step_z;
                 row += 1;
+            }
+        }
+    }
+    out
+}
+
+/// Superficie mínima de un espacio para que admita divisiones, en m².
+///
+/// Noventa metros es una sala de 9 × 10: la más pequeña en la que un tabique DIVIDE en vez de
+/// estrechar. Por debajo, lo que sale a los dos lados es un pasillo, y un pasillo dentro de una sala
+/// no es arquitectura, es un estorbo.
+const PARTITION_MIN_AREA_M2: f32 = 90.0;
+
+/// Longitud mínima del vano que cruza una división, en centímetros.
+///
+/// **Y bajarlo NO sube la dosis, que es lo contrario de lo que parecía.** Se probó a 650 junto con un
+/// margen de pared de 250 para dejar entrar los espacios alargados: la medida dio 52,2 divisiones por
+/// región contra las 61,2 de 800/300, porque lo que entra por abajo son vanos que luego no llegan a
+/// `PARTITION_MIN_LEN_CM` y lo que se pierde son colocaciones que sí valían. Queda escrito para que
+/// nadie vuelva a gastar la vuelta.
+const PARTITION_MIN_SPAN_CM: i32 = 800;
+
+/// Grosor de un tabique, en centímetros.
+///
+/// **Treinta, no quince.** La pared de un tramo mide 15 cm y es la cáscara de una sala; un tabique es
+/// obra suelta y tiene que leerse como tal desde los dos lados. Y el ráster cobra lo mismo por quince
+/// que por treinta —maciza toda celda que TOQUE, ADR-105 D6—, así que los quince de más salen gratis
+/// en colisión y no salen gratis en la vista.
+const PARTITION_T_CM: i32 = 30;
+
+/// Hueco de paso de una división que cruza el espacio entero, en centímetros.
+///
+/// **Cuatro metros, y el número está medido, no elegido.** Simulando divisiones sobre el ráster
+/// servido de cuatro regiones: con hueco de 1,5 m salían hasta 2 islas y la mancha mayor bajaba al
+/// 98,0 %; con 4 m, mancha mayor 100 % e islas cero en las cuatro. El paso ancho es además lo que
+/// separa «una sala partida» de «dos salas», que es la lectura que se busca.
+const PARTITION_GAP_CM: i32 = 400;
+
+/// Distancia mínima entre una división y una puerta, en centímetros.
+///
+/// Es el mismo criterio que `PILLAR_DOOR_CLEAR_CM` y por el mismo motivo: un tabique plantado delante
+/// de un vano lo tapia sin que ningún contador se entere, y el síntoma aparece cien metros más allá
+/// como una sala a la que no se llega.
+const PARTITION_DOOR_CLEAR_CM: i32 = 350;
+
+/// Distancia mínima entre una división y la pared con la que va paralela, en centímetros.
+///
+/// Es lo que queda de sala al otro lado: por debajo de tres metros no es una división, es un pasillo
+/// pegado al muro que nadie pidió. Ver la nota de [`PARTITION_MIN_SPAN_CM`] sobre por qué bajarlo
+/// tampoco sube la dosis.
+const PARTITION_WALL_MARGIN_CM: i32 = 300;
+
+/// Probabilidad de que un espacio que cumple los requisitos lleve divisiones.
+const PARTITION_ROOM_CHANCE: f32 = 0.80;
+
+/// Reparto de los tres tipos de división: ISLA, ESPOLÓN y PARTICIÓN, acumulado.
+///
+/// **Y mandan los dos que no parten la sala, a propósito.** Un tabique que cruza de lado a lado con
+/// su hueco convierte una sala en dos salas, y de eso el mundo ya va lleno: es literalmente lo que
+/// hace el BSP, y repetirlo dentro de la hoja no añade una lectura nueva. La isla —una pared exenta,
+/// despegada de las cuatro paredes— y el espolón —pegado a una sola— rompen la línea de visión SIN
+/// partir el sitio: la sala grande sigue siendo una sala grande, que es lo que se pidió no perder.
+///
+/// # Y la isla existe porque el primer intento se quedó al 40 % de la dosis
+///
+/// Con sólo espolón y partición, toda división llegaba a una pared perpendicular, o sea a 0 cm de
+/// cualquier puerta de esa pared: la esquiva de puertas rechazaba dos de cada tres intentos y la
+/// medida lo cazó —480 metros lineales por región contra los 1200 que la simulación pedía. Una isla
+/// no toca ninguna pared, así que la esquiva casi nunca la ve.
+const PARTITION_ISLAND_BELOW: f32 = 0.45;
+const PARTITION_SPUR_BELOW: f32 = 0.80;
+
+/// Fracción del vano que recorre un espolón, mínimo y máximo.
+const PARTITION_SPUR_SPAN: (f32, f32) = (0.45, 0.78);
+
+/// Fracción del vano que recorre una isla, mínimo y máximo.
+const PARTITION_ISLAND_SPAN: (f32, f32) = (0.35, 0.62);
+
+/// Cuánto deja libre una isla en cada extremo, en centímetros.
+///
+/// **Dos metros y medio, no cuatro.** El hueco de una partición es un PASO —lo que separa dos mitades
+/// de sala— y por eso se midió a cuatro metros contra las islas del ráster. Los extremos de una isla
+/// no son un paso: son el rodeo alrededor de una pared exenta que ya se puede bordear por los dos
+/// lados, y pedirles cuatro metros dejaba la isla fuera de toda sala por debajo de 21 m de vano.
+const PARTITION_ISLAND_CLEAR_CM: i32 = 250;
+
+/// Longitud mínima de una división, en centímetros.
+const PARTITION_MIN_LEN_CM: i32 = 350;
+
+/// Longitud mínima de un TROZO de división, en centímetros.
+///
+/// Lo que separa un tabique corto de un poste. El hueco de una partición se sortea a lo largo del
+/// vano y puede caer a un palmo de un extremo; el trozo que queda se tira y el paso se ensancha.
+const PARTITION_STUB_MIN_CM: i32 = 120;
+
+/// Probabilidad de que una división se quede por debajo del techo.
+const PARTITION_SCREEN_CHANCE: f32 = 0.34;
+
+/// Altura de una división que no llega al techo, en centímetros.
+///
+/// **Tapa la vista y no el volumen.** Los ojos van a 1,60 m, así que 2,30 corta la línea de visión
+/// entera igual que un muro; y dejar el techo corrido por encima es lo que la lee como mampara de
+/// oficina en vez de como muro de carga. Es la única división que se puede mirar por encima, y por
+/// eso no puede ser la única que hay.
+const PARTITION_SCREEN_H_CM: i32 = 230;
+
+/// Cuántas divisiones como mucho por espacio.
+const PARTITION_MAX_PER_SPACE: i32 = 3;
+
+/// Metros cuadrados de espacio por división.
+///
+/// Sale de la dosis medida sobre el ráster servido: unos 12-14 metros lineales de división por
+/// espacio construido. Con el espacio medio en 170 m², eso es una división en la sala normal y tres
+/// en la nave.
+const PARTITION_AREA_PER_ONE_M2: f32 = 170.0;
+
+const SALT_PARTITION_ROOM: u32 = 0xB1_11_A0_02;
+
+/// Una división a lo largo de su vano: `(desde, hasta, hueco)`, en centímetros de mundo. El hueco es
+/// `None` en una isla y en un espolón, que no lo necesitan.
+type PartitionRun = (i32, i32, Option<(i32, i32)>);
+
+/// ADR-105 enmienda 3 — **la masa interior: el tabique, el espolón y la mampara.**
+///
+/// # El agujero que tapa, dicho con el número que lo mide
+///
+/// Hasta aquí había exactamente DOS emisores de [`Wg3Solid`] en todo el relleno: el pretil de un
+/// balcón y la retícula de pilares de una nave. Los dos son de atrio o de nave, así que **el 92,5 %
+/// de los espacios del mundo no contenía ni un solo volumen**: seis caras y aire. La medida que lo
+/// dice sin discutirlo es la isovista —cuánto suelo se ve de golpe—: **1883 m² de mediana contra un
+/// espacio medio de 170 m²**. De pie en cualquier sitio se veían diez salas a la vez, y ninguna
+/// invariante del validador miraba eso, que es por qué 270/270 regiones válidas convivían con la
+/// queja.
+///
+/// # Por qué esto no es «más densidad»
+///
+/// Un tabique cambia la TOPOLOGÍA de lo que se ve, no la cantidad de cosas que hay. Se midió contra
+/// la alternativa: sembrar paredes al azar y sembrarlas en peine desfasado convergen en la misma
+/// isovista (~260 m²) al mismo presupuesto de metros. Lo que mueve el número es que haya masa, no de
+/// qué forma esté puesta — así que aquí no hay ocho arquetipos, hay dos, y el resto es la posición.
+///
+/// # La conectividad no se confía, se construye
+///
+/// Un espolón no puede desconectar nada: arranca de una pared y muere en el aire. Una partición sí
+/// podría, y por eso **hay como mucho UNA por espacio** y su hueco mide cuatro metros. Con eso la
+/// simulación sobre el ráster servido de cuatro regiones da mancha mayor 100 % e islas cero; con
+/// hueco de metro y medio daba 98,0 % y dos islas.
+fn interior_partitions(
+    building: &RegionBuilding,
+    manifest: &Wg3Manifest,
+    placements: &[Wg3Placement],
+    pillars: &[Wg3Solid],
+) -> Vec<Wg3Solid> {
+    let mut out = Vec::new();
+    let seed = building.seed;
+
+    // Huellas ya resueltas por una pieza del catálogo: la pieza trae su interior horneado y un
+    // tabique dentro es obra en mitad de un salón que nadie dibujó.
+    let taken: Vec<(f32, f32, f32, f32)> = placements
+        .iter()
+        .filter_map(|p| {
+            manifest
+                .pieces
+                .get(p.piece as usize)
+                .map(|piece| p.bounds(piece))
+        })
+        .collect();
+
+    for (n, plan) in building.storeys.iter().enumerate() {
+        let landings: Vec<super::plan::PlanRect> = building
+            .wells
+            .iter()
+            .filter(|w| w.storey_below + 1 == n)
+            .map(|w| w.rect.shrunk(-50))
+            .collect();
+        let wells_here: Vec<super::plan::PlanRect> = building
+            .wells
+            .iter()
+            .filter(|w| w.storey_below == n)
+            .map(|w| w.rect.shrunk(-50))
+            .collect();
+
+        // **El espacio de LLEGADA de una escalera se deja entero en paz.**
+        //
+        // Costó dos tests rojos y merece estar escrito: el hueco de escalera es un AGUJERO en el
+        // forjado de la planta de llegada, así que se comporta como una pared. Una división puesta
+        // justo pasado el rellano —a 51 cm del hueco, que la exclusión de `landings` ya daba por
+        // buena— encierra el rellano entre el agujero y ella, y como ésa es la única forma de subir,
+        // la planta entera deja de alcanzarse: `planta 2: sólo 0 de 18 849 cotas pisables se alcanzan
+        // desde la mancha mayor`. Un margen mayor no lo arregla —depende de dónde caiga la puerta del
+        // espacio—, así que se renuncia al espacio completo. Son unos seis por región.
+        let arrivals: Vec<usize> = building
+            .wells
+            .iter()
+            .filter(|w| w.storey_below + 1 == n)
+            .map(|w| w.space_above)
+            .collect();
+        // **Y el espacio que abre una PUERTA DE JUNTA tampoco lleva divisiones**, por el mismo motivo
+        // y con la misma medida detrás. El borde de región es una pared dura y la puerta es su único
+        // hueco; el validador comprueba la celda a 75 cm por dentro y la exige en la mancha mayor
+        // (`validate.rs:889`). Esquivar la puerta 350 cm no bastó: quedaron dos puertas selladas de 27
+        // regiones —(0,0,−131,2) y (179,1,150,0)—, porque lo que encierra la celda no es la división
+        // sola sino la división MÁS el borde. Son cuatro a seis espacios por región.
+        let gated: Vec<usize> = plan.gates.iter().map(|g| g.space).collect();
+
+        for (i, s) in plan.built() {
+            // **Nunca en circulación.** Un tabique en la espina parte el edificio en dos, y eso no es
+            // una división: es el fallo de conectividad de siempre con otro nombre. Es la misma regla
+            // que `plan::assign_void` escribe para el vacío.
+            if s.role.is_circulation() || s.rise_cm != 0 || s.role == SpaceRole::Stair {
+                continue;
+            }
+            if arrivals.contains(&i) || gated.contains(&i) {
+                continue;
+            }
+            let r = s.rect;
+            if r.area_m2() < PARTITION_MIN_AREA_M2 {
+                continue;
+            }
+
+            let (cx, cz) = r.centre_m();
+            let mut room = super::hash::stream_at(seed, cx, cz, SALT_PARTITION_ROOM);
+            if room.next01() >= PARTITION_ROOM_CHANCE {
+                continue;
+            }
+            let want = ((r.area_m2() / PARTITION_AREA_PER_ONE_M2).round() as i32)
+                .clamp(1, PARTITION_MAX_PER_SPACE);
+
+            // Los puntos por los que se entra: enlaces del plan y puertas de junta, igual que en la
+            // retícula de pilares.
+            let doors: Vec<(i32, i32)> = plan
+                .links
+                .iter()
+                .filter(|l| l.a == i || l.b == i)
+                .map(|l| (l.at_x_cm, l.at_z_cm))
+                .chain(
+                    plan.gates
+                        .iter()
+                        .filter(|g| g.space == i)
+                        .map(|g| (g.x_cm, g.z_cm)),
+                )
+                .collect();
+
+            let clear = clear_height_cm(s);
+            let style = style_of(s.role);
+            // Lo que ya ha puesto ESTE espacio: dos divisiones que se cruzan dejan cuadrantes, y un
+            // cuadrante con un solo hueco es la isla que el validador caza.
+            let mut mine: Vec<super::plan::PlanRect> = Vec::new();
+            let mut split_used = false;
+
+            for _ in 0..want {
+                // El eje se sortea; el vano que cruza es el lado perpendicular al tabique.
+                let across_x = room.next01() < 0.5;
+                let (span, room_side) = if across_x {
+                    (r.depth_cm(), r.width_cm())
+                } else {
+                    (r.width_cm(), r.depth_cm())
+                };
+                if span < PARTITION_MIN_SPAN_CM {
+                    continue;
+                }
+                let free = room_side - 2 * PARTITION_WALL_MARGIN_CM - PARTITION_T_CM;
+                if free <= 0 {
+                    continue;
+                }
+                let at_base = if across_x { r.min_x_cm } else { r.min_z_cm };
+                let at = at_base + PARTITION_WALL_MARGIN_CM + (room.next01() * free as f32) as i32;
+
+                // Isla, espolón o partición. La partición sólo puede salir una vez por espacio: dos
+                // que se cruzan dejan cuadrantes, y un cuadrante con un solo hueco es la isla que el
+                // validador caza.
+                let kind = room.next01();
+                let from_base = if across_x { r.min_z_cm } else { r.min_x_cm };
+                let (run_from, run_to, gap): PartitionRun = if kind < PARTITION_ISLAND_BELOW {
+                    let f = PARTITION_ISLAND_SPAN.0
+                        + room.next01() * (PARTITION_ISLAND_SPAN.1 - PARTITION_ISLAND_SPAN.0);
+                    let len = ((span as f32 * f) as i32).min(span - 2 * PARTITION_ISLAND_CLEAR_CM);
+                    if len < PARTITION_MIN_LEN_CM {
+                        continue;
+                    }
+                    let slack = span - len - 2 * PARTITION_ISLAND_CLEAR_CM;
+                    let a = from_base
+                        + PARTITION_ISLAND_CLEAR_CM
+                        + (room.next01() * slack as f32) as i32;
+                    (a, a + len, None)
+                } else if split_used || kind < PARTITION_SPUR_BELOW {
+                    let f = PARTITION_SPUR_SPAN.0
+                        + room.next01() * (PARTITION_SPUR_SPAN.1 - PARTITION_SPUR_SPAN.0);
+                    // **El extremo libre nunca se acerca a la pared de enfrente más de lo que mide un
+                    // paso.** Sin este tope un espolón del 78 % de un vano corto acaba a metro y medio
+                    // del muro: no es un espolón, es una partición con un hueco que no cabe.
+                    let len = ((span as f32 * f) as i32).min(span - PARTITION_GAP_CM);
+                    if len < PARTITION_MIN_LEN_CM {
+                        continue;
+                    }
+                    if room.next01() < 0.5 {
+                        (from_base, from_base + len, None)
+                    } else {
+                        (from_base + span - len, from_base + span, None)
+                    }
+                } else {
+                    split_used = true;
+                    let slack = span - PARTITION_GAP_CM;
+                    let g0 = from_base + (room.next01() * slack as f32) as i32;
+                    (
+                        from_base,
+                        from_base + span,
+                        Some((g0, g0 + PARTITION_GAP_CM)),
+                    )
+                };
+                let is_split = gap.is_some();
+
+                let top = if room.next01() < PARTITION_SCREEN_CHANCE {
+                    s.floor_y_cm + PARTITION_SCREEN_H_CM.min(clear)
+                } else {
+                    s.floor_y_cm + clear
+                };
+
+                // La huella entera de la división, para comprobarla de una vez: una división con un
+                // trozo suprimido en medio no es la misma cosa, así que o entra completa o no entra.
+                let foot = if across_x {
+                    super::plan::PlanRect {
+                        min_x_cm: at,
+                        min_z_cm: run_from,
+                        max_x_cm: at + PARTITION_T_CM,
+                        max_z_cm: run_to,
+                    }
+                } else {
+                    super::plan::PlanRect {
+                        min_x_cm: run_from,
+                        min_z_cm: at,
+                        max_x_cm: run_to,
+                        max_z_cm: at + PARTITION_T_CM,
+                    }
+                };
+                let near_door = foot.shrunk(-PARTITION_DOOR_CLEAR_CM);
+                // **Y NUNCA sobre el centro del espacio, que es donde va el agujero de suelo.**
+                // `hole_carves` centra siempre su cuadrado, y un macizo es inmune a los vanos
+                // (ADR-105 D2): un tabique ahí no sale al restar, sale ENCIMA — un muro cruzando el
+                // hueco, que además tapa la caída de dos plantas. Se esquiva el cuadrado entero sin
+                // repetir el dado de `hole_carves`: duplicar el sorteo es duplicar lógica que luego
+                // se separa, y esquivar el centro de una sala tampoco es una pérdida.
+                let hole = super::plan::PlanRect {
+                    min_x_cm: r.min_x_cm + (r.width_cm() - HOLE_SIDE_CM) / 2,
+                    min_z_cm: r.min_z_cm + (r.depth_cm() - HOLE_SIDE_CM) / 2,
+                    max_x_cm: r.min_x_cm + (r.width_cm() + HOLE_SIDE_CM) / 2,
+                    max_z_cm: r.min_z_cm + (r.depth_cm() + HOLE_SIDE_CM) / 2,
+                };
+                let blocked = landings.iter().any(|l| l.overlaps(&foot))
+                    || (n > 0 && hole.shrunk(-50).overlaps(&foot))
+                    || wells_here.iter().any(|w| w.overlaps(&foot))
+                    || mine.iter().any(|m| m.overlaps(&foot))
+                    || pillars.iter().any(|p| {
+                        let (x0, z0, x1, z1) = p.bounds();
+                        let (a0, b0, a1, b1) = (
+                            foot.min_x_cm as f32 / CM_PER_M,
+                            foot.min_z_cm as f32 / CM_PER_M,
+                            foot.max_x_cm as f32 / CM_PER_M,
+                            foot.max_z_cm as f32 / CM_PER_M,
+                        );
+                        a0 < x1 && a1 > x0 && b0 < z1 && b1 > z0
+                    })
+                    || doors
+                        .iter()
+                        .any(|&(dx, dz)| near_door.contains_point(dx, dz))
+                    || taken.iter().any(|&(x0, z0, x1, z1)| {
+                        let (a0, b0, a1, b1) = (
+                            foot.min_x_cm as f32 / CM_PER_M,
+                            foot.min_z_cm as f32 / CM_PER_M,
+                            foot.max_x_cm as f32 / CM_PER_M,
+                            foot.max_z_cm as f32 / CM_PER_M,
+                        );
+                        a0 < x1 && a1 > x0 && b0 < z1 && b1 > z0
+                    });
+                if blocked {
+                    // Una partición que no llegó a ponerse no gasta el cupo del espacio.
+                    if is_split {
+                        split_used = false;
+                    }
+                    continue;
+                }
+                mine.push(foot);
+
+                // Y a cajas: el hueco parte la tirada en dos, y cada trozo se corta a `MAX_SOLID_CM`
+                // por lo mismo que un pretil — un macizo se dibuja en el chunk de su CENTRO.
+                // **Y un trozo demasiado corto se lo come el hueco.** El hueco de una partición se
+                // sortea a lo largo del vano, así que puede caer a treinta centímetros de un extremo
+                // y dejar un muñón de treinta por treinta: eso no es un tabique, es un poste, y el
+                // test lo cazó en la primera pasada. Tirar el trozo ensancha el paso un palmo, que es
+                // la respuesta correcta.
+                let runs: Vec<(i32, i32)> = match gap {
+                    Some((g0, g1)) => vec![(run_from, g0), (g1, run_to)],
+                    None => vec![(run_from, run_to)],
+                }
+                .into_iter()
+                .filter(|(a, b)| b - a >= PARTITION_STUB_MIN_CM)
+                .collect();
+                for (a, b) in runs {
+                    let mut cut = a;
+                    while cut < b {
+                        let end = (cut + MAX_SOLID_CM).min(b);
+                        let (x, z, sx, sz) = if across_x {
+                            (at, cut, PARTITION_T_CM, end - cut)
+                        } else {
+                            (cut, at, end - cut, PARTITION_T_CM)
+                        };
+                        out.push(Wg3Solid {
+                            x_cm: x,
+                            z_cm: z,
+                            size_x_cm: sx,
+                            size_z_cm: sz,
+                            bottom_y_cm: s.floor_y_cm,
+                            top_y_cm: top,
+                            style,
+                        });
+                        cut = end;
+                    }
+                }
             }
         }
     }

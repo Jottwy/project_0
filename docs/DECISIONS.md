@@ -12531,3 +12531,132 @@ de la omisión, no el resto de la influencia arquitectónica.
   una iteración futura sube la densidad de pilares, **este es el número que se rompe primero**.
 - **Sin cambio de wire** (55), sin `SpaceRole` nuevo, sin tocar el cliente: el canal de macizos ya
   existía y `Wg3SceneAssembler` ya los monta desde ADR-105.
+
+---
+
+## ADR-105 — Enmienda 3: la masa interior, porque una sala vacía no es un sitio (2026-09-03)
+
+Estado: validada — permiso pedido y dado antes de escribir código, igual que la enmienda 2.
+
+**Contexto.** Joel juega y dice que las regiones «siguen pareciendo un generador procedural de
+habitaciones y halls rectangulares: grandes espacios demasiado vacíos, poca profundidad
+arquitectónica y demasiada sensación de geometría modular colocada sobre un plano». La auditoría del
+2026-09-03 —nueve lectores sobre el módulo entero más medición propia— lo convierte en un número:
+**en todo `fill.rs` había exactamente DOS emisores de `Wg3Solid`**, el pretil de un balcón
+(`atrium_solids`) y la retícula de pilares de una nave (`hall_pillars`). Los dos son de atrio o de
+nave, así que **el 90,4 % de los espacios construidos del mundo no contenía ni un solo volumen**:
+seis caras y aire.
+
+### D1 — El tercer caso de la tabla de D5: la MASA INTERIOR
+
+La tabla de casos de ADR-105 D5 es cerrada a propósito, y ampliarla es una enmienda. Se amplía con un
+tercer caso, `fill::interior_partitions`, con tres tipos y ningún arquetipo más:
+
+- **ISLA** — pared exenta, despegada de las cuatro paredes de la sala.
+- **ESPOLÓN** — pegada a una sola pared, muere en el aire.
+- **PARTICIÓN** — cruza el vano entero con un hueco de paso.
+
+Sigue siendo un `Wg3Solid`: mismo canal, misma inmunidad a los vanos (D2), mismo reparto por el chunk
+de su centro (D3), mismo peaje de ráster (D6), mismo byte de estilo. **Lo único que se amplía es
+DÓNDE se emite**, exactamente como en la enmienda 2.
+
+### D2 — Manda la isla, y no es preferencia estética
+
+Un tabique que cruza de lado a lado con su hueco convierte una sala en dos salas, y de eso el mundo
+ya va lleno: **es literalmente lo que hace el BSP**, y repetirlo dentro de la hoja no añade una
+lectura nueva. La isla y el espolón rompen la línea de visión **sin partir el sitio**, así que la sala
+grande sigue siendo una sala grande — que es lo que Joel pidió explícitamente no perder («las salas
+grandes deberían poder seguir siendo grandes, pero no necesariamente sentirse como una caja
+rectangular vacía»). Reparto: isla 45 %, espolón 35 %, partición 20 %.
+
+**Y la isla existe además por una razón medida.** La primera versión sólo tenía espolón y partición,
+o sea que toda división llegaba a una pared perpendicular, o sea a 0 cm de cualquier puerta de esa
+pared: la esquiva de puertas rechazaba dos de cada tres intentos y la dosis se quedó en **480 metros
+lineales por región**. Una isla no toca ninguna pared y la esquiva casi nunca la ve.
+
+### D3 — La conectividad no se confía, se construye
+
+Un espolón y una isla **no pueden desconectar nada**. Una partición sí podría, y por eso hay como
+mucho **una por espacio** y su hueco mide **400 cm**. El número está medido, no elegido: simulando
+divisiones sobre el ráster servido de cuatro regiones, con hueco de 150 cm salían hasta 2 islas y la
+mancha mayor bajaba al 98,0 %; con 400 cm, mancha mayor 100 % e islas cero en las cuatro.
+
+### D4 — La mampara: 230 cm, y por qué esa altura y no otra
+
+El 34 % de las divisiones se queda por debajo del techo, a 230 cm. Los ojos van a 1,60 m, así que
+corta la línea de visión **igual que un muro**; y dejar el techo corrido por encima es lo que la lee
+como mampara de oficina en vez de como muro de carga. Es la única división que se puede mirar por
+encima, y por eso no puede ser la única que hay.
+
+### D5 — Las exclusiones, y las dos que costaron un test rojo cada una
+
+Las evidentes: delante de una puerta (**350 cm**, enlaces del plan y puertas de junta), sobre el
+aterrizaje de una escalera o la boca de un pozo, dentro de la huella de una pieza del catálogo,
+encima de un pilar, y nunca en circulación —un tabique en la espina parte el edificio en dos, que es
+el fallo de conectividad de siempre con otro nombre.
+
+Las tres que no se ven venir, **todas del mismo tipo: un hueco puede hacer de pared**.
+
+1. **El cuadrado central del espacio.** `hole_carves` centra siempre el agujero de suelo, y un macizo
+   es inmune a los vanos (D2), así que un tabique ahí no sale al restar: sale ENCIMA, un muro
+   cruzando el hueco que además tapa la caída de dos plantas. Se esquiva el cuadrado sin repetir el
+   dado de `hole_carves` — duplicar el sorteo es duplicar lógica que luego se separa.
+2. **El espacio de LLEGADA de una escalera, entero.** El hueco de escalera es un agujero en el
+   forjado de la planta de llegada, o sea que se comporta como una pared. Una división puesta a 51 cm
+   del hueco —que la exclusión del rellano daba por buena— encierra el rellano entre el agujero y
+   ella, y como ésa era la única forma de subir, **la planta entera dejó de alcanzarse**: `planta 2:
+   sólo 0 de 18 849 cotas pisables se alcanzan desde la mancha mayor`, en la semilla 42. Un margen
+   mayor no lo arregla, porque depende de dónde caiga la puerta del espacio: se renuncia al espacio
+   completo.
+3. **El espacio que abre una PUERTA DE JUNTA, entero.** Mismo mecanismo con el borde de región
+   haciendo de hueco. El validador comprueba la celda a 75 cm por dentro y la exige en la mancha
+   mayor (`validate.rs:889`); esquivar la puerta 350 cm no bastó y quedaron dos puertas selladas de
+   27 regiones, en (0,0 , −131,2) y (179,1 , 150,0). Lo que encierra la celda no es la división sola:
+   es la división MÁS el borde.
+
+Las dos últimas cuestan unos diez espacios por región y bajan la dosis de 51,7 divisiones a 43,3.
+**Se pagan sin discutir**: una planta inalcanzable o una región sellada contra su vecina no son un
+precio, son un mundo roto.
+
+### D6 — Dos métricas nuevas, y el volcado que llevaba ciego desde ADR-105
+
+Ninguna de las ~14 invariantes de `wg3::validate` mira forma ni oclusión, y por eso 270/270 regiones
+válidas convivían con la queja. Se añaden dos medidas:
+
+- **Espacios construidos CON masa interior**, en `probe_architecture_metrics`. Es la métrica que
+  resume la queja en una línea.
+- **ISOVISTA** — cuánto suelo se ve de golpe, 48 rayos desde 300 celdas pisables del ráster servido.
+  Se calcula fuera del repositorio sobre el volcado de `dump_served_maps`; queda anotada como
+  candidata a entrar en el validador.
+
+**Y un fallo de medición corregido de paso**: `dump_served_maps` llamaba a
+`build_chunk_raster_with_carves`, que pasa `&[]` en el hueco de los macizos. O sea que **el «mundo
+servido» que dibujaba no llevaba ni un pretil ni un pilar desde que ADR-105 los introdujo**: la
+primera isovista medida sobre él daba 1883 m² donde la real eran 873, y hablar de oclusión con esa
+cifra era comparar dos cosas distintas — el mismo aviso que WG3-ROADMAP escribe sobre
+`compose_region`. El validador nunca tuvo el fallo (`validate.rs:591` ya llamaba a la función
+completa). Quedan **siete** volcados más de `tests.rs` con la misma llamada ciega, anotados y no
+tocados en esta tanda.
+
+### Verificaciones
+
+- **Espacios construidos con masa interior: 9,6 % → 26,2 %** (475 → 1 302 de 4 962), sobre 4 semillas
+  × 9 regiones. Casi el triple.
+- **43,3 divisiones por región, 408 metros lineales.** Alrededor de un tercio son mamparas por debajo
+  del techo.
+- **Isovista mediana, cuatro regiones de referencia**: 560 → 438, 643 → 524, 873 → 718, 786 → 650 m².
+  Entre **−17,3 % y −21,8 %**, consistente en las cuatro.
+- **Peaje del ráster**: cotas pisables −0,9 % a −1,7 %. **Mancha mayor 100 %** en las tres regiones
+  que ya la tenían, e **islas sin cambio** (la región (1,0) traía 2 desde antes).
+- **Línea de visión media 21,6 → 20,1 m**; es la métrica equivocada para esto y por eso se añade la
+  isovista: la media de longitud de rayo la dominan los rayos cortos, y cayó un 7 % donde el área
+  visible caía un 20 %.
+- **Suite completa 1358/1358**, `clippy --all-targets -D warnings` y `fmt` limpios.
+- **Test nuevo `partitions_land_where_the_grammar_says`**: 30 semillas, ~1 400 divisiones contra las
+  invariantes de D5 más el grosor de un solo eje y el tope de tirada. Cazó divisiones de **30 × 30
+  cm** en su primera pasada —un hueco sorteado a un palmo del extremo deja un muñón que es un poste,
+  no un muro; el trozo se tira y el paso se ensancha.
+- **Se probó bajar `PARTITION_MIN_SPAN_CM` a 650 y el margen de pared a 250** para dejar entrar los
+  espacios alargados: **empeora**, 52,2 divisiones por región contra 61,2. Queda escrito en el código
+  para que nadie vuelva a gastar la vuelta.
+- **Sin cambio de wire** (55), sin `SpaceRole` nuevo, sin tocar el cliente.

@@ -615,6 +615,13 @@ fn probe_architecture_metrics() {
     let mut spacing_sum = 0.0f64;
     let mut spacing_n = 0usize;
     let mut spacing_min = i32::MAX;
+    // ADR-105 enm. 3 — **cuántos espacios contienen algo.** Es la métrica que la auditoría del
+    // 2026-09-03 echó en falta y la que resume la queja: antes de las divisiones, el 92,5 % de los
+    // espacios del mundo era una cáscara de seis caras con aire dentro.
+    let mut built_spaces = 0usize;
+    let mut spaces_with_mass = 0usize;
+    let mut parts_total = 0usize;
+    let mut part_cm = 0i64;
 
     for &seed in &seeds {
         for &(rx, rz) in &regions {
@@ -666,6 +673,29 @@ fn probe_architecture_metrics() {
                     }
                 }
             }
+            // Masa interior: divisiones (30 cm de canto) y cuántos espacios llevan algo dentro.
+            for s in &inside.filled.solids {
+                if s.size_x_cm == 30 || s.size_z_cm == 30 {
+                    parts_total += 1;
+                    part_cm += s.size_x_cm.max(s.size_z_cm) as i64;
+                }
+            }
+            for st in inside.building.storeys.iter() {
+                for (_, sp) in st.built() {
+                    built_spaces += 1;
+                    let has = inside.filled.solids.iter().any(|s| {
+                        s.bottom_y_cm == sp.floor_y_cm
+                            && s.x_cm >= sp.rect.min_x_cm
+                            && s.x_cm < sp.rect.max_x_cm
+                            && s.z_cm >= sp.rect.min_z_cm
+                            && s.z_cm < sp.rect.max_z_cm
+                    });
+                    if has {
+                        spaces_with_mass += 1;
+                    }
+                }
+            }
+
             for (a, p) in pillars.iter().enumerate() {
                 let mut best = i32::MAX;
                 for (b, q) in pillars.iter().enumerate() {
@@ -860,6 +890,18 @@ fn probe_architecture_metrics() {
         pillars_total as f32 / regions_n.max(1) as f32
     );
     println!(
+        "  divisiones {} ({:.1} por región, {:.0} m lineales por región)",
+        parts_total,
+        parts_total as f32 / regions_n.max(1) as f32,
+        part_cm as f32 / 100.0 / regions_n.max(1) as f32
+    );
+    println!(
+        "  espacios construidos CON masa interior: {} de {} ({:.1} %)",
+        spaces_with_mass,
+        built_spaces,
+        pc(spaces_with_mass, built_spaces)
+    );
+    println!(
         "  naves ≥300 m²: {}, con pilares {} ({:.1} %), {:.1} pilares por nave con pilares",
         halls_big,
         halls_with_pillars,
@@ -1042,6 +1084,161 @@ fn probe_islands() {
     );
 }
 
+/// ADR-105 enmienda 3 — **las cuatro invariantes de la masa interior, contra 30 semillas.**
+///
+/// Es el gemelo de [`pillars_land_where_the_grammar_says`] y existe por el mismo motivo: ninguna de
+/// estas cuatro cosas produce un test rojo en otro sitio si se rompe. Un tabique delante de un vano
+/// tapia la sala sin que ningún contador se entere, y el síntoma sale cien metros más allá como una
+/// puerta que no lleva a ninguna parte.
+///
+/// El grosor es lo que identifica una división: el pretil mide 20 cm, el pilar 200 y la división 30.
+#[test]
+fn partitions_land_where_the_grammar_says() {
+    use super::plan::{PlanRect, SpaceRole};
+
+    let m = real_manifest();
+    let seeds = validate::sweep_seeds(sweep_seed_count(3));
+    // `PARTITION_DOOR_CLEAR_CM`.
+    const DOOR_CLEAR_CM: i32 = 350;
+    const T_CM: i32 = 30;
+    const MAX_RUN_CM: i32 = 2000;
+    const SCREEN_H_CM: i32 = 230;
+
+    let mut seen = 0usize;
+    let mut screens = 0usize;
+    for &seed in &seeds {
+        for &(rx, rz) in NEAR_REGIONS.iter() {
+            let region = Wg3RegionCoord { x: rx, z: rz };
+            let inside = validate::region_inside(&m, seed, region);
+            let parts: Vec<&super::segment::Wg3Solid> = inside
+                .filled
+                .solids
+                .iter()
+                .filter(|s| s.size_x_cm == T_CM || s.size_z_cm == T_CM)
+                .collect();
+            seen += parts.len();
+
+            for p in &parts {
+                let rect = PlanRect {
+                    min_x_cm: p.x_cm,
+                    min_z_cm: p.z_cm,
+                    max_x_cm: p.x_cm + p.size_x_cm,
+                    max_z_cm: p.z_cm + p.size_z_cm,
+                };
+
+                // 1 — toda división cae DENTRO de un espacio construido, plano y que no es
+                //     circulación, y a la cota de su planta. Un tabique en la espina parte el
+                //     edificio en dos.
+                let mut host = None;
+                for (n, st) in inside.building.storeys.iter().enumerate() {
+                    for (i, sp) in st.built() {
+                        if sp.floor_y_cm == p.bottom_y_cm && sp.rect.contains_rect(&rect) {
+                            host = Some((n, i, sp));
+                        }
+                    }
+                }
+                let Some((n, i, sp)) = host else {
+                    panic!(
+                        "semilla {seed:#x} región ({rx},{rz}): división en ({},{}) cota {} fuera \
+                         de todo espacio construido",
+                        p.x_cm, p.z_cm, p.bottom_y_cm
+                    )
+                };
+                assert!(
+                    !sp.role.is_circulation(),
+                    "semilla {seed:#x} región ({rx},{rz}): división en un espacio {}, que es \
+                     circulación",
+                    sp.role.name()
+                );
+                assert_ne!(
+                    sp.role,
+                    SpaceRole::Void,
+                    "semilla {seed:#x} región ({rx},{rz}): división en un vacío"
+                );
+                assert_eq!(
+                    sp.rise_cm, 0,
+                    "semilla {seed:#x} región ({rx},{rz}): división en un espacio con desnivel"
+                );
+
+                // 2 — el grosor es de UN eje. Una división cuadrada de 30 × 30 sería un poste, y un
+                //     poste no divide nada.
+                assert!(
+                    (p.size_x_cm == T_CM) != (p.size_z_cm == T_CM),
+                    "semilla {seed:#x} región ({rx},{rz}): división de {} × {} cm",
+                    p.size_x_cm,
+                    p.size_z_cm
+                );
+                let long = p.size_x_cm.max(p.size_z_cm);
+                assert!(
+                    long <= MAX_RUN_CM,
+                    "semilla {seed:#x} región ({rx},{rz}): tirada de {long} cm sobre un tope de \
+                     {MAX_RUN_CM} — un macizo se dibuja en el chunk de su centro"
+                );
+
+                // 3 — su altura es la del techo o la de la mampara, nunca otra cosa. Una división a
+                //     media altura que no sea ninguna de las dos es un dato roto que se lee como un
+                //     bordillo.
+                let h = p.top_y_cm - p.bottom_y_cm;
+                let clear = super::fill::clear_height_cm(sp);
+                if h == SCREEN_H_CM.min(clear) {
+                    screens += 1;
+                } else {
+                    assert_eq!(
+                        h, clear,
+                        "semilla {seed:#x} región ({rx},{rz}): división de {h} cm de alto en un \
+                         espacio de {clear} cm"
+                    );
+                }
+
+                // 4 — ninguna división delante de una puerta.
+                let near = rect.shrunk(-DOOR_CLEAR_CM);
+                let plan = &inside.building.storeys[n];
+                for (dx, dz) in plan
+                    .links
+                    .iter()
+                    .filter(|l| l.a == i || l.b == i)
+                    .map(|l| (l.at_x_cm, l.at_z_cm))
+                    .chain(
+                        plan.gates
+                            .iter()
+                            .filter(|g| g.space == i)
+                            .map(|g| (g.x_cm, g.z_cm)),
+                    )
+                {
+                    assert!(
+                        !near.contains_point(dx, dz),
+                        "semilla {seed:#x} región ({rx},{rz}): división en ({},{})-({},{}) a menos \
+                         de {DOOR_CLEAR_CM} cm de la puerta ({dx},{dz})",
+                        rect.min_x_cm,
+                        rect.min_z_cm,
+                        rect.max_x_cm,
+                        rect.max_z_cm
+                    );
+                }
+
+                // 5 — ni encima del aterrizaje de una escalera o de la boca de un pozo.
+                for w in &inside.building.wells {
+                    if w.storey_below + 1 == n || w.storey_below == n {
+                        assert!(
+                            !w.rect.shrunk(-50).overlaps(&rect),
+                            "semilla {seed:#x} región ({rx},{rz}): división sobre el pozo en \
+                             ({},{})",
+                            w.rect.min_x_cm,
+                            w.rect.min_z_cm
+                        );
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        seen > 1000,
+        "sólo {seen} divisiones en {} regiones: la gramática no está emitiendo",
+        seeds.len() * NEAR_REGIONS.len()
+    );
+    println!("[divisiones] {seen} revisadas, {screens} mamparas por debajo del techo");
+}
+
 /// ADR-119 enmienda 1 — **las invariantes duras de los pilares**, sobre varias semillas.
 ///
 /// El barrido de niveles ya dice que el mundo con pilares sigue siendo andable (mancha mayor y nav);
@@ -1176,4 +1373,96 @@ fn pillars_land_where_the_grammar_says() {
         seeds.len() * NEAR_REGIONS.len()
     );
     println!("[pilares] {seen} pilares revisados");
+}
+
+/// SONDA — **dónde están las naves con pilares**, para poder ir a verlas.
+///
+/// Un test dice que la retícula cumple sus invariantes; no dice si andando por dentro se lee como
+/// arquitectura. Para eso hay que ir, y para ir hace falta la coordenada.
+///
+/// `WG3_PROBE_SEED=42 WG3_PROBE_REGION=0,0 cargo test --release --bin backrooms_server
+/// probe_pillar_halls -- --ignored --nocapture`
+#[test]
+#[ignore = "sonda de medida; se pide a mano"]
+fn probe_pillar_halls() {
+    use super::plan::SpaceRole;
+
+    let m = real_manifest();
+    let seed = std::env::var("WG3_PROBE_SEED")
+        .ok()
+        .and_then(|v| match v.trim().strip_prefix("0x") {
+            Some(h) => u64::from_str_radix(h, 16).ok(),
+            None => v.trim().parse().ok(),
+        })
+        .unwrap_or(LIVE_SEED);
+    let regions: Vec<(i32, i32)> = match std::env::var("WG3_PROBE_REGION").ok() {
+        Some(v) => {
+            let mut it = v.split(',').map(|t| t.trim().parse::<i32>());
+            vec![(it.next().unwrap().unwrap(), it.next().unwrap().unwrap())]
+        }
+        None => NEAR_REGIONS.to_vec(),
+    };
+
+    /// Una nave con retícula, tal como la ordena esta sonda: `(pilares, centro x, centro z,
+    /// distancia al origen, cota, planta, ancho, fondo)`. Es una tupla y no un struct porque su
+    /// única razón de existir es el `sort_by` de tres líneas más abajo.
+    type PillarHall = (usize, f32, f32, f32, i32, usize, f32, f32);
+    let mut found: Vec<PillarHall> = Vec::new();
+    for (rx, rz) in regions {
+        let region = Wg3RegionCoord { x: rx, z: rz };
+        let inside = validate::region_inside(&m, seed, region);
+        let pillars: Vec<&super::segment::Wg3Solid> = inside
+            .filled
+            .solids
+            .iter()
+            .filter(|s| s.size_x_cm == 200 && s.size_z_cm == 200)
+            .collect();
+        for (n, st) in inside.building.storeys.iter().enumerate() {
+            for (_, sp) in st.built() {
+                if sp.role != SpaceRole::Hall {
+                    continue;
+                }
+                let k = pillars
+                    .iter()
+                    .filter(|p| {
+                        p.bottom_y_cm == sp.floor_y_cm
+                            && p.x_cm >= sp.rect.min_x_cm
+                            && p.x_cm < sp.rect.max_x_cm
+                            && p.z_cm >= sp.rect.min_z_cm
+                            && p.z_cm < sp.rect.max_z_cm
+                    })
+                    .count();
+                if k == 0 {
+                    continue;
+                }
+                let (cx, cz) = sp.rect.centre_m();
+                found.push((
+                    k,
+                    cx,
+                    cz,
+                    sp.rect.area_m2(),
+                    sp.floor_y_cm,
+                    n,
+                    sp.rect.width_cm() as f32 / 100.0,
+                    sp.rect.depth_cm() as f32 / 100.0,
+                ));
+            }
+        }
+    }
+    // Las más pobladas primero, y a igualdad la más cerca del origen: es adonde se puede llegar.
+    found.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then((a.1 * a.1 + a.2 * a.2).total_cmp(&(b.1 * b.1 + b.2 * b.2)))
+    });
+    println!(
+        "[naves] semilla {seed:#x}: {} naves con pilares",
+        found.len()
+    );
+    for (k, cx, cz, area, floor, storey, w, d) in found.iter().take(20) {
+        println!(
+            "[naves]   {k:>2} pilares  centro ({cx:>8.1}, {cz:>8.1})  {w:>5.1} × {d:>5.1} m = \
+             {area:>6.0} m²  planta {storey} cota {floor} cm  · dist origen {:.0} m",
+            (cx * cx + cz * cz).sqrt()
+        );
+    }
 }

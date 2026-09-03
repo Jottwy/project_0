@@ -7464,11 +7464,19 @@ fn dump_served_maps() {
                     x: base.x + cx as i32,
                     z: base.z + cz as i32,
                 };
-                rasters.push(chunk::build_chunk_raster_with_carves(
+                // **Y con los MACIZOS.** Hasta hoy este volcado llamaba a
+                // `build_chunk_raster_with_carves`, que pasa `&[]` en el hueco de los macizos: o
+                // sea que el «mundo servido» que dibujaba no llevaba ni un pretil ni un pilar desde
+                // que ADR-105 los introdujo. Medir oclusión sobre él y hablar del mundo servido es
+                // comparar dos cosas distintas — el mismo aviso que WG3-ROADMAP escribe sobre
+                // `compose_region`. El validador nunca tuvo el fallo: `validate.rs:591` ya llamaba
+                // a la función completa.
+                rasters.push(chunk::build_chunk_raster_full(
                     &m,
                     &world.placements_touching_chunk(&m, coord),
                     &world.segments_touching_chunk(coord),
                     &world.carves_touching_chunk(coord),
+                    &world.solids_touching_chunk(coord),
                     coord,
                 ));
             }
