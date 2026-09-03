@@ -73,6 +73,14 @@ namespace BackroomsSurvival.WorldGen3
             mesh.SetUVs(0, uvs);
             mesh.subMeshCount = SubMesh.Count;
             for (int i = 0; i < SubMesh.Count; i++) mesh.SetTriangles(tris[i], i);
+            // **Y TANGENTES, sin las cuales un mapa de normales no existe.**
+            //
+            // La malla salía con posición, normal y UV, y los cuatro `Wg3_*.mat` tenían `_BumpMap`
+            // vacío, así que nadie las echaba en falta. En cuanto el material lleva normal, el
+            // sombreado necesita la base tangente: sin ella URP usa una arbitraria y el relieve sale
+            // girado por cara, que se ve como suciedad y no como textura. Se calculan aquí y no en el
+            // llamador porque aquí es donde ya están las UV.
+            mesh.RecalculateTangents();
             mesh.RecalculateBounds();
             return mesh;
         }

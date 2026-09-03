@@ -321,6 +321,20 @@ namespace BackroomsSurvival.WorldGen3
             const int MaxPerAxis = 2;
             // A partir de aquí el techo es alto y el plafón pasa a colgar.
             const float HangHeight = 3f;
+            // Lado mínimo, en metros, para que un tramo se lleve UNA lámpara con sombra.
+            //
+            // **Y es una por tramo grande, no una por lámpara.** Hasta hoy los dos únicos creadores de
+            // `Light` de WG3 fijaban `LightShadows.None`, así que nada del mundo proyectaba: ni un
+            // pilar marcaba el suelo, ni una división se despegaba de la pared, y una nave de 700 m²
+            // se leía tan plana como un pasillo. Es la mitad de «geometría modular colocada sobre un
+            // plano» que no está en el generador.
+            //
+            // El tope existe porque el atlas de sombras de luces adicionales es finito
+            // (`PC_RPAsset`: 4096 con teselas de 256, y `m_ShadowDistance` 50 m). Restringiéndolo a
+            // tramos de doce metros por los dos lados sólo lo pagan las naves —que son justo donde
+            // hay masa que sombrear— y las salas normales siguen costando lo mismo que ayer.
+            const float ShadowMinSide = 12f;
+            bool wantsShadow = segment.SizeX >= ShadowMinSide && segment.SizeZ >= ShadowMinSide;
 
             int nx = Mathf.Clamp(Mathf.RoundToInt(segment.SizeX / Spacing), 1, MaxPerAxis);
             int nz = Mathf.Clamp(Mathf.RoundToInt(segment.SizeZ / Spacing), 1, MaxPerAxis);
@@ -346,7 +360,21 @@ namespace BackroomsSurvival.WorldGen3
                     light.range = 6f;
                     light.intensity = 1.1f;
                     light.color = new Color(1f, 0.96f, 0.78f);
-                    light.shadows = LightShadows.None;
+                    // La PRIMERA de un tramo grande proyecta; las demás no. Con 2 × 2 como tope por
+                    // eje, eso es una de cuatro en el peor caso.
+                    if (wantsShadow && ix == 0 && iz == 0)
+                    {
+                        light.shadows = LightShadows.Soft;
+                        // Sin bajar la fuerza, el contacto sale negro: la escena tiene ambiente
+                        // cálido y una sola puntual sin rebote, así que la sombra dura se lee como
+                        // agujero. Tres cuartos deja el volumen y no mata la lectura.
+                        light.shadowStrength = 0.72f;
+                        light.shadowNearPlane = 0.3f;
+                    }
+                    else
+                    {
+                        light.shadows = LightShadows.None;
+                    }
                     // SOLO su planta. Es la mitad de la regla que cierra la fuga, y la que no se
                     // puede deducir mirando el objeto: un plafón parece inofensivo.
                     // `Light.renderingLayerMask` es int y el del Renderer es uint: la conversión
