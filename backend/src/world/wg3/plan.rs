@@ -915,6 +915,35 @@ impl PlannedSpace {
 /// dos caras consecutivas ES el lado de una celda y también la anchura de la boca que la une con su
 /// vecina. Por debajo de [`PART_JOIN_CM`] el ráster tapia esa boca y el espacio nace partido por
 /// dentro.
+/// ¿Toda celda de la rejilla que forman estas partes mide al menos `min_cm` en los dos ejes?
+///
+/// Es [`grid_spans_are_wide`] con el umbral por parámetro. Existe aparte porque el umbral de aquélla
+/// es una regla del ráster —lo que se puede generar— y éste es una regla de circulación: por dónde
+/// se tiene que poder pasar.
+fn cells_are_at_least(parts: &[PlanRect], min_cm: i32) -> bool {
+    if parts.len() < 2 {
+        return true;
+    }
+    for along_x in [true, false] {
+        let mut faces: Vec<i32> = Vec::with_capacity(parts.len() * 2);
+        for p in parts {
+            if along_x {
+                faces.push(p.min_x_cm);
+                faces.push(p.max_x_cm);
+            } else {
+                faces.push(p.min_z_cm);
+                faces.push(p.max_z_cm);
+            }
+        }
+        faces.sort_unstable();
+        faces.dedup();
+        if faces.windows(2).any(|w| w[1] - w[0] < min_cm) {
+            return false;
+        }
+    }
+    true
+}
+
 fn grid_spans_are_wide(parts: &[PlanRect]) -> bool {
     // **Un rectángulo suelto no tiene ninguna cara INTERNA, así que aquí no se le pide nada.**
     //
@@ -1273,6 +1302,45 @@ fn gate_coordinates(gates: &[Wg3Gate], along_x: bool) -> Vec<i32> {
     out
 }
 
+/// Un corte prohibido por una puerta de junta: `(coordenada, desde, hasta)` sobre el eje
+/// perpendicular. Ver [`gate_cut_spans`].
+type GateCut = (i32, i32, i32);
+
+/// Los mismos cortes que [`gate_coordinates`], **pero con hasta dónde llegan hacia dentro**.
+///
+/// El corte de una puerta de junta es `(coordenada, desde, hasta)` sobre el eje perpendicular. Es la
+/// diferencia entre «ninguna pared nueva a esta x» y «ninguna pared nueva a esta x *donde la puerta
+/// la puede sentir*»: lo primero prohíbe una pared a ciento cuarenta metros de la puerta, en el otro
+/// extremo de la región, que no la puede sellar de ninguna manera. Medido en la región (1,0): **174
+/// de 216 mordiscos descartados por geometría morían aquí**, y eran el mayor motivo con diferencia.
+///
+/// El alcance es el mismo que el del cerco blando —lo que hay que proteger no es la puerta sino el
+/// camino que llega a ella— y por la misma razón: más allá hay región de sobra para rodear.
+fn gate_cut_spans(gates: &[Wg3Gate], along_x: bool, reach_cm: i32) -> Vec<GateCut> {
+    let mut out: Vec<GateCut> = gates
+        .iter()
+        .filter(|g| g.outward_side.is_multiple_of(2) == along_x)
+        .map(|g| {
+            let cut = ((if along_x { g.x } else { g.z }) * CM_PER_M).round() as i32;
+            let perp = ((if along_x { g.z } else { g.x }) * CM_PER_M).round() as i32;
+            let (dx, dz) = match g.outward_side % 4 {
+                0 => (0, -1),
+                1 => (-1, 0),
+                2 => (0, 1),
+                _ => (1, 0),
+            };
+            let step = if along_x { dz } else { dx } * reach_cm;
+            (cut, perp.min(perp + step), perp.max(perp + step))
+        })
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// Hasta dónde hacia dentro puede una pared nueva sellar una puerta de junta. Ver [`gate_cut_spans`].
+const GATE_CUT_REACH_CM: i32 = 3000;
+
 /// Nodo del árbol de subdivisión. Vive sólo mientras se planifica.
 struct Node {
     rect: PlanRect,
@@ -1612,8 +1680,8 @@ pub fn plan_building(
     // entera, y una puerta que no cabe sólo descarta un mordisco. Ver `compose_shapes` para la medida
     // que obligó a moverla desde `plan_storey`.
     let (gx, gz) = (
-        gate_coordinates(gates, true),
-        gate_coordinates(gates, false),
+        gate_cut_spans(gates, true, GATE_CUT_REACH_CM),
+        gate_cut_spans(gates, false, GATE_CUT_REACH_CM),
     );
     for (n, storey) in out.iter_mut().enumerate() {
         // Todo lo que un pozo necesita intacto: su tiro y la boca que abre arriba, con el margen con
@@ -1643,26 +1711,49 @@ pub fn plan_building(
         // que se protege es la pared nueva, no el espacio entero. A 80 m el cerco seguía matando 138
         // intentos de 111 parejas en la región (0,0) — más que cualquier otro motivo junto.
         const GATE_REACH_CM: i32 = 3000;
+        /// Y lo que del pasillo va en el cerco DURO: el arranque, junto al borde.
+        ///
+        /// Es donde la puerta se puede quedar encerrada sin que nadie la toque: ahí la franja entre
+        /// el borde y el primer vecino es estrecha, y a ese vecino le basta con retirarse para que
+        /// deje de comunicar. Más adentro hay región de sobra y el cerco blando basta —vetar el
+        /// espacio entero a sesenta metros costaba un tercio de la composición de huellas—.
+        const GATE_HARD_REACH_CM: i32 = 2000;
+        debug_assert_eq!(GATE_REACH_CM, GATE_CUT_REACH_CM);
+        let gate_box = |g: &PlannedGate, reach: i32| -> PlanRect {
+            let (dx, dz) = match g.outward_side % 4 {
+                0 => (0, -1),
+                1 => (-1, 0),
+                2 => (0, 1),
+                _ => (1, 0),
+            };
+            let (ix, iz) = (g.x_cm + dx * reach, g.z_cm + dz * reach);
+            PlanRect {
+                min_x_cm: g.x_cm.min(ix) - GATE_KEEP_CM,
+                min_z_cm: g.z_cm.min(iz) - GATE_KEEP_CM,
+                max_x_cm: g.x_cm.max(ix) + GATE_KEEP_CM,
+                max_z_cm: g.z_cm.max(iz) + GATE_KEEP_CM,
+            }
+        };
+        // **Y el cerco duro es ESTRECHO: la holgura de reparto, no tres veces.**
+        //
+        // El ancho del blando es generoso porque ahí sólo veta dónde cae un mordisco; el duro veta el
+        // espacio ENTERO, y con los mismos doce metros a cada lado se llevaba por delante 48 de los
+        // 96 espacios de la región (1,0) —la mitad del mundo sin poder deformarse para proteger cinco
+        // puertas—. Lo que hay que blindar es la franja entre el borde y el primer vecino, y eso es
+        // el ancho de un paso.
+        let keep_hard: Vec<PlanRect> =
+            keep_hard
+                .into_iter()
+                .chain(storey.gates.iter().map(|g| {
+                    gate_box(g, GATE_HARD_REACH_CM).shrunk(GATE_KEEP_CM - GATE_CLEARANCE_CM)
+                }))
+                .collect();
         let keep_soft: Vec<PlanRect> = storey
             .gates
             .iter()
-            .map(|g| {
-                let (dx, dz) = match g.outward_side % 4 {
-                    0 => (0, -1),
-                    1 => (-1, 0),
-                    2 => (0, 1),
-                    _ => (1, 0),
-                };
-                let (ix, iz) = (g.x_cm + dx * GATE_REACH_CM, g.z_cm + dz * GATE_REACH_CM);
-                PlanRect {
-                    min_x_cm: g.x_cm.min(ix) - GATE_KEEP_CM,
-                    min_z_cm: g.z_cm.min(iz) - GATE_KEEP_CM,
-                    max_x_cm: g.x_cm.max(ix) + GATE_KEEP_CM,
-                    max_z_cm: g.z_cm.max(iz) + GATE_KEEP_CM,
-                }
-            })
+            .map(|g| gate_box(g, GATE_REACH_CM))
             .collect();
-        let storey_gates: (&[i32], &[i32]) = if n == 0 { (&gx, &gz) } else { (&[], &[]) };
+        let storey_gates: (&[GateCut], &[GateCut]) = if n == 0 { (&gx, &gz) } else { (&[], &[]) };
         let storey_seed = if n == 0 { seed } else { storey_seed(seed, n) };
         compose_shapes(
             storey,
@@ -3531,13 +3622,130 @@ impl Planner {
 /// edificio, y la intrusión de un corredor en una sala es el operador siguiente, que se mide aparte.
 /// Y no deforma dos veces el mismo espacio: es la forma más fuerte de la regla «si ya está deformado,
 /// mucho menos», y es lo que mantiene la Z como excepción y no como estilo.
+/// **Los TRAMOS de pared recta de una planta, por coordenada y por eje.**
+///
+/// Devuelve `(por X, por Z)`: para cada coordenada, los intervalos de pared continua que hay sobre
+/// ella, ya fusionados. Es la medida de «cuadrícula» convertida en dato: lo que delata a un BSP no es
+/// que cada sala sea un rectángulo, es que el corte de guillotina deja una LÍNEA recta compartida por
+/// todas las hojas de su subárbol, y esa línea se ve desde dentro aunque ninguna de las paredes que
+/// la forman mida más de seis metros.
+///
+/// **Sólo cuentan las caras que son PARED.** Una cara entre dos partes del mismo espacio es interior
+/// —ahí hay sala, no muro—, y contarla hacía que la línea siguiera «existiendo» detrás de cada bahía:
+/// con la composición encendida y apagada la cuenta daba exactamente lo mismo.
+fn wall_runs(plan: &RegionPlan) -> (WallRuns, WallRuns) {
+    fn subtract(segs: &[(i32, i32)], a: i32, b: i32) -> Vec<(i32, i32)> {
+        let mut out = Vec::new();
+        for &(s0, s1) in segs {
+            if b <= s0 || a >= s1 {
+                out.push((s0, s1));
+                continue;
+            }
+            if s0 < a {
+                out.push((s0, a));
+            }
+            if b < s1 {
+                out.push((b, s1));
+            }
+        }
+        out
+    }
+    let mut fx: WallRuns = WallRuns::new();
+    let mut fz: WallRuns = WallRuns::new();
+    for s in plan.spaces.iter().filter(|s| s.role.is_built()) {
+        let ps = s.parts();
+        for r in ps {
+            for (k, hi) in [(r.min_x_cm, false), (r.max_x_cm, true)] {
+                let mut segs = vec![(r.min_z_cm, r.max_z_cm)];
+                for o in ps {
+                    if (hi && o.min_x_cm == k) || (!hi && o.max_x_cm == k) {
+                        segs = subtract(&segs, o.min_z_cm, o.max_z_cm);
+                    }
+                }
+                fx.entry(k).or_default().extend(segs);
+            }
+            for (k, hi) in [(r.min_z_cm, false), (r.max_z_cm, true)] {
+                let mut segs = vec![(r.min_x_cm, r.max_x_cm)];
+                for o in ps {
+                    if (hi && o.min_z_cm == k) || (!hi && o.max_z_cm == k) {
+                        segs = subtract(&segs, o.min_x_cm, o.max_x_cm);
+                    }
+                }
+                fz.entry(k).or_default().extend(segs);
+            }
+        }
+    }
+    for m in [&mut fx, &mut fz] {
+        for v in m.values_mut() {
+            v.sort_unstable();
+            let mut merged: Vec<(i32, i32)> = Vec::with_capacity(v.len());
+            for &(a, b) in v.iter() {
+                match merged.last_mut() {
+                    Some(last) if a <= last.1 => last.1 = last.1.max(b),
+                    _ => merged.push((a, b)),
+                }
+            }
+            *v = merged;
+        }
+    }
+    (fx, fz)
+}
+
+/// Los tramos de pared continua de un eje, por coordenada. Ver [`wall_runs`].
+type WallRuns = std::collections::HashMap<i32, Vec<(i32, i32)>>;
+
+/// Una pareja de espacios que comparten pared y podrían intercambiar volumen.
+///
+/// Lleva encima el TRAMO de línea recta sobre el que se apoya esa pared, porque es lo que ordena la
+/// pasada: ver [`wall_runs`].
+#[derive(Clone, Copy)]
+struct Cand {
+    x: i32,
+    z: i32,
+    i: usize,
+    j: usize,
+    wall_cm: i32,
+    pi: usize,
+    pj: usize,
+    /// La pared es vertical: los dos se tocan por una cara en X.
+    vertical: bool,
+    run: (i32, i32),
+}
+
+impl Cand {
+    /// Primero la LÍNEA más larga, luego la pared. La posición va detrás como desempate: el
+    /// resultado no puede depender del orden en que salieron las hojas del árbol.
+    fn rank(&self) -> (i32, i32, i32, i32, usize, usize) {
+        (
+            -(self.run.1 - self.run.0),
+            -self.wall_cm,
+            self.x,
+            self.z,
+            self.i,
+            self.j,
+        )
+    }
+
+    fn run_on(&self, lx: &WallRuns, lz: &WallRuns) -> (i32, i32) {
+        let (map, key, along) = if self.vertical {
+            (lx, self.x, self.z)
+        } else {
+            (lz, self.z, self.x)
+        };
+        map.get(&key)
+            .and_then(|v| v.iter().find(|&&(a, b)| along >= a && along <= b))
+            .copied()
+            .unwrap_or((0, 0))
+    }
+}
+
 fn compose_shapes(
     plan: &mut RegionPlan,
     seed: i32,
     keep_hard: &[PlanRect],
     keep_soft: &[PlanRect],
-    gate_cuts_x: &[i32],
-    gate_cuts_z: &[i32],
+    gate_cuts_x: &[GateCut],
+    gate_cuts_z: &[GateCut],
 ) {
     // **Un espacio con puerta de junta NO se deforma, y no es prudencia: es la misma exclusión que
     // ADR-105 enmienda 3 ya pagó con dos puertas selladas.**
@@ -3546,6 +3754,14 @@ fn compose_shapes(
     // puerta entre el borde y ella sin tocarla, y entonces la región nace sellada contra su vecina
     // mientras aquélla abre la suya contra el muro. Medido aquí también: `puerta de junta en
     // (20.5,150.0) sin suelo alcanzable por dentro`. Una sala menos deformada no es un precio.
+    // **El interruptor del ANTES.** `WG3_NO_SHAPE=1` deja el teselado del BSP tal cual salió, y es
+    // lo único que permite poner un volcado de antes y uno de después de la misma semilla uno al
+    // lado del otro sin recompilar entre medias. Sin él, el «antes» hay que sacarlo de un worktree
+    // en otro commit y deja de ser comparable en cuanto la rama avanza.
+    if std::env::var("WG3_NO_SHAPE").is_ok() {
+        return;
+    }
+
     let gated: Vec<usize> = plan.gates.iter().map(|g| g.space).collect();
     // Las puertas que ya existen, por espacio. Son la restricción de esta pasada: un mordisco que
     // deje una puerta fuera de la pared de su dueño la convierte en un vano que se dibuja y no se
@@ -3562,9 +3778,19 @@ fn compose_shapes(
         doors[g.space].push((g.x_cm, g.z_cm, g.width_cm));
     }
 
+    // **CUÁNTA PARED HAY SOBRE CADA COORDENADA, por eje.**
+    //
+    // Es la medida de «cuadrícula» convertida en dato de entrada. Lo que delata a un BSP no es que
+    // cada sala sea un rectángulo: es que el corte de guillotina deja una LÍNEA recta compartida por
+    // todas las hojas de su subárbol, y esa línea cruza media región aunque ninguna de las paredes
+    // que la forman mida más de seis metros. Medido en el barrido de 10 semillas: **20,4 líneas de
+    // más de media región por planta**, y la pasada de mordiscos las estaba ignorando porque ordena
+    // por pared y una línea larga son muchas paredes cortas apiladas.
+    let (line_x, line_z) = wall_runs(plan);
+
     // Candidatos ordenados por la POSICIÓN de su pared y no por índice: así el resultado no depende
     // de en qué orden salieron las hojas del árbol.
-    let mut cands: Vec<(i32, i32, usize, usize, i32, usize, usize)> = Vec::new();
+    let mut cands: Vec<Cand> = Vec::new();
     for i in 0..plan.spaces.len() {
         for j in (i + 1)..plan.spaces.len() {
             if gated.contains(&i) || gated.contains(&j) {
@@ -3579,19 +3805,42 @@ fn compose_shapes(
             }
             // Entre PARTES y la pared más ancha: un espacio ya deformado puede volver a serlo por
             // otro lado, y entonces la envolvente ya no es quien toca a nadie.
-            let mut best: Option<(i32, i32, i32, usize, usize)> = None;
+            let mut best: Option<Cand> = None;
             for (pi, ra) in plan.spaces[i].parts().iter().enumerate() {
                 for (pj, rb) in plan.spaces[j].parts().iter().enumerate() {
                     let Some((w, x, z)) = rects_share_wall(*ra, *rb) else {
                         continue;
                     };
-                    if best.is_none_or(|(bw, ..)| w > bw) {
-                        best = Some((w, x, z, pi, pj));
+                    // Sobre qué línea se apoya esta pared. Vertical si los dos rectángulos se tocan
+                    // por una cara en X; el `rects_share_wall` que la encontró ya lo decidió, así que
+                    // se relee de la geometría en vez de devolverse por el mismo sitio dos veces.
+                    let vertical = (ra.max_x_cm - rb.min_x_cm).abs() <= 1
+                        || (rb.max_x_cm - ra.min_x_cm).abs() <= 1;
+                    // El TRAMO de esa línea al que pertenece esta pared, no la línea entera: una
+                    // coordenada puede tener dos tramos separados y sólo el que toca importa.
+                    let (map, along) = if vertical { (&line_x, z) } else { (&line_z, x) };
+                    let run = map
+                        .get(&if vertical { x } else { z })
+                        .and_then(|v| v.iter().find(|&&(a, b)| along >= a && along <= b))
+                        .copied()
+                        .unwrap_or((0, 0));
+                    if best.is_none_or(|b| w > b.wall_cm) {
+                        best = Some(Cand {
+                            x,
+                            z,
+                            i,
+                            j,
+                            wall_cm: w,
+                            pi,
+                            pj,
+                            vertical,
+                            run,
+                        });
                     }
                 }
             }
-            if let Some((w, x, z, pi, pj)) = best {
-                cands.push((x, z, i, j, w, pi, pj));
+            if let Some(c) = best {
+                cands.push(c);
             }
         }
     }
@@ -3601,7 +3850,14 @@ fn compose_shapes(
     // gasta. Recorriendo por posición se lo comían las paredes cortas que el barrido encontraba
     // antes, que son justo las que `deform_pressure` ya penaliza por no leerse. La posición sigue
     // detrás como desempate: el resultado no puede depender del orden en que salieron las hojas.
-    cands.sort_unstable_by_key(|&(x, z, i, j, w, ..)| (-w, x, z, i, j));
+    // **Y primero la LÍNEA más larga, luego la pared.**
+    //
+    // El presupuesto es de dos o tres mordiscos por espacio, así que el orden decide en qué paredes
+    // se gasta. Ordenando sólo por pared se lo comían las paredes largas sueltas —una nave contra
+    // otra— y quedaban intactas las líneas de guillotina, que son muchas paredes cortas sobre la
+    // misma coordenada y son las que se ven desde dentro. La posición sigue detrás como desempate: el
+    // resultado no puede depender del orden en que salieron las hojas.
+    cands.sort_unstable_by_key(Cand::rank);
     if std::env::var("WG3_SHAPE_DEBUG").is_ok() {
         let n_void = plan.spaces.iter().filter(|s| !s.role.is_built()).count();
         let n_circ = plan
@@ -3627,13 +3883,42 @@ fn compose_shapes(
     // mover números a ciegas, que es exactamente lo que este trabajo tiene prohibido.
     let mut why = [0usize; 7];
     let mut miss = BiteMisses::default();
-    for (x, z, i, j, wall_cm, pi, pj) in cands {
-        if touched[i] >= MAX_DEFORMS || touched[j] >= MAX_DEFORMS {
+    // **Y la tabla de líneas va VIVA.** Cada mordisco puesto parte la línea sobre la que cayó, y con
+    // la tabla congelada los siguientes se gastaban en la mitad ya rota: 18 mordiscos por planta para
+    // quitar 4 líneas de 12. Recalcular cuesta un recorrido de las huellas por mordisco aceptado
+    // —quince veces por planta sobre cien espacios— y hace que el presupuesto vaya siempre a la línea
+    // más larga que QUEDA.
+    let mut pending = cands;
+    let mut stale = false;
+    while !pending.is_empty() {
+        if stale {
+            let (lx, lz) = wall_runs(plan);
+            for c in pending.iter_mut() {
+                c.run = c.run_on(&lx, &lz);
+            }
+            pending.sort_unstable_by_key(Cand::rank);
+            stale = false;
+        }
+        let Cand {
+            x,
+            z,
+            i,
+            j,
+            wall_cm,
+            pi,
+            pj,
+            run,
+            ..
+        } = pending.remove(0);
+        let line_cm = run.1 - run.0;
+        if touched[i] >= deform_budget(&plan.spaces[i])
+            || touched[j] >= deform_budget(&plan.spaces[j])
+        {
             why[0] += 1;
             continue;
         }
         let mut st = hash::stream_at(seed, x as f32 / CM_PER_M, z as f32 / CM_PER_M, SALT_SHAPE);
-        if st.next01() >= deform_pressure(&plan.spaces[i], &plan.spaces[j], wall_cm) {
+        if st.next01() >= deform_pressure(&plan.spaces[i], &plan.spaces[j], wall_cm, line_cm) {
             why[1] += 1;
             continue;
         }
@@ -3736,6 +4021,7 @@ fn compose_shapes(
                         perp_lines: &perp_lines,
                         gate_cuts_x,
                         gate_cuts_z,
+                        cut_at: (line_cm >= DEFORM_LINE_CM).then(|| (run.0 + run.1) / 2),
                     },
                     &mut miss,
                 ) else {
@@ -3790,6 +4076,20 @@ fn compose_shapes(
                 // trozo de la sala tapiado por dentro. Es más barato descartarlo aquí que arreglarlo
                 // allí: allí ya no se sabe qué forma se quería.
                 if !grid_spans_are_wide(&kept_parts) || !grid_spans_are_wide(&recip_parts) {
+                    why[5] += 1;
+                    continue;
+                }
+                // **Y a toda celda de rejilla se le pide holgura de VANO, no el mínimo generable.**
+                //
+                // Los 200 cm de `grid_spans_are_wide` son lo que el ráster deja GENERAR; por una
+                // celda de rejilla, además, se pasa. Con el mínimo justo, una celda de 200 sobrevive
+                // al ráster conservador y no sobrevive a la nav: salió como `nav sólo alcanza el
+                // 12 %` en 2 de 270 regiones del barrido en cuanto la pasada empezó a apuntar a las
+                // líneas largas y a morder más hondo. Cuarenta centímetros más cuestan algunos
+                // mordiscos y quitan la clase de fallo entera.
+                if !cells_are_at_least(&kept_parts, DOORWAY_CM)
+                    || !cells_are_at_least(&recip_parts, DOORWAY_CM)
+                {
                     why[5] += 1;
                     continue;
                 }
@@ -3904,11 +4204,23 @@ fn compose_shapes(
                 plan.spaces[recip] = r_space;
                 touched[donor] += 1;
                 touched[recip] += 1;
+                stale = true;
                 break 'pair;
             }
         }
     }
     if std::env::var("WG3_SHAPE_DEBUG").is_ok() {
+        let count = |m: &WallRuns| -> usize {
+            m.values()
+                .map(|v| v.iter().filter(|&&(a, b)| b - a >= DEFORM_LINE_CM).count())
+                .sum()
+        };
+        let before = count(&line_x) + count(&line_z);
+        let (ax, az) = wall_runs(plan);
+        eprintln!(
+            "[shape] lineas largas {before} -> {}",
+            count(&ax) + count(&az)
+        );
         let done: usize = touched.iter().map(|&t| t as usize).sum::<usize>() / 2;
         eprintln!(
             "[shape] {done} mordiscos | descartes: ya-tocado {}, dado {}, sin-lado {}, \
@@ -3931,11 +4243,39 @@ fn compose_shapes(
 /// Tres desborda el presupuesto de cuatro partes y convierte la excepción en estilo.
 const MAX_DEFORMS: u8 = 2;
 
+/// Y **tres si es una banda**, porque una banda es lo único cuya forma cruza la región entera.
+///
+/// Un corredor con una sola bahía sigue siendo una línea recta con un bulto; con dos o tres, deja de
+/// tener una anchura y pasa a tener un recorrido. Tres es además el techo real: la banda más sus
+/// bahías tienen que caber en las cuatro partes de [`MAX_PARTS`], y esta pasada no las amplía.
+fn deform_budget(s: &PlannedSpace) -> u8 {
+    if s.role.is_circulation() {
+        MAX_PARTS as u8 - 1
+    } else {
+        MAX_DEFORMS
+    }
+}
+
+/// Longitud de cara acumulada a partir de la cual una coordenada es una LÍNEA de guillotina.
+///
+/// Media región. Por debajo de eso una coordenada compartida es una coincidencia entre dos salas;
+/// por encima es el corte que el árbol dejó, y es lo que se ve desde dentro.
+const DEFORM_LINE_CM: i32 = 7500;
+
+/// Cuánto sube la presión sobre una línea de guillotina. Es el sesgo más fuerte de la pasada a
+/// propósito: quebrar una línea larga vale por diez mordiscos en paredes sueltas.
+const DEFORM_LINE_BONUS: f32 = 0.30;
+
 /// Cuánto se infla lo cedido antes de mirarlo contra el cerco blando de las juntas.
 ///
 /// Es el grosor de la pared nueva más el hueco por el que se pasa: por debajo de esto la pared que
 /// nace en el contorno de lo cedido puede caer DENTRO del cerco aunque lo cedido no lo pise.
-const KEEP_SOFT_MARGIN_CM: i32 = 200;
+///
+/// **Cuatro metros y no dos**: con dos, y la pasada apuntando ya al MEDIO de cada línea de
+/// guillotina en vez de a un sitio sorteado, volvió a salir una puerta de junta sellada en 1 de 270
+/// regiones del barrido —`(-150.0, 28.4)`, con la puerta intacta—. La pared nueva no es una línea
+/// sin grosor: arrastra su tramo y su jamba.
+const KEEP_SOFT_MARGIN_CM: i32 = 400;
 
 /// ¿Puede este espacio participar en la deformación, en cualquiera de los dos papeles?
 ///
@@ -3968,8 +4308,12 @@ fn may_donate(s: &PlannedSpace) -> bool {
 /// Cuántas veces dispara la deformación en esta pareja. **Sale del contexto, no de un dado plano**:
 /// dónde está, cuánto miden, cómo de larga es la pared que comparten y qué grano tiene esa parte del
 /// árbol.
-fn deform_pressure(a: &PlannedSpace, b: &PlannedSpace, wall_cm: i32) -> f32 {
+fn deform_pressure(a: &PlannedSpace, b: &PlannedSpace, wall_cm: i32, line_cm: i32) -> f32 {
     let mut p = DEFORM_BASE;
+    // La línea de guillotina manda sobre todo lo demás: ver `DEFORM_LINE_BONUS`.
+    if line_cm >= DEFORM_LINE_CM {
+        p += DEFORM_LINE_BONUS;
+    }
     // Zona rara: es donde ADR-110 D2 dice que la rareza tiene que subir, y una huella irregular es
     // rareza de la barata.
     if a.scale == scale::SCALE_WEIRD || b.scale == scale::SCALE_WEIRD {
@@ -4007,8 +4351,15 @@ struct BiteLimits<'a> {
     snap_lines: &'a [i32],
     /// Y las del eje perpendicular, al que se pega el FONDO por la misma razón.
     perp_lines: &'a [i32],
-    gate_cuts_x: &'a [i32],
-    gate_cuts_z: &'a [i32],
+    gate_cuts_x: &'a [GateCut],
+    gate_cuts_z: &'a [GateCut],
+    /// Dónde hay que CORTAR la línea de guillotina en la que se apoya esta pared, si es larga.
+    ///
+    /// Es el punto medio del TRAMO de pared recta, no el de la pared de esta pareja. Un mordisco en
+    /// el extremo de una línea de 150 m deja 125 m de recta y no se nota; el mismo mordisco en el
+    /// medio la parte en dos de 62 y **deja de existir** como línea larga —el umbral es media
+    /// región—. Es la diferencia entre ponerle un diente a la cuadrícula y quitarla.
+    cut_at: Option<i32>,
 }
 
 /// Por dónde muere un mordisco dentro de [`plan_bite`]. Sólo para `WG3_SHAPE_DEBUG`.
@@ -4037,6 +4388,7 @@ fn plan_bite(
         perp_lines,
         gate_cuts_x,
         gate_cuts_z,
+        cut_at,
     } = *lim;
     let perp_is_x = side % 2 == 1;
     let from_high = side == 0 || side == 1;
@@ -4152,7 +4504,13 @@ fn plan_bite(
     let long_roll = st.next01().max(st.next01());
     let run = BITE_RUN_MIN_CM + (long_roll * (run_max - BITE_RUN_MIN_CM) as f32) as i32;
     let slack = (gap.1 - gap.0) - run;
-    let mut c0 = gap.0 + (st.next01() * slack as f32) as i32;
+    // Sobre una línea de guillotina, tan cerca del corte como el hueco deje: ver
+    // `BiteLimits::cut_at`. Si el corte cae fuera del hueco, el tramo se pega al extremo que más se
+    // le acerca, que es lo más que esta pareja puede hacer por esa línea.
+    let mut c0 = match cut_at {
+        Some(cut) => (cut - run / 2).clamp(gap.0, gap.0 + slack),
+        None => gap.0 + (st.next01() * slack as f32) as i32,
+    };
     let mut c1 = c0 + run;
     // **Los extremos se pegan a las caras que ya existen, las del donante Y las del receptor.**
     //
@@ -4227,20 +4585,27 @@ fn plan_bite(
     } else {
         (gate_cuts_z, gate_cuts_x)
     };
-    for &(_, _, d) in &steps {
+    for &(z0, z1, d) in &steps {
         let line = if from_high { p_hi - d } else { p_lo + d };
-        if !clears_gate_cuts(line, perp_cuts) {
+        if !clears_gate_cuts(line, (z0, z1), perp_cuts) {
             miss.gate += 1;
             return None;
         }
     }
+    // Una cara del tramo va del fondo a la pared: su extensión es todo el mordisco.
+    let deep = steps.iter().map(|&(_, _, d)| d).max().unwrap_or(0);
+    let (w_lo, w_hi) = if from_high {
+        (p_hi - deep, p_hi)
+    } else {
+        (p_lo, p_lo + deep)
+    };
     for line in [c0, c1] {
-        if line != a_lo && line != a_hi && !clears_gate_cuts(line, along_cuts) {
+        if line != a_lo && line != a_hi && !clears_gate_cuts(line, (w_lo, w_hi), along_cuts) {
             miss.gate += 1;
             return None;
         }
     }
-    if steps.len() == 2 && !clears_gate_cuts(steps[0].1, along_cuts) {
+    if steps.len() == 2 && !clears_gate_cuts(steps[0].1, (w_lo, w_hi), along_cuts) {
         miss.gate += 1;
         return None;
     }
@@ -4339,8 +4704,10 @@ fn doors_fit_cells(parts: &[PlanRect], doors: &[(i32, i32, i32)]) -> bool {
 ///
 /// Mismo umbral que usa el reparto ([`GATE_CLEARANCE_CM`]); aquí no hay adónde correr el corte, así
 /// que la respuesta es sí o no y un no descarta el mordisco entero.
-fn clears_gate_cuts(at: i32, blocked: &[i32]) -> bool {
-    blocked.iter().all(|&g| (at - g).abs() >= GATE_CLEARANCE_CM)
+fn clears_gate_cuts(at: i32, seg: (i32, i32), blocked: &[GateCut]) -> bool {
+    blocked
+        .iter()
+        .all(|&(g, lo, hi)| (at - g).abs() >= GATE_CLEARANCE_CM || seg.1 <= lo || seg.0 >= hi)
 }
 
 /// ¿Por qué lado de `a` está `b`? `None` si no se tocan por ninguno.

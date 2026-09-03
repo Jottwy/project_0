@@ -10859,3 +10859,231 @@ fn una_posicion_restaurada_dentro_de_un_macizo_se_corrige() {
         atascado.x, atascado.z, corregida.x, corregida.y, corregida.z
     );
 }
+
+/// **LA REGLA DE MEDIR LA FORMA.** Una tabla de números comparable entre iteraciones.
+///
+/// Existe porque la pregunta de esta tanda —«¿sigue leyéndose como una cuadrícula BSP?»— es visual, y
+/// tunear una gramática mirando sólo el volcado es tunear a ciegas: se mueve un número, la imagen
+/// cambia un poco y no hay forma de saber si el cambio fue el que se buscaba. Estas seis cifras no
+/// sustituyen al ojo; le ponen un raíl.
+///
+/// - **compuestos**: qué fracción de los espacios construidos tiene más de una parte. Es el
+///   rendimiento bruto de la composición de huellas.
+/// - **área deformada**: qué fracción del suelo construido está en un espacio compuesto. Un 5 % de
+///   espacios compuestos que son los trasteros no se ve; el mismo 5 % en las naves sí.
+/// - **rectangularidad**: área de la huella entre área de su envolvente, promediada por ÁREA. Un
+///   rectángulo vale 1,00. Es la cifra que dice si el mundo son cajas.
+/// - **compacidad**: perímetro² / (16·área) de la huella, promediada por área. Un cuadrado vale
+///   1,00; una L larga, 1,3-1,6. Sube cuando la forma se alarga o se quiebra.
+/// - **bandas compuestas**: cuántas de las de circulación tienen bahía. Es lo único que rompe la
+///   retícula que cruza la región.
+/// - **líneas largas**: cuántas caras de espacio caen sobre la misma coordenada a lo largo de más de
+///   media región. **Es la métrica de «cuadrícula»**: lo que delata a un BSP no es que cada sala sea
+///   un rectángulo, es que el corte de guillotina deja una LÍNEA recta compartida por todas las
+///   hojas de su subárbol.
+///
+/// `WG3_SWEEP_SEEDS=N cargo test --release shape_metrics -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn shape_metrics() {
+    let seeds: Vec<u64> = match std::env::var("WG3_SWEEP_SEEDS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+    {
+        Some(n) => super::validate::sweep_seeds(n),
+        None => vec![SERVED_SEED],
+    };
+    let regions: Vec<(i32, i32)> = AUDIT_REGIONS.to_vec();
+
+    let (mut n_built, mut n_comp) = (0usize, 0usize);
+    let (mut a_built, mut a_comp) = (0f64, 0f64);
+    let (mut rect_w, mut comp_w) = (0f64, 0f64);
+    let (mut n_band, mut n_band_comp) = (0usize, 0usize);
+    let mut long_lines = 0usize;
+    let mut storeys = 0usize;
+
+    for &seed in &seeds {
+        for &(rx, rz) in &regions {
+            let region = Wg3RegionCoord { x: rx, z: rz };
+            let bounds = region.bounds();
+            let gates = junction::gates_of_region(composer_seed(seed), rx, rz, bounds);
+            let building = plan::plan_building(region.composer_seed(seed), bounds, &gates, STOREYS);
+            for p in &building.storeys {
+                storeys += 1;
+                // Las caras por eje, para las líneas largas. En centímetros y por valor exacto: dos
+                // hojas hermanas del mismo corte comparten la coordenada al centímetro.
+                // Los INTERVALOS de cada coordenada, no su suma: lo que el ojo lee es un tramo
+                // recto sin interrumpir, y una línea de 150 m con un mordisco en medio son dos de 75
+                // aunque la suma no se mueva. Medir la suma daba 20,4 antes y 20,6 después de subir
+                // la presión sobre las líneas: la métrica no veía el trabajo.
+                let mut faces_x: std::collections::HashMap<i32, Vec<(i32, i32)>> =
+                    std::collections::HashMap::new();
+                let mut faces_z: std::collections::HashMap<i32, Vec<(i32, i32)>> =
+                    std::collections::HashMap::new();
+                for (_, s) in p.built() {
+                    let a = s.area_m2() as f64;
+                    n_built += 1;
+                    a_built += a;
+                    if s.is_composite() {
+                        n_comp += 1;
+                        a_comp += a;
+                    }
+                    if s.role.is_circulation() {
+                        n_band += 1;
+                        if s.is_composite() {
+                            n_band_comp += 1;
+                        }
+                    }
+                    let env = s.rect.area_m2() as f64;
+                    rect_w += a * (a / env.max(1.0));
+                    // Perímetro de la huella: suma de los de las partes menos el doble de lo que se
+                    // tocan. Con una parte es el del rectángulo, y ahí la compacidad vale 1 en un
+                    // cuadrado por construcción.
+                    let mut per = 0f64;
+                    for r in s.parts() {
+                        per += 2.0 * ((r.width_cm() + r.depth_cm()) as f64) / 100.0;
+                    }
+                    let ps = s.parts();
+                    for i in 0..ps.len() {
+                        for j in (i + 1)..ps.len() {
+                            let ox = (ps[i].max_x_cm.min(ps[j].max_x_cm)
+                                - ps[i].min_x_cm.max(ps[j].min_x_cm))
+                            .max(0);
+                            let oz = (ps[i].max_z_cm.min(ps[j].max_z_cm)
+                                - ps[i].min_z_cm.max(ps[j].min_z_cm))
+                            .max(0);
+                            let touch = if ps[i].max_x_cm == ps[j].min_x_cm
+                                || ps[j].max_x_cm == ps[i].min_x_cm
+                            {
+                                oz
+                            } else if ps[i].max_z_cm == ps[j].min_z_cm
+                                || ps[j].max_z_cm == ps[i].min_z_cm
+                            {
+                                ox
+                            } else {
+                                0
+                            };
+                            per -= 2.0 * (touch as f64) / 100.0;
+                        }
+                    }
+                    comp_w += a * (per * per / (16.0 * a.max(1.0)));
+
+                    // **Sólo las caras que son PARED.** Una cara entre dos partes del MISMO espacio
+                    // es interior: ahí no hay muro, hay sala. Contándolas, la línea de guillotina
+                    // seguía apareciendo entera detrás de cada bahía y la métrica daba exactamente lo
+                    // mismo con la composición encendida y apagada —7,1 y 7,1—, que es lo que hizo
+                    // ver que estaba midiendo bordes de rectángulo y no arquitectura.
+                    let ps = s.parts();
+                    for r in ps {
+                        for (k, hi_side) in [(r.min_x_cm, false), (r.max_x_cm, true)] {
+                            let mut segs = vec![(r.min_z_cm, r.max_z_cm)];
+                            for o in ps {
+                                let adj = if hi_side {
+                                    o.min_x_cm == k
+                                } else {
+                                    o.max_x_cm == k
+                                };
+                                if !adj {
+                                    continue;
+                                }
+                                segs = subtract(&segs, o.min_z_cm, o.max_z_cm);
+                            }
+                            faces_x.entry(k).or_default().extend(segs);
+                        }
+                        for (k, hi_side) in [(r.min_z_cm, false), (r.max_z_cm, true)] {
+                            let mut segs = vec![(r.min_x_cm, r.max_x_cm)];
+                            for o in ps {
+                                let adj = if hi_side {
+                                    o.min_z_cm == k
+                                } else {
+                                    o.max_z_cm == k
+                                };
+                                if !adj {
+                                    continue;
+                                }
+                                segs = subtract(&segs, o.min_x_cm, o.max_x_cm);
+                            }
+                            faces_z.entry(k).or_default().extend(segs);
+                        }
+                    }
+                }
+                // Media región, en centímetros. Una cara acumulada por encima de eso es una línea de
+                // guillotina que cruza medio plano.
+                let half = (REGION_M * 100.0 / 2.0) as i32;
+                /// Lo que queda de estos tramos al quitarles `[a, b)`.
+                fn subtract(segs: &[(i32, i32)], a: i32, b: i32) -> Vec<(i32, i32)> {
+                    let mut out = Vec::new();
+                    for &(s0, s1) in segs {
+                        if b <= s0 || a >= s1 {
+                            out.push((s0, s1));
+                            continue;
+                        }
+                        if s0 < a {
+                            out.push((s0, a));
+                        }
+                        if b < s1 {
+                            out.push((b, s1));
+                        }
+                    }
+                    out
+                }
+                fn longest(v: &mut [(i32, i32)]) -> i32 {
+                    v.sort_unstable();
+                    if v.is_empty() {
+                        return 0;
+                    }
+                    let (mut best, mut cur) = (0, (v[0].0, v[0].1));
+                    for &(a, b) in v.iter().skip(1) {
+                        if a <= cur.1 {
+                            cur.1 = cur.1.max(b);
+                        } else {
+                            best = best.max(cur.1 - cur.0);
+                            cur = (a, b);
+                        }
+                    }
+                    best.max(cur.1 - cur.0)
+                }
+                // **Sin las cuatro del borde de región.** Ésas miden la región entera por
+                // definición y no las puede romper nada de esta pasada: dejarlas dentro pone un
+                // suelo de 4 en la cuenta y esconde el movimiento de las que sí se pueden romper.
+                let edges = [
+                    (bounds.0 * 100.0) as i32,
+                    (bounds.2 * 100.0) as i32,
+                    (bounds.1 * 100.0) as i32,
+                    (bounds.3 * 100.0) as i32,
+                ];
+                for (m, e) in [
+                    (&mut faces_x, [edges[0], edges[1]]),
+                    (&mut faces_z, [edges[2], edges[3]]),
+                ] {
+                    for (k, v) in m.iter_mut() {
+                        if e.iter().any(|c| (c - k).abs() <= 2) {
+                            continue;
+                        }
+                        if longest(v.as_mut_slice()) >= half {
+                            long_lines += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let nb = n_built as f64;
+    println!(
+        "[forma] {} semillas x {} regiones ({storeys} plantas, {n_built} espacios)",
+        seeds.len(),
+        regions.len()
+    );
+    println!(
+        "[forma] compuestos {:.1} % | area deformada {:.1} % | rectangularidad {:.3} | \
+         compacidad {:.3} | bandas compuestas {}/{} | lineas largas {:.1}/planta",
+        100.0 * n_comp as f64 / nb.max(1.0),
+        100.0 * a_comp / a_built.max(1.0),
+        rect_w / a_built.max(1.0),
+        comp_w / a_built.max(1.0),
+        n_band_comp,
+        n_band,
+        long_lines as f64 / storeys.max(1) as f64
+    );
+}

@@ -1099,8 +1099,17 @@ fn interior_partitions(
             if room.next01() >= PARTITION_ROOM_CHANCE {
                 continue;
             }
-            let want = ((s.area_m2() / PARTITION_AREA_PER_ONE_M2).round() as i32)
-                .clamp(1, PARTITION_MAX_PER_SPACE);
+            // **Y una huella compuesta admite una más, porque tiene una sala más.**
+            //
+            // El cupo se reparte una por parte (ver `host`), así que con el tope en tres una L de
+            // cuatro partes dejaba siempre una sin estructura. Y el tope existe por lo de siempre:
+            // dos divisiones que se cruzan dejan cuadrantes.
+            let cap = if s.is_composite() {
+                super::plan::MAX_PARTS as i32
+            } else {
+                PARTITION_MAX_PER_SPACE
+            };
+            let want = ((s.area_m2() / PARTITION_AREA_PER_ONE_M2).round() as i32).clamp(1, cap);
 
             // Los puntos por los que se entra: enlaces del plan y puertas de junta, igual que en la
             // retícula de pilares.
@@ -1124,7 +1133,19 @@ fn interior_partitions(
             let mut mine: Vec<super::plan::PlanRect> = Vec::new();
             let mut split_used = false;
 
-            for _ in 0..want {
+            // Las partes de mayor a menor: una división por parte, empezando por la grande. Ver el
+            // comentario de `host`.
+            let mut hosts: Vec<super::plan::PlanRect> = s
+                .parts()
+                .iter()
+                .copied()
+                .filter(|p| p.width_cm().min(p.depth_cm()) >= PARTITION_MIN_SPAN_CM)
+                .collect();
+            hosts.sort_unstable_by_key(|p| -(p.area_m2() as i64));
+            if hosts.is_empty() {
+                hosts.push(r);
+            }
+            for k in 0..want as usize {
                 // **La división se sortea dentro de una PARTE, no de la envolvente** (ADR-120 D5).
                 //
                 // Sobre una L, la envolvente cubre terreno del vecino: la tirada caía ahí y la
@@ -1133,18 +1154,16 @@ fn interior_partitions(
                 // a 858 — o sea que cada mordisco que PASS 1 ponía le quitaba a PASS 2 su sala. La
                 // parte se elige con el mismo flujo, y con una sola parte no se sortea nada: ahí la
                 // envolvente y la huella son lo mismo y la secuencia no se mueve.
-                // Y la parte es la MAYOR, no una sorteada: sobre una L con un brazo de tres metros
-                // media tirada caía en el brazo, no cabía un tramo y se perdía la división entera —
-                // el barrido se quedaba en 919 de las mil que la gramática tiene que emitir. La
-                // mayor es además donde una división se LEE, que es para lo que está.
-                let host = if s.is_composite() {
-                    *s.parts()
-                        .iter()
-                        .max_by_key(|p| p.area_m2() as i64)
-                        .unwrap_or(&r)
-                } else {
-                    r
-                };
+                // **Y la parte se recorre de mayor a menor, una por división.**
+                //
+                // Sorteando la parte, media tirada caía en el brazo de tres metros de una L, no cabía
+                // un tramo y se perdía la división entera: 919 de las mil que la gramática tiene que
+                // emitir. Usando siempre la mayor, las tres divisiones de una nave compuesta se
+                // apilaban en la misma parte y se estorbaban entre ellas: 975. Una por parte, de
+                // mayor a menor, es lo que además reparte la estructura por toda la huella —que es
+                // para lo que está—. Con una sola parte no cambia nada: `hosts` es un elemento y se
+                // recorre en círculo, igual que antes.
+                let host = hosts[k % hosts.len()];
                 // El eje se sortea; el vano que cruza es el lado perpendicular al tabique.
                 let across_x = room.next01() < 0.5;
                 let (span, room_side) = if across_x {
