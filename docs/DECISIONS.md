@@ -13088,3 +13088,52 @@ el medio muro tenga nada encima; medido en (128,40, 211,78) con la sonda nueva
 - Barrido de 27 regiones: mancha mayor 99,6 %, 1,3 islas, nav 100 %, cotas pisables 117 617 →
   117 701 (un medio muro cuesta menos suelo que una división entera).
 - Sin cambio de wire (55), sin tocar el cliente.
+
+---
+
+## ADR-105 — Enmienda 9: el laberinto y el cuarto exento (2026-09-04) — ACEPTADA (implementada y medida)
+
+### Contexto
+
+Joel: «más habitaciones a lo laberintos» y el «cuarto sin motivo» de Level 0. Puntos 3 y 4 del nivel
+1. Dos casos nuevos de la gramática de divisiones (enm. 3), EXCLUSIVOS: una sala que sortea uno de
+los dos no lleva ninguna otra división. Sal propia (`SALT_MAZE_ROOM`): la secuencia de la enm. 3 no
+se mueve.
+
+### D1 — El laberinto es un peine, y por eso no puede desconectar nada
+
+`MAZE_CHANCE` 0,12 en salas ≥ 200 m² de una sola parte: espolones perpendiculares al eje largo,
+alternando la pared de arranque, paso 400–550 sorteado por sala y `MAZE_GAP_CM` 400 al final de cada
+uno. Un espolón arranca de una pared y muere en el aire (enm. 3 D3), así que ningún número de ellos
+desconecta; alternarlos obliga a recorrer la sala entera. Un espolón sobre una puerta, un pilar, un
+rellano o un agujero se descarta solo él; con menos de dos, la sala vuelve a la gramática de siempre.
+
+### D2 — Nunca un laberinto en una sala con pilares, y el hueco es el de una partición
+
+Medido región a región con una sonda nueva (`probe_sweep_per_region`, `#[ignore]`): el peine subió
+las islas de 36 a 41 en 27 regiones, **cada una del tamaño exacto de un pasillo del peine (279–305
+cotas)**. El pasillo entre dos espolones mide 3,7–5,2 m y un pilar de nave de 2–4 m plantado en medio
+lo sella por los dos lados: el espolón esquivaba el pilar, el pasillo no. Con la exclusión: 38. Y con
+el hueco a 400 en vez de 300 (el peaje del ráster dejaba una bolsa de 75 cotas): 37. La que queda —50
+cotas, unos 2 m², región (−1,1) de la tercera semilla— se acepta y queda aquí escrita.
+
+### D3 — El cuarto exento es una isla con puerta
+
+`CELL_CHANCE` 0,15 en salas ≥ 150 m²: cuatro tabiques de lado interior 300–450 (en pasos de celda),
+con una boca de `CELL_DOOR_CM` 250 (el ancho de puerta del plan: con 200, mal alineada con la rejilla
+y con el peaje a cada lado, se queda en 50) en un lado sorteado, y 250 de paso alrededor como una
+isla. Sus muros son tabiques de 30 y los tests de divisiones los cubren sin cambios.
+
+### D4 — Las bocas de los TRAMOS entran en la exclusión de puertas de toda división
+
+`plan.links` guarda el punto medio de una ruta, no su boca en la pared. `segment_door_points` saca
+las bocas reales de los tramos emitidos (plan, juntas, rutas y rescates) y `interior_partitions` las
+esquiva como a las demás. No cambió ninguna cifra en el barrido, pero es la lista completa y la otra
+no lo era.
+
+### Verificaciones
+
+- `cargo test --release --bin backrooms_server world::wg3` **149/149**; clippy y fmt limpios.
+- Divisiones en 3 × 9 regiones: 1 031 → 1 090.
+- Barrido de 27 regiones: mancha mayor 99,6 %, islas 1,3 → 1,4 (D2), nav 100 %, 117 667 cotas.
+- Sin cambio de wire (55), sin tocar el cliente.
