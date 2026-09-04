@@ -59,7 +59,7 @@ const CARVE_DEPTH_M: f32 = 0.5;
 /// que midieran sus piezas; con el plan decidiendo el papel, una nave puede ser alta porque es una
 /// nave. No mueve el suelo —eso es otro trabajo— pero sí el techo, que es la mitad de lo que hace que
 /// un sitio se sienta distinto al de al lado.
-fn clear_height_by_role(role: SpaceRole) -> i32 {
+pub(super) fn clear_height_by_role(role: SpaceRole) -> i32 {
     match role {
         SpaceRole::Hall => 450,
         SpaceRole::Spine => 360,
@@ -124,6 +124,215 @@ fn is_atrium(space: &PlannedSpace) -> bool {
     // un pretil flotando en la sala de al lado y un agujero en SU techo. Un atrio de huella compuesta
     // es trabajo aparte, y hasta entonces una nave deformada es una nave de altura normal.
     space.void_above && space.role == SpaceRole::Hall && !space.is_composite()
+}
+
+/// ADR-105 enm. 14 — **EL CARÁCTER de una zona: el campo de densidad decide QUÉ gramática manda.**
+///
+/// Hasta aquí cada variación tiraba su dado por sala con la misma probabilidad en todo el mundo, y
+/// eso es exactamente lo que Joel llamó «repetitivo»: la misma mezcla en todas partes. El campo de
+/// densidad (ADR-118 D4) es función pura de la posición con grano de sala grande y tramos de ~22 m
+/// andando; hasta hoy sólo lo leían los pilares. Ahora cada clase es un carácter, y TODAS las
+/// probabilidades del relleno salen de su tabla: una zona abierta es abierta de verdad, y a veinte
+/// metros empieza un laberinto.
+///
+/// Los umbrales son propios y no los de `density::class_at`, porque el reparto que se pide no es el
+/// de la ambientación (un tercio vacío) sino el de la arquitectura: un quinto del mundo laberinto.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Character {
+    /// Naves diáfanas, techos altos, casi nada dentro. El vacío también es contenido.
+    Open,
+    /// Cuartos exentos, ventanas en serie, pilastras, mamparas: la oficina.
+    Office,
+    /// Pilares, arcadas, bóvedas, vigas: la nave.
+    Hall,
+    /// Tabiques densos, laberinto real, techo a 2,40: Level 0.
+    Maze,
+    /// Colgados, rendijas, cornisas, techo a 2,00: lo raro.
+    Weird,
+}
+
+/// Las perillas de un carácter. Una tabla y no un `match` por consumidor: así se lee entera de una
+/// vez, y cambiar cómo se siente una zona es cambiar una fila.
+pub(super) struct Knobs {
+    pub character: Character,
+    pub pillar_room: f32,
+    pub pillar_forest: bool,
+    pub partition_room: f32,
+    pub maze: f32,
+    pub cell: f32,
+    pub hang_below: f32,
+    pub beam_room: f32,
+    pub beam_tight: bool,
+    pub joist: f32,
+    pub pilaster_room: f32,
+    pub window: f32,
+    pub series: f32,
+    pub grille: f32,
+    pub slit: f32,
+    pub niche: f32,
+    pub arcade: f32,
+    pub vault: f32,
+    pub soffit: f32,
+    pub cornice: f32,
+    pub platform: f32,
+    /// Tope de altura libre de la zona, 0 = ninguno. Lo aplica el PLAN al asignar techos.
+    pub ceiling_cap_cm: i32,
+}
+
+const KNOBS: [Knobs; 5] = [
+    Knobs {
+        character: Character::Open,
+        pillar_room: 0.15,
+        pillar_forest: false,
+        partition_room: 0.20,
+        maze: 0.00,
+        cell: 0.05,
+        hang_below: 0.55,
+        beam_room: 0.30,
+        beam_tight: false,
+        joist: 0.20,
+        pilaster_room: 0.25,
+        window: 0.20,
+        series: 0.30,
+        grille: 0.20,
+        slit: 0.10,
+        niche: 0.20,
+        arcade: 0.20,
+        vault: 0.45,
+        soffit: 0.15,
+        cornice: 0.20,
+        platform: 0.35,
+        ceiling_cap_cm: 0,
+    },
+    Knobs {
+        character: Character::Office,
+        pillar_room: 0.20,
+        pillar_forest: false,
+        partition_room: 0.90,
+        maze: 0.10,
+        cell: 0.35,
+        hang_below: 0.62,
+        beam_room: 0.45,
+        beam_tight: false,
+        joist: 0.30,
+        pilaster_room: 0.75,
+        window: 0.65,
+        series: 0.65,
+        grille: 0.35,
+        slit: 0.20,
+        niche: 0.40,
+        arcade: 0.20,
+        vault: 0.10,
+        soffit: 0.40,
+        cornice: 0.35,
+        platform: 0.10,
+        ceiling_cap_cm: 0,
+    },
+    Knobs {
+        character: Character::Hall,
+        pillar_room: 0.90,
+        pillar_forest: true,
+        partition_room: 0.45,
+        maze: 0.05,
+        cell: 0.05,
+        hang_below: 0.62,
+        beam_room: 0.85,
+        beam_tight: true,
+        joist: 0.15,
+        pilaster_room: 0.60,
+        window: 0.30,
+        series: 0.30,
+        grille: 0.30,
+        slit: 0.15,
+        niche: 0.25,
+        arcade: 0.55,
+        vault: 0.35,
+        soffit: 0.25,
+        cornice: 0.30,
+        platform: 0.25,
+        ceiling_cap_cm: 0,
+    },
+    Knobs {
+        character: Character::Maze,
+        pillar_room: 0.00,
+        pillar_forest: false,
+        partition_room: 1.00,
+        maze: 0.60,
+        cell: 0.10,
+        hang_below: 0.55,
+        beam_room: 0.20,
+        beam_tight: true,
+        joist: 0.10,
+        pilaster_room: 0.15,
+        window: 0.15,
+        series: 0.10,
+        grille: 0.50,
+        slit: 0.35,
+        niche: 0.20,
+        arcade: 0.00,
+        vault: 0.00,
+        soffit: 0.10,
+        cornice: 0.10,
+        platform: 0.05,
+        ceiling_cap_cm: 240,
+    },
+    Knobs {
+        character: Character::Weird,
+        pillar_room: 0.35,
+        pillar_forest: true,
+        partition_room: 0.85,
+        maze: 0.30,
+        cell: 0.15,
+        hang_below: 0.85,
+        beam_room: 0.60,
+        beam_tight: true,
+        joist: 0.60,
+        pilaster_room: 0.50,
+        window: 0.40,
+        series: 0.20,
+        grille: 0.60,
+        slit: 0.60,
+        niche: 0.45,
+        arcade: 0.30,
+        vault: 0.30,
+        soffit: 0.20,
+        cornice: 0.45,
+        platform: 0.15,
+        ceiling_cap_cm: 200,
+    },
+];
+
+/// El carácter de un punto. Umbrales sobre el valor crudo del campo: abierto 30 %, oficina 25 %,
+/// nave 17 %, laberinto 20 %, raro 8 %.
+pub(super) fn character_at(seed: i32, x_m: f32, z_m: f32) -> Character {
+    let v = super::density::value_at(seed, x_m, z_m);
+    if v < 0.30 {
+        Character::Open
+    } else if v < 0.55 {
+        Character::Office
+    } else if v < 0.72 {
+        Character::Hall
+    } else if v < 0.92 {
+        Character::Maze
+    } else {
+        Character::Weird
+    }
+}
+
+/// Las perillas del espacio, por el centro de su envolvente: una sala es de UN carácter entero.
+pub(super) fn knobs_of(seed: i32, space: &PlannedSpace) -> &'static Knobs {
+    let (cx, cz) = space.rect.centre_m();
+    let c = character_at(seed, cx, cz);
+    KNOBS
+        .iter()
+        .find(|k| k.character == c)
+        .expect("la tabla cubre los cinco caracteres")
+}
+
+/// El tope de altura libre que el carácter impone a un espacio, 0 si ninguno. Lo aplica
+/// `plan::assign_ceilings`, que es quien sabe la semilla y decide techos.
+pub(super) fn ceiling_cap_cm(seed: i32, space: &PlannedSpace) -> i32 {
+    knobs_of(seed, space).ceiling_cap_cm
 }
 
 /// Discriminante de `Wg3VolumeKind::Step`: una caja de peldaño en la chuleta de una pieza.
@@ -281,13 +490,20 @@ pub fn fill_building(building: &RegionBuilding, manifest: &Wg3Manifest) -> Fille
     let seg_doors = segment_door_points(&out.segments);
     // ADR-105 enm. 3 — la masa interior. Va DESPUES de los pilares porque los esquiva: dos macizos
     // que se pisan son una caja rara, no dos elementos.
-    out.solids.extend(interior_partitions(
-        building, manifest, &placed, &pillars, &seg_doors,
-    ));
+    let partitions = interior_partitions(
+        building,
+        manifest,
+        &placed,
+        &pillars,
+        &seg_doors,
+        &out.carves,
+    );
+    out.solids.extend(partitions);
     out.solids.extend(pillars);
     // ADR-105 enm. 10 — las pilastras, pegadas a las paredes de pasillos y naves. Después de las
     // divisiones: éstas guardan 300 cm de margen con la pared y no se tocan.
-    out.solids.extend(wall_pilasters(building, &seg_doors));
+    let pilasters = wall_pilasters(building, &seg_doors, &out.carves);
+    out.solids.extend(pilasters);
     // ADR-105 enm. 11 — arcadas entre pilares y bóvedas escalonadas. Cuelgan por encima de 2,50, así
     // que no esquivan nada del suelo; sólo pozos y agujeros, que atraviesan el techo.
     let arcades = pillar_arcades(building, &out.solids);
@@ -590,7 +806,11 @@ pub(super) fn is_pilaster(s: &Wg3Solid) -> bool {
         && s.top_y_cm - s.bottom_y_cm > 200
 }
 
-fn wall_pilasters(building: &RegionBuilding, seg_doors: &[(i32, i32, i32)]) -> Vec<Wg3Solid> {
+fn wall_pilasters(
+    building: &RegionBuilding,
+    seg_doors: &[(i32, i32, i32)],
+    carves: &[Wg3Carve],
+) -> Vec<Wg3Solid> {
     let mut out = Vec::new();
     let seed = building.seed;
     for (n, plan) in building.storeys.iter().enumerate() {
@@ -618,7 +838,7 @@ fn wall_pilasters(building: &RegionBuilding, seg_doors: &[(i32, i32, i32)]) -> V
             }
             let (cx, cz) = r.centre_m();
             let mut st = super::hash::stream_at(seed, cx, cz, SALT_PILASTER);
-            if st.next01() >= PILASTER_ROOM_CHANCE {
+            if st.next01() >= knobs_of(seed, s).pilaster_room {
                 continue;
             }
             let pitch = PILASTER_PITCH_CM.0
@@ -693,8 +913,13 @@ fn wall_pilasters(building: &RegionBuilding, seg_doors: &[(i32, i32, i32)]) -> V
                         }
                     };
                     let near = foot.shrunk(-PILASTER_DOOR_CLEAR_CM);
+                    // Y ningún VANO de pared (ventana, rendija, hornacina: enm. 6 y 12) bajo la
+                    // pilastra: un macizo es inmune a los vanos, así que la pilastra tapaba la
+                    // ventana y el test la cazó (−22,85, 391,58) al subir las dos por zona.
+                    let on_carve = on_wall_carve(&foot, s, carves);
                     if doors.iter().any(|&(dx, dz)| near.contains_point(dx, dz))
                         || keep_out.iter().any(|k| k.overlaps(&foot))
+                        || on_carve
                         || !s.covers_rect(&foot)
                     {
                         continue;
@@ -1000,17 +1225,11 @@ fn hall_pillars(
             // ADR-105 enm. 4 — **el CAMPO decide cuánta masa.** En zona densa o anómala casi toda
             // nave lleva pilares, más anchos y más juntos: el «bosque de pilares». Sale del campo de
             // densidad que ya consumía el sorteo de cada pilar, no de un segundo campo espacial.
-            let dense = matches!(
-                super::density::class_at(seed, cx, cz),
-                super::density::DENSITY_DENSE | super::density::DENSITY_ANOMALOUS
-            );
+            // Enm. 14 — el carácter de la zona decide si hay pilares y si es bosque.
+            let k = knobs_of(seed, s);
+            let dense = k.pillar_forest;
             let mut room = super::hash::stream_at(seed, cx, cz, SALT_PILLAR_ROOM);
-            let room_chance = if dense {
-                PILLAR_ROOM_CHANCE_DENSE
-            } else {
-                PILLAR_ROOM_CHANCE
-            };
-            if room.next01() >= room_chance {
+            if room.next01() >= k.pillar_room {
                 continue;
             }
             // Los sorteos de siempre van PRIMERO y en el mismo orden: una nave que ya tenía
@@ -1471,6 +1690,21 @@ fn segment_door_points(segments: &[Wg3Segment]) -> Vec<(i32, i32, i32)> {
     out
 }
 
+/// ¿Pisa esta huella (con 30 cm de holgura) algún vano de la planta del espacio? Un macizo es inmune
+/// a los vanos, así que el que nace encima de una ventana, una rendija o una hornacina la tapa sin
+/// que ningún contador lo vea. Lo preguntan divisiones, laberintos, cuartos y pilastras.
+fn on_wall_carve(foot: &super::plan::PlanRect, s: &PlannedSpace, carves: &[Wg3Carve]) -> bool {
+    let grown = foot.shrunk(-30);
+    carves.iter().any(|c| {
+        c.bottom_y_cm >= s.floor_y_cm
+            && c.bottom_y_cm < s.floor_y_cm + STOREY_HEIGHT_CM
+            && grown.min_x_cm < c.x_cm + c.size_x_cm
+            && grown.max_x_cm > c.x_cm
+            && grown.min_z_cm < c.z_cm + c.size_z_cm
+            && grown.max_z_cm > c.z_cm
+    })
+}
+
 /// ¿Cae este punto sobre la pared exterior de este espacio? Dos centímetros de tolerancia, como
 /// `wall_side_of`. Una boca de tramo en la pared de un espacio de OTRA planta se descarta por la cota
 /// antes de llegar aquí.
@@ -1490,6 +1724,7 @@ fn interior_partitions(
     placements: &[Wg3Placement],
     pillars: &[Wg3Solid],
     seg_doors: &[(i32, i32, i32)],
+    carves: &[Wg3Carve],
 ) -> Vec<Wg3Solid> {
     let mut out = Vec::new();
     let seed = building.seed;
@@ -1564,8 +1799,9 @@ fn interior_partitions(
             }
 
             let (cx, cz) = r.centre_m();
+            let kn = knobs_of(seed, s);
             let mut room = super::hash::stream_at(seed, cx, cz, SALT_PARTITION_ROOM);
-            if room.next01() >= PARTITION_ROOM_CHANCE {
+            if room.next01() >= kn.partition_room {
                 continue;
             }
             // **Y una huella compuesta admite una más, porque tiene una sala más.**
@@ -1626,10 +1862,11 @@ fn interior_partitions(
                         a0 < x1 && a1 > x0 && b0 < z1 && b1 > z0
                     };
                 // Las mismas exclusiones que una división: fuera de suelo propio, rellanos, agujeros
-                // (propio y de arriba), pozos, pilares, puertas y piezas.
+                // (propio y de arriba), pozos, pilares, puertas, piezas y vanos de pared.
                 let hole_here = hole_square(&r).shrunk(-50);
                 let blocked_foot = |foot: &super::plan::PlanRect| -> bool {
                     !s.covers_rect(foot)
+                        || on_wall_carve(foot, s, carves)
                         || landings.iter().any(|l| l.overlaps(foot))
                         || (n > 0 && hole_here.overlaps(foot))
                         || holes_above.iter().any(|h| h.overlaps(foot))
@@ -1648,7 +1885,7 @@ fn interior_partitions(
                 // el espolón esquivaba el pilar, el pasillo no. Medido: +5 islas en 27 regiones, y
                 // cada una del tamaño exacto de un pasillo del peine (279–305 cotas).
                 let has_pillars = pillars.iter().any(|p| overlaps_m(&r, p.bounds()));
-                if u < MAZE_CHANCE && s.area_m2() >= MAZE_MIN_AREA_M2 && !has_pillars {
+                if u < kn.maze && s.area_m2() >= MAZE_MIN_AREA_M2 && !has_pillars {
                     // Espolones perpendiculares al eje LARGO, alternando la pared de arranque.
                     let (long, short) = if wide {
                         (r.width_cm(), r.depth_cm())
@@ -1746,7 +1983,7 @@ fn interior_partitions(
                             continue;
                         }
                     }
-                } else if u < MAZE_CHANCE + CELL_CHANCE && s.area_m2() >= CELL_MIN_AREA_M2 {
+                } else if u < kn.maze + kn.cell && s.area_m2() >= CELL_MIN_AREA_M2 {
                     let side = (CELL_SIDE_CM.0
                         + (maze.next01() * (CELL_SIDE_CM.1 - CELL_SIDE_CM.0) as f32) as i32)
                         / 50
@@ -1930,7 +2167,7 @@ fn interior_partitions(
                     )
                 } else if profile < PARTITION_LOW_BELOW {
                     (s.floor_y_cm, s.floor_y_cm + PARTITION_LOW_H_CM)
-                } else if profile < PARTITION_HANG_BELOW
+                } else if profile < kn.hang_below
                     && clear >= PARTITION_HANG_CLEAR_CM + 2 * PARTITION_T_CM
                 {
                     (s.floor_y_cm + PARTITION_HANG_CLEAR_CM, s.floor_y_cm + clear)
@@ -1982,6 +2219,9 @@ fn interior_partitions(
                 let with_gap = foot.shrunk(-PARTITION_ISLAND_CLEAR_CM);
                 let is_island = kind < PARTITION_ISLAND_BELOW;
                 let blocked = !s.covers_rect(&foot)
+                    // Enm. 14 — ni sobre un vano de pared: un espolón que muere en la pared justo
+                    // donde hay una ventana la tapa, y el test lo cazó en (−22,85, 391,58).
+                    || on_wall_carve(&foot, s, carves)
                     || (s.is_composite() && is_island && !s.covers_rect(&with_gap))
                     || landings.iter().any(|l| l.overlaps(&foot))
                     || (n > 0 && hole.shrunk(-50).overlaps(&foot))
@@ -2130,7 +2370,7 @@ fn pillar_arcades(building: &RegionBuilding, pillars: &[Wg3Solid]) -> Vec<Wg3Sol
             }
             let (cx, cz) = r.centre_m();
             let mut st = super::hash::stream_at(seed, cx, cz, SALT_ARCADE);
-            if st.next01() >= ARCADE_CHANCE {
+            if st.next01() >= knobs_of(seed, s).arcade {
                 continue;
             }
             let clear = clear_height_cm(s);
@@ -2251,7 +2491,7 @@ fn wall_vaults(
                 continue;
             }
             let mut st = super::hash::stream_at(seed, cx, cz, SALT_VAULT);
-            if st.next01() >= VAULT_CHANCE {
+            if st.next01() >= knobs_of(seed, s).vault {
                 continue;
             }
             let wide = r.width_cm() >= r.depth_cm();
@@ -2517,10 +2757,11 @@ fn wall_soffits(
                 continue;
             }
             let u = super::hash::stream_at(seed, cx, cz, SALT_SOFFIT).next01();
+            let k = knobs_of(seed, s);
             let top = s.floor_y_cm + clear;
             let style = style_of(s.role);
             let inner = r.shrunk(WALL_T_CM);
-            if u < SOFFIT_CHANCE {
+            if u < k.soffit {
                 ring_bands(
                     &mut out,
                     &inner,
@@ -2530,7 +2771,7 @@ fn wall_soffits(
                     style,
                     &cuts,
                 );
-            } else if u < CORNICE_BELOW {
+            } else if u < k.soffit + k.cornice {
                 ring_bands(
                     &mut out,
                     &inner,
@@ -2589,7 +2830,7 @@ fn floor_platforms(
                 continue;
             }
             let mut st = super::hash::stream_at(seed, cx, cz, SALT_PLATFORM);
-            if st.next01() >= PLATFORM_CHANCE {
+            if st.next01() >= knobs_of(seed, s).platform {
                 continue;
             }
             // Pegada a un lado sorteado, con un fondo de un tercio del lado perpendicular.
@@ -2743,14 +2984,12 @@ fn ceiling_beams(
             {
                 continue;
             }
+            let k = knobs_of(seed, s);
             let mut room = super::hash::stream_at(seed, cx, cz, SALT_BEAM_ROOM);
-            if room.next01() >= BEAM_ROOM_CHANCE {
+            if room.next01() >= k.beam_room {
                 continue;
             }
-            let dense = matches!(
-                super::density::class_at(seed, cx, cz),
-                super::density::DENSITY_DENSE | super::density::DENSITY_ANOMALOUS
-            );
+            let dense = k.beam_tight;
             let (lo, hi) = if dense {
                 BEAM_PITCH_DENSE_CM
             } else {
@@ -2760,7 +2999,7 @@ fn ceiling_beams(
             let grid = room.next01() < BEAM_GRID_CHANCE;
             // ADR-105 enm. 13 — el tercer ritmo: VIGUETAS, finas y a un metro, en un solo eje. Sorteo
             // al final de la secuencia: las salas con vigas o casetones salen donde salían.
-            let joists = !grid && room.next01() < JOIST_CHANCE;
+            let joists = !grid && room.next01() < k.joist;
             let (pitch, t, drop) = if joists {
                 (JOIST_PITCH_CM, JOIST_T_CM, JOIST_DROP_CM)
             } else {
@@ -3455,9 +3694,11 @@ const SLIT_MAX: i32 = 3;
 const SLIT_W_CM: i32 = 3;
 pub(super) const SLIT_BOTTOM_CM: i32 = 40;
 const SLIT_TOP_CM: i32 = 200;
-/// Cuánto se aleja un hueco de los extremos del solape de pared: que no muerda la pared
-/// perpendicular del rincón.
-const OPENING_JAMB_CM: i32 = 60;
+/// Cuánto se aleja un hueco de los extremos del solape de pared. **Más que media puerta más la
+/// profundidad de su vano (120 + 50)**: una puerta en la pared PERPENDICULAR, junto al rincón,
+/// excava una caja que se lleva también el arranque de esta pared, y una ventana ahí nace sin
+/// antepecho. Con 60 salió en (−128,51, 339,17) al subir la frecuencia de ventanas por zona.
+const OPENING_JAMB_CM: i32 = 180;
 /// Sal del sorteo de huecos en pared ciega, por el centro del solape.
 const SALT_WINDOW: u32 = 0xB1_11_A0_05;
 
@@ -3613,8 +3854,10 @@ fn blind_wall_openings(
             let mut st =
                 super::hash::stream_at(seed, x as f32 / CM_PER_M, z as f32 / CM_PER_M, SALT_WINDOW);
             let floor = a.floor_y_cm;
+            // Enm. 14 — el carácter de `a` manda sobre la pared que comparten.
+            let k = knobs_of(seed, a);
 
-            if st.next01() < WINDOW_CHANCE {
+            if st.next01() < k.window {
                 let span = (WINDOW_WIDTH_CM.1 - WINDOW_WIDTH_CM.0) as f32;
                 let w = (WINDOW_WIDTH_CM.0 + (st.next01() * span) as i32) / 50 * 50;
                 let room = hi - lo - 2 * OPENING_JAMB_CM - w;
@@ -3622,8 +3865,8 @@ fn blind_wall_openings(
                     let at = lo + OPENING_JAMB_CM + w / 2 + (st.next01() * room as f32) as i32;
                     // Enm. 12 — en serie: la misma ventana repetida a paso fijo desde `at` hacia el
                     // final del solape, las que quepan hasta `WINDOW_SERIES_MAX`.
-                    let series = st.next01() < WINDOW_SERIES_CHANCE;
-                    let grille = st.next01() < GRILLE_CHANCE;
+                    let series = st.next01() < k.series;
+                    let grille = st.next01() < k.grille;
                     let count = if series { WINDOW_SERIES_MAX } else { 1 };
                     let pitch = w + WINDOW_SERIES_GAP_CM;
                     for k in 0..count {
@@ -3667,7 +3910,7 @@ fn blind_wall_openings(
             }
             // Enm. 12 — hornacinas en la pared de `a`, que NO atraviesan: diez centímetros desde su
             // cara interior. ¿A qué lado de la línea está `a`? Su muro va hacia dentro de su huella.
-            if st.next01() < NICHE_CHANCE {
+            if st.next01() < k.niche {
                 let a_neg = if vertical {
                     (a.rect.max_x_cm - x).abs() <= 1
                 } else {
@@ -3715,10 +3958,10 @@ fn blind_wall_openings(
                     });
                 }
             }
-            if st.next01() < SLIT_CHANCE {
-                let k = 1 + (st.next01() * SLIT_MAX as f32) as i32;
+            if st.next01() < k.slit {
+                let count = 1 + (st.next01() * SLIT_MAX as f32) as i32;
                 let room = hi - lo - 2 * OPENING_JAMB_CM;
-                for _ in 0..k.min(SLIT_MAX) {
+                for _ in 0..count.min(SLIT_MAX) {
                     if room <= 0 {
                         break;
                     }

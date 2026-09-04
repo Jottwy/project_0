@@ -1450,6 +1450,30 @@ fn assign_ceilings(plan: &mut RegionPlan, seed: i32, variety: f32) {
     }
 }
 
+/// ADR-105 enm. 14 — **el carácter de la zona pone un TOPE al techo**: 2,40 en laberinto, 2,00 en lo
+/// raro. Se aplica en el plan y no en el relleno porque el techo es una decisión del plan y el
+/// relleno la lee por `ceiling_clear_cm`; sin esto, la mitad de los consumidores verían un techo y
+/// la otra mitad otro. **Con la semilla del MUNDO, no la de la planta**: el carácter es un campo de
+/// la posición y el relleno lo consulta con `building.seed`; con la semilla de planta, el plan y el
+/// relleno leerían dos caracteres distintos en la misma sala. La escalera se queda fuera (sus 380
+/// son medidos), y con la perilla a cero el mundo tiene que ser el de antes al centímetro.
+fn cap_ceilings_by_character(plan: &mut RegionPlan, world_seed: i32, variety: f32) {
+    if variety <= 0.0 {
+        return;
+    }
+    for s in &mut plan.spaces {
+        let cap = super::fill::ceiling_cap_cm(world_seed, s);
+        if cap > 0 && s.role.is_built() && s.role != SpaceRole::Stair {
+            let base = if s.ceiling_clear_cm > 0 {
+                s.ceiling_clear_cm
+            } else {
+                super::fill::clear_height_by_role(s.role)
+            };
+            s.ceiling_clear_cm = base.min(cap);
+        }
+    }
+}
+
 pub fn plan_region(seed: i32, bounds: (f32, f32, f32, f32), gates: &[Wg3Gate]) -> RegionPlan {
     // Una planta suelta no tiene edificio encima que le pida atrios.
     plan_storey(seed, bounds, gates, 0, true, &[])
@@ -1911,6 +1935,7 @@ pub fn plan_building_with(
         // que partió: sin este segundo reparto habría salas de 90 m² con seis metros de techo porque
         // ANTES tenían 210, y huecos de escalera con el techo de una oficina.
         assign_ceilings(storey, storey_seed, ceiling_variety);
+        cap_ceilings_by_character(storey, seed, ceiling_variety);
     }
 
     // **Y el tope de altura se calcula DESPUÉS de deformar**, no dentro del bucle. Un receptor crece
@@ -5041,9 +5066,12 @@ mod ceiling_tests {
                     );
                     let normal = (CEILING_MIN_CM..=CEILING_MAX_CM).contains(&h);
                     let tall = (CEILING_TALL_MIN_CM..=CEILING_TALL_MAX_CM).contains(&h);
+                    // ADR-105 enm. 14 — el carácter de la zona puede TOPAR el techo por debajo del
+                    // rango normal (2,40 en laberinto, 2,00 en lo raro), nunca por debajo de 2,00.
+                    let cap = crate::world::wg3::fill::ceiling_cap_cm(seed, s);
                     assert!(
-                        normal || tall,
-                        "techo de {h} cm fuera de los dos rangos (semilla {seed}, planta {n})"
+                        normal || tall || (cap > 0 && h >= 200 && h <= cap),
+                        "techo de {h} cm fuera de los dos rangos (semilla {seed}, planta {n}, tope {cap})"
                     );
                     // La doble altura es de las salas GRANDES, y esa es la mitad de la regla: sin
                     // esto el rango alto se colaría en un trastero de doce metros.

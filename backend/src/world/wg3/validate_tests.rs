@@ -1431,6 +1431,86 @@ fn partitions_land_where_the_grammar_says() {
     );
 }
 
+/// Sonda: la MEZCLA por carácter (ADR-105 enm. 14) y la REPETICIÓN entre vecinos, sobre el barrido
+/// corto. Repetición = proporción de enlaces del plan cuyos dos espacios tienen la misma firma de
+/// relleno (el multiconjunto de formas de macizo que contienen). Es el número que Joel pidió bajar
+/// «un 50 %»; sin él no hay antes y después.
+#[test]
+#[ignore]
+fn probe_character_mix() {
+    use std::collections::BTreeMap;
+    let m = real_manifest();
+    let seeds = validate::sweep_seeds(sweep_seed_count(3));
+    let mut by_char: BTreeMap<&'static str, (usize, usize, usize)> = BTreeMap::new();
+    let (mut links, mut same) = (0usize, 0usize);
+    for &seed in &seeds {
+        for &(rx, rz) in NEAR_REGIONS.iter() {
+            let region = Wg3RegionCoord { x: rx, z: rz };
+            let inside = validate::region_inside(&m, seed, region);
+            let b = &inside.building;
+            for (n, st) in b.storeys.iter().enumerate() {
+                let _ = n;
+                let mut sigs: Vec<Option<Vec<(i32, i32)>>> = vec![None; st.spaces.len()];
+                for (i, sp) in st.built() {
+                    let k = super::fill::knobs_of(b.seed, sp);
+                    let name: &'static str = match k.character {
+                        super::fill::Character::Open => "abierto",
+                        super::fill::Character::Office => "oficina",
+                        super::fill::Character::Hall => "nave",
+                        super::fill::Character::Maze => "laberinto",
+                        super::fill::Character::Weird => "raro",
+                    };
+                    let r = sp.rect;
+                    let mut sig: Vec<(i32, i32)> = inside
+                        .filled
+                        .solids
+                        .iter()
+                        .filter(|s| {
+                            s.bottom_y_cm >= sp.floor_y_cm
+                                && s.bottom_y_cm < sp.floor_y_cm + 332
+                                && s.x_cm >= r.min_x_cm
+                                && s.x_cm < r.max_x_cm
+                                && s.z_cm >= r.min_z_cm
+                                && s.z_cm < r.max_z_cm
+                        })
+                        .map(|s| (s.size_x_cm.min(s.size_z_cm), s.top_y_cm - s.bottom_y_cm))
+                        .collect();
+                    sig.sort_unstable();
+                    let e = by_char.entry(name).or_insert((0, 0, 0));
+                    e.0 += 1;
+                    e.1 += sig.len();
+                    if sig.is_empty() {
+                        e.2 += 1;
+                    }
+                    // La firma compara FORMAS presentes, no cantidades: dos naves con 6 y 9 pilares
+                    // son la misma nave.
+                    sig.dedup();
+                    sigs[i] = Some(sig);
+                }
+                for l in &st.links {
+                    if let (Some(a), Some(b2)) = (&sigs[l.a], &sigs[l.b]) {
+                        links += 1;
+                        if a == b2 {
+                            same += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for (name, (n, solids, empty)) in &by_char {
+        println!(
+            "[caracter] {name:10} {n:5} espacios | {:.1} macizos/espacio | {:.0} % sin nada",
+            *solids as f32 / *n as f32,
+            *empty as f32 * 100.0 / *n as f32
+        );
+    }
+    println!(
+        "[repeticion] {same} de {links} enlaces unen dos espacios con la misma firma: {:.1} %",
+        same as f32 * 100.0 / links.max(1) as f32
+    );
+}
+
 /// Sonda: el resumen de CADA región del barrido corto, para diferenciar dos versiones del relleno
 /// región a región (las medias esconden en qué sala apareció una isla).
 #[test]
