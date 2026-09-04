@@ -1444,6 +1444,61 @@ fn probe_sweep_per_region() {
     }
 }
 
+/// ADR-105 enmienda 11 — **toda hilada de arcada o bóveda cuelga a 2,50 o más del suelo de su sala.**
+#[test]
+fn hung_bands_stay_above_the_head() {
+    use super::plan::PlanRect;
+
+    let m = real_manifest();
+    let seeds = validate::sweep_seeds(sweep_seed_count(3));
+    // `ARCADE_CLEAR_CM`; la bóveda deja 260.
+    const MIN_UNDER_CM: i32 = 250;
+
+    let mut seen = 0usize;
+    for &seed in &seeds {
+        for &(rx, rz) in NEAR_REGIONS.iter() {
+            let region = Wg3RegionCoord { x: rx, z: rz };
+            let inside = validate::region_inside(&m, seed, region);
+            for b in inside
+                .filled
+                .solids
+                .iter()
+                .filter(|s| super::fill::is_hung_band(s))
+            {
+                seen += 1;
+                let rect = PlanRect {
+                    min_x_cm: b.x_cm,
+                    min_z_cm: b.z_cm,
+                    max_x_cm: b.x_cm + b.size_x_cm,
+                    max_z_cm: b.z_cm + b.size_z_cm,
+                };
+                let host = inside.building.storeys.iter().find_map(|st| {
+                    st.built()
+                        .find(|(_, sp)| sp.covers_rect(&rect) && sp.floor_y_cm < b.bottom_y_cm)
+                        .map(|(_, sp)| sp)
+                });
+                let Some(sp) = host else {
+                    panic!(
+                        "semilla {seed:#x} región ({rx},{rz}): hilada en ({},{}) sin sala debajo",
+                        b.x_cm, b.z_cm
+                    );
+                };
+                assert!(
+                    b.bottom_y_cm - sp.floor_y_cm >= MIN_UNDER_CM,
+                    "semilla {seed:#x} región ({rx},{rz}): hilada a {} cm del suelo",
+                    b.bottom_y_cm - sp.floor_y_cm
+                );
+            }
+        }
+    }
+    assert!(
+        seen > 50,
+        "sólo {seen} hiladas colgadas en {} regiones: la gramática no está emitiendo",
+        seeds.len() * NEAR_REGIONS.len()
+    );
+    println!("[hiladas] {seen} hiladas de arcada y bóveda revisadas");
+}
+
 /// ADR-105 enmienda 10 — **toda pilastra abraza una pared y ninguna tapa una boca.**
 #[test]
 fn pilasters_hug_their_wall() {

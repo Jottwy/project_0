@@ -288,6 +288,11 @@ pub fn fill_building(building: &RegionBuilding, manifest: &Wg3Manifest) -> Fille
     // ADR-105 enm. 10 — las pilastras, pegadas a las paredes de pasillos y naves. Después de las
     // divisiones: éstas guardan 300 cm de margen con la pared y no se tocan.
     out.solids.extend(wall_pilasters(building, &seg_doors));
+    // ADR-105 enm. 11 — arcadas entre pilares y bóvedas escalonadas. Cuelgan por encima de 2,50, así
+    // que no esquivan nada del suelo; sólo pozos y agujeros, que atraviesan el techo.
+    let arcades = pillar_arcades(building, &out.solids);
+    out.solids.extend(arcades);
+    out.solids.extend(wall_vaults(building, manifest, &placed));
     // ADR-105 enm. 5 — el relieve del techo. Cuelga de la losa, así que no esquiva nada de lo de
     // abajo: sólo pozos y agujeros, que son lo único que atraviesa el techo.
     out.solids
@@ -2046,6 +2051,279 @@ fn interior_partitions(
                             size_z_cm: sz,
                             bottom_y_cm: bottom,
                             top_y_cm: top,
+                            style,
+                        });
+                        cut = end;
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// ADR-105 enm. 11 — **la ARCADA**: hiladas de arco entre dos pilares consecutivos de la misma fila.
+/// Fondo de la hilada (a lo largo del eje perpendicular a la fila); 40 y no 15 para que la arcada
+/// se lea exenta y no como una pared con arcos.
+const ARCADE_T_CM: i32 = 40;
+/// Altura de cada hilada, media celda como en el arco de una boca.
+const ARCADE_BAND_CM: i32 = 25;
+/// Vano máximo entre dos pilares para tender un arco.
+const ARCADE_MAX_SPAN_CM: i32 = 900;
+/// Hueco libre mínimo bajo la línea de arranque del arco.
+const ARCADE_CLEAR_CM: i32 = 250;
+/// Qué proporción de las naves con pilares llevan arcadas.
+const ARCADE_CHANCE: f32 = 0.35;
+const SALT_ARCADE: u32 = 0xB1_11_A0_09;
+
+/// ADR-105 enm. 11 — **la BÓVEDA ESCALONADA**: hiladas colgadas de las dos paredes largas que se
+/// meten hacia el centro cuanto más arriba, como una bóveda de ladrillo por aproximación de hiladas.
+/// Sólo en salas altas: por debajo de `VAULT_MIN_CLEAR_CM` no hay dónde escalonar.
+const VAULT_MIN_CLEAR_CM: i32 = 400;
+const VAULT_BAND_CM: i32 = 25;
+/// Cuánto baja la bóveda desde el techo, como máximo.
+const VAULT_MAX_RISE_CM: i32 = 200;
+/// Hueco libre mínimo bajo la hilada más baja.
+const VAULT_CLEAR_CM: i32 = 260;
+/// Cuánto se mete la hilada más alta desde la pared, como máximo (y nunca más de un cuarto del
+/// lado corto: la clave tiene que quedar abierta).
+const VAULT_MAX_REACH_CM: i32 = 300;
+const VAULT_CHANCE: f32 = 0.25;
+const SALT_VAULT: u32 = 0xB1_11_A0_0A;
+
+/// ¿Es este macizo una hilada de arcada o de bóveda? Por la forma: media celda de alto y ni grosor
+/// de pared ni de pretil ni de división — las hiladas de una BOCA miden 15 y las de aquí 40 o más.
+pub(super) fn is_hung_band(s: &Wg3Solid) -> bool {
+    let thin = s.size_x_cm.min(s.size_z_cm);
+    s.top_y_cm - s.bottom_y_cm == ARCADE_BAND_CM && thin >= ARCADE_T_CM
+}
+
+fn pillar_arcades(building: &RegionBuilding, pillars: &[Wg3Solid]) -> Vec<Wg3Solid> {
+    let mut out = Vec::new();
+    let seed = building.seed;
+    for plan in &building.storeys {
+        for (_, s) in plan.built() {
+            if s.role != SpaceRole::Hall || s.rise_cm != 0 || is_atrium(s) {
+                continue;
+            }
+            let r = s.rect;
+            // Los pilares CUADRADOS de esta sala, a su cota. Los brazos de cruz se quedan fuera: la
+            // arcada arranca de una cara plana.
+            let mut mine: Vec<&Wg3Solid> = pillars
+                .iter()
+                .filter(|p| {
+                    is_pillar(p)
+                        && p.size_x_cm == p.size_z_cm
+                        && p.bottom_y_cm == s.floor_y_cm
+                        && p.x_cm >= r.min_x_cm
+                        && p.x_cm + p.size_x_cm <= r.max_x_cm
+                        && p.z_cm >= r.min_z_cm
+                        && p.z_cm + p.size_z_cm <= r.max_z_cm
+                })
+                .collect();
+            if mine.len() < 2 {
+                continue;
+            }
+            let (cx, cz) = r.centre_m();
+            let mut st = super::hash::stream_at(seed, cx, cz, SALT_ARCADE);
+            if st.next01() >= ARCADE_CHANCE {
+                continue;
+            }
+            let clear = clear_height_cm(s);
+            let top = s.floor_y_cm + clear;
+            let style = style_of(s.role);
+            // Filas a lo largo de X (mismo z) o de Z (mismo x): la que más pares consecutivos dé.
+            let along_x = st.next01() < 0.5;
+            mine.sort_by_key(|p| {
+                if along_x {
+                    (p.z_cm, p.x_cm)
+                } else {
+                    (p.x_cm, p.z_cm)
+                }
+            });
+            for w in mine.windows(2) {
+                let (a, b) = (w[0], w[1]);
+                let same_row = if along_x {
+                    a.z_cm == b.z_cm && a.size_z_cm == b.size_z_cm
+                } else {
+                    a.x_cm == b.x_cm && a.size_x_cm == b.size_x_cm
+                };
+                if !same_row {
+                    continue;
+                }
+                let (from, to) = if along_x {
+                    (a.x_cm + a.size_x_cm, b.x_cm)
+                } else {
+                    (a.z_cm + a.size_z_cm, b.z_cm)
+                };
+                let span = to - from;
+                if span <= 0 || span > ARCADE_MAX_SPAN_CM {
+                    continue;
+                }
+                let radius = span / 2;
+                let rise = radius.min(clear - ARCADE_CLEAR_CM);
+                if rise < 2 * ARCADE_BAND_CM {
+                    continue;
+                }
+                let spring = top - rise;
+                // El fondo de la hilada, centrado en el eje del pilar.
+                let (t0, t1) = if along_x {
+                    let c = a.z_cm + a.size_z_cm / 2;
+                    (c - ARCADE_T_CM / 2, c + ARCADE_T_CM / 2)
+                } else {
+                    let c = a.x_cm + a.size_x_cm / 2;
+                    (c - ARCADE_T_CM / 2, c + ARCADE_T_CM / 2)
+                };
+                let mut y1 = top;
+                while y1 - ARCADE_BAND_CM >= spring {
+                    let y0 = y1 - ARCADE_BAND_CM;
+                    let t = (y1 - spring) as f32 / rise as f32;
+                    let open = (radius as f32 * (1.0 - t * t).max(0.0).sqrt()) as i32;
+                    let fill = radius - open;
+                    if fill >= ARCADE_T_CM {
+                        for (p0, p1) in [(from, from + fill), (to - fill, to)] {
+                            let (x, z, sx, sz) = if along_x {
+                                (p0, t0, p1 - p0, t1 - t0)
+                            } else {
+                                (t0, p0, t1 - t0, p1 - p0)
+                            };
+                            out.push(Wg3Solid {
+                                x_cm: x,
+                                z_cm: z,
+                                size_x_cm: sx,
+                                size_z_cm: sz,
+                                bottom_y_cm: y0,
+                                top_y_cm: y1,
+                                style,
+                            });
+                        }
+                    }
+                    y1 = y0;
+                }
+            }
+        }
+    }
+    out
+}
+
+fn wall_vaults(
+    building: &RegionBuilding,
+    manifest: &Wg3Manifest,
+    placements: &[Wg3Placement],
+) -> Vec<Wg3Solid> {
+    let mut out = Vec::new();
+    let seed = building.seed;
+    let taken: Vec<(f32, f32, f32, f32)> = placements
+        .iter()
+        .filter_map(|p| {
+            manifest
+                .pieces
+                .get(p.piece as usize)
+                .map(|piece| p.bounds(piece))
+        })
+        .collect();
+    for (n, plan) in building.storeys.iter().enumerate() {
+        let mut cuts: Vec<super::plan::PlanRect> = building
+            .wells
+            .iter()
+            .filter(|w| w.storey_below == n)
+            .map(|w| w.rect.shrunk(-50))
+            .collect();
+        cuts.extend(hole_squares_above(building, n));
+        for (_, s) in plan.built() {
+            if s.is_composite() || s.rise_cm != 0 || s.role == SpaceRole::Stair || is_atrium(s) {
+                continue;
+            }
+            let clear = clear_height_cm(s);
+            if clear < VAULT_MIN_CLEAR_CM {
+                continue;
+            }
+            let r = s.rect;
+            let (cx, cz) = r.centre_m();
+            if taken
+                .iter()
+                .any(|&(x0, z0, x1, z1)| cx > x0 && cx < x1 && cz > z0 && cz < z1)
+            {
+                continue;
+            }
+            let mut st = super::hash::stream_at(seed, cx, cz, SALT_VAULT);
+            if st.next01() >= VAULT_CHANCE {
+                continue;
+            }
+            let wide = r.width_cm() >= r.depth_cm();
+            let short = r.width_cm().min(r.depth_cm());
+            let reach = VAULT_MAX_REACH_CM.min(short / 4);
+            let rise = VAULT_MAX_RISE_CM.min(clear - VAULT_CLEAR_CM);
+            let bands = rise / VAULT_BAND_CM;
+            if bands < 2 || reach < 50 {
+                continue;
+            }
+            let top = s.floor_y_cm + clear;
+            let style = style_of(s.role);
+            let inner = r.shrunk(WALL_T_CM);
+            for j in 0..bands {
+                // La hilada más alta (j = 0) se mete `reach`; las de abajo, cada vez menos, con el
+                // perfil de un cuarto de elipse: es lo que se lee como bóveda y no como escalera.
+                let f = 1.0 - (j as f32 / bands as f32).powi(2);
+                // En pasos de 10 y nunca por debajo de 50: con 30 la hilada tenía la forma exacta
+                // de una división y el test de divisiones la adoptó (cota 365, región (1,−1)).
+                let p = ((reach as f32 * f) as i32) / 10 * 10;
+                if p < 50 {
+                    continue;
+                }
+                let (y1, y0) = (top - j * VAULT_BAND_CM, top - (j + 1) * VAULT_BAND_CM);
+                for wall in 0..2 {
+                    let foot = if wide {
+                        let (z0, z1) = if wall == 0 {
+                            (inner.min_z_cm, inner.min_z_cm + p)
+                        } else {
+                            (inner.max_z_cm - p, inner.max_z_cm)
+                        };
+                        super::plan::PlanRect {
+                            min_x_cm: inner.min_x_cm,
+                            min_z_cm: z0,
+                            max_x_cm: inner.max_x_cm,
+                            max_z_cm: z1,
+                        }
+                    } else {
+                        let (x0, x1) = if wall == 0 {
+                            (inner.min_x_cm, inner.min_x_cm + p)
+                        } else {
+                            (inner.max_x_cm - p, inner.max_x_cm)
+                        };
+                        super::plan::PlanRect {
+                            min_x_cm: x0,
+                            min_z_cm: inner.min_z_cm,
+                            max_x_cm: x1,
+                            max_z_cm: inner.max_z_cm,
+                        }
+                    };
+                    if cuts.iter().any(|c| c.overlaps(&foot)) {
+                        continue;
+                    }
+                    // Troceado al tope de macizo a lo largo de la pared.
+                    let (from, to) = if wide {
+                        (foot.min_x_cm, foot.max_x_cm)
+                    } else {
+                        (foot.min_z_cm, foot.max_z_cm)
+                    };
+                    let len = to - from;
+                    let pieces = (len + MAX_SOLID_CM - 1) / MAX_SOLID_CM;
+                    let mut cut = from;
+                    for k in 1..=pieces {
+                        let end = from + (len * k) / pieces;
+                        let (x, z, sx, sz) = if wide {
+                            (cut, foot.min_z_cm, end - cut, foot.depth_cm())
+                        } else {
+                            (foot.min_x_cm, cut, foot.width_cm(), end - cut)
+                        };
+                        out.push(Wg3Solid {
+                            x_cm: x,
+                            z_cm: z,
+                            size_x_cm: sx,
+                            size_z_cm: sz,
+                            bottom_y_cm: y0,
+                            top_y_cm: y1,
                             style,
                         });
                         cut = end;
