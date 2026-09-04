@@ -8317,7 +8317,11 @@ fn pits_drop_you_to_a_dark_chamber_and_the_bridges_hold() {
             let fp = c.footprint();
             let intruders: Vec<&segment::Wg3Solid> = solids
                 .iter()
-                .filter(|s| s.style != fill::PIT_STYLE && !s.is_decoration())
+                .filter(|s| {
+                    s.style != fill::PIT_STYLE
+                        && s.style != fill::PIT_SHAFT_STYLE
+                        && !s.is_decoration()
+                })
                 .filter(|s| s.bottom_y_cm >= c.floor_y_cm - 1 && s.bottom_y_cm < c.floor_y_cm + 100)
                 .filter(|s| {
                     let (sx0, sz0, sx1, sz1) = s.bounds();
@@ -8354,10 +8358,11 @@ fn pits_drop_you_to_a_dark_chamber_and_the_bridges_hold() {
                         floor_m - bottom
                     );
                     pits += 1;
-                    // El pasillo hasta el pozo de al lado, en las dos direcciones.
+                    // El pasillo hasta el pozo de al lado, en las dos direcciones: el centro de
+                    // la celda del pasillo (que desde enm. 1 es UNA celda de 50 cm).
                     for (bx, bz) in [
-                        ((p.max_x_cm + 50) as f32 / 100.0, cz),
-                        (cx, (p.max_z_cm + 50) as f32 / 100.0),
+                        ((p.max_x_cm + fill::PIT_BRIDGE_CM / 2) as f32 / 100.0, cz),
+                        (cx, (p.max_z_cm + fill::PIT_BRIDGE_CM / 2) as f32 / 100.0),
                     ] {
                         let held = raster_at(bx, bz).floor_below(bx, floor_m + EYE_M, bz);
                         assert!(

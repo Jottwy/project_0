@@ -85,6 +85,10 @@ namespace BackroomsSurvival.WorldGen3
                 // ADR-126 D4 — el POZO: casi negro en todo. La luz de la boca lo toca un par de
                 // metros y de ahí para abajo no se ve nada, que es lo que pide la referencia.
                 case 7: return Make(0.05f, 0.05f, 0.05f, 0.05f, 0.05f, 0.05f);
+                // ADR-126 enm. 1 — la PARED del pozo: gris de hormigón. Las lámparas de la sala
+                // le dan a los primeros metros y de ahí para abajo se pierde en el negro de la
+                // cámara: es lo que hace que cuarenta metros se lean como cuarenta metros.
+                case 8: return Make(0.30f, 0.30f, 0.30f, 0.30f, 0.30f, 0.30f);
                 // Oficina y cualquier número que el servidor añada mañana: el juego base, sin tocar.
                 default: return Make(1f, 1f, 1f, 1f, 1f, 1f);
             }

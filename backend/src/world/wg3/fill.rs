@@ -746,10 +746,14 @@ fn hole_carves(building: &RegionBuilding) -> Vec<Wg3Carve> {
     out
 }
 
-/// ADR-126 D2 — lado de cada pozo. Dos celdas del ráster exactas.
-pub(super) const PIT_SIDE_CM: i32 = 100;
-/// ADR-126 D2 — paso de la rejilla: un pozo y un pasillo de su mismo ancho.
-pub(super) const PIT_PITCH_CM: i32 = 200;
+/// ADR-126 enm. 1 — lado de cada pozo. Cuatro celdas del ráster exactas. Era 100 (D2): Joel pidió
+/// «el doble de pozo y la mitad de pasillo», más vertiginoso.
+pub(super) const PIT_SIDE_CM: i32 = 200;
+/// ADR-126 enm. 1 — paso de la rejilla: pozo más pasillo de [`PIT_BRIDGE_CM`].
+pub(super) const PIT_PITCH_CM: i32 = PIT_SIDE_CM + PIT_BRIDGE_CM;
+/// ADR-126 enm. 1 — el pasillo entre pozos: UNA celda. Más estrecho que el jugador (70 cm): se
+/// puede cruzar y se puede caer, que es lo que se pidió. Rodear siempre se puede por el margen.
+pub(super) const PIT_BRIDGE_CM: i32 = 50;
 /// ADR-126 D2 — de la pared más cercana al primer pozo. Un pozo pegado a la pared no se ve hasta
 /// pisarlo, y las pilastras y los rodapiés viven en ese medio metro.
 pub(super) const PIT_MARGIN_CM: i32 = 150;
@@ -765,8 +769,13 @@ pub(super) const PIT_CHAMBER_H_CM: i32 = 300;
 /// 30 m/s) 10 m cuesta el 67 % de la vida y 20 m el 94 %; de 30 en adelante se muere. Cuatro de
 /// siete son sobrevivibles con la vida entera, que es lo que pidió Joel.
 const PIT_DEPTHS_M: [i32; 7] = [10, 10, 20, 20, 30, 40, 50];
-/// ADR-126 D4 — el estilo negro. El cliente lo tiñe a casi nada y no le cuelga luminaria.
+/// ADR-126 D4 — el estilo negro de la CÁMARA. El cliente lo tiñe a casi nada y no le cuelga
+/// luminaria.
 pub const PIT_STYLE: u8 = 7;
+/// ADR-126 enm. 1 — el estilo de la pared del POZO (la tierra): gris de hormigón, para que las
+/// lámparas de la sala le den a los primeros metros y la perspectiva se lea. Con todo a 0,05 cada
+/// pozo era un cuadrado negro plano y cuarenta metros no se distinguían de pintura.
+pub const PIT_SHAFT_STYLE: u8 = 8;
 /// Sal del sorteo de rejillas.
 const SALT_PIT: u32 = 0xA9_04_02;
 
@@ -913,7 +922,7 @@ fn pit_geometry(
 ) -> (Vec<Wg3Carve>, Vec<Wg3Solid>) {
     let mut carves = Vec::new();
     let mut solids = Vec::new();
-    let boxed = |r: &super::plan::PlanRect, y0: i32, y1: i32| -> Wg3Solid {
+    let boxed = |r: &super::plan::PlanRect, y0: i32, y1: i32, style: u8| -> Wg3Solid {
         Wg3Solid {
             x_cm: r.min_x_cm,
             z_cm: r.min_z_cm,
@@ -921,7 +930,7 @@ fn pit_geometry(
             size_z_cm: r.depth_cm(),
             bottom_y_cm: y0,
             top_y_cm: y1,
-            style: PIT_STYLE,
+            style,
             yaw_deg: 0,
             shape: SHAPE_BOX,
         }
@@ -965,7 +974,7 @@ fn pit_geometry(
                     max_x_cm: fp.max_x_cm,
                     max_z_cm: z1,
                 };
-                solids.push(boxed(&strip, earth_bottom, earth_top));
+                solids.push(boxed(&strip, earth_bottom, earth_top, PIT_SHAFT_STYLE));
             }
         }
         // …y, en cada fila, los bloques entre pozos (y los dos de los márgenes).
@@ -987,7 +996,7 @@ fn pit_geometry(
                         max_x_cm: x1,
                         max_z_cm: row.max_z_cm,
                     };
-                    solids.push(boxed(&block, earth_bottom, earth_top));
+                    solids.push(boxed(&block, earth_bottom, earth_top, PIT_SHAFT_STYLE));
                 }
             }
         }
@@ -998,6 +1007,7 @@ fn pit_geometry(
             &outer,
             chamber_floor - SLAB_THICKNESS_CM,
             chamber_floor,
+            PIT_STYLE,
         ));
         let walls = [
             super::plan::PlanRect {
@@ -1026,7 +1036,7 @@ fn pit_geometry(
             },
         ];
         for w in &walls {
-            solids.push(boxed(w, chamber_floor, earth_bottom));
+            solids.push(boxed(w, chamber_floor, earth_bottom, PIT_STYLE));
         }
     }
     (carves, solids)
@@ -5894,7 +5904,7 @@ mod apron_tests {
                 }
                 // ADR-126 — las paredes de la cámara de un pozo miden grosor de pared y viven
                 // bajo el suelo a propósito.
-                if s.style == PIT_STYLE {
+                if s.style == PIT_STYLE || s.style == PIT_SHAFT_STYLE {
                     continue;
                 }
                 if floors
@@ -5963,7 +5973,7 @@ mod apron_tests {
                 let earth_top = c.floor_y_cm - SLAB_THICKNESS_CM;
                 let earth: Vec<&Wg3Solid> = solids
                     .iter()
-                    .filter(|s| s.top_y_cm == earth_top && s.style == PIT_STYLE)
+                    .filter(|s| s.top_y_cm == earth_top && s.style == PIT_SHAFT_STYLE)
                     .filter(|s| fp.contains_rect(&rect_of(s)))
                     .collect();
                 let area: i64 = earth

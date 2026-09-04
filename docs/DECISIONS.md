@@ -13774,3 +13774,33 @@ jugador en la cámara sólo sale muriendo: es un límite conocido y aceptado por
   (−136: las celdas de pozo), **nav 99,8 % (100 antes)** — `nav_reach` cuenta como navegable toda
   celda con suelo debajo desde y = 0, y en un pozo eso es la cámara a −D: el 1–2 % que baja son las
   celdas de pozo, inalcanzables por construcción. Umbral del validador, 50 %.
+
+## ADR-126 — Enmienda 1: el pozo se ve hondo, y es el doble de grande con la mitad de pasillo (2026-09-04) — ACEPTADA (Joel: «un agujero pero sin profundidad en ellos… el doble y la mitad de espacio entre ellos, más vertiginoso»)
+
+### Contexto
+
+En la captura `w59_pozos_6x6` la rejilla es la de la foto, pero cada pozo es un cuadrado negro
+plano: con la tierra al 0,05 ninguna lámpara le da a la pared del pozo, no hay perspectiva que leer y
+cuarenta metros no se distinguen de pintura. Y Joel quiere vértigo: pozos del doble y pasillos de la
+mitad.
+
+### D1 — La pared del pozo, en gris; la cámara, negra. Estilo 8. Wire 59 → 60
+
+La tierra (tiras y bloques entre pozos) lleva `PIT_SHAFT_STYLE` = 8 (cliente: tinte 0,30, gris de
+hormigón); la cámara conserva el 7 (0,05). Las lámparas de la sala (alcance 6 m) iluminan los
+primeros metros de la pared del pozo, la pared converge en perspectiva y se pierde en el negro del
+fondo. Semántica nueva del byte a los dos lados en el mismo commit: **wire 60**. La rampa de ADR-122
+pasa a wire 61.
+
+### D2 — Pozos de 2×2 m a paso 2,5: pasillos de UNA celda
+
+`PIT_SIDE_CM` 100 → **200**, `PIT_BRIDGE_CM` = **50**, `PIT_PITCH_CM` = 250. Cuatro celdas exactas por
+pozo y una por pasillo (alineación a 50 cm, D2 del ADR). **El pasillo es más estrecho que el jugador
+(70 cm)**: se puede cruzar y se puede caer, que es exactamente lo que se pidió; rodear la rejilla
+siempre se puede por el margen de 1,5 m junto a las paredes (D1). El lado mínimo de sala sube de
+7 a 8,5 m; en las cuatro regiones de auditoría quedan 16 rejillas y 184 pozos (eran 19 y 402).
+
+### Verificaciones
+
+Los mismos tests que el ADR, con la sonda del pasillo en el centro de su celda
+(`PIT_BRIDGE_CM / 2`), y captura `w60_pozos*`.
