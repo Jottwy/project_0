@@ -13839,3 +13839,34 @@ pega a una pared, porque lo esquiva. Decoración en el tono de marco del tramo.
 - `wall_rails_never_cross_a_mouth_or_a_pilaster`: 2452 listones en 39 semillas; ninguno bajo una
   boca (bocas de todos los tramos, en mundo) ni sobre una pilastra de su planta.
 - Capturas `w60_madera*`.
+
+## ADR-105 — Enmienda 17: las masas del Nivel 0 — bloques gruesos exentos y huecos hasta el techo (2026-09-04) — ACEPTADA (Joel: «un híbrido que mejore todo… no quiero cambiar lo que tenemos, combinar conceptos»)
+
+### Contexto
+
+Contra las diez referencias, la diferencia número uno era el grosor: allí las masas miden de uno a
+dos metros y las bocas son huecos hasta el techo; aquí las divisiones miden 30 cm y las puertas
+llevan dintel. Joel no quiere un Nivel 0 puro: quiere que estas cosas se SUMEN a lo que hay (marcos,
+arcos, octógonos se quedan). Así que son dos opciones más de la gramática, por carácter.
+
+### D1 — El BLOQUE exento
+
+`wall_blocks`: en salas construidas no de circulación de ≥ 40 m², con `Knobs::block` (abierto 0,42,
+oficina 0,28, nave 0,35, laberinto 0,10, raro 0,25), uno o dos bloques (≥ 150 m²) de grosor
+{100, 150, 200} y largo de 2,5 a 7 m, de suelo a techo, en el tono de la sala. Dentro de UN tramo
+(la lección de los pozos), a 1,5 m de paredes y de toda boca de cualquier tramo, a 1 m de todo
+macizo a ras de suelo ya emitido (pilares, divisiones, otro bloque) y fuera de pozos, rellanos,
+huecos de escalera, agujeros de arriba y piezas del catálogo. Va después de pilares y divisiones,
+y las tarimas lo esquivan (keep-out con su hueco de paso). Es macizo de verdad: estampa y frena.
+
+### D2 — El HUECO hasta el techo, por carácter
+
+Ya existía: `LINTEL_CHANCE` = 0,60 dejaba el 40 % de las puertas sin dintel (y por tanto sin marco
+ni arco). Pasa a `Knobs::lintel` (abierto **0,45**, oficina 0,75, nave 0,55, laberinto 0,70, raro
+0,60): las salas abiertas del Nivel 0 se abren más; las oficinas conservan sus marcos.
+
+### Verificaciones
+
+`thick_blocks_stand_free_and_some_doors_reach_the_ceiling`: 246 bloques en 39 semillas, ninguno a
+menos de 1 m de otro macizo a ras de suelo (los brazos de un pilar en cruz se reconocen por
+compartir centro y se saltan) ni a menos de 1,5 m de una boca. Capturas de la galería `w61_*`.

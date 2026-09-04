@@ -169,6 +169,12 @@ pub(super) struct Knobs {
     /// es una sala abierta con medios muros rematados en madera, y las salas «abierto» tenían dos
     /// en toda una región.
     pub low_below: f32,
+    /// ADR-105 enm. 17 — qué proporción de salas lleva BLOQUES gruesos exentos (1–2 m de grosor,
+    /// hasta el techo): las masas del Nivel 0.
+    pub block: f32,
+    /// ADR-105 enm. 17 — qué proporción de puertas lleva dintel. Las demás son HUECOS hasta el
+    /// techo, como en las referencias. Era la constante `LINTEL_CHANCE` = 0,60 para todos.
+    pub lintel: f32,
     pub beam_room: f32,
     pub beam_tight: bool,
     pub joist: f32,
@@ -206,6 +212,8 @@ const KNOBS: [Knobs; 5] = [
         cell: 0.05,
         hang_below: 0.55,
         low_below: 0.68,
+        block: 0.42,
+        lintel: 0.45,
         beam_room: 0.30,
         beam_tight: false,
         joist: 0.20,
@@ -236,6 +244,8 @@ const KNOBS: [Knobs; 5] = [
         cell: 0.35,
         hang_below: 0.62,
         low_below: 0.49,
+        block: 0.28,
+        lintel: 0.75,
         beam_room: 0.45,
         beam_tight: false,
         joist: 0.30,
@@ -266,6 +276,8 @@ const KNOBS: [Knobs; 5] = [
         cell: 0.05,
         hang_below: 0.62,
         low_below: 0.45,
+        block: 0.35,
+        lintel: 0.55,
         beam_room: 0.85,
         beam_tight: true,
         joist: 0.15,
@@ -296,6 +308,8 @@ const KNOBS: [Knobs; 5] = [
         cell: 0.10,
         hang_below: 0.55,
         low_below: 0.42,
+        block: 0.1,
+        lintel: 0.7,
         beam_room: 0.20,
         beam_tight: true,
         joist: 0.10,
@@ -326,6 +340,8 @@ const KNOBS: [Knobs; 5] = [
         cell: 0.15,
         hang_below: 0.85,
         low_below: 0.49,
+        block: 0.25,
+        lintel: 0.6,
         beam_room: 0.60,
         beam_tight: true,
         joist: 0.60,
@@ -551,6 +567,18 @@ pub fn fill_building(building: &RegionBuilding, manifest: &Wg3Manifest) -> Fille
     );
     out.solids.extend(partitions);
     out.solids.extend(pillars);
+    // ADR-105 enm. 17 — los bloques gruesos, después de pilares y divisiones porque los esquivan.
+    let blocks = wall_blocks(
+        building,
+        manifest,
+        &placed,
+        &out.segments,
+        &out.solids,
+        &out.carves,
+    );
+    // Las tarimas (más abajo) los esquivan: una tarima bajo un bloque es un bloque que flota.
+    let blocks_for_platforms = blocks.clone();
+    out.solids.extend(blocks);
     // ADR-105 enm. 10 — las pilastras, pegadas a las paredes de pasillos y naves. Después de las
     // divisiones: éstas guardan 300 cm de margen con la pared y no se tocan.
     let pilasters = wall_pilasters(building, &seg_doors, &out.carves, &out.segments);
@@ -570,8 +598,13 @@ pub fn fill_building(building: &RegionBuilding, manifest: &Wg3Manifest) -> Fille
         .extend(ceiling_beams(building, manifest, &placed));
     // ADR-105 enm. 13 — descuelgue perimetral o cornisa, y tarimas.
     out.solids.extend(wall_soffits(building, manifest, &placed));
-    out.solids
-        .extend(floor_platforms(building, manifest, &placed, &out.segments));
+    out.solids.extend(floor_platforms(
+        building,
+        manifest,
+        &placed,
+        &out.segments,
+        &blocks_for_platforms,
+    ));
     out
 }
 
@@ -1190,6 +1223,238 @@ fn wall_rails(
                 yaw_deg: 0,
                 shape: SHAPE_BOX,
             });
+        }
+    }
+    out
+}
+
+/// ADR-105 enm. 17 — grosores posibles del BLOQUE exento: las masas del Nivel 0 miden de uno a dos
+/// metros, no treinta centímetros.
+const BLOCK_T_CM: [i32; 3] = [100, 150, 200];
+/// Largo del bloque, mínimo y máximo.
+const BLOCK_LEN_CM: (i32, i32) = (250, 700);
+/// Lo que el bloque deja libre a las paredes y a las bocas: el jugador pasa por los dos lados.
+const BLOCK_CLEAR_CM: i32 = 150;
+/// Lo que deja a otro macizo (pilar, división, otro bloque).
+const BLOCK_GAP_CM: i32 = 100;
+/// Área mínima de la sala.
+const BLOCK_MIN_AREA_M2: f32 = 40.0;
+/// Por encima de esto, dos bloques.
+const BLOCK_TWO_AREA_M2: f32 = 150.0;
+/// Sal del sorteo de bloques.
+const SALT_BLOCK: u32 = 0xA9_04_04;
+
+/// ADR-105 enm. 17 — ¿es un bloque? Grueso como un bloque, largo como un bloque, alto como una
+/// sala. Definición única para el volcado y los tests.
+pub(super) fn is_block(s: &Wg3Solid) -> bool {
+    let (a, b) = (s.size_x_cm.min(s.size_z_cm), s.size_x_cm.max(s.size_z_cm));
+    !s.is_decoration()
+        && s.style != PIT_STYLE
+        && s.style != PIT_SHAFT_STYLE
+        && BLOCK_T_CM.contains(&a)
+        && b >= BLOCK_LEN_CM.0
+        && s.top_y_cm - s.bottom_y_cm >= 250
+}
+
+/// ADR-105 enm. 17 — los BLOQUES exentos: la masa gruesa del Nivel 0, de suelo a techo, en mitad
+/// de una sala. Uno o dos por sala, dentro de UN tramo (como los pozos: una sala son varios tramos
+/// con paredes), a [`BLOCK_CLEAR_CM`] de paredes y bocas de cualquier tramo, y a [`BLOCK_GAP_CM`]
+/// de todo macizo ya emitido de su planta: pilares, divisiones, otros bloques. Esquiva pozos,
+/// rellanos, huecos de escalera, agujeros de arriba y piezas del catálogo. Es macizo de verdad:
+/// estampa y frena.
+#[allow(clippy::too_many_arguments)]
+fn wall_blocks(
+    building: &RegionBuilding,
+    manifest: &Wg3Manifest,
+    placements: &[Wg3Placement],
+    segments: &[Wg3Segment],
+    others: &[Wg3Solid],
+    carves: &[Wg3Carve],
+) -> Vec<Wg3Solid> {
+    let mut out: Vec<Wg3Solid> = Vec::new();
+    let seed = building.seed;
+    let taken: Vec<(f32, f32, f32, f32)> = placements
+        .iter()
+        .filter_map(|p| {
+            manifest
+                .pieces
+                .get(p.piece as usize)
+                .map(|piece| p.bounds(piece))
+        })
+        .collect();
+    let mouths: Vec<(i32, i32, i32, i32)> = segments
+        .iter()
+        .flat_map(|g| {
+            let (w, d) = (g.size_x_cm as f32 / 100.0, g.size_z_cm as f32 / 100.0);
+            g.openings.iter().map(move |o| {
+                let (lx, lz) =
+                    super::placement::local_point(o.side, o.offset_cm as f32 / 100.0, w, d);
+                (
+                    g.x_cm + (lx * 100.0).round() as i32,
+                    g.z_cm + (lz * 100.0).round() as i32,
+                    o.width_cm / 2 + BLOCK_CLEAR_CM,
+                    g.floor_y_cm,
+                )
+            })
+        })
+        .collect();
+    let overlaps_box = |r: &super::plan::PlanRect, o: &Wg3Solid| -> bool {
+        o.x_cm < r.max_x_cm
+            && o.x_cm + o.size_x_cm > r.min_x_cm
+            && o.z_cm < r.max_z_cm
+            && o.z_cm + o.size_z_cm > r.min_z_cm
+    };
+
+    for (n, plan) in building.storeys.iter().enumerate() {
+        let landings: Vec<super::plan::PlanRect> = building
+            .wells
+            .iter()
+            .filter(|w| w.storey_below + 1 == n)
+            .map(|w| w.rect.shrunk(-50))
+            .collect();
+        let wells_here: Vec<super::plan::PlanRect> = building
+            .wells
+            .iter()
+            .filter(|w| w.storey_below == n)
+            .map(|w| w.rect.shrunk(-50))
+            .collect();
+        let holes_above = hole_squares_above(building, n);
+        let pits_here = if n == 0 {
+            pit_rects_of(building, segments)
+        } else {
+            Vec::new()
+        };
+        for (_, s) in plan.built() {
+            if s.role.is_circulation()
+                || s.role == SpaceRole::Stair
+                || s.rise_cm != 0
+                || s.area_m2() < BLOCK_MIN_AREA_M2
+            {
+                continue;
+            }
+            let kn = knobs_of(seed, s);
+            let (cx, cz) = s.rect.centre_m();
+            let mut st = super::hash::stream_at(seed, cx, cz, SALT_BLOCK);
+            if st.next01() >= kn.block {
+                continue;
+            }
+            let own_hole = hole_square(&s.rect).shrunk(-50);
+            let floor = s.floor_y_cm;
+            let top = floor + clear_height_cm(s);
+            // Los tramos de esta sala: los suyos, a su cota, enteros sobre su suelo.
+            let hosts: Vec<&Wg3Segment> = segments
+                .iter()
+                .filter(|g| {
+                    g.floor_y_cm == floor
+                        && s.covers_rect(&super::plan::PlanRect {
+                            min_x_cm: g.x_cm,
+                            min_z_cm: g.z_cm,
+                            max_x_cm: g.x_cm + g.size_x_cm,
+                            max_z_cm: g.z_cm + g.size_z_cm,
+                        })
+                })
+                .collect();
+            if hosts.is_empty() {
+                continue;
+            }
+            let count = if s.area_m2() >= BLOCK_TWO_AREA_M2 {
+                2
+            } else {
+                1
+            };
+            let mut placed: Vec<Wg3Solid> = Vec::new();
+            for _ in 0..count {
+                for _attempt in 0..6 {
+                    let g = hosts[(st.next01() * hosts.len() as f32) as usize % hosts.len()];
+                    let inset = WALL_T_CM + BLOCK_CLEAR_CM;
+                    let inner = super::plan::PlanRect {
+                        min_x_cm: g.x_cm + inset,
+                        min_z_cm: g.z_cm + inset,
+                        max_x_cm: g.x_cm + g.size_x_cm - inset,
+                        max_z_cm: g.z_cm + g.size_z_cm - inset,
+                    };
+                    let t = BLOCK_T_CM[(st.next01() * 3.0) as usize % 3];
+                    let along_x = st.next01() < 0.5;
+                    let room = if along_x {
+                        inner.width_cm()
+                    } else {
+                        inner.depth_cm()
+                    };
+                    let across = if along_x {
+                        inner.depth_cm()
+                    } else {
+                        inner.width_cm()
+                    };
+                    if room < BLOCK_LEN_CM.0 || across < t {
+                        continue;
+                    }
+                    let len = (BLOCK_LEN_CM.0
+                        + (st.next01() * (BLOCK_LEN_CM.1 - BLOCK_LEN_CM.0) as f32) as i32)
+                        .min(room);
+                    let (w, d) = if along_x { (len, t) } else { (t, len) };
+                    let x = inner.min_x_cm
+                        + ((st.next01() * (inner.width_cm() - w) as f32) as i32 / 10) * 10;
+                    let z = inner.min_z_cm
+                        + ((st.next01() * (inner.depth_cm() - d) as f32) as i32 / 10) * 10;
+                    let r = super::plan::PlanRect {
+                        min_x_cm: x,
+                        min_z_cm: z,
+                        max_x_cm: x + w,
+                        max_z_cm: z + d,
+                    };
+                    let grown = r.shrunk(-BLOCK_GAP_CM);
+                    let near_mouth = mouths.iter().any(|&(mx, mz, half, fl)| {
+                        (fl - floor).abs() < 100
+                            && mx + half > r.min_x_cm
+                            && mx - half < r.max_x_cm
+                            && mz + half > r.min_z_cm
+                            && mz - half < r.max_z_cm
+                    });
+                    let on_piece = taken.iter().any(|&(x0, z0, x1, z1)| {
+                        x1 * 100.0 > grown.min_x_cm as f32
+                            && x0 * 100.0 < grown.max_x_cm as f32
+                            && z1 * 100.0 > grown.min_z_cm as f32
+                            && z0 * 100.0 < grown.max_z_cm as f32
+                    });
+                    let y_hits = |o: &Wg3Solid| o.bottom_y_cm < top && o.top_y_cm > floor;
+                    let blocked = !s.covers_rect(&grown)
+                        || near_mouth
+                        || on_piece
+                        || landings.iter().any(|l| l.overlaps(&grown))
+                        || wells_here.iter().any(|w| w.overlaps(&grown))
+                        || holes_above.iter().any(|h| h.overlaps(&grown))
+                        || pits_here.iter().any(|p| p.overlaps(&grown))
+                        || (n > 0 && own_hole.overlaps(&grown))
+                        || others
+                            .iter()
+                            .any(|o| !o.is_decoration() && y_hits(o) && overlaps_box(&grown, o))
+                        || placed.iter().any(|o| overlaps_box(&grown, o))
+                        || carves.iter().any(|k| {
+                            k.bottom_y_cm < top
+                                && k.top_y_cm > floor
+                                && k.x_cm < grown.max_x_cm
+                                && k.x_cm + k.size_x_cm > grown.min_x_cm
+                                && k.z_cm < grown.max_z_cm
+                                && k.z_cm + k.size_z_cm > grown.min_z_cm
+                        });
+                    if blocked {
+                        continue;
+                    }
+                    placed.push(Wg3Solid {
+                        x_cm: r.min_x_cm,
+                        z_cm: r.min_z_cm,
+                        size_x_cm: w,
+                        size_z_cm: d,
+                        bottom_y_cm: floor,
+                        top_y_cm: top,
+                        style: style_of(s.role),
+                        yaw_deg: 0,
+                        shape: SHAPE_BOX,
+                    });
+                    break;
+                }
+            }
+            out.extend(placed);
         }
     }
     out
@@ -3638,6 +3903,7 @@ fn floor_platforms(
     manifest: &Wg3Manifest,
     placements: &[Wg3Placement],
     segments: &[Wg3Segment],
+    blocks: &[Wg3Solid],
 ) -> Vec<Wg3Solid> {
     let mut out = Vec::new();
     let seed = building.seed;
@@ -3661,6 +3927,24 @@ fn floor_platforms(
         if n == 0 {
             keep_out.extend(pit_rects_of(building, segments));
         }
+        // ADR-105 enm. 17 — y los bloques gruesos de esta planta, con su hueco de paso.
+        keep_out.extend(
+            blocks
+                .iter()
+                .filter(|b| {
+                    (b.bottom_y_cm - plan.spaces.first().map_or(0, |sp| sp.floor_y_cm)).abs()
+                        < STOREY_HEIGHT_CM / 2
+                })
+                .map(|b| {
+                    super::plan::PlanRect {
+                        min_x_cm: b.x_cm,
+                        min_z_cm: b.z_cm,
+                        max_x_cm: b.x_cm + b.size_x_cm,
+                        max_z_cm: b.z_cm + b.size_z_cm,
+                    }
+                    .shrunk(-BLOCK_GAP_CM)
+                }),
+        );
         for (_, s) in plan.built() {
             if s.is_composite()
                 || s.rise_cm != 0
@@ -4346,9 +4630,7 @@ fn door_band(side: u8, at_x_cm: i32, at_z_cm: i32, half: i32) -> (i32, i32, i32,
 /// Altura del paso de una puerta con dintel, en centímetros. El mismo número que
 /// [`PIECE_DOOR_CLEAR_CM`]: por encima queda pared, que es el dintel de toda la vida.
 const DOOR_LINTEL_CLEAR_CM: i32 = 240;
-/// Qué proporción de las puertas del plan llevan dintel. No todas: una boca que llega al techo al
-/// lado de una con dintel es lo que hace que la segunda se lea como puerta y no como corte.
-const LINTEL_CHANCE: f32 = 0.60;
+/// ADR-105 enm. 17 — la proporción de puertas con dintel vive en `Knobs::lintel`.
 /// Sal del sorteo del dintel, por la posición de la puerta.
 const SALT_LINTEL: u32 = 0xB1_11_A0_04;
 /// ADR-125 enm. 1 — línea de arranque del ARCO LISO de una puerta, sobre el suelo. Diez por
@@ -4387,7 +4669,9 @@ fn door_lintels(plan: &RegionPlan, by_piece: &[bool], seed: i32) -> Vec<Wg3Solid
             link.at_z_cm as f32 / CM_PER_M,
         );
         let mut st = super::hash::stream_at(seed, mx, mz, SALT_LINTEL);
-        if st.next01() >= LINTEL_CHANCE {
+        // ADR-105 enm. 17 — por carácter (del lado `a`, como el arco): sin dintel, la boca es un
+        // HUECO hasta el techo, que es la puerta del Nivel 0.
+        if st.next01() >= knobs_of(seed, a).lintel {
             continue;
         }
         // Con arco no hay dintel plano: las dos cajas compartirían la cara de la pared y pelearían
@@ -6214,6 +6498,76 @@ mod apron_tests {
             "sólo {rails} listones en 39 semillas: la muestra no cubre el caso"
         );
         println!("[listón] {rails} listones de pared en 39 semillas");
+    }
+
+    /// ADR-105 enm. 17 — los bloques gruesos existen, son de suelo a techo, y dejan paso: a
+    /// `BLOCK_CLEAR_CM` de toda boca de cualquier tramo y a `BLOCK_GAP_CM` de todo otro macizo de su
+    /// planta. Y hay puertas SIN dintel (huecos hasta el techo) además de las que lo llevan.
+    #[test]
+    fn thick_blocks_stand_free_and_some_doors_reach_the_ceiling() {
+        let m = no_catalogue();
+        let mut blocks = 0usize;
+        for seed in 1..40 {
+            let b = building(seed);
+            let filled = fill_building(&b, &m);
+            let solids = &filled.solids;
+            for blk in solids.iter().filter(|s| is_block(s)) {
+                // Un brazo de pilar en CRUZ mide como un bloque; se reconoce porque otro macizo
+                // comparte su centro.
+                let centre = (2 * blk.x_cm + blk.size_x_cm, 2 * blk.z_cm + blk.size_z_cm);
+                if solids.iter().any(|o| {
+                    !std::ptr::eq(o, blk)
+                        && (2 * o.x_cm + o.size_x_cm, 2 * o.z_cm + o.size_z_cm) == centre
+                        && o.bottom_y_cm == blk.bottom_y_cm
+                }) {
+                    continue;
+                }
+                blocks += 1;
+                let r = rect_of(blk);
+                let gap = r.shrunk(-(BLOCK_GAP_CM - 1));
+                let crowd = solids.iter().find(|o| {
+                    !std::ptr::eq(*o, blk)
+                        && !o.is_decoration()
+                        // Lo que arranca del suelo de su planta: vigas, cornisas y colgados van
+                        // en el techo, se emiten después, y no estorban el paso.
+                        && (o.bottom_y_cm - blk.bottom_y_cm).abs() <= 50
+                        && rect_of(o).overlaps(&gap)
+                });
+                assert!(
+                    crowd.is_none(),
+                    "semilla {seed}: el bloque {r:?} tiene un macizo pegado: {crowd:?}"
+                );
+                for g in &filled.segments {
+                    if (g.floor_y_cm - blk.bottom_y_cm).abs() >= 100 {
+                        continue;
+                    }
+                    let (w, d) = (g.size_x_cm as f32 / 100.0, g.size_z_cm as f32 / 100.0);
+                    for o in &g.openings {
+                        let (lx, lz) = super::super::placement::local_point(
+                            o.side,
+                            o.offset_cm as f32 / 100.0,
+                            w,
+                            d,
+                        );
+                        let (mx, mz) = (g.x_cm + (lx * 100.0) as i32, g.z_cm + (lz * 100.0) as i32);
+                        let half = o.width_cm / 2 + BLOCK_CLEAR_CM - 5;
+                        let under = mx + half > r.min_x_cm
+                            && mx - half < r.max_x_cm
+                            && mz + half > r.min_z_cm
+                            && mz - half < r.max_z_cm;
+                        assert!(
+                            !under,
+                            "semilla {seed}: el bloque {r:?} tapa la boca en ({mx}, {mz})"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(
+            blocks >= 60,
+            "sólo {blocks} bloques en 39 semillas: la muestra no cubre el caso"
+        );
+        println!("[bloque] {blocks} bloques gruesos en 39 semillas");
     }
 
     fn rect_of(s: &Wg3Solid) -> super::super::plan::PlanRect {
