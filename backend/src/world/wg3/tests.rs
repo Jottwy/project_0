@@ -8183,7 +8183,7 @@ fn from_the_upper_storey_the_atrium_is_open() {
             rasters.get(dz as usize * side + dx as usize)
         };
 
-        for storey in &b.storeys {
+        for (storey_index, storey) in b.storeys.iter().enumerate() {
             for s in &storey.spaces {
                 // La condición es la de `fill::is_atrium`, **compuesta incluida** (ADR-120 D5): una
                 // nave deformada NO es atrio en esta tanda, porque el pretil se traza metiendo la
@@ -8213,12 +8213,30 @@ fn from_the_upper_storey_the_atrium_is_open() {
                     z += STEP_M;
                 }
 
+                // ADR-104 enm. 3 — sólo cuentan los puntos del anillo que caen sobre una sala
+                // CONSTRUIDA de la planta de arriba: donde arriba no hay nadie, el muro se queda a
+                // propósito, y medirlo sería exigir un agujero a la nada.
+                let up = b.storeys.get(storey_index + 1);
                 let mut solid = 0usize;
                 let mut seen = 0usize;
                 for (px, pz) in ring {
                     let Some(raster) = raster_at(px, pz) else {
                         continue;
                     };
+                    let probe = plan::PlanRect {
+                        min_x_cm: (px * 100.0) as i32 - 5,
+                        min_z_cm: (pz * 100.0) as i32 - 5,
+                        max_x_cm: (px * 100.0) as i32 + 5,
+                        max_z_cm: (pz * 100.0) as i32 + 5,
+                    };
+                    let someone_up = up.is_some_and(|u| {
+                        u.spaces
+                            .iter()
+                            .any(|t| t.role.is_built() && t.hits_rect(&probe))
+                    });
+                    if !someone_up {
+                        continue;
+                    }
                     seen += 1;
                     if raster.is_solid_at(px, eye, pz) {
                         solid += 1;
@@ -8262,6 +8280,150 @@ fn from_the_upper_storey_the_atrium_is_open() {
 /// llevarse sólo una deja un hueco por el que se ve y no se pasa: dibujado perfecto, todos los
 /// contadores en verde, y el jugador rebotando contra un techo invisible.
 ///
+/// ADR-104 enm. 3 — **un atrio nunca se abre a la nada.** Por cada atrio y cada lado, el vano de
+/// esa banda existe si y sólo si arriba hay una sala construida que la toca; y donde no la hay, el
+/// ráster conserva macizo a la altura de los ojos de la planta alta justo sobre la pared del atrio.
+#[test]
+fn an_atrium_never_opens_onto_nothing() {
+    const EYE_M: f32 = 1.6;
+    let m = real_manifest();
+    let grow = (fill::CARVE_DEPTH_M * CM_PER_M) as i32;
+    let mut atria = 0usize;
+    let mut walled_sides = 0usize;
+    let mut open_sides = 0usize;
+    for (rx, rz) in AUDIT_REGIONS {
+        let b = building_of(rx, rz);
+        let region = Wg3RegionCoord { x: rx, z: rz };
+        let (min_x, min_z, _, _) = region.bounds();
+        let served = Wg3ServedWorld::plan_region(&m, SERVED_SEED, region);
+        let side_n = REGION_CHUNKS as usize;
+        let base = chunk::Wg3ChunkCoord::containing(min_x + 1.0, min_z + 1.0);
+        let mut rasters = Vec::with_capacity(side_n * side_n);
+        let mut carves = Vec::new();
+        let mut mouths: Vec<(f32, f32, f32)> = Vec::new();
+        for cz in 0..side_n {
+            for cx in 0..side_n {
+                let coord = chunk::Wg3ChunkCoord {
+                    x: base.x + cx as i32,
+                    z: base.z + cz as i32,
+                };
+                let here = served.carves_touching_chunk(coord);
+                let segs = served.segments_touching_chunk(coord);
+                for g in &segs {
+                    let (w, d) = (g.size_x_cm as f32 / 100.0, g.size_z_cm as f32 / 100.0);
+                    for o in &g.openings {
+                        let (lx, lz) =
+                            placement::local_point(o.side, o.offset_cm as f32 / 100.0, w, d);
+                        mouths.push((
+                            g.x_cm as f32 / 100.0 + lx,
+                            g.z_cm as f32 / 100.0 + lz,
+                            o.width_cm as f32 / 200.0 + 0.6,
+                        ));
+                    }
+                }
+                rasters.push(chunk::build_chunk_raster_full(
+                    &m,
+                    &served.placements_touching_chunk(&m, coord),
+                    &segs,
+                    &here,
+                    &served.solids_touching_chunk(coord),
+                    coord,
+                ));
+                carves.extend(here);
+            }
+        }
+        let raster_at = |x: f32, z: f32| -> Option<&Wg3Raster> {
+            let coord = chunk::Wg3ChunkCoord::containing(x, z);
+            let (dx, dz) = (coord.x - base.x, coord.z - base.z);
+            if dx < 0 || dz < 0 || dx as usize >= side_n || dz as usize >= side_n {
+                return None;
+            }
+            rasters.get(dz as usize * side_n + dx as usize)
+        };
+        for (n, storey) in b.storeys.iter().enumerate() {
+            let up = b.storeys.get(n + 1);
+            for s in &storey.spaces {
+                if !(s.void_above && s.role == SpaceRole::Hall && !s.is_composite()) {
+                    continue;
+                }
+                atria += 1;
+                let eye = (s.floor_y_cm + plan::STOREY_HEIGHT_CM) as f32 / 100.0 + EYE_M;
+                for band in fill::bands_of(&s.rect, grow) {
+                    let someone_up = up.is_some_and(|u| {
+                        u.spaces
+                            .iter()
+                            .any(|t| t.role.is_built() && t.hits_rect(&band))
+                    });
+                    let carved = carves.iter().any(|k| {
+                        k.x_cm == band.min_x_cm
+                            && k.z_cm == band.min_z_cm
+                            && k.size_x_cm == band.width_cm()
+                            && k.size_z_cm == band.depth_cm()
+                            && k.bottom_y_cm == s.floor_y_cm + plan::STOREY_HEIGHT_CM
+                    });
+                    assert_eq!(
+                        carved,
+                        someone_up,
+                        "({rx},{rz}) atrio en {:?}: banda {band:?} {} y arriba {} sala",
+                        s.rect,
+                        if carved { "abierta" } else { "tapiada" },
+                        if someone_up { "hay" } else { "no hay" }
+                    );
+                    if someone_up {
+                        open_sides += 1;
+                        continue;
+                    }
+                    walled_sides += 1;
+                    // El muro del atrio de ese lado sigue ahí a la altura de los ojos de arriba,
+                    // también sobre sus puertas a salas más bajas (`atrium_aprons`): se sondea cada
+                    // metro a lo largo de la banda, medio grosor de pared por dentro de la huella,
+                    // saltando las bocas a otra sala de la misma altura (esas se cortan enteras a
+                    // propósito).
+                    let (cx, cz) = s.rect.centre_m();
+                    let along_x = band.width_cm() >= band.depth_cm();
+                    let (bx, bz) = band.centre_m();
+                    let inward = 0.08;
+                    let (x0, x1, z0, z1) = (
+                        band.min_x_cm as f32 / 100.0,
+                        band.max_x_cm as f32 / 100.0,
+                        band.min_z_cm as f32 / 100.0,
+                        band.max_z_cm as f32 / 100.0,
+                    );
+                    // Pasadas las esquinas: ahí se solapan dos bandas y la abierta manda.
+                    let mut u = if along_x { x0 } else { z0 } + 1.6;
+                    let end = if along_x { x1 } else { z1 } - 1.6;
+                    while u < end {
+                        let (px, pz) = if along_x {
+                            (u, bz + (cz - bz).signum() * inward)
+                        } else {
+                            (bx + (cx - bx).signum() * inward, u)
+                        };
+                        let near_mouth = mouths.iter().any(|&(mx, mz, half)| {
+                            (mx - px).abs() < half && (mz - pz).abs() < half
+                        });
+                        if near_mouth {
+                            u += 1.0;
+                            continue;
+                        }
+                        if let Some(raster) = raster_at(px, pz) {
+                            assert!(
+                                raster.is_solid_at(px, eye, pz),
+                                "({rx},{rz}) atrio en {:?}: el lado tapiado no tiene muro en ({px:.2}, {pz:.2}) a {eye:.2}",
+                                s.rect
+                            );
+                        }
+                        u += 1.0;
+                    }
+                }
+            }
+        }
+    }
+    println!(
+        "[atrio] {atria} atrios: {open_sides} lados abiertos a una sala, {walled_sides} tapiados"
+    );
+    assert!(atria >= 1, "sin atrios en cuatro regiones");
+}
+
 /// ADR-126 — **un pozo te deja en el suelo de la cámara, exactamente D más abajo; el pasillo entre
 /// dos pozos aguanta; y nadie ha nacido encima de la rejilla.** Se mide contra el ráster servido,
 /// que es lo que el servidor consulta para dejar pasar: si la tierra o la cámara faltaran en una

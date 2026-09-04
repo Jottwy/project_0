@@ -13870,3 +13870,75 @@ ni arco). Pasa a `Knobs::lintel` (abierto **0,45**, oficina 0,75, nave 0,55, lab
 `thick_blocks_stand_free_and_some_doors_reach_the_ceiling`: 246 bloques en 39 semillas, ninguno a
 menos de 1 m de otro macizo a ras de suelo (los brazos de un pilar en cruz se reconocen por
 compartir centro y se saltan) ni a menos de 1,5 m de una boca. Capturas de la galería `w61_*`.
+
+## ADR-104 — Enmienda 3: el atrio no se abre a la nada — vano lado a lado, y faldón donde queda muro (2026-09-04) — ACEPTADA (Joel: «diagnosticar de dónde viene el bug de techos negros en atrios… y otro bug: cuando hay un cambio de altura se quedan huecos»)
+
+### Diagnóstico
+
+Con el cabeceo añadido al runner de capturas (cámara propia, `pitch` en el JSON) se vio que el techo
+del atrio SÍ está (gris de ambiente) y que el negro es un **agujero de geometría** justo donde D3
+quitó el muro alto del atrio. D3 abría un solo vano en anillo de `STOREY_HEIGHT_CM` a
+`ATRIUM_CLEAR_CM` alrededor de la huella, sin mirar si arriba había sala: en la región (0,0) los dos
+atrios de la galería (`w61_53_sala`, `w61_65_paseo`) no tienen NINGÚN tramo de planta alta que los
+toque, así que desde abajo se veía la nada. Medido en las cuatro regiones de auditoría: 24 atrios,
+**80 lados de 96 se abrían a nada**; 16 dan a una sala de arriba.
+
+El segundo bug es el mismo atrio: `ceiling_aprons` (enm. 6 de ADR-105) salta los atrios a propósito,
+así que sobre cada puerta de un atrio a una sala más baja queda una franja abierta desde el techo del
+vecino (3,08–3,80) hasta el del atrio (6,40). Son los «huecos al cambiar de altura».
+
+### D1 — El vano se abre lado a lado, sólo hacia una sala construida de arriba
+
+`atrium_carves` emite hasta cuatro bandas (`bands_of`: cada lado de la huella ensanchada
+`CARVE_DEPTH_M` hacia fuera y hacia dentro, esquinas incluidas en las dos bandas que las tocan) y
+sólo la de los lados donde una sala construida de la planta `n + 1` toca la banda. En el resto el
+muro de 6,40 se queda: una nave de doble altura tapiada es arquitectura; un agujero a la nada, no.
+
+### D2 — El faldón del atrio, en los lados con muro
+
+`atrium_aprons`: por cada puerta de un atrio cuya banda queda tapiada, un macizo en la banda de la
+puerta del lado del atrio desde el techo más bajo de los dos hasta `ATRIUM_CLEAR_CM`, en el tono del
+atrio. Es la pared que faltaba: la «tapiada natural» que pidió Joel. En los lados abiertos a una sala
+de arriba no se pone: la franja ES la vista al vacío, y el pretil de enm. 1 la necesita.
+
+### Verificaciones
+
+- `an_atrium_never_opens_onto_nothing`: por atrio y lado, vano ⇔ sala construida arriba; en los lados
+  tapiados el ráster es macizo a la altura de los ojos de la planta alta cada metro a lo largo del
+  muro, saltando esquinas (las abre la banda vecina) y bocas a salas de la misma altura.
+- `from_the_upper_storey_the_atrium_is_open` mide ahora sólo los puntos del anillo con sala arriba:
+  0 % de macizo en los seis atrios abiertos.
+- Capturas `atrio53_*` con cabeceo, antes y después.
+
+## ADR-127 — La RAMPA DE TECHO: el salto de altura suavizado con un plano inclinado (2026-09-04) — PROPUESTA (Joel: «dos opciones un poco aleatorias… una tapiada natural o una rampa en el techo que suavice eso, para darle más geometría»)
+
+### Contexto
+
+Con ADR-104 enm. 3 todo salto de altura sobre una puerta se cierra con pared (faldón). Joel quiere
+que a veces, en vez de pared, el techo BAJE en rampa desde la altura de la sala alta hasta la de la
+puerta: un plano inclinado que suaviza el cambio y añade geometría, en las dos versiones al azar.
+
+### D1 — Forma nueva: la CUÑA (`SHAPE_WEDGE` = 5). Wire 61
+
+Un `Wg3Solid` cuya cara inferior es un plano que sube del `bottom_y_cm` en un extremo del eje largo
+al `top_y_cm` en el otro (la cara superior queda plana en `top_y_cm`): macizo POR ENCIMA del plano.
+Sin giro; el sentido de subida lo dice el signo de `yaw_deg` reinterpretado como +1/−1 a lo largo del
+eje largo (o un byte nuevo si se prefiere claridad; decisión al implementar). El ráster la estampa por
+columna como el arco (`add_arch`: la cota más baja del plano en la celda), así la cabeza nunca la
+toca; el cliente la dibuja con `AddWedge` (seis caras, dos triángulos) y `MeshCollider` no convexo
+como el arco. Semántica nueva del byte `shape`: wire 61 (la rampa de ADR-122 pasa a 62).
+
+### D2 — Dónde y cuándo
+
+En las mismas puertas que hoy llevan faldón (`ceiling_aprons` y `atrium_aprons`), con sorteo por
+posición y `Knobs::ceiling_ramp` por carácter (abierto 0,45, nave 0,40, oficina 0,25, laberinto 0,15,
+raro 0,35): en vez del faldón vertical, una cuña que arranca en la línea de la puerta a la altura del
+techo bajo y sube hasta el techo alto a lo largo de `CEILING_RAMP_RUN_CM` = 300 dentro de la sala
+alta, del ancho de la boca más jambas. Sólo si en esos 3 m no hay viga, casetón ni otro macizo
+colgado (los esquiva como el bloque). El faldón se conserva como la otra opción.
+
+### Verificaciones previstas
+
+Cuña estampada: cabeza libre bajo todo el plano (`headroom_above_floor` ≥ techo bajo); ninguna cuña
+sobre viga o casetón; y en captura, la rampa se lee como techo que baja y no como bloque flotante.
+**Día 4 de la semana de cierre**, tras la rampa de suelo de ADR-122, con la que comparte forma.

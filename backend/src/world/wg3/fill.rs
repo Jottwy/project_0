@@ -51,7 +51,7 @@ use super::segment::{
 
 /// ADR-099 D3 — cuánto entra el vano a cada lado de la cara de contacto, en metros. Mismo número que
 /// usa la absorción, y por la misma razón: atravesar la pared y la celda del ráster.
-const CARVE_DEPTH_M: f32 = 0.5;
+pub(super) const CARVE_DEPTH_M: f32 = 0.5;
 
 /// Altura libre por papel, en centímetros.
 ///
@@ -545,6 +545,7 @@ pub fn fill_building(building: &RegionBuilding, manifest: &Wg3Manifest) -> Fille
     out.carves.extend(pit_carves);
     out.solids.extend(pit_solids);
     out.solids.extend(atrium_solids(building));
+    out.solids.extend(atrium_aprons(building));
     // ADR-119 enm. 1 — los pilares, que ya no son sólo del atrio. Va DESPUÉS del bucle de plantas
     // porque necesita saber qué espacios acabaron resueltos con una pieza del catálogo, y eso no se
     // sabe hasta que están todos rellenados.
@@ -4301,19 +4302,155 @@ fn atrium_carves(building: &RegionBuilding) -> Vec<Wg3Carve> {
     let mut out = Vec::new();
     let grow = (CARVE_DEPTH_M * CM_PER_M) as i32;
 
-    for plan in &building.storeys {
+    for (n, plan) in building.storeys.iter().enumerate() {
+        let up = building.storeys.get(n + 1);
         for s in plan.spaces.iter().filter(|s| is_atrium(s)) {
-            out.push(Wg3Carve {
-                x_cm: s.rect.min_x_cm - grow,
-                z_cm: s.rect.min_z_cm - grow,
-                size_x_cm: s.rect.width_cm() + 2 * grow,
-                size_z_cm: s.rect.depth_cm() + 2 * grow,
-                bottom_y_cm: s.floor_y_cm + STOREY_HEIGHT_CM,
-                top_y_cm: s.floor_y_cm + ATRIUM_CLEAR_CM,
+            // ADR-104 enm. 3 — **el vano se abre LADO A LADO, y sólo hacia una sala construida de
+            // arriba.** Un solo vano en anillo tiraba también el muro alto del atrio por los lados
+            // en los que arriba no hay nada (vacío del plan, borde de la planta), y desde abajo se
+            // veía la nada: los «techos negros» de la galería del 2026-09-04. Donde no hay nadie
+            // que mire, el muro de 6,40 se queda: una nave de doble altura tapiada es
+            // arquitectura; un agujero a la nada no.
+            for side in bands_of(&s.rect, grow) {
+                let someone_up = up.is_some_and(|plan_up| {
+                    plan_up
+                        .spaces
+                        .iter()
+                        .any(|t| t.role.is_built() && t.hits_rect(&side))
+                });
+                if !someone_up {
+                    continue;
+                }
+                out.push(Wg3Carve {
+                    x_cm: side.min_x_cm,
+                    z_cm: side.min_z_cm,
+                    size_x_cm: side.width_cm(),
+                    size_z_cm: side.depth_cm(),
+                    bottom_y_cm: s.floor_y_cm + STOREY_HEIGHT_CM,
+                    top_y_cm: s.floor_y_cm + ATRIUM_CLEAR_CM,
+                });
+            }
+        }
+    }
+    out
+}
+
+/// ADR-104 enm. 3 — **el faldón del ATRIO, sólo en los lados que quedan con muro.**
+///
+/// `ceiling_aprons` salta los atrios a propósito (un panel de tres metros y medio sobre una puerta
+/// en mitad de una doble altura, y encima el pretil). Pero en los lados donde arriba NO hay sala el
+/// muro de 6,40 se queda entero (`atrium_carves`), y una puerta en ese muro dejaba una franja
+/// abierta desde el techo del vecino hasta el del atrio: los «huecos al cambiar de altura» que
+/// Joel vio en la galería. Ahí el faldón es exactamente la pared que faltaba: tapiada natural. En
+/// los lados abiertos a una sala de arriba no hace falta: la franja ES la vista al vacío.
+fn atrium_aprons(building: &RegionBuilding) -> Vec<Wg3Solid> {
+    let mut out = Vec::new();
+    let grow = (CARVE_DEPTH_M * CM_PER_M) as i32;
+    for (n, plan) in building.storeys.iter().enumerate() {
+        let up = building.storeys.get(n + 1);
+        for link in &plan.links {
+            if link.kind == LinkKind::Route {
+                continue;
+            }
+            let (a, b) = (&plan.spaces[link.a], &plan.spaces[link.b]);
+            if !a.role.is_built() || !b.role.is_built() {
+                continue;
+            }
+            let (atrium, other) = if is_atrium(a) {
+                (a, b)
+            } else if is_atrium(b) {
+                (b, a)
+            } else {
+                continue;
+            };
+            // ¿En qué banda del atrio cae la puerta, y está esa banda tapiada?
+            let door = super::plan::PlanRect {
+                min_x_cm: link.at_x_cm - 1,
+                min_z_cm: link.at_z_cm - 1,
+                max_x_cm: link.at_x_cm + 1,
+                max_z_cm: link.at_z_cm + 1,
+            };
+            let walled = bands_of(&atrium.rect, grow)
+                .iter()
+                .filter(|band| band.overlaps(&door))
+                .any(|band| {
+                    !up.is_some_and(|plan_up| {
+                        plan_up
+                            .spaces
+                            .iter()
+                            .any(|t| t.role.is_built() && t.hits_rect(band))
+                    })
+                });
+            if !walled {
+                continue;
+            }
+            let low_top = (atrium.floor_y_cm + clear_height_cm(atrium))
+                .min(other.floor_y_cm + clear_height_cm(other));
+            let high_top = atrium.floor_y_cm + ATRIUM_CLEAR_CM;
+            if high_top <= low_top + SLAB_THICKNESS_CM {
+                continue;
+            }
+            let Some(side) = wall_side(atrium, link.at_x_cm, link.at_z_cm) else {
+                continue;
+            };
+            let half = link.width_cm / 2 + APRON_JAMB_CM;
+            let (x_cm, z_cm, size_x_cm, size_z_cm) =
+                door_band(side, link.at_x_cm, link.at_z_cm, half);
+            out.push(Wg3Solid {
+                x_cm,
+                z_cm,
+                size_x_cm,
+                size_z_cm,
+                bottom_y_cm: low_top,
+                top_y_cm: high_top,
+                style: style_of(atrium.role),
+                yaw_deg: 0,
+                shape: SHAPE_BOX,
             });
         }
     }
     out
+}
+
+/// ADR-104 enm. 3 — las cuatro bandas de un vano de atrio: cada una cubre un lado de la huella
+/// ensanchada `grow` hacia fuera Y hacia dentro (la pared del atrio vive dentro de su rectángulo;
+/// la del vecino, en el suyo), y las esquinas por las dos bandas que las tocan.
+pub(super) fn bands_of(r: &super::plan::PlanRect, grow: i32) -> [super::plan::PlanRect; 4] {
+    let (x0, z0, x1, z1) = (
+        r.min_x_cm - grow,
+        r.min_z_cm - grow,
+        r.max_x_cm + grow,
+        r.max_z_cm + grow,
+    );
+    let w = 2 * grow;
+    [
+        // Norte (z máx) y sur (z mín), de esquina a esquina.
+        super::plan::PlanRect {
+            min_x_cm: x0,
+            min_z_cm: z1 - w,
+            max_x_cm: x1,
+            max_z_cm: z1,
+        },
+        super::plan::PlanRect {
+            min_x_cm: x0,
+            min_z_cm: z0,
+            max_x_cm: x1,
+            max_z_cm: z0 + w,
+        },
+        // Este (x máx) y oeste (x mín).
+        super::plan::PlanRect {
+            min_x_cm: x1 - w,
+            min_z_cm: z0,
+            max_x_cm: x1,
+            max_z_cm: z1,
+        },
+        super::plan::PlanRect {
+            min_x_cm: x0,
+            min_z_cm: z0,
+            max_x_cm: x0 + w,
+            max_z_cm: z1,
+        },
+    ]
 }
 
 /// Igual, pudiendo APAGAR el catálogo. Lo usan las sondas que quieren medir sólo lo generado.
