@@ -12982,3 +12982,59 @@ El plan no la lleva y el dintel y la ventana se sortean por posición: `fill_sto
   faldones+dinteles 460 → 776).
 - Barrido de 27 regiones sin cambio: mancha mayor 99,6 %, 1,3 islas, nav 100 %, 117 617 cotas.
 - Sin cambio de wire (55), sin tocar el cliente.
+
+---
+
+## ADR-105 — Enmienda 7: el arco escalonado sobre las bocas anchas (2026-09-04) — ACEPTADA (implementada y medida)
+
+### Contexto
+
+Joel, 2026-09-04: «medias lunas… geometrías más complejas». No hay volumen curvo en WG3 y no lo va a
+haber sin otro ADR: la chuleta son cajas y el ráster estampa cajas (ADR-121 y ADR-122 dicen lo que
+costaría girarlas o inclinarlas). Un arco es lo que se puede decir con cajas. Quinto punto del Bloque A.
+
+### D1 — Hiladas de media celda desde la clave, siguiendo una elipse
+
+`door_arches`: sobre una boca de ancho ≥ `ARCH_MIN_WIDTH_CM` (300, o sea las anchas de 500), con
+`ARCH_CHANCE` 0,50 por posición, hiladas de `ARCH_BAND_CM` (25) de alto desde el techo más bajo de
+los dos espacios hacia abajo hasta la línea de arranque `ARCH_SPRING_CM` (200 sobre el suelo). Cada
+hilada se mete hacia el centro lo que dicta la elipse que va del ancho de la boca en el arranque a
+cero en la clave, evaluada en la cara SUPERIOR de la hilada: el arco dibujado nunca deja ver por
+encima del estampado. Media celda porque es lo más fino que el ráster estampa sin cambiar de
+significado en vertical (es conservador al centímetro en Y, no a la celda). Se lee como arco de
+ladrillo, no como curva lisa; es la «media luna» a la resolución del sistema.
+
+### D2 — Macizos de grosor de pared en la banda del vano, en los DOS lados, y sin dintel
+
+Misma banda que faldón y dintel (`door_band`), mismas exclusiones. `has_arch` lo preguntan el arco y
+el dintel: una boca con arco no lleva dintel plano, o compartirían el plano de la pared. Cada hilada
+rellena como mínimo un grosor de pared (`WALL_T_CM`): por debajo es una astilla, y además deja de
+tener la forma por la que los tests reconocen lo que cuelga sobre una boca — costó un rojo de
+`every_solid_survives_into_the_raster`, que tomó por pretil una hilada de 9 cm.
+
+### D3 — El paso no cambia
+
+La primera hilada arranca a 2,00: a la altura de los hombros la boca conserva el ancho entero, y bajo
+la hilada quedan 2,00 de hueco libre, por encima del cuerpo (1,80). Los macizos son inmunes a los
+vanos (ADR-105 D2), así que la propia boca no se los lleva.
+
+### Verificaciones
+
+- `cargo test --release --bin backrooms_server world::wg3` **149/149**; clippy y fmt limpios.
+- **376 hiladas de arco** en las cuatro regiones de referencia, todas en el ráster; los dinteles
+  bajan de 776 a 740 (las bocas con arco no lo llevan).
+- `the_apron_never_dips_into_the_doorway` reconoce la hilada (25 de alto, por encima de la línea de
+  arranque) y sigue vigilando al faldón.
+- Barrido de 27 regiones sin cambio: mancha mayor 99,6 %, 1,3 islas, nav 100 %, 117 617 cotas.
+- Sin cambio de wire (55), sin tocar el cliente.
+
+### Lo que el Bloque A NO ha hecho, dicho aquí
+
+El sexto punto —**puertas desalineadas / anti-enfilada**— no se ha tocado. El plan ya descentra el
+45 % de las puertas (`DOOR_CENTRED_CHANCE` 0,55; 47 de 190 enlaces por región en el barrido), pero no
+evita que la entrada y la salida de una sala queden enfrentadas. Evitarlo es un pase sobre
+`plan.links` que tiene que respetar `door_fits_in` en los dos espacios, `doors_fit_cells` contra la
+rejilla de `emit_space` y la lista de puertas que los mordiscos de ADR-120 validan: sistema núcleo,
+plan escrito antes (regla 4). La métrica que hay que añadir primero es la tasa de enfilada (dos
+puertas de la misma sala en paredes opuestas con solape de proyección), y sin ella no hay antes y
+después.
