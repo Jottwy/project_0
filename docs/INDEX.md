@@ -1,133 +1,63 @@
 # docs/INDEX.md — Índice de documentación
 
-> Punto de entrada. Enlaza, no duplica — cada dato vive en un solo sitio.
+> Mapa de DOCUMENTOS: qué fichero existe y para qué. Una línea por entrada, sin resúmenes.
+> El mapa de CONTRATOS es [ARCHITECTURE.md](ARCHITECTURE.md).
 
-## Fuente de verdad (leer en este orden al iniciar sesión)
-1. [STATE.md](STATE.md) — estado vivo: qué está hecho, qué sigue, riesgos abiertos. Léelo SIEMPRE primero.
-2. [ARCHITECTURE.md](ARCHITECTURE.md) — arquitectura validada, capas y contratos.
-3. [DECISIONS.md](DECISIONS.md) — registro ADR completo. ES LEY, append-only.
-4. [CONVENTIONS.md](CONVENTIONS.md) — convenciones C# / Rust / protocolo / git.
+## Fuente de verdad (en este orden al iniciar sesión)
+1. [STATE.md](STATE.md) — estado vivo. Tope 200 líneas / 20 KB.
+2. [ARCHITECTURE.md](ARCHITECTURE.md) — contratos y fronteras, con punteros.
+3. [DECISIONS-INDEX.md](DECISIONS-INDEX.md) — índice de los ADR. Nunca leas `DECISIONS.md` entero.
+4. [DECISIONS.md](DECISIONS.md) — ES LEY, append-only. Se lee por `grep '## ADR-NNN'` + offset.
+5. [CONVENTIONS.md](CONVENTIONS.md) — convenciones C# / Rust / protocolo / git.
 
-## Histórico (NO es fuente de verdad del estado actual)
-- [SESSION-LOG.md](SESSION-LOG.md) — las sesiones anteriores de `STATE.md`, movidas VERBATIM el
-  2026-08-04 (20 entradas, 2026-08-03 → 2026-07-07). Se sacaron porque `STATE.md` es lectura
-  obligatoria en cada arranque y el diario era el 55 % de su peso. Consúltalo para saber **por qué**
-  algo quedó como quedó; para saber **cómo está hoy**, `STATE.md`.
+## Histórico
+- [SESSION-LOG.md](SESSION-LOG.md) — todo el diario anterior, verbatim. El «por qué quedó así».
 
-## ADRs
-- [adr/INDEX.md](adr/INDEX.md) — índice de los ficheros ADR individuales; el registro completo sigue en `DECISIONS.md`.
+## Arquitectura y red
+- [architecture/NETWORKING_AND_SESSION_ARCHITECTURE.md](architecture/NETWORKING_AND_SESSION_ARCHITECTURE.md) — entrada.
+- [architecture/SESSION_LIFECYCLE.md](architecture/SESSION_LIFECYCLE.md) — ocho fases y teardown.
+- [architecture/SESSION_INVARIANTS.md](architecture/SESSION_INVARIANTS.md) — 15 invariantes de sesión.
+- [architecture/NETWORKING_INVARIANTS.md](architecture/NETWORKING_INVARIANTS.md) — invariantes de red.
+- [NETWORK_ARCHITECTURE_CURRENT.md](NETWORK_ARCHITECTURE_CURRENT.md) — transporte y roles.
+- [SERVER_BROWSER.md](SERVER_BROWSER.md) — navegador por Steam; §14 primero.
 
-## Escalado
-- [SCALING-ROADMAP.md](SCALING-ROADMAP.md) — hoja de ruta E0–E5 hacia el MMO (ADR-073): dónde
-  estamos medido, fixes de E0 con archivo:línea, gates por etapa, calendario contra hitos y qué
-  da Steam de verdad. Empieza aquí antes de cualquier trabajo de red orientado a capacidad.
+## Sistemas
+- [systems/ipc-wire-schema.md](systems/ipc-wire-schema.md) — changelog del wire. Autoritativo.
+- [systems/authored-rooms.md](systems/authored-rooms.md) — salas autoradas de punta a punta.
+- [systems/perf-baseline.md](systems/perf-baseline.md) — base de rendimiento medida.
+- [systems/vendor-patches.md](systems/vendor-patches.md) — qué perdemos con cada reimport del vendor.
+- [systems/reverb-mixer.md](systems/reverb-mixer.md) — reverb por zona.
+- [systems/damage-sync.md](systems/damage-sync.md) — hit-reaction cosmético (ADR-024).
 
-## Navegador de servidores
-- [SERVER_BROWSER.md](SERVER_BROWSER.md) — el navegador de servidores (2026-08-31): **discovery y
-  publishing por Steam** (`SteamLobbyDirectory` / `SteamLobbyPublisher` sobre
-  `SteamMatchmaking.LobbyList`), el anuncio del host gobernado por la FASE, filtro/orden/TTL, botón
-  *Buscar partida* y entrada por el ÚNICO camino de conexión — con el Host/Join por IP intacto.
-  **§14 es la sección nueva y la que hay que leer primero**: hasta el 2026-08-31 **Steam nunca
-  había inicializado** en este proyecto (faltaba el nativo `steam_api64.dll`), y el App ID ya no
-  está en el código de red sino en `SteamAppConfig` (entorno → `steam_appid.txt` → constante;
-  DEV 480 / PROD 5072740). §12 es el procedimiento de playtest de 12 pasos, **0 ejecutados**.
-  Cero wire, cero cambios en el protocolo.
+## Mundo (WorldGen3)
+- [WG3-ALPHA1-ROADMAP.md](WG3-ALPHA1-ROADMAP.md) — **contrato vigente**: WG3 v1 = Alpha 1.
+- [WG3-ROADMAP.md](WG3-ROADMAP.md) — plan de WG3 y los frentes abiertos.
+- [WORLDGEN3-BRIEF.md](WORLDGEN3-BRIEF.md) — resumen del sistema.
+- [VERTICALITY-ROADMAP.md](VERTICALITY-ROADMAP.md) — geometrías verticales.
+- [PLAN-PLANTAS-ALTAS.md](PLAN-PLANTAS-ALTAS.md) — poblar las plantas altas.
+- [ROOMS-ROADMAP.md](ROOMS-ROADMAP.md) — salas autoradas.
+- [LEVEL4-ROADMAP.md](LEVEL4-ROADMAP.md) — incursiones (ADR-093).
+- [STRUCTURES.md](STRUCTURES.md) — estructuras del mundo.
 
-## Salas autoradas
-- [ROOMS-ROADMAP.md](ROOMS-ROADMAP.md) — plan de trabajo del sistema de salas (2026-08-20), escrito
-  para ejecutarse tal cual: qué está hecho y verificado, qué se puede tocar sin ADR y qué no, el
-  techo del sistema, y las trampas que ya costaron tiempo. Empieza aquí antes de tocar salas.
+## Juego y contenido
+- [GAME-LOOP-GDD.md](GAME-LOOP-GDD.md) — el loop y sus bloqueantes.
+- [FARMING-ROADMAP.md](FARMING-ROADMAP.md) — farmeo de metal y estantería.
+- [FACELING-ROADMAP.md](FACELING-ROADMAP.md) — facelings.
+- [ASSET-SHOPPING-LIST.md](ASSET-SHOPPING-LIST.md) — arte por comprar.
+- [reference/asset-packs.md](reference/asset-packs.md) — packs importados y sus trampas.
 
-## WorldGen3 (el mundo procedural)
-- [PLAN-PLANTAS-ALTAS.md](PLAN-PLANTAS-ALTAS.md) — plan de tandas para poblar las plantas altas
-  (ADR-110 D3). Seis tandas, cero wire, y una hipótesis que T0 mide antes de tocar nada: que el eje
-  de población siga siendo la CAPA de 4 m de WG2 vaciaría el mundo de criaturas ya en la segunda
-  planta.
-- [VERTICALITY-ROADMAP.md](VERTICALITY-ROADMAP.md) — geometrías verticales de WG3: tope de plantas
-  (torres, hecho), rampas, vacíos y caídas, conductos de ventilación, y poblar las plantas altas.
-- [WG3-ALPHA1-ROADMAP.md](WG3-ALPHA1-ROADMAP.md) — contrato de cierre: WorldGen3 v1 = Alpha 1 en una
-  semana (2026-09-04); cinco días en orden fijo y la lista v2 de lo que no cabe.
-- [WG3-ROADMAP.md](WG3-ROADMAP.md) — plan de trabajo de WorldGen3 (2026-08-28), escrito al cerrar
-  ADR-102. Dónde estamos medido, lo que NO hay que volver a tocar, y los cuatro frentes que quedan
-  —identidad visual, WG3 como autoridad, variedad de catálogo y la rareza Backrooms— ordenados con su
-  porqué. Las decisiones vinculantes siguen siendo ADR-095 a ADR-102 en DECISIONS.md.
-
-## Level 4 (incursiones)
-- [LEVEL4-ROADMAP.md](LEVEL4-ROADMAP.md) — plan troceado de ADR-093 (2026-08-24): región de
-  incursión acotada, generador de grafo rasterizado, puertas con enlace inestable y epochs.
-  Etapas E0–E6 ≤300 líneas con anclajes file:line verificados; wire se toca una sola vez (E2).
-
-## Farmeo y almacenaje (Alpha 1)
-- [FARMING-ROADMAP.md](FARMING-ROADMAP.md) — cierre mínimo del farmeo de metal y la estantería
-  metálica construible (2026-08-22): decisiones tomadas (sin stacks, slots fijos 12–16, 4 Metal,
-  sync de contenedores diferido con ADR), bloque E (estantería) y bloque A (pilas de chatarra),
-  con tareas ejecutables y lo que queda fuera a propósito.
-
-## Deuda técnica
-- [DEBT-ROADMAP.md](DEBT-ROADMAP.md) — auditoría de solo-lectura (2026-08-18, 68 ítems: 27 código
-  muerto + 41 bugs) puntuada 1-10 con plan de arreglo por ítem, ordenada de menos a más grave. El
-  bloque de seguridad de red (Muy grave) es el más serio — dos ítems ahí necesitan ADR nuevo antes
-  de tocar código (regla dura #7).
+## Escalado, deuda y auditorías
+- [SCALING-ROADMAP.md](SCALING-ROADMAP.md) — E0–E5 y el calendario de hitos.
+- [DEBT-ROADMAP.md](DEBT-ROADMAP.md) — 68 ítems con plan por ítem.
+- [AUDIT-2026-08-28.md](AUDIT-2026-08-28.md) — bugs, registro vivo por append.
 
 ## Herramientas
-- [EDITOR-MENUS.md](EDITOR-MENUS.md) — qué hace cada una de las 22 entradas de menú del Editor,
-  cuáles son idempotentes y cuáles rehacen assets. Léelo antes de ejecutar un bake.
-- [DEV-ENVIRONMENT.md](DEV-ENVIRONMENT.md) — rutas de esta máquina, comandos exactos de tests
-  EditMode / build de desarrollo / playtest, y las trampas de herramienta que NO dan error
-  (`Collider.bounds` sin sincronizar en EditMode, banker's rounding de `Mathf.RoundToInt`,
-  arrays por `zone_kind` que sirven la última entrada, freshness del arnés). Léelo antes de
-  pelearte con un resultado absurdo.
+- [DEV-ENVIRONMENT.md](DEV-ENVIRONMENT.md) — rutas, comandos y trampas mudas.
+- [EDITOR-MENUS.md](EDITOR-MENUS.md) — menús del editor; léelo antes de un bake.
+- [web/README.md](web/README.md) — artifacts publicados y su sincronización.
 
-## Sistemas (documentación operativa por subsistema)
-- [systems/damage-sync.md](systems/damage-sync.md) — [G] Player Damage Sync (ADR-024): hit-reaction cosmético `hit_seq` en la pose relay.
-- [systems/ipc-wire-schema.md](systems/ipc-wire-schema.md) — changelog del wire schema IPC/P2P v2→v19 (ADR-009 y siguientes): qué añadió cada bump y cómo degrada la versión anterior. El número vive en `WIRE_SCHEMA_VERSION` (`backend/src/ipc/server.rs`); este doc es el changelog.
-- [systems/perf-baseline.md](systems/perf-baseline.md) — base de rendimiento MEDIDA (2026-08-14): el relay de los cinco rosters completos a 10 Hz sin filtro ni delta es el cuello, no el render. 1170 KB/s POR PEER con una base de 1000 piezas. Sonda reproducible en `backend/src/network/roster.rs` (`roster_relay_cost`, `#[ignore]`). Empieza aquí antes de optimizar nada.
-- [systems/vendor-patches.md](systems/vendor-patches.md) — inventario de TODO lo que este proyecto escribió dentro de `Assets/PolymindGames/` (6 familias, 13 ficheros): qué se pierde con cada reimport del `.unitypackage`, con qué marca se detecta y cuál es la cura. `CheckRegressionChecklist.ps1` lo comprueba solo. Empieza aquí después de reimportar el vendor.
-- [systems/reverb-mixer.md](systems/reverb-mixer.md) — reverb por zona: los 7 parámetros que `ReverbMixerDriver` escribe en `FPS_AudioMixer` y cómo rehacerlos. El mixer es del VENDOR: un reimport se lleva el efecto y el reverb se apaga en silencio — empieza aquí si dejó de sonar.
-- [systems/authored-rooms.md](systems/authored-rooms.md) — salas autoradas y props de punta a punta: modelo, malla/colliders desde la MISMA fuente, horneado al pool, y la colocación determinista por hash sin red. Estado real: NADA es autoritativo en servidor, y `collisionBoxes` y `RoomMarker` se escriben pero **no los lee nadie**. Empieza aquí antes de conectar el backend a las salas o de diseñar loot: la sección 7 es lo que hay que decidir (ADR-083 y la autoridad de props/loot).
-
-## Limpieza y refactor
-- [AUDIT-2026-08-03.md](AUDIT-2026-08-03.md) — barrido de auditoría vigente: qué se limpió, qué
-  queda por tier, y qué está bloqueado esperando decisión humana. Empieza aquí antes de "mejorar"
-  nada por tu cuenta.
-- [AUDIT-2026-08-13.md](AUDIT-2026-08-13.md) — complemento del anterior: barre lo escrito después
-  (audio de sala, aislamiento, spray, menús de editor) y re-mide los tier C que aquel dejó
-  bloqueados. Misma regla: el comportamiento observable no cambia.
-- [AUDIT-2026-08-28.md](AUDIT-2026-08-28.md) — auditoría de BUGS de todo el código (10 pasadas,
-  cliente + backend): 1 crítico, 6 altos, medios/bajos con fichero:línea y escenario, ya-conocidos
-  confirmados, y registro vivo para apuntar bugs nuevos por append.
-
-## Otros documentos de referencia
-- [reference/asset-packs.md](reference/asset-packs.md) — los dos packs de arte (Business Office, 147 prefabs; Grocery Store Props, 406), importados y **arreglados** el 2026-08-26: todo a URP/Lit, 552 de 553 con colisión en la raíz, 698 MB de huérfanos purgados, y el catálogo con tamaños reales contra el tile de 2,5 m. La sección 2 cuenta lo que venía roto de fábrica — shader Built-in y shaders portados de Unreal sin `_BaseColor` — porque vuelve a pasar con el siguiente pack que se compre.
-- [STRUCTURES.md](STRUCTURES.md)
-- [REMOTEPLAYERS_GATE.md](REMOTEPLAYERS_GATE.md)
-
-- [NETWORK_ARCHITECTURE_CURRENT.md](NETWORK_ARCHITECTURE_CURRENT.md) — transporte y roles.
-  **Ya no está congelado**: su cabecera dice que se revisó end-to-end el 2026-08-30 contra el
-  código y contra el binario en ejecución, durante la auditoría de conectividad Host/Join.
-
-> Los dos siguientes llevan `CURRENT` en el nombre pero están **congelados en 2026-06-08**. Se
-> mantienen porque su análisis sigue siendo útil; su inventario de ficheros y su estado NO lo son.
-- [STABILITY_AUDIT_CURRENT.md](STABILITY_AUDIT_CURRENT.md)
-- [ARCHITECTURE_RISK_REVIEW.md](ARCHITECTURE_RISK_REVIEW.md)
-
-## Ciclo de vida de sesión (Unity)
-- [architecture/NETWORKING_AND_SESSION_ARCHITECTURE.md](architecture/NETWORKING_AND_SESSION_ARCHITECTURE.md)
-  — puerta de entrada: qué contesta cada documento, las cinco causas raíz que arregló la tanda T6
-  (2026-08-30) y la frontera con el vendor. El transporte NO se repite aquí. **§14** añade Steam
-  como tercer canal (sólo metadatos), las tres puertas de entrada que desembocan en el mismo
-  `StartAsJoiner`, y la convivencia IP/Steam.
-- [architecture/SESSION_LIFECYCLE.md](architecture/SESSION_LIFECYCLE.md) — las ocho fases, el grafo
-  de transiciones, quién es dueño de qué, el teardown en orden, la política de cursor, la tabla de
-  errores y el procedimiento manual de verificación (§11).
-- [architecture/SESSION_INVARIANTS.md](architecture/SESSION_INVARIANTS.md) — las **quince**
-  invariantes, cada una con **quién la impone** y **qué la prueba**. Léelo antes de tocar conexión,
-  menú o cursor. I14 (una sesión que termina no deja anuncio en Steam, ni siquiera si termina
-  mientras Steam creaba el lobby) e I15 (Steam caído nunca bloquea la sesión) son de 2026-08-31.
-
-## Documentos publicados (Artifacts)
-- [web/README.md](web/README.md) — mapa de los seis documentos publicados en claude.ai: URL, fichero fuente y estado. Contiene la regla de sincronización del Compendio (`web/compendio.html`), que comprime a los otros cuatro y hay que republicar en su URL cuando cualquiera cambie.
-
-## Archivo
-- [archive/](archive/) — documentos retirados, con cabecera que dice por qué. No son fuente de verdad.
-- [legacy/CLAUDE_CODE_INSTRUCTIONS.md](legacy/CLAUDE_CODE_INSTRUCTIONS.md) — guía inicial de implementación, deprecada y conservada solo como histórico.
+## Congelado (análisis útil, estado NO vigente)
+- [AUDIT-2026-08-03.md](AUDIT-2026-08-03.md) · [AUDIT-2026-08-13.md](AUDIT-2026-08-13.md)
+- [STABILITY_AUDIT_CURRENT.md](STABILITY_AUDIT_CURRENT.md) · [ARCHITECTURE_RISK_REVIEW.md](ARCHITECTURE_RISK_REVIEW.md) — 2026-06-08 pese al nombre.
+- [REMOTEPLAYERS_GATE.md](REMOTEPLAYERS_GATE.md) — superado.
+- [archive/](archive/) · [legacy/](legacy/) · [measurements/](measurements/)

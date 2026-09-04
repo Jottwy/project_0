@@ -1,0 +1,141 @@
+# -*- coding: utf-8 -*-
+"""Gate del presupuesto de arranque de sesión.
+
+Comprueba lo MEDIBLE de `docs/STATE.md` (topes, esquema, formato de tanda) y el
+presupuesto de los cuatro ficheros que se cargan al abrir sesión. No juzga prosa:
+la compresión la escribe una persona, este script sólo impide que crezca otra vez.
+
+    python tools/dev/CheckStateBudget.py
+
+Salida 0 = verde, 2 = rojo. Lo invoca `/checkpoint` antes de commitear.
+
+Por qué existe: hasta el 2026-09-04, STATE.md pesaba 688 532 B / 2 588 líneas y la
+regla dura #1 de CLAUDE.md ("léelo antes de tocar nada") era incumplible — Read
+rechaza el fichero entero (tope 256 KB) y cualquier tramo de más de 25 000 tokens.
+Se podó una vez el 2026-08-04 y volvió a crecer de 283 a 688 KB en un mes porque
+nadie medía. Esta es la medida.
+"""
+import io
+import os
+import re
+import sys
+
+STATE_PATH = 'docs/STATE.md'
+
+MAX_LINES = 200
+MAX_BYTES = 20480
+MAX_COLUMNS = 160
+MAX_LINES_PER_BATCH = 8
+
+# Tope de líneas de cuerpo por sección. La única que falta a propósito es
+# "## Últimas tandas": es la desbordable, y su exceso va verbatim a SESSION-LOG.md.
+SECTION_CAPS = {
+    '## Estado': 5,
+    '## Próximo paso ÚNICO': 3,
+    '## En curso': 10,
+    '## Riesgos abiertos': 20,
+    '## NO tocar': 15,
+    '## Deuda declarada': 25,
+}
+
+# Presupuesto de arranque: suma de topes (35 KB) + 1 KB de margen.
+# El tope de INDEX.md es 4 KB y no 3: con 40 documentos reales y una línea por
+# entrada, el suelo medido es 3,9 KB. Bajarlo obligaría a dejar ficheros fuera del
+# índice, que es peor que 900 bytes.
+STARTUP_BUDGET = {
+    'CLAUDE.md': 3072,
+    'docs/INDEX.md': 4096,
+    'docs/STATE.md': 20480,
+    'docs/DECISIONS-INDEX.md': 8192,
+}
+STARTUP_TOTAL = 36864
+
+BATCH_HEADING = re.compile(r'^### \d{4}-\d{2}-\d{2} — .+')
+
+
+def body_lines(lines, start, end):
+    """Líneas de contenido de una sección: sin su encabezado ni las vacías."""
+    return [line for line in lines[start + 1:end] if line.strip()]
+
+
+def check_state(failures):
+    text = io.open(STATE_PATH, encoding='utf-8', newline='').read()
+    lines = text.split('\n')
+
+    total_lines = len(lines)
+    total_bytes = len(text.encode('utf-8'))
+    print('lineas %d / %d' % (total_lines, MAX_LINES))
+    print('bytes  %d / %d' % (total_bytes, MAX_BYTES))
+    if total_lines > MAX_LINES:
+        failures.append('STATE.md: %d lineas, tope %d' % (total_lines, MAX_LINES))
+    if total_bytes > MAX_BYTES:
+        failures.append('STATE.md: %d bytes, tope %d' % (total_bytes, MAX_BYTES))
+
+    for i, line in enumerate(lines):
+        if len(line) > MAX_COLUMNS:
+            failures.append('L%d: %d caracteres, tope %d' % (i + 1, len(line), MAX_COLUMNS))
+
+    starts = [i for i, line in enumerate(lines) if line.startswith('## ')]
+    bounds = list(zip(starts, starts[1:] + [len(lines)]))
+    print('--- secciones ---')
+    for start, end in bounds:
+        title = lines[start]
+        count = len(body_lines(lines, start, end))
+        cap = SECTION_CAPS.get(title)
+        over = cap is not None and count > cap
+        print('%-26s %3d lineas%s' % (title[:26], count, '  <-- EXCEDE' if over else ''))
+        if over:
+            failures.append('%s: %d lineas de cuerpo, tope %d' % (title, count, cap))
+
+    batches = [i for i, line in enumerate(lines) if line.startswith('### ')]
+    print('--- tandas ---')
+    for n, start in enumerate(batches):
+        end = batches[n + 1] if n + 1 < len(batches) else len(lines)
+        count = len(body_lines(lines, start, end))
+        well_formed = bool(BATCH_HEADING.match(lines[start]))
+        print('%-64s %2d lineas  encabezado %s'
+              % (lines[start][:64], count, 'OK' if well_formed else 'MAL'))
+        if not well_formed:
+            failures.append('encabezado de tanda mal formado (### AAAA-MM-DD — titulo): %s'
+                            % lines[start][:60])
+        if count > MAX_LINES_PER_BATCH:
+            failures.append('tanda "%s": %d lineas, tope %d'
+                            % (lines[start][4:44], count, MAX_LINES_PER_BATCH))
+
+
+def check_startup(failures):
+    print('--- presupuesto de arranque ---')
+    total = 0
+    for path, cap in STARTUP_BUDGET.items():
+        exists = os.path.exists(path)
+        size = os.path.getsize(path) if exists else 0
+        total += size
+        note = '' if exists else '  (no existe todavia)'
+        over = '  <-- EXCEDE' if size > cap else ''
+        print('%-24s %6d / %6d B%s%s' % (path, size, cap, over, note))
+        if size > cap:
+            failures.append('%s: %d bytes, tope %d' % (path, size, cap))
+    print('%-24s %6d / %6d B' % ('SUMA', total, STARTUP_TOTAL))
+    if total > STARTUP_TOTAL:
+        failures.append('presupuesto de arranque: %d bytes, tope %d' % (total, STARTUP_TOTAL))
+
+
+def main():
+    if not os.path.exists(STATE_PATH):
+        sys.stderr.write('no encuentro %s: ejecuta desde la raiz del repo\n' % STATE_PATH)
+        return 2
+    failures = []
+    check_state(failures)
+    check_startup(failures)
+    print('--- RESULTADO ---')
+    if failures:
+        print('ROJO:')
+        for failure in failures:
+            print('  - ' + failure)
+        return 2
+    print('VERDE')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

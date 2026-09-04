@@ -5,8 +5,8 @@ Cliente: Unity 6 + URP 17.0.4 Forward+ (C#) — real desde ADR-065 (2026-08-11);
 
 ## Fuente de verdad
 - `docs/ARCHITECTURE.md` — arquitectura validada. No se contradice, se enmienda vía ADR.
-- `docs/DECISIONS.md` — registro ADR. ES LEY. Inmutable: solo se añade, nunca se edita.
-- `docs/STATE.md` — estado vivo: qué está hecho, qué sigue. Léelo SIEMPRE al iniciar sesión.
+- `docs/DECISIONS.md` — registro ADR. ES LEY. Inmutable: solo se añade, nunca se edita. **1,38 MB: NUNCA lo leas entero.** Se lee por `docs/DECISIONS-INDEX.md` (generado) → `grep -n "^## ADR-NNN"` → `Read offset/limit` desde esa línea, y con él las enmiendas de ese número.
+- `docs/STATE.md` — estado vivo. Léelo SIEMPRE al iniciar sesión y ENTERO: cabe en una lectura, con tope de 200 líneas / 20 KB (`tools/dev/CheckStateBudget.py`). El histórico vive en `docs/SESSION-LOG.md`.
 - `docs/CONVENTIONS.md` — convenciones C# / Rust / protocolo.
 - `docs/INDEX.md` — índice de toda la documentación (ADRs, sistemas, guías). Empieza ahí para ubicar cualquier detalle que no esté en este archivo.
 
