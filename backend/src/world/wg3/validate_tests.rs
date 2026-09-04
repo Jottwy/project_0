@@ -1431,6 +1431,19 @@ fn partitions_land_where_the_grammar_says() {
     );
 }
 
+/// Sonda: el resumen de CADA región del barrido corto, para diferenciar dos versiones del relleno
+/// región a región (las medias esconden en qué sala apareció una isla).
+#[test]
+#[ignore]
+fn probe_sweep_per_region() {
+    let m = real_manifest();
+    let seeds = validate::sweep_seeds(sweep_seed_count(3));
+    let sweep = validate::validate_sweep(&m, &seeds, &NEAR_REGIONS, &ValidateOptions::default());
+    for r in &sweep.reports {
+        println!("[region] {}", r.summary());
+    }
+}
+
 /// ADR-105 enmienda 5 — **las invariantes duras de las vigas**, sobre varias semillas.
 ///
 /// Una viga cuelga del techo, así que lo que puede romper no es el paso sino la CABEZA y la SUBIDA:

@@ -275,10 +275,15 @@ pub fn fill_building(building: &RegionBuilding, manifest: &Wg3Manifest) -> Fille
     // sabe hasta que están todos rellenados.
     let placed = out.placements.clone();
     let pillars = hall_pillars(building, manifest, &placed);
+    // ADR-105 enm. 9 — las bocas de los TRAMOS emitidos. `plan.links` guarda el punto medio de una
+    // ruta, no la boca en la pared, así que una división podía tapar la entrada de un conector sin
+    // que ningún contador lo viera: subió las islas de 1,3 a 1,5 por región al meter el peine.
+    let seg_doors = segment_door_points(&out.segments);
     // ADR-105 enm. 3 — la masa interior. Va DESPUES de los pilares porque los esquiva: dos macizos
     // que se pisan son una caja rara, no dos elementos.
-    out.solids
-        .extend(interior_partitions(building, manifest, &placed, &pillars));
+    out.solids.extend(interior_partitions(
+        building, manifest, &placed, &pillars, &seg_doors,
+    ));
     out.solids.extend(pillars);
     // ADR-105 enm. 5 — el relieve del techo. Cuelga de la losa, así que no esquiva nada de lo de
     // abajo: sólo pozos y agujeros, que son lo único que atraviesa el techo.
@@ -1131,6 +1136,73 @@ pub(super) const PARTITION_HANG_CLEAR_CM: i32 = 200;
 const PARTITION_LOW_BELOW: f32 = 0.49;
 const PARTITION_HANG_BELOW: f32 = 0.62;
 
+/// ADR-105 enm. 9 — **el LABERINTO**: peine de espolones alternos desde paredes opuestas, con un
+/// paso al final de cada uno. El camino es una S garantizada: un espolón arranca de una pared y
+/// muere en el aire, así que ningún número de ellos desconecta nada (enm. 3 D3), y alternarlos es
+/// lo que obliga a recorrer la sala entera para cruzarla.
+const MAZE_CHANCE: f32 = 0.12;
+/// Y el CUARTO EXENTO: cuatro tabiques con una boca, flotando en mitad de la sala. El «cuarto sin
+/// motivo» de Level 0.
+const CELL_CHANCE: f32 = 0.15;
+/// Superficie mínima para un laberinto y para un cuarto exento, en m².
+const MAZE_MIN_AREA_M2: f32 = 200.0;
+const CELL_MIN_AREA_M2: f32 = 150.0;
+/// Paso libre al final de cada espolón del peine. Más que el hueco de una partición (400) no hace
+/// falta: se pasa de uno en uno, y menos de 300 lo cierra el peaje del ráster.
+const MAZE_GAP_CM: i32 = 400;
+/// Paso entre espolones del peine, mínimo y máximo, sorteado por sala.
+const MAZE_PITCH_CM: (i32, i32) = (400, 550);
+/// Lado interior del cuarto exento, mínimo y máximo, en pasos de celda.
+const CELL_SIDE_CM: (i32, i32) = (300, 450);
+/// Ancho de la boca del cuarto exento: el de una puerta del plan (`DOORWAY_CM`). Con 200 el barrido
+/// subió las islas de 1,3 a 1,5 por región: los dos muñones macizan su celda y el peaje del ráster
+/// se come otra a cada lado, y una boca de 200 mal alineada con la rejilla se queda en 50.
+const CELL_DOOR_CM: i32 = 250;
+/// Paso libre alrededor del cuarto exento, como el de una isla.
+const CELL_CLEAR_CM: i32 = 250;
+/// Sal del sorteo de laberinto o cuarto exento de una SALA. Propia y no la de las divisiones: así
+/// la secuencia de la enm. 3 no se mueve.
+const SALT_MAZE_ROOM: u32 = 0xB1_11_A0_07;
+
+/// Un tramo de tabique troceado al tope de macizo, a partes iguales, con muñones fuera (ver el
+/// emisor de divisiones: un trozo de 30 × 30 es un poste, no un muro).
+#[allow(clippy::too_many_arguments)]
+fn push_partition_run(
+    out: &mut Vec<Wg3Solid>,
+    across_x: bool,
+    at: i32,
+    a: i32,
+    b: i32,
+    bottom: i32,
+    top: i32,
+    style: u8,
+) {
+    let len = b - a;
+    if len < PARTITION_STUB_MIN_CM {
+        return;
+    }
+    let n = (len + MAX_SOLID_CM - 1) / MAX_SOLID_CM;
+    let mut cut = a;
+    for k in 1..=n {
+        let end = a + (len * k) / n;
+        let (x, z, sx, sz) = if across_x {
+            (at, cut, PARTITION_T_CM, end - cut)
+        } else {
+            (cut, at, end - cut, PARTITION_T_CM)
+        };
+        out.push(Wg3Solid {
+            x_cm: x,
+            z_cm: z,
+            size_x_cm: sx,
+            size_z_cm: sz,
+            bottom_y_cm: bottom,
+            top_y_cm: top,
+            style,
+        });
+        cut = end;
+    }
+}
+
 /// Cuántas divisiones como mucho por espacio.
 const PARTITION_MAX_PER_SPACE: i32 = 3;
 
@@ -1172,11 +1244,55 @@ type PartitionRun = (i32, i32, Option<(i32, i32)>);
 /// podría, y por eso **hay como mucho UNA por espacio** y su hueco mide cuatro metros. Con eso la
 /// simulación sobre el ráster servido de cuatro regiones da mancha mayor 100 % e islas cero; con
 /// hueco de metro y medio daba 98,0 % y dos islas.
+/// Los puntos de boca de los tramos emitidos, con la cota de su suelo: `(x, z, suelo)`. Sólo las
+/// bocas de VERDAD —las que no ocupan el lado entero, que son las juntas interiores entre tramos
+/// hermanos (`full_side`)—. Es la lista completa de por dónde se entra a un espacio: puertas del
+/// plan, de junta, bocas de ruta y puertas rescatadas, que `plan.links` no sabe dar.
+fn segment_door_points(segments: &[Wg3Segment]) -> Vec<(i32, i32, i32)> {
+    let mut out = Vec::new();
+    for seg in segments {
+        let (x0, z0) = (seg.x_cm, seg.z_cm);
+        let (x1, z1) = (x0 + seg.size_x_cm, z0 + seg.size_z_cm);
+        for o in &seg.openings {
+            let side_len = if o.side.is_multiple_of(2) {
+                seg.size_x_cm
+            } else {
+                seg.size_z_cm
+            };
+            if o.width_cm >= side_len - 1 {
+                continue;
+            }
+            let (x, z) = match o.side % 4 {
+                0 => (x0 + o.offset_cm, z1),
+                1 => (x1, z1 - o.offset_cm),
+                2 => (x1 - o.offset_cm, z0),
+                _ => (x0, z0 + o.offset_cm),
+            };
+            out.push((x, z, seg.floor_y_cm));
+        }
+    }
+    out
+}
+
+/// ¿Cae este punto sobre la pared exterior de este espacio? Dos centímetros de tolerancia, como
+/// `wall_side_of`. Una boca de tramo en la pared de un espacio de OTRA planta se descarta por la cota
+/// antes de llegar aquí.
+fn on_space_wall(s: &PlannedSpace, x: i32, z: i32) -> bool {
+    const EPS: i32 = 2;
+    s.parts().iter().any(|p| {
+        let in_x = x >= p.min_x_cm - EPS && x <= p.max_x_cm + EPS;
+        let in_z = z >= p.min_z_cm - EPS && z <= p.max_z_cm + EPS;
+        (in_x && ((p.min_z_cm - z).abs() <= EPS || (p.max_z_cm - z).abs() <= EPS))
+            || (in_z && ((p.min_x_cm - x).abs() <= EPS || (p.max_x_cm - x).abs() <= EPS))
+    })
+}
+
 fn interior_partitions(
     building: &RegionBuilding,
     manifest: &Wg3Manifest,
     placements: &[Wg3Placement],
     pillars: &[Wg3Solid],
+    seg_doors: &[(i32, i32, i32)],
 ) -> Vec<Wg3Solid> {
     let mut out = Vec::new();
     let seed = building.seed;
@@ -1268,7 +1384,8 @@ fn interior_partitions(
             let want = ((s.area_m2() / PARTITION_AREA_PER_ONE_M2).round() as i32).clamp(1, cap);
 
             // Los puntos por los que se entra: enlaces del plan y puertas de junta, igual que en la
-            // retícula de pilares.
+            // retícula de pilares — **y las bocas de los tramos emitidos** (enm. 9), que son las
+            // únicas que saben dónde cae de verdad la boca de una ruta o una puerta rescatada.
             let doors: Vec<(i32, i32)> = plan
                 .links
                 .iter()
@@ -1280,6 +1397,12 @@ fn interior_partitions(
                         .filter(|g| g.space == i)
                         .map(|g| (g.x_cm, g.z_cm)),
                 )
+                .chain(
+                    seg_doors
+                        .iter()
+                        .filter(|&&(x, z, floor)| floor == s.floor_y_cm && on_space_wall(s, x, z))
+                        .map(|&(x, z, _)| (x, z)),
+                )
                 .collect();
 
             let clear = clear_height_cm(s);
@@ -1288,6 +1411,217 @@ fn interior_partitions(
             // cuadrante con un solo hueco es la isla que el validador caza.
             let mut mine: Vec<super::plan::PlanRect> = Vec::new();
             let mut split_used = false;
+
+            // **ADR-105 enm. 9 — laberinto o cuarto exento, y entonces nada más en esta sala.** Con
+            // sal propia: la secuencia de sorteos de las divisiones de siempre no se mueve.
+            //
+            // Sólo sobre huella de UNA parte: el peine se traza de pared a pared y en una L la
+            // envolvente ofrece paredes que en el rincón no existen (ADR-120 D5).
+            if !s.is_composite() {
+                let overlaps_m =
+                    |foot: &super::plan::PlanRect, (x0, z0, x1, z1): (f32, f32, f32, f32)| {
+                        let (a0, b0, a1, b1) = (
+                            foot.min_x_cm as f32 / CM_PER_M,
+                            foot.min_z_cm as f32 / CM_PER_M,
+                            foot.max_x_cm as f32 / CM_PER_M,
+                            foot.max_z_cm as f32 / CM_PER_M,
+                        );
+                        a0 < x1 && a1 > x0 && b0 < z1 && b1 > z0
+                    };
+                // Las mismas exclusiones que una división: fuera de suelo propio, rellanos, agujeros
+                // (propio y de arriba), pozos, pilares, puertas y piezas.
+                let hole_here = hole_square(&r).shrunk(-50);
+                let blocked_foot = |foot: &super::plan::PlanRect| -> bool {
+                    !s.covers_rect(foot)
+                        || landings.iter().any(|l| l.overlaps(foot))
+                        || (n > 0 && hole_here.overlaps(foot))
+                        || holes_above.iter().any(|h| h.overlaps(foot))
+                        || wells_here.iter().any(|w| w.overlaps(foot))
+                        || pillars.iter().any(|p| overlaps_m(foot, p.bounds()))
+                        || doors.iter().any(|&(dx, dz)| {
+                            foot.shrunk(-PARTITION_DOOR_CLEAR_CM).contains_point(dx, dz)
+                        })
+                        || taken.iter().any(|&t| overlaps_m(foot, t))
+                };
+                let mut maze = super::hash::stream_at(seed, cx, cz, SALT_MAZE_ROOM);
+                let u = maze.next01();
+                let wide = r.width_cm() >= r.depth_cm();
+                // **Nunca un laberinto en una sala con pilares.** El pasillo entre dos espolones
+                // mide 3,7–5,2 m y un pilar de 2–4 m plantado en medio lo sella por los dos lados:
+                // el espolón esquivaba el pilar, el pasillo no. Medido: +5 islas en 27 regiones, y
+                // cada una del tamaño exacto de un pasillo del peine (279–305 cotas).
+                let has_pillars = pillars.iter().any(|p| overlaps_m(&r, p.bounds()));
+                if u < MAZE_CHANCE && s.area_m2() >= MAZE_MIN_AREA_M2 && !has_pillars {
+                    // Espolones perpendiculares al eje LARGO, alternando la pared de arranque.
+                    let (long, short) = if wide {
+                        (r.width_cm(), r.depth_cm())
+                    } else {
+                        (r.depth_cm(), r.width_cm())
+                    };
+                    let pitch = MAZE_PITCH_CM.0
+                        + (maze.next01() * (MAZE_PITCH_CM.1 - MAZE_PITCH_CM.0) as f32) as i32;
+                    let len = short - MAZE_GAP_CM;
+                    let usable = long - 2 * PARTITION_WALL_MARGIN_CM - PARTITION_T_CM;
+                    let count = usable / pitch;
+                    if len >= PARTITION_MIN_LEN_CM && count >= 2 {
+                        let step = usable / count;
+                        let top = if maze.next01() < PARTITION_SCREEN_CHANCE {
+                            s.floor_y_cm + PARTITION_SCREEN_H_CM.min(clear)
+                        } else {
+                            s.floor_y_cm + clear
+                        };
+                        let mut placed = 0;
+                        for k in 0..=count {
+                            // `across_x`: el tabique corre a lo largo de Z con `at` en X.
+                            let across_x = wide;
+                            let at_base = if wide { r.min_x_cm } else { r.min_z_cm };
+                            let at = at_base + PARTITION_WALL_MARGIN_CM + k * step;
+                            if at + PARTITION_T_CM
+                                > (if wide { r.max_x_cm } else { r.max_z_cm })
+                                    - PARTITION_WALL_MARGIN_CM
+                            {
+                                break;
+                            }
+                            let from_base = if wide { r.min_z_cm } else { r.min_x_cm };
+                            let (a, b) = if k % 2 == 0 {
+                                (from_base, from_base + len)
+                            } else {
+                                (from_base + short - len, from_base + short)
+                            };
+                            let foot = if across_x {
+                                super::plan::PlanRect {
+                                    min_x_cm: at,
+                                    min_z_cm: a,
+                                    max_x_cm: at + PARTITION_T_CM,
+                                    max_z_cm: b,
+                                }
+                            } else {
+                                super::plan::PlanRect {
+                                    min_x_cm: a,
+                                    min_z_cm: at,
+                                    max_x_cm: b,
+                                    max_z_cm: at + PARTITION_T_CM,
+                                }
+                            };
+                            // **Y el HUECO al final del espolón tiene que estar libre**, no sólo el
+                            // espolón. Un pilar plantado en esos 300 cm cierra el paso y deja una
+                            // bolsa: medido, +4 islas en 27 regiones (305 cotas en una sola).
+                            let (g0, g1) = if k % 2 == 0 {
+                                (from_base + len, from_base + short)
+                            } else {
+                                (from_base, from_base + short - len)
+                            };
+                            let gap = if across_x {
+                                super::plan::PlanRect {
+                                    min_x_cm: at - 100,
+                                    min_z_cm: g0,
+                                    max_x_cm: at + PARTITION_T_CM + 100,
+                                    max_z_cm: g1,
+                                }
+                            } else {
+                                super::plan::PlanRect {
+                                    min_x_cm: g0,
+                                    min_z_cm: at - 100,
+                                    max_x_cm: g1,
+                                    max_z_cm: at + PARTITION_T_CM + 100,
+                                }
+                            };
+                            let gap_blocked = pillars.iter().any(|p| overlaps_m(&gap, p.bounds()))
+                                || taken.iter().any(|&t| overlaps_m(&gap, t))
+                                || landings.iter().any(|l| l.overlaps(&gap))
+                                || wells_here.iter().any(|w| w.overlaps(&gap));
+                            if blocked_foot(&foot) || gap_blocked {
+                                continue;
+                            }
+                            push_partition_run(
+                                &mut out,
+                                across_x,
+                                at,
+                                a,
+                                b,
+                                s.floor_y_cm,
+                                top,
+                                style,
+                            );
+                            placed += 1;
+                        }
+                        if placed >= 2 {
+                            continue;
+                        }
+                    }
+                } else if u < MAZE_CHANCE + CELL_CHANCE && s.area_m2() >= CELL_MIN_AREA_M2 {
+                    let side = (CELL_SIDE_CM.0
+                        + (maze.next01() * (CELL_SIDE_CM.1 - CELL_SIDE_CM.0) as f32) as i32)
+                        / 50
+                        * 50;
+                    let outer = side + 2 * PARTITION_T_CM;
+                    let free_x = r.width_cm() - 2 * CELL_CLEAR_CM - outer;
+                    let free_z = r.depth_cm() - 2 * CELL_CLEAR_CM - outer;
+                    if free_x > 0 && free_z > 0 {
+                        let x0 =
+                            r.min_x_cm + CELL_CLEAR_CM + (maze.next01() * free_x as f32) as i32;
+                        let z0 =
+                            r.min_z_cm + CELL_CLEAR_CM + (maze.next01() * free_z as f32) as i32;
+                        let foot = super::plan::PlanRect {
+                            min_x_cm: x0,
+                            min_z_cm: z0,
+                            max_x_cm: x0 + outer,
+                            max_z_cm: z0 + outer,
+                        };
+                        // Con su paso alrededor, como una isla.
+                        if !blocked_foot(&foot.shrunk(-CELL_CLEAR_CM)) {
+                            let door_side = (maze.next01() * 4.0) as i32 % 4;
+                            let top = s.floor_y_cm + clear;
+                            let (x1, z1) = (x0 + outer, z0 + outer);
+                            let jamb = (outer - CELL_DOOR_CM) / 2;
+                            // Los cuatro lados: 0 = N (z1), 1 = E (x1), 2 = S (z0), 3 = O (x0). El
+                            // lado con boca se emite como dos muñones.
+                            for side_k in 0..4 {
+                                let (across_x, at, a, b) = match side_k {
+                                    0 => (false, z1 - PARTITION_T_CM, x0, x1),
+                                    1 => (true, x1 - PARTITION_T_CM, z0, z1),
+                                    2 => (false, z0, x0, x1),
+                                    _ => (true, x0, z0, z1),
+                                };
+                                if side_k == door_side {
+                                    push_partition_run(
+                                        &mut out,
+                                        across_x,
+                                        at,
+                                        a,
+                                        a + jamb,
+                                        s.floor_y_cm,
+                                        top,
+                                        style,
+                                    );
+                                    push_partition_run(
+                                        &mut out,
+                                        across_x,
+                                        at,
+                                        b - jamb,
+                                        b,
+                                        s.floor_y_cm,
+                                        top,
+                                        style,
+                                    );
+                                } else {
+                                    push_partition_run(
+                                        &mut out,
+                                        across_x,
+                                        at,
+                                        a,
+                                        b,
+                                        s.floor_y_cm,
+                                        top,
+                                        style,
+                                    );
+                                }
+                            }
+                            continue;
+                        }
+                    }
+                }
+            }
 
             // Las partes de mayor a menor: una división por parte, empezando por la grande. Ver el
             // comentario de `host`.
