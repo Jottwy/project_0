@@ -178,9 +178,9 @@ namespace BackroomsSurvival.Tests.EditMode
                     Vector3 w = go.transform.TransformPoint(verts[i]);
                     lowestAnywhere = Mathf.Min(lowestAnywhere, w.y);
                     if (Mathf.Abs(w.x - 10f) < 0.01f) lowestAtCentre = Mathf.Min(lowestAtCentre, w.y);
-                    // Un tramo hacia dentro de cada jamba (cuerda 1,2 en 16 tramos = 7,5 cm).
-                    if (Mathf.Abs(w.x - 9.475f) < 0.01f) lowestLeft = Mathf.Min(lowestLeft, w.y);
-                    if (Mathf.Abs(w.x - 10.525f) < 0.01f) lowestRight = Mathf.Min(lowestRight, w.y);
+                    // Un tramo angular hacia dentro de cada jamba: u = ±0,6·cos(π/16) = ±0,5885.
+                    if (Mathf.Abs(w.x - 9.4115f) < 0.005f) lowestLeft = Mathf.Min(lowestLeft, w.y);
+                    if (Mathf.Abs(w.x - 10.5885f) < 0.005f) lowestRight = Mathf.Min(lowestRight, w.y);
                 }
                 Assert.AreEqual(1.9f, lowestAnywhere, 0.01f, "el arco baja por debajo del arranque");
                 Assert.AreEqual(2.3f, lowestAtCentre, 0.01f, "la clave no está a 2,30 en el centro de la cuerda");

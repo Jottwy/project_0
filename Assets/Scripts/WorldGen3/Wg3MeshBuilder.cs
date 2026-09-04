@@ -253,11 +253,15 @@ namespace BackroomsSurvival.WorldGen3
             var cn = new Vector3[N + 1];
             for (int i = 0; i <= N; i++)
             {
-                float u = -r + 2f * r * i / N;
-                // |u|: la elipse es simétrica. Con `Clamp01(u / r)` la mitad negativa de la cuerda
-                // se aplanaba a la clave y el arco salía con una jamba cuadrada (captura 14:47).
-                float k = Mathf.Clamp01(Mathf.Abs(u) / r);
-                float y = -hy + rise * Mathf.Sqrt(Mathf.Max(0f, 1f - k * k));
+                // POR ÁNGULO, no por `u` uniforme. Con `u` uniforme el primer tramo junto a la
+                // jamba era una cuerda de 15 cm de base y 19 de alto que se metía 5 cm en la luz
+                // por dentro de la elipse: asomaba beige por dentro del marco (captura 15:25) y
+                // el ráster, que estampa la elipse de verdad, dejaba pasar donde el dibujo no. Por
+                // ángulo la flecha máxima de cada cuerda es de 2 mm, y la arquivolta —que muestrea
+                // igual— queda a 1 cm por dentro en todo el recorrido.
+                float a = Mathf.PI * i / N;
+                float u = -r * Mathf.Cos(a);
+                float y = -hy + rise * Mathf.Sin(a);
                 cu[i] = u;
                 cy[i] = y;
                 // Normal del macizo en el intradós: hacia el centro de la elipse (abajo y adentro).
