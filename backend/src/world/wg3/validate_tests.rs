@@ -1444,6 +1444,59 @@ fn probe_sweep_per_region() {
     }
 }
 
+/// ADR-105 enmienda 13 — **toda tarima apoya en el suelo de su sala y es un escalón, no un muro.**
+#[test]
+fn platforms_sit_on_their_floor() {
+    use super::plan::PlanRect;
+
+    let m = real_manifest();
+    let seeds = validate::sweep_seeds(sweep_seed_count(3));
+    let mut seen = 0usize;
+    for &seed in &seeds {
+        for &(rx, rz) in NEAR_REGIONS.iter() {
+            let region = Wg3RegionCoord { x: rx, z: rz };
+            let inside = validate::region_inside(&m, seed, region);
+            for p in inside
+                .filled
+                .solids
+                .iter()
+                .filter(|s| super::fill::is_platform(s))
+            {
+                seen += 1;
+                let rect = PlanRect {
+                    min_x_cm: p.x_cm,
+                    min_z_cm: p.z_cm,
+                    max_x_cm: p.x_cm + p.size_x_cm,
+                    max_z_cm: p.z_cm + p.size_z_cm,
+                };
+                let host = inside.building.storeys.iter().find_map(|st| {
+                    st.built()
+                        .find(|(_, sp)| sp.floor_y_cm == p.bottom_y_cm && sp.covers_rect(&rect))
+                        .map(|(_, sp)| sp)
+                });
+                assert!(
+                    host.is_some(),
+                    "semilla {seed:#x} región ({rx},{rz}): tarima en ({},{}) cota {} fuera de \
+                     todo espacio o despegada de su suelo",
+                    p.x_cm,
+                    p.z_cm,
+                    p.bottom_y_cm
+                );
+                assert!(
+                    !host.unwrap().role.is_circulation(),
+                    "semilla {seed:#x} región ({rx},{rz}): tarima en circulación"
+                );
+            }
+        }
+    }
+    assert!(
+        seen > 30,
+        "sólo {seen} tarimas en {} regiones: la gramática no está emitiendo",
+        seeds.len() * NEAR_REGIONS.len()
+    );
+    println!("[tarimas] {seen} tarimas revisadas");
+}
+
 /// ADR-105 enmienda 11 — **toda hilada de arcada o bóveda cuelga a 2,50 o más del suelo de su sala.**
 #[test]
 fn hung_bands_stay_above_the_head() {

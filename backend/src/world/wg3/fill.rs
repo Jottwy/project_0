@@ -297,6 +297,10 @@ pub fn fill_building(building: &RegionBuilding, manifest: &Wg3Manifest) -> Fille
     // abajo: sólo pozos y agujeros, que son lo único que atraviesa el techo.
     out.solids
         .extend(ceiling_beams(building, manifest, &placed));
+    // ADR-105 enm. 13 — descuelgue perimetral o cornisa, y tarimas.
+    out.solids.extend(wall_soffits(building, manifest, &placed));
+    out.solids
+        .extend(floor_platforms(building, manifest, &placed));
     out
 }
 
@@ -2359,6 +2363,319 @@ const BEAM_MIN_LEN_CM: i32 = 100;
 /// Sal del sorteo de vigas de una SALA.
 const SALT_BEAM_ROOM: u32 = 0xB1_11_A0_03;
 
+/// ADR-105 enm. 13 — **VIGUETAS**: el tercer ritmo de techo, fino y apretado, en un solo eje. Treinta
+/// y cinco de ancho (ninguna otra forma colgada mide eso: la viga 40, el faldón 15) y 30 de caída.
+const JOIST_CHANCE: f32 = 0.25;
+const JOIST_T_CM: i32 = 35;
+const JOIST_DROP_CM: i32 = 30;
+const JOIST_PITCH_CM: i32 = 100;
+
+/// ADR-105 enm. 13 — **DESCUELGUE PERIMETRAL y CORNISA**: una banda colgada del techo a lo largo de
+/// las cuatro paredes (60 de fondo, 50 de caída), o una moldura de 10 × 10 en la arista. Excluyentes
+/// por sala, con un solo dado.
+const SOFFIT_CHANCE: f32 = 0.30;
+const CORNICE_BELOW: f32 = 0.60;
+const SOFFIT_DEPTH_CM: i32 = 60;
+const SOFFIT_DROP_CM: i32 = 50;
+const CORNICE_CM: i32 = 10;
+const SOFFIT_MIN_CLEAR_CM: i32 = 300;
+const SALT_SOFFIT: u32 = 0xB1_11_A0_0C;
+
+/// ADR-105 enm. 13 — **la TARIMA**: un escalón de suelo de `PLATFORM_H_CM` pegado a una pared, que
+/// ocupa una franja de la sala. Veinte y no treinta: por debajo del escalón del jugador (27) y del de
+/// la navegación (30), así que se sube sin pensarlo y el ráster la ofrece como suelo. La zapata del
+/// pilar mide 30 justamente para lo contrario.
+const PLATFORM_CHANCE: f32 = 0.20;
+const PLATFORM_H_CM: i32 = 20;
+const PLATFORM_MIN_AREA_M2: f32 = 100.0;
+const PLATFORM_MARGIN_CM: i32 = 300;
+const PLATFORM_MIN_SPAN_CM: i32 = 450;
+const SALT_PLATFORM: u32 = 0xB1_11_A0_0D;
+
+/// ¿Es este macizo una tarima? Por la forma: 20 de alto, más de 4,5 m de largo Y más de 1,5 m de
+/// fondo — un dintel bajo un techo de 2,60 también mide 20 de alto y 5 m de largo, pero 15 de fondo.
+pub(super) fn is_platform(s: &Wg3Solid) -> bool {
+    s.top_y_cm - s.bottom_y_cm == PLATFORM_H_CM
+        && s.size_x_cm.max(s.size_z_cm) >= PLATFORM_MIN_SPAN_CM
+        && s.size_x_cm.min(s.size_z_cm) >= 150
+}
+
+/// Las cuatro bandas de un anillo pegado a las paredes de `inner`, de `depth` de fondo, entre `y0` e
+/// `y1`, troceadas al tope de macizo y recortadas por `cuts`.
+#[allow(clippy::too_many_arguments)]
+fn ring_bands(
+    out: &mut Vec<Wg3Solid>,
+    inner: &super::plan::PlanRect,
+    depth: i32,
+    y0: i32,
+    y1: i32,
+    style: u8,
+    cuts: &[super::plan::PlanRect],
+) {
+    let strips = [
+        // Las dos largas en Z (paredes O y E), enteras; las dos en X entre ellas.
+        super::plan::PlanRect {
+            min_x_cm: inner.min_x_cm,
+            min_z_cm: inner.min_z_cm,
+            max_x_cm: inner.min_x_cm + depth,
+            max_z_cm: inner.max_z_cm,
+        },
+        super::plan::PlanRect {
+            min_x_cm: inner.max_x_cm - depth,
+            min_z_cm: inner.min_z_cm,
+            max_x_cm: inner.max_x_cm,
+            max_z_cm: inner.max_z_cm,
+        },
+        super::plan::PlanRect {
+            min_x_cm: inner.min_x_cm + depth,
+            min_z_cm: inner.min_z_cm,
+            max_x_cm: inner.max_x_cm - depth,
+            max_z_cm: inner.min_z_cm + depth,
+        },
+        super::plan::PlanRect {
+            min_x_cm: inner.min_x_cm + depth,
+            min_z_cm: inner.max_z_cm - depth,
+            max_x_cm: inner.max_x_cm - depth,
+            max_z_cm: inner.max_z_cm,
+        },
+    ];
+    for (i, strip) in strips.iter().enumerate() {
+        if strip.width_cm() <= 0 || strip.depth_cm() <= 0 {
+            continue;
+        }
+        if cuts.iter().any(|c| c.overlaps(strip)) {
+            continue;
+        }
+        let run_x = i >= 2;
+        let (from, to) = if run_x {
+            (strip.min_x_cm, strip.max_x_cm)
+        } else {
+            (strip.min_z_cm, strip.max_z_cm)
+        };
+        let len = to - from;
+        let pieces = (len + MAX_SOLID_CM - 1) / MAX_SOLID_CM;
+        let mut cut = from;
+        for k in 1..=pieces {
+            let end = from + (len * k) / pieces;
+            let (x, z, sx, sz) = if run_x {
+                (cut, strip.min_z_cm, end - cut, strip.depth_cm())
+            } else {
+                (strip.min_x_cm, cut, strip.width_cm(), end - cut)
+            };
+            out.push(Wg3Solid {
+                x_cm: x,
+                z_cm: z,
+                size_x_cm: sx,
+                size_z_cm: sz,
+                bottom_y_cm: y0,
+                top_y_cm: y1,
+                style,
+            });
+            cut = end;
+        }
+    }
+}
+
+fn wall_soffits(
+    building: &RegionBuilding,
+    manifest: &Wg3Manifest,
+    placements: &[Wg3Placement],
+) -> Vec<Wg3Solid> {
+    let mut out = Vec::new();
+    let seed = building.seed;
+    let taken: Vec<(f32, f32, f32, f32)> = placements
+        .iter()
+        .filter_map(|p| {
+            manifest
+                .pieces
+                .get(p.piece as usize)
+                .map(|piece| p.bounds(piece))
+        })
+        .collect();
+    for (n, plan) in building.storeys.iter().enumerate() {
+        let mut cuts: Vec<super::plan::PlanRect> = building
+            .wells
+            .iter()
+            .filter(|w| w.storey_below == n)
+            .map(|w| w.rect.shrunk(-50))
+            .collect();
+        cuts.extend(hole_squares_above(building, n));
+        for (_, s) in plan.built() {
+            if s.is_composite() || s.rise_cm != 0 || s.role == SpaceRole::Stair || is_atrium(s) {
+                continue;
+            }
+            let clear = clear_height_cm(s);
+            if clear < SOFFIT_MIN_CLEAR_CM {
+                continue;
+            }
+            let r = s.rect;
+            let (cx, cz) = r.centre_m();
+            if taken
+                .iter()
+                .any(|&(x0, z0, x1, z1)| cx > x0 && cx < x1 && cz > z0 && cz < z1)
+            {
+                continue;
+            }
+            let u = super::hash::stream_at(seed, cx, cz, SALT_SOFFIT).next01();
+            let top = s.floor_y_cm + clear;
+            let style = style_of(s.role);
+            let inner = r.shrunk(WALL_T_CM);
+            if u < SOFFIT_CHANCE {
+                ring_bands(
+                    &mut out,
+                    &inner,
+                    SOFFIT_DEPTH_CM,
+                    top - SOFFIT_DROP_CM,
+                    top,
+                    style,
+                    &cuts,
+                );
+            } else if u < CORNICE_BELOW {
+                ring_bands(
+                    &mut out,
+                    &inner,
+                    CORNICE_CM,
+                    top - CORNICE_CM,
+                    top,
+                    style,
+                    &cuts,
+                );
+            }
+        }
+    }
+    out
+}
+
+fn floor_platforms(
+    building: &RegionBuilding,
+    manifest: &Wg3Manifest,
+    placements: &[Wg3Placement],
+) -> Vec<Wg3Solid> {
+    let mut out = Vec::new();
+    let seed = building.seed;
+    let taken: Vec<(f32, f32, f32, f32)> = placements
+        .iter()
+        .filter_map(|p| {
+            manifest
+                .pieces
+                .get(p.piece as usize)
+                .map(|piece| p.bounds(piece))
+        })
+        .collect();
+    for (n, plan) in building.storeys.iter().enumerate() {
+        let mut keep_out: Vec<super::plan::PlanRect> = building
+            .wells
+            .iter()
+            .filter(|w| w.storey_below + 1 == n || w.storey_below == n)
+            .map(|w| w.rect.shrunk(-50))
+            .collect();
+        keep_out.extend(hole_squares_above(building, n));
+        for (_, s) in plan.built() {
+            if s.is_composite()
+                || s.rise_cm != 0
+                || s.role.is_circulation()
+                || s.role == SpaceRole::Stair
+                || is_atrium(s)
+                || s.area_m2() < PLATFORM_MIN_AREA_M2
+            {
+                continue;
+            }
+            let r = s.rect;
+            let (cx, cz) = r.centre_m();
+            if taken
+                .iter()
+                .any(|&(x0, z0, x1, z1)| cx > x0 && cx < x1 && cz > z0 && cz < z1)
+            {
+                continue;
+            }
+            let mut st = super::hash::stream_at(seed, cx, cz, SALT_PLATFORM);
+            if st.next01() >= PLATFORM_CHANCE {
+                continue;
+            }
+            // Pegada a un lado sorteado, con un fondo de un tercio del lado perpendicular.
+            let side = (st.next01() * 4.0) as i32 % 4;
+            let inner = r.shrunk(WALL_T_CM);
+            let along_x = side % 2 == 0;
+            let depth = ((if along_x {
+                inner.depth_cm()
+            } else {
+                inner.width_cm()
+            }) / 3)
+                / 10
+                * 10;
+            let span = (if along_x {
+                inner.width_cm()
+            } else {
+                inner.depth_cm()
+            }) - 2 * PLATFORM_MARGIN_CM;
+            if depth < 150 || span < PLATFORM_MIN_SPAN_CM {
+                continue;
+            }
+            let foot = match side {
+                0 => super::plan::PlanRect {
+                    min_x_cm: inner.min_x_cm + PLATFORM_MARGIN_CM,
+                    min_z_cm: inner.max_z_cm - depth,
+                    max_x_cm: inner.max_x_cm - PLATFORM_MARGIN_CM,
+                    max_z_cm: inner.max_z_cm,
+                },
+                1 => super::plan::PlanRect {
+                    min_x_cm: inner.max_x_cm - depth,
+                    min_z_cm: inner.min_z_cm + PLATFORM_MARGIN_CM,
+                    max_x_cm: inner.max_x_cm,
+                    max_z_cm: inner.max_z_cm - PLATFORM_MARGIN_CM,
+                },
+                2 => super::plan::PlanRect {
+                    min_x_cm: inner.min_x_cm + PLATFORM_MARGIN_CM,
+                    min_z_cm: inner.min_z_cm,
+                    max_x_cm: inner.max_x_cm - PLATFORM_MARGIN_CM,
+                    max_z_cm: inner.min_z_cm + depth,
+                },
+                _ => super::plan::PlanRect {
+                    min_x_cm: inner.min_x_cm,
+                    min_z_cm: inner.min_z_cm + PLATFORM_MARGIN_CM,
+                    max_x_cm: inner.min_x_cm + depth,
+                    max_z_cm: inner.max_z_cm - PLATFORM_MARGIN_CM,
+                },
+            };
+            // Ni bajo el agujero propio (lo taparía: un macizo es inmune a los vanos), ni sobre
+            // pozos ni rellanos, que tienen su propia cota.
+            if (n > 0 && hole_square(&r).shrunk(-50).overlaps(&foot))
+                || keep_out.iter().any(|k| k.overlaps(&foot))
+            {
+                continue;
+            }
+            let style = style_of(s.role);
+            let (from, to, run_x) = if along_x {
+                (foot.min_x_cm, foot.max_x_cm, true)
+            } else {
+                (foot.min_z_cm, foot.max_z_cm, false)
+            };
+            let len = to - from;
+            let pieces = (len + MAX_SOLID_CM - 1) / MAX_SOLID_CM;
+            let mut cut = from;
+            for k in 1..=pieces {
+                let end = from + (len * k) / pieces;
+                let (x, z, sx, sz) = if run_x {
+                    (cut, foot.min_z_cm, end - cut, foot.depth_cm())
+                } else {
+                    (foot.min_x_cm, cut, foot.width_cm(), end - cut)
+                };
+                out.push(Wg3Solid {
+                    x_cm: x,
+                    z_cm: z,
+                    size_x_cm: sx,
+                    size_z_cm: sz,
+                    bottom_y_cm: s.floor_y_cm,
+                    top_y_cm: s.floor_y_cm + PLATFORM_H_CM,
+                    style,
+                });
+                cut = end;
+            }
+        }
+    }
+    out
+}
+
 /// ¿Este macizo es una viga de [`ceiling_beams`]? Para los tests, por la forma: cuelga
 /// `BEAM_DROP_CM` y mide `BEAM_T_CM` de ancho.
 pub(super) fn is_beam(s: &Wg3Solid) -> bool {
@@ -2441,9 +2758,17 @@ fn ceiling_beams(
             };
             let pitch = lo + (room.next01() * (hi - lo) as f32) as i32;
             let grid = room.next01() < BEAM_GRID_CHANCE;
+            // ADR-105 enm. 13 — el tercer ritmo: VIGUETAS, finas y a un metro, en un solo eje. Sorteo
+            // al final de la secuencia: las salas con vigas o casetones salen donde salían.
+            let joists = !grid && room.next01() < JOIST_CHANCE;
+            let (pitch, t, drop) = if joists {
+                (JOIST_PITCH_CM, JOIST_T_CM, JOIST_DROP_CM)
+            } else {
+                (pitch, BEAM_T_CM, BEAM_DROP_CM)
+            };
 
             let top = s.floor_y_cm + clear;
-            let bottom = top - BEAM_DROP_CM;
+            let bottom = top - drop;
             let style = style_of(s.role);
             let mut mine = cuts.clone();
             if n > 0 {
@@ -2457,9 +2782,11 @@ fn ceiling_beams(
                     continue;
                 }
                 let run_x = inner.width_cm() <= inner.depth_cm();
-                beam_rows(&mut out, &inner, run_x, pitch, bottom, top, style, &mine);
+                beam_rows(&mut out, &inner, run_x, t, pitch, bottom, top, style, &mine);
                 if grid {
-                    beam_rows(&mut out, &inner, !run_x, pitch, bottom, top, style, &mine);
+                    beam_rows(
+                        &mut out, &inner, !run_x, t, pitch, bottom, top, style, &mine,
+                    );
                 }
             }
         }
@@ -2475,6 +2802,7 @@ fn beam_rows(
     out: &mut Vec<Wg3Solid>,
     inner: &super::plan::PlanRect,
     run_x: bool,
+    t: i32,
     pitch: i32,
     bottom: i32,
     top: i32,
@@ -2501,27 +2829,29 @@ fn beam_rows(
         let strip = if run_x {
             super::plan::PlanRect {
                 min_x_cm: inner.min_x_cm,
-                min_z_cm: at - BEAM_T_CM / 2,
+                min_z_cm: at - t / 2,
                 max_x_cm: inner.max_x_cm,
-                max_z_cm: at + BEAM_T_CM / 2,
+                max_z_cm: at + t / 2,
             }
         } else {
             super::plan::PlanRect {
-                min_x_cm: at - BEAM_T_CM / 2,
+                min_x_cm: at - t / 2,
                 min_z_cm: inner.min_z_cm,
-                max_x_cm: at + BEAM_T_CM / 2,
+                max_x_cm: at + t / 2,
                 max_z_cm: inner.max_z_cm,
             }
         };
-        beam_strip(out, &strip, run_x, bottom, top, style, cuts);
+        beam_strip(out, &strip, run_x, t, bottom, top, style, cuts);
     }
 }
 
 /// Una viga recortada por lo que no puede cruzar, y partida al tope de macizo.
+#[allow(clippy::too_many_arguments)]
 fn beam_strip(
     out: &mut Vec<Wg3Solid>,
     strip: &super::plan::PlanRect,
     run_x: bool,
+    t: i32,
     bottom: i32,
     top: i32,
     style: u8,
@@ -2555,7 +2885,7 @@ fn beam_strip(
                         x_cm: at,
                         z_cm: strip.min_z_cm,
                         size_x_cm: end - at,
-                        size_z_cm: BEAM_T_CM,
+                        size_z_cm: t,
                         bottom_y_cm: bottom,
                         top_y_cm: top,
                         style,
@@ -2564,7 +2894,7 @@ fn beam_strip(
                     Wg3Solid {
                         x_cm: strip.min_x_cm,
                         z_cm: at,
-                        size_x_cm: BEAM_T_CM,
+                        size_x_cm: t,
                         size_z_cm: end - at,
                         bottom_y_cm: bottom,
                         top_y_cm: top,
