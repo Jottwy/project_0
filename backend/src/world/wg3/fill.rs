@@ -2734,3 +2734,207 @@ mod apron_tests {
         }
     }
 }
+
+/// FASE 3 — lo que hay que poder afirmar después de mover los techos: que el plan sigue siendo
+/// coherente, que la conectividad no se ha tocado y que la altura llega al cliente sin perderse.
+#[cfg(test)]
+mod ceiling_verification {
+    use super::*;
+    use crate::world::wg3::plan;
+
+    /// Doce semillas, cuatro plantas. Doce y no cuatro porque lo que puede romperse aquí depende del
+    /// sorteo, y cuatro regiones ya dejaron pasar un vano perdido en este proyecto.
+    const SEEDS: std::ops::Range<i32> = 1..13;
+
+    fn building(seed: i32, variety: f32) -> RegionBuilding {
+        plan::plan_building_with(seed, (0.0, 0.0, 150.0, 150.0), &[], 4, variety)
+    }
+
+    #[test]
+    fn the_plan_still_has_nothing_to_complain_about() {
+        for seed in SEEDS {
+            let b = building(seed, plan::CEILING_VARIETY);
+            let problems = b.problems();
+            assert!(
+                problems.is_empty(),
+                "el edificio de la semilla {seed} dejo de ser coherente: {}",
+                problems.join("; ")
+            );
+            for (n, storey) in b.storeys.iter().enumerate() {
+                let problems = storey.problems();
+                assert!(
+                    problems.is_empty(),
+                    "la planta {n} de la semilla {seed} dejo de ser coherente: {}",
+                    problems.join("; ")
+                );
+            }
+        }
+    }
+
+    /// **La conectividad no la toca el techo, y esto lo DEMUESTRA en vez de suponerlo.**
+    ///
+    /// Con la perilla encendida y apagada tienen que salir el mismo número de espacios, los mismos
+    /// enlaces uno a uno y las mismas componentes conexas. Comparar contra sí mismo es más fuerte
+    /// que exigir «una sola componente»: un mundo que se parta en dos por cualquier otra razón
+    /// daría el mismo dos a los dos lados, y eso es justo lo que aquí hay que saber.
+    #[test]
+    fn turning_the_ceilings_on_changes_no_link_and_no_component() {
+        for seed in SEEDS {
+            let on = building(seed, plan::CEILING_VARIETY);
+            let off = building(seed, 0.0);
+            assert_eq!(
+                on.storeys.len(),
+                off.storeys.len(),
+                "la semilla {seed} levanta distinto número de plantas con la perilla encendida"
+            );
+            for (n, (a, b)) in on.storeys.iter().zip(off.storeys.iter()).enumerate() {
+                assert_eq!(
+                    a.spaces.len(),
+                    b.spaces.len(),
+                    "planta {n} de la semilla {seed}: distinto número de espacios"
+                );
+                assert_eq!(
+                    a.links, b.links,
+                    "planta {n} de la semilla {seed}: los enlaces no son los mismos"
+                );
+                assert_eq!(
+                    a.components(),
+                    b.components(),
+                    "planta {n} de la semilla {seed}: distintas componentes conexas"
+                );
+                assert_eq!(
+                    a.gates, b.gates,
+                    "planta {n} de la semilla {seed}: las puertas de junta no son las mismas"
+                );
+            }
+        }
+    }
+
+    /// **La altura llega al cliente y vuelve igual.**
+    ///
+    /// Sobre los BYTES y no sobre el struct, por la misma razón que ya escribió
+    /// `the_wg3_chunk_encodes_the_keys_the_client_parser_looks_for`: lo que viaja son los bytes, y un
+    /// `#[serde(rename)]` mal puesto no cambia el struct. Y con alturas REALES sacadas de un mundo
+    /// generado, no con un 320 escrito a mano: un valor que coincide con el de siempre no distingue
+    /// «viajó» de «el parser lo saltó y cayó al de por defecto».
+    #[test]
+    fn the_wire_carries_every_ceiling_height_without_loss() {
+        use crate::ipc::{decode, encode, Wg3OpeningWire, Wg3SegmentWire};
+
+        let m = Wg3Manifest {
+            version: 1,
+            digest: String::new(),
+            pieces: Vec::new(),
+        };
+        let filled = fill_building(&building(7, plan::CEILING_VARIETY), &m);
+
+        let wire: Vec<Wg3SegmentWire> = filled
+            .segments
+            .iter()
+            .map(|s| Wg3SegmentWire {
+                x_cm: s.x_cm,
+                z_cm: s.z_cm,
+                size_x_cm: s.size_x_cm,
+                size_z_cm: s.size_z_cm,
+                floor_y_cm: s.floor_y_cm,
+                height_cm: s.height_cm,
+                style: s.style,
+                openings: s
+                    .openings
+                    .iter()
+                    .map(|o| Wg3OpeningWire {
+                        side: o.side,
+                        offset_cm: o.offset_cm,
+                        width_cm: o.width_cm,
+                    })
+                    .collect(),
+            })
+            .collect();
+
+        let mut distinct: Vec<i32> = wire.iter().map(|w| w.height_cm).collect();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert!(
+            distinct.len() >= 4,
+            "sólo {} alturas distintas en la trama: la muestra no distingue una altura que viaja \
+             de una que se pierde ({distinct:?})",
+            distinct.len()
+        );
+
+        let bytes = encode(&wire).expect("la trama de tramos tiene que codificar");
+        // `encode` antepone el prefijo de longitud de cuatro bytes y `decode` recibe el CUERPO,
+        // que es exactamente lo que hace el lector de verdad.
+        let back: Vec<Wg3SegmentWire> = decode(&bytes[4..]).expect("y tiene que volver a leerse");
+        assert_eq!(
+            wire.len(),
+            back.len(),
+            "la trama perdió tramos por el camino"
+        );
+        for (a, b) in wire.iter().zip(back.iter()) {
+            assert_eq!(
+                a.height_cm, b.height_cm,
+                "un tramo en ({}, {}) salió con {} cm de altura y volvió con {}",
+                a.x_cm, a.z_cm, a.height_cm, b.height_cm
+            );
+            assert_eq!(a, b, "y el resto del tramo tampoco sobrevivió igual");
+        }
+    }
+
+    /// El histograma de alturas sobre 200 semillas. Sin afirmar nada: es la cifra que dice si el
+    /// sesgo hacia lo bajo es el que se pidió o sólo lo parece.
+    #[test]
+    #[ignore = "sonda de medida; se pide a mano"]
+    fn probe_ceiling_histogram() {
+        use std::collections::BTreeMap;
+
+        let mut hist: BTreeMap<i32, usize> = BTreeMap::new();
+        let mut by_role: BTreeMap<&str, (usize, i64)> = BTreeMap::new();
+        let mut total = 0usize;
+
+        for seed in 1..=200 {
+            let b = building(seed, plan::CEILING_VARIETY);
+            for storey in &b.storeys {
+                for sp in &storey.spaces {
+                    if !sp.role.is_built() {
+                        continue;
+                    }
+                    // La altura que de verdad se construye, no la que se pidió: el tope de
+                    // `max_clear_cm` y el atrio mandan por encima del sorteo.
+                    let h = clear_height_cm(sp);
+                    *hist.entry(h).or_insert(0) += 1;
+                    let e = by_role.entry(sp.role.name()).or_insert((0, 0));
+                    e.0 += 1;
+                    e.1 += h as i64;
+                    total += 1;
+                }
+            }
+        }
+
+        println!("[techo] {total} espacios construidos en 200 semillas");
+        for (h, n) in &hist {
+            let pct = *n as f32 * 100.0 / total as f32;
+            let bar = "#".repeat(((pct * 1.5).round() as usize).min(90));
+            println!("[techo] {h:>4} cm  {n:>6}  {pct:>5.2}%  {bar}");
+        }
+        let mut heights: Vec<i32> = Vec::new();
+        for (h, n) in &hist {
+            for _ in 0..*n {
+                heights.push(*h);
+            }
+        }
+        let mean = heights.iter().map(|&h| h as f64).sum::<f64>() / heights.len() as f64;
+        println!(
+            "[techo] media {:.1} cm, mediana {} cm, p10 {} cm, p90 {} cm",
+            mean,
+            heights[heights.len() / 2],
+            heights[heights.len() / 10],
+            heights[heights.len() * 9 / 10]
+        );
+        for (role, (n, sum)) in &by_role {
+            println!(
+                "[techo] {role:<9} {n:>6} espacios, media {:.1} cm",
+                *sum as f64 / *n as f64
+            );
+        }
+    }
+}
