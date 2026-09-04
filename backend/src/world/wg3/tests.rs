@@ -6962,6 +6962,7 @@ fn plan_with_a_gap(blocked: bool) -> plan::RegionPlan {
             rise_step_cm: plan::STEP_RISE_CM,
             max_clear_cm: 0,
             void_above: false,
+            ceiling_clear_cm: 0,
         }
     };
 

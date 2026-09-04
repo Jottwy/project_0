@@ -87,7 +87,14 @@ pub(super) fn clear_height_cm(space: &PlannedSpace) -> i32 {
     if is_atrium(space) {
         return ATRIUM_CLEAR_CM;
     }
-    let want = clear_height_by_role(space.role);
+    // **El espacio manda sobre el papel.** `ceiling_clear_cm` a cero no es un techo de cero: es que
+    // este espacio no ha pedido nada —o que la perilla de `plan::CEILING_VARIETY` está apagada— y
+    // entonces vuelve a decidir el papel, al centímetro, igual que antes de que el campo existiera.
+    let want = if space.ceiling_clear_cm > 0 {
+        space.ceiling_clear_cm
+    } else {
+        clear_height_by_role(space.role)
+    };
     if space.max_clear_cm > 0 {
         want.min(space.max_clear_cm)
     } else {

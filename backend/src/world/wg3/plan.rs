@@ -88,6 +88,8 @@ const SALT_DOOR: u32 = 0x9A17_000A;
 const SALT_WEIRD_UP: u32 = 0x9A17_000B;
 /// ADR-120 — sal de la composición de huellas: si dispara, quién cede, y qué mordisco sale.
 const SALT_SHAPE: u32 = 0x9A17_000C;
+/// Sal de la altura de techo por espacio.
+const SALT_CEILING: u32 = 0x9A17_000D;
 
 /// ADR-120 D3 — las perillas de la GRAMÁTICA de composición.
 ///
@@ -719,6 +721,18 @@ pub struct PlannedSpace {
     ///
     /// Sólo lo pone [`cap_headroom_under`], que por definición se llama con una planta encima delante.
     pub void_above: bool,
+
+    /// **La altura libre que ESTE espacio pide, en centímetros. `0` = la de su papel.**
+    ///
+    /// Cero no es un techo de cero: es «este espacio no ha pedido nada», y entonces manda
+    /// `fill::clear_height_by_role` igual que antes de que este campo existiera. Es lo que deja la
+    /// perilla apagada devolviendo el mundo de siempre al centímetro, sin una segunda rama de código
+    /// que mantener.
+    ///
+    /// Lo pone [`assign_ceilings`], y **no lo pone el papel**: dos oficinas contiguas medían lo mismo
+    /// porque las dos eran oficinas, y una planta de oficinas era un techo plano de ciento cincuenta
+    /// metros. El tope de [`PlannedSpace::max_clear_cm`] sigue mandando por encima de esto.
+    pub ceiling_clear_cm: i32,
 }
 
 impl PlannedSpace {
@@ -1354,6 +1368,88 @@ struct Node {
 /// `gates` son las puertas de junta que ya acordó [`super::junction`] con la región vecina. Entran
 /// como restricción y no como sugerencia: son el único punto del plan que NO se decide aquí, porque
 /// ya está acordado con alguien que no puede consultarse.
+/// **LA ALTURA DE TECHO POR ESPACIO — el techo deja de ser una propiedad del PAPEL.**
+///
+/// Hasta aquí la altura libre salía entera de `fill::clear_height_by_role`: dos oficinas contiguas
+/// medían exactamente lo mismo porque las dos eran oficinas, y una planta de oficinas era un techo
+/// plano de ciento cincuenta metros. Esto la mueve al ESPACIO y la sortea por POSICIÓN (R3), así que
+/// dos vecinas se distinguen sin que nadie las coordine y la misma semilla da siempre el mismo techo.
+///
+/// **El suelo NO se mueve.** Bajar una cota es trabajo de `rise_cm` y arrastra escalones, vecinos y
+/// vanos; mover el techo no arrastra nada más que el faldón del vano.
+pub const CEILING_MIN_CM: i32 = 240;
+/// El otro extremo del rango normal.
+pub const CEILING_MAX_CM: i32 = 340;
+
+/// A qué escalón se cuantiza. Diez centímetros: por debajo la diferencia no se lee desde dentro y
+/// sólo ensucia el histograma.
+const CEILING_STEP_CM: i32 = 10;
+
+/// Exponente del sesgo, `u^k`. Con `k > 1` la masa se va al extremo BAJO, que es lo que hace que un
+/// techo alto se note: con reparto plano, «alto» es la mitad del mundo y deja de significar nada.
+const CEILING_SKEW: f32 = 2.2;
+
+/// Superficie a partir de la cual un espacio puede pedir doble altura, en m².
+pub const CEILING_TALL_AREA_M2: f32 = 200.0;
+
+/// Y con qué probabilidad la pide. Baja a propósito, por lo mismo que el sesgo.
+const CEILING_TALL_CHANCE: f32 = 0.12;
+
+/// El rango de la doble altura. El tope de [`PlannedSpace::max_clear_cm`] la recorta a 308 en cuanto
+/// hay planta encima, así que seis metros sólo salen donde de verdad no hay nada arriba.
+pub const CEILING_TALL_MIN_CM: i32 = 400;
+/// El techo del techo.
+pub const CEILING_TALL_MAX_CM: i32 = 600;
+
+/// **LA PERILLA: qué parte de los espacios sortea su propia altura.**
+///
+/// `0` la apaga entera y **el mundo vuelve a ser el de antes al centímetro** —todo espacio se queda
+/// con la altura de su papel—, que es lo que permite comparar el mundo contra sí mismo sin cambiar de
+/// rama. No es un interruptor disfrazado de flotante: los valores intermedios reparten de verdad, y
+/// el sorteo que decide va por posición como todo lo demás.
+pub const CEILING_VARIETY: f32 = 1.0;
+
+/// La altura que pide un espacio, o `0` si se queda con la de su papel.
+fn ceiling_for(seed: i32, s: &PlannedSpace, variety: f32) -> i32 {
+    // Lo que no se construye no tiene techo. Y la ESCALERA se queda fuera: sus 380 son un número
+    // medido y no un gusto —los peldaños suben mientras el techo no— y con 2,40 el último queda
+    // debajo de la losa. Ver `fill::clear_height_by_role`.
+    if variety <= 0.0 || !s.role.is_built() || s.role == SpaceRole::Stair {
+        return 0;
+    }
+    let (cx, cz) = s.rect.centre_m();
+    let mut st = hash::stream_at(seed, cx, cz, SALT_CEILING);
+    if st.next01() >= variety {
+        return 0;
+    }
+    // El sorteo de doble altura se tira SIEMPRE, quepa o no, para que la perilla del área no corra el
+    // flujo de los espacios pequeños: un mundo no puede cambiar de techos porque una sala cruce los
+    // 200 m² por un centímetro.
+    let tall = st.next01() < CEILING_TALL_CHANCE && s.area_m2() > CEILING_TALL_AREA_M2;
+    let (lo, hi) = if tall {
+        (CEILING_TALL_MIN_CM, CEILING_TALL_MAX_CM)
+    } else {
+        (CEILING_MIN_CM, CEILING_MAX_CM)
+    };
+    let u = st.next01().powf(CEILING_SKEW);
+    let raw = lo as f32 + (hi - lo) as f32 * u;
+    let stepped = (raw / CEILING_STEP_CM as f32).round() as i32 * CEILING_STEP_CM;
+    stepped.clamp(lo, hi)
+}
+
+/// Reparte la altura de techo por toda una planta.
+///
+/// **Se llama con la huella ya definitiva**, y por eso corre dos veces: al cerrar
+/// [`plan_storey_with`] —que es lo que hace que [`plan_region`] suelta también tenga techos— y otra
+/// vez al final de [`plan_building_with`], después de `compose_shapes`. Un receptor deformado crece y
+/// un donante mengua, así que el área con la que se decidió la doble altura ya no es la suya. Es
+/// idempotente: misma posición y misma área, misma respuesta.
+fn assign_ceilings(plan: &mut RegionPlan, seed: i32, variety: f32) {
+    for s in &mut plan.spaces {
+        s.ceiling_clear_cm = ceiling_for(seed, s, variety);
+    }
+}
+
 pub fn plan_region(seed: i32, bounds: (f32, f32, f32, f32), gates: &[Wg3Gate]) -> RegionPlan {
     // Una planta suelta no tiene edificio encima que le pida atrios.
     plan_storey(seed, bounds, gates, 0, true, &[])
@@ -1380,6 +1476,28 @@ pub fn plan_storey(
     base_y_cm: i32,
     may_sink: bool,
     atria_below: &[PlanRect],
+) -> RegionPlan {
+    plan_storey_with(
+        seed,
+        bounds,
+        gates,
+        base_y_cm,
+        may_sink,
+        atria_below,
+        CEILING_VARIETY,
+    )
+}
+
+/// [`plan_storey`] con la perilla de techos a la vista. Ver [`CEILING_VARIETY`].
+#[allow(clippy::too_many_arguments)]
+pub fn plan_storey_with(
+    seed: i32,
+    bounds: (f32, f32, f32, f32),
+    gates: &[Wg3Gate],
+    base_y_cm: i32,
+    may_sink: bool,
+    atria_below: &[PlanRect],
+    ceiling_variety: f32,
 ) -> RegionPlan {
     let root = PlanRect {
         min_x_cm: (bounds.0 * CM_PER_M).round() as i32,
@@ -1427,12 +1545,16 @@ pub fn plan_storey(
         planner.sink_dead_ends(&gates);
     }
 
-    RegionPlan {
+    let mut plan = RegionPlan {
         spaces: planner.spaces,
         links: planner.links,
         gates,
         bounds_cm: Some(root),
-    }
+    };
+    // Al final: hasta aquí la huella todavía se movía —vacío, atrios, hundidos— y el área es lo que
+    // decide si un espacio puede pedir doble altura.
+    assign_ceilings(&mut plan, seed, ceiling_variety);
+    plan
 }
 
 /// El hueco por el que se sube de una planta a la siguiente (ADR-102 D1 y D4).
@@ -1573,9 +1695,28 @@ pub fn plan_building(
     gates: &[Wg3Gate],
     storeys: usize,
 ) -> RegionBuilding {
+    plan_building_with(seed, bounds, gates, storeys, CEILING_VARIETY)
+}
+
+/// [`plan_building`] con la perilla de techos a la vista. Ver [`CEILING_VARIETY`].
+pub fn plan_building_with(
+    seed: i32,
+    bounds: (f32, f32, f32, f32),
+    gates: &[Wg3Gate],
+    storeys: usize,
+    ceiling_variety: f32,
+) -> RegionBuilding {
     // La planta baja SÍ se hunde: debajo de ella no hay nada que perforar.
     // La planta baja no tiene nada debajo, así que no hay atrios que abrirle a nadie.
-    let mut out = vec![plan_storey(seed, bounds, gates, 0, true, &[])];
+    let mut out = vec![plan_storey_with(
+        seed,
+        bounds,
+        gates,
+        0,
+        true,
+        &[],
+        ceiling_variety,
+    )];
     let mut wells = Vec::new();
 
     for n in 1..storeys.max(1) {
@@ -1602,13 +1743,14 @@ pub fn plan_building(
             .filter(|s| s.role == SpaceRole::Hall)
             .map(|s| s.rect)
             .collect();
-        let plan = plan_storey(
+        let plan = plan_storey_with(
             storey_seed(seed, n),
             up,
             &[],
             n as i32 * STOREY_HEIGHT_CM,
             false,
             &atria,
+            ceiling_variety,
         );
         // **EL EDIFICIO SUBE SÓLO HASTA DONDE SE PUEDE SUBIR.** El hueco pide que COINCIDAN dos
         // geometrías planificadas por separado —un espacio de abajo que quepa entero dentro de uno
@@ -1651,13 +1793,14 @@ pub fn plan_building(
         // así que reintentar es legal.
         if dug.is_empty() {
             if let Some(tb) = tower_bounds(&out[n - 1]) {
-                let retry = plan_storey(
+                let retry = plan_storey_with(
                     storey_seed(seed, n),
                     tb,
                     &[],
                     n as i32 * STOREY_HEIGHT_CM,
                     false,
                     &atria,
+                    ceiling_variety,
                 );
                 if !retry.links.is_empty() {
                     dug = dig_wells(&mut out[n - 1], &retry, n - 1, seed, &landings);
@@ -1763,6 +1906,11 @@ pub fn plan_building(
             storey_gates.0,
             storey_gates.1,
         );
+        // **Y los techos se reparten OTRA VEZ, con la huella ya deformada.** `compose_shapes` mueve
+        // área de un espacio a otro y la escalera de `dig_wells` nació heredando el techo de la sala
+        // que partió: sin este segundo reparto habría salas de 90 m² con seis metros de techo porque
+        // ANTES tenían 210, y huecos de escalera con el techo de una oficina.
+        assign_ceilings(storey, storey_seed, ceiling_variety);
     }
 
     // **Y el tope de altura se calcula DESPUÉS de deformar**, no dentro del bucle. Un receptor crece
@@ -3581,6 +3729,8 @@ impl Planner {
             max_clear_cm: 0,
             // Y esto sólo lo sabe el edificio: una planta sola no puede saber si tiene otra encima.
             void_above: false,
+            // La sortea `assign_ceilings` al cerrar la planta, con la huella ya definitiva.
+            ceiling_clear_cm: 0,
         });
         self.spaces.len() - 1
     }
@@ -4829,5 +4979,141 @@ impl UnionFind {
         if ra != rb {
             self.parent[rb] = ra;
         }
+    }
+}
+
+/// Los techos por espacio: que sean deterministas, que respeten el rango y que no salgan todos
+/// iguales.
+#[cfg(test)]
+mod ceiling_tests {
+    use super::*;
+
+    /// Una región entera de cuatro plantas, sin puertas de junta: lo que se mide aquí es el reparto
+    /// de alturas, y una junta no lo cambia.
+    fn building(seed: i32, variety: f32) -> RegionBuilding {
+        plan_building_with(seed, (0.0, 0.0, 150.0, 150.0), &[], 4, variety)
+    }
+
+    /// Todas las alturas pedidas de un edificio, en orden de planta y de espacio.
+    fn ceilings(b: &RegionBuilding) -> Vec<i32> {
+        b.storeys
+            .iter()
+            .flat_map(|p| p.spaces.iter().map(|s| s.ceiling_clear_cm))
+            .collect()
+    }
+
+    #[test]
+    fn the_same_seed_always_asks_for_the_same_ceilings() {
+        for seed in [1, 7, 42, 1009] {
+            assert_eq!(
+                ceilings(&building(seed, CEILING_VARIETY)),
+                ceilings(&building(seed, CEILING_VARIETY)),
+                "la semilla {seed} pidió dos juegos de techos distintos"
+            );
+        }
+    }
+
+    #[test]
+    fn the_knob_at_zero_gives_back_the_world_of_before() {
+        for seed in [1, 7, 42, 1009] {
+            let b = building(seed, 0.0);
+            assert!(
+                ceilings(&b).iter().all(|&h| h == 0),
+                "con la perilla apagada algún espacio de la semilla {seed} sigue pidiendo techo"
+            );
+        }
+    }
+
+    #[test]
+    fn every_ceiling_asked_for_is_inside_its_range() {
+        for seed in 1..24 {
+            let b = building(seed, CEILING_VARIETY);
+            for (n, storey) in b.storeys.iter().enumerate() {
+                for s in &storey.spaces {
+                    let h = s.ceiling_clear_cm;
+                    if h == 0 {
+                        continue;
+                    }
+                    assert!(
+                        s.role.is_built() && s.role != SpaceRole::Stair,
+                        "un {} de la planta {n} (semilla {seed}) pidió techo: {h} cm",
+                        s.role.name()
+                    );
+                    let normal = (CEILING_MIN_CM..=CEILING_MAX_CM).contains(&h);
+                    let tall = (CEILING_TALL_MIN_CM..=CEILING_TALL_MAX_CM).contains(&h);
+                    assert!(
+                        normal || tall,
+                        "techo de {h} cm fuera de los dos rangos (semilla {seed}, planta {n})"
+                    );
+                    // La doble altura es de las salas GRANDES, y esa es la mitad de la regla: sin
+                    // esto el rango alto se colaría en un trastero de doce metros.
+                    assert!(
+                        !tall || s.area_m2() > CEILING_TALL_AREA_M2,
+                        "un espacio de {:.0} m² pidió {h} cm (semilla {seed}, planta {n})",
+                        s.area_m2()
+                    );
+                }
+            }
+        }
+    }
+
+    /// **Ni plano ni uniforme**, que son los dos fallos que dejan verde un histograma roto: uno
+    /// devuelve siempre el mismo número, el otro reparte por igual y hace que «alto» no signifique
+    /// nada.
+    #[test]
+    fn the_spread_of_ceilings_is_neither_flat_nor_uniform() {
+        let mut all: Vec<i32> = Vec::new();
+        for seed in 1..40 {
+            all.extend(
+                ceilings(&building(seed, CEILING_VARIETY))
+                    .into_iter()
+                    .filter(|&h| h > 0),
+            );
+        }
+        assert!(all.len() > 200, "muestra corta: {} techos", all.len());
+
+        let mut distinct: Vec<i32> = all.clone();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert!(
+            distinct.len() >= 6,
+            "sólo {} alturas distintas en {} espacios: {distinct:?}",
+            distinct.len(),
+            all.len()
+        );
+
+        let top = distinct
+            .iter()
+            .map(|&h| all.iter().filter(|&&x| x == h).count())
+            .max()
+            .unwrap_or(0);
+        assert!(
+            top * 2 < all.len(),
+            "una sola altura se lleva {top} de {} espacios",
+            all.len()
+        );
+
+        // Y el sesgo, que es lo que se pidió: la mitad baja del rango normal pesa más que la alta.
+        let mid = (CEILING_MIN_CM + CEILING_MAX_CM) / 2;
+        let low = all
+            .iter()
+            .filter(|&&h| h <= mid && h <= CEILING_MAX_CM)
+            .count();
+        let high = all
+            .iter()
+            .filter(|&&h| h > mid && h <= CEILING_MAX_CM)
+            .count();
+        assert!(
+            low > high,
+            "el reparto no está sesgado hacia lo bajo: {low} por debajo de {mid} cm contra {high} por encima"
+        );
+
+        // Y la doble altura es RARA. Si fuera la norma dejaría de leerse como excepción.
+        let tall = all.iter().filter(|&&h| h >= CEILING_TALL_MIN_CM).count();
+        assert!(
+            tall * 10 < all.len(),
+            "la doble altura se lleva {tall} de {} espacios",
+            all.len()
+        );
     }
 }
