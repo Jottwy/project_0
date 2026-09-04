@@ -172,14 +172,23 @@ namespace BackroomsSurvival.Tests.EditMode
                 // arranque: la puerta queda abierta bajo él.
                 Vector3[] verts = mesh.vertices;
                 float lowestAtCentre = float.MaxValue, lowestAnywhere = float.MaxValue;
+                float lowestLeft = float.MaxValue, lowestRight = float.MaxValue;
                 for (int i = 0; i < verts.Length; i++)
                 {
                     Vector3 w = go.transform.TransformPoint(verts[i]);
                     lowestAnywhere = Mathf.Min(lowestAnywhere, w.y);
                     if (Mathf.Abs(w.x - 10f) < 0.01f) lowestAtCentre = Mathf.Min(lowestAtCentre, w.y);
+                    // Un tramo hacia dentro de cada jamba (cuerda 1,2 en 16 tramos = 7,5 cm).
+                    if (Mathf.Abs(w.x - 9.475f) < 0.01f) lowestLeft = Mathf.Min(lowestLeft, w.y);
+                    if (Mathf.Abs(w.x - 10.525f) < 0.01f) lowestRight = Mathf.Min(lowestRight, w.y);
                 }
                 Assert.AreEqual(1.9f, lowestAnywhere, 0.01f, "el arco baja por debajo del arranque");
                 Assert.AreEqual(2.3f, lowestAtCentre, 0.01f, "la clave no está a 2,30 en el centro de la cuerda");
+                // SIMÉTRICO: las dos jambas arrancan igual. Un `Clamp01` sobre `u / r` aplanaba la
+                // mitad izquierda a la clave y el arco salía con una jamba cuadrada.
+                Assert.AreEqual(lowestRight, lowestLeft, 0.005f,
+                    $"arco asimétrico: jamba izquierda a {lowestLeft}, derecha a {lowestRight}");
+                Assert.Less(lowestLeft, 2.1f, "cerca de la jamba el intradós tiene que estar cerca del arranque");
 
                 var mc = go.GetComponent<MeshCollider>();
                 Assert.IsNotNull(mc);

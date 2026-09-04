@@ -251,7 +251,9 @@ namespace BackroomsSurvival.WorldGen3
             for (int i = 0; i <= N; i++)
             {
                 float u = -r + 2f * r * i / N;
-                float k = Mathf.Clamp01(u / r);
+                // |u|: la elipse es simétrica. Con `Clamp01(u / r)` la mitad negativa de la cuerda
+                // se aplanaba a la clave y el arco salía con una jamba cuadrada (captura 14:47).
+                float k = Mathf.Clamp01(Mathf.Abs(u) / r);
                 float y = -hy + rise * Mathf.Sqrt(Mathf.Max(0f, 1f - k * k));
                 cu[i] = u;
                 cy[i] = y;
