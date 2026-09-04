@@ -13220,3 +13220,52 @@ región (1,−1)). Ninguna forma del sistema mide 50 o más de fondo con 25 de a
 - 148 hiladas de arcada y bóveda en 27 regiones. Barrido sin cambio: mancha mayor 99,5 %, 1,4
   islas, nav 100 %, 117 544 cotas (cuelgan por encima de 2,50: cero coste de suelo).
 - Sin cambio de wire (55), sin tocar el cliente.
+
+---
+
+## ADR-105 — Enmienda 12: rejillas, hornacinas, ventanas en serie y parteluz (2026-09-04) — ACEPTADA (implementada y medida)
+
+### Contexto
+
+Joel: «rejillas… huecos en las paredes». Puntos 9, 10 y 11 del nivel 1: cuatro cosas sobre las
+paredes ciegas (enm. 6) y las bocas anchas, todas sin wire.
+
+### D1 — Ventanas en serie
+
+`WINDOW_SERIES_CHANCE` 0,40: la ventana de la enm. 6 repetida a paso fijo (ancho + 100) hasta
+`WINDOW_SERIES_MAX` (4) veces, las que quepan en el solape. La fila de ventanas de oficina a un pasillo.
+
+### D2 — La rejilla es pared para el ráster y ventana para el ojo
+
+`GRILLE_CHANCE` 0,35: barrotes de `GRILLE_BAR_CM` (8) cada `GRILLE_PITCH_CM` (25), del alféizar al
+dintel, cubriendo las dos paredes (macizos). Cada barrote maciza su celda, así que en el servidor una
+ventana con reja es pared —no se pasa, no se ve— y en el cliente se ve a través: «se ve y no se pasa»
+por el otro camino que la ventana lisa. `windows_are_seen_through_and_not_walked_through` lo sabe: a
+las enrejadas no les exige el ráster abierto a la altura de los ojos, y las cuenta.
+
+### D3 — La hornacina no atraviesa
+
+`NICHE_CHANCE` 0,30: nicho de `NICHE_W_CM` (60) × 120 (de 60 a 180) y `NICHE_DEPTH_CM` (10) de fondo
+en la pared de UNO de los dos vecinos, desde su cara interior. Quedan cinco centímetros de muro, más
+que el `MinSliver` del cliente. En el servidor una caja de diez casi nunca contiene el centro de una
+celda; cuando lo contiene abre una banda de 60 a 180 que no es paso (120 < 180).
+
+### D4 — El parteluz parte una boca ancha en dos puertas
+
+`MULLION_CHANCE` 0,40 en bocas ≥ `MULLION_MIN_WIDTH_CM` (400) sin arco: un pilar de `MULLION_CM`
+(35) en el centro, de suelo al techo más bajo, cubriendo las dos paredes. Dos puertas de ~2,30.
+Treinta y cinco y no 30: ésa es la forma de una división y el test la adoptaría.
+
+### D5 — Un tropiezo de rustdoc que vale como regla
+
+Las constantes nuevas se insertaron ENTRE el doc de `blind_wall_openings` y la función; el doc
+(que termina en lista) quedó pegado a la primera constante y clippy lo rechazó («doc list item
+without indentation»). Al insertar antes de una función, insertar antes de su doc.
+
+### Verificaciones
+
+- `cargo test --release --bin backrooms_server world::wg3` **151/151**; clippy y fmt limpios.
+- Cuatro regiones de referencia, sobre el ráster servido: **80 ventanas (26 con rejilla) y 47
+  rendijas**; todas bloquean un cuerpo de pie.
+- Barrido de 27 regiones sin cambio: mancha mayor 99,5 %, 1,4 islas, nav 100 %, 117 530 cotas.
+- Sin cambio de wire (55), sin tocar el cliente.
