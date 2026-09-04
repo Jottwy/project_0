@@ -13324,3 +13324,176 @@ enm. 13 tarimas, descuelgue, cornisa y viguetas. Todo sobre `fill.rs`, wire 55 i
 tocar. Barrido de 27 regiones del principio al final del día: mancha mayor 99,5 → 99,5 %, islas 1,4 →
 1,4, nav 100 %, cotas pisables 117 615 → 117 532 (−0,07 %). Lo que queda pendiente de Joel: ADR-121 y
 ADR-122 (aprobados, sin código) y la anti-enfilada de puertas (enm. 7, último apartado).
+
+---
+
+## ADR-105 — Enmienda 14: zonas con carácter, el campo de densidad decide qué gramática manda (2026-09-04) — ACEPTADA (implementada y medida)
+
+### Contexto
+
+Joel, tras ver el visor de planta: «más uniforme, más dinámico, menos repetitivo… zonas abiertas como
+ahora pero zonas más laberínticas, más Level 0». Hasta aquí cada variación (enm. 4–13) tiraba su dado
+por sala con la misma probabilidad en todo el mundo: la misma mezcla en todas partes, que es
+exactamente lo repetitivo. El campo de densidad (ADR-118 D4) es función pura de la posición, con
+grano de sala grande y tramos de ~22 m andando, y hasta hoy sólo lo leían los pilares.
+
+### D1 — Cinco caracteres, una tabla, todas las probabilidades
+
+`fill::Character { Open, Office, Hall, Maze, Weird }` por el valor crudo del campo con umbrales
+propios (30 / 25 / 17 / 20 / 8 %; los de `class_at` reparten ambientación, no arquitectura), y
+`KNOBS`: una fila por carácter con TODAS las perillas del relleno (pilares y bosque, divisiones,
+peine, laberinto de rejilla, cuarto, perfil colgado, vigas, viguetas, pilastras, ventanas, serie,
+rejilla, rendija, hornacina, arcada, bóveda, descuelgue, cornisa, tarima, tope de techo). Una sala es
+de UN carácter entero, por el centro de su envolvente.
+
+### D2 — El tope de techo lo pone el PLAN, con la semilla del MUNDO
+
+2,40 en laberinto, 2,00 en lo raro (`plan::cap_ceilings_by_character`). En el plan porque el techo es
+una decisión del plan y el relleno la lee por `ceiling_clear_cm`. **Con la semilla del mundo**: el
+carácter es un campo de la posición y el relleno lo consulta con `building.seed`; con la semilla de
+planta, plan y relleno leían dos caracteres en la misma sala (falló en la planta 1). Se apaga con
+`CEILING_VARIETY` a cero, como todo lo de techos. Dos metros es el mínimo sin agacharse (ADR-123).
+
+### D3 — Dos colisiones que la zonificación destapó
+
+`OPENING_JAMB_CM` 60 → 180: la puerta de la pared perpendicular excavaba el antepecho de una ventana
+junto al rincón. Y `on_wall_carve`: ninguna división, peine, cuarto ni pilastra nace sobre una
+ventana, rendija u hornacina (un espolón moría en la pared justo donde había una ventana y la tapaba).
+
+### D4 — La medida, y lo que dice de verdad
+
+`probe_character_mix`, 3 semillas × 9 regiones. Macizos por espacio, antes → después: abierto
+6,5 → 4,3 · oficina 6,5 → 6,5 · nave 7,0 → 7,6 · laberinto 6,5 → 1,8 (→ 5,7 con la enm. 15) ·
+raro 9,7 → 3,4. **Antes todo era lo mismo en todas partes; ahora cada zona es una cosa.** La
+repetición LOCAL (vecinos con la misma firma de relleno) sube de 5,7 % a 9,6 %, a propósito: los
+vecinos de una zona se parecen entre sí. El «50 % menos repetitivo» de Joel es la homogeneidad
+GLOBAL, y ésa es la que cae.
+
+### Verificaciones
+
+- `cargo test --release --bin backrooms_server world::wg3` **152/152**; clippy y fmt limpios.
+- Barrido de 27 regiones: mancha mayor 99,6 %, 1,2 islas, nav 100 %, 118 010 cotas.
+- Sin cambio de wire (55), sin tocar el cliente.
+
+---
+
+## ADR-105 — Enmienda 15: el laberinto de rejilla (2026-09-04) — ACEPTADA (implementada y medida)
+
+### Contexto
+
+El peine (enm. 9) es una S. Joel pide «muchas más zonas laberínticas… rellenar algunas zonas con
+muros que hagan parecer más laberinto todo». Esto es un laberinto.
+
+### D1 — Árbol de expansión: la conectividad va por construcción
+
+Rejilla de celdas de `GRID_MAZE_CELL_CM` (250) dentro de la sala, anillo de `GRID_MAZE_RING_CM`
+(100) alrededor donde caen las puertas, búsqueda en profundidad con retroceso sorteada por posición
+(`SALT_GRID_MAZE`) y un tabique de 30 en cada arista que el árbol no abre; borde exterior cerrado
+salvo `GRID_MAZE_ENTRANCES` (2). Un árbol de expansión une todas las celdas sin ciclos: dentro no hay
+islas posibles y sí callejones por todas partes. Cada tabique pasa por las mismas exclusiones que una
+división (`blocked_foot`); uno bloqueado se pierde solo él.
+
+### D2 — Dónde, y desde qué tamaño
+
+Por carácter (`knobs.grid_maze`): laberinto 0,75, raro 0,35, oficina 0,05, nave y abierto 0. Mínimo
+`GRID_MAZE_MIN_AREA_M2` 55: con 100 m² y anillo de 150, el 47 % de las salas de zona laberinto se
+quedaban vacías (son pequeñas). Exclusivo con el resto de la gramática de la sala, como el peine.
+
+### Verificaciones
+
+- `cargo test --release --bin backrooms_server world::wg3` **152/152**; clippy y fmt limpios.
+- Divisiones en 3 × 9 regiones: 1 028 → 3 729; laberinto 1,8 → 5,7 macizos por espacio.
+- Barrido de 27 regiones: mancha mayor 99,6 %, 1,3 islas, nav 100 %, 117 230 cotas (los tabiques
+  cuestan un 0,7 % de suelo).
+- Sin cambio de wire (55), sin tocar el cliente.
+
+---
+
+## ADR-124 — Menos pasillos, más largos: tres intentos medidos, ninguno se queda, y por qué (2026-09-04) — ACEPTADA (como registro; el código está revertido)
+
+### Contexto
+
+Joel: «menos pasillos pero más largos… que se encuentren caminos». Antes: 28,1 espacios de circulación
+por región, 50,5 m de largo medio, 24,6 cruces (enlaces corredor–corredor) por región.
+
+### D1 — `CORRIDOR_DEPTH` 3 → 2: NO se sostiene
+
+16,6 pasillos por región y 53,6 m de largo medio —lo pedido—, pero: 6 de 300 regiones rotas (cinco
+por enlaces del plan que el enrutador no construye, una por un tramo de 2 540 cm sobre el tope de
+2 500), plantas 3,2 → 2,9, y cruces 24,6 → 10,0, lo contrario de «que se encuentren caminos».
+
+### D2 — El tercer nivel tallando banda la mitad de las veces: TAMPOCO
+
+21,4 pasillos, 53,0 m, 16,3 cruces, plantas 3,0. Y 1 de 300 regiones rota por el mismo enlace sin
+construir. El tercer nivel de banda es lo que da acceso a las salas que no tocan la espina; cuando
+falta, el enrutador tiene que unir espacios que no se tocan y hoy falla en uno de cada trescientos.
+**Quitar pasillos pide reescribir el enrutador, no una constante.**
+
+### D3 — Más anillos (`RING_CHANCE` 0,30 → 0,45): limpio en el barrido, y aun así revertido
+
+210 enlaces por región contra 190, mancha mayor 99,8 %, 1,0 islas, nav 100 %: el barrido no se
+queja. Pero el plan cambia bajo los pozos y los agujeros de forjado de las cuatro regiones de
+referencia caen de 8 a 5, por debajo del listón de `a_hole_drops_you_a_whole_storey`, que Joel
+calibró. No se cuela un cambio de reparto vertical por debajo de un test: los anillos van con el
+enrutador, en la misma sesión, con el listón revisado a la vista.
+
+### D4 — Lo que queda escrito como listón para esa sesión
+
+Antes de tocar nada: 28,1 pasillos por región, 50,5 m de largo medio, 24,6 cruces, 3,2 plantas,
+8 agujeros de referencia, 0 de 300 regiones rotas. El objetivo de Joel es la mitad de pasillos y el
+doble de largo con los cruces intactos; el enrutador (`route.rs`) tiene que unir espacios que no se
+tocan sin fallar en uno de cada trescientos, y el listón de agujeros tiene que dejar de depender de
+cuatro regiones de una semilla. Sonda: `probe_character_mix` imprime `[pasillos]`.
+
+### Verificaciones
+
+- Con el código revertido la suite vuelve a **152/152** y el barrido a mancha mayor 99,6 %, 1,3 islas,
+  nav 100 %, 8 agujeros de referencia. La sonda de pasillos queda en el repo.
+- Sin cambio de wire (55), sin tocar el cliente.
+
+---
+
+## ADR-123 — Agacharse y conductos: techos por debajo del cuerpo (2026-09-04) — PROPUESTA (pendiente de aprobación de Joel)
+
+### Contexto
+
+Joel: «alguna zona donde los techos bajen a un metro o menos, como para simular que estás en un
+conducto». Hoy el cuerpo mide `PLAYER_BODY_M` 1,80 en el servidor (`blocked_standing_at`), la
+navegación exige `BODY_M` de hueco por columna (`headroom_above_floor`), y el cliente lleva un
+`CharacterController` de altura fija. **Un techo por debajo de 1,80 es pared para todos**, jugador y
+criaturas. Con la enm. 14 el tope más bajo es 2,00 (zona rara); por debajo no hay conducto que valga
+sin cambiar el modelo de movimiento.
+
+### D1 — Un estado de cuerpo AGACHADO, con altura propia, y viaja en los bits libres de pose
+
+- Altura de cuerpo `PLAYER_CROUCH_M` 1,00 (y ojos a 0,85). El servidor resuelve el movimiento con la
+  altura del ESTADO, no con la constante: `resolve_move` recibe la altura y `blocked_standing_at` la
+  usa. Levantarse sólo se permite si `headroom_above_floor ≥ 1,80` en la columna.
+- El estado va en un bit libre de `buttons` (ADR-044 dejó bits sin usar): sin campo nuevo, sin bump
+  de wire, sin tocar el esquema. El cliente lo manda; el servidor manda (autoridad: si el cliente dice
+  «de pie» bajo un conducto, el servidor lo deja agachado).
+- Cliente: `CharacterController.height` y centro conmutados; cámara a 0,85; velocidad × 0,55.
+
+### D2 — El conducto es un SEGMENTO con altura libre de 1,00–1,20, y se decide en el plan
+
+Un tramo generado ya lleva `height_cm` por tramo (ADR-098). El conducto es un corredor de carácter
+`Weird` (o un ramal ciego) con `ceiling_clear_cm` 100–120 y ancho 100–150, tallado por el plan con su
+propio papel `SpaceRole::Duct` (nuevo, sin wire: el `style` lo viste). Conecta dos espacios que ya
+estaban conectados por otro camino (nunca es el único paso: regla de conectividad de ADR-118).
+
+### D3 — Las criaturas NO entran, y es una decisión de juego
+
+`wg3::nav::floor_at` sigue exigiendo `BODY_M`: el conducto es refugio. El robapieles y los facelings
+se paran en la boca. Es lo que hace que agacharse signifique algo. Si algún día una criatura repta,
+es otro ADR.
+
+### D4 — Lo que NO decide este ADR
+
+Ni tuberías ni rejillas de suelo ni sonido de conducto; sólo el cuerpo, el papel y la altura.
+
+### Verificaciones (al implementar)
+
+- Test de movimiento: un cuerpo de pie no entra, agachado sí; no se levanta bajo el conducto.
+- `validate_sweep`: todo conducto tiene los dos extremos en la mancha mayor y ningún espacio depende
+  de él para alcanzarse.
+- Playtest en `WorldGen3Live`: entrar, no poder levantarse, salir; un faceling se para en la boca.
