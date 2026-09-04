@@ -279,6 +279,10 @@ pub fn fill_building(building: &RegionBuilding, manifest: &Wg3Manifest) -> Fille
     out.solids
         .extend(interior_partitions(building, manifest, &placed, &pillars));
     out.solids.extend(pillars);
+    // ADR-105 enm. 5 — el relieve del techo. Cuelga de la losa, así que no esquiva nada de lo de
+    // abajo: sólo pozos y agujeros, que son lo único que atraviesa el techo.
+    out.solids
+        .extend(ceiling_beams(building, manifest, &placed));
     out
 }
 
@@ -1503,6 +1507,259 @@ fn interior_partitions(
         }
     }
     out
+}
+
+/// Ancho de una viga, en centímetros. Ni 15 (faldón), ni 20 (pretil), ni 30 (división): los tests
+/// distinguen los macizos por su forma y una viga tiene que tener la suya.
+const BEAM_T_CM: i32 = 40;
+/// Cuánto cuelga una viga por debajo de la losa de techo.
+const BEAM_DROP_CM: i32 = 40;
+/// Altura libre mínima del espacio para que lleve vigas. Con 3,00 quedan 2,60 bajo la viga; un
+/// servicio de 2,80 con vigas se leería como un túnel.
+const BEAM_MIN_CLEAR_CM: i32 = 300;
+/// Superficie mínima para que un espacio lleve vigas: por debajo, una viga lo parte en dos techos.
+const BEAM_MIN_AREA_M2: f32 = 40.0;
+/// Qué proporción de los espacios que CABEN llevan vigas. No todos, por lo mismo que los pilares:
+/// un techo liso al lado de uno con vigas es lo que hace que el segundo signifique algo.
+const BEAM_ROOM_CHANCE: f32 = 0.55;
+/// De los que llevan vigas, cuántos las llevan en los DOS ejes: casetones.
+const BEAM_GRID_CHANCE: f32 = 0.30;
+/// Paso entre vigas, mínimo y máximo, sorteado por sala.
+const BEAM_PITCH_CM: (i32, i32) = (350, 500);
+/// Y en zona DENSA o ANÓMALA del campo, más apretado.
+const BEAM_PITCH_DENSE_CM: (i32, i32) = (250, 350);
+/// Un trozo de viga por debajo de esto se tira: es un tocón, no una viga.
+const BEAM_MIN_LEN_CM: i32 = 100;
+/// Sal del sorteo de vigas de una SALA.
+const SALT_BEAM_ROOM: u32 = 0xB1_11_A0_03;
+
+/// ¿Este macizo es una viga de [`ceiling_beams`]? Para los tests, por la forma: cuelga
+/// `BEAM_DROP_CM` y mide `BEAM_T_CM` de ancho.
+pub(super) fn is_beam(s: &Wg3Solid) -> bool {
+    s.top_y_cm - s.bottom_y_cm == BEAM_DROP_CM && s.size_x_cm.min(s.size_z_cm) == BEAM_T_CM
+}
+
+/// ADR-105 enmienda 5 — **el RELIEVE DEL TECHO: vigas colgadas del forjado.**
+///
+/// Un techo plano a altura constante es, con el eje único, el delator más fuerte de que el mundo es
+/// una planta extruida. `height_cm` ya varía por espacio (2026-09-04), pero DENTRO del espacio el
+/// techo sigue siendo una losa lisa. Una viga es un macizo que cuelga de la losa: no toca el suelo,
+/// el ráster mide hueco libre por columna (`headroom_above_floor`) y un cuerpo de 1,80 pasa bajo
+/// 2,60 sin enterarse. Lo que cambia es la vista, y la cambia con el ritmo que los plafones
+/// deberían dar y no dan (R32).
+///
+/// Dos ritmos y un solo caso: vigas cruzando el eje CORTO de cada parte, o en los dos ejes
+/// (casetones). El paso se sortea por sala y el campo de densidad lo aprieta en zona densa.
+///
+/// # Dónde NO va una viga
+///
+/// - Bajo un techo de menos de 3 m, ni en un atrio (su techo es el de dos plantas), ni en una
+///   escalera o un hundido.
+/// - En un espacio resuelto con una pieza del catálogo: su techo es el que horneó quien la dibujó.
+/// - Cruzando la boca de un pozo que ARRANCA en esta planta —cerraría la subida— ni bajo un
+///   candidato a agujero de forjado, propio o de la planta de arriba (enm. 4 D5): ahí se RECORTA
+///   el tramo, no se pierde la viga.
+fn ceiling_beams(
+    building: &RegionBuilding,
+    manifest: &Wg3Manifest,
+    placements: &[Wg3Placement],
+) -> Vec<Wg3Solid> {
+    let mut out = Vec::new();
+    let seed = building.seed;
+    let taken: Vec<(f32, f32, f32, f32)> = placements
+        .iter()
+        .filter_map(|p| {
+            manifest
+                .pieces
+                .get(p.piece as usize)
+                .map(|piece| p.bounds(piece))
+        })
+        .collect();
+
+    for (n, plan) in building.storeys.iter().enumerate() {
+        let mut cuts: Vec<super::plan::PlanRect> = building
+            .wells
+            .iter()
+            .filter(|w| w.storey_below == n)
+            .map(|w| w.rect.shrunk(-50))
+            .collect();
+        cuts.extend(hole_squares_above(building, n));
+
+        for (_, s) in plan.built() {
+            if s.rise_cm != 0 || s.role == SpaceRole::Stair || is_atrium(s) {
+                continue;
+            }
+            let clear = clear_height_cm(s);
+            if clear < BEAM_MIN_CLEAR_CM || s.area_m2() < BEAM_MIN_AREA_M2 {
+                continue;
+            }
+            let (cx, cz) = s.rect.centre_m();
+            if taken
+                .iter()
+                .any(|&(x0, z0, x1, z1)| cx > x0 && cx < x1 && cz > z0 && cz < z1)
+            {
+                continue;
+            }
+            let mut room = super::hash::stream_at(seed, cx, cz, SALT_BEAM_ROOM);
+            if room.next01() >= BEAM_ROOM_CHANCE {
+                continue;
+            }
+            let dense = matches!(
+                super::density::class_at(seed, cx, cz),
+                super::density::DENSITY_DENSE | super::density::DENSITY_ANOMALOUS
+            );
+            let (lo, hi) = if dense {
+                BEAM_PITCH_DENSE_CM
+            } else {
+                BEAM_PITCH_CM
+            };
+            let pitch = lo + (room.next01() * (hi - lo) as f32) as i32;
+            let grid = room.next01() < BEAM_GRID_CHANCE;
+
+            let top = s.floor_y_cm + clear;
+            let bottom = top - BEAM_DROP_CM;
+            let style = style_of(s.role);
+            let mut mine = cuts.clone();
+            if n > 0 {
+                mine.push(hole_square(&s.rect).shrunk(-50));
+            }
+            for part in s.parts() {
+                // De pared a pared: la viga arranca en la cara interior del muro, no en la línea
+                // del plan, o asomaría medio grosor dentro de la sala de al lado.
+                let inner = part.shrunk(WALL_T_CM);
+                if inner.width_cm() <= 0 || inner.depth_cm() <= 0 {
+                    continue;
+                }
+                let run_x = inner.width_cm() <= inner.depth_cm();
+                beam_rows(&mut out, &inner, run_x, pitch, bottom, top, style, &mine);
+                if grid {
+                    beam_rows(&mut out, &inner, !run_x, pitch, bottom, top, style, &mine);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Las vigas de una parte en un eje: `run_x` es que corren a lo largo de X y se reparten a lo
+/// largo de Z. Repartidas a partes iguales como los pilares (enm. 2 D3): se elige cuántos vanos
+/// caben y el paso se ajusta, así que la última queda a la misma distancia del muro que la primera.
+#[allow(clippy::too_many_arguments)]
+fn beam_rows(
+    out: &mut Vec<Wg3Solid>,
+    inner: &super::plan::PlanRect,
+    run_x: bool,
+    pitch: i32,
+    bottom: i32,
+    top: i32,
+    style: u8,
+    cuts: &[super::plan::PlanRect],
+) {
+    let long = if run_x {
+        inner.depth_cm()
+    } else {
+        inner.width_cm()
+    };
+    let bays = ((long as f32 / pitch as f32).round() as i32).max(1);
+    // Una viga sola en mitad del techo no es un ritmo: son dos vanos o nada.
+    if bays < 2 {
+        return;
+    }
+    let step = long / bays;
+    for k in 1..bays {
+        let at = if run_x {
+            inner.min_z_cm + k * step
+        } else {
+            inner.min_x_cm + k * step
+        };
+        let strip = if run_x {
+            super::plan::PlanRect {
+                min_x_cm: inner.min_x_cm,
+                min_z_cm: at - BEAM_T_CM / 2,
+                max_x_cm: inner.max_x_cm,
+                max_z_cm: at + BEAM_T_CM / 2,
+            }
+        } else {
+            super::plan::PlanRect {
+                min_x_cm: at - BEAM_T_CM / 2,
+                min_z_cm: inner.min_z_cm,
+                max_x_cm: at + BEAM_T_CM / 2,
+                max_z_cm: inner.max_z_cm,
+            }
+        };
+        beam_strip(out, &strip, run_x, bottom, top, style, cuts);
+    }
+}
+
+/// Una viga recortada por lo que no puede cruzar, y partida al tope de macizo.
+fn beam_strip(
+    out: &mut Vec<Wg3Solid>,
+    strip: &super::plan::PlanRect,
+    run_x: bool,
+    bottom: i32,
+    top: i32,
+    style: u8,
+    cuts: &[super::plan::PlanRect],
+) {
+    let (from, to) = if run_x {
+        (strip.min_x_cm, strip.max_x_cm)
+    } else {
+        (strip.min_z_cm, strip.max_z_cm)
+    };
+    let mut blocked: Vec<(i32, i32)> = cuts
+        .iter()
+        .filter(|c| c.overlaps(strip))
+        .map(|c| {
+            if run_x {
+                (c.min_x_cm, c.max_x_cm)
+            } else {
+                (c.min_z_cm, c.max_z_cm)
+            }
+        })
+        .collect();
+    blocked.sort_unstable();
+
+    let mut push = |a: i32, b: i32| {
+        let mut at = a;
+        while at < b {
+            let end = (at + MAX_SOLID_CM).min(b);
+            if end - at >= BEAM_MIN_LEN_CM {
+                out.push(if run_x {
+                    Wg3Solid {
+                        x_cm: at,
+                        z_cm: strip.min_z_cm,
+                        size_x_cm: end - at,
+                        size_z_cm: BEAM_T_CM,
+                        bottom_y_cm: bottom,
+                        top_y_cm: top,
+                        style,
+                    }
+                } else {
+                    Wg3Solid {
+                        x_cm: strip.min_x_cm,
+                        z_cm: at,
+                        size_x_cm: BEAM_T_CM,
+                        size_z_cm: end - at,
+                        bottom_y_cm: bottom,
+                        top_y_cm: top,
+                        style,
+                    }
+                });
+            }
+            at = end;
+        }
+    };
+
+    let mut cursor = from;
+    for (lo, hi) in blocked {
+        if lo > cursor {
+            push(cursor, lo.min(to));
+        }
+        cursor = cursor.max(hi);
+    }
+    if cursor < to {
+        push(cursor, to);
+    }
 }
 
 fn atrium_carves(building: &RegionBuilding) -> Vec<Wg3Carve> {

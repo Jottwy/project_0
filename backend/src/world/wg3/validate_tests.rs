@@ -1408,6 +1408,79 @@ fn partitions_land_where_the_grammar_says() {
     println!("[divisiones] {seen} revisadas, {screens} mamparas por debajo del techo");
 }
 
+/// ADR-105 enmienda 5 — **las invariantes duras de las vigas**, sobre varias semillas.
+///
+/// Una viga cuelga del techo, así que lo que puede romper no es el paso sino la CABEZA y la SUBIDA:
+/// menos de 2,60 m de hueco bajo ella, o una viga cruzando la boca de un pozo o bajo un agujero de
+/// forjado. Ninguna de las tres produce un test rojo en otro sitio.
+#[test]
+fn beams_hang_where_the_grammar_says() {
+    use super::plan::PlanRect;
+
+    let m = real_manifest();
+    let seeds = validate::sweep_seeds(sweep_seed_count(3));
+    // `BEAM_MIN_CLEAR_CM` (300) menos `BEAM_DROP_CM` (40).
+    const MIN_UNDER_CM: i32 = 260;
+
+    let mut seen = 0usize;
+    for &seed in &seeds {
+        for &(rx, rz) in NEAR_REGIONS.iter() {
+            let region = Wg3RegionCoord { x: rx, z: rz };
+            let inside = validate::region_inside(&m, seed, region);
+            for b in inside
+                .filled
+                .solids
+                .iter()
+                .filter(|s| super::fill::is_beam(s))
+            {
+                seen += 1;
+                let rect = PlanRect {
+                    min_x_cm: b.x_cm,
+                    min_z_cm: b.z_cm,
+                    max_x_cm: b.x_cm + b.size_x_cm,
+                    max_z_cm: b.z_cm + b.size_z_cm,
+                };
+                // 1 — cuelga de UN espacio construido y deja 2,60 de hueco sobre su suelo.
+                let mut host = None;
+                for (n, st) in inside.building.storeys.iter().enumerate() {
+                    for (_, sp) in st.built() {
+                        if sp.covers_rect(&rect) && sp.floor_y_cm < b.bottom_y_cm {
+                            host = Some((n, sp));
+                        }
+                    }
+                }
+                let Some((n, sp)) = host else {
+                    panic!(
+                        "semilla {seed:#x} región ({rx},{rz}): viga en ({},{}) sin espacio debajo",
+                        b.x_cm, b.z_cm
+                    );
+                };
+                assert!(
+                    b.bottom_y_cm - sp.floor_y_cm >= MIN_UNDER_CM,
+                    "semilla {seed:#x} región ({rx},{rz}): viga a {} cm del suelo de su sala",
+                    b.bottom_y_cm - sp.floor_y_cm
+                );
+                // 2 — ni sobre la boca de un pozo que arranca en esta planta.
+                for w in inside.building.wells.iter().filter(|w| w.storey_below == n) {
+                    assert!(
+                        !w.rect.shrunk(-50).overlaps(&rect),
+                        "semilla {seed:#x} región ({rx},{rz}): viga sobre la boca del pozo en \
+                         ({},{})",
+                        w.rect.min_x_cm,
+                        w.rect.min_z_cm
+                    );
+                }
+            }
+        }
+    }
+    assert!(
+        seen > 100,
+        "sólo {seen} vigas en {} regiones: la gramática no está emitiendo",
+        seeds.len() * NEAR_REGIONS.len()
+    );
+    println!("[vigas] {seen} vigas revisadas");
+}
+
 /// ADR-119 enmienda 1 — **las invariantes duras de los pilares**, sobre varias semillas.
 ///
 /// El barrido de niveles ya dice que el mundo con pilares sigue siendo andable (mancha mayor y nav);

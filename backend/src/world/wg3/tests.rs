@@ -8365,6 +8365,7 @@ fn every_solid_survives_into_the_raster() {
     let mut parapets = 0usize;
     let mut pillars = 0usize;
     let mut aprons = 0usize;
+    let mut beams = 0usize;
 
     for (rx, rz) in AUDIT_REGIONS {
         let region = Wg3RegionCoord { x: rx, z: rz };
@@ -8421,8 +8422,19 @@ fn every_solid_survives_into_the_raster() {
                     // `PARAPET_T_CM` (20) y una partición `PARTITION_T_CM` (30). La forma sigue
                     // diciendo qué es cada macizo; lo que hacía falta era una forma más.
                     let h = s.top_y_cm - s.bottom_y_cm;
+                    // **Y desde ADR-105 enm. 5 hay macizos que CUELGAN: las vigas.** Un pretil apoya
+                    // en la losa —seis centímetros bajo su cara inferior hay materia—; una viga cuelga
+                    // de la de techo y debajo tiene aire. Por encima de una viga hay que ver TAPADO
+                    // (es el techo), así que la comprobación del pretil no le aplica.
+                    let hanging =
+                        !raster.is_solid_at(cx_m, s.bottom_y_cm as f32 / 100.0 - 0.06, cz_m);
                     if s.size_x_cm.min(s.size_z_cm) == fill::WALL_T_CM {
                         aprons += 1;
+                    } else if fill::is_beam(s) || hanging {
+                        // Por la forma primero: una viga que pasa sobre una isla o un pilar tiene
+                        // materia debajo y «apoya» sin dejar de ser viga. Medido: 9 de 527 en las
+                        // cuatro regiones de referencia.
+                        beams += 1;
                     } else if h <= 200 {
                         parapets += 1;
                         // Por encima del pretil hay que VER. Medio metro más arriba de su remate.
@@ -8451,8 +8463,14 @@ fn every_solid_survives_into_the_raster() {
         aprons > 0,
         "ningún faldón de vano en las regiones auditadas: o no se emiten, o el ráster no los tiene"
     );
+    // Y las vigas: si salieran cero, la clase «cuelga» no habría probado nada.
+    assert!(
+        beams > 0,
+        "ninguna viga en las regiones auditadas: o no se emiten, o el ráster no las tiene"
+    );
     println!(
-        "[macizo] {checked} verificados en el ráster: {parapets} pretiles, {pillars} pilares,          {aprons} faldones"
+        "[macizo] {checked} verificados en el ráster: {parapets} pretiles, {pillars} pilares, \
+         {aprons} faldones, {beams} vigas"
     );
 }
 
