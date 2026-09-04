@@ -8364,6 +8364,7 @@ fn every_solid_survives_into_the_raster() {
     let mut checked = 0usize;
     let mut parapets = 0usize;
     let mut pillars = 0usize;
+    let mut aprons = 0usize;
 
     for (rx, rz) in AUDIT_REGIONS {
         let region = Wg3RegionCoord { x: rx, z: rz };
@@ -8412,8 +8413,17 @@ fn every_solid_survives_into_the_raster() {
 
                     // Un pretil es bajo y largo; un pilar, alto y cuadrado. No hace falta un campo
                     // para distinguirlos: la forma ya lo dice, y así el dato no puede mentir.
+                    //
+                    // **Y desde los techos por espacio hay un tercero que también es bajo: el FALDÓN
+                    // del vano** (`fill::ceiling_aprons`). No es una barandilla y por encima de él hay
+                    // que ver TAPADO, no despejado: es la pared que le falta a la boca del lado alto.
+                    // Se distingue por el grosor, que es exactamente el de una pared — un pretil mide
+                    // `PARAPET_T_CM` (20) y una partición `PARTITION_T_CM` (30). La forma sigue
+                    // diciendo qué es cada macizo; lo que hacía falta era una forma más.
                     let h = s.top_y_cm - s.bottom_y_cm;
-                    if h <= 200 {
+                    if s.size_x_cm.min(s.size_z_cm) == fill::WALL_T_CM {
+                        aprons += 1;
+                    } else if h <= 200 {
                         parapets += 1;
                         // Por encima del pretil hay que VER. Medio metro más arriba de su remate.
                         let over = s.top_y_cm as f32 / 100.0 + 0.5;
@@ -8435,7 +8445,15 @@ fn every_solid_survives_into_the_raster() {
         checked > 0,
         "ninguna región emitió un macizo, así que este test no ha probado nada"
     );
-    println!("[macizo] {checked} verificados en el ráster: {parapets} pretiles, {pillars} pilares");
+    // Y los faldones tienen que EXISTIR: si salieran cero, la comprobación de arriba estaría
+    // pasando por no mirar ninguno.
+    assert!(
+        aprons > 0,
+        "ningún faldón de vano en las regiones auditadas: o no se emiten, o el ráster no los tiene"
+    );
+    println!(
+        "[macizo] {checked} verificados en el ráster: {parapets} pretiles, {pillars} pilares,          {aprons} faldones"
+    );
 }
 
 /// Cuántos macizos emite el plan, por región y por tipo. Sin afirmar nada: es la cifra que dice si

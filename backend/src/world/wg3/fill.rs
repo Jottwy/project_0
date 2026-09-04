@@ -45,7 +45,7 @@ use super::raster::CM_PER_M;
 use super::route::{self, Mouth, PlannedRoute, Rect, RouteSettings};
 use super::segment::{
     Wg3Carve, Wg3Opening, Wg3Segment, Wg3Solid, CARVE_FLOOR_GUARD_CM, MAX_SEGMENT_M,
-    MIN_GENERATED_WIDTH_CM,
+    MIN_GENERATED_WIDTH_CM, WALL_THICKNESS_M,
 };
 
 /// ADR-099 D3 — cuánto entra el vano a cada lado de la cara de contacto, en metros. Mismo número que
@@ -1519,6 +1519,10 @@ fn fill_storey(
         out.links_failed.extend(routed.failed);
     }
 
+    // Quién acabó resuelto con una pieza del catálogo. Lo necesita el faldón: el techo de una pieza
+    // es el que horneó quien la dibujó, no el que pide el plan.
+    let mut by_piece = vec![false; plan.spaces.len()];
+
     for (i, space) in plan.spaces.iter().enumerate() {
         if !space.role.is_built() {
             continue;
@@ -1555,6 +1559,7 @@ fn fill_storey(
                 ));
                 out.openings_built += 1;
             }
+            by_piece[i] = true;
             continue;
         }
         let before = out.segments.len();
@@ -1566,6 +1571,126 @@ fn fill_storey(
         }
     }
 
+    // **Y al final, los faldones.** Después de emitir porque necesita saber quién se resolvió con
+    // una pieza, que es lo único que este pase no puede medir por su cuenta.
+    out.solids.extend(ceiling_aprons(plan, &by_piece));
+
+    out
+}
+
+/// Grosor de pared en centímetros enteros. Derivado, no escrito a mano: el faldón ocupa EXACTAMENTE
+/// el sitio de la pared que le falta al vano, y un número suelto que se separe del de
+/// [`super::segment::WALL_THICKNESS_M`] deja una rendija que nadie va a buscar aquí.
+pub(super) const WALL_T_CM: i32 = (WALL_THICKNESS_M * CM_PER_M) as i32;
+
+/// Cuánto se mete el faldón en cada jamba. Cinco centímetros de solape contra la pared que sigue: la
+/// alternativa es una junta a hueso entre dos cajas que se calculan por caminos distintos, y ahí es
+/// donde salen las líneas de luz.
+const APRON_JAMB_CM: i32 = 5;
+
+/// **EL FALDÓN DEL VANO: lo que cierra un techo contra el techo más alto de al lado.**
+///
+/// # Por qué hace falta
+///
+/// Una boca de tramo NO TIENE DINTEL: `segment::emit_side` parte la pared por el ancho del hueco y
+/// la parte de suelo a techo, así que el vano llega a la losa. Con las dos salas a la misma altura
+/// eso no se nota; en cuanto una mide 2,40 y la vecina 3,40, la pared de la alta está cortada desde
+/// el suelo hasta 3,40 y **de 2,52 para arriba no hay nada al otro lado**: la losa de la baja se
+/// acaba ahí. Desde dentro de la sala alta es una franja abierta sobre la puerta que da al plenum.
+///
+/// No es un artefacto nuevo de la altura por espacio: ya existía entre un servicio (2,80) y un
+/// corredor (3,20), y es exactamente el mismo que `carve_for_piece` ya paga capando su vano al
+/// dintel. Lo que cambia es la frecuencia.
+///
+/// # Por qué un MACIZO y no un dintel de verdad
+///
+/// Un dintel pediría que [`Wg3Opening`] llevara altura, y eso es campo nuevo en la trama, espejo en
+/// C# y el oráculo de conectores rehecho. El macizo ya viaja, ya se estampa DESPUÉS de excavar
+/// (ADR-105 D2) y ya lo dibujan los dos lados con la misma regla. La misma caja, sin canal nuevo.
+///
+/// # Dónde va exactamente
+///
+/// En la banda de pared del lado ALTO —el único cuyo muro falta ahí— desde la cara inferior de la
+/// losa baja hasta la cara inferior de la alta. El resultado es que **el dintel efectivo del vano es
+/// el menor de los dos techos**, que es lo que se pedía, sin tocar una sola boca.
+///
+/// # Lo que NO cubre, dicho aquí para que nadie lea un verde de más
+///
+/// - Los espacios resueltos con una PIEZA del catálogo: su techo es el que horneó quien la dibujó y
+///   no el que pide el plan, así que la diferencia que se calcularía aquí no sería la real. Su vano
+///   ya va capado a [`PIECE_DOOR_CLEAR_CM`], que es el dintel de toda la vida.
+/// - Las puertas de JUNTA: al otro lado hay otra región, y su altura no se negocia en el contrato de
+///   ADR-096. Cruzar de región sigue siendo por espacios de la misma altura de siempre.
+/// - Las bocas de RUTA: el conector trae su propia altura del enrutador y no la del espacio.
+fn ceiling_aprons(plan: &RegionPlan, by_piece: &[bool]) -> Vec<Wg3Solid> {
+    let mut out = Vec::new();
+    for link in &plan.links {
+        // Una ruta no comparte pared: los dos extremos dan a un conector, no el uno al otro.
+        if link.kind == LinkKind::Route {
+            continue;
+        }
+        let (a, b) = (&plan.spaces[link.a], &plan.spaces[link.b]);
+        if !a.role.is_built() || !b.role.is_built() || by_piece[link.a] || by_piece[link.b] {
+            continue;
+        }
+        // **Y un ATRIO no lleva faldón**, aunque su salto de techo sea el mayor del mundo.
+        //
+        // Su altura libre no es la de una sala: son dos plantas (`ATRIUM_CLEAR_CM`), y taparlas
+        // plantaría tres metros y medio de panel sobre la puerta — que ya no es un dintel, es una
+        // pared en mitad de una doble altura. Y peor: sube hasta la cota del PRETIL de ADR-104, que
+        // está justo encima en el borde del vacío, y el pretil deja de tener por dónde ver. Medido:
+        // `el pretil de (-61.41, 347.05) sigue siendo macizo 4.92 m arriba`.
+        //
+        // La franja que queda abierta sobre la puerta de un atrio no la trae esta fase: un atrio ya
+        // medía 6,40 contra los 2,80 de un servicio antes de que la altura fuera por espacio. Es de
+        // ADR-104, y se arregla donde se decidió la doble altura.
+        if is_atrium(a) || is_atrium(b) {
+            continue;
+        }
+        let top_a = a.floor_y_cm + clear_height_cm(a);
+        let top_b = b.floor_y_cm + clear_height_cm(b);
+        let (low_top, high_top) = (top_a.min(top_b), top_a.max(top_b));
+        // Y el ALTO es el que tiene la pared cortada de más; el bajo ya cierra con su propia losa.
+        let high = if top_a >= top_b { a } else { b };
+        // Por debajo de una losa no hay franja que tapar: la del techo bajo ya la cubre.
+        if high_top <= low_top + SLAB_THICKNESS_CM {
+            continue;
+        }
+        let Some(side) = wall_side(high, link.at_x_cm, link.at_z_cm) else {
+            continue;
+        };
+        let half = link.width_cm / 2 + APRON_JAMB_CM;
+        // La banda de pared cae a un lado u otro de la línea del plan según por qué cara la toque el
+        // espacio alto: las paredes de un tramo van hacia DENTRO de su huella.
+        let (x_cm, z_cm, size_x_cm, size_z_cm) = match side % 4 {
+            0 => (
+                link.at_x_cm - half,
+                link.at_z_cm - WALL_T_CM,
+                2 * half,
+                WALL_T_CM,
+            ),
+            1 => (
+                link.at_x_cm - WALL_T_CM,
+                link.at_z_cm - half,
+                WALL_T_CM,
+                2 * half,
+            ),
+            2 => (link.at_x_cm - half, link.at_z_cm, 2 * half, WALL_T_CM),
+            _ => (link.at_x_cm, link.at_z_cm - half, WALL_T_CM, 2 * half),
+        };
+        out.push(Wg3Solid {
+            x_cm,
+            z_cm,
+            size_x_cm,
+            size_z_cm,
+            // Desde la cara INFERIOR de la losa baja: entre `low_top` y `low_top + SLAB` la losa sólo
+            // cubre su mitad de la línea, y la otra mitad es la banda de pared que falta.
+            bottom_y_cm: low_top,
+            top_y_cm: high_top,
+            // Con el aspecto de la sala ALTA, que es de quien es la pared que se está completando.
+            style: style_of(high.role),
+        });
+    }
     out
 }
 
@@ -2476,5 +2601,136 @@ fn style_of(role: SpaceRole) -> u8 {
         // de encontrarla. Es el número que más falta hacía de los seis.
         SpaceRole::Stair => 6,
         _ => 0,
+    }
+}
+
+/// El faldón del vano: que no quede franja abierta entre dos techos de distinta cota.
+#[cfg(test)]
+mod apron_tests {
+    use super::*;
+    use crate::world::wg3::plan;
+
+    /// **Un catálogo VACÍO, y a propósito.** Sin piezas todo espacio se resuelve con tramos
+    /// generados, que es donde vive el problema: una boca de tramo no tiene dintel. Un espacio
+    /// resuelto con pieza trae su techo horneado y su vano ya va capado a `PIECE_DOOR_CLEAR_CM`.
+    fn no_catalogue() -> Wg3Manifest {
+        Wg3Manifest {
+            version: 1,
+            digest: String::new(),
+            pieces: Vec::new(),
+        }
+    }
+
+    fn building(seed: i32) -> RegionBuilding {
+        plan::plan_building(seed, (0.0, 0.0, 150.0, 150.0), &[], 4)
+    }
+
+    /// El punto que hay que tapar: el centro del vano, metido media pared hacia el lado ALTO.
+    fn probe(high: &PlannedSpace, link: &plan::PlannedLink) -> Option<(i32, i32)> {
+        let side = wall_side(high, link.at_x_cm, link.at_z_cm)?;
+        let h = WALL_T_CM / 2;
+        Some(match side % 4 {
+            0 => (link.at_x_cm, link.at_z_cm - h),
+            1 => (link.at_x_cm - h, link.at_z_cm),
+            2 => (link.at_x_cm, link.at_z_cm + h),
+            _ => (link.at_x_cm + h, link.at_z_cm),
+        })
+    }
+
+    #[test]
+    fn no_doorway_opens_onto_the_plenum_of_the_lower_ceiling() {
+        let m = no_catalogue();
+        let mut checked = 0usize;
+        for seed in 1..13 {
+            let b = building(seed);
+            let filled = fill_building(&b, &m);
+            for storey in &b.storeys {
+                for link in &storey.links {
+                    if link.kind == LinkKind::Route {
+                        continue;
+                    }
+                    let (a, c) = (&storey.spaces[link.a], &storey.spaces[link.b]);
+                    if !a.role.is_built() || !c.role.is_built() {
+                        continue;
+                    }
+                    // Un ATRIO no lleva faldón, y por qué está escrito en `ceiling_aprons`: taparlo
+                    // ciega el pretil de ADR-104 que va justo encima, en el borde del vacío.
+                    if is_atrium(a) || is_atrium(c) {
+                        continue;
+                    }
+                    // Un enlace que el propio relleno declaró fallido no tiene vano que tapar.
+                    if filled
+                        .links_failed
+                        .iter()
+                        .any(|&(x, y)| (x, y) == (link.a, link.b))
+                    {
+                        continue;
+                    }
+                    let top_a = a.floor_y_cm + clear_height_cm(a);
+                    let top_c = c.floor_y_cm + clear_height_cm(c);
+                    let (low_top, high_top) = (top_a.min(top_c), top_a.max(top_c));
+                    if high_top <= low_top + SLAB_THICKNESS_CM {
+                        continue;
+                    }
+                    let high = if top_a >= top_c { a } else { c };
+                    let Some((px, pz)) = probe(high, link) else {
+                        continue;
+                    };
+                    let closed = filled.solids.iter().any(|s| {
+                        s.x_cm <= px
+                            && px <= s.x_cm + s.size_x_cm
+                            && s.z_cm <= pz
+                            && pz <= s.z_cm + s.size_z_cm
+                            && s.bottom_y_cm <= low_top
+                            && s.top_y_cm >= high_top
+                    });
+                    assert!(
+                        closed,
+                        "semilla {seed}: el vano de ({}, {}) entre {} y {} deja abierto                          [{low_top}, {high_top}] y nada lo tapa",
+                        link.at_x_cm,
+                        link.at_z_cm,
+                        a.role.name(),
+                        c.role.name()
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        // Sin esto el test pasa por no mirar nada, que es como se descubre roto el día que hace
+        // falta.
+        assert!(
+            checked > 100,
+            "sólo {checked} vanos con salto de techo: la muestra no cubre el caso"
+        );
+    }
+
+    /// **Y el faldón no puede bajar del techo bajo**, o deja de ser un dintel y pasa a ser una puerta
+    /// tapiada: se dibujaría el vano y no se pasaría, que es el peor fallo posible porque no sale en
+    /// una captura.
+    #[test]
+    fn the_apron_never_dips_into_the_doorway() {
+        let m = no_catalogue();
+        for seed in 1..13 {
+            let b = building(seed);
+            let mut lowest = i32::MAX;
+            for storey in &b.storeys {
+                for s in &storey.spaces {
+                    if s.role.is_built() {
+                        lowest = lowest.min(s.floor_y_cm + clear_height_cm(s));
+                    }
+                }
+            }
+            for s in &fill_building(&b, &m).solids {
+                // Sólo los faldones: son los únicos macizos de grosor exactamente de pared.
+                if s.size_x_cm != WALL_T_CM && s.size_z_cm != WALL_T_CM {
+                    continue;
+                }
+                assert!(
+                    s.bottom_y_cm >= lowest,
+                    "semilla {seed}: un faldón arranca en {} cm, por debajo del techo más bajo                      del edificio ({lowest} cm)",
+                    s.bottom_y_cm
+                );
+            }
+        }
     }
 }
