@@ -2793,8 +2793,12 @@ fn fill_storey(
     // ADR-105 enm. 7 — y los arcos sobre las bocas anchas.
     out.solids.extend(door_arches(plan, &by_piece, seed));
     // Y las paredes ciegas ganan ventanas y rendijas: vanos, que se restan después de estampar.
-    out.carves
-        .extend(blind_wall_openings(plan, &by_piece, seed));
+    // ADR-105 enm. 12 — y rejillas, hornacinas y ventanas en serie; la rejilla es macizo.
+    let (carves, bars) = blind_wall_openings(plan, &by_piece, seed);
+    out.carves.extend(carves);
+    out.solids.extend(bars);
+    // ADR-105 enm. 12 — el parteluz de las bocas anchas.
+    out.solids.extend(door_mullions(plan, &by_piece, seed));
 
     out
 }
@@ -3137,7 +3141,82 @@ pub(super) fn is_slit(c: &Wg3Carve) -> bool {
     c.size_x_cm.min(c.size_z_cm) == SLIT_W_CM
 }
 
-/// ADR-105 enmienda 6 (segunda mitad) — **VENTANAS INTERIORES Y RENDIJAS en las paredes ciegas.**
+/// ADR-105 enm. 12 — **ventanas en serie**: con esta probabilidad, la ventana de una pared ciega se
+/// repite a lo largo del solape, a paso fijo. La fila de ventanas de oficina a un pasillo.
+const WINDOW_SERIES_CHANCE: f32 = 0.40;
+const WINDOW_SERIES_MAX: i32 = 4;
+const WINDOW_SERIES_GAP_CM: i32 = 100;
+/// **La REJILLA**: barrotes en una ventana. Macizos de `GRILLE_BAR_CM` de ancho cada
+/// `GRILLE_PITCH_CM`, del alféizar al dintel, cubriendo las dos paredes. En el servidor un barrote
+/// maciza su celda, así que una ventana con reja se ve a través en el cliente y es pared para el
+/// ráster: «se ve y no se pasa», por el otro camino.
+const GRILLE_CHANCE: f32 = 0.35;
+const GRILLE_BAR_CM: i32 = 8;
+const GRILLE_PITCH_CM: i32 = 25;
+/// **La HORNACINA**: un nicho de `NICHE_DEPTH_CM` en una sola pared, que NO la atraviesa. Deja
+/// cinco centímetros de fondo, más que el `MinSliver` del cliente; en el servidor una caja de diez
+/// centímetros casi nunca contiene el centro de una celda, y cuando lo contiene abre una banda de
+/// 60 a 180 que no es paso.
+const NICHE_CHANCE: f32 = 0.30;
+const NICHE_W_CM: i32 = 60;
+const NICHE_DEPTH_CM: i32 = 10;
+const NICHE_BOTTOM_CM: i32 = 60;
+const NICHE_TOP_CM: i32 = 180;
+/// **El PARTELUZ**: un pilar de `MULLION_CM` en medio de una boca ancha, que la parte en dos
+/// puertas. Treinta y cinco y no 30: ninguna otra forma del sistema mide eso.
+const MULLION_CM: i32 = 35;
+const MULLION_CHANCE: f32 = 0.40;
+const MULLION_MIN_WIDTH_CM: i32 = 400;
+const SALT_MULLION: u32 = 0xB1_11_A0_0B;
+
+/// ¿Es este macizo un barrote de rejilla? Por la forma: 8 de ancho.
+pub(super) fn is_grille_bar(s: &Wg3Solid) -> bool {
+    s.size_x_cm.min(s.size_z_cm) == GRILLE_BAR_CM
+}
+
+/// ADR-105 enm. 12 — el parteluz: en las bocas de ≥ `MULLION_MIN_WIDTH_CM` sin arco, un pilar de
+/// `MULLION_CM` en el centro, de suelo al techo más bajo, cubriendo las dos paredes.
+fn door_mullions(plan: &RegionPlan, by_piece: &[bool], seed: i32) -> Vec<Wg3Solid> {
+    let mut out = Vec::new();
+    for link in &plan.links {
+        if link.kind == LinkKind::Route || link.width_cm < MULLION_MIN_WIDTH_CM {
+            continue;
+        }
+        let (a, b) = (&plan.spaces[link.a], &plan.spaces[link.b]);
+        if !a.role.is_built() || !b.role.is_built() || by_piece[link.a] || by_piece[link.b] {
+            continue;
+        }
+        if is_atrium(a) || is_atrium(b) || has_arch(seed, link) {
+            continue;
+        }
+        let mut st = super::hash::stream_at(
+            seed,
+            link.at_x_cm as f32 / CM_PER_M,
+            link.at_z_cm as f32 / CM_PER_M,
+            SALT_MULLION,
+        );
+        if st.next01() >= MULLION_CHANCE {
+            continue;
+        }
+        let low_top = (a.floor_y_cm + clear_height_cm(a)).min(b.floor_y_cm + clear_height_cm(b));
+        let floor = a.floor_y_cm.max(b.floor_y_cm);
+        let h = MULLION_CM / 2;
+        out.push(Wg3Solid {
+            x_cm: link.at_x_cm - h,
+            z_cm: link.at_z_cm - h,
+            size_x_cm: MULLION_CM,
+            size_z_cm: MULLION_CM,
+            bottom_y_cm: floor,
+            top_y_cm: low_top,
+            style: style_of(a.role),
+        });
+    }
+    out
+}
+
+/// ADR-105 enmienda 6 (segunda mitad) — **VENTANAS INTERIORES Y RENDIJAS en las paredes ciegas**, y
+/// desde la enmienda 12 también en serie, con rejilla, y hornacinas. Devuelve los vanos y los
+/// barrotes (macizos).
 ///
 /// Dos espacios vecinos sin puerta entre ellos comparten una pared que hoy es ciega de suelo a techo.
 /// Backrooms está lleno de paredes por las que se ve y no se pasa: ventanas de oficina a un pasillo,
@@ -3151,8 +3230,13 @@ pub(super) fn is_slit(c: &Wg3Carve) -> bool {
 ///   espacios a distinta cota.
 /// - Los macizos: un vano no resta de un macizo (ADR-105 D2), así que una ventana nunca abre una
 ///   isla ni un dintel.
-fn blind_wall_openings(plan: &RegionPlan, by_piece: &[bool], seed: i32) -> Vec<Wg3Carve> {
+fn blind_wall_openings(
+    plan: &RegionPlan,
+    by_piece: &[bool],
+    seed: i32,
+) -> (Vec<Wg3Carve>, Vec<Wg3Solid>) {
     let mut out = Vec::new();
+    let mut bars = Vec::new();
     let depth = (CARVE_DEPTH_M * CM_PER_M) as i32;
     let n = plan.spaces.len();
     for i in 0..n {
@@ -3206,16 +3290,99 @@ fn blind_wall_openings(plan: &RegionPlan, by_piece: &[bool], seed: i32) -> Vec<W
                 let room = hi - lo - 2 * OPENING_JAMB_CM - w;
                 if room >= 0 {
                     let at = lo + OPENING_JAMB_CM + w / 2 + (st.next01() * room as f32) as i32;
-                    out.push(carve_across(
-                        vertical,
-                        x,
-                        z,
-                        at,
-                        w,
-                        depth,
-                        floor + WINDOW_SILL_CM,
-                        floor + WINDOW_HEAD_CM,
-                    ));
+                    // Enm. 12 — en serie: la misma ventana repetida a paso fijo desde `at` hacia el
+                    // final del solape, las que quepan hasta `WINDOW_SERIES_MAX`.
+                    let series = st.next01() < WINDOW_SERIES_CHANCE;
+                    let grille = st.next01() < GRILLE_CHANCE;
+                    let count = if series { WINDOW_SERIES_MAX } else { 1 };
+                    let pitch = w + WINDOW_SERIES_GAP_CM;
+                    for k in 0..count {
+                        let c = at + k * pitch;
+                        if c + w / 2 > hi - OPENING_JAMB_CM {
+                            break;
+                        }
+                        out.push(carve_across(
+                            vertical,
+                            x,
+                            z,
+                            c,
+                            w,
+                            depth,
+                            floor + WINDOW_SILL_CM,
+                            floor + WINDOW_HEAD_CM,
+                        ));
+                        if grille {
+                            // Barrotes cada `GRILLE_PITCH_CM`, cubriendo las dos paredes.
+                            let mut p = c - w / 2 + GRILLE_PITCH_CM;
+                            while p + GRILLE_BAR_CM < c + w / 2 {
+                                let (bx, bz, sx, sz) = if vertical {
+                                    (x - WALL_T_CM, p, 2 * WALL_T_CM, GRILLE_BAR_CM)
+                                } else {
+                                    (p, z - WALL_T_CM, GRILLE_BAR_CM, 2 * WALL_T_CM)
+                                };
+                                bars.push(Wg3Solid {
+                                    x_cm: bx,
+                                    z_cm: bz,
+                                    size_x_cm: sx,
+                                    size_z_cm: sz,
+                                    bottom_y_cm: floor + WINDOW_SILL_CM,
+                                    top_y_cm: floor + WINDOW_HEAD_CM,
+                                    style: style_of(a.role),
+                                });
+                                p += GRILLE_PITCH_CM;
+                            }
+                        }
+                    }
+                }
+            }
+            // Enm. 12 — hornacinas en la pared de `a`, que NO atraviesan: diez centímetros desde su
+            // cara interior. ¿A qué lado de la línea está `a`? Su muro va hacia dentro de su huella.
+            if st.next01() < NICHE_CHANCE {
+                let a_neg = if vertical {
+                    (a.rect.max_x_cm - x).abs() <= 1
+                } else {
+                    (a.rect.max_z_cm - z).abs() <= 1
+                };
+                let k = 1 + (st.next01() * 2.0) as i32;
+                let room = hi - lo - 2 * OPENING_JAMB_CM - NICHE_W_CM;
+                for _ in 0..k {
+                    if room <= 0 {
+                        break;
+                    }
+                    let at =
+                        lo + OPENING_JAMB_CM + NICHE_W_CM / 2 + (st.next01() * room as f32) as i32;
+                    // Desde la cara interior del muro de `a` (a 15 de la línea) diez centímetros
+                    // hacia la línea: quedan cinco de fondo.
+                    let (near, far) = if a_neg {
+                        (
+                            x_or_z(vertical, x, z) - WALL_T_CM,
+                            x_or_z(vertical, x, z) - WALL_T_CM + NICHE_DEPTH_CM,
+                        )
+                    } else {
+                        (
+                            x_or_z(vertical, x, z) + WALL_T_CM - NICHE_DEPTH_CM,
+                            x_or_z(vertical, x, z) + WALL_T_CM,
+                        )
+                    };
+                    out.push(if vertical {
+                        Wg3Carve {
+                            x_cm: near,
+                            z_cm: at - NICHE_W_CM / 2,
+                            size_x_cm: far - near,
+                            size_z_cm: NICHE_W_CM,
+                            bottom_y_cm: floor + NICHE_BOTTOM_CM,
+                            top_y_cm: floor + NICHE_TOP_CM,
+                        }
+                    } else {
+                        Wg3Carve {
+                            x_cm: at - NICHE_W_CM / 2,
+                            z_cm: near,
+                            size_x_cm: NICHE_W_CM,
+                            size_z_cm: far - near,
+                            bottom_y_cm: floor + NICHE_BOTTOM_CM,
+                            top_y_cm: floor + NICHE_TOP_CM,
+                        }
+                    });
                 }
             }
             if st.next01() < SLIT_CHANCE {
@@ -3240,7 +3407,16 @@ fn blind_wall_openings(plan: &RegionPlan, by_piece: &[bool], seed: i32) -> Vec<W
             }
         }
     }
-    out
+    (out, bars)
+}
+
+/// La coordenada de la línea de una pared compartida: `x` si corre a lo largo de Z, `z` si no.
+fn x_or_z(vertical: bool, x: i32, z: i32) -> i32 {
+    if vertical {
+        x
+    } else {
+        z
+    }
 }
 
 /// Un vano que atraviesa una pared compartida: `vertical` es que la pared corre a lo largo de Z en

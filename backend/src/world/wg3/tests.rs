@@ -8359,6 +8359,7 @@ fn windows_are_seen_through_and_not_walked_through() {
     let m = real_manifest();
     let mut windows = 0usize;
     let mut slits = 0usize;
+    let mut grilles = 0usize;
 
     for (rx, rz) in AUDIT_REGIONS {
         let region = Wg3RegionCoord { x: rx, z: rz };
@@ -8379,17 +8380,28 @@ fn windows_are_seen_through_and_not_walked_through() {
                 {
                     continue;
                 }
+                let solids = served.solids_touching_chunk(coord);
                 let raster = chunk::build_chunk_raster_full(
                     &m,
                     &served.placements_touching_chunk(&m, coord),
                     &served.segments_touching_chunk(coord),
                     &carves,
-                    &served.solids_touching_chunk(coord),
+                    &solids,
                     coord,
                 );
                 let (bx0, bz0, bx1, bz1) = coord.bounds();
                 for c in &carves {
                     let is_window = fill::is_window(c);
+                    // Enm. 12 — una ventana con REJILLA es pared para el ráster (cada barrote maciza
+                    // su celda) y se ve a través sólo en el cliente: no se le exige lo segundo.
+                    let barred = solids.iter().any(|s| {
+                        fill::is_grille_bar(s)
+                            && s.x_cm < c.x_cm + c.size_x_cm
+                            && s.x_cm + s.size_x_cm > c.x_cm
+                            && s.z_cm < c.z_cm + c.size_z_cm
+                            && s.z_cm + s.size_z_cm > c.z_cm
+                            && s.bottom_y_cm == c.bottom_y_cm
+                    });
                     if !is_window && !fill::is_slit(c) {
                         continue;
                     }
@@ -8416,11 +8428,15 @@ fn windows_are_seen_through_and_not_walked_through() {
                             raster.is_solid_at(x, floor + 0.5, z),
                             "la ventana de ({x:.2}, {z:.2}) no tiene antepecho en el ráster"
                         );
-                        assert!(
-                            !raster.is_solid_at(x, floor + EYE_M, z),
-                            "por la ventana de ({x:.2}, {z:.2}) no se ve: el ráster sigue macizo \
-                             a la altura de los ojos"
-                        );
+                        if barred {
+                            grilles += 1;
+                        } else {
+                            assert!(
+                                !raster.is_solid_at(x, floor + EYE_M, z),
+                                "por la ventana de ({x:.2}, {z:.2}) no se ve: el ráster sigue \
+                                 macizo a la altura de los ojos"
+                            );
+                        }
                     } else {
                         slits += 1;
                     }
@@ -8432,7 +8448,10 @@ fn windows_are_seen_through_and_not_walked_through() {
         windows >= 20,
         "sólo {windows} ventanas en cuatro regiones: o no se emiten, o el vano no llega al ráster"
     );
-    println!("[ventana] {windows} ventanas y {slits} rendijas verificadas en el ráster");
+    println!(
+        "[ventana] {windows} ventanas ({grilles} con rejilla) y {slits} rendijas verificadas en el \
+         ráster"
+    );
 }
 
 /// Sonda: qué macizos tocan una columna del mundo servido. `WG3_PROBE_COLUMN="x,z"` en metros.
