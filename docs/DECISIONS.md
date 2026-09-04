@@ -13942,3 +13942,64 @@ colgado (los esquiva como el bloque). El faldón se conserva como la otra opció
 Cuña estampada: cabeza libre bajo todo el plano (`headroom_above_floor` ≥ techo bajo); ninguna cuña
 sobre viga o casetón; y en captura, la rampa se lee como techo que baja y no como bloque flotante.
 **Día 4 de la semana de cierre**, tras la rampa de suelo de ADR-122, con la que comparte forma.
+
+## ADR-128 — EL MUNDO A DOBLE ESCALA: un factor en la frontera, no 248 constantes (2026-09-04) — ACEPTADA (Joel: «el player es dos veces más grande… el tamaño de la generación debe ser 2 veces en todos los valores, x2 simple y proporcionado»)
+
+### Contexto
+
+El cuerpo del jugador (STP: 1,80 m de alto, 0,35 de radio) es el doble de grande respecto al mundo
+que WG3 genera: pasillos de 2,40, techos de 3,08 y puertas de 2,40 se sienten estrechos. Joel decide
+**doblar todo el mundo**, no encoger al jugador.
+
+Doblar a mano no es una opción: hay **248 constantes con unidades** en `world/wg3`, los tests fijan
+invariantes sobre casi todas, y algunas NO deben doblarse (la celda del ráster mide la resolución
+frente al CUERPO del jugador, que no cambia; el chunk es una rejilla de streaming compartida con
+WG2). Una pasada a mano sería el cambio con más superficie de error de todo el proyecto.
+
+### D1 — Dos sistemas de unidades, y la conversión en UN punto
+
+- **Unidades de PLAN**: lo que hoy llaman «centímetros» `plan.rs`, `fill.rs`, `route.rs`,
+  `segment.rs` y todas sus constantes. No cambia ni un número.
+- **Centímetros de MUNDO**: lo que ven el ráster, la colisión, la navegación, el IPC y el cliente.
+
+`WG3_SCALE = 2`: un centímetro de plan son dos de mundo. La conversión vive en **`Wg3ServedWorld`**,
+que es por donde sale TODA la geometría (`segments_touching_chunk`, `carves_touching_chunk`,
+`solids_touching_chunk`, `solids_owned_by_chunk`, `placements_touching_chunk`): cada método filtra
+convirtiendo el chunk a unidades de plan y devuelve la geometría ya escalada. Aguas abajo nadie se
+entera: el ráster sigue en cm, el wire sigue en cm, y **el cliente no cambia una línea**.
+
+### D2 — La región pasa a 6×6 chunks
+
+Una región son 150 metros de plan = **300 m de mundo**, y el chunk sigue midiendo 50 m (rejilla de
+streaming compartida con WG2, D3 de ADR-095). Luego `REGION_CHUNKS` pasa de 3 a **6**. `REGION_M`
+sigue siendo 150 y ahora significa metros de PLAN: es lo que alimenta al plan y al compositor.
+Espejos en el cliente que miden la región en metros de mundo: `Wg3Identity.RegionM` y
+`Wg3LiveBootstrap.RegionMeters` pasan de 150 a **300**.
+
+### D3 — El tope de tramo baja a la mitad
+
+`MAX_SEGMENT_M` = 25 metros de plan serían 50 m de mundo, o sea **un chunk entero**, y ahí muere la
+regla «una pieza, un chunk» sobre la que se apoya el reparto (`solids_owned_by_chunk` y el montaje
+por chunk del cliente). Pasa a **12,5 metros de plan** = 25 m de mundo, que es exactamente lo que
+mide hoy. Cuesta más tramos por región, que es gratis.
+
+### D4 — Lo que este ADR NO resuelve, dicho aquí
+
+- **Las piezas del catálogo no escalan.** Su malla viene horneada del prefab, así que un
+  `Wg3Placement` escalado las coloca al doble de distancia con el tamaño de siempre. Hoy hay 0,1
+  piezas por región (el catálogo está apagado por deuda de wire desde ADR-100) y el mundo servido
+  sale del plan, así que no se ve; el día que se reencienda, el cliente tendrá que escalar el
+  transform de la pieza ×2 y el ráster su colisión.
+- **La luz.** Un plafón de alcance 6 m en una nave de 6,16 m de techo alumbra la mitad que antes. Es
+  del día 2 de la semana de cierre (`WG3-ALPHA1-ROADMAP`), no de aquí.
+- **El efecto colateral que Joel debe ver jugando:** las puertas pasan a medir 4,80 de alto y los
+  techos 6,16. El mundo deja de sentirse pequeño, y a la vez deja de parecer una oficina: es la
+  consecuencia directa de «todos los valores ×2», y se mide en el playtest, no en una captura.
+
+### Verificaciones
+
+- `the_served_world_is_twice_the_plan`: para cada región de auditoría, la envolvente de lo servido
+  mide el doble que la del plan, y un tramo servido mide el doble que el suyo del plan.
+- El barrido de 27 regiones (mancha, islas, nav) debe salir **igual que la línea base**: la escala no
+  cambia la topología, y cualquier desvío es un sitio donde se mezclaron las dos unidades.
+- Playtest: cruzar una puerta, subir una escalera y caer por un pozo con el cuerpo real.
