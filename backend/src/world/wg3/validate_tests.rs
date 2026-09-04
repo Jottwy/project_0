@@ -1498,6 +1498,34 @@ fn probe_character_mix() {
             }
         }
     }
+    // ADR-124 — los pasillos: cuántos por región y cuánto miden de largo (lado mayor).
+    let (mut corridors, mut long_sum, mut junction_links) = (0usize, 0f32, 0usize);
+    for &seed in &seeds {
+        for &(rx, rz) in NEAR_REGIONS.iter() {
+            let region = Wg3RegionCoord { x: rx, z: rz };
+            let inside = validate::region_inside(&m, seed, region);
+            for st in inside.building.storeys.iter() {
+                for (_, sp) in st.built() {
+                    if sp.role.is_circulation() {
+                        corridors += 1;
+                        long_sum += sp.rect.width_cm().max(sp.rect.depth_cm()) as f32 / 100.0;
+                    }
+                }
+                junction_links += st
+                    .links
+                    .iter()
+                    .filter(|l| l.kind == super::plan::LinkKind::Junction)
+                    .count();
+            }
+        }
+    }
+    let regions = (seeds.len() * NEAR_REGIONS.len()) as f32;
+    println!(
+        "[pasillos] {:.1} por región, {:.1} m de largo medio, {:.1} cruces por región",
+        corridors as f32 / regions,
+        long_sum / corridors.max(1) as f32,
+        junction_links as f32 / regions
+    );
     for (name, (n, solids, empty)) in &by_char {
         println!(
             "[caracter] {name:10} {n:5} espacios | {:.1} macizos/espacio | {:.0} % sin nada",

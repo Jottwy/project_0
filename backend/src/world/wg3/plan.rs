@@ -333,6 +333,14 @@ const TERRACE_CHANCE: f32 = 0.34;
 /// resultado se lee como una retícula —justo lo que WG3 vino a quitar—. Con banda sólo en los tres
 /// primeros niveles, el mundo tiene una espina, un par de ramas, y **a partir de ahí las salas
 /// comparten pared y se comunican por un vano**, que es como está hecho un edificio de oficinas.
+///
+/// **ADR-124 (2026-09-04): se probó bajarlo y NO se sostiene, ni a dos ni a «dos y medio».** Joel:
+/// «menos pasillos pero más largos». Con banda sólo en dos niveles: 6 de 300 regiones rotas (enlaces
+/// del plan que el enrutador no construye, un tramo de 2540 cm sobre el tope, una planta 2
+/// inalcanzable), plantas 3,2 → 2,9 y cruces 24,6 → 10,0 por región — lo contrario de «que se
+/// encuentren caminos». Con el tercer nivel tallando banda la mitad de las veces: 1 de 300 rota por
+/// el mismo enlace y plantas 3,0. El tercer nivel de banda es lo que da acceso a las salas que no
+/// tocan la espina; quitarlo pide reescribir el enrutador, no una constante. Queda pendiente ahí.
 const CORRIDOR_DEPTH: u8 = 3;
 
 /// Ancho de la banda de corredor por profundidad de corte, en centímetros.
@@ -462,6 +470,11 @@ const GOOD_WALL_CM: i32 = DOORWAY_CM + 120;
 ///
 /// Es lo que convierte el grafo en un edificio con anillos en vez de en un árbol. Un edificio real
 /// tiene más de una forma de llegar a sitio, y sin eso vuelve el «llega un punto que se cierra».
+/// **ADR-124 (2026-09-04): se probó 0,45 y se revirtió.** «Que se encuentren caminos» pide más vanos
+/// de más, y con 0,45 el barrido salía limpio (210 enlaces por región contra 190, mancha mayor
+/// 99,8 %), pero el plan cambia bajo los pozos y los agujeros de forjado de las cuatro regiones de
+/// referencia caían de 8 a 5, por debajo del listón de `a_hole_drops_you_a_whole_storey`. Mover
+/// esto es mover el reparto vertical entero: va con el enrutador, no solo.
 const RING_CHANCE: f32 = 0.30;
 
 /// Un rectángulo del plan, en centímetros enteros de mundo.
