@@ -16,21 +16,14 @@
 - Antes hace falta **la decisión de Joel sobre la madera**: material de decoración para todo (sin wire) o estilo propio (wire 61).
 
 ## En curso
-- **ADR-128, el mundo a doble escala: núcleo escrito, PROBADO y NO commiteado.** Dos sistemas de unidades (PLAN
-  intacto, MUNDO ×2) con la conversión en un solo punto, `Wg3ServedWorld`; `REGION_CHUNKS` 3→6, `MAX_SEGMENT_M`
-  25→12,5 de plan; espejos `Wg3Identity.RegionM`/`Wg3LiveBootstrap.RegionMeters` 150→300. Compila y sirve, pero
-  **32 tests de `world::wg3` en rojo** (sondan el ráster con constantes del plan) y **dos síntomas que no son de
-  test**: 0 celdas de planta alta en la mancha, y un atrio de 5,80 m — lo mismo que antes del ×2, o sea que la
-  vertical no escala en todo el camino (sospecha `SLAB_THICKNESS_M` y las alturas en metros de `segment`). Código
-  revertido, `Builds/Backend` sano (3A3BA36C); el parche íntegro vive en `scratchpad/scale_patch.py`. Verbatim en
-  `docs/SESSION-LOG.md`.
+- **ADR-128, mundo ×2: núcleo escrito, PROBADO, NO commiteado.** PLAN intacto, MUNDO ×2 con la conversión en
+  `Wg3ServedWorld`. 32 tests en rojo y dos síntomas reales: 0 celdas de planta alta y un atrio de 5,80 m — la
+  vertical no escala entera. Revertido; parche en `scratchpad/scale_patch.py`, verbatim en `docs/SESSION-LOG.md`.
 - **Contrato WG3 v1**, 5 días. Día 1 cerrado: el atrio ya no se abre a la nada (ADR-104 enm. 3, `65d267c3`).
   Días 1–2 materiales · día 3 rendimiento (fundido por chunk) · día 4 rampa + tabique diagonal + anti-enfilada · día 5 verificación y etiqueta `wg3-v1-alpha1`.
-- **Saneamiento del proyecto** (auditoría del 2026-09-04): **B1 cerrado** (arranque de sesión). Quedan B3 repo
-  (ramas y worktrees, pendiente de Joel), B2 docs y gates, B4 código muerto, y los tres agujeros de autoridad.
+- **Saneamiento** (auditoría 2026-09-04): **B1 cerrado**. Quedan B2 (docs y gates), B3 (repo, pendiente de Joel) y B4 (código muerto).
 - **Migración STP servidor-autoritativo**: Steps 1–2 y slice 3.1 (plumbing) hechos y verificados. Falta slice 3.2
-  (capa L2 de predicción) y reescribir los 8 call sites de `Inventory`.
-- `PlayerController.cs` marcado DEPRECATED por ADR-009: se borra o se deja en stub dentro de la slice 3.2.
+  (capa L2 de predicción), reescribir los 8 call sites de `Inventory` y retirar `PlayerController.cs` (DEPRECATED por ADR-009).
 - ADR-014 fase 2 (borrado diferido 200 ms + reserva host-only anti-duplicado): backend implementado, **pendiente de playtest**.
 - ADR-123 (agacharse y conductos) PROPUESTO, pendiente de Joel. ADR-127 (rampa de techo, wire 61) propuesto para el día 4.
 
