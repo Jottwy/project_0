@@ -1965,6 +1965,8 @@ fn fill_storey(
     out.solids.extend(ceiling_aprons(plan, &by_piece));
     // ADR-105 enm. 6 — y los dinteles, por lo mismo.
     out.solids.extend(door_lintels(plan, &by_piece, seed));
+    // ADR-105 enm. 7 — y los arcos sobre las bocas anchas.
+    out.solids.extend(door_arches(plan, &by_piece, seed));
     // Y las paredes ciegas ganan ventanas y rendijas: vanos, que se restan después de estampar.
     out.carves
         .extend(blind_wall_openings(plan, &by_piece, seed));
@@ -2127,6 +2129,11 @@ fn door_lintels(plan: &RegionPlan, by_piece: &[bool], seed: i32) -> Vec<Wg3Solid
         if st.next01() >= LINTEL_CHANCE {
             continue;
         }
+        // Con arco no hay dintel plano: las dos cajas compartirían la cara de la pared y pelearían
+        // por el mismo plano.
+        if has_arch(seed, link) {
+            continue;
+        }
         let low_top = (a.floor_y_cm + clear_height_cm(a)).min(b.floor_y_cm + clear_height_cm(b));
         let half = link.width_cm / 2 + APRON_JAMB_CM;
         for s in [a, b] {
@@ -2149,6 +2156,118 @@ fn door_lintels(plan: &RegionPlan, by_piece: &[bool], seed: i32) -> Vec<Wg3Solid
                 top_y_cm: low_top,
                 style: style_of(s.role),
             });
+        }
+    }
+    out
+}
+
+/// Línea de arranque de un arco, sobre el suelo. Por encima de la cabeza (1,80 + escalón), así que
+/// el paso a la altura de los hombros conserva el ancho entero de la boca.
+const ARCH_SPRING_CM: i32 = 200;
+/// Altura de cada hilada del arco. Media celda: el arco se lee escalonado, como de ladrillo, y la
+/// media celda es lo más fino que el ráster estampa sin cambiar de significado en vertical (el
+/// ráster es conservador al centímetro en Y, no a la celda).
+pub(super) const ARCH_BAND_CM: i32 = 25;
+/// Ancho mínimo de boca para un arco. Sólo las bocas anchas (`WIDE_DOORWAY_CM`): un arco sobre una
+/// puerta de 2,40 son dos hiladas y se lee como un dintel torcido.
+const ARCH_MIN_WIDTH_CM: i32 = 300;
+/// Qué proporción de las bocas anchas llevan arco.
+const ARCH_CHANCE: f32 = 0.50;
+/// Sal del sorteo del arco, por la posición de la boca.
+const SALT_ARCH: u32 = 0xB1_11_A0_06;
+
+/// ¿Lleva arco esta boca? Lo preguntan el arco y el dintel: los dos sobre la misma banda de pared,
+/// y por eso el que decide es uno.
+fn has_arch(seed: i32, link: &super::plan::PlannedLink) -> bool {
+    if link.kind == LinkKind::Route || link.width_cm < ARCH_MIN_WIDTH_CM {
+        return false;
+    }
+    let mut st = super::hash::stream_at(
+        seed,
+        link.at_x_cm as f32 / CM_PER_M,
+        link.at_z_cm as f32 / CM_PER_M,
+        SALT_ARCH,
+    );
+    st.next01() < ARCH_CHANCE
+}
+
+/// ADR-105 enmienda 7 — **EL ARCO ESCALONADO: una boca ancha que se cierra por arriba en hiladas.**
+///
+/// No hay volumen curvo en WG3 y no lo va a haber (la chuleta son cajas, y el ráster estampa cajas).
+/// Un arco es lo que se puede decir con cajas: hiladas de `ARCH_BAND_CM` desde la línea de arranque
+/// hasta el techo, cada una metiéndose hacia el centro lo que dicta la elipse que va del ancho de la
+/// boca en el arranque a cero en la clave. Se lee como arco de ladrillo, no como curva lisa, y eso
+/// es lo que hay: la «media luna» que pidió Joel el 2026-09-04, a la resolución del sistema.
+///
+/// Son macizos en la banda del vano ([`door_band`]), en los DOS lados como el dintel, y por eso una
+/// boca con arco no lleva dintel: compartirían plano. Inmunes a los vanos (ADR-105 D2), así que la
+/// propia boca no se los lleva.
+fn door_arches(plan: &RegionPlan, by_piece: &[bool], seed: i32) -> Vec<Wg3Solid> {
+    let mut out = Vec::new();
+    for link in &plan.links {
+        if !has_arch(seed, link) {
+            continue;
+        }
+        let (a, b) = (&plan.spaces[link.a], &plan.spaces[link.b]);
+        if !a.role.is_built() || !b.role.is_built() || by_piece[link.a] || by_piece[link.b] {
+            continue;
+        }
+        if is_atrium(a) || is_atrium(b) {
+            continue;
+        }
+        let low_top = (a.floor_y_cm + clear_height_cm(a)).min(b.floor_y_cm + clear_height_cm(b));
+        let radius = link.width_cm / 2;
+        let half = radius + APRON_JAMB_CM;
+        for s in [a, b] {
+            let spring = s.floor_y_cm + ARCH_SPRING_CM;
+            let rise = low_top - spring;
+            if rise < 2 * ARCH_BAND_CM {
+                continue;
+            }
+            let Some(side) = wall_side(s, link.at_x_cm, link.at_z_cm) else {
+                continue;
+            };
+            let (x_cm, z_cm, size_x_cm, size_z_cm) =
+                door_band(side, link.at_x_cm, link.at_z_cm, half);
+            // Hiladas desde la CLAVE hacia abajo, todas de la misma altura: la que no cabe entera
+            // contra el arranque se tira. Así el test las reconoce por la forma.
+            let mut y1 = low_top;
+            while y1 - ARCH_BAND_CM >= spring {
+                let y0 = y1 - ARCH_BAND_CM;
+                // Media anchura de la luz a la altura de la cara SUPERIOR de la hilada: la elipse
+                // se evalúa por arriba, así que cada hilada tapa un poco más de lo justo y el arco
+                // dibujado nunca deja ver por encima del estampado.
+                let t = (y1 - spring) as f32 / rise as f32;
+                let open = (radius as f32 * (1.0 - t * t).max(0.0).sqrt()) as i32;
+                let fill = half - open;
+                // Nunca menos de un grosor de pared: por debajo la hilada es una astilla, y además
+                // deja de tener la forma por la que los tests reconocen lo que cuelga sobre una boca.
+                if fill >= WALL_T_CM {
+                    let along_x = side.is_multiple_of(2);
+                    let (len_x, len_z) = if along_x {
+                        (fill, size_z_cm)
+                    } else {
+                        (size_x_cm, fill)
+                    };
+                    let (bx, bz) = if along_x {
+                        (x_cm + size_x_cm - fill, z_cm)
+                    } else {
+                        (x_cm, z_cm + size_z_cm - fill)
+                    };
+                    for (px, pz) in [(x_cm, z_cm), (bx, bz)] {
+                        out.push(Wg3Solid {
+                            x_cm: px,
+                            z_cm: pz,
+                            size_x_cm: len_x,
+                            size_z_cm: len_z,
+                            bottom_y_cm: y0,
+                            top_y_cm: y1,
+                            style: style_of(s.role),
+                        });
+                    }
+                }
+                y1 = y0;
+            }
         }
     }
     out
@@ -3377,6 +3496,13 @@ mod apron_tests {
                 if floors
                     .iter()
                     .any(|f| s.bottom_y_cm == f + DOOR_LINTEL_CLEAR_CM)
+                {
+                    continue;
+                }
+                // Y una hilada de ARCO (enm. 7) mide exactamente media celda de alto y arranca por
+                // encima de la cabeza: tampoco es un faldón que baja.
+                if s.top_y_cm - s.bottom_y_cm == ARCH_BAND_CM
+                    && floors.iter().any(|f| s.bottom_y_cm >= f + ARCH_SPRING_CM)
                 {
                     continue;
                 }

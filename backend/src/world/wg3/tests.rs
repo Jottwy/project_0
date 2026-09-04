@@ -8454,6 +8454,7 @@ fn every_solid_survives_into_the_raster() {
     let mut pillars = 0usize;
     let mut aprons = 0usize;
     let mut beams = 0usize;
+    let mut arches = 0usize;
 
     for (rx, rz) in AUDIT_REGIONS {
         let region = Wg3RegionCoord { x: rx, z: rz };
@@ -8517,7 +8518,13 @@ fn every_solid_survives_into_the_raster() {
                     let hanging =
                         !raster.is_solid_at(cx_m, s.bottom_y_cm as f32 / 100.0 - 0.06, cz_m);
                     if s.size_x_cm.min(s.size_z_cm) == fill::WALL_T_CM {
-                        aprons += 1;
+                        // Grosor de pared: faldón, dintel o hilada de arco (enm. 7, media celda
+                        // de alto exacta). Los tres cuelgan sobre una boca y por encima hay pared.
+                        if h == fill::ARCH_BAND_CM {
+                            arches += 1;
+                        } else {
+                            aprons += 1;
+                        }
                     } else if fill::is_beam(s) || hanging {
                         // Por la forma primero: una viga que pasa sobre una isla o un pilar tiene
                         // materia debajo y «apoya» sin dejar de ser viga. Medido: 9 de 527 en las
@@ -8558,7 +8565,7 @@ fn every_solid_survives_into_the_raster() {
     );
     println!(
         "[macizo] {checked} verificados en el ráster: {parapets} pretiles, {pillars} pilares, \
-         {aprons} faldones, {beams} vigas"
+         {aprons} faldones y dinteles, {beams} vigas, {arches} hiladas de arco"
     );
 }
 
