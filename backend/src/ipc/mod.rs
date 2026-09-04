@@ -357,6 +357,12 @@ pub struct Wg3SolidWire {
     /// Aspecto, como en el tramo. Sin él un pretil se lee como un objeto pegado y no como la
     /// arquitectura de la sala a la que pertenece.
     pub style: u8,
+    /// ADR-121 D1 (wire 56) — giro alrededor del centro de la huella, grados enteros, horario
+    /// visto desde arriba. La caja de arriba es la caja SIN girar.
+    pub yaw_deg: i16,
+    /// ADR-125 (wire 56) — forma inscrita en la huella: 0 caja, 1 cilindro, 2 media luna,
+    /// 3 octógono. El ráster del servidor y la malla del cliente leen el mismo byte.
+    pub shape: u8,
 }
 
 /// ADR-095 — lo que WG3 entrega por chunk.
@@ -1418,6 +1424,9 @@ mod tests {
                 bottom_y_cm: 332,
                 top_y_cm: 442,
                 style: 3,
+                // Wire 56: giro y forma, distintos de cero por lo mismo que `style`.
+                yaw_deg: 45,
+                shape: 2,
             }],
         }))
         .unwrap();
@@ -1446,6 +1455,8 @@ mod tests {
             "solids",
             "bottom_y_cm",
             "top_y_cm",
+            "yaw_deg",
+            "shape",
             "width_cm",
             "carves",
             "bottom_y_cm",

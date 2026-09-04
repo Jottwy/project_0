@@ -108,12 +108,31 @@ namespace BackroomsSurvival.WorldGen3
     /// <summary>Una caja con giro en Y. Es la unidad de la "chuleta": lo único que en F2 tendrá
     /// que entender Rust de la geometría de una pieza.</summary>
     [Serializable]
+    /// <summary>
+    /// ADR-125 — la forma inscrita en la caja de un volumen. Mismos números que el byte `shape` del
+    /// cable: el ráster del servidor y <see cref="Wg3MeshBuilder"/> leen el mismo valor.
+    /// </summary>
+    public static class Wg3Shape
+    {
+        public const byte Box = 0;
+        /// <summary>Cilindro inscrito en la huella (círculo: la huella es cuadrada).</summary>
+        public const byte Cylinder = 1;
+        /// <summary>Media luna: medio disco con la cara plana en la z mínima de la caja sin girar y
+        /// la panza hacia +z. La caja mide diámetro × radio.</summary>
+        public const byte HalfCylinder = 2;
+        /// <summary>Prisma octogonal regular, caras planas sobre los ejes.</summary>
+        public const byte Octagon = 3;
+    }
+
     public struct Wg3Volume
     {
         public Vector3 center;
         public Vector3 size;
         public float yawDegrees;
         public Wg3VolumeKind kind;
+        /// <summary>ADR-125 — <see cref="Wg3Shape"/>. Cero (caja) para todo lo que no sea un macizo
+        /// del cable, y por eso el valor por defecto del struct es el correcto.</summary>
+        public byte shape;
 
         public bool IsSolid => kind != Wg3VolumeKind.Decoration;
     }

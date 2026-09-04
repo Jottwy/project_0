@@ -45,7 +45,8 @@ use super::raster::CM_PER_M;
 use super::route::{self, Mouth, PlannedRoute, Rect, RouteSettings};
 use super::segment::{
     Wg3Carve, Wg3Opening, Wg3Segment, Wg3Solid, CARVE_FLOOR_GUARD_CM, MAX_SEGMENT_M,
-    MIN_GENERATED_WIDTH_CM, WALL_THICKNESS_M,
+    MIN_GENERATED_WIDTH_CM, SHAPE_BOX, SHAPE_CYLINDER, SHAPE_HALF_CYLINDER, SHAPE_OCTAGON,
+    WALL_THICKNESS_M,
 };
 
 /// ADR-099 D3 — cuánto entra el vano a cada lado de la cara de contacto, en metros. Mismo número que
@@ -179,6 +180,12 @@ pub(super) struct Knobs {
     pub platform: f32,
     /// Tope de altura libre de la zona, 0 = ninguno. Lo aplica el PLAN al asignar techos.
     pub ceiling_cap_cm: i32,
+    /// ADR-125 — qué proporción de las naves con pilares los lleva CILÍNDRICOS.
+    pub round_pillar: f32,
+    /// ADR-125 — y OCTOGONALES (se sortea después del cilindro, sobre el resto).
+    pub octagon_pillar: f32,
+    /// ADR-125 — qué proporción de los espacios con pilastras las lleva en MEDIA LUNA.
+    pub round_pilaster: f32,
 }
 
 const KNOBS: [Knobs; 5] = [
@@ -206,6 +213,9 @@ const KNOBS: [Knobs; 5] = [
         cornice: 0.20,
         platform: 0.35,
         ceiling_cap_cm: 0,
+        round_pillar: 0.30,
+        octagon_pillar: 0.20,
+        round_pilaster: 0.25,
     },
     Knobs {
         character: Character::Office,
@@ -231,6 +241,9 @@ const KNOBS: [Knobs; 5] = [
         cornice: 0.35,
         platform: 0.10,
         ceiling_cap_cm: 0,
+        round_pillar: 0.10,
+        octagon_pillar: 0.15,
+        round_pilaster: 0.15,
     },
     Knobs {
         character: Character::Hall,
@@ -256,6 +269,9 @@ const KNOBS: [Knobs; 5] = [
         cornice: 0.30,
         platform: 0.25,
         ceiling_cap_cm: 0,
+        round_pillar: 0.40,
+        octagon_pillar: 0.25,
+        round_pilaster: 0.30,
     },
     Knobs {
         character: Character::Maze,
@@ -281,6 +297,9 @@ const KNOBS: [Knobs; 5] = [
         cornice: 0.10,
         platform: 0.05,
         ceiling_cap_cm: 240,
+        round_pillar: 0.20,
+        octagon_pillar: 0.20,
+        round_pilaster: 0.30,
     },
     Knobs {
         character: Character::Weird,
@@ -306,6 +325,9 @@ const KNOBS: [Knobs; 5] = [
         cornice: 0.45,
         platform: 0.15,
         ceiling_cap_cm: 200,
+        round_pillar: 0.55,
+        octagon_pillar: 0.25,
+        round_pilaster: 0.50,
     },
 ];
 
@@ -803,6 +825,20 @@ const PILASTER_PITCH_CM: (i32, i32) = (400, 600);
 const PILASTER_MARGIN_CM: i32 = 200;
 const PILASTER_DOOR_CLEAR_CM: i32 = 150;
 const PILASTER_MIN_WIDTH_CM: i32 = 280;
+/// ADR-125 — la pilastra en MEDIA LUNA: medio cilindro adosado a la pared, 1 m de cuerda y 50 cm
+/// de panza. Es la «media luna» que Joel pidió el 2026-09-04, y la primera forma curva que se
+/// toca al pasar. Cuesta el doble de paso que la recta (50 frente a 25), así que va con las
+/// mismas exclusiones y sólo en los espacios que sortean `round_pilaster`.
+const PILASTER_ROUND_W_CM: i32 = 100;
+const PILASTER_ROUND_D_CM: i32 = 50;
+
+/// ¿Es una pilastra en media luna de [`wall_pilasters`]? Por la forma del cable, no por medidas:
+/// ningún otro macizo lleva `SHAPE_HALF_CYLINDER` hoy.
+pub(super) fn is_round_pilaster(s: &Wg3Solid) -> bool {
+    s.shape == SHAPE_HALF_CYLINDER
+        && s.size_x_cm == PILASTER_ROUND_W_CM
+        && s.size_z_cm == PILASTER_ROUND_D_CM
+}
 const PILASTER_ROOM_CHANCE: f32 = 0.50;
 const SALT_PILASTER: u32 = 0xB1_11_A0_08;
 
@@ -850,8 +886,16 @@ fn wall_pilasters(
             }
             let pitch = PILASTER_PITCH_CM.0
                 + (st.next01() * (PILASTER_PITCH_CM.1 - PILASTER_PITCH_CM.0) as f32) as i32;
+            // ADR-125 — recta o en media luna, por espacio. Sorteo después del paso: los espacios
+            // que ya tenían pilastras conservan su ritmo.
+            let round = st.next01() < knobs_of(seed, s).round_pilaster;
+            let (w, d) = if round {
+                (PILASTER_ROUND_W_CM, PILASTER_ROUND_D_CM)
+            } else {
+                (PILASTER_W_CM, PILASTER_D_CM)
+            };
             let long = r.width_cm().max(r.depth_cm());
-            let usable = long - 2 * PILASTER_MARGIN_CM - PILASTER_W_CM;
+            let usable = long - 2 * PILASTER_MARGIN_CM - w;
             let count = usable / pitch;
             if count < 1 {
                 continue;
@@ -888,35 +932,36 @@ fn wall_pilasters(
                         + PILASTER_MARGIN_CM
                         + k * step
                         + shift;
-                    if along + PILASTER_W_CM
-                        > (if wide { r.max_x_cm } else { r.max_z_cm }) - PILASTER_MARGIN_CM
+                    if along + w > (if wide { r.max_x_cm } else { r.max_z_cm }) - PILASTER_MARGIN_CM
                     {
                         break;
                     }
-                    // Desde la cara interior del muro hacia dentro.
+                    // Desde la cara interior del muro hacia dentro. `foot` es la HUELLA en el
+                    // mundo (lo que se excluye y se comprueba); la caja del cable de la media luna
+                    // es la caja sin girar centrada en ella, ver abajo.
                     let foot = if wide {
                         let z = if wall == 0 {
                             r.min_z_cm + WALL_T_CM
                         } else {
-                            r.max_z_cm - WALL_T_CM - PILASTER_D_CM
+                            r.max_z_cm - WALL_T_CM - d
                         };
                         super::plan::PlanRect {
                             min_x_cm: along,
                             min_z_cm: z,
-                            max_x_cm: along + PILASTER_W_CM,
-                            max_z_cm: z + PILASTER_D_CM,
+                            max_x_cm: along + w,
+                            max_z_cm: z + d,
                         }
                     } else {
                         let x = if wall == 0 {
                             r.min_x_cm + WALL_T_CM
                         } else {
-                            r.max_x_cm - WALL_T_CM - PILASTER_D_CM
+                            r.max_x_cm - WALL_T_CM - d
                         };
                         super::plan::PlanRect {
                             min_x_cm: x,
                             min_z_cm: along,
-                            max_x_cm: x + PILASTER_D_CM,
-                            max_z_cm: along + PILASTER_W_CM,
+                            max_x_cm: x + d,
+                            max_z_cm: along + w,
                         }
                     };
                     let near = foot.shrunk(-PILASTER_DOOR_CLEAR_CM);
@@ -931,6 +976,35 @@ fn wall_pilasters(
                     {
                         continue;
                     }
+                    if round {
+                        // La media luna viaja como su caja SIN girar (cuerda × panza) centrada en
+                        // la huella, con la cara plana en la z mínima local y la panza hacia +z
+                        // local; el giro la pone contra cada pared: 0 = pared de z mínima, 180 =
+                        // de z máxima, 90 = de x mínima (local +z va a mundo +x), 270 = de x
+                        // máxima.
+                        let (cx, cz) = (
+                            (foot.min_x_cm + foot.max_x_cm) / 2,
+                            (foot.min_z_cm + foot.max_z_cm) / 2,
+                        );
+                        let yaw_deg = match (wide, wall) {
+                            (true, 0) => 0,
+                            (true, _) => 180,
+                            (false, 0) => 90,
+                            (false, _) => 270,
+                        };
+                        out.push(Wg3Solid {
+                            x_cm: cx - w / 2,
+                            z_cm: cz - d / 2,
+                            size_x_cm: w,
+                            size_z_cm: d,
+                            bottom_y_cm: s.floor_y_cm,
+                            top_y_cm: s.floor_y_cm + clear,
+                            style,
+                            yaw_deg,
+                            shape: SHAPE_HALF_CYLINDER,
+                        });
+                        continue;
+                    }
                     out.push(Wg3Solid {
                         x_cm: foot.min_x_cm,
                         z_cm: foot.min_z_cm,
@@ -939,6 +1013,8 @@ fn wall_pilasters(
                         bottom_y_cm: s.floor_y_cm,
                         top_y_cm: s.floor_y_cm + clear,
                         style,
+                        yaw_deg: 0,
+                        shape: SHAPE_BOX,
                     });
                 }
             }
@@ -1056,6 +1132,8 @@ fn atrium_solids(building: &RegionBuilding) -> Vec<Wg3Solid> {
                         bottom_y_cm: deck_y,
                         top_y_cm: deck_y + PARAPET_H_CM,
                         style,
+                        yaw_deg: 0,
+                        shape: SHAPE_BOX,
                     });
                     at = end;
                 }
@@ -1257,6 +1335,19 @@ fn hall_pillars(
             // ADR-105 enm. 10 — base y capitel, sólo en el pilar cuadrado. Sorteo al final de la
             // secuencia de la sala: todo lo anterior sale donde salía.
             let trim = !cross && room.next01() < PILLAR_TRIM_CHANCE;
+            // ADR-125 — la FORMA, último sorteo de la sala para que todo lo anterior salga donde
+            // salía. El cilindro y el octógono son un solo macizo con la huella del cuadrado, así
+            // que las exclusiones y el paso libre medidos sobre `pillar` siguen valiendo; la cruz
+            // es de dos cajas y sólo tiene sentido con caja.
+            let u_shape = room.next01();
+            let shape = if u_shape < k.round_pillar {
+                SHAPE_CYLINDER
+            } else if u_shape < k.round_pillar + k.octagon_pillar {
+                SHAPE_OCTAGON
+            } else {
+                SHAPE_BOX
+            };
+            let cross = cross && shape == SHAPE_BOX;
             // De centro a centro: el lado más el paso libre, que es lo que de verdad se anda.
             let gap_max = if dense {
                 PILLAR_GAP_MAX_DENSE_CM
@@ -1396,6 +1487,8 @@ fn hall_pillars(
                                 bottom_y_cm: s.floor_y_cm,
                                 top_y_cm: s.floor_y_cm + clear,
                                 style: style_of(s.role),
+                                yaw_deg: 0,
+                                shape,
                             };
                         if cross {
                             // Dos cajas concéntricas. El brazo es la mitad del lado redondeada a
@@ -1423,6 +1516,9 @@ fn hall_pillars(
                                     bottom_y_cm: s.floor_y_cm,
                                     top_y_cm: s.floor_y_cm + PILLAR_TRIM_H_CM,
                                     style: style_of(s.role),
+                                    yaw_deg: 0,
+                                    // Zapata y capitel con la forma del fuste: un disco mayor.
+                                    shape,
                                 });
                                 out.push(Wg3Solid {
                                     x_cm: x - o,
@@ -1432,6 +1528,8 @@ fn hall_pillars(
                                     bottom_y_cm: s.floor_y_cm + clear - PILLAR_TRIM_H_CM,
                                     top_y_cm: s.floor_y_cm + clear,
                                     style: style_of(s.role),
+                                    yaw_deg: 0,
+                                    shape,
                                 });
                             }
                         }
@@ -1647,6 +1745,8 @@ fn grid_maze_wall(
         bottom_y_cm: bottom,
         top_y_cm: top,
         style,
+        yaw_deg: 0,
+        shape: SHAPE_BOX,
     });
 }
 
@@ -1684,6 +1784,8 @@ fn push_partition_run(
             bottom_y_cm: bottom,
             top_y_cm: top,
             style,
+            yaw_deg: 0,
+            shape: SHAPE_BOX,
         });
         cut = end;
     }
@@ -2528,6 +2630,8 @@ fn interior_partitions(
                             bottom_y_cm: bottom,
                             top_y_cm: top,
                             style,
+                            yaw_deg: 0,
+                            shape: SHAPE_BOX,
                         });
                         cut = end;
                     }
@@ -2671,6 +2775,8 @@ fn pillar_arcades(building: &RegionBuilding, pillars: &[Wg3Solid]) -> Vec<Wg3Sol
                                 bottom_y_cm: y0,
                                 top_y_cm: y1,
                                 style,
+                                yaw_deg: 0,
+                                shape: SHAPE_BOX,
                             });
                         }
                     }
@@ -2801,6 +2907,8 @@ fn wall_vaults(
                             bottom_y_cm: y0,
                             top_y_cm: y1,
                             style,
+                            yaw_deg: 0,
+                            shape: SHAPE_BOX,
                         });
                         cut = end;
                     }
@@ -2942,6 +3050,8 @@ fn ring_bands(
                 bottom_y_cm: y0,
                 top_y_cm: y1,
                 style,
+                yaw_deg: 0,
+                shape: SHAPE_BOX,
             });
             cut = end;
         }
@@ -3141,6 +3251,8 @@ fn floor_platforms(
                     bottom_y_cm: s.floor_y_cm,
                     top_y_cm: s.floor_y_cm + PLATFORM_H_CM,
                     style,
+                    yaw_deg: 0,
+                    shape: SHAPE_BOX,
                 });
                 cut = end;
             }
@@ -3360,6 +3472,8 @@ fn beam_strip(
                         bottom_y_cm: bottom,
                         top_y_cm: top,
                         style,
+                        yaw_deg: 0,
+                        shape: SHAPE_BOX,
                     }
                 } else {
                     Wg3Solid {
@@ -3370,6 +3484,8 @@ fn beam_strip(
                         bottom_y_cm: bottom,
                         top_y_cm: top,
                         style,
+                        yaw_deg: 0,
+                        shape: SHAPE_BOX,
                     }
                 });
             }
@@ -3698,6 +3814,8 @@ fn ceiling_aprons(plan: &RegionPlan, by_piece: &[bool]) -> Vec<Wg3Solid> {
             top_y_cm: high_top,
             // Con el aspecto de la sala ALTA, que es de quien es la pared que se está completando.
             style: style_of(high.role),
+            yaw_deg: 0,
+            shape: SHAPE_BOX,
         });
     }
     out
@@ -3785,6 +3903,8 @@ fn door_lintels(plan: &RegionPlan, by_piece: &[bool], seed: i32) -> Vec<Wg3Solid
                 bottom_y_cm: bottom,
                 top_y_cm: low_top,
                 style: style_of(s.role),
+                yaw_deg: 0,
+                shape: SHAPE_BOX,
             });
         }
     }
@@ -3893,6 +4013,8 @@ fn door_arches(plan: &RegionPlan, by_piece: &[bool], seed: i32) -> Vec<Wg3Solid>
                             bottom_y_cm: y0,
                             top_y_cm: y1,
                             style: style_of(s.role),
+                            yaw_deg: 0,
+                            shape: SHAPE_BOX,
                         });
                     }
                 }
@@ -4012,6 +4134,8 @@ fn door_mullions(plan: &RegionPlan, by_piece: &[bool], seed: i32) -> Vec<Wg3Soli
             bottom_y_cm: floor,
             top_y_cm: low_top,
             style: style_of(a.role),
+            yaw_deg: 0,
+            shape: SHAPE_BOX,
         });
     }
     out
@@ -4133,6 +4257,8 @@ fn blind_wall_openings(
                                     bottom_y_cm: floor + WINDOW_SILL_CM,
                                     top_y_cm: floor + WINDOW_HEAD_CM,
                                     style: style_of(a.role),
+                                    yaw_deg: 0,
+                                    shape: SHAPE_BOX,
                                 });
                                 p += GRILLE_PITCH_CM;
                             }

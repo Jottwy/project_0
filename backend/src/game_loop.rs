@@ -1294,6 +1294,8 @@ pub async fn run(
                                     bottom_y_cm: s.bottom_y_cm,
                                     top_y_cm: s.top_y_cm,
                                     style: s.style,
+                                    yaw_deg: s.yaw_deg,
+                                    shape: s.shape,
                                 })
                                 .collect();
                             (placements, segments, carves, solids)

@@ -181,7 +181,7 @@ pub fn build_chunk_raster_full(
         if pmax_x <= cmin_x || pmin_x >= cmax_x || pmax_z <= cmin_z || pmin_z >= cmax_z {
             continue;
         }
-        builder.add_box(&segment::solid_box(s));
+        builder.add_solid(s);
     }
 
     builder.finish()

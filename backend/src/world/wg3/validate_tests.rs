@@ -1763,6 +1763,81 @@ fn pilasters_hug_their_wall() {
     println!("[pilastras] {seen} pilastras revisadas");
 }
 
+/// ADR-125 — **la media luna toca su pared por la cara plana**, sobre varias semillas.
+///
+/// La huella del cable es la caja SIN girar y el giro dice contra qué pared va; si el giro y la
+/// pared no casan, la panza queda dentro del muro y la cara plana mira a la sala — que se ve como
+/// una pilastra cuadrada, o sea que no se ve.
+#[test]
+fn half_moon_pilasters_hug_their_wall_by_the_flat_face() {
+    let m = real_manifest();
+    let seeds = validate::sweep_seeds(sweep_seed_count(3));
+    let mut seen = 0usize;
+    for &seed in &seeds {
+        for &(rx, rz) in NEAR_REGIONS.iter() {
+            let region = Wg3RegionCoord { x: rx, z: rz };
+            let inside = validate::region_inside(&m, seed, region);
+            for p in inside
+                .filled
+                .solids
+                .iter()
+                .filter(|s| super::fill::is_round_pilaster(s))
+            {
+                seen += 1;
+                let (cx, cz) = (p.x_cm + p.size_x_cm / 2, p.z_cm + p.size_z_cm / 2);
+                let (w, d) = (p.size_x_cm, p.size_z_cm);
+                // Envolvente en el mundo según el giro, y en qué cara está el plano.
+                let (env, flat) = match p.yaw_deg {
+                    0 => ((cx - w / 2, cz - d / 2, cx + w / 2, cz + d / 2), 'z'),
+                    180 => ((cx - w / 2, cz - d / 2, cx + w / 2, cz + d / 2), 'Z'),
+                    90 => ((cx - d / 2, cz - w / 2, cx + d / 2, cz + w / 2), 'x'),
+                    270 => ((cx - d / 2, cz - w / 2, cx + d / 2, cz + w / 2), 'X'),
+                    other => {
+                        panic!("semilla {seed:#x} región ({rx},{rz}): media luna con giro {other}")
+                    }
+                };
+                let rect = super::plan::PlanRect {
+                    min_x_cm: env.0,
+                    min_z_cm: env.1,
+                    max_x_cm: env.2,
+                    max_z_cm: env.3,
+                };
+                let host = inside.building.storeys.iter().find_map(|st| {
+                    st.built()
+                        .find(|(_, sp)| sp.floor_y_cm == p.bottom_y_cm && sp.covers_rect(&rect))
+                        .map(|(_, sp)| sp)
+                });
+                let Some(sp) = host else {
+                    panic!(
+                        "semilla {seed:#x} región ({rx},{rz}): media luna en ({cx},{cz}) fuera de \
+                         todo espacio"
+                    );
+                };
+                let r = sp.rect;
+                const T: i32 = 15;
+                let hugs = match flat {
+                    'z' => rect.min_z_cm == r.min_z_cm + T,
+                    'Z' => rect.max_z_cm == r.max_z_cm - T,
+                    'x' => rect.min_x_cm == r.min_x_cm + T,
+                    _ => rect.max_x_cm == r.max_x_cm - T,
+                };
+                assert!(
+                    hugs,
+                    "semilla {seed:#x} región ({rx},{rz}): media luna en ({cx},{cz}) giro {} con \
+                     la cara plana lejos de la pared",
+                    p.yaw_deg
+                );
+            }
+        }
+    }
+    assert!(
+        seen > 20,
+        "sólo {seen} medias lunas en {} regiones: la gramática no está emitiendo",
+        seeds.len() * NEAR_REGIONS.len()
+    );
+    println!("[medias lunas] {seen} revisadas");
+}
+
 /// ADR-105 enmienda 5 — **las invariantes duras de las vigas**, sobre varias semillas.
 ///
 /// Una viga cuelga del techo, así que lo que puede romper no es el paso sino la CABEZA y la SUBIDA:

@@ -62,5 +62,112 @@ namespace BackroomsSurvival.Tests.EditMode
                 Object.DestroyImmediate(parent);
             }
         }
+
+        /// <summary>ADR-125 — un cilindro se monta con malla convexa, del tamaño de su huella, y
+        /// la esquina de la caja queda FUERA de la malla (que es lo que el ráster del servidor
+        /// también deja libre: `round_solids_stamp_as_discs_not_boxes`).</summary>
+        [Test]
+        public void ACylinderIsAConvexMeshInscribedInItsFootprint()
+        {
+            var parent = new GameObject("chunk");
+            GameObject go = null;
+            try
+            {
+                var created = new System.Collections.Generic.List<Mesh>();
+                var msg = new Wg3SolidMsg
+                {
+                    xCm = 800, zCm = 800, sizeXCm = 400, sizeZCm = 400,
+                    bottomYCm = 0, topYCm = 300, style = 3, yawDeg = 0, shape = Wg3Shape.Cylinder,
+                };
+                go = Wg3SceneAssembler.AssembleSolid(msg, parent.transform, null, created, "cyl");
+                Assert.IsNotNull(go);
+
+                Mesh mesh = go.GetComponent<MeshFilter>().sharedMesh;
+                Vector3 centre = go.transform.TransformPoint(mesh.bounds.center);
+                Assert.Less((centre - new Vector3(10f, 1.5f, 10f)).magnitude, 0.001f, $"centro en {centre}");
+                Assert.Less((mesh.bounds.size - new Vector3(4f, 3f, 4f)).magnitude, 0.01f,
+                    $"la envolvente del cilindro mide {mesh.bounds.size}, no 4×3×4");
+
+                // Ningún vértice a más del radio del eje: la esquina de la caja no existe.
+                Vector3[] verts = mesh.vertices;
+                float maxR = 0f;
+                for (int i = 0; i < verts.Length; i++)
+                {
+                    Vector3 w = go.transform.TransformPoint(verts[i]);
+                    maxR = Mathf.Max(maxR, new Vector2(w.x - 10f, w.z - 10f).magnitude);
+                }
+                Assert.Less(maxR, 2.001f, $"un vértice a {maxR} m del eje: eso es una caja, no un cilindro");
+
+                Assert.IsNull(go.GetComponent<BoxCollider>(), "un prisma no lleva BoxCollider");
+                var mc = go.GetComponent<MeshCollider>();
+                Assert.IsNotNull(mc, "un prisma frena con su malla");
+                Assert.IsTrue(mc.convex, "y la malla tiene que ser convexa para que un CharacterController choque");
+
+                foreach (Mesh m in created) Object.DestroyImmediate(m);
+            }
+            finally
+            {
+                if (go != null) Object.DestroyImmediate(go);
+                Object.DestroyImmediate(parent);
+            }
+        }
+
+        /// <summary>ADR-125 — la media luna girada 90° apoya la cara plana en x mínima y la panza
+        /// mira a +x: es el giro que `wall_pilasters` usa contra la pared de x mínima, y si la
+        /// convención de giro de los dos lados no casa, la panza queda dentro del muro.</summary>
+        [Test]
+        public void AHalfMoonTurnedNinetyBulgesTowardsPlusX()
+        {
+            var parent = new GameObject("chunk");
+            GameObject go = null;
+            try
+            {
+                var created = new System.Collections.Generic.List<Mesh>();
+                var msg = new Wg3SolidMsg
+                {
+                    xCm = 900, zCm = 1000, sizeXCm = 200, sizeZCm = 100,
+                    bottomYCm = 0, topYCm = 300, style = 3, yawDeg = 90, shape = Wg3Shape.HalfCylinder,
+                };
+                go = Wg3SceneAssembler.AssembleSolid(msg, parent.transform, null, created, "half");
+                Mesh mesh = go.GetComponent<MeshFilter>().sharedMesh;
+                Bounds b = mesh.bounds;
+                Vector3 min = go.transform.TransformPoint(b.min);
+                Vector3 max = go.transform.TransformPoint(b.max);
+                // Envolvente girada: x 9,5..10,5 (cara plana en 9,5), z 9,5..11,5.
+                Assert.AreEqual(9.5f, min.x, 0.01f, "la cara plana no está en x = 9,5");
+                Assert.AreEqual(10.5f, max.x, 0.01f, "la panza no llega a x = 10,5");
+                Assert.AreEqual(9.5f, min.z, 0.01f);
+                Assert.AreEqual(11.5f, max.z, 0.01f);
+                foreach (Mesh m in created) Object.DestroyImmediate(m);
+            }
+            finally
+            {
+                if (go != null) Object.DestroyImmediate(go);
+                Object.DestroyImmediate(parent);
+            }
+        }
+
+        /// <summary>Wire 56 — las dos claves nuevas se leen por nombre; si el parser las saltara,
+        /// todo pilar redondo llegaría como caja y sin giro, sin un solo error.</summary>
+        [Test]
+        public void YawAndShapeAreParsedFromTheWire()
+        {
+            var w = new MsgPackWriter();
+            w.WriteMapHeader(9);
+            w.WriteString("x_cm"); w.WriteInt(900);
+            w.WriteString("z_cm"); w.WriteInt(-60);
+            w.WriteString("size_x_cm"); w.WriteInt(150);
+            w.WriteString("size_z_cm"); w.WriteInt(20);
+            w.WriteString("bottom_y_cm"); w.WriteInt(332);
+            w.WriteString("top_y_cm"); w.WriteInt(442);
+            w.WriteString("style"); w.WriteInt(3);
+            w.WriteString("yaw_deg"); w.WriteInt(270);
+            w.WriteString("shape"); w.WriteInt(2);
+            var r = new MsgPackReader(w.ToArray());
+            Wg3SolidMsg s = Wg3SolidMsg.Parse(r);
+            Assert.AreEqual(900, s.xCm);
+            Assert.AreEqual(270, s.yawDeg);
+            Assert.AreEqual(2, s.shape);
+        }
     }
 }

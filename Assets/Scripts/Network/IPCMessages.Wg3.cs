@@ -228,6 +228,15 @@ namespace BackroomsSurvival.Net
         /// él un pretil se lee como un objeto pegado y no como la sala a la que pertenece.</summary>
         public byte style;
 
+        /// <summary>ADR-121 D1 (wire 56) — giro alrededor del centro de la huella, en grados,
+        /// horario visto desde arriba: la convención de <c>Wg3Volume.yawDegrees</c>. La caja de
+        /// arriba es la caja SIN girar.</summary>
+        public short yawDeg;
+
+        /// <summary>ADR-125 (wire 56) — forma inscrita en la huella: 0 caja, 1 cilindro, 2 media
+        /// luna (cara plana en z mínima, panza hacia +z), 3 octógono. Ver <c>Wg3Shape</c>.</summary>
+        public byte shape;
+
         public static Wg3SolidMsg Parse(MsgPackReader r)
         {
             var s = new Wg3SolidMsg();
@@ -242,6 +251,8 @@ namespace BackroomsSurvival.Net
                 else if (MsgPackReader.Is(k, "bottom_y_cm")) s.bottomYCm = (int)r.ReadInt();
                 else if (MsgPackReader.Is(k, "top_y_cm")) s.topYCm = (int)r.ReadInt();
                 else if (MsgPackReader.Is(k, "style")) s.style = (byte)r.ReadInt();
+                else if (MsgPackReader.Is(k, "yaw_deg")) s.yawDeg = (short)r.ReadInt();
+                else if (MsgPackReader.Is(k, "shape")) s.shape = (byte)r.ReadInt();
                 else r.Skip();
             }
             return s;

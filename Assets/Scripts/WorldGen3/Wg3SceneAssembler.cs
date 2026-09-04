@@ -500,7 +500,11 @@ namespace BackroomsSurvival.WorldGen3
                 {
                     center = origin + new Vector3(sx * 0.5f, sy * 0.5f, sz * 0.5f),
                     size = new Vector3(sx, sy, sz),
-                    yawDegrees = 0f,
+                    // ADR-121 D1 — el giro es alrededor del centro de la huella, que es el que
+                    // acabamos de calcular; la caja del cable es la caja SIN girar.
+                    yawDegrees = solid.yawDeg,
+                    // ADR-125 — la forma dentro de la huella.
+                    shape = solid.shape,
                     kind = Wg3VolumeKind.Pillar,
                 }
             };
@@ -523,7 +527,19 @@ namespace BackroomsSurvival.WorldGen3
             // ilumina desde las dos. Un pretil vive en una sola.
             renderer.renderingLayerMask = Wg3StoreyLayers.ForSurface(origin.y, sy);
 
-            AddColliders(go, volumes, origin);
+            if (solid.shape == Wg3Shape.Box)
+            {
+                AddColliders(go, volumes, origin);
+            }
+            else
+            {
+                // ADR-125 — un prisma frena con SU malla, convexa: cilindro, media luna y octógono
+                // son convexos, y un `CapsuleCollider` a la altura del pilar metería sus casquetes
+                // dos metros dentro del forjado de la planta de abajo.
+                var mc = go.AddComponent<MeshCollider>();
+                mc.sharedMesh = mesh;
+                mc.convex = true;
+            }
             return go;
         }
 
@@ -533,6 +549,8 @@ namespace BackroomsSurvival.WorldGen3
             {
                 Wg3Volume vol = volumes[v];
                 if (!vol.IsSolid) continue;
+                // ADR-125 — los prismas llevan collider de malla, que pone `AssembleSolid`.
+                if (vol.shape != Wg3Shape.Box) continue;
 
                 float yaw = Mathf.Repeat(vol.yawDegrees, 90f);
                 bool axisAligned = yaw < YawEpsilon || yaw > 90f - YawEpsilon;

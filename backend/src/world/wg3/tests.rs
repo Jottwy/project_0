@@ -8482,9 +8482,17 @@ fn probe_dump_regions_json() {
             .enumerate()
             .flat_map(|(n, st)| {
                 st.spaces.iter().filter(|s| s.role.is_built()).map(move |s| {
+                    let character = match fill::knobs_of(b.seed, s).character {
+                        fill::Character::Open => "abierto",
+                        fill::Character::Office => "oficina",
+                        fill::Character::Hall => "nave",
+                        fill::Character::Maze => "laberinto",
+                        fill::Character::Weird => "raro",
+                    };
                     json!({
                         "storey": n,
                         "role": s.role.name(),
+                        "character": character,
                         "floor": s.floor_y_cm,
                         "clear": fill::clear_height_cm(s),
                         "parts": s.parts().iter().map(|p| [p.min_x_cm, p.min_z_cm, p.max_x_cm, p.max_z_cm]).collect::<Vec<_>>(),
@@ -8810,6 +8818,159 @@ fn every_solid_survives_into_the_raster() {
         "[macizo] {checked} verificados en el ráster: {parapets} pretiles, {pillars} pilares, \
          {aprons} faldones y dinteles, {beams} vigas, {arches} hiladas de arco, {lows} medios \
          muros"
+    );
+}
+
+/// ADR-121 D4 / ADR-125 — **todo macizo servido pasa sus propias comprobaciones, y las formas
+/// nuevas EXISTEN.** Un giro fuera de paso o una media luna con el fondo mal medido cruzarían el
+/// cable sin error y el cliente dibujaría otra cosa que la que el ráster frena.
+#[test]
+fn every_served_solid_is_well_formed_and_the_round_ones_exist() {
+    let m = real_manifest();
+    let mut checked = 0usize;
+    let mut by_shape = [0usize; 4];
+    let mut rotated = 0usize;
+    for (rx, rz) in AUDIT_REGIONS {
+        let region = Wg3RegionCoord { x: rx, z: rz };
+        let inside = super::validate::region_inside(&m, SERVED_SEED, region);
+        for s in &inside.filled.solids {
+            let problems = s.problems();
+            assert!(
+                problems.is_empty(),
+                "región ({rx},{rz}): macizo en ({},{}) {}×{} forma {} giro {}: {problems:?}",
+                s.x_cm,
+                s.z_cm,
+                s.size_x_cm,
+                s.size_z_cm,
+                s.shape,
+                s.yaw_deg
+            );
+            checked += 1;
+            by_shape[s.shape as usize] += 1;
+            if s.yaw_deg != 0 {
+                rotated += 1;
+            }
+        }
+    }
+    assert!(checked > 0, "ninguna región emitió un macizo");
+    assert!(
+        by_shape[1] > 0 && by_shape[2] > 0 && by_shape[3] > 0,
+        "faltan formas: cajas {} cilindros {} medias lunas {} octógonos {}",
+        by_shape[0],
+        by_shape[1],
+        by_shape[2],
+        by_shape[3]
+    );
+    assert!(
+        rotated > 0,
+        "ningún macizo girado: el giro no cruza el cable"
+    );
+    println!(
+        "[formas] {checked} macizos: {} cajas, {} cilindros, {} medias lunas, {} octógonos, {} \
+         girados",
+        by_shape[0], by_shape[1], by_shape[2], by_shape[3], rotated
+    );
+}
+
+/// ADR-125 — **el ráster estampa el DISCO, no la caja.** Es la mitad servidor del contrato: el
+/// cliente dibuja un cilindro y por sus esquinas se pasa; si el ráster macizara la envolvente,
+/// el servidor frenaría donde el cliente deja pasar (regla R6, el tirón).
+#[test]
+fn round_solids_stamp_as_discs_not_boxes() {
+    use super::segment::{Wg3Solid, SHAPE_CYLINDER, SHAPE_HALF_CYLINDER, SHAPE_OCTAGON};
+
+    let stamp = |s: Wg3Solid| {
+        let mut b = Wg3RasterBuilder::new(0, 0, 40, 40);
+        b.add_solid(&s);
+        b.finish()
+    };
+    // Cilindro de 4 m centrado en (10, 10): el centro es macizo, la esquina de su caja no.
+    let cyl = stamp(Wg3Solid {
+        x_cm: 800,
+        z_cm: 800,
+        size_x_cm: 400,
+        size_z_cm: 400,
+        bottom_y_cm: 0,
+        top_y_cm: 300,
+        style: 3,
+        yaw_deg: 0,
+        shape: SHAPE_CYLINDER,
+    });
+    assert!(
+        cyl.is_solid_at(10.0, 1.5, 10.0),
+        "el centro del cilindro no es macizo"
+    );
+    assert!(
+        cyl.is_solid_at(11.9, 1.5, 10.0),
+        "el borde del cilindro no es macizo"
+    );
+    assert!(
+        !cyl.is_solid_at(8.25, 1.5, 8.25),
+        "la esquina de la caja del cilindro es maciza: se estampó la envolvente"
+    );
+    // Octógono de 6 m: mismo centro, la esquina de la caja libre. Seis y no cuatro porque se
+    // estampa por el círculo CIRCUNSCRITO (1,082 apotemas) y con el ráster conservador la celda de
+    // esquina de un octógono de 4 m sigue tocándolo (2,12 < 2,165); a 6 m ya no (3,54 > 3,25).
+    let oct = stamp(Wg3Solid {
+        x_cm: 700,
+        z_cm: 700,
+        size_x_cm: 600,
+        size_z_cm: 600,
+        bottom_y_cm: 0,
+        top_y_cm: 300,
+        style: 3,
+        yaw_deg: 0,
+        shape: SHAPE_OCTAGON,
+    });
+    assert!(oct.is_solid_at(10.0, 1.5, 10.0));
+    assert!(
+        !oct.is_solid_at(7.1, 1.5, 7.1),
+        "la esquina del octógono es maciza"
+    );
+    // Media luna de 2 m de cuerda contra la pared de z mínima (giro 0): panza hacia +z. Delante
+    // de la cara plana (z menor) nada; en la panza, macizo.
+    let half = stamp(Wg3Solid {
+        x_cm: 900,
+        z_cm: 1000,
+        size_x_cm: 200,
+        size_z_cm: 100,
+        bottom_y_cm: 0,
+        top_y_cm: 300,
+        style: 3,
+        yaw_deg: 0,
+        shape: SHAPE_HALF_CYLINDER,
+    });
+    assert!(
+        half.is_solid_at(10.0, 1.5, 10.25),
+        "la panza de la media luna no es maciza"
+    );
+    // A 9,4 y no a 9,6: la celda 9,5..10,0 TOCA la cara plana y el ráster conservador la maciza
+    // igual que hace `add_box` con una pared apoyada en la línea de una celda.
+    assert!(
+        !half.is_solid_at(10.0, 1.5, 9.4),
+        "hay macizo detrás de la cara plana de la media luna"
+    );
+    // Y girada 90: la panza va hacia +x, la cara plana queda en x mínima.
+    let turned = stamp(Wg3Solid {
+        x_cm: 900,
+        z_cm: 1000,
+        size_x_cm: 200,
+        size_z_cm: 100,
+        bottom_y_cm: 0,
+        top_y_cm: 300,
+        style: 3,
+        yaw_deg: 90,
+        shape: SHAPE_HALF_CYLINDER,
+    });
+    assert!(
+        turned.is_solid_at(10.25, 1.5, 10.5),
+        "la panza girada no es maciza"
+    );
+    // Girada, la cara plana queda en x = 9,5 (el disco se centra en el medio de la cara plana,
+    // que el giro lleva a −x): la celda 9,0..9,5 la toca, la 8,5..9,0 no.
+    assert!(
+        !turned.is_solid_at(8.9, 1.5, 10.5),
+        "hay macizo detrás de la cara plana girada"
     );
 }
 

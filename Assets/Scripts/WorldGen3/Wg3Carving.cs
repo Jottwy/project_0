@@ -96,7 +96,9 @@ namespace BackroomsSurvival.WorldGen3
         {
             float yaw = Mathf.Repeat(vol.yawDegrees, 90f);
             bool axisAligned = yaw < YawEpsilon || yaw > 90f - YawEpsilon;
-            if (!axisAligned)
+            // ADR-125 — y un volumen redondo tampoco se talla: es un macizo, inmune a los vanos
+            // por definición (ADR-105 D2), y restarle una caja pediría CSG.
+            if (!axisAligned || vol.shape != Wg3Shape.Box)
             {
                 output.Add(vol);
                 return;

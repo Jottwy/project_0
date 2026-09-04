@@ -30,6 +30,7 @@
 //! diámetro del jugador, el tamaño de celda de D1 está mal elegido y hay que bajarlo.
 
 use super::placement::PlacedBox;
+use super::segment::{self, Wg3Solid, SHAPE_BOX, SHAPE_HALF_CYLINDER, SHAPE_OCTAGON};
 
 /// Lado de celda del ráster, en metros. ADR-095 D1.
 ///
@@ -156,6 +157,91 @@ impl Wg3RasterBuilder {
                     vz,
                     half,
                 ) {
+                    continue;
+                }
+                self.columns[iz * self.cells_x + ix].push(span);
+            }
+        }
+    }
+
+    /// ADR-125 — estampa un MACIZO según su forma.
+    ///
+    /// La caja va por `add_box` (con su giro, ADR-121). Las formas redondas se estampan como
+    /// DISCO y no como su envolvente: un pilar de 4 m estampado como caja deja 58 cm de esquina
+    /// que el cliente dibuja vacía y el servidor bloquea, que es exactamente el tirón que la regla
+    /// R6 prohíbe. Conservador como `add_box` —toda celda que el disco TOQUE es maciza— y por el
+    /// mismo motivo.
+    pub fn add_solid(&mut self, s: &Wg3Solid) {
+        let b = segment::solid_box(s);
+        if s.shape == SHAPE_BOX {
+            self.add_box(&b);
+            return;
+        }
+        let hy = b.size[1] * 0.5;
+        if hy <= 0.0 || b.size[0] <= 0.0 {
+            return;
+        }
+        let bottom = ((b.center[1] - hy) * CM_PER_M).floor();
+        let top = ((b.center[1] + hy) * CM_PER_M).ceil();
+        let span = Span {
+            bottom_cm: bottom.clamp(i16::MIN as f32, i16::MAX as f32) as i16,
+            top_cm: top.clamp(i16::MIN as f32, i16::MAX as f32) as i16,
+        };
+        if span.top_cm <= span.bottom_cm {
+            return;
+        }
+
+        // El radio es medio ancho de la huella. El octógono se estampa por su círculo
+        // CIRCUNSCRITO: cabe entero dentro, así que sigue siendo conservador, y en las esquinas
+        // aprieta más que la caja (1,08 frente a 1,41 apotemas).
+        let r = b.size[0] * 0.5;
+        let stamp_r = if s.shape == SHAPE_OCTAGON {
+            r / (22.5f32).to_radians().cos()
+        } else {
+            r
+        };
+        // Centro del disco: el de la huella, salvo en la media luna, donde está en el medio de la
+        // cara plana (z mínima de la caja sin girar), girado con la caja.
+        let (sin, cos) = b.yaw_degrees.to_radians().sin_cos();
+        let (ux, uz, vx, vz) = (cos, -sin, sin, cos);
+        let (dcx, dcz) = if s.shape == SHAPE_HALF_CYLINDER {
+            let back = -b.size[2] * 0.5;
+            (b.center[0] + vx * back, b.center[2] + vz * back)
+        } else {
+            (b.center[0], b.center[2])
+        };
+
+        let (ix0, ix1) = self.cell_range_x(dcx - stamp_r, dcx + stamp_r);
+        let (iz0, iz1) = self.cell_range_z(dcz - stamp_r, dcz + stamp_r);
+        let half = WG3_CELL_M * 0.5;
+        let (hx, hz) = (b.size[0] * 0.5, b.size[2] * 0.5);
+        for iz in iz0..iz1 {
+            for ix in ix0..ix1 {
+                let (ccx, ccz) = self.cell_centre(ix, iz);
+                // Punto de la celda más cercano al centro del disco: si está a menos del radio,
+                // el disco toca la celda.
+                let nx = (dcx - ccx).clamp(-half, half);
+                let nz = (dcz - ccz).clamp(-half, half);
+                let ex = dcx - (ccx + nx);
+                let ez = dcz - (ccz + nz);
+                if ex * ex + ez * ez > stamp_r * stamp_r {
+                    continue;
+                }
+                // La media luna, además, sólo por el lado de la panza: la propia caja girada la
+                // acota (mide diámetro × radio desde la cara plana).
+                if s.shape == SHAPE_HALF_CYLINDER
+                    && !obb_overlaps_cell(
+                        b.center[0] - ccx,
+                        b.center[2] - ccz,
+                        hx,
+                        hz,
+                        ux,
+                        uz,
+                        vx,
+                        vz,
+                        half,
+                    )
+                {
                     continue;
                 }
                 self.columns[iz * self.cells_x + ix].push(span);

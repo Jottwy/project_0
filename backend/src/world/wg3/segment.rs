@@ -156,7 +156,34 @@ pub struct Wg3Solid {
     /// Aspecto, como en [`Wg3Segment`]. El servidor no lo interpreta: sin él un pretil se lee como un
     /// objeto pegado en vez de como arquitectura de la sala a la que pertenece.
     pub style: u8,
+    /// ADR-121 D1 — giro alrededor del CENTRO de la huella, en grados enteros, positivo horario
+    /// visto desde arriba (la convención de Unity y de `raster::add_box`). Cero es el macizo de
+    /// siempre. `x_cm/z_cm/size_*` siguen describiendo la caja SIN girar.
+    pub yaw_deg: i16,
+    /// ADR-125 — la forma dentro de la huella: [`SHAPE_BOX`], [`SHAPE_CYLINDER`],
+    /// [`SHAPE_HALF_CYLINDER`] u [`SHAPE_OCTAGON`]. La huella sigue siendo la caja: la forma se
+    /// inscribe en ella, y por eso `centre()` y el reparto por chunk no cambian.
+    pub shape: u8,
 }
+
+/// ADR-125 — la caja de siempre.
+pub const SHAPE_BOX: u8 = 0;
+/// ADR-125 — cilindro inscrito en la huella. **Sólo círculo**: `size_x_cm == size_z_cm`, para que el
+/// giro no signifique nada y el ráster lo estampe como un disco exacto.
+pub const SHAPE_CYLINDER: u8 = 1;
+/// ADR-125 — MEDIA LUNA: medio disco con la cara plana en el lado de z mínima de la caja sin girar
+/// y la panza hacia +z. `size_z_cm == size_x_cm / 2`. Con `yaw_deg` múltiplo de 90 se adosa a
+/// cualquier pared.
+pub const SHAPE_HALF_CYLINDER: u8 = 2;
+/// ADR-125 — prisma octogonal REGULAR inscrito en la huella (cuadrada), con caras planas sobre los
+/// ejes. Sustituye al «octógono de dos macizos» de ADR-121 D5, que era una estrella de ocho puntas.
+pub const SHAPE_OCTAGON: u8 = 3;
+
+/// ADR-121 D4 — paso del sorteo de giros. Un giro arbitrario no se lee como intención.
+pub const YAW_STEP_DEG: i16 = 15;
+/// ADR-121 D4 — lado mínimo de un macizo GIRADO. Por debajo de la celda (50) la geometría cambia de
+/// significado al cruzar el cable: el ráster la engorda a la celda y el cliente la dibuja fina.
+pub const ROTATED_SIDE_MIN_CM: i32 = 45;
 
 impl Wg3Solid {
     /// El centro de la huella, en metros. Es lo que decide de qué chunk es el macizo (ADR-105 D3).
@@ -167,14 +194,86 @@ impl Wg3Solid {
         )
     }
 
-    /// `(min_x, min_z, max_x, max_z)` en metros.
+    /// `(min_x, min_z, max_x, max_z)` en metros: la ENVOLVENTE de la huella girada (ADR-121 D1). Es
+    /// lo que usan las exclusiones del relleno y el filtro por chunk del ráster, y por eso tiene que
+    /// crecer con el giro: un tabique a 45° toca celdas que su caja sin girar no toca.
     pub fn bounds(&self) -> (f32, f32, f32, f32) {
-        let (x, z) = (metres(self.x_cm), metres(self.z_cm));
-        (x, z, x + metres(self.size_x_cm), z + metres(self.size_z_cm))
+        let (cx, cz) = self.centre();
+        let (hx, hz) = (metres(self.size_x_cm) * 0.5, metres(self.size_z_cm) * 0.5);
+        if self.yaw_deg == 0 {
+            return (cx - hx, cz - hz, cx + hx, cz + hz);
+        }
+        let (sin, cos) = (self.yaw_deg as f32).to_radians().sin_cos();
+        let ext_x = hx * cos.abs() + hz * sin.abs();
+        let ext_z = hx * sin.abs() + hz * cos.abs();
+        (cx - ext_x, cz - ext_z, cx + ext_x, cz + ext_z)
+    }
+
+    /// ADR-121 D4 / ADR-125 — lo que este módulo exige antes de emitir un macizo. Vacío = utilizable.
+    pub fn problems(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if self.size_x_cm <= 0 || self.size_z_cm <= 0 {
+            out.push(format!(
+                "huella no positiva: {}×{} cm",
+                self.size_x_cm, self.size_z_cm
+            ));
+        }
+        if self.top_y_cm <= self.bottom_y_cm {
+            out.push(format!(
+                "banda vertical vacía: {}..{} cm",
+                self.bottom_y_cm, self.top_y_cm
+            ));
+        }
+        // 0..360 y no los 0..165 de ADR-121 D4: una caja es simétrica y le bastaba media vuelta,
+        // pero la media luna de ADR-125 tiene DIRECCIÓN (la panza), y 270 no es 90.
+        if !(0..360).contains(&self.yaw_deg) || self.yaw_deg % YAW_STEP_DEG != 0 {
+            out.push(format!(
+                "giro de {}°: tiene que ser múltiplo de {} en 0..360",
+                self.yaw_deg, YAW_STEP_DEG
+            ));
+        }
+        if self.yaw_deg != 0 && self.size_x_cm.min(self.size_z_cm) < ROTATED_SIDE_MIN_CM {
+            out.push(format!(
+                "macizo girado de {}×{} cm: por debajo de {} cm el ráster y el cliente ya no dicen \
+                 lo mismo",
+                self.size_x_cm, self.size_z_cm, ROTATED_SIDE_MIN_CM
+            ));
+        }
+        match self.shape {
+            SHAPE_BOX => {}
+            SHAPE_CYLINDER | SHAPE_OCTAGON => {
+                if self.size_x_cm != self.size_z_cm {
+                    out.push(format!(
+                        "forma {} sobre huella {}×{}: sólo se inscribe en un cuadrado",
+                        self.shape, self.size_x_cm, self.size_z_cm
+                    ));
+                }
+                if self.shape == SHAPE_CYLINDER && self.yaw_deg != 0 {
+                    out.push("un cilindro girado no significa nada".to_string());
+                }
+            }
+            SHAPE_HALF_CYLINDER => {
+                if self.size_z_cm * 2 != self.size_x_cm {
+                    out.push(format!(
+                        "media luna de {}×{}: el fondo tiene que ser la mitad del ancho",
+                        self.size_x_cm, self.size_z_cm
+                    ));
+                }
+                if self.yaw_deg % 90 != 0 {
+                    out.push(format!(
+                        "media luna a {}°: sólo se adosa a paredes, múltiplos de 90",
+                        self.yaw_deg
+                    ));
+                }
+            }
+            other => out.push(format!("forma {other} desconocida")),
+        }
+        out
     }
 }
 
-/// La caja de colisión de un macizo. Una sola, y por eso este canal existe.
+/// La caja de colisión de un macizo: la HUELLA girada. Para las formas no-caja es la envolvente
+/// (conservadora); el estampado exacto de disco y octógono lo hace `Wg3RasterBuilder::add_solid`.
 pub fn solid_box(s: &Wg3Solid) -> PlacedBox {
     let (x, z) = (metres(s.x_cm), metres(s.z_cm));
     let (sx, sz) = (metres(s.size_x_cm), metres(s.size_z_cm));
@@ -182,7 +281,7 @@ pub fn solid_box(s: &Wg3Solid) -> PlacedBox {
     PlacedBox {
         center: [x + sx * 0.5, metres(s.bottom_y_cm) + sy * 0.5, z + sz * 0.5],
         size: [sx, sy, sz],
-        yaw_degrees: 0.0,
+        yaw_degrees: s.yaw_deg as f32,
         kind: KIND_WALL,
     }
 }

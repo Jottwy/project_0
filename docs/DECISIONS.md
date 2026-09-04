@@ -13497,3 +13497,92 @@ Ni tuberías ni rejillas de suelo ni sonido de conducto; sólo el cuerpo, el pap
 - `validate_sweep`: todo conducto tiene los dos extremos en la mancha mayor y ningún espacio depende
   de él para alcanzarse.
 - Playtest en `WorldGen3Live`: entrar, no poder levantarse, salir; un faceling se para en la boca.
+
+---
+
+## ADR-125 — La forma dentro de la huella: cilindros, medias lunas y octógonos cruzan el cable (2026-09-04) — ACEPTADA (Joel eligió «implementar ya ADR-121 + cilindro»; implementada con ADR-121 D1–D2 en wire 56)
+
+### Contexto
+
+Joel, 2026-09-04, tras ver las capturas: *«¿se puede mejorar los pilares? más volumen o más variedad e
+inclusive generar varios polígonos para hacer pilares suavizados y que parezcan circunferencia?»*.
+
+Con cajas no se puede. La unión de cuadrados girados nunca da un círculo: el cociente radio
+interior/exterior queda clavado en 0,71 por muchos que se apilen, y dos cuadrados a 45° —el
+«octógono» de ADR-121 D5.1— son una estrella de ocho puntas, no un octógono. La unión de cajas
+ALINEADAS inscritas en un círculo sí se acerca (20 vértices sobre la circunferencia con cinco cajas),
+pero deja muescas del 10 % y, sobre todo, aristas duras: lo que hace que un pilar se lea redondo no es
+el número de lados sino la **normal suave** en la cara curva, y eso una caja no lo tiene. Hace falta
+que el cliente construya un prisma, y para eso el macizo tiene que decir qué forma es.
+
+**Y al hacerlo se destapó que ningún macizo se había visto nunca.** `AssembleSolid` daba el centro del
+volumen en coordenadas locales y `Wg3MeshBuilder`/`AddColliders` le restaban el origen otra vez:
+desde wire 50 (ADR-105 D4) todos los pilares, pretiles, tabiques, vigas y pilastras se dibujaban y
+colisionaban apilados en (0, 0), y en su sitio quedaba sólo el ráster del servidor —paredes
+invisibles—. Lo cazó una captura en (3, 0, 14) con un bloque de 4 m plantado en el origen y ninguna
+cruz de 3 m donde el plan la pone (104, 47). Arreglado en `5aa8fc07` antes de este ADR, con test de
+malla y collider en coordenadas de mundo (`Wg3SolidAssemblyTests`).
+
+### D1 — `Wg3Solid` gana `shape: u8`, y la forma se INSCRIBE en la huella
+
+- `0` caja (todo lo de antes, byte a byte). `1` cilindro: círculo inscrito, sólo sobre huella
+  cuadrada. `2` media luna: medio disco con la cara plana en la z mínima de la caja sin girar y la
+  panza hacia +z; la caja mide cuerda × radio. `3` octógono regular inscrito, caras planas sobre los
+  ejes. Sustituye al octógono de dos macizos de ADR-121 D5.1, que no se implementa.
+- La huella sigue siendo la caja: `centre()`, el reparto por chunk (ADR-105 D3) y las exclusiones del
+  relleno no cambian. Un pilar redondo ocupa en el plan lo mismo que el cuadrado que sustituye.
+- `Wg3Solid::problems` (nuevo) lo exige: cilindro y octógono cuadrados, media luna con fondo = mitad
+  del ancho y giro múltiplo de 90, giro múltiplo de 15 en **0..360** (ADR-121 D4 decía 0..165 porque
+  una caja es simétrica; la media luna tiene dirección y 270 no es 90), y lado ≥ 45 si hay giro.
+
+### D2 — El ráster estampa el DISCO, no la envolvente (regla R6)
+
+`Wg3RasterBuilder::add_solid`: la caja va por `add_box` con su giro; cilindro y octógono se estampan
+como disco (el octógono por su círculo circunscrito, 1,08 apotemas: cabe entero y en las esquinas
+aprieta más que la caja, 1,41); la media luna, disco ∩ su caja girada. Conservador como `add_box`:
+toda celda que el disco TOQUE es maciza. Un pilar de 4 m estampado como caja dejaría 58 cm de esquina
+que el cliente dibuja vacía y el servidor bloquea: exactamente el tirón que R6 prohíbe.
+Test: `round_solids_stamp_as_discs_not_boxes`.
+
+### D3 — El cliente construye un prisma con normal suave y frena con malla convexa
+
+`Wg3MeshBuilder.AddPrism`: 24 lados el cilindro, 12 la media luna, 8 el octógono; normal radial por
+vértice (cilindro, media luna) o dura por cara (octógono: sus aristas son intención); tapas planas;
+la media luna cierra por la cara `back` de su caja. UV en metros como las cajas: `u` longitud de
+arco, `v` altura. Colisión: `MeshCollider` convexo con la propia malla —un `CapsuleCollider` a la
+altura del pilar metería sus casquetes dos metros en el forjado de la planta de abajo—. Los prismas
+no se tallan (`Wg3Carving`): son macizos, inmunes a los vanos por ADR-105 D2.
+
+### D4 — Wire 55 → 56 con ADR-121 D1–D2, espejo C# en el MISMO commit
+
+`Wg3SolidWire { yaw_deg: i16, shape: u8 }` al final; `WIRE_SCHEMA_VERSION` 56 y `WireSchema.Expected`
+56; `Wg3SolidMsg.yawDeg/shape` por nombre; `Wg3Volume.shape`. El test de claves del frame
+(`ipc::tests`) exige `yaw_deg` y `shape`, y `Wg3SolidAssemblyTests` lee las dos del msgpack.
+
+### D5 — Consumidores en este ADR
+
+1. **Pilar cilíndrico y octogonal** (`hall_pillars`): sorteo de forma por sala, al final de la
+   secuencia (`round_pillar` / `octagon_pillar` en `KNOBS`: abierto 0,30/0,20, oficina 0,10/0,15,
+   nave 0,40/0,25, laberinto 0,20/0,20, raro 0,55/0,25). Excluye la cruz. Zapata y capitel toman la
+   forma del fuste (un disco mayor).
+2. **Pilastra en media luna** (`wall_pilasters`): 100 de cuerda × 50 de panza, por espacio
+   (`round_pilaster`: 0,25/0,15/0,30/0,30/0,50), con las mismas exclusiones que la recta; el giro
+   la pone contra cada pared (0 z mínima, 180 z máxima, 90 x mínima, 270 x máxima).
+   Test: `half_moon_pilasters_hug_their_wall_by_the_flat_face`.
+3. El tabique diagonal de ADR-121 D5.2 **no** se implementa aquí: es una sesión de exclusiones sobre
+   envolventes giradas en `interior_partitions`, no un consumidor de forma.
+
+### D6 — Lo que NO decide este ADR
+
+Ni elipses (cilindro sobre huella rectangular), ni conos, ni arcos de verdad (medio cilindro
+tumbado: exige cabeceo), ni la rampa de ADR-122, que sigue aprobada y sin código: su canal
+`Wg3Ramp` NO viaja en wire 56, así que cuando se implemente será wire 57.
+
+### Verificaciones
+
+- `cargo test --release --bin backrooms_server`: suite completa, `world::wg3` 155/155; clippy
+  `--all-targets -D warnings` y fmt limpios.
+- `every_served_solid_is_well_formed_and_the_round_ones_exist`: todo macizo servido pasa `problems()`
+  y las tres formas nuevas existen en las regiones auditadas.
+- `CompileCheckClient` 0 errores; `Wg3SolidAssemblyTests` 4/4 en el editor.
+- Captura en `WorldGen3Live` con pilares redondos en su sitio.
