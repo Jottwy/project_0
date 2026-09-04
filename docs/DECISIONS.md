@@ -13804,3 +13804,38 @@ siempre se puede por el margen de 1,5 m junto a las paredes (D1). El lado mínim
 
 Los mismos tests que el ADR, con la sonda del pasillo en el centro de su celda
 (`PIT_BRIDGE_CM / 2`), y captura `w60_pozos*`.
+
+## ADR-105 — Enmienda 16: la madera del Nivel 0 — el remate del medio muro y el listón de pared (2026-09-04) — ACEPTADA (Joel: diez referencias visuales del Nivel 0; «con lo que tenemos, mejorar un poco más a estas cosas y combinarlo todo»)
+
+### Contexto
+
+En las referencias de Joel se repiten cuatro cosas: papel amarillo, techo de placas con paneles
+fluorescentes en fila, bloques de pared exentos, y **madera**: el medio muro rematado con una tabla y
+un listón a media altura en las paredes, en tramos cortos. WG3 tenía el medio muro bajo (enm. 8) como
+barra lisa, dos por región en salas «abierto», y ningún listón. El techo y los paneles son del cliente
+(materiales y luminaria, ADR-107), no de este ADR.
+
+### D1 — El medio muro lleva tabla, y sale más en las salas abiertas
+
+Sobre cada pieza de medio muro bajo (`PARTITION_LOW_H_CM` 110), una decoración de
+`LOW_WALL_RAIL_H_CM` = 4 de canto que vuela `LOW_WALL_RAIL_OVERHANG_CM` = 3 por las dos caras y los
+extremos, en el tono de marco de la sala (el mismo que su rodapié). Cuatro de canto y no más porque el
+cliente talla perfil a toda decoración de más de 4,5 cm (`AddCasingBox`), y una tabla es lisa. El
+umbral del perfil bajo deja de ser la constante 0,49 y pasa a `Knobs::low_below` por carácter:
+abierto **0,68**, oficina 0,49, nave 0,45, laberinto 0,42, raro 0,49. Sin wire: es decoración.
+
+### D2 — El listón de pared
+
+`wall_rails`: por cada pared de tramo, con probabilidad 0,40, un tramo de tabla de 1,5 a 4,5 m a
+90 cm sobre el suelo (6 de canto, vuela 3 de la cara interior), que deja 40 cm a esquinas y **no cruza
+ninguna boca de NINGÚN tramo** (los tramos se solapan por el grosor de pared, y la boca del vecino
+cae sobre la misma línea: medido en la semilla 1), ni una pieza pegada a esa pared (pilastra, marco,
+división que muere en ella), ni un vano de pared (ventana, hornacina). Va después de todo lo que se
+pega a una pared, porque lo esquiva. Decoración en el tono de marco del tramo.
+
+### Verificaciones
+
+- `every_low_wall_wears_its_rail`: 153 medios muros bajos en 39 semillas, todos con su tabla.
+- `wall_rails_never_cross_a_mouth_or_a_pilaster`: 2452 listones en 39 semillas; ninguno bajo una
+  boca (bocas de todos los tramos, en mundo) ni sobre una pilastra de su planta.
+- Capturas `w60_madera*`.

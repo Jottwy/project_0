@@ -164,6 +164,11 @@ pub(super) struct Knobs {
     pub grid_maze: f32,
     pub cell: f32,
     pub hang_below: f32,
+    /// ADR-105 enm. 16 — bajo qué tirada del perfil sale el MEDIO MURO BAJO (entre la mampara,
+    /// que va hasta 0,34, y esto). Era una constante (0,49) para todos: la referencia del Nivel 0
+    /// es una sala abierta con medios muros rematados en madera, y las salas «abierto» tenían dos
+    /// en toda una región.
+    pub low_below: f32,
     pub beam_room: f32,
     pub beam_tight: bool,
     pub joist: f32,
@@ -200,6 +205,7 @@ const KNOBS: [Knobs; 5] = [
         grid_maze: 0.00,
         cell: 0.05,
         hang_below: 0.55,
+        low_below: 0.68,
         beam_room: 0.30,
         beam_tight: false,
         joist: 0.20,
@@ -229,6 +235,7 @@ const KNOBS: [Knobs; 5] = [
         grid_maze: 0.05,
         cell: 0.35,
         hang_below: 0.62,
+        low_below: 0.49,
         beam_room: 0.45,
         beam_tight: false,
         joist: 0.30,
@@ -258,6 +265,7 @@ const KNOBS: [Knobs; 5] = [
         grid_maze: 0.00,
         cell: 0.05,
         hang_below: 0.62,
+        low_below: 0.45,
         beam_room: 0.85,
         beam_tight: true,
         joist: 0.15,
@@ -287,6 +295,7 @@ const KNOBS: [Knobs; 5] = [
         grid_maze: 0.75,
         cell: 0.10,
         hang_below: 0.55,
+        low_below: 0.42,
         beam_room: 0.20,
         beam_tight: true,
         joist: 0.10,
@@ -316,6 +325,7 @@ const KNOBS: [Knobs; 5] = [
         grid_maze: 0.35,
         cell: 0.15,
         hang_below: 0.85,
+        low_below: 0.49,
         beam_room: 0.60,
         beam_tight: true,
         joist: 0.60,
@@ -545,6 +555,10 @@ pub fn fill_building(building: &RegionBuilding, manifest: &Wg3Manifest) -> Fille
     // divisiones: éstas guardan 300 cm de margen con la pared y no se tocan.
     let pilasters = wall_pilasters(building, &seg_doors, &out.carves, &out.segments);
     out.solids.extend(pilasters);
+    // ADR-105 enm. 16 — los listones de pared, después de todo lo que se pega a una pared, porque
+    // los esquivan.
+    let rails = wall_rails(building.seed, &out.segments, &out.solids, &out.carves);
+    out.solids.extend(rails);
     // ADR-105 enm. 11 — arcadas entre pilares y bóvedas escalonadas. Cuelgan por encima de 2,50, así
     // que no esquivan nada del suelo; sólo pozos y agujeros, que atraviesan el techo.
     let arcades = pillar_arcades(building, &out.solids);
@@ -1040,6 +1054,145 @@ fn pit_geometry(
         }
     }
     (carves, solids)
+}
+
+/// ADR-105 enm. 16 — el LISTÓN de pared: la tabla de madera a media altura que llevan las paredes
+/// del Nivel 0 en cuatro de las diez referencias de Joel. Cota de su cara inferior sobre el suelo.
+pub(super) const WALL_RAIL_Y_CM: i32 = 90;
+/// Canto de la tabla. Seis y no más: el cliente talla perfil a toda decoración de más de 4,5 cm de
+/// canto… salvo que su fondo sea menor de 4,5 (`AddCasingBox` cae a caja lisa), y aquí el fondo es
+/// el vuelo de 3. Una tabla lisa, pues.
+pub(super) const WALL_RAIL_H_CM: i32 = 6;
+/// Cuánto vuela la tabla de la cara de la pared.
+pub(super) const WALL_RAIL_PROUD_CM: i32 = 3;
+/// Cada cuánto una pared de tramo lleva listón.
+const WALL_RAIL_CHANCE: f32 = 0.40;
+/// Largo del listón, mínimo y máximo. En la referencia son TRAMOS, no una línea continua.
+const WALL_RAIL_LEN_CM: (i32, i32) = (150, 450);
+/// Lo que el listón deja libre hasta una esquina, una boca o una pieza pegada a la pared.
+const WALL_RAIL_CLEAR_CM: i32 = 40;
+/// Sal del sorteo de listones.
+const SALT_WALL_RAIL: u32 = 0xA9_04_03;
+
+/// ADR-105 enm. 16 — un listón por pared de tramo, si le toca: un tramo de tabla a
+/// [`WALL_RAIL_Y_CM`] sobre el suelo, volando [`WALL_RAIL_PROUD_CM`] de la cara interior, que
+/// nunca cruza una boca ni una pieza pegada a esa pared (pilastra, marco, división que muere en
+/// ella) ni un vano de pared (ventana, hornacina). Decoración: no estampa, no frena.
+fn wall_rails(
+    seed: i32,
+    segments: &[Wg3Segment],
+    others: &[Wg3Solid],
+    carves: &[Wg3Carve],
+) -> Vec<Wg3Solid> {
+    let mut out = Vec::new();
+    let t = WALL_T_CM;
+    // Las bocas de TODOS los tramos, en mundo: los tramos se solapan por el grosor de pared y una
+    // boca del vecino cae sobre la misma línea de pared que la de este tramo.
+    let mouths: Vec<(i32, i32, i32, i32)> = segments
+        .iter()
+        .flat_map(|g| {
+            let (w, d) = (g.size_x_cm as f32 / 100.0, g.size_z_cm as f32 / 100.0);
+            g.openings.iter().map(move |o| {
+                let (lx, lz) =
+                    super::placement::local_point(o.side, o.offset_cm as f32 / 100.0, w, d);
+                (
+                    g.x_cm + (lx * 100.0).round() as i32,
+                    g.z_cm + (lz * 100.0).round() as i32,
+                    o.width_cm / 2 + WALL_RAIL_CLEAR_CM,
+                    g.floor_y_cm,
+                )
+            })
+        })
+        .collect();
+    for g in segments {
+        let (x0, z0) = (g.x_cm, g.z_cm);
+        let (x1, z1) = (g.x_cm + g.size_x_cm, g.z_cm + g.size_z_cm);
+        let y0 = g.floor_y_cm + WALL_RAIL_Y_CM;
+        let y1 = y0 + WALL_RAIL_H_CM;
+        if y1 > g.floor_y_cm + g.height_cm - 20 {
+            continue;
+        }
+        let (cx, cz) = ((x0 + x1) as f32 / 200.0, (z0 + z1) as f32 / 200.0);
+        for side in 0..4u8 {
+            let length = if side.is_multiple_of(2) {
+                g.size_x_cm
+            } else {
+                g.size_z_cm
+            };
+            if length < 2 * WALL_RAIL_CLEAR_CM + WALL_RAIL_LEN_CM.0 {
+                continue;
+            }
+            let mut st = super::hash::stream_at(seed, cx, cz, SALT_WALL_RAIL + side as u32);
+            if st.next01() >= WALL_RAIL_CHANCE {
+                continue;
+            }
+            let len = WALL_RAIL_LEN_CM.0
+                + (st.next01() * (WALL_RAIL_LEN_CM.1 - WALL_RAIL_LEN_CM.0) as f32) as i32;
+            let len = len.min(length - 2 * WALL_RAIL_CLEAR_CM);
+            let free = length - 2 * WALL_RAIL_CLEAR_CM - len;
+            let off0 = WALL_RAIL_CLEAR_CM + (st.next01() * free as f32) as i32;
+            let off1 = off0 + len;
+            // Ninguna boca de este lado bajo el listón, con holgura.
+            let crosses_mouth = g.openings.iter().any(|o| {
+                o.side % 4 == side
+                    && o.offset_cm - o.width_cm / 2 - WALL_RAIL_CLEAR_CM < off1
+                    && o.offset_cm + o.width_cm / 2 + WALL_RAIL_CLEAR_CM > off0
+            });
+            if crosses_mouth {
+                continue;
+            }
+            // Al mundo. Convención de `segment::emit_wall`: 0 = N (z máx, offset +x), 1 = E
+            // (x máx, offset −z desde z máx), 2 = S (z mín, offset −x desde x máx), 3 = O (x mín,
+            // offset +z).
+            let p = WALL_RAIL_PROUD_CM;
+            let r = match side {
+                0 => (x0 + off0, z1 - t - p, x0 + off1, z1 - t),
+                1 => (x1 - t - p, z1 - off1, x1 - t, z1 - off0),
+                2 => (x1 - off1, z0 + t, x1 - off0, z0 + t + p),
+                _ => (x0 + t, z0 + off0, x0 + t + p, z0 + off1),
+            };
+            let c = WALL_RAIL_CLEAR_CM;
+            let grown = (r.0 - c, r.1 - c, r.2 + c, r.3 + c);
+            let hits_solid = others.iter().any(|o| {
+                o.bottom_y_cm < y1 + c
+                    && o.top_y_cm > y0 - c
+                    && o.x_cm < grown.2
+                    && o.x_cm + o.size_x_cm > grown.0
+                    && o.z_cm < grown.3
+                    && o.z_cm + o.size_z_cm > grown.1
+            });
+            let hits_mouth = mouths.iter().any(|&(mx, mz, half, fl)| {
+                (fl - g.floor_y_cm).abs() < 100
+                    && mx + half > r.0
+                    && mx - half < r.2
+                    && mz + half > r.1
+                    && mz - half < r.3
+            });
+            let hits_carve = carves.iter().any(|k| {
+                k.bottom_y_cm < y1 + c
+                    && k.top_y_cm > y0 - c
+                    && k.x_cm < grown.2
+                    && k.x_cm + k.size_x_cm > grown.0
+                    && k.z_cm < grown.3
+                    && k.z_cm + k.size_z_cm > grown.1
+            });
+            if hits_solid || hits_carve || hits_mouth {
+                continue;
+            }
+            out.push(Wg3Solid {
+                x_cm: r.0,
+                z_cm: r.1,
+                size_x_cm: r.2 - r.0,
+                size_z_cm: r.3 - r.1,
+                bottom_y_cm: y0,
+                top_y_cm: y1,
+                style: g.style | STYLE_DECOR_BIT,
+                yaw_deg: 0,
+                shape: SHAPE_BOX,
+            });
+        }
+    }
+    out
 }
 
 /// ADR-104 D3 — **abrir el atrio por arriba, porque hasta aquí era un pozo SELLADO.**
@@ -1968,13 +2121,17 @@ const PARTITION_SCREEN_H_CM: i32 = 230;
 /// encima y no se pasa, como el pretil de un atrio pero dentro de una sala. Es la mitad baja de lo
 /// que Joel pidió («medios muros de alturas tanto de suelo como techo»).
 pub(super) const PARTITION_LOW_H_CM: i32 = 110;
+/// ADR-105 enm. 16 — el REMATE del medio muro bajo: una tabla de madera encima, como en la foto
+/// del Nivel 0. Alto de la tabla. Cuatro y no más: el cliente talla perfil a toda decoración de
+/// más de 4,5 cm de canto (`Wg3MeshBuilder.AddCasingBox`), y una tabla es lisa.
+pub(super) const LOW_WALL_RAIL_H_CM: i32 = 4;
+/// ADR-105 enm. 16 — cuánto vuela la tabla sobre cada cara del medio muro (y sobre los extremos).
+pub(super) const LOW_WALL_RAIL_OVERHANG_CM: i32 = 3;
 /// Y el que CUELGA del techo hasta dos metros: se pasa por debajo y corta la vista al fondo. Dos
 /// metros y no 1,80 porque el hueco libre tiene que quedar por encima del cuerpo con holgura, o el
 /// ráster conservador cierra el paso por un centímetro.
 pub(super) const PARTITION_HANG_CLEAR_CM: i32 = 200;
-/// El perfil se sortea con UN dado: por debajo de `PARTITION_SCREEN_CHANCE` mampara (sin cambio
-/// respecto a la enm. 3), luego medio muro bajo, luego colgado, y el resto de suelo a techo.
-const PARTITION_LOW_BELOW: f32 = 0.49;
+/// ADR-105 enm. 16 — el umbral del medio muro bajo vive en `Knobs::low_below`.
 const PARTITION_HANG_BELOW: f32 = 0.62;
 
 /// ADR-105 enm. 9 — **el LABERINTO**: peine de espolones alternos desde paredes opuestas, con un
@@ -2828,7 +2985,7 @@ fn interior_partitions(
                         s.floor_y_cm,
                         s.floor_y_cm + PARTITION_SCREEN_H_CM.min(clear),
                     )
-                } else if profile < PARTITION_LOW_BELOW {
+                } else if profile < kn.low_below {
                     (s.floor_y_cm, s.floor_y_cm + PARTITION_LOW_H_CM)
                 } else if profile < kn.hang_below
                     && clear >= PARTITION_HANG_CLEAR_CM + 2 * PARTITION_T_CM
@@ -2963,6 +3120,23 @@ fn interior_partitions(
                             yaw_deg: 0,
                             shape: SHAPE_BOX,
                         });
+                        // ADR-105 enm. 16 — el medio muro bajo lleva su tabla encima: decoración
+                        // (no estampa, no frena), que vuela por las dos caras y los extremos. En
+                        // tono de marco de la sala, el mismo que su rodapié.
+                        if top - bottom == PARTITION_LOW_H_CM {
+                            let o = LOW_WALL_RAIL_OVERHANG_CM;
+                            out.push(Wg3Solid {
+                                x_cm: x - o,
+                                z_cm: z - o,
+                                size_x_cm: sx + 2 * o,
+                                size_z_cm: sz + 2 * o,
+                                bottom_y_cm: top,
+                                top_y_cm: top + LOW_WALL_RAIL_H_CM,
+                                style: style | STYLE_DECOR_BIT,
+                                yaw_deg: 0,
+                                shape: SHAPE_BOX,
+                            });
+                        }
                         cut = end;
                     }
                 }
@@ -5927,6 +6101,119 @@ mod apron_tests {
                 );
             }
         }
+    }
+
+    /// ADR-105 enm. 16 — todo medio muro bajo lleva su tabla: una decoración de
+    /// `LOW_WALL_RAIL_H_CM` justo encima, que lo cubre entero con su vuelo. Y las salas «abierto»
+    /// tienen medios muros de verdad, no dos por región.
+    #[test]
+    fn every_low_wall_wears_its_rail() {
+        let m = no_catalogue();
+        let mut low = 0usize;
+        for seed in 1..40 {
+            let b = building(seed);
+            let solids = fill_building(&b, &m).solids;
+            for s in &solids {
+                if s.is_decoration()
+                    || s.top_y_cm - s.bottom_y_cm != PARTITION_LOW_H_CM
+                    || s.size_x_cm.min(s.size_z_cm) != PARTITION_T_CM
+                {
+                    continue;
+                }
+                low += 1;
+                let has_rail = solids.iter().any(|r| {
+                    r.is_decoration()
+                        && r.bottom_y_cm == s.top_y_cm
+                        && r.top_y_cm == s.top_y_cm + LOW_WALL_RAIL_H_CM
+                        && r.x_cm <= s.x_cm
+                        && r.z_cm <= s.z_cm
+                        && r.x_cm + r.size_x_cm >= s.x_cm + s.size_x_cm
+                        && r.z_cm + r.size_z_cm >= s.z_cm + s.size_z_cm
+                });
+                assert!(
+                    has_rail,
+                    "semilla {seed}: medio muro bajo en ({}, {}) sin tabla encima",
+                    s.x_cm, s.z_cm
+                );
+            }
+        }
+        assert!(
+            low >= 30,
+            "sólo {low} medios muros bajos en 39 semillas: la muestra no cubre el caso"
+        );
+        println!("[medio muro] {low} medios muros bajos con tabla en 39 semillas");
+    }
+
+    /// ADR-105 enm. 16 — los listones de pared existen, son decoración de 6 cm a 90 sobre el
+    /// suelo, y ninguno cruza una boca de su tramo ni una pilastra.
+    #[test]
+    fn wall_rails_never_cross_a_mouth_or_a_pilaster() {
+        let m = no_catalogue();
+        let mut rails = 0usize;
+        for seed in 1..40 {
+            let b = building(seed);
+            let filled = fill_building(&b, &m);
+            let pilasters: Vec<&Wg3Solid> =
+                filled.solids.iter().filter(|s| is_pilaster(s)).collect();
+            for r in &filled.solids {
+                if !r.is_decoration() || r.top_y_cm - r.bottom_y_cm != WALL_RAIL_H_CM {
+                    continue;
+                }
+                rails += 1;
+                assert!(
+                    r.size_x_cm.min(r.size_z_cm) == WALL_RAIL_PROUD_CM,
+                    "semilla {seed}: un listón con fondo {}",
+                    r.size_x_cm.min(r.size_z_cm)
+                );
+                // Ninguna pilastra bajo el listón.
+                let hit = pilasters.iter().find(|p| {
+                    p.bottom_y_cm < r.top_y_cm
+                        && p.top_y_cm > r.bottom_y_cm
+                        && p.x_cm < r.x_cm + r.size_x_cm
+                        && p.x_cm + p.size_x_cm > r.x_cm
+                        && p.z_cm < r.z_cm + r.size_z_cm
+                        && p.z_cm + p.size_z_cm > r.z_cm
+                });
+                assert!(
+                    hit.is_none(),
+                    "semilla {seed}: un listón {r:?} atraviesa la pilastra {hit:?}"
+                );
+                // Ninguna boca de su tramo bajo el listón: se busca el tramo cuya pared lo lleva.
+                let host = filled.segments.iter().find(|g| {
+                    r.x_cm >= g.x_cm
+                        && r.x_cm + r.size_x_cm <= g.x_cm + g.size_x_cm
+                        && r.z_cm >= g.z_cm
+                        && r.z_cm + r.size_z_cm <= g.z_cm + g.size_z_cm
+                        && r.bottom_y_cm == g.floor_y_cm + WALL_RAIL_Y_CM
+                });
+                let g = host.unwrap_or_else(|| panic!("semilla {seed}: listón sin tramo"));
+                for o in &g.openings {
+                    let (w, d) = (g.size_x_cm as f32 / 100.0, g.size_z_cm as f32 / 100.0);
+                    let (lx, lz) = super::super::placement::local_point(
+                        o.side,
+                        o.offset_cm as f32 / 100.0,
+                        w,
+                        d,
+                    );
+                    let (mx, mz) = (g.x_cm + (lx * 100.0) as i32, g.z_cm + (lz * 100.0) as i32);
+                    let half = o.width_cm / 2 + 20;
+                    let under = mx + half > r.x_cm
+                        && mx - half < r.x_cm + r.size_x_cm
+                        && mz + half > r.z_cm
+                        && mz - half < r.z_cm + r.size_z_cm;
+                    assert!(
+                        !under,
+                        "semilla {seed}: un listón cruza la boca del lado {} en ({mx}, {mz})",
+                        o.side
+                    );
+                }
+            }
+        }
+        assert!(
+            rails >= 100,
+            "sólo {rails} listones en 39 semillas: la muestra no cubre el caso"
+        );
+        println!("[listón] {rails} listones de pared en 39 semillas");
     }
 
     fn rect_of(s: &Wg3Solid) -> super::super::plan::PlanRect {
