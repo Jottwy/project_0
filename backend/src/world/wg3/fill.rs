@@ -159,6 +159,8 @@ pub(super) struct Knobs {
     pub pillar_forest: bool,
     pub partition_room: f32,
     pub maze: f32,
+    /// ADR-105 enm. 15 — el laberinto de REJILLA (árbol de expansión), el de verdad.
+    pub grid_maze: f32,
     pub cell: f32,
     pub hang_below: f32,
     pub beam_room: f32,
@@ -186,6 +188,7 @@ const KNOBS: [Knobs; 5] = [
         pillar_forest: false,
         partition_room: 0.20,
         maze: 0.00,
+        grid_maze: 0.00,
         cell: 0.05,
         hang_below: 0.55,
         beam_room: 0.30,
@@ -210,6 +213,7 @@ const KNOBS: [Knobs; 5] = [
         pillar_forest: false,
         partition_room: 0.90,
         maze: 0.10,
+        grid_maze: 0.05,
         cell: 0.35,
         hang_below: 0.62,
         beam_room: 0.45,
@@ -234,6 +238,7 @@ const KNOBS: [Knobs; 5] = [
         pillar_forest: true,
         partition_room: 0.45,
         maze: 0.05,
+        grid_maze: 0.00,
         cell: 0.05,
         hang_below: 0.62,
         beam_room: 0.85,
@@ -258,6 +263,7 @@ const KNOBS: [Knobs; 5] = [
         pillar_forest: false,
         partition_room: 1.00,
         maze: 0.60,
+        grid_maze: 0.75,
         cell: 0.10,
         hang_below: 0.55,
         beam_room: 0.20,
@@ -282,6 +288,7 @@ const KNOBS: [Knobs; 5] = [
         pillar_forest: true,
         partition_room: 0.85,
         maze: 0.30,
+        grid_maze: 0.35,
         cell: 0.15,
         hang_below: 0.85,
         beam_room: 0.60,
@@ -1580,6 +1587,69 @@ const CELL_CLEAR_CM: i32 = 250;
 /// la secuencia de la enm. 3 no se mueve.
 const SALT_MAZE_ROOM: u32 = 0xB1_11_A0_07;
 
+/// ADR-105 enm. 15 — **EL LABERINTO DE REJILLA: el de verdad.**
+///
+/// El peine (enm. 9) es una S. Esto es un laberinto: rejilla de celdas de `GRID_MAZE_CELL_CM`
+/// dentro de la sala, un árbol de expansión sorteado por posición (búsqueda en profundidad con
+/// retroceso) y un tabique en cada arista que el árbol no abre. **La conectividad va por
+/// construcción**: un árbol de expansión une todas las celdas y no tiene ciclos, así que dentro
+/// no hay islas posibles y sí callejones por todas partes, que es Level 0. Alrededor queda un anillo
+/// de `GRID_MAZE_RING_CM` donde caen las puertas de la sala, y el bloque se abre al anillo por
+/// `GRID_MAZE_ENTRANCES` celdas de borde.
+const GRID_MAZE_CELL_CM: i32 = 250;
+/// Un metro de anillo: las puertas de la sala caen ahí, y los tabiques a menos de 350 de una puerta
+/// se descartan uno a uno (`blocked_foot`), así que el anillo no necesita ser el paso de puerta.
+/// Con 150 y 100 m² de mínimo, el 47 % de las salas de zona laberinto se quedaban vacías: son
+/// pequeñas. Con 100 y 55 m² cabe una rejilla de 2 × 2 en una sala de 7,3 × 7,3.
+const GRID_MAZE_RING_CM: i32 = 100;
+const GRID_MAZE_MIN_AREA_M2: f32 = 55.0;
+const GRID_MAZE_ENTRANCES: usize = 2;
+const SALT_GRID_MAZE: u32 = 0xB1_11_A0_0E;
+
+/// Un tabique de laberinto de rejilla sobre una arista, con medio grosor de solape a cada extremo
+/// para cerrar la esquina con el siguiente. `(x, z)` es el punto medio de la arista.
+#[allow(clippy::too_many_arguments)]
+fn grid_maze_wall(
+    out: &mut Vec<Wg3Solid>,
+    along_x: bool,
+    x: i32,
+    z: i32,
+    bottom: i32,
+    top: i32,
+    style: u8,
+    blocked: &dyn Fn(&super::plan::PlanRect) -> bool,
+) {
+    let half = GRID_MAZE_CELL_CM / 2 + PARTITION_T_CM / 2;
+    let t = PARTITION_T_CM / 2;
+    let foot = if along_x {
+        super::plan::PlanRect {
+            min_x_cm: x - half,
+            min_z_cm: z - t,
+            max_x_cm: x + half,
+            max_z_cm: z + t,
+        }
+    } else {
+        super::plan::PlanRect {
+            min_x_cm: x - t,
+            min_z_cm: z - half,
+            max_x_cm: x + t,
+            max_z_cm: z + half,
+        }
+    };
+    if blocked(&foot) {
+        return;
+    }
+    out.push(Wg3Solid {
+        x_cm: foot.min_x_cm,
+        z_cm: foot.min_z_cm,
+        size_x_cm: foot.width_cm(),
+        size_z_cm: foot.depth_cm(),
+        bottom_y_cm: bottom,
+        top_y_cm: top,
+        style,
+    });
+}
+
 /// Un tramo de tabique troceado al tope de macizo, a partes iguales, con muñones fuera (ver el
 /// emisor de divisiones: un trozo de 30 × 30 es un poste, no un muro).
 #[allow(clippy::too_many_arguments)]
@@ -1885,6 +1955,168 @@ fn interior_partitions(
                 // el espolón esquivaba el pilar, el pasillo no. Medido: +5 islas en 27 regiones, y
                 // cada una del tamaño exacto de un pasillo del peine (279–305 cotas).
                 let has_pillars = pillars.iter().any(|p| overlaps_m(&r, p.bounds()));
+
+                // ADR-105 enm. 15 — el laberinto de REJILLA, con dado propio (`SALT_GRID_MAZE`) para
+                // no mover la secuencia del peine y el cuarto.
+                let mut gm = super::hash::stream_at(seed, cx, cz, SALT_GRID_MAZE);
+                if gm.next01() < kn.grid_maze
+                    && s.area_m2() >= GRID_MAZE_MIN_AREA_M2
+                    && !has_pillars
+                {
+                    let inner = r.shrunk(WALL_T_CM + GRID_MAZE_RING_CM);
+                    let cell = GRID_MAZE_CELL_CM;
+                    let (nx, nz) = (
+                        (inner.width_cm() / cell).max(0) as usize,
+                        (inner.depth_cm() / cell).max(0) as usize,
+                    );
+                    if nx >= 2 && nz >= 2 {
+                        let gx0 = inner.min_x_cm + (inner.width_cm() - nx as i32 * cell) / 2;
+                        let gz0 = inner.min_z_cm + (inner.depth_cm() - nz as i32 * cell) / 2;
+                        // Árbol de expansión: `open_e[c]` abre la arista este de la celda `c`,
+                        // `open_n[c]` la norte.
+                        let count = nx * nz;
+                        let mut visited = vec![false; count];
+                        let mut open_e = vec![false; count];
+                        let mut open_n = vec![false; count];
+                        let start = (gm.next01() * count as f32) as usize % count;
+                        let mut stack = vec![start];
+                        visited[start] = true;
+                        while let Some(&c) = stack.last() {
+                            let (ix, iz) = (c % nx, c / nx);
+                            let mut cands: Vec<(usize, u8)> = Vec::with_capacity(4);
+                            if ix + 1 < nx && !visited[c + 1] {
+                                cands.push((c + 1, 0));
+                            }
+                            if ix > 0 && !visited[c - 1] {
+                                cands.push((c - 1, 1));
+                            }
+                            if iz + 1 < nz && !visited[c + nx] {
+                                cands.push((c + nx, 2));
+                            }
+                            if iz > 0 && !visited[c - nx] {
+                                cands.push((c - nx, 3));
+                            }
+                            if cands.is_empty() {
+                                stack.pop();
+                                continue;
+                            }
+                            let (next, dir) =
+                                cands[(gm.next01() * cands.len() as f32) as usize % cands.len()];
+                            match dir {
+                                0 => open_e[c] = true,
+                                1 => open_e[next] = true,
+                                2 => open_n[c] = true,
+                                _ => open_n[next] = true,
+                            }
+                            visited[next] = true;
+                            stack.push(next);
+                        }
+                        // Entradas: celdas de borde cuya arista exterior queda abierta.
+                        let perimeter = 2 * (nx + nz);
+                        let mut entrances: Vec<usize> = Vec::new();
+                        while entrances.len() < GRID_MAZE_ENTRANCES.min(perimeter) {
+                            let e = (gm.next01() * perimeter as f32) as usize % perimeter;
+                            if !entrances.contains(&e) {
+                                entrances.push(e);
+                            }
+                        }
+                        let top = if gm.next01() < PARTITION_SCREEN_CHANCE {
+                            s.floor_y_cm + PARTITION_SCREEN_H_CM.min(clear)
+                        } else {
+                            s.floor_y_cm + clear
+                        };
+                        let blocked = |foot: &super::plan::PlanRect| -> bool { blocked_foot(foot) };
+                        // Aristas interiores cerradas.
+                        for iz in 0..nz {
+                            for ix in 0..nx {
+                                let c = iz * nx + ix;
+                                let (x0, z0) = (gx0 + ix as i32 * cell, gz0 + iz as i32 * cell);
+                                if ix + 1 < nx && !open_e[c] {
+                                    grid_maze_wall(
+                                        &mut out,
+                                        false,
+                                        x0 + cell,
+                                        z0 + cell / 2,
+                                        s.floor_y_cm,
+                                        top,
+                                        style,
+                                        &blocked,
+                                    );
+                                }
+                                if iz + 1 < nz && !open_n[c] {
+                                    grid_maze_wall(
+                                        &mut out,
+                                        true,
+                                        x0 + cell / 2,
+                                        z0 + cell,
+                                        s.floor_y_cm,
+                                        top,
+                                        style,
+                                        &blocked,
+                                    );
+                                }
+                            }
+                        }
+                        // Borde exterior, menos las entradas. Índice de perímetro: sur (0..nx),
+                        // norte (nx..2nx), oeste (2nx..2nx+nz), este (resto).
+                        for ix in 0..nx {
+                            let x = gx0 + ix as i32 * cell + cell / 2;
+                            if !entrances.contains(&ix) {
+                                grid_maze_wall(
+                                    &mut out,
+                                    true,
+                                    x,
+                                    gz0,
+                                    s.floor_y_cm,
+                                    top,
+                                    style,
+                                    &blocked,
+                                );
+                            }
+                            if !entrances.contains(&(nx + ix)) {
+                                grid_maze_wall(
+                                    &mut out,
+                                    true,
+                                    x,
+                                    gz0 + nz as i32 * cell,
+                                    s.floor_y_cm,
+                                    top,
+                                    style,
+                                    &blocked,
+                                );
+                            }
+                        }
+                        for iz in 0..nz {
+                            let z = gz0 + iz as i32 * cell + cell / 2;
+                            if !entrances.contains(&(2 * nx + iz)) {
+                                grid_maze_wall(
+                                    &mut out,
+                                    false,
+                                    gx0,
+                                    z,
+                                    s.floor_y_cm,
+                                    top,
+                                    style,
+                                    &blocked,
+                                );
+                            }
+                            if !entrances.contains(&(2 * nx + nz + iz)) {
+                                grid_maze_wall(
+                                    &mut out,
+                                    false,
+                                    gx0 + nx as i32 * cell,
+                                    z,
+                                    s.floor_y_cm,
+                                    top,
+                                    style,
+                                    &blocked,
+                                );
+                            }
+                        }
+                        continue;
+                    }
+                }
+
                 if u < kn.maze && s.area_m2() >= MAZE_MIN_AREA_M2 && !has_pillars {
                     // Espolones perpendiculares al eje LARGO, alternando la pared de arranque.
                     let (long, short) = if wide {
