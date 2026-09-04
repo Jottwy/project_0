@@ -2,7 +2,7 @@
 > Actualizado por /checkpoint al cierre de cada sesión. Leído al inicio de cada sesión.
 
 ## Última sesión
-- Fecha: 2026-09-04, 20.ª tanda (**NINGÚN MACIZO SE HABÍA VISTO NUNCA; y wire 56: giro y forma — cilindros, medias lunas y octógonos** — ADR-121 D1–D2 y ADR-125 implementados) — validación al cierre: **`cargo test --release --bin backrooms_server` 1375/1375, `world::wg3` 155/155, clippy `--all-targets -D warnings` y fmt limpios. `CompileCheckClient` 0 errores; `Wg3SolidAssemblyTests` 4/4 en el editor. WIRE 56 (`WireSchema.Expected` 56 en el mismo commit). Backend desplegado a `Builds/Backend` (SHA256 95AFCE2B…, 6.720.512 bytes).**
+- Fecha: 2026-09-04, 20.ª tanda (**NINGÚN MACIZO SE HABÍA VISTO NUNCA; wire 56: giro y forma — cilindros, medias lunas y octógonos; wire 57: arco de puerta** — ADR-121 D1–D2, ADR-125 y su enm. 1 implementados) — validación al cierre: **`cargo test --release --bin backrooms_server` 1375/1375, `world::wg3` 155/155, clippy `--all-targets -D warnings` y fmt limpios. `CompileCheckClient` 0 errores; `Wg3SolidAssemblyTests` 5/5 en el editor. WIRE 57 (`WireSchema.Expected` 57 en el mismo commit). Backend desplegado a `Builds/Backend` (SHA256 1B645A52…, 6.723.072 bytes).**
 
 0. **Qué pidió Joel.** Tras las diez capturas: «¿se puede mejorar los pilares? más volumen, más variedad, varios polígonos para que parezcan circunferencia». Se le dieron cuatro vías y eligió **«implementar ya ADR-121 + cilindro»** (wire 56 completo).
 
@@ -12,7 +12,9 @@
 
 3. **Por qué no «unión de cajas».** Cuadrados girados nunca dan círculo (radio interior/exterior 0,71 fijo; el «octógono» de ADR-121 D5.1 era una estrella de ocho puntas). Cajas alineadas inscritas sí se acercan (20 vértices, muescas del 10 %) pero sin normal suave no se lee redondo. De ahí el byte.
 
-4. **Lo que queda de ADR-121/122:** el tabique diagonal (D5.2) sin hacer; la rampa de ADR-122 sigue aprobada y sin código, y como su canal NO viaja en 56, será **wire 57**. ADR-123 (agacharse) sigue pendiente de Joel. ADR-124 (menos pasillos) sigue esperando la sesión del enrutador.
+4. **Lo que queda de ADR-121/122:** el tabique diagonal (D5.2) sin hacer; la rampa de ADR-122 sigue aprobada y sin código, y como su canal NO viaja, será **wire 58**. ADR-123 (agacharse) sigue pendiente de Joel. ADR-124 (menos pasillos) sigue esperando la sesión del enrutador.
+
+4b. **Wire 57 (`be34cebb` + `ce21fa99`): ARCO DE PUERTA, quinta forma (ADR-125 enm. 1).** Joel: «en los marcos de puerta, arco tipo arco»; eligió puertas normales por carácter. `SHAPE_ARCH`: banda de la boca (cuerda exacta, grosor de pared) con intradós en media elipse, arranque 1,90, clave 10 bajo el paso de 2,40 (rebajado: el de medio punto obligaría a subir vanos). Ráster por columna (`add_arch`), malla `AddArch` con `MeshCollider` NO convexo, sorteo appended al del dintel (`arch_door` en `KNOBS`), solo puertas < 3 m. Cazado en captura y arreglado: `Clamp01(u / r)` aplanaba media cuerda (jamba cuadrada); el test C# exige simetría. Validación: cargo 1375/1375, wg3 155/155, clippy/fmt limpios, CompileCheck 0, EditMode 5/5. Backend desplegado 1B645A52 (6.723.072 bytes). Capturas de tres puertas con arco en su sitio.
 
 5. **Arnés:** `Assets/Editor/_ClaudeCaptureRunner.cs` (sin trackear) sigue ahí; la escena `WorldGen3Live` NO tiene materiales WG3 ni `ambience` asignados en el asset (el arnés los pone en runtime: un playtest a mano sale magenta).
 
