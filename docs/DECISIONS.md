@@ -12660,3 +12660,209 @@ tocados en esta tanda.
   espacios alargados: **empeora**, 52,2 divisiones por región contra 61,2. Queda escrito en el código
   para que nadie vuelva a gastar la vuelta.
 - **Sin cambio de wire** (55), sin `SpaceRole` nuevo, sin tocar el cliente.
+
+---
+
+## ADR-105 — Enmienda 4: el pilar cambia de lado, se cruza y se apiña donde el campo lo pide (2026-09-04) — ACEPTADA (implementada y medida)
+
+### Contexto
+
+Joel, 2026-09-04: *«pilares más anchos y más cantidad de pilares en algunas zonas… que rompa de una
+vez esa sensación de que todo es cuadrado»*. Los pilares de las enmiendas 1 y 2 son todos de 2 × 2 m y
+la separación se sortea de centro a centro entre 7 y 13 m; el campo de densidad (ADR-118 D4) sólo
+decidía si a un pilar de la retícula le tocaba faltar. Resultado: una nave con pilares es siempre la
+misma nave con pilares.
+
+Aprobado por Joel en la misma sesión como parte del «Bloque A» (sin cambio de wire), junto con el
+relieve de techo, los dinteles y ventanas interiores, los arcos escalonados y las puertas desalineadas,
+cada uno en su commit.
+
+### D1 — El lado se sortea por sala, de 2 a 4 m en pasos de una celda
+
+`PILLAR_SIDE_MIN_CM` 200, `PILLAR_SIDE_MAX_CM` 400, paso `PILLAR_SIDE_STEP_CM` 50. En pasos de una
+celda del ráster para que el pilar dibujado y el estampado midan lo mismo. Por encima de 4 m un pilar
+deja de rodearse con la vista y es un núcleo: otro caso, otra gramática. Fuera de zona densa el sorteo
+se sesga a ESTRECHO (`u²`): sin el sesgo, 1225 → 950 pilares en 27 regiones, lo contrario de lo pedido.
+
+### D2 — Lo que tiene mínimo es el PASO LIBRE, no la distancia entre centros
+
+Con el lado variable, sortear de centro a centro dejaba que un pilar de 4 m se comiera el paso que uno
+de 2 dejaba. `PILLAR_GAP_MIN_CM` 500 y `PILLAR_GAP_MAX_CM` 1100 cara a cara (los 700–1300 de antes
+menos los 200 del pilar): el mundo sin cambio de lado sale igual que antes al centímetro. Los sorteos
+de siempre van primero y en el mismo orden, así que una nave que ya tenía retícula conserva su paso,
+su desfase y sus ausencias, y sólo estrena lado y cruz.
+
+### D3 — El campo de densidad decide cuánta masa, no sólo qué pilar falta
+
+En zona DENSA o ANÓMALA: `PILLAR_ROOM_CHANCE_DENSE` 0,90 (contra 0,62), el sorteo del lado sesgado a
+ancho (raíz cuadrada), y `PILLAR_GAP_MAX_DENSE_CM` 800 en vez de 1100. Se recorta el máximo y NO el
+mínimo: el bosque de pilares sigue siendo andable, sólo deja de haber naves con los pilares a 15 m.
+
+### D4 — La cruz: dos cajas concéntricas, a partir de 3 m de lado
+
+`PILLAR_CROSS_CHANCE` 0,30 por sala, sólo con lado ≥ `PILLAR_CROSS_MIN_SIDE_CM` (300): con 2 m los
+brazos miden una celda y el ráster conservador los engorda hasta un cuadrado con muescas. El brazo es
+la mitad del lado redondeada a celda. Las dos cajas comparten centro con el cuadrado que sustituyen,
+así que toda exclusión medida sobre el pilar sigue valiendo, y `Wg3Solid` no cambia: sin wire.
+
+### D5 — Dónde NO va un macizo, una exclusión más, y es para pilares Y divisiones
+
+Además de rellanos, pozos, puertas y piezas (enm. 1 D5): **el cuadrado central de todo candidato a
+agujero de forjado, el propio y el de la planta de arriba**. Un pilar llega al techo, o sea justo
+debajo del forjado que el agujero perfora; una mampara de 230 cm deja la caída en 20. En la primera
+pasada `a_hole_drops_you_a_whole_storey` bajó de 8 a 7, y **no fue un pilar: fue una DIVISIÓN**. Al
+cambiar los pilares cambió qué divisiones sobreviven, y una de la planta baja de (−1,2) nació justo
+bajo el agujero. Las divisiones nunca habían esquivado los agujeros de arriba; ahora sí.
+`hole_square` y `hole_squares_above` pasan a ser la única definición del cuadrado, compartida por el
+emisor, las divisiones y los pilares.
+
+### D6 — Los tests distinguen un pilar por su FORMA, con una función y no con un número
+
+`fill::is_pillar`: cuadrado con lado en rango y múltiplo de celda, o brazo de cruz (una dimensión el
+lado y la otra la mitad o menos, nunca por debajo de dos celdas). Cuatro tests filtraban por
+`200 × 200` y ahora preguntan. El hueco entre pilares se mide cara a cara y los dos brazos de una cruz
+se reconocen por compartir centro.
+
+### Verificaciones
+
+- `cargo test --release --bin backrooms_server world::wg3` **147/147**; clippy `--all-targets
+  -D warnings` y fmt limpios.
+- **Barrido de 27 regiones** antes → después: mancha mayor 99,5 % → 99,6 %, islas 1,4 → 1,3, nav 100 %,
+  cotas pisables 117 615 → 117 613. Sin regresión de conectividad.
+- **Pilares, 3 semillas × 9 regiones**: 1017 macizos de pilar; lados 200/250/300/350/400 =
+  514/162/175/117/49; **97 cruces**. HEAD daba 1225 pilares de 2 m: hay **menos cuerpos y más anchos**,
+  y más donde el campo es denso. Si el recuento global importa más que el ancho, la perilla es
+  `PILLAR_ROOM_CHANCE` (0,62, validado en enm. 1 y no tocado aquí).
+- **Una trampa de medición que costó tres corridas**: restaurar un fichero con `Copy-Item` conserva el
+  mtime viejo y cargo NO recompila; dos corridas «verdes» ejecutaron el binario de HEAD. Se detectó
+  porque el recuento de pilares no cuadraba. `touch` antes de medir.
+- **Sin cambio de wire** (55), sin tocar el cliente.
+
+---
+
+## ADR-121 — Giro en los macizos: el mundo deja de ser sólo cajas alineadas (2026-09-04) — PROPUESTA (Joel pidió el ADR; código sólo tras su aprobación)
+
+> **Nota de numeración.** El código de `plan.rs` y `fill.rs` cita un ADR-120 (huellas compuestas: salas
+> en L, `is_composite`, `parts()`) que **no está en este registro**. Se numera 121 para no colisionar
+> con él cuando quien lo implementó lo escriba.
+
+### Contexto
+
+Todo lo que WG3 sirve por el cable es una caja alineada a los ejes: `Wg3Segment`, `Wg3Carve` y
+`Wg3Solid` llevan esquina mínima y tamaño, y ningún campo de giro. Las dos puntas SÍ saben girar:
+`Wg3Volume.yawDegrees` existe desde F0, `Wg3SceneAssembler.AddColliders` cuelga un hijo girado cuando
+el yaw no es múltiplo de 90°, y `raster::add_box` hace SAT entre una caja girada y la celda. La
+capacidad está en los extremos y no en el medio: sólo la usan las piezas del catálogo, y el catálogo
+está apagado por deuda de altura (STATE 2026-09-03 §0d).
+
+Joel, 2026-09-04: *«que rompa de una vez esa sensación de que todo es cuadrado»*. Un pilar en cruz o un
+arco escalonado salen sin wire; un pilar OCTOGONAL, un tabique en diagonal o una mampara a 30° no se
+pueden decir con lo que hay.
+
+### D1 — `Wg3Solid` gana `yaw_deg: i16`, y el giro es alrededor del CENTRO de la huella
+
+- Campo nuevo al final de `Wg3SolidWire`, grados enteros, positivo horario visto desde arriba (la
+  convención de Unity y de `raster::add_box`). Cero es el macizo de siempre, byte a byte.
+- `x_cm/z_cm/size_x_cm/size_z_cm` siguen describiendo la caja SIN girar; el giro se aplica sobre su
+  centro. `Wg3Solid::centre()` —lo que decide el chunk dueño (ADR-105 D3)— no cambia.
+- `Wg3Solid::bounds()` pasa a devolver la ENVOLVENTE del rectángulo girado. Es lo que usan las
+  exclusiones (`hall_pillars`, `interior_partitions`) y el validador.
+- `solid_box` pasa el yaw a `PlacedBox`; el ráster ya lo entiende.
+
+### D2 — Wire 55 → 56, y el espejo C# en el MISMO commit
+
+`WIRE_SCHEMA_VERSION` 56, `WireSchema.Expected` 56, `Wg3SolidMsg.yawDeg` leído en `Parse` (bumpear un
+lado sin el otro deja el juego inarrancable, no con un aviso). `AssembleSolid` construye el
+`Wg3Volume` con `yawDegrees = yawDeg`; `AddColliders` y `Wg3MeshBuilder.AddBox` ya hacen el resto.
+
+### D3 — Lo que gira y lo que NO
+
+- GIRA: macizos (pilares, tabiques, mamparas, vigas). Sólo ellos.
+- NO GIRA: tramos ni vanos. Un espacio sigue siendo un rectángulo del plan, `PickSpace`/`space_at`
+  siguen contestando por `Bounds`, y `Wg3Carving.Subtract` sigue dejando entero un volumen girado —
+  que con macizos da igual, porque un macizo es inmune a los vanos (ADR-105 D2). Una «sala poligonal»
+  sale de tabiques girados DENTRO de un rectángulo, no de un rectángulo girado.
+
+### D4 — Múltiplos de 15° y nunca menos de 45 cm de lado
+
+`yaw_deg` se sortea en múltiplos de 15 (0..165): un giro arbitrario no se lee como intención y el
+ráster conservador lo convierte en un contorno de sierra que cuesta celdas. Un macizo girado de lado
+< 45 cm se prohíbe en `Wg3Solid::problems`: por debajo de la celda (50 cm) la geometría cambia de
+significado al cruzar el cable.
+
+### D5 — Consumidores en este ADR, y nada más
+
+1. **Pilar octogonal**: dos macizos concéntricos, a 0° y a 45°, mismo lado. Mismo sorteo por posición
+   que el pilar cuadrado (`SALT_PILLAR_ONE`), con `PILLAR_OCTAGON_CHANCE` por sala.
+2. **Tabique diagonal**: un caso más de `interior_partitions` (espolón girado ±30/±45° desde la pared
+   de arranque). Mismas exclusiones que los rectos, medidas sobre la envolvente.
+3. Nada en circulación (Spine/Corridor), por la regla de ADR-105 enm. 3 D3.
+
+### D6 — Oráculos y determinismo
+
+`wg3_oracle_catalog.json` no cambia (el catálogo no gira nada nuevo). El oráculo de conectores tampoco:
+los tramos no giran. Golden test nuevo de macizos girados (semilla 42, región (0,0)).
+
+### Verificaciones (al implementar)
+
+- `cargo test --bin backrooms_server` completo, clippy `--all-targets -D warnings`, fmt.
+- `validate_sweep` 27 regiones antes/después: mancha mayor, islas, cotas pisables.
+- `CompileCheckClient` 0 errores; `WireSchema.Expected == 56` verificado a mano.
+
+---
+
+## ADR-122 — La rampa: colisión escalonada en los dos lados, dibujo liso en uno (2026-09-04) — PROPUESTA (Joel eligió esta vía frente a los micro-escalones; código sólo tras su aprobación)
+
+### Contexto
+
+WG3 sube por peldaños y sólo por peldaños. `Wg3Geometry.BuildStair` lo dice con todas las letras:
+*«una rampa inclinada sería una caja menos, pero un jugador con `CharacterController` sube escalones y
+resbala por cajas giradas»*. Y el ráster no sabe estampar un plano inclinado: `add_box` mete cajas.
+
+Joel pide rampas que «vayan alzándose», no escaleras. Un plano inclinado de verdad exigiría un tipo
+de volumen nuevo en la chuleta (con cabeceo, no sólo guiñada), un collider no-caja en el cliente y una
+rasterización nueva. Se decide aquí lo mínimo que produce la SENSACIÓN de rampa sin abrir esas tres
+puertas.
+
+### D1 — Un canal nuevo: `Wg3Ramp`, wire 56 (comparte bump con ADR-121)
+
+`Wg3Ramp { x_cm, z_cm, size_x_cm, size_z_cm, bottom_y_cm, top_y_cm, dir: u8, style: u8 }`. `dir` 0..3
+= hacia dónde SUBE (N/E/S/O, misma convención que `Wg3Opening.side`). El suelo va de `bottom_y_cm` en
+el borde de arranque a `top_y_cm` en el de llegada. Lista nueva en `Wg3ChunkWire`, espejo `Wg3RampMsg`
+en C#, reparto por chunk por el centro como los macizos.
+
+### D2 — La colisión es IDÉNTICA en los dos lados, y es escalonada
+
+El servidor rasteriza la rampa como una fila de cajas de una celda de huella (50 cm) a lo largo de
+`dir`, cada una con su cota. El cliente construye EXACTAMENTE las mismas cajas como `BoxCollider`
+(`Wg3VolumeKind.Step`). Sin cuña en la colisión: lo que frena es lo mismo a los dos lados del cable
+(regla R6), y un `CharacterController` con `stepOffset` 0,275 sube contrahuellas de ≤ 10 cm sin
+notarlas como escalón.
+
+### D3 — El dibujo es liso, y es DECORACIÓN
+
+La malla de la rampa es una cuña (dos triángulos por cara lateral, un quad inclinado arriba), en la
+submalla `Floor` con `kind = Decoration` para que `AddColliders` la ignore. Es el primer volumen
+no-caja de `Wg3MeshBuilder`: `AddWedge`, con UV en metros. Se dibuja 1 cm por encima de los peldaños
+de colisión para que ninguna arista asome.
+
+### D4 — Pendiente máxima 1:5 y dónde se pone
+
+- Contrahuella por celda ≤ 10 cm → pendiente ≤ 0,20 (11,3°). Por encima, el plan pone escalera.
+- Consumidor 1: el espacio HUNDIDO (`SpaceRole::Stair` con `rise_cm` ≤ 100), que hoy baja a
+  peldaños; con `RAMP_CHANCE` baja por rampa.
+- Consumidor 2: rampa de servicio entre dos espacios contiguos de cotas distintas cuando el desnivel
+  es ≤ 100 cm y el largo disponible ≥ 5 × desnivel. Sin consumidor hasta que exista desnivel entre
+  vecinos (hoy sólo lo hay dentro de un hundido).
+- NUNCA entre plantas: 3,32 m a 1:5 son 16,6 m de rampa, un corredor entero.
+
+### D5 — Lo que NO decide este ADR
+
+Ni rampas curvas ni helicoidales, ni cabeceo en `Wg3Volume`. Si algún día hace falta, es otro ADR.
+
+### Verificaciones (al implementar)
+
+- Oráculo nuevo `wg3_ramp_oracle.json`: la fila de cajas que emite Rust contra la que construye C#.
+- `validate_sweep` 27 regiones: mancha mayor; test de que toda rampa emitida es navegable de abajo
+  arriba y de arriba abajo por `wg3::nav` (`floors_at` ofrece las dos cotas por celda).
+- Playtest en `WorldGen3Live`: subir y bajar sin tirones.
