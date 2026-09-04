@@ -1,0 +1,13 @@
+# Finales de línea de la documentación.
+#
+# Por qué existe: `core.autocrlf` está en `true` en esta máquina, así que Git expande a CRLF al
+# sacar el fichero y lo normaliza al meterlo. Eso funciona mientras TODO el fichero pase por Git,
+# pero el commit `36c04939` metió ~96 KB de CRLF dentro del blob de `docs/SESSION-LOG.md` (2 930
+# líneas CRLF de 2 948, 18 en LF): finales mixtos dentro de un mismo fichero. El daño no es
+# cosmético — `SESSION-LOG.md` guarda texto VERBATIM movido desde `STATE.md`, y un fichero con
+# finales mixtos ya no es byte a byte el original que dice ser.
+#
+# `text eol=lf` deja la decisión escrita en el repo en vez de en la configuración de cada máquina:
+# el blob es LF siempre, venga de donde venga el fichero, y los diffs dejan de salir inflados por
+# un cambio de final de línea que nadie pidió.
+*.md text eol=lf
