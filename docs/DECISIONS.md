@@ -13137,3 +13137,46 @@ no lo era.
 - Divisiones en 3 × 9 regiones: 1 031 → 1 090.
 - Barrido de 27 regiones: mancha mayor 99,6 %, islas 1,3 → 1,4 (D2), nav 100 %, 117 667 cotas.
 - Sin cambio de wire (55), sin tocar el cliente.
+
+---
+
+## ADR-105 — Enmienda 10: la pilastra, y la zapata y el capitel del pilar (2026-09-04) — ACEPTADA (implementada y medida)
+
+### Contexto
+
+Joel: «más pilares». Puntos 5 y 6 del nivel 1. La columnata central en la espina NO cabe: las bandas
+de circulación miden 240–320 cm (`BAND_WIDTH_CM`), y un pilar de 2 m en medio deja 60 cm por lado.
+El ritmo de pared que un pasillo de Backrooms tiene y el nuestro no tenía va ADOSADO.
+
+### D1 — La pilastra: 60 × 25, de suelo a techo, a tresbolillo en las dos paredes largas
+
+`wall_pilasters`: en circulación y naves de ≥ `PILASTER_MIN_WIDTH_CM` (280) de ancho, con
+`PILASTER_ROOM_CHANCE` 0,50, paso 400–600 sorteado por sala, la segunda pared medio paso corrida. Su
+cara trasera está en la cara interior del muro (`WALL_T_CM`). Nunca a menos de
+`PILASTER_DOOR_CLEAR_CM` (150) de una boca —del plan, de junta o de tramo emitido, la lista completa
+de la enm. 9 D4—, ni sobre pozos, rellanos ni agujeros. Cuesta la celda del ráster en esa columna:
+117 667 → 117 544 cotas en 27 regiones (0,1 %).
+
+### D2 — Zapata y capitel, sólo en el pilar cuadrado
+
+`PILLAR_TRIM_CHANCE` 0,40 por nave: la caja del pilar crecida `PILLAR_TRIM_OUT_CM` (30) por lado y
+`PILLAR_TRIM_H_CM` (30) de alto, en el suelo y bajo el techo. Treinta y no 25: por encima del escalón
+del jugador (27), para que la zapata sea pilar y no un bordillo que se sube. El paso entre pilares
+baja 60 y sigue por encima del mínimo (500 − 60). El sorteo va al final de la secuencia de la sala:
+todo lo anterior (enm. 4) sale donde salía. Las cruces no llevan: sus brazos ya rompen el prisma.
+
+### D3 — Los tests
+
+`pilasters_hug_their_wall` (3 × 9 regiones): toda pilastra tiene su cara trasera en un muro de su
+espacio y ninguna boca a menos de 150. `is_pilaster` la reconoce por la forma (25 × 60, más alta que
+un cuerpo); ninguna otra forma del sistema mide 25 de fondo. La zapata (260–410 de lado, 30 de alto)
+cae en la clase «bajo» del clasificador y el capitel en «cuelga», sin tocar `is_pillar` (ningún lado
+suyo es múltiplo de 50 dentro del rango).
+
+### Verificaciones
+
+- `cargo test --release --bin backrooms_server world::wg3` **150/150**; clippy y fmt limpios.
+- **3 197 pilastras** en 27 regiones (~118 por región); 93 zapatas y capiteles en las cuatro de
+  referencia.
+- Barrido de 27 regiones: mancha mayor 99,5 %, 1,4 islas, nav 100 %.
+- Sin cambio de wire (55), sin tocar el cliente.
