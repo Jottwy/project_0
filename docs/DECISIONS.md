@@ -13697,3 +13697,80 @@ wire 59.
 > Se probó además dibujar el arco estructural en la submalla de decoración para que el intradós
 > fuese del tono del marco, y se descartó en captura: las enjutas salían con el rodapié de SU lado
 > (el marco lleva el estilo del lado `a`; el arco, el del suyo). La mocheta en tono de sala se queda.
+
+---
+
+## ADR-126 — POZOS: la rejilla de agujeros del Nivel 0, con fondo a 10–50 m y una cámara oscura debajo (2026-09-04) — ACEPTADA (Joel: «en el suelo me gustaría aplicar esto», foto de la variante de agujeros del Nivel 0; «caídas de 10, 20, 30, 40 o 50 m, pero que haya un fondo y puedas sobrevivir en algunos casos… lootear… poleas o cuerdas para bajar»)
+
+### Contexto
+
+WG3 ya tiene UN agujero por espacio (ADR-104 D4): 2×2 m en el centro, sólo en plantas altas, y se cae
+una planta a una sala iluminada. La referencia de Joel es otra cosa: una **rejilla** de pozos
+cuadrados de ~1 m con pasillos de ~1 m entre ellos, negros, en mitad de una sala, y con fondo hondo.
+Bajo la planta 0 no hay nada generado, así que ahí un pozo negro es posible por construcción.
+
+**El daño por caída ya existe y no es de servidor:** el `CharacterFallDamageHandler` del vendor
+(`_minFallSpeed` 13 m/s, `_fatalFallSpeed` 30, gravedad 20) lo calcula en el cliente y llega por
+`report_damage` (ADR-025 Slice B). Con esa curva: 10 m → 67 % de la vida, 20 m → 94 %, 30 m o más →
+mortal. Es exactamente «sobrevivir en algunos casos» sin escribir una regla nueva.
+
+### D1 — Dónde: salas de la PLANTA BAJA, por sorteo
+
+Candidatas: espacios construidos de la planta 0, no circulación, no escalera, `rise_cm == 0`, de al
+menos `PIT_MIN_SIDE_CM` (7 m) de lado, cuyo rectángulo cubra la rejilla entera (`covers_rect`; una L
+que no la cubra no la lleva). Sorteo por posición con sal propia (`SALT_PIT`), `PIT_CHANCE` = 0,26
+— la misma densidad por sala que el agujero de ADR-104, que es la que se miró jugando. Las plantas
+altas conservan su agujero de 2×2; no llevan rejilla (debajo hay sala).
+
+### D2 — La rejilla: pozos de 1×1 a paso 2, alineados a la celda del ráster
+
+`PIT_SIDE_CM` = 100, `PIT_PITCH_CM` = 200, a `PIT_MARGIN_CM` = 150 de la pared más cercana,
+n×m pozos con n, m ∈ [2, 6]. **Las esquinas se redondean a múltiplos de 50 cm de mundo**: así cada
+pozo son exactamente 2×2 celdas del ráster y cada pasillo otras 2 (`carve_box` abre la celda cuyo
+CENTRO cae dentro), y el servidor deja pasar exactamente por donde el cliente dibuja suelo. Cabe el
+jugador (0,70 m) y cabe el pasillo.
+
+### D3 — Debajo: TIERRA con pozos, y una cámara
+
+Cada pozo es un `Wg3Carve` que se lleva la losa de la planta 0 (`floor − SLAB − 1` a
+`floor + CARVE_FLOOR_GUARD_CM`, como el agujero de ADR-104). Debajo, la «tierra» entre pozos son
+macizos (`Wg3Solid`): m+1 tiras de ancho completo entre filas y n+1 bloques por fila entre pozos, del
+techo de la cámara (`floor − D + PIT_CHAMBER_H_CM`) hasta la cara inferior de la losa. Vistas desde
+dentro son las paredes del pozo; vistas desde la cámara son su techo, con un hueco de 1×1 por pozo.
+La CÁMARA: losa de suelo a `floor − D` y cuatro paredes de `WALL_T_CM` hasta `PIT_CHAMBER_H_CM` =
+300, bajo la huella de la rejilla más el margen. **Profundidad D por rejilla**, sorteada de
+`PIT_DEPTHS_M` = [10, 10, 20, 20, 30, 40, 50]: cuatro de siete son sobrevivibles con vida entera.
+Sin salida: hoy se sale muriendo. Las cuerdas y poleas de Joel, y el loot del fondo, son la
+entrega siguiente (D6).
+
+### D4 — Estilo 7, «pozo»: negro. Wire 58 → 59
+
+Todos los macizos del pozo llevan `style` = 7. El cliente lo tiñe a casi negro
+(`Wg3StyleMaterials.TintFor(7)`, 0,05) y no le cuelga luminaria (las luminarias son de tramo, y un
+pozo no es tramo). Semántica nueva del byte a los dos lados en el mismo commit: **wire 59**. La rampa
+de ADR-122 pasa a wire 60.
+
+### D5 — Nadie nace encima
+
+La rejilla (crecida 50 cm) entra en las mismas exclusiones que el agujero de ADR-104: pilares de
+nave, divisiones, tarimas y pilastras la esquivan (`pit_rects_of`, definición ÚNICA como
+`hole_square`). El ráster y `nav::floors_at` ya tratan una celda sin suelo cercano como intransitable
+(`MAX_WALK_STEP_CM`), así que ningún robapieles ni faceling entra andando.
+
+### D6 — Fuera de esta entrega
+
+Loot en la cámara, cuerdas/poleas para bajar y subir, luz propia del fondo, sonido del pozo. Un
+jugador en la cámara sólo sale muriendo: es un límite conocido y aceptado por Joel para esta entrega.
+
+### Verificaciones
+
+- Rust: `pits_drop_you_to_a_dark_chamber_and_the_bridges_hold` sobre las regiones de auditoría —
+  en el centro de cada pozo `floor_below` baja exactamente D; en el centro de cada pasillo se queda
+  en el suelo; ningún macizo que no sea de pozo pisa la rejilla; existe al menos una rejilla.
+- Unidad: la rejilla se alinea a 50 cm y las tiras más los bloques cubren la huella menos los pozos.
+- C#: `WireSchema.Expected` 59 (`WireSchemaHelloTests`, `ServerBrowserSessionGateTests`); el negro
+  del estilo 7, por captura (`w59_pozos*`).
+- Barrido de 27 regiones: 27/27 válidas; mancha 99,56 % (=), islas 1,26 (1,41 antes), cotas 117 077
+  (−136: las celdas de pozo), **nav 99,8 % (100 antes)** — `nav_reach` cuenta como navegable toda
+  celda con suelo debajo desde y = 0, y en un pozo eso es la cámara a −D: el 1–2 % que baja son las
+  celdas de pozo, inalcanzables por construcción. Umbral del validador, 50 %.

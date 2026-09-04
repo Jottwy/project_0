@@ -8262,6 +8262,136 @@ fn from_the_upper_storey_the_atrium_is_open() {
 /// llevarse sólo una deja un hueco por el que se ve y no se pasa: dibujado perfecto, todos los
 /// contadores en verde, y el jugador rebotando contra un techo invisible.
 ///
+/// ADR-126 — **un pozo te deja en el suelo de la cámara, exactamente D más abajo; el pasillo entre
+/// dos pozos aguanta; y nadie ha nacido encima de la rejilla.** Se mide contra el ráster servido,
+/// que es lo que el servidor consulta para dejar pasar: si la tierra o la cámara faltaran en una
+/// celda, `floor_below` devolvería otra cosa o nada.
+#[test]
+fn pits_drop_you_to_a_dark_chamber_and_the_bridges_hold() {
+    const EYE_M: f32 = 1.6;
+    let m = real_manifest();
+    let mut clusters = 0usize;
+    let mut pits = 0usize;
+
+    for (rx, rz) in AUDIT_REGIONS {
+        let b = building_of(rx, rz);
+        let found = fill::pit_clusters_of(&b, &fill::fill_building(&b, &m).segments);
+        if found.is_empty() {
+            continue;
+        }
+        let region = Wg3RegionCoord { x: rx, z: rz };
+        let (min_x, min_z, _, _) = region.bounds();
+        let served = Wg3ServedWorld::plan_region(&m, SERVED_SEED, region);
+
+        let side = REGION_CHUNKS as usize;
+        let base = chunk::Wg3ChunkCoord::containing(min_x + 1.0, min_z + 1.0);
+        let mut rasters = Vec::with_capacity(side * side);
+        let mut solids = Vec::new();
+        for cz in 0..side {
+            for cx in 0..side {
+                let coord = chunk::Wg3ChunkCoord {
+                    x: base.x + cx as i32,
+                    z: base.z + cz as i32,
+                };
+                let here = served.solids_touching_chunk(coord);
+                rasters.push(chunk::build_chunk_raster_full(
+                    &m,
+                    &served.placements_touching_chunk(&m, coord),
+                    &served.segments_touching_chunk(coord),
+                    &served.carves_touching_chunk(coord),
+                    &here,
+                    coord,
+                ));
+                solids.extend(here);
+            }
+        }
+        let raster_at = |x: f32, z: f32| -> &Wg3Raster {
+            let coord = chunk::Wg3ChunkCoord::containing(x, z);
+            let (dx, dz) = (coord.x - base.x, coord.z - base.z);
+            &rasters[dz as usize * side + dx as usize]
+        };
+
+        for c in found {
+            clusters += 1;
+            // Nadie encima: ningún macizo que no sea de pozo y arranque a ras de suelo pisa la huella.
+            let fp = c.footprint();
+            let intruders: Vec<&segment::Wg3Solid> = solids
+                .iter()
+                .filter(|s| s.style != fill::PIT_STYLE && !s.is_decoration())
+                .filter(|s| s.bottom_y_cm >= c.floor_y_cm - 1 && s.bottom_y_cm < c.floor_y_cm + 100)
+                .filter(|s| {
+                    let (sx0, sz0, sx1, sz1) = s.bounds();
+                    sx1 * 100.0 > fp.min_x_cm as f32
+                        && sx0 * 100.0 < fp.max_x_cm as f32
+                        && sz1 * 100.0 > fp.min_z_cm as f32
+                        && sz0 * 100.0 < fp.max_z_cm as f32
+                })
+                .collect();
+            assert!(
+                intruders.is_empty(),
+                "({rx},{rz}) rejilla en ({},{}): {} macizos encima, el primero {:?}",
+                c.x0_cm,
+                c.z0_cm,
+                intruders.len(),
+                intruders[0]
+            );
+            let floor_m = c.floor_y_cm as f32 / 100.0;
+            let depth_m = c.depth_cm as f32 / 100.0;
+            for i in 0..c.nx {
+                for j in 0..c.nz {
+                    let p = c.pit(i, j);
+                    let (cx, cz) = p.centre_m();
+                    let bottom = raster_at(cx, cz)
+                        .floor_below(cx, floor_m + EYE_M, cz)
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "({rx},{rz}) pozo ({i},{j}) en ({cx:.2},{cz:.2}): sin suelo debajo"
+                            )
+                        });
+                    assert!(
+                        (floor_m - bottom - depth_m).abs() < 0.03,
+                        "({rx},{rz}) pozo ({i},{j}): cae {:.2} m y la rejilla dice {depth_m}",
+                        floor_m - bottom
+                    );
+                    pits += 1;
+                    // El pasillo hasta el pozo de al lado, en las dos direcciones.
+                    for (bx, bz) in [
+                        ((p.max_x_cm + 50) as f32 / 100.0, cz),
+                        (cx, (p.max_z_cm + 50) as f32 / 100.0),
+                    ] {
+                        let held = raster_at(bx, bz).floor_below(bx, floor_m + EYE_M, bz);
+                        assert!(
+                            held.is_some_and(|f| (f - floor_m).abs() < 0.01),
+                            "({rx},{rz}) pasillo en ({bx:.2},{bz:.2}) junto al pozo ({i},{j}): suelo {held:?}, no {floor_m}; columna {:?}; vanos {:?}",
+                            raster_at(bx, bz).column_at(bx, bz),
+                            served
+                                .carves_touching_chunk(chunk::Wg3ChunkCoord::containing(bx, bz))
+                                .iter()
+                                .filter(|k| (k.x_cm as f32) <= bx * 100.0
+                                    && bx * 100.0 <= (k.x_cm + k.size_x_cm) as f32
+                                    && (k.z_cm as f32) <= bz * 100.0
+                                    && bz * 100.0 <= (k.z_cm + k.size_z_cm) as f32)
+                                .collect::<Vec<_>>()
+                        );
+                    }
+                }
+            }
+            println!(
+                "[pozos] ({rx},{rz}) rejilla {}×{} en ({:.1},{:.1}) m, {depth_m} m de caída",
+                c.nx,
+                c.nz,
+                c.x0_cm as f32 / 100.0,
+                c.z0_cm as f32 / 100.0
+            );
+        }
+    }
+    assert!(
+        clusters >= 1,
+        "ninguna rejilla en cuatro regiones: o el sorteo no sale o `covers_rect` lo tira todo"
+    );
+    println!("[pozos] {clusters} rejillas, {pits} pozos en cuatro regiones");
+}
+
 /// Se mide con `floor_below` desde la altura de los ojos de la planta alta, en el centro de cada
 /// espacio construido de arriba. Si hay agujero, el suelo que devuelve está una planta más abajo.
 #[test]

@@ -82,6 +82,9 @@ namespace BackroomsSurvival.WorldGen3
                 // oficina. Estructura neutra fría y decoración FRANCAMENTE anaranjada: el rodapié
                 // hace de señal, y una señal se lee por lo que contrasta contra lo que la rodea.
                 case 6: return MakeStair();
+                // ADR-126 D4 — el POZO: casi negro en todo. La luz de la boca lo toca un par de
+                // metros y de ahí para abajo no se ve nada, que es lo que pide la referencia.
+                case 7: return Make(0.05f, 0.05f, 0.05f, 0.05f, 0.05f, 0.05f);
                 // Oficina y cualquier número que el servidor añada mañana: el juego base, sin tocar.
                 default: return Make(1f, 1f, 1f, 1f, 1f, 1f);
             }

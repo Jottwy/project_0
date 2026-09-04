@@ -514,12 +514,16 @@ pub fn fill_building(building: &RegionBuilding, manifest: &Wg3Manifest) -> Fille
     out.carves.extend(atrium_carves(building));
     out.carves.extend(hole_carves(building));
     out.carves.extend(well_mouth_carves(building));
+    // ADR-126 — las rejillas de pozos de la planta baja: vanos en la losa, tierra y cámara.
+    let (pit_carves, pit_solids) = pit_geometry(building, &out.segments);
+    out.carves.extend(pit_carves);
+    out.solids.extend(pit_solids);
     out.solids.extend(atrium_solids(building));
     // ADR-119 enm. 1 — los pilares, que ya no son sólo del atrio. Va DESPUÉS del bucle de plantas
     // porque necesita saber qué espacios acabaron resueltos con una pieza del catálogo, y eso no se
     // sabe hasta que están todos rellenados.
     let placed = out.placements.clone();
-    let pillars = hall_pillars(building, manifest, &placed);
+    let pillars = hall_pillars(building, manifest, &placed, &out.segments);
     // ADR-105 enm. 9 — las bocas de los TRAMOS emitidos. `plan.links` guarda el punto medio de una
     // ruta, no la boca en la pared, así que una división podía tapar la entrada de un conector sin
     // que ningún contador lo viera: subió las islas de 1,3 a 1,5 por región al meter el peine.
@@ -533,12 +537,13 @@ pub fn fill_building(building: &RegionBuilding, manifest: &Wg3Manifest) -> Fille
         &pillars,
         &seg_doors,
         &out.carves,
+        &out.segments,
     );
     out.solids.extend(partitions);
     out.solids.extend(pillars);
     // ADR-105 enm. 10 — las pilastras, pegadas a las paredes de pasillos y naves. Después de las
     // divisiones: éstas guardan 300 cm de margen con la pared y no se tocan.
-    let pilasters = wall_pilasters(building, &seg_doors, &out.carves);
+    let pilasters = wall_pilasters(building, &seg_doors, &out.carves, &out.segments);
     out.solids.extend(pilasters);
     // ADR-105 enm. 11 — arcadas entre pilares y bóvedas escalonadas. Cuelgan por encima de 2,50, así
     // que no esquivan nada del suelo; sólo pozos y agujeros, que atraviesan el techo.
@@ -552,7 +557,7 @@ pub fn fill_building(building: &RegionBuilding, manifest: &Wg3Manifest) -> Fille
     // ADR-105 enm. 13 — descuelgue perimetral o cornisa, y tarimas.
     out.solids.extend(wall_soffits(building, manifest, &placed));
     out.solids
-        .extend(floor_platforms(building, manifest, &placed));
+        .extend(floor_platforms(building, manifest, &placed, &out.segments));
     out
 }
 
@@ -741,6 +746,292 @@ fn hole_carves(building: &RegionBuilding) -> Vec<Wg3Carve> {
     out
 }
 
+/// ADR-126 D2 — lado de cada pozo. Dos celdas del ráster exactas.
+pub(super) const PIT_SIDE_CM: i32 = 100;
+/// ADR-126 D2 — paso de la rejilla: un pozo y un pasillo de su mismo ancho.
+pub(super) const PIT_PITCH_CM: i32 = 200;
+/// ADR-126 D2 — de la pared más cercana al primer pozo. Un pozo pegado a la pared no se ve hasta
+/// pisarlo, y las pilastras y los rodapiés viven en ese medio metro.
+pub(super) const PIT_MARGIN_CM: i32 = 150;
+/// ADR-126 D1 — lado mínimo de la sala: margen, dos pozos con su pasillo, margen.
+const PIT_MIN_SIDE_CM: i32 = 2 * PIT_MARGIN_CM + PIT_PITCH_CM + PIT_SIDE_CM + 100;
+/// ADR-126 D2 — pozos por eje, como mucho. Seis por seis son 36 vanos y 49 macizos en un chunk.
+const PIT_MAX_PER_AXIS: i32 = 6;
+/// ADR-126 D1 — la misma densidad por sala que el agujero de ADR-104.
+const PIT_CHANCE: f32 = 0.26;
+/// ADR-126 D3 — alto libre de la cámara del fondo.
+pub(super) const PIT_CHAMBER_H_CM: i32 = 300;
+/// ADR-126 D3 — profundidades posibles, en metros. Con la curva del vendor (gravedad 20, mortal a
+/// 30 m/s) 10 m cuesta el 67 % de la vida y 20 m el 94 %; de 30 en adelante se muere. Cuatro de
+/// siete son sobrevivibles con la vida entera, que es lo que pidió Joel.
+const PIT_DEPTHS_M: [i32; 7] = [10, 10, 20, 20, 30, 40, 50];
+/// ADR-126 D4 — el estilo negro. El cliente lo tiñe a casi nada y no le cuelga luminaria.
+pub const PIT_STYLE: u8 = 7;
+/// Sal del sorteo de rejillas.
+const SALT_PIT: u32 = 0xA9_04_02;
+
+/// ADR-126 — una rejilla de pozos ya sorteada: dónde empieza, cuántos, y a qué profundidad cae.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct PitCluster {
+    /// Esquina mínima del primer pozo, en centímetros de mundo, múltiplo de 50.
+    pub x0_cm: i32,
+    pub z0_cm: i32,
+    pub nx: i32,
+    pub nz: i32,
+    pub floor_y_cm: i32,
+    pub depth_cm: i32,
+}
+
+impl PitCluster {
+    /// El pozo (i, j).
+    pub fn pit(&self, i: i32, j: i32) -> super::plan::PlanRect {
+        let x = self.x0_cm + i * PIT_PITCH_CM;
+        let z = self.z0_cm + j * PIT_PITCH_CM;
+        super::plan::PlanRect {
+            min_x_cm: x,
+            min_z_cm: z,
+            max_x_cm: x + PIT_SIDE_CM,
+            max_z_cm: z + PIT_SIDE_CM,
+        }
+    }
+    /// La huella de la rejilla con su margen: lo que ocupan la tierra y la cámara.
+    pub fn footprint(&self) -> super::plan::PlanRect {
+        super::plan::PlanRect {
+            min_x_cm: self.x0_cm - PIT_MARGIN_CM,
+            min_z_cm: self.z0_cm - PIT_MARGIN_CM,
+            max_x_cm: self.x0_cm + (self.nx - 1) * PIT_PITCH_CM + PIT_SIDE_CM + PIT_MARGIN_CM,
+            max_z_cm: self.z0_cm + (self.nz - 1) * PIT_PITCH_CM + PIT_SIDE_CM + PIT_MARGIN_CM,
+        }
+    }
+    /// Cota del suelo de la cámara.
+    pub fn chamber_floor_y_cm(&self) -> i32 {
+        self.floor_y_cm - self.depth_cm
+    }
+}
+
+/// ADR-126 D1 — la rejilla de UN espacio, si le toca. Definición única: la usan el emisor y quienes
+/// tienen que esquivarla (pilares, divisiones, pilastras), como `hole_square`.
+///
+/// **Y dentro de UN solo tramo.** Una sala de WG3 no es un espacio abierto: la rellenan varios
+/// `Wg3Segment` con paredes entre sí, y una rejilla que cruce una de esas paredes tiene un pasillo
+/// que es muro (medido: en (−142,5, 345) la tierra se fundía con una pared de 2,52 m). La huella con
+/// su margen tiene que caber en el interior de un tramo de la planta baja, que además deja fuera a
+/// las piezas del catálogo (traen su interior horneado y no son tramos).
+fn pit_cluster_of(
+    building: &RegionBuilding,
+    s: &PlannedSpace,
+    segments: &[Wg3Segment],
+) -> Option<PitCluster> {
+    if !s.role.is_built() || s.role.is_circulation() || s.role == SpaceRole::Stair || s.rise_cm != 0
+    {
+        return None;
+    }
+    let r = s.rect;
+    if r.width_cm() < PIT_MIN_SIDE_CM || r.depth_cm() < PIT_MIN_SIDE_CM {
+        return None;
+    }
+    let (cx, cz) = r.centre_m();
+    let mut st = super::hash::stream_at(building.seed, cx, cz, SALT_PIT);
+    if st.next01() >= PIT_CHANCE {
+        return None;
+    }
+    // Cuántos caben con margen a los dos lados, y centrados en la sala.
+    let fits = |side: i32| -> i32 {
+        ((side - 2 * PIT_MARGIN_CM - PIT_SIDE_CM) / PIT_PITCH_CM + 1).clamp(0, PIT_MAX_PER_AXIS)
+    };
+    let nx = fits(r.width_cm());
+    let nz = fits(r.depth_cm());
+    if nx < 2 || nz < 2 {
+        return None;
+    }
+    let span_x = (nx - 1) * PIT_PITCH_CM + PIT_SIDE_CM;
+    let span_z = (nz - 1) * PIT_PITCH_CM + PIT_SIDE_CM;
+    // Alineado a 50 cm de mundo: dos celdas exactas por pozo y por pasillo (D2).
+    let x0 = (r.min_x_cm + (r.width_cm() - span_x) / 2).div_euclid(50) * 50;
+    let z0 = (r.min_z_cm + (r.depth_cm() - span_z) / 2).div_euclid(50) * 50;
+    let depth_cm = PIT_DEPTHS_M[(st.next_raw() % PIT_DEPTHS_M.len() as u64) as usize] * 100;
+    let cluster = PitCluster {
+        x0_cm: x0,
+        z0_cm: z0,
+        nx,
+        nz,
+        floor_y_cm: s.floor_y_cm,
+        depth_cm,
+    };
+    // Entera sobre suelo de ESTE espacio (una L con la muesca en medio no la lleva), y con el
+    // margen dentro también: la tierra y la cámara no pueden asomar bajo el vecino.
+    if !s.covers_rect(&cluster.footprint()) {
+        return None;
+    }
+    let fp = cluster.footprint();
+    let inside_one_segment = segments.iter().any(|g| {
+        g.floor_y_cm == s.floor_y_cm && {
+            let inner = super::plan::PlanRect {
+                min_x_cm: g.x_cm + WALL_T_CM,
+                min_z_cm: g.z_cm + WALL_T_CM,
+                max_x_cm: g.x_cm + g.size_x_cm - WALL_T_CM,
+                max_z_cm: g.z_cm + g.size_z_cm - WALL_T_CM,
+            };
+            inner.contains_rect(&fp)
+        }
+    });
+    if !inside_one_segment {
+        return None;
+    }
+    Some(cluster)
+}
+
+/// ADR-126 — todas las rejillas de la planta baja del edificio, dados sus tramos ya emitidos.
+pub(super) fn pit_clusters_of(
+    building: &RegionBuilding,
+    segments: &[Wg3Segment],
+) -> Vec<PitCluster> {
+    building
+        .storeys
+        .first()
+        .map(|plan| {
+            plan.spaces
+                .iter()
+                .filter_map(|s| pit_cluster_of(building, s, segments))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// ADR-126 D5 — las huellas que nadie de la planta baja debe pisar, con medio metro de margen.
+fn pit_rects_of(building: &RegionBuilding, segments: &[Wg3Segment]) -> Vec<super::plan::PlanRect> {
+    pit_clusters_of(building, segments)
+        .iter()
+        .map(|c| c.footprint().shrunk(-50))
+        .collect()
+}
+
+/// ADR-126 D3 — lo que una rejilla emite: un vano por pozo, la tierra entre pozos y la cámara.
+fn pit_geometry(
+    building: &RegionBuilding,
+    segments: &[Wg3Segment],
+) -> (Vec<Wg3Carve>, Vec<Wg3Solid>) {
+    let mut carves = Vec::new();
+    let mut solids = Vec::new();
+    let boxed = |r: &super::plan::PlanRect, y0: i32, y1: i32| -> Wg3Solid {
+        Wg3Solid {
+            x_cm: r.min_x_cm,
+            z_cm: r.min_z_cm,
+            size_x_cm: r.width_cm(),
+            size_z_cm: r.depth_cm(),
+            bottom_y_cm: y0,
+            top_y_cm: y1,
+            style: PIT_STYLE,
+            yaw_deg: 0,
+            shape: SHAPE_BOX,
+        }
+    };
+    for c in pit_clusters_of(building, segments) {
+        let fp = c.footprint();
+        let floor = c.floor_y_cm;
+        let chamber_floor = c.chamber_floor_y_cm();
+        let earth_top = floor - SLAB_THICKNESS_CM;
+        let earth_bottom = chamber_floor + PIT_CHAMBER_H_CM;
+
+        // Los vanos: la losa de la planta baja, como el agujero de ADR-104 (sin la guarda del
+        // suelo, que aquí es el objetivo).
+        for i in 0..c.nx {
+            for j in 0..c.nz {
+                let p = c.pit(i, j);
+                carves.push(Wg3Carve {
+                    x_cm: p.min_x_cm,
+                    z_cm: p.min_z_cm,
+                    size_x_cm: PIT_SIDE_CM,
+                    size_z_cm: PIT_SIDE_CM,
+                    bottom_y_cm: floor - SLAB_THICKNESS_CM - 1,
+                    top_y_cm: floor + CARVE_FLOOR_GUARD_CM,
+                });
+            }
+        }
+        // La tierra: tiras de ancho completo entre filas de pozos (y en los dos márgenes)…
+        let mut z_edges = vec![fp.min_z_cm];
+        for j in 0..c.nz {
+            let p = c.pit(0, j);
+            z_edges.push(p.min_z_cm);
+            z_edges.push(p.max_z_cm);
+        }
+        z_edges.push(fp.max_z_cm);
+        for k in (0..z_edges.len()).step_by(2) {
+            let (z0, z1) = (z_edges[k], z_edges[k + 1]);
+            if z1 > z0 {
+                let strip = super::plan::PlanRect {
+                    min_x_cm: fp.min_x_cm,
+                    min_z_cm: z0,
+                    max_x_cm: fp.max_x_cm,
+                    max_z_cm: z1,
+                };
+                solids.push(boxed(&strip, earth_bottom, earth_top));
+            }
+        }
+        // …y, en cada fila, los bloques entre pozos (y los dos de los márgenes).
+        for j in 0..c.nz {
+            let row = c.pit(0, j);
+            let mut x_edges = vec![fp.min_x_cm];
+            for i in 0..c.nx {
+                let p = c.pit(i, j);
+                x_edges.push(p.min_x_cm);
+                x_edges.push(p.max_x_cm);
+            }
+            x_edges.push(fp.max_x_cm);
+            for k in (0..x_edges.len()).step_by(2) {
+                let (x0, x1) = (x_edges[k], x_edges[k + 1]);
+                if x1 > x0 {
+                    let block = super::plan::PlanRect {
+                        min_x_cm: x0,
+                        min_z_cm: row.min_z_cm,
+                        max_x_cm: x1,
+                        max_z_cm: row.max_z_cm,
+                    };
+                    solids.push(boxed(&block, earth_bottom, earth_top));
+                }
+            }
+        }
+        // La cámara: losa de suelo y cuatro paredes por FUERA de la huella, hasta la tierra.
+        let wall = WALL_T_CM;
+        let outer = fp.shrunk(-wall);
+        solids.push(boxed(
+            &outer,
+            chamber_floor - SLAB_THICKNESS_CM,
+            chamber_floor,
+        ));
+        let walls = [
+            super::plan::PlanRect {
+                min_x_cm: outer.min_x_cm,
+                min_z_cm: outer.min_z_cm,
+                max_x_cm: outer.max_x_cm,
+                max_z_cm: fp.min_z_cm,
+            },
+            super::plan::PlanRect {
+                min_x_cm: outer.min_x_cm,
+                min_z_cm: fp.max_z_cm,
+                max_x_cm: outer.max_x_cm,
+                max_z_cm: outer.max_z_cm,
+            },
+            super::plan::PlanRect {
+                min_x_cm: outer.min_x_cm,
+                min_z_cm: fp.min_z_cm,
+                max_x_cm: fp.min_x_cm,
+                max_z_cm: fp.max_z_cm,
+            },
+            super::plan::PlanRect {
+                min_x_cm: fp.max_x_cm,
+                min_z_cm: fp.min_z_cm,
+                max_x_cm: outer.max_x_cm,
+                max_z_cm: fp.max_z_cm,
+            },
+        ];
+        for w in &walls {
+            solids.push(boxed(w, chamber_floor, earth_bottom));
+        }
+    }
+    (carves, solids)
+}
+
 /// ADR-104 D3 — **abrir el atrio por arriba, porque hasta aquí era un pozo SELLADO.**
 ///
 /// El atrio ya medía dos plantas —eso lo hizo D1 y está verificado en el ráster— y aun así no se veía
@@ -860,6 +1151,7 @@ fn wall_pilasters(
     building: &RegionBuilding,
     seg_doors: &[(i32, i32, i32)],
     carves: &[Wg3Carve],
+    segments: &[Wg3Segment],
 ) -> Vec<Wg3Solid> {
     let mut out = Vec::new();
     let seed = building.seed;
@@ -871,6 +1163,9 @@ fn wall_pilasters(
             .map(|w| w.rect.shrunk(-50))
             .collect();
         keep_out.extend(hole_squares_above(building, n));
+        if n == 0 {
+            keep_out.extend(pit_rects_of(building, segments));
+        }
 
         for (i, s) in plan.built() {
             if !(s.role.is_circulation() || s.role == SpaceRole::Hall)
@@ -1262,6 +1557,7 @@ fn hall_pillars(
     building: &RegionBuilding,
     manifest: &Wg3Manifest,
     placements: &[Wg3Placement],
+    segments: &[Wg3Segment],
 ) -> Vec<Wg3Solid> {
     let mut out = Vec::new();
     let seed = building.seed;
@@ -1300,6 +1596,12 @@ fn hall_pillars(
         // baja la planta entera. Con pilares de 2 m casi nunca coincidían; con 4 m y retícula densa
         // lo hicieron, y `a_hole_drops_you_a_whole_storey` bajó de 8 a 7.
         let holes_above = hole_squares_above(building, n);
+        // ADR-126 D5 — y la rejilla de pozos de la planta baja, por lo mismo.
+        let pits_here = if n == 0 {
+            pit_rects_of(building, segments)
+        } else {
+            Vec::new()
+        };
 
         for (i, s) in plan.built() {
             if s.role != SpaceRole::Hall || s.rise_cm != 0 {
@@ -1471,6 +1773,7 @@ fn hall_pillars(
                         || wells_here.iter().any(|w| w.overlaps(&pillar))
                         || (n > 0 && own_hole.overlaps(&pillar))
                         || holes_above.iter().any(|h| h.overlaps(&pillar))
+                        || pits_here.iter().any(|p| p.overlaps(&pillar))
                         || doors.iter().any(|&(dx, dz)| {
                             (dx - (x + side / 2)).abs() < PILLAR_DOOR_CLEAR_CM
                                 && (dz - (z + side / 2)).abs() < PILLAR_DOOR_CLEAR_CM
@@ -1897,6 +2200,7 @@ fn on_space_wall(s: &PlannedSpace, x: i32, z: i32) -> bool {
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn interior_partitions(
     building: &RegionBuilding,
     manifest: &Wg3Manifest,
@@ -1904,6 +2208,7 @@ fn interior_partitions(
     pillars: &[Wg3Solid],
     seg_doors: &[(i32, i32, i32)],
     carves: &[Wg3Carve],
+    segments: &[Wg3Segment],
 ) -> Vec<Wg3Solid> {
     let mut out = Vec::new();
     let seed = building.seed;
@@ -1938,6 +2243,12 @@ fn interior_partitions(
         // pilares: la exclusión de éstos movió una división de la semilla servida justo debajo del
         // agujero de (-1,2), y `a_hole_drops_you_a_whole_storey` lo cazó.
         let holes_above = hole_squares_above(building, n);
+        // ADR-126 D5 — y la rejilla de pozos de la planta baja, por lo mismo.
+        let pits_here = if n == 0 {
+            pit_rects_of(building, segments)
+        } else {
+            Vec::new()
+        };
 
         // **El espacio de LLEGADA de una escalera se deja entero en paz.**
         //
@@ -2049,6 +2360,7 @@ fn interior_partitions(
                         || landings.iter().any(|l| l.overlaps(foot))
                         || (n > 0 && hole_here.overlaps(foot))
                         || holes_above.iter().any(|h| h.overlaps(foot))
+                        || pits_here.iter().any(|p| p.overlaps(foot))
                         || wells_here.iter().any(|w| w.overlaps(foot))
                         || pillars.iter().any(|p| overlaps_m(foot, p.bounds()))
                         || doors.iter().any(|&(dx, dz)| {
@@ -2567,6 +2879,7 @@ fn interior_partitions(
                     || landings.iter().any(|l| l.overlaps(&foot))
                     || (n > 0 && hole.shrunk(-50).overlaps(&foot))
                     || holes_above.iter().any(|h| h.overlaps(&foot))
+                    || pits_here.iter().any(|p| p.overlaps(&foot))
                     || wells_here.iter().any(|w| w.overlaps(&foot))
                     || mine.iter().any(|m| m.overlaps(&foot))
                     || pillars.iter().any(|p| {
@@ -3140,6 +3453,7 @@ fn floor_platforms(
     building: &RegionBuilding,
     manifest: &Wg3Manifest,
     placements: &[Wg3Placement],
+    segments: &[Wg3Segment],
 ) -> Vec<Wg3Solid> {
     let mut out = Vec::new();
     let seed = building.seed;
@@ -3160,6 +3474,9 @@ fn floor_platforms(
             .map(|w| w.rect.shrunk(-50))
             .collect();
         keep_out.extend(hole_squares_above(building, n));
+        if n == 0 {
+            keep_out.extend(pit_rects_of(building, segments));
+        }
         for (_, s) in plan.built() {
             if s.is_composite()
                 || s.rise_cm != 0
@@ -5575,6 +5892,11 @@ mod apron_tests {
                 if s.shape == SHAPE_ARCH {
                     continue;
                 }
+                // ADR-126 — las paredes de la cámara de un pozo miden grosor de pared y viven
+                // bajo el suelo a propósito.
+                if s.style == PIT_STYLE {
+                    continue;
+                }
                 if floors
                     .iter()
                     .any(|f| s.bottom_y_cm == f + DOOR_LINTEL_CLEAR_CM)
@@ -5595,6 +5917,88 @@ mod apron_tests {
                 );
             }
         }
+    }
+
+    fn rect_of(s: &Wg3Solid) -> super::super::plan::PlanRect {
+        super::super::plan::PlanRect {
+            min_x_cm: s.x_cm,
+            min_z_cm: s.z_cm,
+            max_x_cm: s.x_cm + s.size_x_cm,
+            max_z_cm: s.z_cm + s.size_z_cm,
+        }
+    }
+
+    /// ADR-126 D2/D3 — la rejilla se alinea a la celda del ráster (múltiplos de 50 cm, dos celdas
+    /// por pozo y por pasillo) y la tierra cubre la huella entera menos los pozos: ni un hueco
+    /// por el que se caiga donde no hay pozo, ni un macizo dentro de uno.
+    #[test]
+    fn pit_grids_align_to_the_raster_and_the_earth_covers_everything_but_the_pits() {
+        let mut seen = 0usize;
+        for seed in 1..60 {
+            let b = building(seed);
+            let segments = fill_building(&b, &no_catalogue()).segments;
+            let clusters = pit_clusters_of(&b, &segments);
+            if clusters.is_empty() {
+                continue;
+            }
+            let (carves, solids) = pit_geometry(&b, &segments);
+            for c in clusters {
+                seen += 1;
+                assert_eq!(
+                    c.x0_cm.rem_euclid(50),
+                    0,
+                    "semilla {seed}: x0 fuera de celda"
+                );
+                assert_eq!(
+                    c.z0_cm.rem_euclid(50),
+                    0,
+                    "semilla {seed}: z0 fuera de celda"
+                );
+                assert!(
+                    (2..=PIT_MAX_PER_AXIS).contains(&c.nx)
+                        && (2..=PIT_MAX_PER_AXIS).contains(&c.nz)
+                );
+                assert!(PIT_DEPTHS_M.contains(&(c.depth_cm / 100)));
+                let fp = c.footprint();
+                let earth_top = c.floor_y_cm - SLAB_THICKNESS_CM;
+                let earth: Vec<&Wg3Solid> = solids
+                    .iter()
+                    .filter(|s| s.top_y_cm == earth_top && s.style == PIT_STYLE)
+                    .filter(|s| fp.contains_rect(&rect_of(s)))
+                    .collect();
+                let area: i64 = earth
+                    .iter()
+                    .map(|s| s.size_x_cm as i64 * s.size_z_cm as i64)
+                    .sum();
+                let expected = fp.width_cm() as i64 * fp.depth_cm() as i64
+                    - (c.nx * c.nz) as i64 * (PIT_SIDE_CM * PIT_SIDE_CM) as i64;
+                assert_eq!(
+                    area, expected,
+                    "semilla {seed}: la tierra cubre {area} cm² y la huella menos los pozos son {expected}"
+                );
+                // Ningún macizo de tierra pisa un pozo, y cada pozo tiene su vano.
+                for i in 0..c.nx {
+                    for j in 0..c.nz {
+                        let p = c.pit(i, j);
+                        assert!(
+                            !earth.iter().any(|s| rect_of(s).overlaps(&p)),
+                            "semilla {seed}: hay tierra dentro del pozo ({i},{j})"
+                        );
+                        assert!(
+                            carves.iter().any(|k| k.x_cm == p.min_x_cm
+                                && k.z_cm == p.min_z_cm
+                                && k.bottom_y_cm < c.floor_y_cm - SLAB_THICKNESS_CM),
+                            "semilla {seed}: el pozo ({i},{j}) no tiene vano en la losa"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(
+            seen >= 5,
+            "sólo {seen} rejillas en 59 semillas: la muestra no cubre el caso"
+        );
+        println!("[pozos] {seen} rejillas en 59 semillas");
     }
 }
 
