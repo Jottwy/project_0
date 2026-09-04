@@ -8519,14 +8519,17 @@ fn probe_dump_regions_json() {
                 let long = s.size_x_cm.max(s.size_z_cm);
                 let h = s.top_y_cm - s.bottom_y_cm;
                 let standing = floors.contains(&s.bottom_y_cm);
-                let (kind, new) = if fill::is_pillar(s) {
+                let (kind, new) = if fill::is_round_pilaster(s) {
+                    ("media luna", true)
+                } else if fill::is_pillar(s) {
                     (
-                        if s.size_x_cm == s.size_z_cm {
-                            "pilar"
-                        } else {
-                            "cruz"
+                        match (s.shape, s.size_x_cm == s.size_z_cm) {
+                            (segment::SHAPE_CYLINDER, _) => "cilindro",
+                            (segment::SHAPE_OCTAGON, _) => "octógono",
+                            (_, true) => "pilar",
+                            (_, false) => "cruz",
                         },
-                        false,
+                        s.shape != segment::SHAPE_BOX,
                     )
                 } else if fill::is_pilaster(s) {
                     ("pilastra", true)
@@ -8578,6 +8581,7 @@ fn probe_dump_regions_json() {
                 json!({
                     "r": [s.x_cm, s.z_cm, s.x_cm + s.size_x_cm, s.z_cm + s.size_z_cm],
                     "y": [s.bottom_y_cm, s.top_y_cm], "kind": kind, "new": new, "style": s.style,
+                    "shape": s.shape, "yaw": s.yaw_deg,
                 })
             })
             .collect();
