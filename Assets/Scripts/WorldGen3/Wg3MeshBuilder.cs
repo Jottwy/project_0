@@ -62,6 +62,9 @@ namespace BackroomsSurvival.WorldGen3
                 if (v.shape == Wg3Shape.Box)
                     AddBox(verts, normals, uvs, tris[SubMeshFor(v.kind)],
                         v.center - origin, v.size, v.yawDegrees);
+                else if (v.shape == Wg3Shape.Arch)
+                    AddArch(verts, normals, uvs, tris[SubMeshFor(v.kind)],
+                        v.center - origin, v.size);
                 else
                     AddPrism(verts, normals, uvs, tris[SubMeshFor(v.kind)],
                         v.center - origin, v.size, v.yawDegrees, v.shape);
@@ -216,6 +219,114 @@ namespace BackroomsSurvival.WorldGen3
             {
                 AddFace(verts, normals, uvs, tris, centre, rot, new Vector3(r, hy, size.z * 0.5f),
                     Vector3.back, Vector3.right, Vector3.up, size.x, h);
+            }
+        }
+
+        /// <summary>Espejo de `ARCH_KEY_CM` del servidor: lo que queda de macizo sobre la clave.</summary>
+        public const float ArchKeyM = 0.10f;
+
+        /// <summary>
+        /// ADR-125 enm. 1 — ARCO DE PUERTA: la banda sobre una boca con el intradós en media
+        /// elipse, del arranque (cara inferior de la caja, en los dos extremos de la cuerda) a la
+        /// clave (<see cref="ArchKeyM"/> bajo la cara superior). El eje largo de la caja es la
+        /// cuerda; el corto, el grosor de pared. Intradós con normal suave; caras, remate y testeros
+        /// planos. Es cóncavo: su collider es de malla NO convexa.
+        /// </summary>
+        private static void AddArch(List<Vector3> verts, List<Vector3> normals, List<Vector2> uvs,
+            List<int> tris, Vector3 centre, Vector3 size)
+        {
+            bool alongX = size.x >= size.z;
+            float r = (alongX ? size.x : size.z) * 0.5f;
+            float t = (alongX ? size.z : size.x) * 0.5f;
+            float hy = size.y * 0.5f;
+            float rise = Mathf.Max(size.y - ArchKeyM, 0f);
+            const int N = 16;
+
+            // (u, y, w) locales → vector: `u` a lo largo de la cuerda, `w` a través de la pared.
+            Vector3 L(float u, float y, float w) => alongX ? new Vector3(u, y, w) : new Vector3(w, y, u);
+
+            var cu = new float[N + 1];
+            var cy = new float[N + 1];
+            var cn = new Vector3[N + 1];
+            for (int i = 0; i <= N; i++)
+            {
+                float u = -r + 2f * r * i / N;
+                float k = Mathf.Clamp01(u / r);
+                float y = -hy + rise * Mathf.Sqrt(Mathf.Max(0f, 1f - k * k));
+                cu[i] = u;
+                cy[i] = y;
+                // Normal del macizo en el intradós: hacia el centro de la elipse (abajo y adentro).
+                Vector2 g = new Vector2(u / (r * r), rise > 0f ? (y + hy) / (rise * rise) : 0f);
+                if (g.sqrMagnitude < 1e-8f) g = Vector2.up;
+                g.Normalize();
+                cn[i] = L(-g.x, -g.y, 0f).normalized;
+            }
+
+            // Intradós: un quad por tramo, normal suave por vértice.
+            float arc = 0f;
+            for (int i = 0; i < N; i++)
+            {
+                float seg = Vector2.Distance(new Vector2(cu[i], cy[i]), new Vector2(cu[i + 1], cy[i + 1]));
+                Quad(verts, normals, uvs, tris,
+                    centre + L(cu[i], cy[i], -t), centre + L(cu[i + 1], cy[i + 1], -t),
+                    centre + L(cu[i + 1], cy[i + 1], t), centre + L(cu[i], cy[i], t),
+                    cn[i], cn[i + 1], cn[i + 1], cn[i],
+                    new Vector2(arc, 0f), new Vector2(arc + seg, 0f), new Vector2(arc + seg, 2f * t), new Vector2(arc, 2f * t));
+                arc += seg;
+            }
+            // Las dos caras de pared: entre la curva y el remate.
+            for (int side = -1; side <= 1; side += 2)
+            {
+                float w = side * t;
+                Vector3 n = L(0f, 0f, side);
+                for (int i = 0; i < N; i++)
+                {
+                    Quad(verts, normals, uvs, tris,
+                        centre + L(cu[i], cy[i], w), centre + L(cu[i + 1], cy[i + 1], w),
+                        centre + L(cu[i + 1], hy, w), centre + L(cu[i], hy, w),
+                        n, n, n, n,
+                        new Vector2(cu[i], cy[i]), new Vector2(cu[i + 1], cy[i + 1]),
+                        new Vector2(cu[i + 1], hy), new Vector2(cu[i], hy));
+                }
+            }
+            // Remate y testeros.
+            Quad(verts, normals, uvs, tris,
+                centre + L(-r, hy, -t), centre + L(r, hy, -t), centre + L(r, hy, t), centre + L(-r, hy, t),
+                Vector3.up, Vector3.up, Vector3.up, Vector3.up,
+                new Vector2(-r, -t), new Vector2(r, -t), new Vector2(r, t), new Vector2(-r, t));
+            for (int side = -1; side <= 1; side += 2)
+            {
+                float u = side * r;
+                Vector3 n = L(side, 0f, 0f);
+                Quad(verts, normals, uvs, tris,
+                    centre + L(u, -hy, -t), centre + L(u, -hy, t), centre + L(u, hy, t), centre + L(u, hy, -t),
+                    n, n, n, n,
+                    new Vector2(-t, -hy), new Vector2(t, -hy), new Vector2(t, hy), new Vector2(-t, hy));
+            }
+        }
+
+        /// <summary>Un quad con la normal que se le pide: el orden de los triángulos se elige para
+        /// que la cara mire hacia `n0` (Unity: la normal geométrica de (a, b, c) es
+        /// <c>cross(b − a, c − a)</c>), así ningún llamador tiene que acertar el sentido a mano.</summary>
+        private static void Quad(List<Vector3> verts, List<Vector3> normals, List<Vector2> uvs, List<int> tris,
+            Vector3 p0, Vector3 p1, Vector3 p2, Vector3 p3,
+            Vector3 n0, Vector3 n1, Vector3 n2, Vector3 n3,
+            Vector2 t0, Vector2 t1, Vector2 t2, Vector2 t3)
+        {
+            int b = verts.Count;
+            verts.Add(p0); verts.Add(p1); verts.Add(p2); verts.Add(p3);
+            normals.Add(n0); normals.Add(n1); normals.Add(n2); normals.Add(n3);
+            uvs.Add(t0); uvs.Add(t1); uvs.Add(t2); uvs.Add(t3);
+            Vector3 geo = Vector3.Cross(p2 - p0, p1 - p0);
+            if (Vector3.Dot(geo, n0 + n1 + n2 + n3) >= 0f)
+            {
+                tris.Add(b); tris.Add(b + 2); tris.Add(b + 1);
+                tris.Add(b); tris.Add(b + 3); tris.Add(b + 2);
+            }
+            else
+            {
+                tris.Add(b); tris.Add(b + 1); tris.Add(b + 2);
+                tris.Add(b); tris.Add(b + 2); tris.Add(b + 3);
             }
         }
 

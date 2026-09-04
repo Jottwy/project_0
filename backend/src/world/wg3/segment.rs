@@ -178,6 +178,14 @@ pub const SHAPE_HALF_CYLINDER: u8 = 2;
 /// ADR-125 — prisma octogonal REGULAR inscrito en la huella (cuadrada), con caras planas sobre los
 /// ejes. Sustituye al «octógono de dos macizos» de ADR-121 D5, que era una estrella de ocho puntas.
 pub const SHAPE_OCTAGON: u8 = 3;
+/// ADR-125 enm. 1 — ARCO DE PUERTA: la banda sobre una boca, con el intradós curvo. El eje LARGO de
+/// la huella es la cuerda (el ancho de la boca), el corto el grosor de pared. Media elipse desde
+/// `bottom_y_cm` en los dos extremos hasta `top_y_cm - ARCH_KEY_CM` en la clave; por encima de la
+/// curva, macizo. Sin giro: la orientación la da la propia caja.
+pub const SHAPE_ARCH: u8 = 4;
+/// ADR-125 enm. 1 — grosor de la clave del arco: lo que queda de macizo sobre el intradós en el
+/// centro. El cliente lo refleja (`Wg3MeshBuilder.ArchKeyM`).
+pub const ARCH_KEY_CM: i32 = 10;
 
 /// ADR-121 D4 — paso del sorteo de giros. Un giro arbitrario no se lee como intención.
 pub const YAW_STEP_DEG: i16 = 15;
@@ -250,6 +258,24 @@ impl Wg3Solid {
                 }
                 if self.shape == SHAPE_CYLINDER && self.yaw_deg != 0 {
                     out.push("un cilindro girado no significa nada".to_string());
+                }
+            }
+            SHAPE_ARCH => {
+                if self.yaw_deg != 0 {
+                    out.push("un arco no gira: la caja ya dice su orientación".to_string());
+                }
+                if self.size_x_cm == self.size_z_cm {
+                    out.push(format!(
+                        "arco sobre huella cuadrada {}×{}: no se sabe cuál es la cuerda",
+                        self.size_x_cm, self.size_z_cm
+                    ));
+                }
+                if self.top_y_cm - self.bottom_y_cm <= ARCH_KEY_CM {
+                    out.push(format!(
+                        "arco de {} cm de banda: no cabe ni la clave ({})",
+                        self.top_y_cm - self.bottom_y_cm,
+                        ARCH_KEY_CM
+                    ));
                 }
             }
             SHAPE_HALF_CYLINDER => {

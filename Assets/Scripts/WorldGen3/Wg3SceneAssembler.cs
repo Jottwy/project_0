@@ -538,7 +538,9 @@ namespace BackroomsSurvival.WorldGen3
                 // dos metros dentro del forjado de la planta de abajo.
                 var mc = go.AddComponent<MeshCollider>();
                 mc.sharedMesh = mesh;
-                mc.convex = true;
+                // El arco es cóncavo (el intradós): malla sin casco convexo, que para un collider
+                // estático contra un CharacterController es igual de válida.
+                mc.convex = solid.shape != Wg3Shape.Arch;
             }
             return go;
         }

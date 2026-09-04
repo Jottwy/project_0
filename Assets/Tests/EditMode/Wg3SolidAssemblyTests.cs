@@ -147,6 +147,52 @@ namespace BackroomsSurvival.Tests.EditMode
             }
         }
 
+        /// <summary>ADR-125 enm. 1 — el arco de puerta ocupa su banda entera en envolvente, deja la
+        /// luz libre bajo la clave (ningún vértice del intradós por debajo del arranque, y el punto
+        /// medio de la cuerda sube hasta la clave) y frena con malla NO convexa.</summary>
+        [Test]
+        public void ADoorArchLeavesTheOpeningFreeUnderItsKey()
+        {
+            var parent = new GameObject("chunk");
+            GameObject go = null;
+            try
+            {
+                var created = new System.Collections.Generic.List<Mesh>();
+                var msg = new Wg3SolidMsg
+                {
+                    xCm = 940, zCm = 1000, sizeXCm = 120, sizeZCm = 15,
+                    bottomYCm = 190, topYCm = 240, style = 3, yawDeg = 0, shape = Wg3Shape.Arch,
+                };
+                go = Wg3SceneAssembler.AssembleSolid(msg, parent.transform, null, created, "arch");
+                Mesh mesh = go.GetComponent<MeshFilter>().sharedMesh;
+                Assert.Less((mesh.bounds.size - new Vector3(1.2f, 0.5f, 0.15f)).magnitude, 0.01f,
+                    $"la envolvente del arco mide {mesh.bounds.size}, no 1,2×0,5×0,15");
+
+                // El intradós en el centro de la cuerda está a la altura de la clave (2,30), no del
+                // arranque: la puerta queda abierta bajo él.
+                Vector3[] verts = mesh.vertices;
+                float lowestAtCentre = float.MaxValue, lowestAnywhere = float.MaxValue;
+                for (int i = 0; i < verts.Length; i++)
+                {
+                    Vector3 w = go.transform.TransformPoint(verts[i]);
+                    lowestAnywhere = Mathf.Min(lowestAnywhere, w.y);
+                    if (Mathf.Abs(w.x - 10f) < 0.01f) lowestAtCentre = Mathf.Min(lowestAtCentre, w.y);
+                }
+                Assert.AreEqual(1.9f, lowestAnywhere, 0.01f, "el arco baja por debajo del arranque");
+                Assert.AreEqual(2.3f, lowestAtCentre, 0.01f, "la clave no está a 2,30 en el centro de la cuerda");
+
+                var mc = go.GetComponent<MeshCollider>();
+                Assert.IsNotNull(mc);
+                Assert.IsFalse(mc.convex, "un arco es cóncavo: con casco convexo taparía la puerta");
+                foreach (Mesh m in created) Object.DestroyImmediate(m);
+            }
+            finally
+            {
+                if (go != null) Object.DestroyImmediate(go);
+                Object.DestroyImmediate(parent);
+            }
+        }
+
         /// <summary>Wire 56 — las dos claves nuevas se leen por nombre; si el parser las saltara,
         /// todo pilar redondo llegaría como caja y sin giro, sin un solo error.</summary>
         [Test]

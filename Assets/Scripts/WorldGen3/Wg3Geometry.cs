@@ -122,6 +122,10 @@ namespace BackroomsSurvival.WorldGen3
         public const byte HalfCylinder = 2;
         /// <summary>Prisma octogonal regular, caras planas sobre los ejes.</summary>
         public const byte Octagon = 3;
+        /// <summary>ADR-125 enm. 1 — arco de puerta: banda con el intradós en media elipse. El eje
+        /// largo de la caja es la cuerda; la clave queda <c>Wg3MeshBuilder.ArchKeyM</c> bajo el
+        /// remate.</summary>
+        public const byte Arch = 4;
     }
 
     public struct Wg3Volume

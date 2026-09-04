@@ -45,8 +45,8 @@ use super::raster::CM_PER_M;
 use super::route::{self, Mouth, PlannedRoute, Rect, RouteSettings};
 use super::segment::{
     Wg3Carve, Wg3Opening, Wg3Segment, Wg3Solid, CARVE_FLOOR_GUARD_CM, MAX_SEGMENT_M,
-    MIN_GENERATED_WIDTH_CM, SHAPE_BOX, SHAPE_CYLINDER, SHAPE_HALF_CYLINDER, SHAPE_OCTAGON,
-    WALL_THICKNESS_M,
+    MIN_GENERATED_WIDTH_CM, SHAPE_ARCH, SHAPE_BOX, SHAPE_CYLINDER, SHAPE_HALF_CYLINDER,
+    SHAPE_OCTAGON, WALL_THICKNESS_M,
 };
 
 /// ADR-099 D3 — cuánto entra el vano a cada lado de la cara de contacto, en metros. Mismo número que
@@ -186,6 +186,8 @@ pub(super) struct Knobs {
     pub octagon_pillar: f32,
     /// ADR-125 — qué proporción de los espacios con pilastras las lleva en MEDIA LUNA.
     pub round_pilaster: f32,
+    /// ADR-125 enm. 1 — qué proporción de las puertas con dintel llevan ARCO LISO bajo él.
+    pub arch_door: f32,
 }
 
 const KNOBS: [Knobs; 5] = [
@@ -216,6 +218,7 @@ const KNOBS: [Knobs; 5] = [
         round_pillar: 0.30,
         octagon_pillar: 0.20,
         round_pilaster: 0.25,
+        arch_door: 0.20,
     },
     Knobs {
         character: Character::Office,
@@ -244,6 +247,7 @@ const KNOBS: [Knobs; 5] = [
         round_pillar: 0.10,
         octagon_pillar: 0.15,
         round_pilaster: 0.15,
+        arch_door: 0.25,
     },
     Knobs {
         character: Character::Hall,
@@ -272,6 +276,7 @@ const KNOBS: [Knobs; 5] = [
         round_pillar: 0.40,
         octagon_pillar: 0.25,
         round_pilaster: 0.30,
+        arch_door: 0.35,
     },
     Knobs {
         character: Character::Maze,
@@ -300,6 +305,7 @@ const KNOBS: [Knobs; 5] = [
         round_pillar: 0.20,
         octagon_pillar: 0.20,
         round_pilaster: 0.30,
+        arch_door: 0.30,
     },
     Knobs {
         character: Character::Weird,
@@ -328,6 +334,7 @@ const KNOBS: [Knobs; 5] = [
         round_pillar: 0.55,
         octagon_pillar: 0.25,
         round_pilaster: 0.50,
+        arch_door: 0.50,
     },
 ];
 
@@ -3843,6 +3850,11 @@ const DOOR_LINTEL_CLEAR_CM: i32 = 240;
 const LINTEL_CHANCE: f32 = 0.60;
 /// Sal del sorteo del dintel, por la posición de la puerta.
 const SALT_LINTEL: u32 = 0xB1_11_A0_04;
+/// ADR-125 enm. 1 — línea de arranque del ARCO LISO de una puerta, sobre el suelo. Diez por
+/// encima del cuerpo (1,80): el intradós baja hasta aquí en las jambas y ninguna puerta se cierra
+/// al paso. Con el paso a 2,40 y la clave de 10, la flecha es de 40: rebajado, no de medio punto
+/// —el de medio punto sobre 1,20 pondría la clave a 2,60 y obligaría a subir todos los vanos.
+const ARCH_DOOR_SPRING_CM: i32 = 190;
 
 /// ADR-105 enmienda 6 — **EL DINTEL: la pared que hay sobre una puerta.**
 ///
@@ -3884,6 +3896,11 @@ fn door_lintels(plan: &RegionPlan, by_piece: &[bool], seed: i32) -> Vec<Wg3Solid
         }
         let low_top = (a.floor_y_cm + clear_height_cm(a)).min(b.floor_y_cm + clear_height_cm(b));
         let half = link.width_cm / 2 + APRON_JAMB_CM;
+        // ADR-125 enm. 1 — bajo el dintel, un ARCO LISO. Sorteo después del dintel, para que las
+        // puertas que ya lo tenían lo conserven; por el carácter del lado `a` para que los dos lados
+        // de la misma puerta digan lo mismo. Sólo en puertas normales: las bocas anchas llevan el
+        // escalonado de ladrillo (enm. 7), que es otro sabor y se queda.
+        let arch = link.width_cm < ARCH_MIN_WIDTH_CM && st.next01() < knobs_of(seed, a).arch_door;
         for s in [a, b] {
             let bottom = s.floor_y_cm + DOOR_LINTEL_CLEAR_CM;
             // Un dintel de menos de dos celdas no es un dintel: es un alféizar al revés.
@@ -3906,6 +3923,23 @@ fn door_lintels(plan: &RegionPlan, by_piece: &[bool], seed: i32) -> Vec<Wg3Solid
                 yaw_deg: 0,
                 shape: SHAPE_BOX,
             });
+            if arch {
+                // La cuerda es la boca EXACTA, sin jambas: el arco arranca en la jamba y la pared
+                // de al lado ya es maciza. Va del arranque al paso, justo bajo el dintel.
+                let (x_cm, z_cm, size_x_cm, size_z_cm) =
+                    door_band(side, link.at_x_cm, link.at_z_cm, link.width_cm / 2);
+                out.push(Wg3Solid {
+                    x_cm,
+                    z_cm,
+                    size_x_cm,
+                    size_z_cm,
+                    bottom_y_cm: s.floor_y_cm + ARCH_DOOR_SPRING_CM,
+                    top_y_cm: bottom,
+                    style: style_of(s.role),
+                    yaw_deg: 0,
+                    shape: SHAPE_ARCH,
+                });
+            }
         }
     }
     out
@@ -5423,6 +5457,11 @@ mod apron_tests {
             for s in &fill_building(&b, &m).solids {
                 // Sólo los faldones: son los únicos macizos de grosor exactamente de pared.
                 if s.size_x_cm != WALL_T_CM && s.size_z_cm != WALL_T_CM {
+                    continue;
+                }
+                // ADR-125 enm. 1 — el arco liso de una puerta vive DENTRO de la boca a propósito
+                // (arranque a 1,90 sobre su suelo): no es un faldón que baja.
+                if s.shape == SHAPE_ARCH {
                     continue;
                 }
                 if floors

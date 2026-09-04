@@ -30,7 +30,9 @@
 //! diámetro del jugador, el tamaño de celda de D1 está mal elegido y hay que bajarlo.
 
 use super::placement::PlacedBox;
-use super::segment::{self, Wg3Solid, SHAPE_BOX, SHAPE_HALF_CYLINDER, SHAPE_OCTAGON};
+use super::segment::{
+    self, Wg3Solid, ARCH_KEY_CM, SHAPE_ARCH, SHAPE_BOX, SHAPE_HALF_CYLINDER, SHAPE_OCTAGON,
+};
 
 /// Lado de celda del ráster, en metros. ADR-095 D1.
 ///
@@ -177,6 +179,10 @@ impl Wg3RasterBuilder {
             self.add_box(&b);
             return;
         }
+        if s.shape == SHAPE_ARCH {
+            self.add_arch(s);
+            return;
+        }
         let hy = b.size[1] * 0.5;
         if hy <= 0.0 || b.size[0] <= 0.0 {
             return;
@@ -245,6 +251,47 @@ impl Wg3RasterBuilder {
                     continue;
                 }
                 self.columns[iz * self.cells_x + ix].push(span);
+            }
+        }
+    }
+
+    /// ADR-125 enm. 1 — estampa un ARCO DE PUERTA: por columna, desde el punto más bajo del
+    /// intradós dentro de la celda hasta el remate de la banda.
+    ///
+    /// El intradós es la media elipse de `SHAPE_ARCH`; en cada celda se toma el `u` más alejado
+    /// del centro (donde la curva está más baja), así que la columna estampada nunca deja ver por
+    /// encima de lo que el cliente dibuja. Una celda que sobresale de la cuerda queda maciza desde
+    /// el arranque: es la pared de al lado, que ya lo era.
+    fn add_arch(&mut self, s: &Wg3Solid) {
+        let rise_cm = s.top_y_cm - ARCH_KEY_CM - s.bottom_y_cm;
+        if rise_cm <= 0 {
+            self.add_box(&segment::solid_box(s));
+            return;
+        }
+        let along_x = s.size_x_cm >= s.size_z_cm;
+        let (x0, z0, x1, z1) = s.bounds();
+        let (cx, cz) = s.centre();
+        let r = if along_x { x1 - x0 } else { z1 - z0 } * 0.5;
+        let top = s.top_y_cm.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        let (ix0, ix1) = self.cell_range_x(x0, x1);
+        let (iz0, iz1) = self.cell_range_z(z0, z1);
+        let half = WG3_CELL_M * 0.5;
+        for iz in iz0..iz1 {
+            for ix in ix0..ix1 {
+                let (ccx, ccz) = self.cell_centre(ix, iz);
+                let (c, centre) = if along_x { (ccx, cx) } else { (ccz, cz) };
+                // El |u| máximo dentro de la celda, acotado a la cuerda.
+                let u = ((c - centre).abs() + half).min(r);
+                let t = u / r;
+                let y = s.bottom_y_cm as f32 + rise_cm as f32 * (1.0 - t * t).max(0.0).sqrt();
+                let bottom = y.floor().clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+                if top <= bottom {
+                    continue;
+                }
+                self.columns[iz * self.cells_x + ix].push(Span {
+                    bottom_cm: bottom,
+                    top_cm: top,
+                });
             }
         }
     }

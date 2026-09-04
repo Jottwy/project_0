@@ -8519,7 +8519,9 @@ fn probe_dump_regions_json() {
                 let long = s.size_x_cm.max(s.size_z_cm);
                 let h = s.top_y_cm - s.bottom_y_cm;
                 let standing = floors.contains(&s.bottom_y_cm);
-                let (kind, new) = if fill::is_round_pilaster(s) {
+                let (kind, new) = if s.shape == segment::SHAPE_ARCH {
+                    ("arco liso", true)
+                } else if fill::is_round_pilaster(s) {
                     ("media luna", true)
                 } else if fill::is_pillar(s) {
                     (
@@ -8703,6 +8705,7 @@ fn every_solid_survives_into_the_raster() {
     let mut aprons = 0usize;
     let mut beams = 0usize;
     let mut arches = 0usize;
+    let mut smooth_arches = 0usize;
     let mut lows = 0usize;
 
     for (rx, rz) in AUDIT_REGIONS {
@@ -8737,6 +8740,24 @@ fn every_solid_survives_into_the_raster() {
                     // lo toca por el borde tiene su centro en el vecino.
                     let (bx0, bz0, bx1, bz1) = coord.bounds();
                     if cx_m < bx0 || cx_m >= bx1 || cz_m < bz0 || cz_m >= bz1 {
+                        continue;
+                    }
+                    // ADR-125 enm. 1 — el arco liso es hueco en su centro geométrico (ahí está
+                    // la luz de la puerta): se comprueba la CLAVE, tres centímetros bajo el remate,
+                    // y que bajo el arranque la puerta sigue abierta.
+                    if s.shape == segment::SHAPE_ARCH {
+                        let key = s.top_y_cm as f32 / 100.0 - 0.03;
+                        assert!(
+                            raster.is_solid_at(cx_m, key, cz_m),
+                            "el arco de ({cx_m:.2}, {cz_m:.2}) no tiene clave en el ráster"
+                        );
+                        let under = s.bottom_y_cm as f32 / 100.0 - 0.05;
+                        assert!(
+                            !raster.is_solid_at(cx_m, under, cz_m),
+                            "el arco de ({cx_m:.2}, {cz_m:.2}) cierra la puerta bajo el arranque"
+                        );
+                        smooth_arches += 1;
+                        checked += 1;
                         continue;
                     }
                     let mid = (s.bottom_y_cm + s.top_y_cm) as f32 / 200.0;
@@ -8820,8 +8841,8 @@ fn every_solid_survives_into_the_raster() {
     );
     println!(
         "[macizo] {checked} verificados en el ráster: {parapets} pretiles, {pillars} pilares, \
-         {aprons} faldones y dinteles, {beams} vigas, {arches} hiladas de arco, {lows} medios \
-         muros"
+         {aprons} faldones y dinteles, {beams} vigas, {arches} hiladas de arco, {smooth_arches} \
+         arcos lisos, {lows} medios muros"
     );
 }
 
@@ -8832,7 +8853,7 @@ fn every_solid_survives_into_the_raster() {
 fn every_served_solid_is_well_formed_and_the_round_ones_exist() {
     let m = real_manifest();
     let mut checked = 0usize;
-    let mut by_shape = [0usize; 4];
+    let mut by_shape = [0usize; 5];
     let mut rotated = 0usize;
     for (rx, rz) in AUDIT_REGIONS {
         let region = Wg3RegionCoord { x: rx, z: rz };
@@ -8858,12 +8879,13 @@ fn every_served_solid_is_well_formed_and_the_round_ones_exist() {
     }
     assert!(checked > 0, "ninguna región emitió un macizo");
     assert!(
-        by_shape[1] > 0 && by_shape[2] > 0 && by_shape[3] > 0,
-        "faltan formas: cajas {} cilindros {} medias lunas {} octógonos {}",
+        by_shape[1] > 0 && by_shape[2] > 0 && by_shape[3] > 0 && by_shape[4] > 0,
+        "faltan formas: cajas {} cilindros {} medias lunas {} octógonos {} arcos {}",
         by_shape[0],
         by_shape[1],
         by_shape[2],
-        by_shape[3]
+        by_shape[3],
+        by_shape[4]
     );
     assert!(
         rotated > 0,
@@ -8871,8 +8893,8 @@ fn every_served_solid_is_well_formed_and_the_round_ones_exist() {
     );
     println!(
         "[formas] {checked} macizos: {} cajas, {} cilindros, {} medias lunas, {} octógonos, {} \
-         girados",
-        by_shape[0], by_shape[1], by_shape[2], by_shape[3], rotated
+         arcos lisos, {} girados",
+        by_shape[0], by_shape[1], by_shape[2], by_shape[3], by_shape[4], rotated
     );
 }
 
@@ -8881,7 +8903,9 @@ fn every_served_solid_is_well_formed_and_the_round_ones_exist() {
 /// el servidor frenaría donde el cliente deja pasar (regla R6, el tirón).
 #[test]
 fn round_solids_stamp_as_discs_not_boxes() {
-    use super::segment::{Wg3Solid, SHAPE_CYLINDER, SHAPE_HALF_CYLINDER, SHAPE_OCTAGON};
+    use super::segment::{
+        Wg3Solid, SHAPE_ARCH, SHAPE_CYLINDER, SHAPE_HALF_CYLINDER, SHAPE_OCTAGON,
+    };
 
     let stamp = |s: Wg3Solid| {
         let mut b = Wg3RasterBuilder::new(0, 0, 40, 40);
@@ -8954,6 +8978,36 @@ fn round_solids_stamp_as_discs_not_boxes() {
         !half.is_solid_at(10.0, 1.5, 9.4),
         "hay macizo detrás de la cara plana de la media luna"
     );
+    // Arco de puerta de 1,20 de cuerda a lo largo de x, banda 190..240 (clave a 230): en el
+    // centro, libre a 2,00 y macizo a 2,35; en la jamba, macizo desde el arranque.
+    let arch = stamp(Wg3Solid {
+        x_cm: 940,
+        z_cm: 1000,
+        size_x_cm: 120,
+        size_z_cm: 15,
+        bottom_y_cm: 190,
+        top_y_cm: 240,
+        style: 3,
+        yaw_deg: 0,
+        shape: SHAPE_ARCH,
+    });
+    assert!(
+        !arch.is_solid_at(10.0, 2.0, 10.05),
+        "el arco cierra el centro de la puerta a 2,00"
+    );
+    assert!(
+        arch.is_solid_at(10.0, 2.35, 10.05),
+        "el arco no tiene clave"
+    );
+    assert!(
+        arch.is_solid_at(9.45, 1.95, 10.05),
+        "la jamba del arco no arranca a 1,90"
+    );
+    assert!(
+        !arch.is_solid_at(10.0, 1.85, 10.05),
+        "hay macizo bajo el arranque del arco"
+    );
+
     // Y girada 90: la panza va hacia +x, la cara plana queda en x mínima.
     let turned = stamp(Wg3Solid {
         x_cm: 900,

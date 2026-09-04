@@ -13586,3 +13586,47 @@ tumbado: exige cabeceo), ni la rampa de ADR-122, que sigue aprobada y sin códig
   y las tres formas nuevas existen en las regiones auditadas.
 - `CompileCheckClient` 0 errores; `Wg3SolidAssemblyTests` 4/4 en el editor.
 - Captura en `WorldGen3Live` con pilares redondos en su sitio.
+
+---
+
+## ADR-125 — Enmienda 1: el ARCO DE PUERTA, quinta forma (2026-09-04) — ACEPTADA (Joel: «en los marcos de puertas, arco tipo arco»; eligió puertas normales por carácter)
+
+### Contexto
+
+El arco escalonado de ADR-105 enm. 7 es de ladrillo y sólo va en bocas ≥ 3 m. Joel pide arcos en los
+marcos de puerta. Con el byte de forma de ADR-125 es una forma más, no un canal.
+
+### D1 — `SHAPE_ARCH` (4): la banda sobre la boca con el intradós en media elipse
+
+La huella es la banda de la puerta (cuerda = ancho EXACTO de la boca, sin jambas; grosor = pared),
+sin giro: el eje largo dice la orientación. Intradós desde `bottom_y_cm` en las jambas hasta
+`top_y_cm − ARCH_KEY_CM` (10) en la clave. Arranque a **1,90** sobre el suelo (`ARCH_DOOR_SPRING_CM`)
+y remate en el paso (2,40): flecha de 40, arco REBAJADO. El de medio punto sobre 1,20 pondría la
+clave a 2,60 y obligaría a subir todos los vanos; se descarta.
+
+### D2 — Ráster por columna, malla cóncava
+
+`add_arch`: en cada celda, desde el punto más bajo del intradós dentro de ella (el |u| más lejano
+del centro) hasta el remate. Ninguna puerta baja de 1,90 de paso (cuerpo 1,80). Cliente:
+`Wg3MeshBuilder.AddArch` (16 tramos, intradós con normal suave, caras y testeros planos, helper
+`Quad` que elige el sentido de los triángulos por la normal pedida) y `MeshCollider` NO convexo —
+con casco convexo taparía la puerta.
+
+### D3 — Dónde: bajo el dintel, puertas < 3 m, por carácter
+
+Sorteo APPENDED al del dintel en `door_lintels` (`arch_door` en `KNOBS`: abierto 0,20, oficina
+0,25, nave 0,35, laberinto 0,30, raro 0,50), por el carácter del lado `a` para que las dos caras
+digan lo mismo. Las bocas anchas conservan el escalonado.
+
+### D4 — Wire 56 → 57
+
+Valor nuevo del enum a los dos lados del cable en el mismo commit (`WIRE_SCHEMA_VERSION` 57,
+`WireSchema.Expected` 57). La rampa de ADR-122 pasa a ser wire 58.
+
+### Verificaciones
+
+- `round_solids_stamp_as_discs_not_boxes`: centro libre a 2,00, clave maciza a 2,35, jamba maciza a
+  1,95, nada bajo 1,90. `every_solid_survives_into_the_raster` comprueba clave y luz de cada arco
+  servido; `every_served_solid_is_well_formed…` exige que existan.
+- C# `ADoorArchLeavesTheOpeningFreeUnderItsKey`: envolvente, intradós a 2,30 en el centro, nada bajo
+  1,90, collider cóncavo.
