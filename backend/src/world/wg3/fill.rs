@@ -263,6 +263,7 @@ pub fn fill_building(building: &RegionBuilding, manifest: &Wg3Manifest) -> Fille
             true,
             &RouteSettings::default(),
             &landings,
+            building.seed,
         ));
     }
     out.carves.extend(atrium_carves(building));
@@ -1793,7 +1794,10 @@ pub fn fill_full(
     use_catalogue: bool,
     route_settings: &RouteSettings,
 ) -> FilledRegion {
-    fill_storey(plan, manifest, use_catalogue, route_settings, &[])
+    // Una planta suelta no tiene semilla de edificio: el plan ya lleva la suya en cada posición, y
+    // los sorteos por posición del relleno (dinteles) salen de cero. Las sondas comparan plan contra
+    // plan, no edificio contra planta.
+    fill_storey(plan, manifest, use_catalogue, route_settings, &[], 0)
 }
 
 /// El relleno de UNA planta, con los rectángulos en los que no puede ir una pieza del catálogo
@@ -1804,6 +1808,7 @@ fn fill_storey(
     use_catalogue: bool,
     route_settings: &RouteSettings,
     keep_generated: &[super::plan::PlanRect],
+    seed: i32,
 ) -> FilledRegion {
     let mut out = FilledRegion::default();
 
@@ -1958,6 +1963,8 @@ fn fill_storey(
     // **Y al final, los faldones.** Después de emitir porque necesita saber quién se resolvió con
     // una pieza, que es lo único que este pase no puede medir por su cuenta.
     out.solids.extend(ceiling_aprons(plan, &by_piece));
+    // ADR-105 enm. 6 — y los dinteles, por lo mismo.
+    out.solids.extend(door_lintels(plan, &by_piece, seed));
 
     out
 }
@@ -2044,24 +2051,7 @@ fn ceiling_aprons(plan: &RegionPlan, by_piece: &[bool]) -> Vec<Wg3Solid> {
             continue;
         };
         let half = link.width_cm / 2 + APRON_JAMB_CM;
-        // La banda de pared cae a un lado u otro de la línea del plan según por qué cara la toque el
-        // espacio alto: las paredes de un tramo van hacia DENTRO de su huella.
-        let (x_cm, z_cm, size_x_cm, size_z_cm) = match side % 4 {
-            0 => (
-                link.at_x_cm - half,
-                link.at_z_cm - WALL_T_CM,
-                2 * half,
-                WALL_T_CM,
-            ),
-            1 => (
-                link.at_x_cm - WALL_T_CM,
-                link.at_z_cm - half,
-                WALL_T_CM,
-                2 * half,
-            ),
-            2 => (link.at_x_cm - half, link.at_z_cm, 2 * half, WALL_T_CM),
-            _ => (link.at_x_cm, link.at_z_cm - half, WALL_T_CM, 2 * half),
-        };
+        let (x_cm, z_cm, size_x_cm, size_z_cm) = door_band(side, link.at_x_cm, link.at_z_cm, half);
         out.push(Wg3Solid {
             x_cm,
             z_cm,
@@ -2074,6 +2064,89 @@ fn ceiling_aprons(plan: &RegionPlan, by_piece: &[bool]) -> Vec<Wg3Solid> {
             // Con el aspecto de la sala ALTA, que es de quien es la pared que se está completando.
             style: style_of(high.role),
         });
+    }
+    out
+}
+
+/// La banda de pared de un vano, vista desde el espacio que tiene esa pared en su lado `side`:
+/// `(x, z, ancho, fondo)` en centímetros. Cae a un lado u otro de la línea del plan según por qué
+/// cara la toque el espacio, porque las paredes de un tramo van hacia DENTRO de su huella. Es la
+/// misma caja para el faldón y para el dintel: dos cálculos separados serían dos que pueden
+/// desviarse un grosor de pared, y ahí es donde salen las líneas de luz.
+fn door_band(side: u8, at_x_cm: i32, at_z_cm: i32, half: i32) -> (i32, i32, i32, i32) {
+    match side % 4 {
+        0 => (at_x_cm - half, at_z_cm - WALL_T_CM, 2 * half, WALL_T_CM),
+        1 => (at_x_cm - WALL_T_CM, at_z_cm - half, WALL_T_CM, 2 * half),
+        2 => (at_x_cm - half, at_z_cm, 2 * half, WALL_T_CM),
+        _ => (at_x_cm, at_z_cm - half, WALL_T_CM, 2 * half),
+    }
+}
+
+/// Altura del paso de una puerta con dintel, en centímetros. El mismo número que
+/// [`PIECE_DOOR_CLEAR_CM`]: por encima queda pared, que es el dintel de toda la vida.
+const DOOR_LINTEL_CLEAR_CM: i32 = 240;
+/// Qué proporción de las puertas del plan llevan dintel. No todas: una boca que llega al techo al
+/// lado de una con dintel es lo que hace que la segunda se lea como puerta y no como corte.
+const LINTEL_CHANCE: f32 = 0.60;
+/// Sal del sorteo del dintel, por la posición de la puerta.
+const SALT_LINTEL: u32 = 0xB1_11_A0_04;
+
+/// ADR-105 enmienda 6 — **EL DINTEL: la pared que hay sobre una puerta.**
+///
+/// Una boca de tramo se corta de suelo a techo (`segment::emit_side`), así que toda puerta generada
+/// es una rendija de 3,20 m: se lee como un corte en la pared, no como una puerta. STATE 2026-09-03
+/// §0c lo midió: «metros de pared que no van de suelo a techo: 0,0». El faldón de arriba
+/// ([`ceiling_aprons`]) cierra sólo la franja entre dos techos distintos; esto cierra desde el paso
+/// (2,40) hasta el techo más bajo de los dos, y en los DOS lados, porque las dos paredes están
+/// cortadas.
+///
+/// Mismo macizo, misma banda ([`door_band`]) y mismas exclusiones que el faldón: ni piezas del
+/// catálogo (su vano ya va capado en `carve_for_piece`), ni puertas de junta, ni bocas de ruta, ni
+/// atrios.
+fn door_lintels(plan: &RegionPlan, by_piece: &[bool], seed: i32) -> Vec<Wg3Solid> {
+    let mut out = Vec::new();
+    for link in &plan.links {
+        if link.kind == LinkKind::Route {
+            continue;
+        }
+        let (a, b) = (&plan.spaces[link.a], &plan.spaces[link.b]);
+        if !a.role.is_built() || !b.role.is_built() || by_piece[link.a] || by_piece[link.b] {
+            continue;
+        }
+        if is_atrium(a) || is_atrium(b) {
+            continue;
+        }
+        let (mx, mz) = (
+            link.at_x_cm as f32 / CM_PER_M,
+            link.at_z_cm as f32 / CM_PER_M,
+        );
+        let mut st = super::hash::stream_at(seed, mx, mz, SALT_LINTEL);
+        if st.next01() >= LINTEL_CHANCE {
+            continue;
+        }
+        let low_top = (a.floor_y_cm + clear_height_cm(a)).min(b.floor_y_cm + clear_height_cm(b));
+        let half = link.width_cm / 2 + APRON_JAMB_CM;
+        for s in [a, b] {
+            let bottom = s.floor_y_cm + DOOR_LINTEL_CLEAR_CM;
+            // Un dintel de menos de dos celdas no es un dintel: es un alféizar al revés.
+            if low_top - bottom < 20 {
+                continue;
+            }
+            let Some(side) = wall_side(s, link.at_x_cm, link.at_z_cm) else {
+                continue;
+            };
+            let (x_cm, z_cm, size_x_cm, size_z_cm) =
+                door_band(side, link.at_x_cm, link.at_z_cm, half);
+            out.push(Wg3Solid {
+                x_cm,
+                z_cm,
+                size_x_cm,
+                size_z_cm,
+                bottom_y_cm: bottom,
+                top_y_cm: low_top,
+                style: style_of(s.role),
+            });
+        }
     }
     out
 }
@@ -3104,9 +3177,23 @@ mod apron_tests {
                     }
                 }
             }
+            // Los suelos de las plantas: un DINTEL (enm. 6) también mide grosor de pared y arranca
+            // a `DOOR_LINTEL_CLEAR_CM` de su suelo, que está por debajo del techo más bajo. Es un
+            // dintel, no un faldón que baja.
+            let floors: Vec<i32> = b
+                .storeys
+                .iter()
+                .flat_map(|st| st.spaces.iter().map(|s| s.floor_y_cm))
+                .collect();
             for s in &fill_building(&b, &m).solids {
                 // Sólo los faldones: son los únicos macizos de grosor exactamente de pared.
                 if s.size_x_cm != WALL_T_CM && s.size_z_cm != WALL_T_CM {
+                    continue;
+                }
+                if floors
+                    .iter()
+                    .any(|f| s.bottom_y_cm == f + DOOR_LINTEL_CLEAR_CM)
+                {
                     continue;
                 }
                 assert!(
