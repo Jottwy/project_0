@@ -12918,3 +12918,67 @@ un pozo.
   117 616. **El techo no cuesta suelo.** 8 agujeros que bajan una planta, sin cambio.
 - **Sin cambio de wire** (55), sin tocar el cliente. Las vigas se pintan con el material de estructura
   del papel de su sala (`style_of`), igual que todo macizo.
+
+---
+
+## ADR-105 — Enmienda 6: la pared que hay sobre una puerta, y la que se ve sin pasar (2026-09-04) — ACEPTADA (implementada y medida)
+
+### Contexto
+
+STATE 2026-09-03 §0c: «metros de pared que no van de suelo a techo: 0,0 — `Wg3Carve` tiene
+`bottom_y_cm`/`top_y_cm` libres desde ADR-101 y nadie los usa para un dintel». Una boca de tramo se
+corta de suelo a techo (`segment::emit_side`), así que toda puerta generada era una rendija de 3,20 m
+y toda pared entre dos vecinos sin puerta era ciega. Joel (2026-09-04) pidió además «huecos en las
+paredes… incluso huecos de 2–3 cm que dejen ver otras». Tercer y cuarto punto del Bloque A, en dos
+commits (`ee810758` dinteles, y el siguiente ventanas y rendijas).
+
+### D1 — El dintel es un MACIZO en la banda del vano, en los DOS lados
+
+`door_lintels`: `Wg3Solid` de grosor de pared (`WALL_T_CM`) desde `DOOR_LINTEL_CLEAR_CM` (240, el
+mismo número que capa el vano de una pieza) hasta el techo más bajo de los dos espacios. Los dos
+lados, porque las dos paredes están cortadas; el faldón (`ceiling_aprons`) sigue cerrando de ahí
+arriba en el lado alto. `door_band` pasa a ser la única definición de la banda para faldón y dintel.
+`LINTEL_CHANCE` 0,60 por posición de puerta: una boca que llega al techo al lado de una con dintel es
+lo que hace que la segunda se lea como puerta y no como corte. Mismas exclusiones que el faldón.
+
+### D2 — La ventana interior es un VANO con antepecho, y es ventana en el servidor por la banda
+
+`blind_wall_openings`: en una pared compartida por dos espacios SIN puerta entre ellos, un
+`Wg3Carve` de 100–250 cm de ancho entre `WINDOW_SILL_CM` (110) y `WINDOW_HEAD_CM` (200), con
+`WINDOW_CHANCE` 0,35 por pared. Noventa centímetros de banda es lo que la hace ventana:
+`headroom_above_floor` mide 90 en esa columna, muy por debajo de los 180 del cuerpo, así que ninguna
+criatura la planifica como paso; `blocked_standing_at` choca con el antepecho; `line_of_sight` a 1,40
+la atraviesa. Se ve y no se pasa, y las dos cosas las dice el ráster, no una convención.
+
+### D3 — La rendija está por debajo de la celda A PROPÓSITO, y su banda está pensada para eso
+
+`SLIT_W_CM` 3, de 40 a 200 cm, hasta tres por pared con `SLIT_CHANCE` 0,20. `carve_box` abre la
+celda cuyo CENTRO cae dentro, así que en el servidor una rendija abre una celda entera o ninguna;
+con la banda de 40 a 200 el hueco libre de esa columna son 160 cm, por debajo del cuerpo, y no es
+paso en ningún caso. En el cliente el corte es exacto (`Wg3Carving`). Es geometría más fina que la
+celda que NO cambia de significado al cruzar el cable: la única forma admisible de bajar de 50 cm.
+
+### D4 — Lo que no se toca
+
+Paredes con puerta, huellas compuestas (la envolvente ofrece paredes que en el rincón de la L no
+existen), escaleras, hundidos, atrios, piezas del catálogo y vecinos a distinta cota. Los macizos son
+inmunes a los vanos (D2 del ADR), así que una ventana nunca abre una isla, un pilar ni un dintel.
+
+### D5 — El relleno recibe la semilla
+
+El plan no la lleva y el dintel y la ventana se sortean por posición: `fill_storey` gana un `seed`
+(el del edificio; cero para una planta suelta, que es lo que comparan las sondas plan contra plan).
+
+### Verificaciones
+
+- `cargo test --release --bin backrooms_server world::wg3` **149/149**; clippy y fmt limpios en los
+  dos commits.
+- Test nuevo `windows_are_seen_through_and_not_walked_through` (cuatro regiones de referencia, sobre
+  el ráster servido): toda ventana y toda rendija bloquean un cuerpo de pie; toda ventana tiene
+  antepecho macizo y está abierta a la altura de los ojos. **55 ventanas y 63 rendijas.**
+- `the_apron_never_dips_into_the_doorway` reconoce el dintel (arranca exactamente a 240 de un suelo)
+  y sigue exigiendo que el faldón no baje.
+- **316 dinteles** en las cuatro regiones de referencia (`every_solid_survives_into_the_raster`,
+  faldones+dinteles 460 → 776).
+- Barrido de 27 regiones sin cambio: mancha mayor 99,6 %, 1,3 islas, nav 100 %, 117 617 cotas.
+- Sin cambio de wire (55), sin tocar el cliente.
