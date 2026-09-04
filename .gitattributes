@@ -11,3 +11,9 @@
 # el blob es LF siempre, venga de donde venga el fichero, y los diffs dejan de salir inflados por
 # un cambio de final de línea que nadie pidió.
 *.md text eol=lf
+
+# Scripts que ejecuta un shell POSIX: con CRLF, la primera linea es `#!/usr/bin/env bash\r` y el
+# shell busca un interprete llamado "bash\r" que no existe. `core.autocrlf=true` los dejaria en
+# CRLF en el arbol de trabajo de esta maquina, asi que la excepcion tiene que estar escrita.
+*.sh text eol=lf
+.githooks/* text eol=lf

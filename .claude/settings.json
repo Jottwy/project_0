@@ -6,18 +6,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python .claude/hooks/guard-decisions-write.py",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python .claude/hooks/pretool-git-staging-guard.py",
-            "timeout": 5
+            "command": "python .claude/hooks/pretool-guard.py",
+            "timeout": 1800
           }
         ]
       }
@@ -28,17 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python .claude/hooks/postedit-check-csharp.py",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "Edit|Write",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python .claude/hooks/postedit-check-rust.py",
+            "command": "python .claude/hooks/postedit-check.py",
             "timeout": 120
           }
         ]

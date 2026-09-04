@@ -10,8 +10,9 @@ Cierre de sesión:
 3. Lanza el subagente documentador para actualizar docs/STATE.md. El esquema es FIJO y cada sección tiene tope: Estado (5) · Próximo paso ÚNICO (3) · En curso (10) · Riesgos abiertos (20) · NO tocar (15) · Deuda declarada (25) · Últimas tandas (la única desbordable). La tanda se escribe YA densa: encabezado `### AAAA-MM-DD — título`, ≤ 8 líneas, ≤ 160 caracteres por línea, viñetas con cifra + `fichero:línea` + porqué; nada de narrar el proceso.
 3b. Paso obligatorio antes de cerrar la tanda: **¿algo de esta tanda debe sobrevivirla?** Riesgo nuevo → Riesgos abiertos; valor que Joel dio por bueno → NO tocar; deuda asumida → Deuda declarada. Lo que ya no aplique en esas tres secciones sale a `docs/SESSION-LOG.md`.
 3c. Si «Últimas tandas» desborda el tope, mueve las tandas más viejas a `docs/SESSION-LOG.md` **verbatim** (append), nunca reescribiéndolas, y **nunca recortes por número de línea**: siempre por encabezado.
-3d. Regenera el índice de ADR y pasa el gate de arranque; los dos deben salir en verde antes de commitear:
-    `python tools/dev/GenDecisionsIndex.py && python tools/dev/CheckStateBudget.py`
+3d. Regenera el índice de ADR **y luego COMPRUEBA** que está al día; los dos gates deben salir en verde antes de commitear:
+    `python tools/dev/GenDecisionsIndex.py` (escribe) y después `python tools/dev/GenDecisionsIndex.py --check` + `python tools/dev/CheckStateBudget.py`.
+    El `--check` no es redundante: hasta el 2026-09-04 este paso invocaba SOLO el modo escritura, así que un índice desactualizado se reescribía en silencio en vez de salir en rojo, y el gate no podía fallar nunca. El commit lo vuelve a comprobar contra el índice de git (`--check --staged`), que es lo que de verdad entra al repositorio.
 4. Si en la sesión se tomó una decisión de arquitectura aprobada por el humano: el documentador añade el ADR correspondiente.
 5. Propón mensaje de commit (convención de CONVENTIONS.md) y, si hay hito validado, el tag.
 6. Devuelve el resumen final en máx. 10 líneas. Recuérdame hacer /clear después.
