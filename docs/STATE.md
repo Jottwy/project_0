@@ -2490,3 +2490,30 @@ sensible al orden.
   lo resuelve contra `CarryableDefinition`), y morir durante el seize deja la cinemática congelada
   que RESUCITA tras el respawn.
 - **Enmiendas 12 y 13 no están en `DECISIONS.md`** — viven solo en el commit `294c96df`.
+
+## Estado actual — Carril A / A2: cadencia de iluminación de WG3 (2026-09-04)
+
+Rama `claude/unity-lighting-cadence-bfdd2a`, commits `944b7c4e` (implementación) y `f6982286`
+(arnés + tests). **Sin ADR**: no toca protocolo, ni formato de chunk, ni schema de guardado — la
+semilla del ritmo NO viaja por el cable, se deriva en cada cliente de la de sesión, que ya tienen
+los dos.
+
+Los plafones salían del índice de la celda: rejilla perfecta, todos encendidos, mismo color, fijos.
+Ahora cada fixture se resuelve en `Wg3LightCadence` por hash de (chunk, posición, índice) más la
+semilla, con un `Wg3Hash.Stream` por lámpara (R3: sin RNG compartido). Por defecto **12 % apagados,
+8 % parpadeantes con fase propia, ±200 K y jitter dentro de la celda**. Alcance, intensidad y color
+base intactos — el tinte es un cociente, así que a ±0 K sale el color validado bit a bit.
+
+Dos efectos de borde que ya están resueltos y conviene no reintroducir: la sombra del tramo grande
+va a la primera lámpara **encendida** (atada al índice, un 12 % de las naves se quedaba sin
+ninguna), y un difusor apagado emite negro por MPB — solo los apagados lo llevan, el resto sigue en
+el SRP Batcher.
+
+**Verificación:** `CompileCheckClient.sh` verde en las cuatro assemblies. Los siete tests de
+`Wg3LightCadenceTests` están escritos pero **no ejecutados** (piden el editor); el hash se replicó
+aparte y mide 0,113 apagadas / 0,083 parpadeando, con 105 de 1024 en el fixture 0 — o sea que el
+índice ya no ordena nada.
+
+**Pendiente:** correr la suite EditMode, y mirar la escena
+`Backrooms/WorldGen3/Crear escena de cadencia de luces` (tres semillas lado a lado) — nadie ha
+juzgado todavía el resultado visual ni los cuatro porcentajes por defecto.
