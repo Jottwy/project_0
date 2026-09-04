@@ -13269,3 +13269,58 @@ without indentation»). Al insertar antes de una función, insertar antes de su 
   rendijas**; todas bloquean un cuerpo de pie.
 - Barrido de 27 regiones sin cambio: mancha mayor 99,5 %, 1,4 islas, nav 100 %, 117 530 cotas.
 - Sin cambio de wire (55), sin tocar el cliente.
+
+---
+
+## ADR-105 — Enmienda 13: tarimas, descuelgue perimetral con cornisa, y viguetas (2026-09-04) — ACEPTADA (implementada y medida)
+
+### Contexto
+
+Puntos 12, 13 y 14 del nivel 1: el cierre del catálogo de variaciones sin wire. Con esta enmienda
+las catorce están hechas.
+
+### D1 — La tarima es un escalón, y su altura es la que la hace escalón
+
+`floor_platforms`: en salas que no son circulación, de ≥ 100 m², con `PLATFORM_CHANCE` 0,20, un
+macizo de `PLATFORM_H_CM` (20) pegado a un lado sorteado, con un tercio del lado perpendicular de
+fondo y 3 m de margen a los extremos. Veinte y no treinta: por debajo del escalón del jugador (27) y
+del de navegación (30), se sube sin pensarlo y el ráster la ofrece como suelo; la zapata del pilar
+(enm. 10) mide 30 justamente para lo contrario. Nunca bajo el agujero propio —lo taparía, un macizo
+es inmune a los vanos— ni sobre pozos ni rellanos, que tienen su propia cota.
+
+### D2 — Descuelgue perimetral o cornisa, con un solo dado
+
+`wall_soffits`: con techo ≥ 3 m, `SOFFIT_CHANCE` 0,30 una banda colgada por las cuatro paredes
+(`SOFFIT_DEPTH_CM` 60, `SOFFIT_DROP_CM` 50), o hasta `CORNICE_BELOW` 0,60 una moldura de
+`CORNICE_CM` (10 × 10) en la arista. `ring_bands` emite las cuatro bandas troceadas y recortadas
+sobre pozos y agujeros.
+
+### D3 — Viguetas: el tercer ritmo de techo
+
+`JOIST_CHANCE` 0,25 sobre las salas con vigas y sin casetones: `JOIST_T_CM` 35 de ancho,
+`JOIST_DROP_CM` 30 de caída, cada `JOIST_PITCH_CM` (100). `beam_rows` y `beam_strip` reciben el ancho.
+Treinta y cinco porque ninguna otra forma colgada mide eso (la viga 40, el faldón 15, la hilada 25).
+
+### D4 — El test, y su falso positivo
+
+`platforms_sit_on_their_floor` (3 × 9 regiones): toda tarima apoya en el suelo de su sala y no está
+en circulación. `is_platform` exige 20 de alto, ≥ 4,5 m de largo **y ≥ 1,5 m de fondo**: un dintel bajo
+un techo de 2,60 también mide 20 de alto y 5 m de largo, pero 15 de fondo, y la primera pasada lo
+adoptó (cota 240, región (−1,−1)).
+
+### Verificaciones
+
+- `cargo test --release --bin backrooms_server world::wg3` **152/152**; clippy y fmt limpios.
+- **114 tarimas** en 27 regiones; la clase «cuelga» del clasificador pasa de 553 a 879 macizos en las
+  cuatro regiones de referencia (viguetas, descuelgues y cornisas).
+- Barrido de 27 regiones: mancha mayor 99,5 %, 1,4 islas, nav 100 %, 117 532 cotas.
+- Sin cambio de wire (55), sin tocar el cliente.
+
+### El nivel 1, cerrado: catorce variaciones en seis commits
+
+Enm. 8 medios muros (bajo y colgado) · enm. 9 laberinto y cuarto exento · enm. 10 pilastras, zapata y
+capitel · enm. 11 arcadas y bóvedas · enm. 12 rejillas, hornacinas, ventanas en serie y parteluz ·
+enm. 13 tarimas, descuelgue, cornisa y viguetas. Todo sobre `fill.rs`, wire 55 intacto, cliente sin
+tocar. Barrido de 27 regiones del principio al final del día: mancha mayor 99,5 → 99,5 %, islas 1,4 →
+1,4, nav 100 %, cotas pisables 117 615 → 117 532 (−0,07 %). Lo que queda pendiente de Joel: ADR-121 y
+ADR-122 (aprobados, sin código) y la anti-enfilada de puertas (enm. 7, último apartado).
