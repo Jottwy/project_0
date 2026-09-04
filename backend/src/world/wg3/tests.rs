@@ -8454,6 +8454,170 @@ fn windows_are_seen_through_and_not_walked_through() {
     );
 }
 
+/// Sonda: vuelca regiones de la semilla servida a JSON para el visor de planta
+/// (`docs/web/wg3-planta.html`). `WG3_DUMP_REGIONS="0,0;1,0"`, `WG3_DUMP_OUT=ruta.json`. Cada macizo
+/// y cada vano van etiquetados por su FORMA con las mismas reglas que usan los tests, y con `new`
+/// cuando la forma nació en las enmiendas 8–13 de ADR-105.
+#[test]
+#[ignore]
+fn probe_dump_regions_json() {
+    use serde_json::json;
+    let spec = std::env::var("WG3_DUMP_REGIONS").unwrap_or_else(|_| "0,0".into());
+    let out_path = std::env::var("WG3_DUMP_OUT").unwrap_or_else(|_| "wg3_dump.json".into());
+    let m = real_manifest();
+    let mut regions = Vec::new();
+    for pair in spec.split(';') {
+        let mut it = pair.split(',').map(|v| v.trim().parse::<i32>().unwrap());
+        let (rx, rz) = (it.next().unwrap(), it.next().unwrap());
+        let b = building_of(rx, rz);
+        let f = fill::fill_building(&b, &m);
+        let floors: Vec<i32> = b
+            .storeys
+            .iter()
+            .flat_map(|st| st.spaces.iter().map(|s| s.floor_y_cm))
+            .collect();
+        let spaces: Vec<_> = b
+            .storeys
+            .iter()
+            .enumerate()
+            .flat_map(|(n, st)| {
+                st.spaces.iter().filter(|s| s.role.is_built()).map(move |s| {
+                    json!({
+                        "storey": n,
+                        "role": s.role.name(),
+                        "floor": s.floor_y_cm,
+                        "clear": fill::clear_height_cm(s),
+                        "parts": s.parts().iter().map(|p| [p.min_x_cm, p.min_z_cm, p.max_x_cm, p.max_z_cm]).collect::<Vec<_>>(),
+                    })
+                })
+            })
+            .collect();
+        let segments: Vec<_> = f
+            .segments
+            .iter()
+            .map(|s| {
+                json!({
+                    "r": [s.x_cm, s.z_cm, s.x_cm + s.size_x_cm, s.z_cm + s.size_z_cm],
+                    "floor": s.floor_y_cm, "h": s.height_cm, "style": s.style,
+                    "openings": s.openings.iter().map(|o| [o.side as i32, o.offset_cm, o.width_cm]).collect::<Vec<_>>(),
+                })
+            })
+            .collect();
+        let solids: Vec<_> = f
+            .solids
+            .iter()
+            .map(|s| {
+                let thin = s.size_x_cm.min(s.size_z_cm);
+                let long = s.size_x_cm.max(s.size_z_cm);
+                let h = s.top_y_cm - s.bottom_y_cm;
+                let standing = floors.contains(&s.bottom_y_cm);
+                let (kind, new) = if fill::is_pillar(s) {
+                    (
+                        if s.size_x_cm == s.size_z_cm {
+                            "pilar"
+                        } else {
+                            "cruz"
+                        },
+                        false,
+                    )
+                } else if fill::is_pilaster(s) {
+                    ("pilastra", true)
+                } else if fill::is_beam(s) {
+                    ("viga", false)
+                } else if fill::is_platform(s) {
+                    ("tarima", true)
+                } else if fill::is_grille_bar(s) {
+                    ("rejilla", true)
+                } else if fill::is_hung_band(s) {
+                    ("arcada/bóveda", true)
+                } else if thin == 15 {
+                    (
+                        if h == fill::ARCH_BAND_CM {
+                            "arco"
+                        } else {
+                            "dintel/faldón"
+                        },
+                        false,
+                    )
+                } else if thin == 20 && h <= 200 {
+                    ("pretil", false)
+                } else if thin == 30 {
+                    (
+                        if !standing {
+                            "medio muro colgado"
+                        } else if h == 110 {
+                            "medio muro bajo"
+                        } else if h == 230 {
+                            "mampara"
+                        } else {
+                            "tabique"
+                        },
+                        !standing || h == 110,
+                    )
+                } else if thin == 35 && s.size_x_cm == s.size_z_cm && h > 200 {
+                    ("parteluz", true)
+                } else if thin == 35 && h == 30 {
+                    ("vigueta", true)
+                } else if thin == 10 && h == 10 {
+                    ("cornisa", true)
+                } else if thin == 60 && h == 50 && long > 400 {
+                    ("descuelgue", true)
+                } else if h == 30 && thin >= 260 && s.size_x_cm == s.size_z_cm {
+                    (if standing { "zapata" } else { "capitel" }, true)
+                } else {
+                    ("otro", false)
+                };
+                json!({
+                    "r": [s.x_cm, s.z_cm, s.x_cm + s.size_x_cm, s.z_cm + s.size_z_cm],
+                    "y": [s.bottom_y_cm, s.top_y_cm], "kind": kind, "new": new, "style": s.style,
+                })
+            })
+            .collect();
+        let carves: Vec<_> = f
+            .carves
+            .iter()
+            .map(|c| {
+                let thin = c.size_x_cm.min(c.size_z_cm);
+                let h = c.top_y_cm - c.bottom_y_cm;
+                let (kind, new) = if fill::is_slit(c) {
+                    ("rendija", false)
+                } else if fill::is_window(c) {
+                    ("ventana", false)
+                } else if thin == 10 {
+                    ("hornacina", true)
+                } else if c.bottom_y_cm < 0
+                    || floors
+                        .iter()
+                        .any(|&fl| c.bottom_y_cm < fl && c.top_y_cm > fl && fl > 0)
+                {
+                    ("agujero", false)
+                } else if h >= 200 {
+                    ("puerta", false)
+                } else {
+                    ("otro", false)
+                };
+                json!({
+                    "r": [c.x_cm, c.z_cm, c.x_cm + c.size_x_cm, c.z_cm + c.size_z_cm],
+                    "y": [c.bottom_y_cm, c.top_y_cm], "kind": kind, "new": new,
+                })
+            })
+            .collect();
+        let (min_x, min_z, max_x, max_z) = Wg3RegionCoord { x: rx, z: rz }.bounds();
+        regions.push(json!({
+            "region": [rx, rz],
+            "bounds": [(min_x * 100.0) as i32, (min_z * 100.0) as i32, (max_x * 100.0) as i32, (max_z * 100.0) as i32],
+            "storeys": b.storeys.len(),
+            "spaces": spaces, "segments": segments, "solids": solids, "carves": carves,
+        }));
+    }
+    let doc = json!({ "seed": format!("{SERVED_SEED:#x}"), "regions": regions });
+    std::fs::write(&out_path, serde_json::to_string(&doc).unwrap()).unwrap();
+    println!(
+        "[dump] {} regiones en {out_path}",
+        doc["regions"].as_array().unwrap().len()
+    );
+}
+
 /// Sonda: qué macizos tocan una columna del mundo servido. `WG3_PROBE_COLUMN="x,z"` en metros.
 #[test]
 #[ignore]
