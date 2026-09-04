@@ -32,6 +32,11 @@ namespace BackroomsSurvival.WorldGen3
 
         public bool spawnLights = true;
 
+        [Tooltip("Ritmo de los fluorescentes: apagados, parpadeo, temperatura y jitter. Todo " +
+                 "derivado del hash, así que cambiar un valor aquí NO rompe el determinismo: " +
+                 "sigue saliendo lo mismo para la misma semilla.")]
+        public Wg3LightCadenceSettings lightCadence = new Wg3LightCadenceSettings();
+
         [Header("Gizmos")]
         public bool drawSockets = true;
         public bool drawCaps = true;
@@ -112,7 +117,8 @@ namespace BackroomsSurvival.WorldGen3
             }
 
             _world = Wg3Composer.Compose(worldSeed, catalog, settings);
-            Wg3SceneAssembler.Assemble(_world, transform, materials, _meshes, spawnLights);
+            Wg3SceneAssembler.Assemble(_world, transform, materials, _meshes, spawnLights,
+                null, worldSeed, lightCadence);
 
             int[] histogram = _world.ScaleHistogram();
             Debug.Log($"[WG3] semilla {worldSeed}: {_world.placements.Count} piezas, " +

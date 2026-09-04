@@ -378,6 +378,11 @@ namespace BackroomsSurvival.WorldGen3
             init.enableWorldGen3 = true;
             init.StartAsAutoSolo("Wg3Live", worldSeed);
 
+            // La MISMA semilla al streamer: el ritmo de las luces se deriva en el cliente y con dos
+            // semillas distintas cada jugador vería fundidas lámparas distintas. No viaja por el
+            // cable a propósito — es la semilla de la sesión, que ya la tienen los dos.
+            if (streamer != null) streamer.worldSeed = worldSeed;
+
             _deadline = Time.time + spawnTimeout;
             Debug.Log($"[WG3] arrancando sesión en vivo, semilla {worldSeed}, WorldGen3 ACTIVO");
         }

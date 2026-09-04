@@ -126,7 +126,8 @@ namespace BackroomsSurvival.WorldGen3
 
         public static void Assemble(Wg3World world, Transform parent, Wg3Materials materials,
             List<Mesh> createdMeshes, bool addLights = true,
-            List<BackroomsSurvival.Net.Wg3CarveMsg> carves = null)
+            List<BackroomsSurvival.Net.Wg3CarveMsg> carves = null,
+            int worldSeed = 0, Wg3LightCadenceSettings cadence = null)
         {
             if (world == null || parent == null) return;
             Material[] mats = materials != null ? materials.AsArray() : null;
@@ -185,7 +186,7 @@ namespace BackroomsSurvival.WorldGen3
                 // es el único dato que cruzó la frontera de autoridad.
                 AddColliders(go, volumes, origin);
 
-                if (addLights) AddCeilingLight(go, placement);
+                if (addLights) AddCeilingLight(go, placement, worldSeed, cadence);
 
                 // La pieza autorada también entra en el reparto por plantas: si no, es lo único que
                 // sigue iluminándose y iluminando a través del forjado, y la fuga vuelve por la
@@ -209,7 +210,8 @@ namespace BackroomsSurvival.WorldGen3
         public static GameObject AssembleSegment(Wg3Segment segment, Transform parent,
             Wg3Materials materials, List<Mesh> createdMeshes, string name, bool addLight = true,
             List<BackroomsSurvival.Net.Wg3CarveMsg> carves = null,
-            Material lampMaterial = null, Wg3HumBatch hum = null)
+            Material lampMaterial = null, Wg3HumBatch hum = null,
+            int worldSeed = 0, Wg3LightCadenceSettings cadence = null)
         {
             if (segment == null || parent == null) return null;
 
@@ -243,7 +245,7 @@ namespace BackroomsSurvival.WorldGen3
 
             AddColliders(go, volumes, origin);
 
-            if (addLight) AddSegmentLights(go, segment, lampMaterial, hum);
+            if (addLight) AddSegmentLights(go, segment, lampMaterial, hum, worldSeed, cadence);
 
             return go;
         }
@@ -309,7 +311,7 @@ namespace BackroomsSurvival.WorldGen3
         /// mirándolos en partida. Lo que cambia aquí es CUÁNTOS y DÓNDE.
         /// </summary>
         private static void AddSegmentLights(GameObject go, Wg3Segment segment,
-            Material lampMaterial, Wg3HumBatch hum)
+            Material lampMaterial, Wg3HumBatch hum, int worldSeed, Wg3LightCadenceSettings cadence)
         {
             // Un plafón cada nueve metros por eje. Eran seis, y con range 9 cada punto del techo
             // caía dentro de hasta cuatro luces a la vez: en un radio de 9 chunks salían cientos de
@@ -340,17 +342,53 @@ namespace BackroomsSurvival.WorldGen3
             int nz = Mathf.Clamp(Mathf.RoundToInt(segment.SizeZ / Spacing), 1, MaxPerAxis);
             float y = Mathf.Min(segment.Height - 0.2f, HangHeight);
 
+            // La celda de cada fixture. Es lo que acota el jitter: un plafón se mueve dentro de SU
+            // celda y nunca invade la del vecino, así que el ritmo se rompe sin que dos plafones se
+            // junten hasta solaparse.
+            float cellX = segment.SizeX / nx;
+            float cellZ = segment.SizeZ / nz;
+            // Media luminaria (1,65 / 2) más un dedo: el jitter no puede meter el difusor dentro de
+            // la pared, que es como se ve un plafón medio comido por la esquina.
+            float marginX = Mathf.Min(1.0f, segment.SizeX * 0.5f);
+            float marginZ = Mathf.Min(1.0f, segment.SizeZ * 0.5f);
+
+            // LA SOMBRA VA A LA PRIMERA ENCENDIDA, no a la de índice (0,0). Con un 12 % de plafones
+            // muertos, atar la sombra al índice deja una nave de cada ocho sin ninguna sombra —
+            // justo las que se apuntalaron con esto.
+            bool shadowTaken = false;
+
             for (int ix = 0; ix < nx; ix++)
             {
                 for (int iz = 0; iz < nz; iz++)
                 {
+                    float nominalX = cellX * (ix + 0.5f);
+                    float nominalZ = cellZ * (iz + 0.5f);
+
+                    // El hash se siembra con la posición NOMINAL en coordenadas de MUNDO: dos
+                    // clientes montan el mismo tramo en el mismo sitio, así que sacan la misma
+                    // lámpara rota sin que nada viaje por el cable.
+                    Wg3Fixture fixture = Wg3LightCadence.Resolve(worldSeed,
+                        segment.MinX + nominalX, segment.MinZ + nominalZ,
+                        ix * nz + iz, cellX, cellZ, cadence);
+
                     var lamp = new GameObject($"light_{ix}_{iz}");
                     lamp.hideFlags = HideFlags.DontSave;
                     lamp.transform.SetParent(go.transform, false);
                     lamp.transform.localPosition = new Vector3(
-                        segment.SizeX * (ix + 0.5f) / nx,
+                        Mathf.Clamp(nominalX + fixture.offset.x, marginX, segment.SizeX - marginX),
                         y,
-                        segment.SizeZ * (iz + 0.5f) / nz);
+                        Mathf.Clamp(nominalZ + fixture.offset.y, marginZ, segment.SizeZ - marginZ));
+
+                    // ADR-107 D2 — **la luminaria, que hasta hoy no existía: había luz sin lámpara.**
+                    // Es decorativa y sin collider, igual que la de WG2, porque un plafón que frena
+                    // es una viga invisible a la altura de la cabeza.
+                    //
+                    // Se pone ANTES de decidir la Light y también cuando el tubo está muerto: un
+                    // fluorescente fundido sigue colgando del techo, y quitarlo dejaría un agujero
+                    // en el ritmo del techo en vez de una lámpara apagada.
+                    if (lampMaterial != null) AddLuminaire(lamp.transform, lampMaterial, fixture.lit);
+
+                    if (!fixture.lit) continue; // tubo muerto: difusor apagado y ninguna Light
 
                     var light = lamp.AddComponent<Light>();
                     light.type = LightType.Point;
@@ -359,11 +397,14 @@ namespace BackroomsSurvival.WorldGen3
                     // Forward+ lo pagaba entero cada frame.
                     light.range = 6f;
                     light.intensity = 1.1f;
-                    light.color = new Color(1f, 0.96f, 0.78f);
-                    // La PRIMERA de un tramo grande proyecta; las demás no. Con 2 × 2 como tope por
-                    // eje, eso es una de cuatro en el peor caso.
-                    if (wantsShadow && ix == 0 && iz == 0)
+                    // El color validado, empujado ±200 K por el tinte. Con desviación cero el
+                    // producto es el mismo color de siempre, bit a bit.
+                    light.color = new Color(1f, 0.96f, 0.78f) * fixture.tint;
+                    // La PRIMERA encendida de un tramo grande proyecta; las demás no. Con 2 × 2 como
+                    // tope por eje, eso es una de cuatro en el peor caso.
+                    if (wantsShadow && !shadowTaken)
                     {
+                        shadowTaken = true;
                         light.shadows = LightShadows.Soft;
                         // Sin bajar la fuerza, el contacto sale negro: la escena tiene ambiente
                         // cálido y una sola puntual sin rebote, así que la sombra dura se lee como
@@ -381,10 +422,15 @@ namespace BackroomsSurvival.WorldGen3
                     // es explícita a propósito en la API de Unity, no un descuido de aquí.
                     light.renderingLayerMask = (int)Wg3StoreyLayers.ForLight(segment.FloorY);
 
-                    // ADR-107 D2 — **la luminaria, que hasta hoy no existía: había luz sin lámpara.**
-                    // Es decorativa y sin collider, igual que la de WG2, porque un plafón que frena
-                    // es una viga invisible a la altura de la cabeza.
-                    if (lampMaterial != null) AddLuminaire(lamp.transform, lampMaterial);
+                    if (fixture.flickers)
+                    {
+                        var flicker = lamp.AddComponent<
+                            BackroomsSurvival.Gameplay.World.LampFlicker>();
+                        flicker.target = light;
+                        flicker.baseIntensity = light.intensity;
+                        flicker.frequency = fixture.flickerHz;
+                        flicker.phase = fixture.flickerPhase;
+                    }
 
                     // ADR-107 D3 — y el zumbido. Pitch y fase salen de la POSICIÓN con las mismas
                     // funciones que usa WG2, así que dos jugadores oyen la misma lámpara, la misma
@@ -397,11 +443,13 @@ namespace BackroomsSurvival.WorldGen3
                         hum.positions.Add(world);
                         hum.pitches.Add(
                             BackroomsSurvival.Gameplay.Audio.FluorescentHumDirector.PitchFor(gx, gz));
-                        // Sin parpadeo en esta fase: `LampFlicker` es comportamiento aparte y meterlo
-                        // aquí de contrabando sería otro ADR disfrazado de detalle. Cero = luz fija.
-                        hum.flickerHz.Add(0f);
-                        hum.flickerPhase.Add(
-                            BackroomsSurvival.Gameplay.Audio.FluorescentHumDirector
+                        // Frecuencia y fase salen del MISMO fixture que gobierna la Light, no de la
+                        // posición: si el zumbido reconstruyera su onda por su cuenta, sonaría a
+                        // destiempo con el brillo y el efecto se leería como un fallo de audio.
+                        hum.flickerHz.Add(fixture.flickers ? fixture.flickerHz : 0f);
+                        hum.flickerPhase.Add(fixture.flickers
+                            ? fixture.flickerPhase
+                            : BackroomsSurvival.Gameplay.Audio.FluorescentHumDirector
                                 .FlickerPhaseFor(gx, gz));
                     }
                 }
@@ -419,7 +467,7 @@ namespace BackroomsSurvival.WorldGen3
         /// así que no hay nada que sobrescribir por lámpara. Un MPB aquí, además, rompería el SRP
         /// Batcher para las ~900 luminarias de un radio 1.
         /// </summary>
-        private static void AddLuminaire(Transform parent, Material lampMaterial)
+        private static void AddLuminaire(Transform parent, Material lampMaterial, bool lit = true)
         {
             var go = new GameObject("Luminaire");
             go.hideFlags = HideFlags.DontSave;
@@ -429,6 +477,22 @@ namespace BackroomsSurvival.WorldGen3
             go.AddComponent<MeshFilter>().sharedMesh = LuminaireMesh();
             var r = go.AddComponent<MeshRenderer>();
             r.sharedMaterial = lampMaterial;
+            // UN DIFUSOR APAGADO NO EMITE, y sin esto un tubo muerto seguiría brillando igual que
+            // los vivos: se vería un techo entero encendido dando la luz de sólo el 88 % de las
+            // lámparas, que se lee como bug de iluminación y no como lámpara fundida.
+            //
+            // El MPB se pone SÓLO a los apagados —uno de cada ocho— porque rompe el SRP Batcher
+            // para el objeto que lo lleva. Que el 88 % siga compartiendo material tal cual es
+            // justamente lo que esta clase decidió proteger.
+            if (!lit)
+            {
+                _lampMpb ??= new MaterialPropertyBlock();
+                _lampMpb.Clear();
+                _lampMpb.SetColor(
+                    BackroomsSurvival.Gameplay.GridWorld.LayerVisualMaterials.EmissionColorId,
+                    Color.black);
+                r.SetPropertyBlock(_lampMpb);
+            }
             // La luminaria pertenece a la planta de su lámpara (ADR-104 enmienda 2): si no, la de
             // abajo se ve iluminada desde arriba y vuelve el síntoma que esa enmienda quitó.
             r.renderingLayerMask = Wg3StoreyLayers.ForLight(parent.position.y);
@@ -449,6 +513,11 @@ namespace BackroomsSurvival.WorldGen3
         /// destruida por debajo deja las luminarias invisibles sin decir por qué.
         /// </summary>
         private static Mesh _luminaireMesh;
+
+        /// <summary>Bloque reutilizado para apagar la emisión de un difusor muerto. Uno solo para
+        /// toda la sesión, igual que <c>BackroomsLighting._lampMpb</c>: se rellena y se aplica en el
+        /// acto, así que no guarda estado entre lámparas.</summary>
+        private static MaterialPropertyBlock _lampMpb;
 
         private static Mesh LuminaireMesh()
         {
@@ -556,16 +625,43 @@ namespace BackroomsSurvival.WorldGen3
         /// lo único que te dice cuánto falta para el final de un pasillo—. Uno al centro no da
         /// ese ritmo; da que se vea algo. Cuando la pieza declare sus luces, esto se borra.
         /// </summary>
-        private static void AddCeilingLight(GameObject root, Wg3Placement placement)
+        private static void AddCeilingLight(GameObject root, Wg3Placement placement,
+            int worldSeed, Wg3LightCadenceSettings cadence)
         {
+            // La celda de este fixture es la pieza entera: es el único que hay. El jitter queda
+            // acotado igual por `jitterMaxMeters`, así que en una pieza grande no se va al rincón.
+            float nominalX = placement.SizeX * 0.5f;
+            float nominalZ = placement.SizeZ * 0.5f;
+            Wg3Fixture fixture = Wg3LightCadence.Resolve(worldSeed,
+                placement.originX + nominalX, placement.originZ + nominalZ,
+                0, placement.SizeX, placement.SizeZ, cadence);
+
+            // Un tubo muerto aquí es sólo ausencia de Light: esta ruta no dibuja luminaria (ver el
+            // R32 pendiente de arriba), así que no hay difusor que apagar. Queda el hueco marcado
+            // en la jerarquía y no un vacío: sin él, «esta pieza no tiene plafón» y «el plafón de
+            // esta pieza está fundido» son el mismo silencio al mirar la escena.
+            if (!fixture.lit)
+            {
+                var dead = new GameObject("light_off");
+                dead.transform.SetParent(root.transform, false);
+                dead.transform.localPosition = new Vector3(
+                    nominalX, placement.piece.heightMeters - 0.25f, nominalZ);
+                return;
+            }
+
+            float marginX = Mathf.Min(1.0f, placement.SizeX * 0.5f);
+            float marginZ = Mathf.Min(1.0f, placement.SizeZ * 0.5f);
+
             var go = new GameObject("light");
             go.transform.SetParent(root.transform, false);
             go.transform.localPosition = new Vector3(
-                placement.SizeX * 0.5f, placement.piece.heightMeters - 0.25f, placement.SizeZ * 0.5f);
+                Mathf.Clamp(nominalX + fixture.offset.x, marginX, placement.SizeX - marginX),
+                placement.piece.heightMeters - 0.25f,
+                Mathf.Clamp(nominalZ + fixture.offset.y, marginZ, placement.SizeZ - marginZ));
 
             var light = go.AddComponent<Light>();
             light.type = LightType.Point;
-            light.color = new Color(1f, 0.97f, 0.88f);
+            light.color = new Color(1f, 0.97f, 0.88f) * fixture.tint;
             light.intensity = 1.6f;
             // Acotado a 9 m: la fórmula abierta llegaba a 21,75 m en la pieza más grande, y una
             // puntual así cruza decenas de clusters de Forward+ ella sola. Una pieza grande queda
@@ -575,6 +671,15 @@ namespace BackroomsSurvival.WorldGen3
             // Sólo su planta, igual que el plafón de un tramo. Éste es el que más alcance tiene
             // —hasta 21,75 m— así que es el que peor filtraba.
             light.renderingLayerMask = (int)Wg3StoreyLayers.ForLight(root.transform.position.y);
+
+            if (fixture.flickers)
+            {
+                var flicker = go.AddComponent<BackroomsSurvival.Gameplay.World.LampFlicker>();
+                flicker.target = light;
+                flicker.baseIntensity = light.intensity;
+                flicker.frequency = fixture.flickerHz;
+                flicker.phase = fixture.flickerPhase;
+            }
         }
 
         /// <summary>Borra la escena montada Y las mallas que creó. Lo segundo es lo que se olvida.</summary>
