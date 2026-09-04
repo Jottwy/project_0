@@ -198,8 +198,9 @@ pub const CASING_W_CM: i32 = 9;
 pub const CASING_PROUD_CM: i32 = 2;
 /// ADR-125 enm. 2 — cuánto entra el marco en la luz de la boca: un centímetro, para que su cara
 /// interior no sea coplanar con la mocheta (z-fighting) y para que la arquivolta no comparta el
-/// intradós con el arco. El cliente lo refleja: la curva interior de la arquivolta es la exterior
-/// menos `CASING_W_CM + CASING_IN_CM` (`Wg3MeshBuilder.ArchCasingInM`).
+/// intradós con el arco. El cliente lo refleja: la curva interior de la arquivolta es el intradós
+/// del arco (la caja menos `CASING_W_CM`) empujado esto hacia el hueco por su normal
+/// (`Wg3MeshBuilder.ArchCasingWM` / `ArchCasingInM`).
 pub const CASING_IN_CM: i32 = 1;
 
 /// ADR-121 D4 — paso del sorteo de giros. Un giro arbitrario no se lee como intención.

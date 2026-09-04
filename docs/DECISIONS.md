@@ -13679,3 +13679,8 @@ wire 59.
   `every_served_solid_is_well_formed…` exige que exista.
 - C# `ADecorativeSolidDrawsAsTrimAndNeverCollides`: sin collider, sólo submalla de decoración,
   arquivolta con su envolvente.
+
+> **Nota, mismo día (15:25):** la curva interior de la arquivolta NO es «la exterior menos 10 cm»:
+> una elipse con la cuerda más corta cae a cero antes que el arco y cerca del arranque el arco
+> asomaba por dentro del anillo. Es el intradós del arco (la caja menos `CASING_W_CM`) empujado
+> `CASING_IN_CM` hacia el hueco por su normal, punto a punto.

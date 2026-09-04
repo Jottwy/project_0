@@ -310,9 +310,14 @@ namespace BackroomsSurvival.WorldGen3
             }
         }
 
-        /// <summary>Espejo de `CASING_W_CM + CASING_IN_CM` del servidor: lo que la curva interior de
-        /// la arquivolta queda por dentro de la exterior, en cuerda y en flecha.</summary>
-        public const float ArchCasingInM = 0.10f;
+        /// <summary>Espejo de `CASING_W_CM` del servidor: lo que la caja de la arquivolta excede al
+        /// arco en cuerda y en flecha. Restándolo se recupera el intradós del arco.</summary>
+        public const float ArchCasingWM = 0.09f;
+        /// <summary>Espejo de `CASING_IN_CM`: cuánto queda la curva interior de la arquivolta por
+        /// DENTRO del intradós del arco, medido por la normal. No es una elipse reducida: una elipse
+        /// con la cuerda 1 cm más corta cae a cero antes que el arco y cerca del arranque el arco
+        /// asomaba por dentro del anillo (captura 15:25).</summary>
+        public const float ArchCasingInM = 0.01f;
 
         /// <summary>
         /// ADR-125 enm. 2 — la ARQUIVOLTA: el marco de una puerta en arco. Un anillo entre dos
@@ -329,14 +334,17 @@ namespace BackroomsSurvival.WorldGen3
             float t = (alongX ? size.z : size.x) * 0.5f;
             float hy = size.y * 0.5f;
             float riseO = size.y;
-            float ri = ro - ArchCasingInM;
-            float riseI = Mathf.Max(riseO - ArchCasingInM, 0f);
-            if (ri <= 0f) return;
+            // El arco al que este marco viste: la caja menos el ancho del marco.
+            float ra = ro - ArchCasingWM;
+            float riseA = Mathf.Max(riseO - ArchCasingWM, 0f);
+            if (ra <= 0f) return;
             const int N = 16;
             Vector3 L(float u, float y, float w) => alongX ? new Vector3(u, y, w) : new Vector3(w, y, u);
 
             // Puntos de las dos curvas al mismo ángulo paramétrico, para que los quads del anillo
-            // no se crucen. `y` relativo al centro de la caja: el arranque está en −hy.
+            // no se crucen. `y` relativo al centro de la caja: el arranque está en −hy. La curva
+            // interior es el intradós del arco empujado `ArchCasingInM` hacia el hueco por su
+            // normal: así queda por debajo de él en TODO el recorrido, también junto a la jamba.
             var po = new Vector2[N + 1];
             var pi = new Vector2[N + 1];
             var no = new Vector3[N + 1];
@@ -346,11 +354,12 @@ namespace BackroomsSurvival.WorldGen3
                 float a = Mathf.PI * i / N; // de −ro (a = π) a +ro (a = 0), pasando por la clave
                 float c = -Mathf.Cos(a), s = Mathf.Sin(a);
                 po[i] = new Vector2(ro * c, -hy + riseO * s);
-                pi[i] = new Vector2(ri * c, -hy + riseI * s);
                 Vector2 go = new Vector2(c / ro, riseO > 0f ? s / riseO : 0f).normalized;
-                Vector2 gi = new Vector2(c / ri, riseI > 0f ? s / riseI : 0f).normalized;
+                Vector2 ga = new Vector2(c / ra, riseA > 0f ? s / riseA : 0f).normalized;
+                Vector2 onArch = new Vector2(ra * c, -hy + riseA * s);
+                pi[i] = onArch - ga * ArchCasingInM;
                 no[i] = L(go.x, go.y, 0f).normalized;
-                ni[i] = L(-gi.x, -gi.y, 0f).normalized;
+                ni[i] = L(-ga.x, -ga.y, 0f).normalized;
             }
 
             float arcI = 0f, arcO = 0f;
