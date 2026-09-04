@@ -14,7 +14,17 @@
 
 4. **Lo que queda de ADR-121/122:** el tabique diagonal (D5.2) sin hacer; la rampa de ADR-122 sigue aprobada y sin código, y como su canal NO viaja, será **wire 59**. ADR-123 (agacharse) sigue pendiente de Joel. ADR-124 (menos pasillos) sigue esperando la sesión del enrutador.
 
-4i. **EL MUNDO A DOBLE ESCALA (ADR-128): núcleo escrito, PROBADO y NO commiteado — falta media jornada.**
+4i. **EL MUNDO A DOBLE ESCALA (ADR-128): tercera pasada — de 32 a 24 fallos, dos causas raíz cazadas, sigue SIN commitear.**
+
+  Lo aprendido esta pasada, todo dentro de `scratchpad/scale_patch.py`:
+  - **`MAX_SEGMENT_M` NO se toca.** Bajarlo a 12,5 (D3 del ADR) cambia la partición de tramos y con ella el mundo entero: **11 tests más en rojo**. Un tramo escalado puede llenar un chunk; «una pieza, un chunk» sólo la necesitan los macizos y las piezas, que se reparten por su CENTRO. D3 queda anulado.
+  - **`Wg3RegionCoord::bounds()` pasa a metros de MUNDO y se añade `plan_bounds()`** para alimentar al plan y al compositor. Sin eso el validador planificaba regiones de 300×300 metros-plan: **750 espacios y 5 plantas** en vez de 166 y 3,2, o sea otro mundo.
+  - **El validador sondeaba en unidades mezcladas**: puertas de junta y rectángulos de espacio salen del plan y se medían contra el ráster de mundo. Corregido con dos ayudantes (`w`, `w_cm`) en `validate.rs`.
+  - **El volcado de sondas (`probe_dump_regions_json`) también planifica con los límites de mundo**, así que su JSON NO refleja lo servido: por eso mostraba XZ escalado y alturas sin escalar a la vez. No usarlo como prueba hasta arreglarlo.
+
+  **Sigue sin verificarse que el mundo servido salga ×2**: la evidencia que parecía decir que no (atrio de 5,80 m) se explica por sondas en coordenadas de plan, pero no está confirmada. Quedan **24 tests** de `world::wg3`, casi todos sondas, más los dorados de identidad.
+
+4i-bis. **Estado anterior de la misma noche (diseño, sigue vigente):**
 
   Segunda pasada de la misma noche: el parche se aplicó entero, compiló, se desplegó y se capturó. **No basta.** Además de los 32 tests de `world::wg3` en rojo (sondean el ráster con constantes del plan; mecánico), hay **dos síntomas que NO son de test y hay que resolver antes de dar el ×2 por bueno**:
   - `a_second_storey_is_actually_reachable`: la mancha de planta baja anda 217 233 celdas y **0 de la planta alta, de 0 altas en total**. O la planta 1 no llega al ráster, o su cota deja de reconocerse.
