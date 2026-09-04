@@ -1965,6 +1965,9 @@ fn fill_storey(
     out.solids.extend(ceiling_aprons(plan, &by_piece));
     // ADR-105 enm. 6 — y los dinteles, por lo mismo.
     out.solids.extend(door_lintels(plan, &by_piece, seed));
+    // Y las paredes ciegas ganan ventanas y rendijas: vanos, que se restan después de estampar.
+    out.carves
+        .extend(blind_wall_openings(plan, &by_piece, seed));
 
     out
 }
@@ -2149,6 +2152,187 @@ fn door_lintels(plan: &RegionPlan, by_piece: &[bool], seed: i32) -> Vec<Wg3Solid
         }
     }
     out
+}
+
+/// Alféizar de una ventana interior, sobre el suelo. A la altura de la cadera: se ve por encima, no
+/// se pasa por debajo.
+pub(super) const WINDOW_SILL_CM: i32 = 110;
+/// Dintel de una ventana interior. **Noventa centímetros de banda, y es lo que la hace ventana en
+/// el servidor**: `headroom_above_floor` mide 90 en esa columna, muy por debajo de los 180 del
+/// cuerpo, así que ninguna criatura la planifica como paso, y `blocked_standing_at` choca con el
+/// antepecho. Ver por ella sí: `line_of_sight` va a 1,40 (ojos menos `EYE_DROP_M`).
+const WINDOW_HEAD_CM: i32 = 200;
+/// Ancho de una ventana, mínimo y máximo, redondeado a celda.
+const WINDOW_WIDTH_CM: (i32, i32) = (100, 250);
+/// Qué proporción de las paredes ciegas entre dos espacios llevan ventana.
+const WINDOW_CHANCE: f32 = 0.35;
+/// Y cuántas llevan rendijas: cortes de tres centímetros por los que se ve la sala de al lado.
+const SLIT_CHANCE: f32 = 0.20;
+const SLIT_MAX: i32 = 3;
+/// Ancho de una rendija. **Por debajo de la celda del ráster a propósito, y con la banda vertical
+/// pensada para eso.** `carve_box` abre la celda cuyo CENTRO cae dentro, así que una rendija puede
+/// abrir en el servidor una celda entera o ninguna; con la banda de 40 a 200 el hueco libre de esa
+/// columna son 160 cm, por debajo del cuerpo, y no es paso en ningún caso. En el cliente el corte
+/// es exacto: `Wg3Carving` parte la pared en cajas de 3 cm de luz.
+const SLIT_W_CM: i32 = 3;
+pub(super) const SLIT_BOTTOM_CM: i32 = 40;
+const SLIT_TOP_CM: i32 = 200;
+/// Cuánto se aleja un hueco de los extremos del solape de pared: que no muerda la pared
+/// perpendicular del rincón.
+const OPENING_JAMB_CM: i32 = 60;
+/// Sal del sorteo de huecos en pared ciega, por el centro del solape.
+const SALT_WINDOW: u32 = 0xB1_11_A0_05;
+
+/// ¿Es este vano una ventana interior? Por la forma: 90 cm de banda vertical.
+pub(super) fn is_window(c: &Wg3Carve) -> bool {
+    c.top_y_cm - c.bottom_y_cm == WINDOW_HEAD_CM - WINDOW_SILL_CM
+}
+
+/// ¿Y una rendija? Tres centímetros de luz.
+pub(super) fn is_slit(c: &Wg3Carve) -> bool {
+    c.size_x_cm.min(c.size_z_cm) == SLIT_W_CM
+}
+
+/// ADR-105 enmienda 6 (segunda mitad) — **VENTANAS INTERIORES Y RENDIJAS en las paredes ciegas.**
+///
+/// Dos espacios vecinos sin puerta entre ellos comparten una pared que hoy es ciega de suelo a techo.
+/// Backrooms está lleno de paredes por las que se ve y no se pasa: ventanas de oficina a un pasillo,
+/// tabiques con un corte por el que se adivina otra sala. Las dos salen del mismo canal que abre las
+/// puertas —[`Wg3Carve`] con su banda vertical, libre desde ADR-101 y nunca usada—, así que no hay
+/// wire nuevo y el cliente ya sabe cortar.
+///
+/// # Lo que NO se toca
+/// - Paredes con puerta (el enlace ya la abre), huellas compuestas (la envolvente ofrece paredes
+///   que en el rincón de la L no existen), escaleras, hundidos, atrios, piezas del catálogo y dos
+///   espacios a distinta cota.
+/// - Los macizos: un vano no resta de un macizo (ADR-105 D2), así que una ventana nunca abre una
+///   isla ni un dintel.
+fn blind_wall_openings(plan: &RegionPlan, by_piece: &[bool], seed: i32) -> Vec<Wg3Carve> {
+    let mut out = Vec::new();
+    let depth = (CARVE_DEPTH_M * CM_PER_M) as i32;
+    let n = plan.spaces.len();
+    for i in 0..n {
+        for j in (i + 1)..n {
+            let (a, b) = (&plan.spaces[i], &plan.spaces[j]);
+            if !a.role.is_built() || !b.role.is_built() || by_piece[i] || by_piece[j] {
+                continue;
+            }
+            if a.is_composite()
+                || b.is_composite()
+                || a.role == SpaceRole::Stair
+                || b.role == SpaceRole::Stair
+                || a.rise_cm != 0
+                || b.rise_cm != 0
+                || is_atrium(a)
+                || is_atrium(b)
+                || a.floor_y_cm != b.floor_y_cm
+            {
+                continue;
+            }
+            if plan
+                .links
+                .iter()
+                .any(|l| (l.a == i && l.b == j) || (l.a == j && l.b == i))
+            {
+                continue;
+            }
+            let Some((_, x, z)) = super::plan::rects_share_wall(a.rect, b.rect) else {
+                continue;
+            };
+            let vertical = (a.rect.max_x_cm - b.rect.min_x_cm).abs() <= 1
+                || (b.rect.max_x_cm - a.rect.min_x_cm).abs() <= 1;
+            let (lo, hi) = if vertical {
+                (
+                    a.rect.min_z_cm.max(b.rect.min_z_cm),
+                    a.rect.max_z_cm.min(b.rect.max_z_cm),
+                )
+            } else {
+                (
+                    a.rect.min_x_cm.max(b.rect.min_x_cm),
+                    a.rect.max_x_cm.min(b.rect.max_x_cm),
+                )
+            };
+            let mut st =
+                super::hash::stream_at(seed, x as f32 / CM_PER_M, z as f32 / CM_PER_M, SALT_WINDOW);
+            let floor = a.floor_y_cm;
+
+            if st.next01() < WINDOW_CHANCE {
+                let span = (WINDOW_WIDTH_CM.1 - WINDOW_WIDTH_CM.0) as f32;
+                let w = (WINDOW_WIDTH_CM.0 + (st.next01() * span) as i32) / 50 * 50;
+                let room = hi - lo - 2 * OPENING_JAMB_CM - w;
+                if room >= 0 {
+                    let at = lo + OPENING_JAMB_CM + w / 2 + (st.next01() * room as f32) as i32;
+                    out.push(carve_across(
+                        vertical,
+                        x,
+                        z,
+                        at,
+                        w,
+                        depth,
+                        floor + WINDOW_SILL_CM,
+                        floor + WINDOW_HEAD_CM,
+                    ));
+                }
+            }
+            if st.next01() < SLIT_CHANCE {
+                let k = 1 + (st.next01() * SLIT_MAX as f32) as i32;
+                let room = hi - lo - 2 * OPENING_JAMB_CM;
+                for _ in 0..k.min(SLIT_MAX) {
+                    if room <= 0 {
+                        break;
+                    }
+                    let at = lo + OPENING_JAMB_CM + (st.next01() * room as f32) as i32;
+                    out.push(carve_across(
+                        vertical,
+                        x,
+                        z,
+                        at,
+                        SLIT_W_CM,
+                        depth,
+                        floor + SLIT_BOTTOM_CM,
+                        floor + SLIT_TOP_CM,
+                    ));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Un vano que atraviesa una pared compartida: `vertical` es que la pared corre a lo largo de Z en
+/// `x`; si no, a lo largo de X en `z`. `at` es el centro del hueco a lo largo de la pared. Como
+/// [`carve_for`], la caja cubre medio metro a cada lado de la línea para llevarse las DOS paredes
+/// y la celda del ráster que las contiene.
+#[allow(clippy::too_many_arguments)]
+fn carve_across(
+    vertical: bool,
+    x: i32,
+    z: i32,
+    at: i32,
+    width: i32,
+    depth: i32,
+    bottom_y_cm: i32,
+    top_y_cm: i32,
+) -> Wg3Carve {
+    if vertical {
+        Wg3Carve {
+            x_cm: x - depth,
+            z_cm: at - width / 2,
+            size_x_cm: 2 * depth,
+            size_z_cm: width,
+            bottom_y_cm,
+            top_y_cm,
+        }
+    } else {
+        Wg3Carve {
+            x_cm: at - width / 2,
+            z_cm: z - depth,
+            size_x_cm: width,
+            size_z_cm: 2 * depth,
+            bottom_y_cm,
+            top_y_cm,
+        }
+    }
 }
 
 /// El hueco que hay que abrir en la pared para que una ruta enganche ahí.

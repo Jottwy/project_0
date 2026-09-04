@@ -8347,6 +8347,94 @@ fn a_hole_drops_you_a_whole_storey() {
     println!("[agujero] {holes} agujeros que bajan una planta entera");
 }
 
+/// ADR-105 enmienda 6 — **por una ventana interior se VE y no se PASA, y por una rendija tampoco.**
+///
+/// Es la invariante que separa «hueco en la pared» de «puerta que no se dibuja»: el ráster tiene
+/// que dejar el antepecho y el dintel macizos (el cuerpo de pie choca) y la banda de en medio
+/// abierta (los ojos ven). Para la rendija sólo cuenta lo primero: es un corte por debajo de la
+/// celda y el servidor puede abrir una celda entera o ninguna, pero en ningún caso un paso.
+#[test]
+fn windows_are_seen_through_and_not_walked_through() {
+    const EYE_M: f32 = 1.55;
+    let m = real_manifest();
+    let mut windows = 0usize;
+    let mut slits = 0usize;
+
+    for (rx, rz) in AUDIT_REGIONS {
+        let region = Wg3RegionCoord { x: rx, z: rz };
+        let (min_x, min_z, _, _) = region.bounds();
+        let served = Wg3ServedWorld::plan_region(&m, SERVED_SEED, region);
+        let side = REGION_CHUNKS as usize;
+        let base = chunk::Wg3ChunkCoord::containing(min_x + 1.0, min_z + 1.0);
+        for cz in 0..side {
+            for cx in 0..side {
+                let coord = chunk::Wg3ChunkCoord {
+                    x: base.x + cx as i32,
+                    z: base.z + cz as i32,
+                };
+                let carves = served.carves_touching_chunk(coord);
+                if !carves
+                    .iter()
+                    .any(|c| fill::is_window(c) || fill::is_slit(c))
+                {
+                    continue;
+                }
+                let raster = chunk::build_chunk_raster_full(
+                    &m,
+                    &served.placements_touching_chunk(&m, coord),
+                    &served.segments_touching_chunk(coord),
+                    &carves,
+                    &served.solids_touching_chunk(coord),
+                    coord,
+                );
+                let (bx0, bz0, bx1, bz1) = coord.bounds();
+                for c in &carves {
+                    let is_window = fill::is_window(c);
+                    if !is_window && !fill::is_slit(c) {
+                        continue;
+                    }
+                    let (x, z) = (
+                        (c.x_cm as f32 + c.size_x_cm as f32 * 0.5) / 100.0,
+                        (c.z_cm as f32 + c.size_z_cm as f32 * 0.5) / 100.0,
+                    );
+                    if x < bx0 || x >= bx1 || z < bz0 || z >= bz1 {
+                        continue;
+                    }
+                    let floor = if is_window {
+                        (c.bottom_y_cm - fill::WINDOW_SILL_CM) as f32 / 100.0
+                    } else {
+                        (c.bottom_y_cm - fill::SLIT_BOTTOM_CM) as f32 / 100.0
+                    };
+                    assert!(
+                        raster.blocked_standing_at(x, floor, z, 1.8),
+                        "el hueco de ({x:.2}, {z:.2}) deja pasar un cuerpo de pie: eso no es una \
+                         ventana, es una puerta que no se dibuja"
+                    );
+                    if is_window {
+                        windows += 1;
+                        assert!(
+                            raster.is_solid_at(x, floor + 0.5, z),
+                            "la ventana de ({x:.2}, {z:.2}) no tiene antepecho en el ráster"
+                        );
+                        assert!(
+                            !raster.is_solid_at(x, floor + EYE_M, z),
+                            "por la ventana de ({x:.2}, {z:.2}) no se ve: el ráster sigue macizo \
+                             a la altura de los ojos"
+                        );
+                    } else {
+                        slits += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        windows >= 20,
+        "sólo {windows} ventanas en cuatro regiones: o no se emiten, o el vano no llega al ráster"
+    );
+    println!("[ventana] {windows} ventanas y {slits} rendijas verificadas en el ráster");
+}
+
 /// ADR-105 verificaciones (a) y (b) — **todo macizo emitido EXISTE en el ráster, y ningún vano se lo
 /// come.**
 ///
