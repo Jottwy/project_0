@@ -246,6 +246,70 @@ namespace BackroomsSurvival.Tests.EditMode
             }
         }
 
+        /// <summary>ADR-125 enm. 2 (nota del perfil) — el marco tiene RELIEVE: una jamba de 9 × 38
+        /// deja vértices a tres fondos (bandas de borde hundidas 2 cm, banda central, zócalo 1 cm
+        /// más proud) y el zócalo es 1 cm más ancho; la arquivolta hunde sus bordes igual y sigue
+        /// ocupando su caja en envolvente. El arco estructural sigue en tono de SALA (submalla de
+        /// estructura): en la de decoración salían las enjutas con el rodapié de su lado.</summary>
+        [Test]
+        public void ACasingHasAStepProfileAndAPlinth()
+        {
+            var parent = new GameObject("chunk");
+            GameObject jamb = null, archivolt = null, arch = null;
+            try
+            {
+                var created = new System.Collections.Generic.List<Mesh>();
+                var msg = new Wg3SolidMsg
+                {
+                    xCm = 939, zCm = 981, sizeXCm = 9, sizeZCm = 38,
+                    bottomYCm = 0, topYCm = 191, style = (byte)(3 | Wg3SolidMsg.DecorBit),
+                };
+                jamb = Wg3SceneAssembler.AssembleSolid(msg, parent.transform, null, created, "jamb");
+                Mesh jm = jamb.GetComponent<MeshFilter>().sharedMesh;
+                var depths = new System.Collections.Generic.HashSet<int>();
+                float zc = 9.81f + 0.19f;
+                foreach (Vector3 v in jm.vertices) depths.Add(Mathf.RoundToInt(Mathf.Abs(v.z + jamb.transform.position.z - zc) * 1000f));
+                Assert.IsTrue(depths.Contains(170), "faltan las bandas de borde hundidas (fondo ±17 cm)");
+                Assert.IsTrue(depths.Contains(190), "falta la banda central a fondo completo (±19 cm)");
+                Assert.IsTrue(depths.Contains(200), "falta el zócalo, 1 cm más proud (±20 cm)");
+                Assert.Less((jm.bounds.size - new Vector3(0.11f, 1.91f, 0.40f)).magnitude, 0.01f,
+                    $"la jamba con zócalo mide {jm.bounds.size}, no 0,11×1,91×0,40");
+                Assert.AreEqual(0, jm.GetTriangles(Wg3MeshBuilder.SubMesh.Structure).Length);
+
+                var arc = new Wg3SolidMsg
+                {
+                    xCm = 931, zCm = 981, sizeXCm = 138, sizeZCm = 38,
+                    bottomYCm = 190, topYCm = 239, style = (byte)(3 | Wg3SolidMsg.DecorBit), shape = Wg3Shape.Arch,
+                };
+                archivolt = Wg3SceneAssembler.AssembleSolid(arc, parent.transform, null, created, "archivolt");
+                Mesh am = archivolt.GetComponent<MeshFilter>().sharedMesh;
+                Assert.Less((am.bounds.size - new Vector3(1.38f, 0.49f, 0.38f)).magnitude, 0.01f,
+                    $"la arquivolta mide {am.bounds.size}, no 1,38×0,49×0,38");
+                depths.Clear();
+                foreach (Vector3 v in am.vertices) depths.Add(Mathf.RoundToInt(Mathf.Abs(v.z + archivolt.transform.position.z - zc) * 1000f));
+                Assert.IsTrue(depths.Contains(170) && depths.Contains(190), "la arquivolta no tiene los dos fondos del perfil");
+
+                var solidArch = new Wg3SolidMsg
+                {
+                    xCm = 940, zCm = 993, sizeXCm = 120, sizeZCm = 15,
+                    bottomYCm = 190, topYCm = 240, style = 3, shape = Wg3Shape.Arch,
+                };
+                arch = Wg3SceneAssembler.AssembleSolid(solidArch, parent.transform, null, created, "arch");
+                Mesh sm = arch.GetComponent<MeshFilter>().sharedMesh;
+                Assert.Greater(sm.GetTriangles(Wg3MeshBuilder.SubMesh.Structure).Length, 0, "el arco estructural va en tono de sala");
+                Assert.AreEqual(0, sm.GetTriangles(Wg3MeshBuilder.SubMesh.Decoration).Length);
+                Assert.IsNotNull(arch.GetComponent<MeshCollider>(), "y aun así frena");
+                foreach (Mesh m in created) Object.DestroyImmediate(m);
+            }
+            finally
+            {
+                if (jamb != null) Object.DestroyImmediate(jamb);
+                if (archivolt != null) Object.DestroyImmediate(archivolt);
+                if (arch != null) Object.DestroyImmediate(arch);
+                Object.DestroyImmediate(parent);
+            }
+        }
+
         /// <summary>Wire 56 — las dos claves nuevas se leen por nombre; si el parser las saltara,
         /// todo pilar redondo llegaría como caja y sin giro, sin un solo error.</summary>
         [Test]

@@ -102,7 +102,13 @@ namespace BackroomsSurvival.WorldGen3
 
         /// <summary>Solo se ve. Rodapiés, molduras, marcos. REGLA R25 y L14 al revés: si costase
         /// colisión, un rodapié de 12 cm frenaría al jugador contra la pared.</summary>
-        Decoration = 6
+        Decoration = 6,
+
+        /// <summary>ADR-125 enm. 2 (nota del perfil) — un MARCO de puerta: decoración como
+        /// <see cref="Decoration"/> (misma submalla, sin collider), pero el constructor de malla le
+        /// talla el perfil de dos escalones y el zócalo. Va aparte para que un rodapié, que también
+        /// es decoración, siga siendo una caja lisa.</summary>
+        Casing = 7
     }
 
     /// <summary>Una caja con giro en Y. Es la unidad de la "chuleta": lo único que en F2 tendrá
@@ -138,7 +144,7 @@ namespace BackroomsSurvival.WorldGen3
         /// del cable, y por eso el valor por defecto del struct es el correcto.</summary>
         public byte shape;
 
-        public bool IsSolid => kind != Wg3VolumeKind.Decoration;
+        public bool IsSolid => kind != Wg3VolumeKind.Decoration && kind != Wg3VolumeKind.Casing;
     }
 
     /// <summary>

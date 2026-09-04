@@ -13684,3 +13684,16 @@ wire 59.
 > una elipse con la cuerda más corta cae a cero antes que el arco y cerca del arranque el arco
 > asomaba por dentro del anillo. Es el intradós del arco (la caja menos `CASING_W_CM`) empujado
 > `CASING_IN_CM` hacia el hueco por su normal, punto a punto.
+
+> **Nota del PERFIL, mismo día (Joel: «deja el marco a 10»).** Un anillo plano de 9 cm se leía como
+> cinta pegada a la pared: una moldura se lee por sus líneas de sombra. Sin tocar el cable:
+> - `CASING_PROUD_CM` pasa de 2 a **4** (D2 decía 2). El ráster no lo mira, así que no cuesta celdas.
+> - El cliente distingue el marco del rodapié (`Wg3VolumeKind.Casing`, misma submalla y sin
+>   collider) y le talla un perfil SIMÉTRICO de dos escalones —banda central a fondo completo, dos
+>   bandas de borde de 2 cm hundidas 2 cm por cara— porque no sabe de qué lado queda la luz, y un
+>   perfil igual a los dos lados es una moldura corriente. La jamba lleva zócalo liso de 22 cm, 1 cm
+>   mayor en todo. La arquivolta, el mismo perfil en tres anillos concéntricos con sus escalones.
+>
+> Se probó además dibujar el arco estructural en la submalla de decoración para que el intradós
+> fuese del tono del marco, y se descartó en captura: las enjutas salían con el rodapié de SU lado
+> (el marco lleva el estilo del lado `a`; el arco, el del suyo). La mocheta en tono de sala se queda.

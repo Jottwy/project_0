@@ -40,6 +40,7 @@ namespace BackroomsSurvival.WorldGen3
                 case Wg3VolumeKind.Floor: return SubMesh.Floor;
                 case Wg3VolumeKind.Ceiling: return SubMesh.Ceiling;
                 case Wg3VolumeKind.Decoration: return SubMesh.Decoration;
+                case Wg3VolumeKind.Casing: return SubMesh.Decoration;
                 default: return SubMesh.Structure;
             }
         }
@@ -59,13 +60,20 @@ namespace BackroomsSurvival.WorldGen3
             for (int i = 0; i < volumes.Count; i++)
             {
                 Wg3Volume v = volumes[i];
-                if (v.shape == Wg3Shape.Box)
+                if (v.shape == Wg3Shape.Box && v.kind == Wg3VolumeKind.Casing)
+                    AddCasingBox(verts, normals, uvs, tris[SubMeshFor(v.kind)],
+                        v.center - origin, v.size, v.yawDegrees);
+                else if (v.shape == Wg3Shape.Box)
                     AddBox(verts, normals, uvs, tris[SubMeshFor(v.kind)],
                         v.center - origin, v.size, v.yawDegrees);
-                else if (v.shape == Wg3Shape.Arch && v.kind == Wg3VolumeKind.Decoration)
+                else if (v.shape == Wg3Shape.Arch && v.kind == Wg3VolumeKind.Casing)
                     AddArchCasing(verts, normals, uvs, tris[SubMeshFor(v.kind)],
                         v.center - origin, v.size);
                 else if (v.shape == Wg3Shape.Arch)
+                    // En tono de SALA, como la mocheta: se probó en la submalla de decoración para
+                    // que el intradós fuese del tono del marco, y salieron las enjutas naranjas
+                    // (el material de decoración del estilo de ESTE lado, no el del marco, que
+                    // lleva el estilo del lado `a`).
                     AddArch(verts, normals, uvs, tris[SubMeshFor(v.kind)],
                         v.center - origin, v.size);
                 else
@@ -137,6 +145,80 @@ namespace BackroomsSurvival.WorldGen3
             AddFace(verts, normals, uvs, tris, centre, rot, h, Vector3.back, Vector3.right, Vector3.up, size.x, size.y);
             AddFace(verts, normals, uvs, tris, centre, rot, h, Vector3.up, Vector3.right, Vector3.forward, size.x, size.z);
             AddFace(verts, normals, uvs, tris, centre, rot, h, Vector3.down, Vector3.right, Vector3.back, size.x, size.z);
+        }
+
+        /// <summary>Ancho de las dos bandas de borde del perfil del marco, a cada lado de la banda
+        /// central.</summary>
+        public const float CasingEdgeM = 0.02f;
+        /// <summary>Cuánto se hunden las bandas de borde respecto a la central, por cada cara. Con
+        /// `CASING_PROUD_CM` = 4 en el servidor, el borde queda a 2 cm de la pared y el centro a 4.</summary>
+        public const float CasingStepM = 0.02f;
+        /// <summary>Alto del zócalo de la jamba: un bloque liso en el arranque, como en toda
+        /// carpintería de puerta que no sea de obra.</summary>
+        public const float CasingPlinthHM = 0.22f;
+        /// <summary>Cuánto sobresale el zócalo del resto de la jamba, en ancho y en fondo.</summary>
+        public const float CasingPlinthExtraM = 0.01f;
+
+        private static Vector3 Axis(int i, float v)
+        {
+            var r = Vector3.zero;
+            r[i] = v;
+            return r;
+        }
+
+        /// <summary>
+        /// ADR-125 enm. 2 (nota del perfil) — una pieza recta del MARCO de la puerta: jamba o
+        /// cabeza plana. Una caja lisa de 9 cm se leía como cinta pegada a la pared; una moldura
+        /// se lee por sus LÍNEAS DE SOMBRA. Tres cajas en vez de una: banda central a fondo
+        /// completo y dos bandas de borde de <see cref="CasingEdgeM"/> hundidas
+        /// <see cref="CasingStepM"/> por cada cara. Simétrico a propósito: el cliente no sabe de
+        /// qué lado queda la luz de la puerta, y un perfil de dos escalones a cada lado es una
+        /// moldura corriente. La jamba (la que sube) lleva además un zócalo liso de
+        /// <see cref="CasingPlinthHM"/> un centímetro mayor en todo.
+        ///
+        /// Ejes por tamaño: el largo `L` es el mayor; de los otros dos, el fondo `A` (a través de
+        /// la pared) es el horizontal, o el mayor si los dos lo son; el perfil `P` es el que queda.
+        /// Jamba (9 × 240 × 38): L = y, A = z, P = x. Cabeza (138 × 10 × 38): L = x, A = z, P = y.
+        /// </summary>
+        private static void AddCasingBox(List<Vector3> verts, List<Vector3> normals, List<Vector2> uvs,
+            List<int> tris, Vector3 centre, Vector3 size, float yawDegrees)
+        {
+            int L = size.x >= size.y && size.x >= size.z ? 0 : (size.y >= size.z ? 1 : 2);
+            int a = (L + 1) % 3, b = (L + 2) % 3;
+            int A = a == 1 ? b : (b == 1 ? a : (size[a] >= size[b] ? a : b));
+            int P = 3 - L - A;
+            float wP = size[P];
+            if (wP <= 2f * CasingEdgeM + 0.005f || size[A] <= 2f * CasingStepM + 0.005f)
+            {
+                AddBox(verts, normals, uvs, tris, centre, size, yawDegrees);
+                return;
+            }
+            Quaternion rot = Quaternion.Euler(0f, yawDegrees, 0f);
+            float len = size[L];
+            float lenOff = 0f;
+            if (L == 1 && len > 2f * CasingPlinthHM)
+            {
+                Vector3 plinth = size;
+                plinth[1] = CasingPlinthHM;
+                plinth[P] += 2f * CasingPlinthExtraM;
+                plinth[A] += 2f * CasingPlinthExtraM;
+                AddBox(verts, normals, uvs, tris,
+                    centre + rot * Axis(1, (CasingPlinthHM - size.y) * 0.5f), plinth, yawDegrees);
+                len -= CasingPlinthHM;
+                lenOff = CasingPlinthHM * 0.5f;
+            }
+            Vector3 c = centre + rot * Axis(L, lenOff);
+            Vector3 mid = size;
+            mid[L] = len;
+            mid[P] = wP - 2f * CasingEdgeM;
+            AddBox(verts, normals, uvs, tris, c, mid, yawDegrees);
+            Vector3 edge = size;
+            edge[L] = len;
+            edge[P] = CasingEdgeM;
+            edge[A] = size[A] - 2f * CasingStepM;
+            float off = (wP - CasingEdgeM) * 0.5f;
+            AddBox(verts, normals, uvs, tris, c + rot * Axis(P, -off), edge, yawDegrees);
+            AddBox(verts, normals, uvs, tris, c + rot * Axis(P, off), edge, yawDegrees);
         }
 
         /// <summary>
@@ -324,11 +406,15 @@ namespace BackroomsSurvival.WorldGen3
         public const float ArchCasingInM = 0.01f;
 
         /// <summary>
-        /// ADR-125 enm. 2 — la ARQUIVOLTA: el marco de una puerta en arco. Un anillo entre dos
-        /// medias elipses concéntricas —la exterior es la caja del volumen, la interior queda
-        /// <see cref="ArchCasingInM"/> por dentro en cuerda y flecha—, desde la línea de arranque
-        /// (cara inferior de la caja). Dos caras de pared en anillo, intradós interior y extradós
-        /// exterior con normal suave, y los dos testeros en el arranque. Decoración: no frena.
+        /// ADR-125 enm. 2 — la ARQUIVOLTA: el marco de una puerta en arco, con el mismo perfil de
+        /// dos escalones que <see cref="AddCasingBox"/>. Cuatro curvas al mismo ángulo paramétrico
+        /// (para que los quads no se crucen): la exterior es la caja del volumen; las dos siguientes
+        /// son ésa empujada <see cref="CasingEdgeM"/> y <c>ArchCasingWM − CasingEdgeM</c> hacia
+        /// dentro por su normal; la interior es el intradós del arco empujado
+        /// <see cref="ArchCasingInM"/> hacia el hueco por la suya. Tres bandas: la central a fondo
+        /// completo, las de borde hundidas <see cref="CasingStepM"/> por cara, con los escalones
+        /// entre ellas. Extradós e intradós con normal suave, testeros en el arranque. Decoración:
+        /// no frena.
         /// </summary>
         private static void AddArchCasing(List<Vector3> verts, List<Vector3> normals, List<Vector2> uvs,
             List<int> tris, Vector3 centre, Vector3 size)
@@ -338,75 +424,91 @@ namespace BackroomsSurvival.WorldGen3
             float t = (alongX ? size.z : size.x) * 0.5f;
             float hy = size.y * 0.5f;
             float riseO = size.y;
-            // El arco al que este marco viste: la caja menos el ancho del marco.
             float ra = ro - ArchCasingWM;
             float riseA = Mathf.Max(riseO - ArchCasingWM, 0f);
             if (ra <= 0f) return;
+            float tIn = Mathf.Max(t - CasingStepM, 0.001f);
             const int N = 16;
             Vector3 L(float u, float y, float w) => alongX ? new Vector3(u, y, w) : new Vector3(w, y, u);
 
-            // Puntos de las dos curvas al mismo ángulo paramétrico, para que los quads del anillo
-            // no se crucen. `y` relativo al centro de la caja: el arranque está en −hy. La curva
-            // interior es el intradós del arco empujado `ArchCasingInM` hacia el hueco por su
-            // normal: así queda por debajo de él en TODO el recorrido, también junto a la jamba.
-            var po = new Vector2[N + 1];
-            var pi = new Vector2[N + 1];
+            var c = new Vector2[4][];
+            for (int k = 0; k < 4; k++) c[k] = new Vector2[N + 1];
             var no = new Vector3[N + 1];
             var ni = new Vector3[N + 1];
             for (int i = 0; i <= N; i++)
             {
                 float a = Mathf.PI * i / N; // de −ro (a = π) a +ro (a = 0), pasando por la clave
-                float c = -Mathf.Cos(a), s = Mathf.Sin(a);
-                po[i] = new Vector2(ro * c, -hy + riseO * s);
-                Vector2 go = new Vector2(c / ro, riseO > 0f ? s / riseO : 0f).normalized;
-                Vector2 ga = new Vector2(c / ra, riseA > 0f ? s / riseA : 0f).normalized;
-                Vector2 onArch = new Vector2(ra * c, -hy + riseA * s);
-                pi[i] = onArch - ga * ArchCasingInM;
+                float cs = -Mathf.Cos(a), sn = Mathf.Sin(a);
+                Vector2 po = new Vector2(ro * cs, -hy + riseO * sn);
+                Vector2 go = new Vector2(cs / ro, riseO > 0f ? sn / riseO : 0f).normalized;
+                Vector2 ga = new Vector2(cs / ra, riseA > 0f ? sn / riseA : 0f).normalized;
+                Vector2 onArch = new Vector2(ra * cs, -hy + riseA * sn);
+                c[0][i] = po;
+                c[1][i] = po - go * CasingEdgeM;
+                c[2][i] = po - go * (ArchCasingWM - CasingEdgeM);
+                c[3][i] = onArch - ga * ArchCasingInM;
                 no[i] = L(go.x, go.y, 0f).normalized;
                 ni[i] = L(-ga.x, -ga.y, 0f).normalized;
             }
+            float[] depth = { tIn, t, tIn };
 
             float arcI = 0f, arcO = 0f;
             for (int i = 0; i < N; i++)
             {
-                float segI = Vector2.Distance(pi[i], pi[i + 1]);
-                float segO = Vector2.Distance(po[i], po[i + 1]);
-                // Intradós (curva interior), mirando al hueco.
+                float segI = Vector2.Distance(c[3][i], c[3][i + 1]);
+                float segO = Vector2.Distance(c[0][i], c[0][i + 1]);
+                // Intradós (curva interior), mirando al hueco, al fondo de la banda de borde.
                 Quad(verts, normals, uvs, tris,
-                    centre + L(pi[i].x, pi[i].y, -t), centre + L(pi[i + 1].x, pi[i + 1].y, -t),
-                    centre + L(pi[i + 1].x, pi[i + 1].y, t), centre + L(pi[i].x, pi[i].y, t),
+                    centre + L(c[3][i].x, c[3][i].y, -tIn), centre + L(c[3][i + 1].x, c[3][i + 1].y, -tIn),
+                    centre + L(c[3][i + 1].x, c[3][i + 1].y, tIn), centre + L(c[3][i].x, c[3][i].y, tIn),
                     ni[i], ni[i + 1], ni[i + 1], ni[i],
-                    new Vector2(arcI, 0f), new Vector2(arcI + segI, 0f), new Vector2(arcI + segI, 2f * t), new Vector2(arcI, 2f * t));
-                // Extradós (curva exterior), mirando afuera: sólo se ve la parte proud.
+                    new Vector2(arcI, 0f), new Vector2(arcI + segI, 0f), new Vector2(arcI + segI, 2f * tIn), new Vector2(arcI, 2f * tIn));
+                // Extradós (curva exterior), mirando afuera.
                 Quad(verts, normals, uvs, tris,
-                    centre + L(po[i].x, po[i].y, -t), centre + L(po[i + 1].x, po[i + 1].y, -t),
-                    centre + L(po[i + 1].x, po[i + 1].y, t), centre + L(po[i].x, po[i].y, t),
+                    centre + L(c[0][i].x, c[0][i].y, -tIn), centre + L(c[0][i + 1].x, c[0][i + 1].y, -tIn),
+                    centre + L(c[0][i + 1].x, c[0][i + 1].y, tIn), centre + L(c[0][i].x, c[0][i].y, tIn),
                     no[i], no[i + 1], no[i + 1], no[i],
-                    new Vector2(arcO, 0f), new Vector2(arcO + segO, 0f), new Vector2(arcO + segO, 2f * t), new Vector2(arcO, 2f * t));
-                // Las dos caras de pared: anillo entre las curvas.
+                    new Vector2(arcO, 0f), new Vector2(arcO + segO, 0f), new Vector2(arcO + segO, 2f * tIn), new Vector2(arcO, 2f * tIn));
                 for (int side = -1; side <= 1; side += 2)
                 {
-                    float w = side * t;
-                    Vector3 n = L(0f, 0f, side);
-                    Quad(verts, normals, uvs, tris,
-                        centre + L(pi[i].x, pi[i].y, w), centre + L(pi[i + 1].x, pi[i + 1].y, w),
-                        centre + L(po[i + 1].x, po[i + 1].y, w), centre + L(po[i].x, po[i].y, w),
-                        n, n, n, n,
-                        pi[i], pi[i + 1], po[i + 1], po[i]);
+                    // Las tres bandas de cada cara de pared, cada una a su fondo.
+                    for (int k = 0; k < 3; k++)
+                    {
+                        float w = side * depth[k];
+                        Vector3 n = L(0f, 0f, side);
+                        Quad(verts, normals, uvs, tris,
+                            centre + L(c[k + 1][i].x, c[k + 1][i].y, w), centre + L(c[k + 1][i + 1].x, c[k + 1][i + 1].y, w),
+                            centre + L(c[k][i + 1].x, c[k][i + 1].y, w), centre + L(c[k][i].x, c[k][i].y, w),
+                            n, n, n, n,
+                            c[k + 1][i], c[k + 1][i + 1], c[k][i + 1], c[k][i]);
+                    }
+                    // Los dos escalones: el de fuera mira al extradós, el de dentro al hueco.
+                    for (int k = 1; k <= 2; k++)
+                    {
+                        float sgn = k == 1 ? 1f : -1f;
+                        Quad(verts, normals, uvs, tris,
+                            centre + L(c[k][i].x, c[k][i].y, side * tIn), centre + L(c[k][i + 1].x, c[k][i + 1].y, side * tIn),
+                            centre + L(c[k][i + 1].x, c[k][i + 1].y, side * t), centre + L(c[k][i].x, c[k][i].y, side * t),
+                            sgn * no[i], sgn * no[i + 1], sgn * no[i + 1], sgn * no[i],
+                            new Vector2(arcO, tIn), new Vector2(arcO + segO, tIn), new Vector2(arcO + segO, t), new Vector2(arcO, t));
+                    }
                 }
                 arcI += segI;
                 arcO += segO;
             }
-            // Testeros en el arranque: entre la curva interior y la exterior, a −hy.
-            for (int side = 0; side <= N; side += N)
+            // Testeros en el arranque: una tira por banda, a −hy, cada una a su fondo.
+            for (int end = 0; end <= N; end += N)
             {
-                float uo = po[side].x, ui = pi[side].x;
-                Vector3 n = Vector3.down;
-                Quad(verts, normals, uvs, tris,
-                    centre + L(ui, -hy, -t), centre + L(uo, -hy, -t),
-                    centre + L(uo, -hy, t), centre + L(ui, -hy, t),
-                    n, n, n, n,
-                    new Vector2(ui, -t), new Vector2(uo, -t), new Vector2(uo, t), new Vector2(ui, t));
+                for (int k = 0; k < 3; k++)
+                {
+                    float uo = c[k][end].x, ui = c[k + 1][end].x, d = depth[k];
+                    Vector3 n = Vector3.down;
+                    Quad(verts, normals, uvs, tris,
+                        centre + L(ui, -hy, -d), centre + L(uo, -hy, -d),
+                        centre + L(uo, -hy, d), centre + L(ui, -hy, d),
+                        n, n, n, n,
+                        new Vector2(ui, -d), new Vector2(uo, -d), new Vector2(uo, d), new Vector2(ui, d));
+                }
             }
         }
 

@@ -506,8 +506,9 @@ namespace BackroomsSurvival.WorldGen3
                     // ADR-125 — la forma dentro de la huella.
                     shape = solid.shape,
                     // ADR-125 enm. 2 — un marco es decoración: submalla de decoración y sin
-                    // collider (`IsSolid` falso), igual que un rodapié.
-                    kind = solid.IsDecoration ? Wg3VolumeKind.Decoration : Wg3VolumeKind.Pillar,
+                    // collider (`IsSolid` falso), igual que un rodapié. `Casing` y no `Decoration`
+                    // para que el constructor le talle el perfil y el zócalo.
+                    kind = solid.IsDecoration ? Wg3VolumeKind.Casing : Wg3VolumeKind.Pillar,
                 }
             };
 

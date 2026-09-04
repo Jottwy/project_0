@@ -194,8 +194,11 @@ pub const STYLE_DECOR_BIT: u8 = 0x80;
 /// ADR-125 enm. 2 — ancho del marco (jambas y dintel), y del anillo de la arquivolta. Nueve y no
 /// ocho ni diez: ocho es un barrote de rejilla y diez una cornisa, y los tests distinguen por forma.
 pub const CASING_W_CM: i32 = 9;
-/// ADR-125 enm. 2 — cuánto sobresale el marco de la cara de la pared, por cada sala.
-pub const CASING_PROUD_CM: i32 = 2;
+/// ADR-125 enm. 2 — cuánto sobresale el marco de la cara de la pared, por cada sala. **Cuatro y no
+/// dos desde la nota de enm. 2 (2026-09-04):** el cliente talla un perfil de dos escalones de 2 cm
+/// en la banda (`Wg3MeshBuilder.CasingStepM`), y con 2 cm proud los bordes quedaban a ras de la
+/// pared. El ráster no lo mira (decoración), así que no cuesta celdas.
+pub const CASING_PROUD_CM: i32 = 4;
 /// ADR-125 enm. 2 — cuánto entra el marco en la luz de la boca: un centímetro, para que su cara
 /// interior no sea coplanar con la mocheta (z-fighting) y para que la arquivolta no comparta el
 /// intradós con el arco. El cliente lo refleja: la curva interior de la arquivolta es el intradós
