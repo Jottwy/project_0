@@ -13038,3 +13038,53 @@ rejilla de `emit_space` y la lista de puertas que los mordiscos de ADR-120 valid
 plan escrito antes (regla 4). La métrica que hay que añadir primero es la tasa de enfilada (dos
 puertas de la misma sala en paredes opuestas con solape de proyección), y sin ella no hay antes y
 después.
+
+---
+
+## ADR-121 y ADR-122 — Aprobación (2026-09-04) — ACEPTADAS (pendientes de implementación)
+
+Joel aprueba los dos tal como están redactados arriba. Este registro es sólo-añadir (regla 11), así
+que sus cabeceras se quedan como PROPUESTA y esta nota es la que manda: **ACEPTADAS**. El código va
+DESPUÉS del nivel 1 del catálogo de variaciones sin wire (ADR-105 enm. 8 y siguientes), que Joel
+eligió implementar entero primero; los dos comparten el bump de wire 55 → 56 y van en el mismo commit
+de wire con su espejo C#.
+
+---
+
+## ADR-105 — Enmienda 8: el medio muro, desde el suelo y colgado del techo (2026-09-04) — ACEPTADA (implementada y medida)
+
+### Contexto
+
+Joel: «añadir de una vez los medios muros de alturas tanto de suelo como techo». Primer punto del
+nivel 1 del catálogo de variaciones (catorce, todas sin wire), aprobado entero.
+
+### D1 — Cuatro perfiles con UN dado, y la mampara donde estaba
+
+La división de la enm. 3 tenía dos perfiles: mampara de 230 o de suelo a techo. Ahora cuatro:
+mampara (< 0,34, sin cambio), **medio muro bajo** `PARTITION_LOW_H_CM` 110 (< 0,49), **colgado**
+desde `PARTITION_HANG_CLEAR_CM` 200 hasta el techo (< 0,62, sólo con techo ≥ 260), y entera. Un solo
+sorteo en ese orden: la mampara sale exactamente donde salía y la secuencia del espacio no se mueve.
+
+### D2 — Qué hace cada uno en el ráster, y por qué esas alturas
+
+El bajo, a la cadera: se ve por encima y no se pasa (`blocked_standing_at` choca). El colgado deja
+200 de hueco libre, por encima del cuerpo con holgura para el ráster conservador: se pasa por debajo
+y corta la vista al fondo. Ninguno cambia la conectividad: el bajo es una isla o un espolón como los
+de siempre, y el colgado no frena.
+
+### D3 — Los tests distinguen los perfiles por su forma
+
+`partitions_land_where_the_grammar_says` reconoce el colgado por arrancar a dos metros del suelo de su
+sala (y exige que llegue al techo) y el bajo por sus 110. Y `every_solid_survives_into_the_raster`
+deja de exigir «ver por encima» a todo macizo bajo: sólo al PRETIL (grosor 20). Un medio muro puede
+compartir celda de ráster con un pilar o tabique vecino y esa columna sube hasta el techo sin que
+el medio muro tenga nada encima; medido en (128,40, 211,78) con la sonda nueva
+`probe_solids_at_column`.
+
+### Verificaciones
+
+- `cargo test --release --bin backrooms_server world::wg3` **149/149**; clippy y fmt limpios.
+- **3 semillas × 9 regiones: 1 031 divisiones, 346 mamparas, 148 medios muros bajos, 82 colgadas.**
+- Barrido de 27 regiones: mancha mayor 99,6 %, 1,3 islas, nav 100 %, cotas pisables 117 617 →
+  117 701 (un medio muro cuesta menos suelo que una división entera).
+- Sin cambio de wire (55), sin tocar el cliente.
