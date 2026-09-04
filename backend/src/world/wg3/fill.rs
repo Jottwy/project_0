@@ -1118,6 +1118,19 @@ const PARTITION_SCREEN_CHANCE: f32 = 0.34;
 /// eso no puede ser la única que hay.
 const PARTITION_SCREEN_H_CM: i32 = 230;
 
+/// ADR-105 enm. 8 — **el MEDIO MURO desde el suelo**: 110 cm, a la altura de la cadera. Se ve por
+/// encima y no se pasa, como el pretil de un atrio pero dentro de una sala. Es la mitad baja de lo
+/// que Joel pidió («medios muros de alturas tanto de suelo como techo»).
+pub(super) const PARTITION_LOW_H_CM: i32 = 110;
+/// Y el que CUELGA del techo hasta dos metros: se pasa por debajo y corta la vista al fondo. Dos
+/// metros y no 1,80 porque el hueco libre tiene que quedar por encima del cuerpo con holgura, o el
+/// ráster conservador cierra el paso por un centímetro.
+pub(super) const PARTITION_HANG_CLEAR_CM: i32 = 200;
+/// El perfil se sortea con UN dado: por debajo de `PARTITION_SCREEN_CHANCE` mampara (sin cambio
+/// respecto a la enm. 3), luego medio muro bajo, luego colgado, y el resto de suelo a techo.
+const PARTITION_LOW_BELOW: f32 = 0.49;
+const PARTITION_HANG_BELOW: f32 = 0.62;
+
 /// Cuántas divisiones como mucho por espacio.
 const PARTITION_MAX_PER_SPACE: i32 = 3;
 
@@ -1376,10 +1389,22 @@ fn interior_partitions(
                 };
                 let is_split = gap.is_some();
 
-                let top = if room.next01() < PARTITION_SCREEN_CHANCE {
-                    s.floor_y_cm + PARTITION_SCREEN_H_CM.min(clear)
+                // El PERFIL: mampara, medio muro bajo, colgado del techo, o de suelo a techo
+                // (enm. 8). Un solo dado y en este orden, para que la mampara salga donde salía.
+                let profile = room.next01();
+                let (bottom, top) = if profile < PARTITION_SCREEN_CHANCE {
+                    (
+                        s.floor_y_cm,
+                        s.floor_y_cm + PARTITION_SCREEN_H_CM.min(clear),
+                    )
+                } else if profile < PARTITION_LOW_BELOW {
+                    (s.floor_y_cm, s.floor_y_cm + PARTITION_LOW_H_CM)
+                } else if profile < PARTITION_HANG_BELOW
+                    && clear >= PARTITION_HANG_CLEAR_CM + 2 * PARTITION_T_CM
+                {
+                    (s.floor_y_cm + PARTITION_HANG_CLEAR_CM, s.floor_y_cm + clear)
                 } else {
-                    s.floor_y_cm + clear
+                    (s.floor_y_cm, s.floor_y_cm + clear)
                 };
 
                 // La huella entera de la división, para comprobarla de una vez: una división con un
@@ -1497,7 +1522,7 @@ fn interior_partitions(
                             z_cm: z,
                             size_x_cm: sx,
                             size_z_cm: sz,
-                            bottom_y_cm: s.floor_y_cm,
+                            bottom_y_cm: bottom,
                             top_y_cm: top,
                             style,
                         });

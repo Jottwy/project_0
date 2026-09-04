@@ -1263,9 +1263,14 @@ fn partitions_land_where_the_grammar_says() {
     const T_CM: i32 = 30;
     const MAX_RUN_CM: i32 = 2000;
     const SCREEN_H_CM: i32 = 230;
+    // Enm. 8: medio muro bajo y división colgada del techo.
+    const LOW_H_CM: i32 = super::fill::PARTITION_LOW_H_CM;
+    const HANG_CLEAR_CM: i32 = super::fill::PARTITION_HANG_CLEAR_CM;
 
     let mut seen = 0usize;
     let mut screens = 0usize;
+    let mut lows = 0usize;
+    let mut hung = 0usize;
     for &seed in &seeds {
         for &(rx, rz) in NEAR_REGIONS.iter() {
             let region = Wg3RegionCoord { x: rx, z: rz };
@@ -1301,7 +1306,10 @@ fn partitions_land_where_the_grammar_says() {
                         // envolventes se pisan, así que preguntando por `rect` el macizo se le
                         // atribuye al vecino y el test mide la sala equivocada. Las huellas son
                         // disjuntas, así que dueño hay exactamente uno.
-                        if sp.floor_y_cm == p.bottom_y_cm && sp.covers_rect(&rect) {
+                        // A la cota de su suelo, o colgada dos metros por encima (enm. 8).
+                        let at_floor = sp.floor_y_cm == p.bottom_y_cm
+                            || sp.floor_y_cm + HANG_CLEAR_CM == p.bottom_y_cm;
+                        if at_floor && sp.covers_rect(&rect) {
                             host = Some((n, i, sp));
                         }
                     }
@@ -1349,8 +1357,20 @@ fn partitions_land_where_the_grammar_says() {
                 //     bordillo.
                 let h = p.top_y_cm - p.bottom_y_cm;
                 let clear = super::fill::clear_height_cm(sp);
-                if h == SCREEN_H_CM.min(clear) {
+                let hanging = p.bottom_y_cm != sp.floor_y_cm;
+                if hanging {
+                    // Colgada: de los dos metros al techo, ni un centímetro menos por abajo.
+                    hung += 1;
+                    assert_eq!(
+                        p.top_y_cm,
+                        sp.floor_y_cm + clear,
+                        "semilla {seed:#x} región ({rx},{rz}): división colgada que no llega al \
+                         techo"
+                    );
+                } else if h == SCREEN_H_CM.min(clear) {
                     screens += 1;
+                } else if h == LOW_H_CM {
+                    lows += 1;
                 } else {
                     assert_eq!(
                         h, clear,
@@ -1405,7 +1425,10 @@ fn partitions_land_where_the_grammar_says() {
         "sólo {seen} divisiones en {} regiones: la gramática no está emitiendo",
         seeds.len() * NEAR_REGIONS.len()
     );
-    println!("[divisiones] {seen} revisadas, {screens} mamparas por debajo del techo");
+    println!(
+        "[divisiones] {seen} revisadas, {screens} mamparas por debajo del techo, {lows} medios \
+         muros bajos, {hung} colgadas"
+    );
 }
 
 /// ADR-105 enmienda 5 — **las invariantes duras de las vigas**, sobre varias semillas.

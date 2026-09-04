@@ -8435,6 +8435,59 @@ fn windows_are_seen_through_and_not_walked_through() {
     println!("[ventana] {windows} ventanas y {slits} rendijas verificadas en el ráster");
 }
 
+/// Sonda: qué macizos tocan una columna del mundo servido. `WG3_PROBE_COLUMN="x,z"` en metros.
+#[test]
+#[ignore]
+fn probe_solids_at_column() {
+    let spec = std::env::var("WG3_PROBE_COLUMN").unwrap_or_else(|_| "128.4,211.78".into());
+    let mut it = spec.split(',').map(|v| v.trim().parse::<f32>().unwrap());
+    let (x, z) = (it.next().unwrap(), it.next().unwrap());
+    let m = real_manifest();
+    for (rx, rz) in AUDIT_REGIONS {
+        let region = Wg3RegionCoord { x: rx, z: rz };
+        let (min_x, min_z, max_x, max_z) = region.bounds();
+        if x < min_x || x >= max_x || z < min_z || z >= max_z {
+            continue;
+        }
+        let served = Wg3ServedWorld::plan_region(&m, SERVED_SEED, region);
+        let coord = chunk::Wg3ChunkCoord::containing(x, z);
+        for s in served.solids_touching_chunk(coord) {
+            let (x0, z0, x1, z1) = s.bounds();
+            if x >= x0 && x <= x1 && z >= z0 && z <= z1 {
+                println!("[columna] macizo {s:?}");
+            }
+        }
+        for c in served.carves_touching_chunk(coord) {
+            let (cx0, cz0) = (c.x_cm as f32 / 100.0, c.z_cm as f32 / 100.0);
+            let (cx1, cz1) = (
+                (c.x_cm + c.size_x_cm) as f32 / 100.0,
+                (c.z_cm + c.size_z_cm) as f32 / 100.0,
+            );
+            if x >= cx0 && x <= cx1 && z >= cz0 && z <= cz1 {
+                println!("[columna] vano {c:?}");
+            }
+        }
+        for seg in served.segments_touching_chunk(coord) {
+            if x >= seg.min_x()
+                && x <= seg.min_x() + seg.size_x()
+                && z >= seg.min_z()
+                && z <= seg.min_z() + seg.size_z()
+            {
+                println!(
+                    "[columna] tramo ({},{}) {}x{} suelo {} alto {} estilo {}",
+                    seg.x_cm,
+                    seg.z_cm,
+                    seg.size_x_cm,
+                    seg.size_z_cm,
+                    seg.floor_y_cm,
+                    seg.height_cm,
+                    seg.style
+                );
+            }
+        }
+    }
+}
+
 /// ADR-105 verificaciones (a) y (b) — **todo macizo emitido EXISTE en el ráster, y ningún vano se lo
 /// come.**
 ///
@@ -8455,6 +8508,7 @@ fn every_solid_survives_into_the_raster() {
     let mut aprons = 0usize;
     let mut beams = 0usize;
     let mut arches = 0usize;
+    let mut lows = 0usize;
 
     for (rx, rz) in AUDIT_REGIONS {
         let region = Wg3RegionCoord { x: rx, z: rz };
@@ -8530,7 +8584,11 @@ fn every_solid_survives_into_the_raster() {
                         // materia debajo y «apoya» sin dejar de ser viga. Medido: 9 de 527 en las
                         // cuatro regiones de referencia.
                         beams += 1;
-                    } else if h <= 200 {
+                    } else if s.size_x_cm.min(s.size_z_cm) == 20 && h <= 200 {
+                        // Grosor de PRETIL (`PARAPET_T_CM`). Sólo a él se le exige ver por encima:
+                        // un medio muro de sala (enm. 8, grosor 30) puede compartir celda de ráster
+                        // con un pilar o un tabique vecino, y esa columna sube hasta el techo sin
+                        // que el medio muro tenga nada encima — medido en (128.40, 211.78).
                         parapets += 1;
                         // Por encima del pretil hay que VER. Medio metro más arriba de su remate.
                         let over = s.top_y_cm as f32 / 100.0 + 0.5;
@@ -8540,6 +8598,8 @@ fn every_solid_survives_into_the_raster() {
                              arriba: eso no es una barandilla, es una pared, y el atrio vuelve a \
                              estar sellado"
                         );
+                    } else if h <= 200 {
+                        lows += 1;
                     } else {
                         pillars += 1;
                     }
@@ -8565,7 +8625,8 @@ fn every_solid_survives_into_the_raster() {
     );
     println!(
         "[macizo] {checked} verificados en el ráster: {parapets} pretiles, {pillars} pilares, \
-         {aprons} faldones y dinteles, {beams} vigas, {arches} hiladas de arco"
+         {aprons} faldones y dinteles, {beams} vigas, {arches} hiladas de arco, {lows} medios \
+         muros"
     );
 }
 
