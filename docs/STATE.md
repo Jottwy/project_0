@@ -2,6 +2,22 @@
 > Actualizado por /checkpoint al cierre de cada sesión. Leído al inicio de cada sesión.
 
 ## Última sesión
+- Fecha: 2026-09-04, 19.ª tanda (**ZONAS CON CARÁCTER, LABERINTO DE REJILLA, y «menos pasillos» probado tres veces y revertido** — ADR-105 enm. 14–15, ADR-124 como registro, ADR-123 propuesto) — validación al cierre: **`cargo test --release --bin backrooms_server` 1372/1372, `world::wg3` 152/152, clippy y fmt limpios en cada commit. WIRE 55 sin tocar, cliente sin tocar. Backend desplegado a `Builds/Backend` (SHA256 6BC5FB7F…, 6.715.392 bytes). Visor de planta actualizado.**
+
+0. **Qué pidió Joel, tras ver el visor.** «Más uniforme, más dinámico, un 50 % menos repetitivo; menos pasillos pero más largos; que se encuentren caminos; muchas más zonas laberínticas, más Level 0; techos a un metro como un conducto.» Eligió hacerlo todo en orden 1 → 2 → 3, y redactar el ADR de agacharse.
+
+1. **Enm. 14, zonas con carácter (`8d423f81`).** `fill::Character` {abierto, oficina, nave, laberinto, raro} por el valor crudo del campo de densidad (30/25/17/20/8 %) y una tabla `KNOBS` con TODAS las probabilidades del relleno por carácter, más un tope de techo (2,40 laberinto, 2,00 raro) que aplica el plan con la semilla del MUNDO (`cap_ceilings_by_character`). Medido: macizos por espacio antes → después: abierto 6,5 → 4,3, oficina 6,5 → 6,5, nave 7,0 → 7,6, laberinto 6,5 → 1,8, raro 9,7 → 3,4. **Antes todo era lo mismo en todas partes.** La repetición LOCAL (vecinos con la misma firma) sube 5,7 → 9,6 % a propósito; lo que cae es la homogeneidad global. Dos colisiones destapadas: `OPENING_JAMB_CM` 60 → 180 y `on_wall_carve` (ningún macizo sobre una ventana).
+
+2. **Enm. 15, laberinto de rejilla (`2d4259c4`).** Árbol de expansión sobre celdas de 2,5 m con anillo de 1 m: conectividad por construcción, callejones por todas partes. Divisiones 1 028 → 3 729 en 27 regiones; laberinto 1,8 → 5,7 macizos por espacio. Barrido: mancha mayor 99,6 %, 1,3 islas, nav 100 %, 117 230 cotas.
+
+3. **ADR-124, «menos pasillos, más largos»: tres intentos medidos, ninguno se queda (`c3f5b043`).** `CORRIDOR_DEPTH` 3 → 2 da lo pedido (28,1 → 16,6 pasillos, 50,5 → 53,6 m) pero rompe 6 de 300 regiones (enrutador) y baja cruces 24,6 → 10,0 y plantas 3,2 → 2,9; el tercer nivel a medias, 1 de 300 rota; más anillos (0,45), barrido limpio pero los agujeros de referencia caen 8 → 5 bajo el listón de un test calibrado por Joel. **El enrutador es el límite, no una constante.** Listón escrito en el ADR; sonda `[pasillos]` en `probe_character_mix`.
+
+4. **ADR-123 (agacharse y conductos), PROPUESTA pendiente de Joel.** Cuerpo de 1,00 en bits libres de pose, `resolve_move` con altura de estado, papel `Duct` con techo 100–120, criaturas fuera (refugio). Sin él, el techo mínimo es 2,00.
+
+5. **Medir bien costó tres vueltas:** la métrica local de repetición sube con la zonificación (los vecinos de una zona se parecen); la que baja es la global. Antes de vender un «50 %» hay que decir cuál de las dos.
+
+6. **PRÓXIMO PASO:** andar `WorldGen3Live` (backend desplegado) y juzgar zonas; aprobar o no ADR-123; el commit de wire 56 (ADR-121/122); y la sesión del enrutador para ADR-124.
+
 - Fecha: 2026-09-04, 18.ª tanda (**NIVEL 1 DEL CATÁLOGO DE VARIACIONES — catorce variaciones sin wire en seis commits, ADR-105 enm. 8 a 13; ADR-121 y ADR-122 aprobados por Joel, sin código**) — validación al cierre: **`cargo test --release --bin backrooms_server` 1372/1372, `world::wg3` 152/152, clippy `--all-targets -D warnings` y fmt limpios en cada commit. WIRE 55 sin tocar, cliente sin tocar. Backend desplegado a `Builds/Backend` (SHA256 68AF9FA4…, 6.701.056 bytes).**
 
 0. **Qué pidió Joel.** Tras ver el Bloque A: «una veintena de variaciones… más pilares, estructuras en arco en interiores, rampas circulares, rejillas, paredes deformadas, habitaciones a lo laberintos, medios muros de suelo y techo». Se le devolvió un catálogo en tres niveles por coste real (sin wire / ADR-121 / ADR-122) y eligió: **nivel 1 entero y aprobar los dos ADR**. Las paredes deformadas, octógonos, rejas giradas y la escalera de caracol son nivel 2 (necesitan `yaw`); la rampa recta es nivel 3; la rampa circular LISA no cabe en ningún ADR de hoy.
