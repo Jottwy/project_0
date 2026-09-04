@@ -13180,3 +13180,43 @@ suyo es múltiplo de 50 dentro del rango).
   referencia.
 - Barrido de 27 regiones: mancha mayor 99,5 %, 1,4 islas, nav 100 %.
 - Sin cambio de wire (55), sin tocar el cliente.
+
+---
+
+## ADR-105 — Enmienda 11: arcadas entre pilares y bóvedas escalonadas (2026-09-04) — ACEPTADA (implementada y medida)
+
+### Contexto
+
+Joel: «estructuras en arco en interiores de las mismas habitaciones». Puntos 7 y 8 del nivel 1. Las
+dos con hiladas de media celda como el arco de una boca (enm. 7): es lo curvo que este sistema puede
+decir con cajas, y lo dice igual en los dos lados del cable.
+
+### D1 — La arcada tiende arcos entre pilares consecutivos de la misma fila
+
+`pillar_arcades`: en una nave con pilares cuadrados (enm. 4; los brazos de cruz no, la arcada arranca
+de una cara plana), con `ARCADE_CHANCE` 0,35, hiladas de `ARCADE_T_CM` (40) de fondo y 25 de alto
+entre cada dos pilares consecutivos de una fila (vano ≤ `ARCADE_MAX_SPAN_CM` 900), desde el techo
+hasta una línea de arranque que deja ≥ `ARCADE_CLEAR_CM` (250) de hueco libre. Perfil elíptico
+evaluado por la cara superior de cada hilada, como en la boca. Fila a lo largo de X o de Z, sorteado.
+
+### D2 — La bóveda es una aproximación de hiladas colgada de las dos paredes largas
+
+`wall_vaults`: en salas de ≥ `VAULT_MIN_CLEAR_CM` (400) de techo —ni atrios, ni piezas, ni huellas
+compuestas—, con `VAULT_CHANCE` 0,25, hasta ocho hiladas de 25 colgadas de las dos paredes largas que
+se meten hacia el centro cuanto más arriba (cuarto de elipse; alcance ≤ `VAULT_MAX_REACH_CM` 300 y ≤
+un cuarto del lado corto: la clave queda abierta), dejando ≥ `VAULT_CLEAR_CM` (260). Se recortan
+sobre pozos y agujeros como las vigas. **El alcance va en pasos de 10 y nunca baja de 50**: con 30
+la hilada tenía la forma exacta de una división y el test de divisiones la adoptó (cota 365,
+región (1,−1)). Ninguna forma del sistema mide 50 o más de fondo con 25 de alto salvo éstas.
+
+### D3 — El test
+
+`is_hung_band` (25 de alto, ≥ 40 de fondo; las hiladas de una boca miden 15) y
+`hung_bands_stay_above_the_head` (3 × 9 regiones): toda hilada cuelga a ≥ 2,50 del suelo de su sala.
+
+### Verificaciones
+
+- `cargo test --release --bin backrooms_server world::wg3` **151/151**; clippy y fmt limpios.
+- 148 hiladas de arcada y bóveda en 27 regiones. Barrido sin cambio: mancha mayor 99,5 %, 1,4
+  islas, nav 100 %, 117 544 cotas (cuelgan por encima de 2,50: cero coste de suelo).
+- Sin cambio de wire (55), sin tocar el cliente.
