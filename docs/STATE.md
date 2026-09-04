@@ -26,7 +26,8 @@
   `docs/SESSION-LOG.md`.
 - **Contrato WG3 v1**, 5 días. Día 1 cerrado: el atrio ya no se abre a la nada (ADR-104 enm. 3, `65d267c3`).
   Días 1–2 materiales · día 3 rendimiento (fundido por chunk) · día 4 rampa + tabique diagonal + anti-enfilada · día 5 verificación y etiqueta `wg3-v1-alpha1`.
-- **Saneamiento del proyecto** (auditoría del 2026-09-04): B1 arranque de sesión ← aquí; luego autoridad, repo, docs y código muerto.
+- **Saneamiento del proyecto** (auditoría del 2026-09-04): **B1 cerrado** (arranque de sesión). Quedan B3 repo
+  (ramas y worktrees, pendiente de Joel), B2 docs y gates, B4 código muerto, y los tres agujeros de autoridad.
 - **Migración STP servidor-autoritativo**: Steps 1–2 y slice 3.1 (plumbing) hechos y verificados. Falta slice 3.2
   (capa L2 de predicción) y reescribir los 8 call sites de `Inventory`.
 - `PlayerController.cs` marcado DEPRECATED por ADR-009: se borra o se deja en stub dentro de la slice 3.2.
@@ -49,9 +50,11 @@
 - `handle_spawn_world_chest` (`game_loop.rs`) y `World::spawn_corpse` (`world/corpse.rs`) aceptan la posición del
   cliente sin validar andabilidad. Ausencia total de gate, no el desajuste 2,5/5 m.
 - Sin anti-cheat de posesión ni cantidad en `consume_item` (ADR-030): trust-the-client asumido y documentado.
-- `IPCClient.cs`: cuatro `catch { }` mudos en los notificadores de listeners (state/delta/chunk/event) — pueden estar
-  tragando fallos hoy mismo.
-- La suite EditMode arrastra rojos conocidos; el rojo de lanzamiento del backend sólo pasa con `BACKROOMS_VERBOSE_LOG=1`.
+- `IPCClient.cs`: cuatro `catch { }` mudos en los notificadores de listeners — pueden tragar fallos hoy mismo.
+- La suite EditMode arrastra rojos conocidos; el del lanzamiento del backend sólo pasa con `BACKROOMS_VERBOSE_LOG=1`.
+- **Trabajo en paralelo sin integrar**: `claude/unity-lighting-cadence-bfdd2a` (cadencia de luces, 2 commits, 7 tests
+  sin ejecutar) va 51 commits por detrás y está fuera del contrato; y `migration/worldgraph-v1` ya lleva ADR-128
+  (doble escala) escrito por otra sesión. Al integrar hay que regenerar `DECISIONS-INDEX.md` o el gate sale en rojo.
 
 ## NO tocar
 > Detalle completo, verbatim, en `docs/SESSION-LOG.md` (bloques «NO tocar» y «Última sesión» de 2026-08-03).
@@ -93,11 +96,21 @@
   diagnosis»; falta un playtest con la instrumentación y LEER los logs. Gate de las partes 1–2 de ADR-026.
 - **Entidades PvE (Lurker/Crawler/Shadow) con daño DESACTIVADO** desde 2026-07-07: eran la causa de las muertes
   silenciosas. Implementadas en el backend y apagadas a propósito.
-- **`docs/DECISIONS.md`** (1,38 MB, 138 encabezados `## ADR-`) es ilegible entero: el índice generado y la lectura
-  por `grep` + `Read offset/limit` son el B1 de este saneamiento.
+- **`docs/DECISIONS.md`** (1,38 MB) sigue siendo ilegible entero; ya se lee por `DECISIONS-INDEX.md` + `grep`.
+  Alternativa sin decidir: partirlo en un fichero por ADR (122 ficheros, ~15 referencias y un hook que rehacer).
 - Menores: `MPTRACE` sin commitear en cuatro ficheros del vendor STP; `TODO(balance)` de loot; doc-comments stale.
 
 ## Últimas tandas
+
+### 2026-09-04 — 21.ª tanda: auditoría del proyecto y B1 del saneamiento (arranque de sesión)
+- **La regla dura #1 era incumplible, no cara.** `Read` rechaza `STATE.md` entero (tope 256 KB) y todo
+  tramo de más de 25 000 tokens: 500 líneas medían 51 211. `Riesgos abiertos` y `Estado actual` no entraban nunca.
+- `77801e2a` traslado verbatim de 595 370 B a `SESSION-LOG.md` (verificado byte a byte); `36c04939`
+  compresión: **688 532 → 11 587 B, 2 588 → 121 líneas**. El verbatim de lo conservado también está en el log.
+- `68831a61` `tools/dev/CheckStateBudget.py` (topes y presupuesto de 36 KB) + `GenDecisionsIndex.py` →
+  `docs/DECISIONS-INDEX.md` (7 917 B; 105 números, 163 encabezados) + `ARCHITECTURE.md` con contratos reales.
+- `7534b0a2` el hook de Stop baja a solo `fmt`: corría clippy + tests en CADA parada, sin bloquear nunca.
+- Auditoría completa (Alpha 1, código, repo, flujo) en el plan de la sesión; B2–B5 sin empezar.
 
 ### 2026-09-04 — 20.ª tanda: ningún macizo se había visto nunca; wire 56→60, pozos del Nivel 0
 - **El hallazgo (`5aa8fc07`): desde wire 50 ningún macizo se dibujaba en su sitio** — `AssembleSolid` daba el centro local

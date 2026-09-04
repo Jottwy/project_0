@@ -60,7 +60,9 @@ def body_lines(lines, start, end):
 
 def check_state(failures):
     text = io.open(STATE_PATH, encoding='utf-8', newline='').read()
-    lines = text.split('\n')
+    # El arbol de trabajo puede estar en CRLF (autocrlf). Sin quitar el \r, ningun encabezado
+    # coincide con SECTION_CAPS y los topes por seccion no se aplican en silencio.
+    lines = [line.rstrip('\r') for line in text.split('\n')]
 
     total_lines = len(lines)
     total_bytes = len(text.encode('utf-8'))
