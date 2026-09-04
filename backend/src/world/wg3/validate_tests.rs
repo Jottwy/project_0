@@ -731,7 +731,7 @@ fn probe_architecture_metrics() {
                 .filled
                 .solids
                 .iter()
-                .filter(|s| s.size_x_cm == 200 && s.size_z_cm == 200)
+                .filter(|s| super::fill::is_pillar(s))
                 .count();
             segments_total += inside.filled.segments.len();
 
@@ -746,7 +746,7 @@ fn probe_architecture_metrics() {
                 .filled
                 .solids
                 .iter()
-                .filter(|s| s.size_x_cm == 200 && s.size_z_cm == 200)
+                .filter(|s| super::fill::is_pillar(s))
                 .collect();
             for st in inside.building.storeys.iter() {
                 for (_, sp) in st.built() {
@@ -1420,12 +1420,16 @@ fn pillars_land_where_the_grammar_says() {
 
     let m = real_manifest();
     let seeds = validate::sweep_seeds(sweep_seed_count(3));
-    // `PILLAR_SPACING_MIN_CM` (700) menos el desorden de los dos vecinos (2 × `PILLAR_JITTER_MAX_CM`).
-    const MIN_GAP_CM: i32 = 700 - 2 * 55;
+    // `PILLAR_GAP_MIN_CM` (500, cara a cara) menos el desorden de los dos vecinos
+    // (2 × `PILLAR_JITTER_MAX_CM`). Desde ADR-105 enm. 4 el lado varía, así que se mide el HUECO.
+    const MIN_GAP_CM: i32 = 500 - 2 * 55;
     // `PILLAR_DOOR_CLEAR_CM`, con un centímetro de tolerancia por el redondeo del centro.
     const DOOR_CLEAR_CM: i32 = 400;
 
     let mut seen = 0usize;
+    // Histograma de lados (200, 250, …, 400) y brazos de cruz, para leer la enmienda 4 en cifras.
+    let mut sides = [0usize; 5];
+    let mut arms = 0usize;
     for &seed in &seeds {
         for &(rx, rz) in NEAR_REGIONS.iter() {
             let region = Wg3RegionCoord { x: rx, z: rz };
@@ -1434,9 +1438,16 @@ fn pillars_land_where_the_grammar_says() {
                 .filled
                 .solids
                 .iter()
-                .filter(|s| s.size_x_cm == 200 && s.size_z_cm == 200)
+                .filter(|s| super::fill::is_pillar(s))
                 .collect();
             seen += pillars.len();
+            for p in &pillars {
+                let long = p.size_x_cm.max(p.size_z_cm);
+                sides[((long - 200) / 50).clamp(0, 4) as usize] += 1;
+                if p.size_x_cm != p.size_z_cm {
+                    arms += 1;
+                }
+            }
 
             for p in &pillars {
                 let rect = PlanRect {
@@ -1445,7 +1456,7 @@ fn pillars_land_where_the_grammar_says() {
                     max_x_cm: p.x_cm + p.size_x_cm,
                     max_z_cm: p.z_cm + p.size_z_cm,
                 };
-                let (mid_x, mid_z) = (p.x_cm + 100, p.z_cm + 100);
+                let (mid_x, mid_z) = (p.x_cm + p.size_x_cm / 2, p.z_cm + p.size_z_cm / 2);
 
                 // 1 — todo pilar cae DENTRO de una nave construida y a la cota de su planta.
                 let mut host = None;
@@ -1545,7 +1556,17 @@ fn pillars_land_where_the_grammar_says() {
                     if p.bottom_y_cm != q.bottom_y_cm {
                         continue;
                     }
-                    let d = (p.x_cm - q.x_cm).abs().max((p.z_cm - q.z_cm).abs());
+                    // Los dos brazos de una cruz comparten centro: son el mismo pilar.
+                    if p.x_cm + p.size_x_cm / 2 == q.x_cm + q.size_x_cm / 2
+                        && p.z_cm + p.size_z_cm / 2 == q.z_cm + q.size_z_cm / 2
+                    {
+                        continue;
+                    }
+                    // Hueco cara a cara en el eje que más los separa.
+                    let d = (q.x_cm - (p.x_cm + p.size_x_cm))
+                        .max(p.x_cm - (q.x_cm + q.size_x_cm))
+                        .max(q.z_cm - (p.z_cm + p.size_z_cm))
+                        .max(p.z_cm - (q.z_cm + q.size_z_cm));
                     assert!(
                         d >= MIN_GAP_CM,
                         "semilla {seed:#x} región ({rx},{rz}): pilares a {d} cm en ({},{}) y \
@@ -1564,7 +1585,17 @@ fn pillars_land_where_the_grammar_says() {
         "sólo {seen} pilares en {} regiones: la gramática no está emitiendo",
         seeds.len() * NEAR_REGIONS.len()
     );
-    println!("[pilares] {seen} pilares revisados");
+    println!(
+        "[pilares] {seen} pilares revisados | lados 200/250/300/350/400: {}/{}/{}/{}/{} | {} brazos \
+         de cruz ({} cruces)",
+        sides[0],
+        sides[1],
+        sides[2],
+        sides[3],
+        sides[4],
+        arms,
+        arms / 2
+    );
 }
 
 /// SONDA — **dónde están las naves con pilares**, para poder ir a verlas.
@@ -1607,7 +1638,7 @@ fn probe_pillar_halls() {
             .filled
             .solids
             .iter()
-            .filter(|s| s.size_x_cm == 200 && s.size_z_cm == 200)
+            .filter(|s| super::fill::is_pillar(s))
             .collect();
         for (n, st) in inside.building.storeys.iter().enumerate() {
             for (_, sp) in st.built() {
