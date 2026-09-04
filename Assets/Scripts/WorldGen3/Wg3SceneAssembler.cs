@@ -485,11 +485,20 @@ namespace BackroomsSurvival.WorldGen3
 
             // Una sola caja, y por eso este canal existe: un tramo habría traído además su losa de
             // suelo y la de techo, coplanares con las del atrio.
+            //
+            // **El centro es de MUNDO, como en toda lista de volúmenes** (`BuildPlaced` suma el
+            // origen de la colocación; `Wg3GeneratedSegment.Build` el del tramo). `Wg3MeshBuilder`
+            // y `AddColliders` restan `origin` a cada centro para emitir coordenadas locales, así
+            // que un centro local aquí se restaba dos veces: desde wire 50 (2026-08-27) TODOS los
+            // macizos —pilares, pretiles, tabiques, vigas— se dibujaban y colisionaban apilados en
+            // el origen del mundo, y en su sitio quedaba sólo el ráster del servidor: paredes
+            // invisibles. Lo destapó una captura en (3, 0, 14) con un bloque de 4 m plantado en
+            // (0, 0) y ninguna cruz de 3 m donde el plan la ponía (2026-09-04).
             var volumes = new List<Wg3Volume>(1)
             {
                 new Wg3Volume
                 {
-                    center = new Vector3(sx * 0.5f, sy * 0.5f, sz * 0.5f),
+                    center = origin + new Vector3(sx * 0.5f, sy * 0.5f, sz * 0.5f),
                     size = new Vector3(sx, sy, sz),
                     yawDegrees = 0f,
                     kind = Wg3VolumeKind.Pillar,
