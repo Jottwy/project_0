@@ -45,6 +45,8 @@
   planta.
 - [VERTICALITY-ROADMAP.md](VERTICALITY-ROADMAP.md) — geometrías verticales de WG3: tope de plantas
   (torres, hecho), rampas, vacíos y caídas, conductos de ventilación, y poblar las plantas altas.
+- [WG3-ALPHA1-ROADMAP.md](WG3-ALPHA1-ROADMAP.md) — contrato de cierre: WorldGen3 v1 = Alpha 1 en una
+  semana (2026-09-04); cinco días en orden fijo y la lista v2 de lo que no cabe.
 - [WG3-ROADMAP.md](WG3-ROADMAP.md) — plan de trabajo de WorldGen3 (2026-08-28), escrito al cerrar
   ADR-102. Dónde estamos medido, lo que NO hay que volver a tocar, y los cuatro frentes que quedan
   —identidad visual, WG3 como autoridad, variedad de catálogo y la rareza Backrooms— ordenados con su
