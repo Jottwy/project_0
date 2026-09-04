@@ -285,6 +285,9 @@ pub fn fill_building(building: &RegionBuilding, manifest: &Wg3Manifest) -> Fille
         building, manifest, &placed, &pillars, &seg_doors,
     ));
     out.solids.extend(pillars);
+    // ADR-105 enm. 10 — las pilastras, pegadas a las paredes de pasillos y naves. Después de las
+    // divisiones: éstas guardan 300 cm de margen con la pared y no se tocan.
+    out.solids.extend(wall_pilasters(building, &seg_doors));
     // ADR-105 enm. 5 — el relieve del techo. Cuelga de la losa, así que no esquiva nada de lo de
     // abajo: sólo pozos y agujeros, que son lo único que atraviesa el techo.
     out.solids
@@ -547,6 +550,161 @@ const PILLAR_CROSS_MIN_SIDE_CM: i32 = 300;
 
 /// Qué proporción de las naves con pilares los lleva en cruz.
 const PILLAR_CROSS_CHANCE: f32 = 0.30;
+
+/// ADR-105 enm. 10 — qué proporción de las naves con pilares cuadrados les pone zapata y capitel.
+const PILLAR_TRIM_CHANCE: f32 = 0.40;
+/// Cuánto sobresale la zapata (y el capitel) por cada lado del pilar.
+const PILLAR_TRIM_OUT_CM: i32 = 30;
+/// Alto de la zapata y del capitel. Treinta y no veinticinco: por encima del escalón del jugador
+/// (27), para que la zapata sea parte del pilar y no un bordillo que se sube.
+const PILLAR_TRIM_H_CM: i32 = 30;
+
+/// ADR-105 enm. 10 — **la PILASTRA**: un pilar adosado a la pared, en pasillos y naves.
+///
+/// Es el ritmo de pared que un pasillo de Backrooms tiene y el nuestro no tenía: un resalte cada
+/// pocos metros, en las dos paredes largas, a tresbolillo. Cuesta poco paso —25 cm de fondo, que el
+/// ráster convierte en su celda— y por eso sólo va donde la circulación mide `PILASTER_MIN_WIDTH_CM`
+/// o más, y nunca a menos de `PILASTER_DOOR_CLEAR_CM` de una boca.
+const PILASTER_W_CM: i32 = 60;
+const PILASTER_D_CM: i32 = 25;
+const PILASTER_PITCH_CM: (i32, i32) = (400, 600);
+const PILASTER_MARGIN_CM: i32 = 200;
+const PILASTER_DOOR_CLEAR_CM: i32 = 150;
+const PILASTER_MIN_WIDTH_CM: i32 = 280;
+const PILASTER_ROOM_CHANCE: f32 = 0.50;
+const SALT_PILASTER: u32 = 0xB1_11_A0_08;
+
+/// ¿Es este macizo una pilastra? Por la forma: 25 de fondo, 60 de ancho, y más alto que un cuerpo.
+pub(super) fn is_pilaster(s: &Wg3Solid) -> bool {
+    s.size_x_cm.min(s.size_z_cm) == PILASTER_D_CM
+        && s.size_x_cm.max(s.size_z_cm) == PILASTER_W_CM
+        && s.top_y_cm - s.bottom_y_cm > 200
+}
+
+fn wall_pilasters(building: &RegionBuilding, seg_doors: &[(i32, i32, i32)]) -> Vec<Wg3Solid> {
+    let mut out = Vec::new();
+    let seed = building.seed;
+    for (n, plan) in building.storeys.iter().enumerate() {
+        let mut keep_out: Vec<super::plan::PlanRect> = building
+            .wells
+            .iter()
+            .filter(|w| w.storey_below + 1 == n || w.storey_below == n)
+            .map(|w| w.rect.shrunk(-50))
+            .collect();
+        keep_out.extend(hole_squares_above(building, n));
+
+        for (i, s) in plan.built() {
+            if !(s.role.is_circulation() || s.role == SpaceRole::Hall)
+                || s.is_composite()
+                || s.rise_cm != 0
+                || is_atrium(s)
+            {
+                continue;
+            }
+            let r = s.rect;
+            let wide = r.width_cm() >= r.depth_cm();
+            let short = r.width_cm().min(r.depth_cm());
+            if short < PILASTER_MIN_WIDTH_CM {
+                continue;
+            }
+            let (cx, cz) = r.centre_m();
+            let mut st = super::hash::stream_at(seed, cx, cz, SALT_PILASTER);
+            if st.next01() >= PILASTER_ROOM_CHANCE {
+                continue;
+            }
+            let pitch = PILASTER_PITCH_CM.0
+                + (st.next01() * (PILASTER_PITCH_CM.1 - PILASTER_PITCH_CM.0) as f32) as i32;
+            let long = r.width_cm().max(r.depth_cm());
+            let usable = long - 2 * PILASTER_MARGIN_CM - PILASTER_W_CM;
+            let count = usable / pitch;
+            if count < 1 {
+                continue;
+            }
+            let step = usable / count;
+            let clear = clear_height_cm(s);
+            let style = style_of(s.role);
+            // Todas las bocas de este espacio: las del plan, las de junta y las de los tramos.
+            let doors: Vec<(i32, i32)> = plan
+                .links
+                .iter()
+                .filter(|l| l.a == i || l.b == i)
+                .map(|l| (l.at_x_cm, l.at_z_cm))
+                .chain(
+                    plan.gates
+                        .iter()
+                        .filter(|g| g.space == i)
+                        .map(|g| (g.x_cm, g.z_cm)),
+                )
+                .chain(
+                    seg_doors
+                        .iter()
+                        .filter(|&&(x, z, floor)| floor == s.floor_y_cm && on_space_wall(s, x, z))
+                        .map(|&(x, z, _)| (x, z)),
+                )
+                .collect();
+
+            // Las dos paredes largas: `0` la de coordenada mínima, `1` la máxima. La segunda va a
+            // tresbolillo, medio paso corrida.
+            for wall in 0..2 {
+                let shift = if wall == 1 { step / 2 } else { 0 };
+                for k in 0..=count {
+                    let along = (if wide { r.min_x_cm } else { r.min_z_cm })
+                        + PILASTER_MARGIN_CM
+                        + k * step
+                        + shift;
+                    if along + PILASTER_W_CM
+                        > (if wide { r.max_x_cm } else { r.max_z_cm }) - PILASTER_MARGIN_CM
+                    {
+                        break;
+                    }
+                    // Desde la cara interior del muro hacia dentro.
+                    let foot = if wide {
+                        let z = if wall == 0 {
+                            r.min_z_cm + WALL_T_CM
+                        } else {
+                            r.max_z_cm - WALL_T_CM - PILASTER_D_CM
+                        };
+                        super::plan::PlanRect {
+                            min_x_cm: along,
+                            min_z_cm: z,
+                            max_x_cm: along + PILASTER_W_CM,
+                            max_z_cm: z + PILASTER_D_CM,
+                        }
+                    } else {
+                        let x = if wall == 0 {
+                            r.min_x_cm + WALL_T_CM
+                        } else {
+                            r.max_x_cm - WALL_T_CM - PILASTER_D_CM
+                        };
+                        super::plan::PlanRect {
+                            min_x_cm: x,
+                            min_z_cm: along,
+                            max_x_cm: x + PILASTER_D_CM,
+                            max_z_cm: along + PILASTER_W_CM,
+                        }
+                    };
+                    let near = foot.shrunk(-PILASTER_DOOR_CLEAR_CM);
+                    if doors.iter().any(|&(dx, dz)| near.contains_point(dx, dz))
+                        || keep_out.iter().any(|k| k.overlaps(&foot))
+                        || !s.covers_rect(&foot)
+                    {
+                        continue;
+                    }
+                    out.push(Wg3Solid {
+                        x_cm: foot.min_x_cm,
+                        z_cm: foot.min_z_cm,
+                        size_x_cm: foot.width_cm(),
+                        size_z_cm: foot.depth_cm(),
+                        bottom_y_cm: s.floor_y_cm,
+                        top_y_cm: s.floor_y_cm + clear,
+                        style,
+                    });
+                }
+            }
+        }
+    }
+    out
+}
 
 /// ¿Este macizo es un pilar de [`hall_pillars`]? Lo usan los tests para separarlos de tabiques y
 /// pretiles sin un campo de cable: un pilar es cuadrado con lado en el rango, o un brazo de cruz
@@ -861,6 +1019,9 @@ fn hall_pillars(
             let side = PILLAR_SIDE_MIN_CM
                 + ((u_side * (side_steps + 1) as f32) as i32).min(side_steps) * PILLAR_SIDE_STEP_CM;
             let cross = side >= PILLAR_CROSS_MIN_SIDE_CM && room.next01() < PILLAR_CROSS_CHANCE;
+            // ADR-105 enm. 10 — base y capitel, sólo en el pilar cuadrado. Sorteo al final de la
+            // secuencia de la sala: todo lo anterior sale donde salía.
+            let trim = !cross && room.next01() < PILLAR_TRIM_CHANCE;
             // De centro a centro: el lado más el paso libre, que es lo que de verdad se anda.
             let gap_max = if dense {
                 PILLAR_GAP_MAX_DENSE_CM
@@ -1011,6 +1172,33 @@ fn hall_pillars(
                             out.push(solid(x + inset, z, arm, side));
                         } else {
                             out.push(solid(x, z, side, side));
+                            if trim {
+                                // Zapata y capitel: la misma caja del pilar crecida
+                                // `PILLAR_TRIM_OUT_CM` por cada lado, de `PILLAR_TRIM_H_CM` de alto,
+                                // una en el suelo y otra bajo el techo. Rompen el prisma sin cambiar
+                                // lo que se anda: el paso entre pilares baja 60 cm y sigue por
+                                // encima del mínimo (500 − 60).
+                                let o = PILLAR_TRIM_OUT_CM;
+                                let big = side + 2 * o;
+                                out.push(Wg3Solid {
+                                    x_cm: x - o,
+                                    z_cm: z - o,
+                                    size_x_cm: big,
+                                    size_z_cm: big,
+                                    bottom_y_cm: s.floor_y_cm,
+                                    top_y_cm: s.floor_y_cm + PILLAR_TRIM_H_CM,
+                                    style: style_of(s.role),
+                                });
+                                out.push(Wg3Solid {
+                                    x_cm: x - o,
+                                    z_cm: z - o,
+                                    size_x_cm: big,
+                                    size_z_cm: big,
+                                    bottom_y_cm: s.floor_y_cm + clear - PILLAR_TRIM_H_CM,
+                                    top_y_cm: s.floor_y_cm + clear,
+                                    style: style_of(s.role),
+                                });
+                            }
                         }
                     }
                     px += step_x;

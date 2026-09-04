@@ -1444,6 +1444,109 @@ fn probe_sweep_per_region() {
     }
 }
 
+/// ADR-105 enmienda 10 — **toda pilastra abraza una pared y ninguna tapa una boca.**
+#[test]
+fn pilasters_hug_their_wall() {
+    use super::plan::PlanRect;
+
+    let m = real_manifest();
+    let seeds = validate::sweep_seeds(sweep_seed_count(3));
+    // `PILASTER_DOOR_CLEAR_CM`.
+    const DOOR_CLEAR_CM: i32 = 150;
+
+    let mut seen = 0usize;
+    for &seed in &seeds {
+        for &(rx, rz) in NEAR_REGIONS.iter() {
+            let region = Wg3RegionCoord { x: rx, z: rz };
+            let inside = validate::region_inside(&m, seed, region);
+            let doors: Vec<(i32, i32, i32)> = inside
+                .filled
+                .segments
+                .iter()
+                .flat_map(|seg| {
+                    let (x0, z0) = (seg.x_cm, seg.z_cm);
+                    let (x1, z1) = (x0 + seg.size_x_cm, z0 + seg.size_z_cm);
+                    seg.openings.iter().filter_map(move |o| {
+                        let side_len = if o.side.is_multiple_of(2) {
+                            seg.size_x_cm
+                        } else {
+                            seg.size_z_cm
+                        };
+                        if o.width_cm >= side_len - 1 {
+                            return None;
+                        }
+                        Some(match o.side % 4 {
+                            0 => (x0 + o.offset_cm, z1, seg.floor_y_cm),
+                            1 => (x1, z1 - o.offset_cm, seg.floor_y_cm),
+                            2 => (x1 - o.offset_cm, z0, seg.floor_y_cm),
+                            _ => (x0, z0 + o.offset_cm, seg.floor_y_cm),
+                        })
+                    })
+                })
+                .collect();
+            for p in inside
+                .filled
+                .solids
+                .iter()
+                .filter(|s| super::fill::is_pilaster(s))
+            {
+                seen += 1;
+                let rect = PlanRect {
+                    min_x_cm: p.x_cm,
+                    min_z_cm: p.z_cm,
+                    max_x_cm: p.x_cm + p.size_x_cm,
+                    max_z_cm: p.z_cm + p.size_z_cm,
+                };
+                // 1 — dentro de un espacio construido a su cota, y a un grosor de pared de una de
+                //     sus paredes: su cara trasera toca la cara interior del muro.
+                let host = inside.building.storeys.iter().find_map(|st| {
+                    st.built()
+                        .find(|(_, sp)| sp.floor_y_cm == p.bottom_y_cm && sp.covers_rect(&rect))
+                        .map(|(_, sp)| sp)
+                });
+                let Some(sp) = host else {
+                    panic!(
+                        "semilla {seed:#x} región ({rx},{rz}): pilastra en ({},{}) fuera de todo \
+                         espacio",
+                        p.x_cm, p.z_cm
+                    );
+                };
+                let r = sp.rect;
+                const T: i32 = 15;
+                let hugs = rect.min_x_cm == r.min_x_cm + T
+                    || rect.max_x_cm == r.max_x_cm - T
+                    || rect.min_z_cm == r.min_z_cm + T
+                    || rect.max_z_cm == r.max_z_cm - T;
+                assert!(
+                    hugs,
+                    "semilla {seed:#x} región ({rx},{rz}): pilastra en ({},{}) que no toca pared",
+                    p.x_cm, p.z_cm
+                );
+                // 2 — ninguna boca a menos del margen.
+                let near = rect.shrunk(-DOOR_CLEAR_CM);
+                for &(dx, dz, floor) in &doors {
+                    if floor != p.bottom_y_cm {
+                        continue;
+                    }
+                    assert!(
+                        !near.contains_point(dx, dz),
+                        "semilla {seed:#x} región ({rx},{rz}): pilastra en ({},{}) a menos de \
+                         {DOOR_CLEAR_CM} cm de la boca ({dx},{dz})",
+                        p.x_cm,
+                        p.z_cm
+                    );
+                }
+            }
+        }
+    }
+    assert!(
+        seen > 100,
+        "sólo {seen} pilastras en {} regiones: la gramática no está emitiendo",
+        seeds.len() * NEAR_REGIONS.len()
+    );
+    println!("[pilastras] {seen} pilastras revisadas");
+}
+
 /// ADR-105 enmienda 5 — **las invariantes duras de las vigas**, sobre varias semillas.
 ///
 /// Una viga cuelga del techo, así que lo que puede romper no es el paso sino la CABEZA y la SUBIDA:
