@@ -62,6 +62,9 @@ namespace BackroomsSurvival.WorldGen3
                 if (v.shape == Wg3Shape.Box)
                     AddBox(verts, normals, uvs, tris[SubMeshFor(v.kind)],
                         v.center - origin, v.size, v.yawDegrees);
+                else if (v.shape == Wg3Shape.Arch && v.kind == Wg3VolumeKind.Decoration)
+                    AddArchCasing(verts, normals, uvs, tris[SubMeshFor(v.kind)],
+                        v.center - origin, v.size);
                 else if (v.shape == Wg3Shape.Arch)
                     AddArch(verts, normals, uvs, tris[SubMeshFor(v.kind)],
                         v.center - origin, v.size);
@@ -304,6 +307,93 @@ namespace BackroomsSurvival.WorldGen3
                     centre + L(u, -hy, -t), centre + L(u, -hy, t), centre + L(u, hy, t), centre + L(u, hy, -t),
                     n, n, n, n,
                     new Vector2(-t, -hy), new Vector2(t, -hy), new Vector2(t, hy), new Vector2(-t, hy));
+            }
+        }
+
+        /// <summary>Espejo de `CASING_W_CM + CASING_IN_CM` del servidor: lo que la curva interior de
+        /// la arquivolta queda por dentro de la exterior, en cuerda y en flecha.</summary>
+        public const float ArchCasingInM = 0.10f;
+
+        /// <summary>
+        /// ADR-125 enm. 2 — la ARQUIVOLTA: el marco de una puerta en arco. Un anillo entre dos
+        /// medias elipses concéntricas —la exterior es la caja del volumen, la interior queda
+        /// <see cref="ArchCasingInM"/> por dentro en cuerda y flecha—, desde la línea de arranque
+        /// (cara inferior de la caja). Dos caras de pared en anillo, intradós interior y extradós
+        /// exterior con normal suave, y los dos testeros en el arranque. Decoración: no frena.
+        /// </summary>
+        private static void AddArchCasing(List<Vector3> verts, List<Vector3> normals, List<Vector2> uvs,
+            List<int> tris, Vector3 centre, Vector3 size)
+        {
+            bool alongX = size.x >= size.z;
+            float ro = (alongX ? size.x : size.z) * 0.5f;
+            float t = (alongX ? size.z : size.x) * 0.5f;
+            float hy = size.y * 0.5f;
+            float riseO = size.y;
+            float ri = ro - ArchCasingInM;
+            float riseI = Mathf.Max(riseO - ArchCasingInM, 0f);
+            if (ri <= 0f) return;
+            const int N = 16;
+            Vector3 L(float u, float y, float w) => alongX ? new Vector3(u, y, w) : new Vector3(w, y, u);
+
+            // Puntos de las dos curvas al mismo ángulo paramétrico, para que los quads del anillo
+            // no se crucen. `y` relativo al centro de la caja: el arranque está en −hy.
+            var po = new Vector2[N + 1];
+            var pi = new Vector2[N + 1];
+            var no = new Vector3[N + 1];
+            var ni = new Vector3[N + 1];
+            for (int i = 0; i <= N; i++)
+            {
+                float a = Mathf.PI * i / N; // de −ro (a = π) a +ro (a = 0), pasando por la clave
+                float c = -Mathf.Cos(a), s = Mathf.Sin(a);
+                po[i] = new Vector2(ro * c, -hy + riseO * s);
+                pi[i] = new Vector2(ri * c, -hy + riseI * s);
+                Vector2 go = new Vector2(c / ro, riseO > 0f ? s / riseO : 0f).normalized;
+                Vector2 gi = new Vector2(c / ri, riseI > 0f ? s / riseI : 0f).normalized;
+                no[i] = L(go.x, go.y, 0f).normalized;
+                ni[i] = L(-gi.x, -gi.y, 0f).normalized;
+            }
+
+            float arcI = 0f, arcO = 0f;
+            for (int i = 0; i < N; i++)
+            {
+                float segI = Vector2.Distance(pi[i], pi[i + 1]);
+                float segO = Vector2.Distance(po[i], po[i + 1]);
+                // Intradós (curva interior), mirando al hueco.
+                Quad(verts, normals, uvs, tris,
+                    centre + L(pi[i].x, pi[i].y, -t), centre + L(pi[i + 1].x, pi[i + 1].y, -t),
+                    centre + L(pi[i + 1].x, pi[i + 1].y, t), centre + L(pi[i].x, pi[i].y, t),
+                    ni[i], ni[i + 1], ni[i + 1], ni[i],
+                    new Vector2(arcI, 0f), new Vector2(arcI + segI, 0f), new Vector2(arcI + segI, 2f * t), new Vector2(arcI, 2f * t));
+                // Extradós (curva exterior), mirando afuera: sólo se ve la parte proud.
+                Quad(verts, normals, uvs, tris,
+                    centre + L(po[i].x, po[i].y, -t), centre + L(po[i + 1].x, po[i + 1].y, -t),
+                    centre + L(po[i + 1].x, po[i + 1].y, t), centre + L(po[i].x, po[i].y, t),
+                    no[i], no[i + 1], no[i + 1], no[i],
+                    new Vector2(arcO, 0f), new Vector2(arcO + segO, 0f), new Vector2(arcO + segO, 2f * t), new Vector2(arcO, 2f * t));
+                // Las dos caras de pared: anillo entre las curvas.
+                for (int side = -1; side <= 1; side += 2)
+                {
+                    float w = side * t;
+                    Vector3 n = L(0f, 0f, side);
+                    Quad(verts, normals, uvs, tris,
+                        centre + L(pi[i].x, pi[i].y, w), centre + L(pi[i + 1].x, pi[i + 1].y, w),
+                        centre + L(po[i + 1].x, po[i + 1].y, w), centre + L(po[i].x, po[i].y, w),
+                        n, n, n, n,
+                        pi[i], pi[i + 1], po[i + 1], po[i]);
+                }
+                arcI += segI;
+                arcO += segO;
+            }
+            // Testeros en el arranque: entre la curva interior y la exterior, a −hy.
+            for (int side = 0; side <= N; side += N)
+            {
+                float uo = po[side].x, ui = pi[side].x;
+                Vector3 n = Vector3.down;
+                Quad(verts, normals, uvs, tris,
+                    centre + L(ui, -hy, -t), centre + L(uo, -hy, -t),
+                    centre + L(uo, -hy, t), centre + L(ui, -hy, t),
+                    n, n, n, n,
+                    new Vector2(ui, -t), new Vector2(uo, -t), new Vector2(uo, t), new Vector2(ui, t));
             }
         }
 

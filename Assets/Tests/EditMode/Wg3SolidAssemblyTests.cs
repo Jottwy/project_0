@@ -202,6 +202,50 @@ namespace BackroomsSurvival.Tests.EditMode
             }
         }
 
+        /// <summary>ADR-125 enm. 2 — un macizo con el bit de decoración se dibuja en la submalla de
+        /// decoración, con el aspecto SIN el bit, y no lleva collider de ningún tipo. Y la
+        /// arquivolta ocupa su caja en envolvente.</summary>
+        [Test]
+        public void ADecorativeSolidDrawsAsTrimAndNeverCollides()
+        {
+            var parent = new GameObject("chunk");
+            GameObject jamb = null, archivolt = null;
+            try
+            {
+                var created = new System.Collections.Generic.List<Mesh>();
+                var msg = new Wg3SolidMsg
+                {
+                    xCm = 939, zCm = 983, sizeXCm = 10, sizeZCm = 34,
+                    bottomYCm = 0, topYCm = 191, style = (byte)(3 | Wg3SolidMsg.DecorBit),
+                };
+                Assert.IsTrue(msg.IsDecoration);
+                Assert.AreEqual(3, msg.BaseStyle);
+                jamb = Wg3SceneAssembler.AssembleSolid(msg, parent.transform, null, created, "jamb");
+                Assert.IsNull(jamb.GetComponent<Collider>(), "la decoración no frena");
+                Mesh mesh = jamb.GetComponent<MeshFilter>().sharedMesh;
+                Assert.AreEqual(0, mesh.GetTriangles(Wg3MeshBuilder.SubMesh.Structure).Length, "un marco no es estructura");
+                Assert.Greater(mesh.GetTriangles(Wg3MeshBuilder.SubMesh.Decoration).Length, 0, "un marco va en la submalla de decoración");
+
+                var arc = new Wg3SolidMsg
+                {
+                    xCm = 931, zCm = 983, sizeXCm = 138, sizeZCm = 34,
+                    bottomYCm = 190, topYCm = 239, style = (byte)(3 | Wg3SolidMsg.DecorBit), shape = Wg3Shape.Arch,
+                };
+                archivolt = Wg3SceneAssembler.AssembleSolid(arc, parent.transform, null, created, "archivolt");
+                Assert.IsNull(archivolt.GetComponent<Collider>());
+                Mesh am = archivolt.GetComponent<MeshFilter>().sharedMesh;
+                Assert.Less((am.bounds.size - new Vector3(1.38f, 0.49f, 0.34f)).magnitude, 0.01f,
+                    $"la arquivolta mide {am.bounds.size}, no 1,38×0,49×0,34");
+                foreach (Mesh m in created) Object.DestroyImmediate(m);
+            }
+            finally
+            {
+                if (jamb != null) Object.DestroyImmediate(jamb);
+                if (archivolt != null) Object.DestroyImmediate(archivolt);
+                Object.DestroyImmediate(parent);
+            }
+        }
+
         /// <summary>Wire 56 — las dos claves nuevas se leen por nombre; si el parser las saltara,
         /// todo pilar redondo llegaría como caja y sin giro, sin un solo error.</summary>
         [Test]

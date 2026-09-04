@@ -13630,3 +13630,52 @@ Valor nuevo del enum a los dos lados del cable en el mismo commit (`WIRE_SCHEMA_
   servido; `every_served_solid_is_well_formed…` exige que existan.
 - C# `ADoorArchLeavesTheOpeningFreeUnderItsKey`: envolvente, intradós a 2,30 en el centro, nada bajo
   1,90, collider cóncavo.
+
+---
+
+## ADR-125 — Enmienda 2: el MARCO de la puerta, y el bit de decoración en `style` (2026-09-04) — ACEPTADA (Joel: «camuflar la unión de las dos paredes»; eligió marco completo por el servidor)
+
+### Contexto
+
+Cada lado de una puerta es una pared distinta (15 cm cada una, espalda con espalda) con el tono de su
+papel, y el arco también va por lado: en la mocheta se ve el cambio de tono a mitad de grosor y arriba
+el arco de un lado contra el del otro. Lo que lo tapa en arquitectura es el marco: jambas y dintel
+(o arquivolta) en un tono único, a caballo de las dos paredes y proud en las dos salas.
+
+### D1 — `STYLE_DECOR_BIT` (0x80): un macizo que sólo se dibuja
+
+Bit alto de `style`. Con él, el servidor NO estampa (`add_solid` sale) y el cliente lo monta en la
+submalla de decoración con el aspecto sin el bit, sin collider de ningún tipo (como un rodapié). Sin
+este bit un marco es imposible: 2 cm proud tocan la celda vecina y el ráster conservador cierra
+50 cm a cada lado de la boca. Es el primer dato del canal de macizos que el servidor emite y no
+consume.
+
+### D2 — El marco: jambas y cabeza, una vez por puerta
+
+`door_casing`, desde `door_lintels`, para toda puerta con dintel cuyos dos lados están a la misma
+cota. Caja centrada en la línea de la puerta, de `2 × (WALL_T_CM + CASING_PROUD_CM)` = 34 de fondo;
+jambas de `CASING_W_CM` (9: ocho es barrote de rejilla y diez cornisa) que entran `CASING_IN_CM` (1)
+en la luz —para no ser coplanares con la mocheta— y suben hasta la cabeza. Cabeza: dintel plano
+bajo el paso, o con arco la **arquivolta**: un `SHAPE_ARCH` decorativo con cuerda y flecha las del
+arco más `CASING_W_CM`; el cliente le resta `CASING_W_CM + CASING_IN_CM` (`ArchCasingInM` 0,10) para
+la curva interior, que así queda 1 cm bajo el intradós del arco. Tono: el del lado `a`, para las dos
+caras.
+
+### D3 — Cliente: `AddArchCasing`
+
+Anillo entre dos medias elipses concéntricas al mismo ángulo paramétrico (para que los quads no se
+crucen): intradós y extradós con normal suave, dos caras de pared en anillo, testeros en el
+arranque. Decoración: sin collider.
+
+### D4 — Wire 57 → 58
+
+Semántica nueva del byte `style` a los dos lados en el mismo commit. La rampa de ADR-122 pasa a
+wire 59.
+
+### Verificaciones
+
+- Rust: la decoración no estampa (`round_solids_stamp_as_discs_not_boxes`: una jamba dentro de la luz
+  deja la puerta abierta); `every_solid_survives_into_the_raster` la salta y la cuenta;
+  `every_served_solid_is_well_formed…` exige que exista.
+- C# `ADecorativeSolidDrawsAsTrimAndNeverCollides`: sin collider, sólo submalla de decoración,
+  arquivolta con su envolvente.

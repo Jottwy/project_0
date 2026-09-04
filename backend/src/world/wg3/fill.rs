@@ -44,9 +44,9 @@ use super::plan::{
 use super::raster::CM_PER_M;
 use super::route::{self, Mouth, PlannedRoute, Rect, RouteSettings};
 use super::segment::{
-    Wg3Carve, Wg3Opening, Wg3Segment, Wg3Solid, CARVE_FLOOR_GUARD_CM, MAX_SEGMENT_M,
-    MIN_GENERATED_WIDTH_CM, SHAPE_ARCH, SHAPE_BOX, SHAPE_CYLINDER, SHAPE_HALF_CYLINDER,
-    SHAPE_OCTAGON, WALL_THICKNESS_M,
+    Wg3Carve, Wg3Opening, Wg3Segment, Wg3Solid, CARVE_FLOOR_GUARD_CM, CASING_IN_CM,
+    CASING_PROUD_CM, CASING_W_CM, MAX_SEGMENT_M, MIN_GENERATED_WIDTH_CM, SHAPE_ARCH, SHAPE_BOX,
+    SHAPE_CYLINDER, SHAPE_HALF_CYLINDER, SHAPE_OCTAGON, STYLE_DECOR_BIT, WALL_THICKNESS_M,
 };
 
 /// ADR-099 D3 — cuánto entra el vano a cada lado de la cara de contacto, en metros. Mismo número que
@@ -3941,8 +3941,119 @@ fn door_lintels(plan: &RegionPlan, by_piece: &[bool], seed: i32) -> Vec<Wg3Solid
                 });
             }
         }
+        // ADR-125 enm. 2 — EL MARCO, una vez por puerta y a caballo de las DOS paredes. Es lo que
+        // tapa la junta: cada lado es una pared distinta con su tono, y en la mocheta el cambio se
+        // ve a mitad de grosor. Jambas y dintel (o arquivolta) en el tono de UN lado, decorativos
+        // (sin ráster ni collider), 2 cm proud por sala y 1 cm dentro de la luz. Sólo si los dos
+        // suelos coinciden: con desnivel, una jamba de suelo a dintel no tiene un suelo.
+        if a.floor_y_cm == b.floor_y_cm {
+            if let Some(side) = wall_side(a, link.at_x_cm, link.at_z_cm) {
+                door_casing(
+                    &mut out,
+                    side,
+                    link.at_x_cm,
+                    link.at_z_cm,
+                    link.width_cm,
+                    a.floor_y_cm,
+                    low_top,
+                    arch,
+                    style_of(a.role) | STYLE_DECOR_BIT,
+                );
+            }
+        }
     }
     out
+}
+
+/// ADR-125 enm. 2 — el marco de una puerta: dos jambas y una cabeza, decorativos.
+///
+/// Todo centrado en la línea de la puerta (`at`), que es el plano entre las dos paredes: la caja
+/// cubre `WALL_T_CM` a cada lado más `CASING_PROUD_CM` proud por sala. Las jambas entran
+/// `CASING_IN_CM` en la luz y cubren `CASING_W_CM` sobre la pared; suben hasta la cabeza. La cabeza
+/// es un dintel plano de `CASING_W_CM` de alto bajo el paso, o —con arco— la ARQUIVOLTA: un
+/// `SHAPE_ARCH` decorativo cuya curva exterior es la del arco crecida `CASING_W_CM` en cuerda y
+/// flecha; el cliente le resta `CASING_W_CM + CASING_IN_CM` para la interior.
+#[allow(clippy::too_many_arguments)]
+fn door_casing(
+    out: &mut Vec<Wg3Solid>,
+    side: u8,
+    at_x_cm: i32,
+    at_z_cm: i32,
+    width_cm: i32,
+    floor_y_cm: i32,
+    low_top: i32,
+    arch: bool,
+    style: u8,
+) {
+    let along_x = side.is_multiple_of(2);
+    let depth = 2 * (WALL_T_CM + CASING_PROUD_CM);
+    let half = width_cm / 2;
+    // Cabeza: el paso (dintel) o el arranque del arco; la jamba llega hasta ahí más el solape.
+    let head_y = floor_y_cm
+        + if arch {
+            ARCH_DOOR_SPRING_CM
+        } else {
+            DOOR_LINTEL_CLEAR_CM
+        };
+    if head_y + CASING_W_CM > low_top {
+        return;
+    }
+    // Caja centrada en la línea de la puerta, `u` a lo largo de la pared, `v` a través.
+    let boxed = |u0: i32, u1: i32, y0: i32, y1: i32, shape: u8| -> Wg3Solid {
+        let (x_cm, z_cm, size_x_cm, size_z_cm) = if along_x {
+            (at_x_cm + u0, at_z_cm - depth / 2, u1 - u0, depth)
+        } else {
+            (at_x_cm - depth / 2, at_z_cm + u0, depth, u1 - u0)
+        };
+        Wg3Solid {
+            x_cm,
+            z_cm,
+            size_x_cm,
+            size_z_cm,
+            bottom_y_cm: y0,
+            top_y_cm: y1,
+            style,
+            yaw_deg: 0,
+            shape,
+        }
+    };
+    let inner = half - CASING_IN_CM;
+    let outer = half + CASING_W_CM;
+    // Jambas, de suelo a cabeza (solapando `CASING_IN_CM` con ella).
+    out.push(boxed(
+        -outer,
+        -inner,
+        floor_y_cm,
+        head_y + CASING_IN_CM,
+        SHAPE_BOX,
+    ));
+    out.push(boxed(
+        inner,
+        outer,
+        floor_y_cm,
+        head_y + CASING_IN_CM,
+        SHAPE_BOX,
+    ));
+    if arch {
+        // Arquivolta: cuerda y flecha exteriores = las del arco más el ancho del marco. La flecha
+        // del arco es del arranque a la clave (paso − clave).
+        let rise = DOOR_LINTEL_CLEAR_CM - ARCH_DOOR_SPRING_CM - super::segment::ARCH_KEY_CM;
+        out.push(boxed(
+            -outer,
+            outer,
+            head_y,
+            head_y + rise + CASING_W_CM,
+            SHAPE_ARCH,
+        ));
+    } else {
+        out.push(boxed(
+            -outer,
+            outer,
+            head_y - CASING_IN_CM,
+            head_y + CASING_W_CM,
+            SHAPE_BOX,
+        ));
+    }
 }
 
 /// Línea de arranque de un arco, sobre el suelo. Por encima de la cabeza (1,80 + escalón), así que

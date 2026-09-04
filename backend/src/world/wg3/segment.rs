@@ -187,6 +187,21 @@ pub const SHAPE_ARCH: u8 = 4;
 /// centro. El cliente lo refleja (`Wg3MeshBuilder.ArchKeyM`).
 pub const ARCH_KEY_CM: i32 = 10;
 
+/// ADR-125 enm. 2 — bit alto de `style`: el macizo es DECORACIÓN. Se dibuja y nada más: ni el
+/// ráster lo estampa ni el cliente le cuelga collider. Existe porque un marco de puerta que
+/// sobresale 2 cm de la pared cerraría media celda del ráster (50 cm) a cada lado de la boca.
+pub const STYLE_DECOR_BIT: u8 = 0x80;
+/// ADR-125 enm. 2 — ancho del marco (jambas y dintel), y del anillo de la arquivolta. Nueve y no
+/// ocho ni diez: ocho es un barrote de rejilla y diez una cornisa, y los tests distinguen por forma.
+pub const CASING_W_CM: i32 = 9;
+/// ADR-125 enm. 2 — cuánto sobresale el marco de la cara de la pared, por cada sala.
+pub const CASING_PROUD_CM: i32 = 2;
+/// ADR-125 enm. 2 — cuánto entra el marco en la luz de la boca: un centímetro, para que su cara
+/// interior no sea coplanar con la mocheta (z-fighting) y para que la arquivolta no comparta el
+/// intradós con el arco. El cliente lo refleja: la curva interior de la arquivolta es la exterior
+/// menos `CASING_W_CM + CASING_IN_CM` (`Wg3MeshBuilder.ArchCasingInM`).
+pub const CASING_IN_CM: i32 = 1;
+
 /// ADR-121 D4 — paso del sorteo de giros. Un giro arbitrario no se lee como intención.
 pub const YAW_STEP_DEG: i16 = 15;
 /// ADR-121 D4 — lado mínimo de un macizo GIRADO. Por debajo de la celda (50) la geometría cambia de
@@ -194,6 +209,11 @@ pub const YAW_STEP_DEG: i16 = 15;
 pub const ROTATED_SIDE_MIN_CM: i32 = 45;
 
 impl Wg3Solid {
+    /// ADR-125 enm. 2 — ¿es decoración? Ver [`STYLE_DECOR_BIT`].
+    pub fn is_decoration(&self) -> bool {
+        self.style & STYLE_DECOR_BIT != 0
+    }
+
     /// El centro de la huella, en metros. Es lo que decide de qué chunk es el macizo (ADR-105 D3).
     pub fn centre(&self) -> (f32, f32) {
         (

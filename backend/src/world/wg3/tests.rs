@@ -8519,7 +8519,9 @@ fn probe_dump_regions_json() {
                 let long = s.size_x_cm.max(s.size_z_cm);
                 let h = s.top_y_cm - s.bottom_y_cm;
                 let standing = floors.contains(&s.bottom_y_cm);
-                let (kind, new) = if s.shape == segment::SHAPE_ARCH {
+                let (kind, new) = if s.is_decoration() {
+                    ("marco", true)
+                } else if s.shape == segment::SHAPE_ARCH {
                     ("arco liso", true)
                 } else if fill::is_round_pilaster(s) {
                     ("media luna", true)
@@ -8706,6 +8708,7 @@ fn every_solid_survives_into_the_raster() {
     let mut beams = 0usize;
     let mut arches = 0usize;
     let mut smooth_arches = 0usize;
+    let mut casings = 0usize;
     let mut lows = 0usize;
 
     for (rx, rz) in AUDIT_REGIONS {
@@ -8740,6 +8743,12 @@ fn every_solid_survives_into_the_raster() {
                     // lo toca por el borde tiene su centro en el vecino.
                     let (bx0, bz0, bx1, bz1) = coord.bounds();
                     if cx_m < bx0 || cx_m >= bx1 || cz_m < bz0 || cz_m >= bz1 {
+                        continue;
+                    }
+                    // ADR-125 enm. 2 — la decoración no se estampa: un marco no está en el ráster
+                    // por definición.
+                    if s.is_decoration() {
+                        casings += 1;
                         continue;
                     }
                     // ADR-125 enm. 1 — el arco liso es hueco en su centro geométrico (ahí está
@@ -8842,7 +8851,7 @@ fn every_solid_survives_into_the_raster() {
     println!(
         "[macizo] {checked} verificados en el ráster: {parapets} pretiles, {pillars} pilares, \
          {aprons} faldones y dinteles, {beams} vigas, {arches} hiladas de arco, {smooth_arches} \
-         arcos lisos, {lows} medios muros"
+         arcos lisos, {lows} medios muros; {casings} piezas de marco fuera del ráster"
     );
 }
 
@@ -8855,6 +8864,7 @@ fn every_served_solid_is_well_formed_and_the_round_ones_exist() {
     let mut checked = 0usize;
     let mut by_shape = [0usize; 5];
     let mut rotated = 0usize;
+    let mut decorations = 0usize;
     for (rx, rz) in AUDIT_REGIONS {
         let region = Wg3RegionCoord { x: rx, z: rz };
         let inside = super::validate::region_inside(&m, SERVED_SEED, region);
@@ -8872,12 +8882,19 @@ fn every_served_solid_is_well_formed_and_the_round_ones_exist() {
             );
             checked += 1;
             by_shape[s.shape as usize] += 1;
+            if s.is_decoration() {
+                decorations += 1;
+            }
             if s.yaw_deg != 0 {
                 rotated += 1;
             }
         }
     }
     assert!(checked > 0, "ninguna región emitió un macizo");
+    assert!(
+        decorations > 0,
+        "ningún macizo decorativo: los marcos de puerta no se emiten"
+    );
     assert!(
         by_shape[1] > 0 && by_shape[2] > 0 && by_shape[3] > 0 && by_shape[4] > 0,
         "faltan formas: cajas {} cilindros {} medias lunas {} octógonos {} arcos {}",
@@ -9006,6 +9023,23 @@ fn round_solids_stamp_as_discs_not_boxes() {
     assert!(
         !arch.is_solid_at(10.0, 1.85, 10.05),
         "hay macizo bajo el arranque del arco"
+    );
+    // Y la DECORACIÓN no estampa nada: una jamba de marco de suelo a dintel dentro de la luz de
+    // la puerta deja la puerta abierta (ADR-125 enm. 2).
+    let casing = stamp(Wg3Solid {
+        x_cm: 939,
+        z_cm: 983,
+        size_x_cm: 10,
+        size_z_cm: 34,
+        bottom_y_cm: 0,
+        top_y_cm: 191,
+        style: 3 | segment::STYLE_DECOR_BIT,
+        yaw_deg: 0,
+        shape: segment::SHAPE_BOX,
+    });
+    assert!(
+        !casing.is_solid_at(9.44, 1.0, 10.0),
+        "una jamba decorativa se ha estampado: cierra la puerta"
     );
 
     // Y girada 90: la panza va hacia +x, la cara plana queda en x mínima.

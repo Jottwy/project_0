@@ -505,7 +505,9 @@ namespace BackroomsSurvival.WorldGen3
                     yawDegrees = solid.yawDeg,
                     // ADR-125 — la forma dentro de la huella.
                     shape = solid.shape,
-                    kind = Wg3VolumeKind.Pillar,
+                    // ADR-125 enm. 2 — un marco es decoración: submalla de decoración y sin
+                    // collider (`IsSolid` falso), igual que un rodapié.
+                    kind = solid.IsDecoration ? Wg3VolumeKind.Decoration : Wg3VolumeKind.Pillar,
                 }
             };
 
@@ -521,13 +523,18 @@ namespace BackroomsSurvival.WorldGen3
 
             go.AddComponent<MeshFilter>().sharedMesh = mesh;
             var renderer = go.AddComponent<MeshRenderer>();
-            Material[] mats = Wg3StyleMaterials.Resolve(materials, solid.style);
+            Material[] mats = Wg3StyleMaterials.Resolve(materials, solid.BaseStyle);
             if (mats != null) renderer.sharedMaterials = mats;
             // Un megapilar cruza el atrio de suelo a techo, así que lleva las dos plantas y se
             // ilumina desde las dos. Un pretil vive en una sola.
             renderer.renderingLayerMask = Wg3StoreyLayers.ForSurface(origin.y, sy);
 
-            if (solid.shape == Wg3Shape.Box)
+            if (solid.IsDecoration)
+            {
+                // Sin collider: es lo que permite que un marco sobresalga 2 cm de la pared sin
+                // cerrar media celda del ráster ni frenar al jugador contra la jamba.
+            }
+            else if (solid.shape == Wg3Shape.Box)
             {
                 AddColliders(go, volumes, origin);
             }

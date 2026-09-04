@@ -234,8 +234,15 @@ namespace BackroomsSurvival.Net
         public short yawDeg;
 
         /// <summary>ADR-125 (wire 56) — forma inscrita en la huella: 0 caja, 1 cilindro, 2 media
-        /// luna (cara plana en z mínima, panza hacia +z), 3 octógono. Ver <c>Wg3Shape</c>.</summary>
+        /// luna (cara plana en z mínima, panza hacia +z), 3 octógono, 4 arco. Ver <c>Wg3Shape</c>.</summary>
         public byte shape;
+
+        /// <summary>ADR-125 enm. 2 (wire 58) — bit alto de <c>style</c>: DECORACIÓN. Se dibuja en
+        /// la submalla de decoración y no lleva collider; el servidor tampoco lo rasteriza.</summary>
+        public const byte DecorBit = 0x80;
+        public bool IsDecoration => (style & DecorBit) != 0;
+        /// <summary>El aspecto sin el bit: lo que consume <c>Wg3StyleMaterials.Resolve</c>.</summary>
+        public byte BaseStyle => (byte)(style & ~DecorBit);
 
         public static Wg3SolidMsg Parse(MsgPackReader r)
         {

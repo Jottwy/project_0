@@ -174,6 +174,10 @@ impl Wg3RasterBuilder {
     /// R6 prohíbe. Conservador como `add_box` —toda celda que el disco TOQUE es maciza— y por el
     /// mismo motivo.
     pub fn add_solid(&mut self, s: &Wg3Solid) {
+        // ADR-125 enm. 2 — la decoración no frena: no se estampa.
+        if s.is_decoration() {
+            return;
+        }
         let b = segment::solid_box(s);
         if s.shape == SHAPE_BOX {
             self.add_box(&b);
