@@ -12866,3 +12866,55 @@ Ni rampas curvas ni helicoidales, ni cabeceo en `Wg3Volume`. Si algún día hace
 - `validate_sweep` 27 regiones: mancha mayor; test de que toda rampa emitida es navegable de abajo
   arriba y de arriba abajo por `wg3::nav` (`floors_at` ofrece las dos cotas por celda).
 - Playtest en `WorldGen3Live`: subir y bajar sin tirones.
+
+---
+
+## ADR-105 — Enmienda 5: el relieve del techo, vigas colgadas del forjado (2026-09-04) — ACEPTADA (implementada y medida)
+
+### Contexto
+
+El techo plano a altura constante es, con el eje único, el delator más fuerte de que el mundo es una
+planta extruida (análisis externo contrastado por Joel el 2026-09-04, y STATE 2026-09-03 §6: «el
+relieve de techo sigue sin hacerse»). `height_cm` ya varía por espacio desde esta madrugada (commits
+`e19a9891`, `691cf81b`, `6b4b7877`), pero DENTRO del espacio el techo seguía siendo una losa lisa.
+Segundo punto del Bloque A aprobado por Joel.
+
+### D1 — Una viga es un MACIZO que cuelga de la losa, y por eso sale sin wire
+
+`Wg3Solid` de `BEAM_T_CM` (40) de ancho y `BEAM_DROP_CM` (40) de caída, desde la cara inferior de la
+losa de techo. No toca el suelo: el ráster mide hueco libre por columna (`headroom_above_floor`) y un
+cuerpo de 1,80 pasa bajo 2,60 sin enterarse. Cuarenta y no 15/20/30 porque los tests distinguen los
+macizos por su forma y una viga necesita la suya.
+
+### D2 — Dos ritmos y un solo caso
+
+Vigas cruzando el eje CORTO de cada parte de la huella, repartidas a partes iguales como los pilares
+(enm. 2 D3), con paso sorteado por sala: `BEAM_PITCH_CM` 350–500, y `BEAM_PITCH_DENSE_CM` 250–350 en
+zona DENSA o ANÓMALA del campo. `BEAM_GRID_CHANCE` 0,30 las pone también en el otro eje: casetones.
+`BEAM_ROOM_CHANCE` 0,55: un techo liso al lado de uno con vigas es lo que hace que el segundo
+signifique algo. De pared a pared desde la cara interior del muro (`WALL_T_CM`), no desde la línea
+del plan.
+
+### D3 — Dónde NO cuelga nada
+
+Bajo un techo de menos de `BEAM_MIN_CLEAR_CM` (300: quedarían 2,60), en atrios, escaleras y hundidos,
+en espacios de menos de 40 m² y en los resueltos con pieza del catálogo. Cruzando la boca de un pozo
+que ARRANCA en la planta —cerraría la subida— o bajo un candidato a agujero de forjado, propio o de la
+planta de arriba (enm. 4 D5), la viga se RECORTA, no se pierde. Trozos por debajo de 1 m se tiran.
+
+### D4 — Los tests aprenden una cuarta forma
+
+`every_solid_survives_into_the_raster` clasifica «cuelga» (forma de viga, o sin materia 6 cm bajo su
+cara inferior) y exige que existan. Test nuevo `beams_hang_where_the_grammar_says`, 3 semillas × 9
+regiones: toda viga cuelga de UN espacio construido a ≥ 2,60 m de su suelo y ninguna cruza la boca de
+un pozo.
+
+### Verificaciones
+
+- `cargo test --release --bin backrooms_server world::wg3` **148/148**; clippy y fmt limpios.
+- **3 965 vigas en 27 regiones** (~147 por región); **536 verificadas en el ráster** de las cuatro de
+  referencia, 9 de ellas apoyando sobre una isla o un pilar.
+- **Barrido de 27 regiones**: mancha mayor 99,6 %, 1,3 islas, nav 100 %, cotas pisables 117 613 →
+  117 616. **El techo no cuesta suelo.** 8 agujeros que bajan una planta, sin cambio.
+- **Sin cambio de wire** (55), sin tocar el cliente. Las vigas se pintan con el material de estructura
+  del papel de su sala (`style_of`), igual que todo macizo.
