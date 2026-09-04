@@ -1465,6 +1465,25 @@ const OCCLUDER_DOOR_CLEAR_CM: i32 = 350;
 /// Margen contra la pared paralela, en centímetros: lo que queda de sala al otro lado.
 const OCCLUDER_WALL_MARGIN_CM: i32 = 250;
 
+/// **Separación entre un vano y la pantalla que lo sombrea**, mínimo y máximo, en centímetros.
+///
+/// Es el ancho del canal que queda entre la pared del vano y la pantalla: por ahí se entra y por ahí
+/// se sale hacia el extremo suelto. El encargo pide 120 cm de paso; el suelo aquí es 250 por lo
+/// mismo que `OCCLUDER_CLEAR_CM` — 120 es el mínimo del cuerpo, no el de una entrada por la que
+/// además se cruza a oscuras.
+const OCC_SHADOW_OFFSET_MIN_CM: i32 = 250;
+const OCC_SHADOW_OFFSET_MAX_CM: i32 = 500;
+
+/// Cuánto tiene que pasarse la pantalla del centro del vano para taparlo de verdad, en centímetros.
+///
+/// Medio vano son 120; con 150 la pantalla sobresale por el lado por el que se rodea, así que la
+/// recta que entra por el vano no encuentra sala al otro lado sino canto de pantalla.
+const OCC_SHADOW_OVERHANG_CM: i32 = 150;
+
+/// Lo que tiene que quedar de sala MÁS ALLÁ de la pantalla para que ponerla tenga sentido, en
+/// centímetros. Por debajo de esto la pantalla no sombrea un espacio: lo tapia.
+const OCC_SHADOW_ROOM_BEYOND_CM: i32 = 250;
+
 /// Tope de oclusores por espacio. Un espacio con más obra que esto no es una sala con oclusores:
 /// es un laberinto, y el encargo pide romper la convexidad, no cerrar el sitio.
 const OCCLUDER_MAX_PER_SPACE: i32 = 6;
@@ -1526,6 +1545,103 @@ const SALT_OCCLUDER_ONE: u32 = 0xB1_11_A0_04;
 /// de ese mismo centro. El índice sólo separa un oclusor del siguiente DENTRO del mismo espacio. No
 /// hay ningún contador global: dos regiones vecinas producen el mismo oclusor en el mismo sitio sin
 /// hablarse.
+/// Por qué borde de `r` cae un punto de su perímetro. Mismos números que `plan::side_of_point_in`:
+/// 0 = z máxima, 1 = x máxima, 2 = z mínima, 3 = x mínima. `None` si no cae en ninguno.
+fn side_of_door_on(r: &super::plan::PlanRect, door: (i32, i32)) -> Option<u8> {
+    const EPS: i32 = 2;
+    let (x, z) = door;
+    if (r.max_z_cm - z).abs() <= EPS {
+        return Some(0);
+    }
+    if (r.max_x_cm - x).abs() <= EPS {
+        return Some(1);
+    }
+    if (r.min_z_cm - z).abs() <= EPS {
+        return Some(2);
+    }
+    if (r.min_x_cm - x).abs() <= EPS {
+        return Some(3);
+    }
+    None
+}
+
+/// **La pantalla que sombrea un vano**: un divisor anclado a una pared lateral, plantado a unos
+/// metros por dentro del vano y paralelo a la pared que lo aloja.
+///
+/// # Por qué ésta y no una repartida por la sala
+///
+/// Lo que llena la isovista de un punto cualquiera no es la sala en la que está: es lo que se ve
+/// POR LOS VANOS de las salas de al lado. La medida de `layout_metrics_occ` lo dice sin discutirlo
+/// —las celdas pisables sólo bajaron un 0,8 %, o sea que la obra repartida apenas tapa suelo, y la
+/// isovista mediana se quedó en 227 m²—. Una pantalla delante del vano corta esa recta en su único
+/// cuello: el hueco por el que la sala de al lado entra en la cuenta.
+///
+/// # Qué devuelve, y cómo no corta el paso
+///
+/// `(across_x, at, desde, hasta)` en las mismas coordenadas que usa el resto de la pasada. La
+/// pantalla nace en la pared lateral MÁS CERCANA al vano y muere en el aire tras pasarse
+/// [`OCC_SHADOW_OVERHANG_CM`] del centro del hueco: se entra, se topa uno con ella y se rodea por su
+/// extremo suelto, que deja [`OCCLUDER_CLEAR_CM`] hasta la pared de enfrente. El canal entre el vano
+/// y la pantalla mide [`OCC_SHADOW_OFFSET_MIN_CM`] como poco.
+///
+/// `None` cuando la sala no da para ello: sin sitio más allá de la pantalla, sin largo mínimo, o
+/// con la pantalla tan larga que ya no dejaría por dónde rodearla.
+fn shadow_baffle(
+    host: &super::plan::PlanRect,
+    side: u8,
+    door: (i32, i32),
+    offset_cm: i32,
+) -> Option<(bool, i32, i32, i32)> {
+    // El eje sobre el que CORRE la pantalla es el de la pared del vano; `across_x` es la convención
+    // del resto de la pasada: cierto = la pantalla corre en Z y su grosor va en X.
+    let across_x = side == 1 || side == 3;
+    let (depth, at) = match side {
+        0 => (host.depth_cm(), host.max_z_cm - offset_cm - OCCLUDER_T_CM),
+        2 => (host.depth_cm(), host.min_z_cm + offset_cm),
+        1 => (host.width_cm(), host.max_x_cm - offset_cm - OCCLUDER_T_CM),
+        _ => (host.width_cm(), host.min_x_cm + offset_cm),
+    };
+    if depth - offset_cm - OCCLUDER_T_CM < OCC_SHADOW_ROOM_BEYOND_CM {
+        return None;
+    }
+    let (lo, hi, dc) = if across_x {
+        (host.min_z_cm, host.max_z_cm, door.1)
+    } else {
+        (host.min_x_cm, host.max_x_cm, door.0)
+    };
+    if dc <= lo || dc >= hi {
+        return None;
+    }
+    let room = hi - lo;
+    // Ancla en la pared lateral más cercana al vano: es la que deja la pantalla más corta, o sea la
+    // que menos paso se come para el mismo sombreado.
+    let from_lo = dc + OCC_SHADOW_OVERHANG_CM - lo;
+    let from_hi = hi - (dc - OCC_SHADOW_OVERHANG_CM);
+    let anchor_lo = from_lo <= from_hi;
+    let want = if anchor_lo { from_lo } else { from_hi };
+    let len = want.min(room - OCCLUDER_CLEAR_CM).min(OCCLUDER_MAX_LEN_CM);
+    if len < OCCLUDER_MIN_LEN_CM {
+        return None;
+    }
+    let (from, to) = if anchor_lo {
+        (lo, lo + len)
+    } else {
+        (hi - len, hi)
+    };
+    // Y tras el recorte tiene que SEGUIR tapando el vano: media hoja de puerta pasada del centro. Si
+    // el recorte se la comió, esta pantalla no sombrea nada y no se pone.
+    let half_leaf = super::plan::DOORWAY_CM / 2;
+    let covers = if anchor_lo {
+        to >= dc + half_leaf
+    } else {
+        from <= dc - half_leaf
+    };
+    if !covers {
+        return None;
+    }
+    Some((across_x, at, from, to))
+}
+
 fn interior_occluders(
     building: &RegionBuilding,
     manifest: &Wg3Manifest,
@@ -1616,6 +1732,12 @@ fn interior_occluders(
                 )
                 .collect();
 
+            // **El orden de los vanos es el del MUNDO, no el del plan.** Se ordena por coordenada
+            // para que dos regiones vecinas sombreen los mismos huecos aunque el plan las haya
+            // enumerado distinto: el índice `k` sólo puede significar algo si la lista es estable.
+            let mut shaded = doors.clone();
+            shaded.sort_unstable();
+
             let clear = clear_height_cm(s);
             let style = style_of(s.role);
             // El agujero de forjado del centro, que `hole_carves` estampa siempre centrado: un
@@ -1645,6 +1767,26 @@ fn interior_occluders(
                     host.centre_m().1,
                     SALT_OCCLUDER_ONE,
                 );
+
+                // **LOS VANOS PRIMERO.** Mientras queden vanos de este espacio sin sombrear, el
+                // oclusor va delante de uno; sólo cuando se acaban se reparte por la sala con la
+                // gramática de siempre. Es el cambio de criterio entero: lo que llena una isovista
+                // no es la sala en la que se está, sino lo que se ve por los huecos.
+                let target = shaded.get(k).copied();
+                let offset = OCC_SHADOW_OFFSET_MIN_CM
+                    + (one.next01() * (OCC_SHADOW_OFFSET_MAX_CM - OCC_SHADOW_OFFSET_MIN_CM) as f32)
+                        as i32;
+                // **Y la pantalla se planta en la parte que TIENE el vano, no en la que le tocaba
+                // por turno.** Sobre una huella compuesta, `hosts[k % n]` rota entre los brazos de
+                // la L y el vano casi nunca cae en el que toca: con el turno salían 525 vanos
+                // sombreados de 2598, o sea que cuatro de cada cinco pantallas se caían por buscar
+                // la puerta en el brazo equivocado y acababan de oclusor repartido.
+                let shadow = target.and_then(|d| {
+                    let part = hosts.iter().find(|p| side_of_door_on(p, d).is_some())?;
+                    let side = side_of_door_on(part, d)?;
+                    shadow_baffle(part, side, d, offset)
+                });
+
                 let kind = one.next01();
                 let across_x = one.next01() < 0.5;
                 // `span` es el vano que el oclusor cruzaría de lado a lado; `room_side` el
@@ -1713,7 +1855,23 @@ fn interior_occluders(
                     (a, a + OCCLUDER_PILLAR_CM, OCCLUDER_PILLAR_CM)
                 };
 
-                let is_spur = kind < OCCLUDER_SPUR_BELOW;
+                // Y si había pantalla, manda ella: la tirada de arriba sólo sirvió para el reparto
+                // de tipos del camino alternativo.
+                let (across_x, at, run_from, run_to, thickness_along, is_spur, screen) =
+                    match shadow {
+                        Some((sx, sat, from, to)) => {
+                            (sx, sat, from, to, OCCLUDER_T_CM, true, false)
+                        }
+                        None => (
+                            across_x,
+                            at,
+                            run_from,
+                            run_to,
+                            thickness_along,
+                            kind < OCCLUDER_SPUR_BELOW,
+                            (OCCLUDER_SPUR_BELOW..OCCLUDER_HALFWALL_BELOW).contains(&kind),
+                        ),
+                    };
                 let foot = if across_x {
                     super::plan::PlanRect {
                         min_x_cm: at,
@@ -1756,8 +1914,14 @@ fn interior_occluders(
                     || existing
                         .iter()
                         .any(|e| e.shrunk(-OCCLUDER_CLEAR_CM).overlaps(&foot))
+                    // **La puerta que se sombrea es la excepción, y es el sentido de la pasada.**
+                    // La pantalla se planta justo delante de ella; lo que la mantiene practicable no
+                    // es la distancia, es el canal de `OCC_SHADOW_OFFSET_MIN_CM` que le queda por
+                    // delante y el extremo suelto por el que se rodea. Las DEMÁS puertas se siguen
+                    // esquivando enteras.
                     || doors
                         .iter()
+                        .filter(|&&d| shadow.is_none() || Some(d) != target)
                         .any(|&(dx, dz)| near_door.contains_point(dx, dz))
                     || taken
                         .iter()
@@ -1767,7 +1931,9 @@ fn interior_occluders(
                 }
                 mine.push(foot);
 
-                let top = if (OCCLUDER_SPUR_BELOW..OCCLUDER_HALFWALL_BELOW).contains(&kind) {
+                // Una pantalla de vano nunca es media pared: lo que corta es la recta que entra
+                // por el hueco, y por encima de una media pared se sigue viendo la sala entera.
+                let top = if screen {
                     s.floor_y_cm + OCCLUDER_HALFWALL_H_CM.min(clear)
                 } else {
                     s.floor_y_cm + clear
@@ -3060,6 +3226,68 @@ mod occluder_tests {
                 }
             }
         }
+    }
+
+    /// **La medida del cambio de criterio**: cuántos vanos de los que pueden llevar pantalla la
+    /// llevan. Sin esto, la pasada podría no sombrear un solo hueco y los otros tres tests seguirían
+    /// verdes — miden que lo que se pone está bien puesto, no que se ponga delante de un vano.
+    #[test]
+    fn doors_of_eligible_spaces_get_shaded() {
+        let m = manifest();
+        let mut doors = 0usize;
+        let mut shaded = 0usize;
+        for seed in 1..=12 {
+            let b = plan_building(seed, BOUNDS, &[], STOREYS);
+            let f = fill_building_with(&b, &m, OCCLUDER_DENSITY);
+            let mine = ours(&f);
+            for st in &b.storeys {
+                for (i, sp) in st.built() {
+                    if occluder_area_per_one_m2(sp.role).is_none()
+                        || sp.area_m2() < OCCLUDER_MIN_AREA_M2
+                    {
+                        continue;
+                    }
+                    for l in st.links.iter().filter(|l| l.a == i || l.b == i) {
+                        let (dx, dz) = (l.at_x_cm, l.at_z_cm);
+                        doors += 1;
+                        // Una pantalla del vano: a la distancia del canal, paralela a su pared y
+                        // cubriendo su coordenada lateral.
+                        let hit = mine.iter().any(|o| {
+                            if o.bottom_y_cm != sp.floor_y_cm {
+                                return false;
+                            }
+                            let (x0, z0) = (o.x_cm, o.z_cm);
+                            let (x1, z1) = (o.x_cm + o.size_x_cm, o.z_cm + o.size_z_cm);
+                            let band = OCC_SHADOW_OFFSET_MIN_CM
+                                ..=(OCC_SHADOW_OFFSET_MAX_CM + OCCLUDER_T_CM);
+                            let along_x = o.size_x_cm > o.size_z_cm;
+                            if along_x {
+                                let d = (z0 - dz).abs().min((z1 - dz).abs());
+                                band.contains(&d) && x0 - 120 <= dx && dx <= x1 + 120
+                            } else {
+                                let d = (x0 - dx).abs().min((x1 - dx).abs());
+                                band.contains(&d) && z0 - 120 <= dz && dz <= z1 + 120
+                            }
+                        });
+                        if hit {
+                            shaded += 1;
+                        }
+                    }
+                }
+            }
+        }
+        println!("[occ] vanos {doors}, sombreados {shaded}");
+        assert!(doors > 0, "no hubo vanos que medir");
+        // **El listón es la sexta parte, y el número medido es uno de cada cinco (534 de 2598).**
+        // No llega a todos por dos topes que esta fase no toca: la densidad por papel decide cuántos
+        // oclusores caben en el espacio —una oficina de 100 m² se lleva tres, y puede tener cinco
+        // vanos— y la mitad de los intentos se caen contra la esquiva de las OTRAS puertas y de la
+        // masa que ya hay. Lo que este test guarda es que el criterio siga siendo «los vanos
+        // primero»: antes de esta fase, los vanos sombreados eran cero.
+        assert!(
+            shaded * 6 >= doors,
+            "sólo {shaded} de {doors} vanos llevan pantalla"
+        );
     }
 
     #[test]
