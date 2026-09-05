@@ -43,6 +43,31 @@ en pantalla el `layer` y el `zone_kind` del chunk donde está el jugador.
 Ojo: `PoiDebugHud` **sí** está compilado en un build de release. Su `#if` solo cambia el
 valor por defecto de `enablePoiDebugHud`; la clase existe, apagada.
 
+### El compile-check de C# NO funciona en un worktree recién creado
+
+`tools/dev/CompileCheckClient.sh` saca sus referencias de los `*.csproj` y de
+`Library/ScriptAssemblies/`, y **las dos cosas las genera Unity, están en `.gitignore` y existen
+sólo en el clon principal** (`J:\Unity\BackroomsSurvivalMMO`). En un worktree recién creado el
+script no falla por el código: falla con `MISSING csproj` para las cuatro asambleas, y con él falla
+el gate de commit de cualquier cambio en `Assets/**.cs`.
+
+Se arregla una vez por worktree, y no ensucia el repositorio porque todo lo que se copia está
+ignorado:
+
+```bash
+cp J:/Unity/BackroomsSurvivalMMO/*.csproj .
+cmd //c mklink /J Library "J:\Unity\BackroomsSurvivalMMO\Library"
+cp -n J:/Unity/BackroomsSurvivalMMO/Assets/Editor/_Claude*.cs* Assets/Editor/
+```
+
+Los `HintPath` del `.csproj` apuntan al Unity instalado (`C:\UnityInstall\…`), que es común, así
+que sólo hacía falta la unión para `Library`. La tercera línea es porque los dos runners
+`_Claude*` **no están trackeados**: el `.csproj` los lista y sin ellos salen dos `CS2001`.
+
+Y lo importante: **las fuentes siguen saliendo de este worktree**, no del principal — verificado
+metiendo un error a propósito en `PoiDebugHud.cs` y viendo el `CS0029` con su `fichero(línea)` de
+aquí. Si esto se montase al revés, el gate daría verde sobre el código de otro sitio.
+
 ## Playtest
 
 ```
