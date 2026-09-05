@@ -11,8 +11,10 @@ namespace BackroomsSurvival.Net
     /// (<see cref="ChunkLootManager"/>) resolves item NAMES → STP definition ids and normalized
     /// (u,v) → world position via the walkable raycast; that part needs Play.
     ///
-    /// The hash mirrors <c>ChunkRenderer.Level0Profile.FromSeedAndPos</c> (the project's existing
-    /// seed+coord mixing pattern) so per-chunk determinism is consistent with the renderer.
+    /// La mezcla semilla+coordenadas está en <see cref="ChunkCoordHash.Mix"/>. Hasta el 2026-09-05
+    /// este comentario decía que «espejaba» <c>ChunkRenderer.Level0Profile.FromSeedAndPos</c>: ese
+    /// renderer estaba inerte y se borró, y además las dos copias NO daban lo mismo en coordenadas
+    /// negativas (una extendía el signo y la otra no). Ver `ChunkCoordHash`.
     ///
     /// POOL TABLES nacieron copiadas VERBATIM de StpItemSpawner / StpCarryableSpawner y YA NO LO
     /// SON: el recorte de catálogo vendor (2026-08-10) borró AmmoPool y adelgazó WeaponPool AQUÍ y
@@ -177,20 +179,14 @@ namespace BackroomsSurvival.Net
         }
 
         /// <summary>
-        /// Seed+coord mix (mirror of ChunkRenderer.Level0Profile.FromSeedAndPos), XORed with a
-        /// per-channel salt so different loot channels of the same chunk are independent.
+        /// Mezcla semilla+coordenadas, con una sal por canal para que dos canales de loot del mismo
+        /// chunk sean independientes. La aritmética vive en <see cref="ChunkCoordHash.Mix"/> desde
+        /// el 2026-09-05; aquí estaba copiada, y el comentario decía que espejaba
+        /// <c>ChunkRenderer.Level0Profile.FromSeedAndPos</c>, que ya no existe. Los bits que salen
+        /// son los mismos: se movió la copia que sobrevive, no se eligió entre las dos.
         /// </summary>
         public static ulong Hash(long worldSeed, int cx, int cz, ulong salt)
-        {
-            ulong h = (ulong)worldSeed ^ 0x9E3779B97F4A7C15UL ^ salt;
-            h += ((ulong)(uint)cx) * 0xFF51AFD7ED558CCDUL;
-            h ^= h >> 33;
-            h += ((ulong)(uint)cz) * 0xC4CEB9FE1A85EC53UL;
-            h ^= h >> 29;
-            h *= 0x9E3779B185EBCA87UL;
-            h ^= h >> 32;
-            return h;
-        }
+            => ChunkCoordHash.Mix(worldSeed, cx, cz, salt);
 
         /// <summary>
         /// 13 first-pass profiles, one per ZONE_* (0=Normal..12=Office, mirrors
