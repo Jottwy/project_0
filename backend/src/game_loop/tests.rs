@@ -13027,6 +13027,7 @@ async fn every_creature_is_physically_on_the_storey_it_was_assigned() {
 
     let mut comprobadas = 0usize;
     let mut mal = Vec::new();
+    let mut plantas = 0usize;
     for storey in 0..5i32 {
         let Some(here) = a_spot_on_storey(&mut worlds, &m, (0, 0), storey) else {
             continue;
@@ -13045,6 +13046,7 @@ async fn every_creature_is_physically_on_the_storey_it_was_assigned() {
                 world_seed: AUDIT_SEED,
             }),
         );
+        let antes = comprobadas;
         for mv in &driver.movers {
             let Some(peer) = net.peers.get(&mv.id) else {
                 continue;
@@ -13058,10 +13060,17 @@ async fn every_creature_is_physically_on_the_storey_it_was_assigned() {
                 mal.push((mv.layer, fisico, peer.position[1]));
             }
         }
+        if comprobadas > antes {
+            plantas += 1;
+        }
     }
+    // **Cobertura de PLANTAS, que es lo que la prueba dice medir.** El tope en un número redondo
+    // de criaturas era frágil por construcción: cualquier cambio de geometría mueve el reparto y
+    // ésta se cayó por UNA —20 contra «más de 20»— al subir los techos, sin que la cobertura real
+    // cambiara. Lo que hace falta para que el caso exista es que haya bichos en más de una planta.
     assert!(
-        comprobadas > 20,
-        "solo {comprobadas} criaturas comprobadas: la muestra no cubre el caso"
+        plantas >= 2 && comprobadas >= 20,
+        "muestra insuficiente: {comprobadas} criaturas en {plantas} plantas"
     );
     assert!(
         mal.is_empty(),

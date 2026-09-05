@@ -1057,36 +1057,50 @@ fn nav_reach(
         );
     }
 
-    // Inundar desde la celda pisable más cercana al centro del chunk, que es donde caería el
-    // reparto. Se coge la más cercana y no la primera: la primera es una esquina.
-    let (cx0, cz0) = nav::cell_of(min_x + 75.0, min_z + 75.0);
-    let start = seeds
-        .iter()
-        .min_by_key(|(x, z, _)| (x - cx0).abs() + (z - cz0).abs())
-        .copied()
-        .expect("hay al menos una");
-    let mut seen: HashSet<(i32, i32, i32)> = HashSet::new();
-    let mut stack = vec![start];
-    seen.insert(start);
-    let mut reached: HashSet<(i32, i32)> = HashSet::new();
-    while let Some((cx, cz, cf)) = stack.pop() {
-        reached.insert((cx, cz));
-        let floor = cf as f32 / 100.0;
-        for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
-            let nc = (cx + dx, cz + dz);
-            let (nx, nz) = nav::cell_centre(nc.0, nc.1);
-            for nf in nav::floors_at(&cache, nx, nz, floor) {
-                if ((nf - floor).abs() * 100.0) as i32 > MAX_WALK_STEP_CM {
-                    continue;
-                }
-                let k = (nc.0, nc.1, (nf * 100.0).round() as i32);
-                if seen.insert(k) {
-                    stack.push(k);
+    // **La componente MAYOR, no la que toque al centro del chunk.**
+    //
+    // Antes se inundaba desde la celda pisable más cercana al centro. Eso mide el sitio donde caiga
+    // esa celda, no el edificio: si el reparto la pone dentro de un armario de cuatro celdas, la
+    // cifra sale del 8 % con el resto de la planta entera comunicada. Y es sensible de una forma que
+    // no dice nada — basta que la geometría se mueva un palmo para que la celda del centro cambie de
+    // sitio y la misma región pase del 100 % al 9 %. Medido al subir los techos: cuatro regiones de
+    // 270 saltaron así, con la mancha de suelo al 99,9 % en todas.
+    //
+    // Lo que la prueba quiere saber —«¿pueden las criaturas que nacen en la otra mitad llegar al
+    // jugador?»— es si el grafo de nav es UNA pieza, y eso es la componente mayor. Es además la misma
+    // medida que ya usa el suelo (`mancha mayor`), así que las dos cifras vuelven a ser comparables.
+    let mut visited: HashSet<(i32, i32, i32)> = HashSet::new();
+    let mut best: HashSet<(i32, i32)> = HashSet::new();
+    for &seed_cell in &seeds {
+        if visited.contains(&seed_cell) {
+            continue;
+        }
+        let mut stack = vec![seed_cell];
+        visited.insert(seed_cell);
+        let mut reached: HashSet<(i32, i32)> = HashSet::new();
+        while let Some((cx, cz, cf)) = stack.pop() {
+            reached.insert((cx, cz));
+            let floor = cf as f32 / 100.0;
+            for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let nc = (cx + dx, cz + dz);
+                let (nx, nz) = nav::cell_centre(nc.0, nc.1);
+                for nf in nav::floors_at(&cache, nx, nz, floor) {
+                    if ((nf - floor).abs() * 100.0) as i32 > MAX_WALK_STEP_CM {
+                        continue;
+                    }
+                    let k = (nc.0, nc.1, (nf * 100.0).round() as i32);
+                    if visited.insert(k) {
+                        stack.push(k);
+                    }
                 }
             }
         }
+        let mine = reached.iter().filter(|c| walkable.contains(c)).count();
+        if mine > best.iter().filter(|c| walkable.contains(c)).count() {
+            best = reached;
+        }
     }
-    let inside = reached.iter().filter(|c| walkable.contains(c)).count();
+    let inside = best.iter().filter(|c| walkable.contains(c)).count();
     let frac = inside as f32 / walkable.len() as f32;
     let mut problems = Vec::new();
     // El grafo de nav puede salir del chunk central (la ventana es la región precalentada), así

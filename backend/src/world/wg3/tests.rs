@@ -12013,3 +12013,75 @@ fn shape_metrics() {
         long_lines as f64 / storeys.max(1) as f64
     );
 }
+
+/// **EL MUNDO EN ALTURAS DE JUGADOR.** Qué mide de verdad lo que se recorre.
+///
+/// La pregunta que contesta no es «cuántos metros cuadrados tiene una sala» —eso ya lo dice el
+/// objetivo de área— sino la que se hace de pie dentro: **el ancho de un pasillo y la altura de un
+/// techo, divididos por lo que mide el jugador**. Un número absoluto no dice si un sitio se siente
+/// grande; una proporción sí.
+///
+/// `cargo test --release player_scale_reality -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn player_scale_reality() {
+    /// Lo que mide el jugador, en metros.
+    const PLAYER_M: f32 = 1.86;
+
+    let mut band_w: Vec<f32> = Vec::new();
+    let mut room_min: Vec<f32> = Vec::new();
+    let mut clear: Vec<f32> = Vec::new();
+    let mut clear_band: Vec<f32> = Vec::new();
+    let mut ratio: Vec<f32> = Vec::new();
+
+    for (rx, rz) in AUDIT_REGIONS {
+        let building = building_of(rx, rz);
+        for p in &building.storeys {
+            for (_, s) in p.built() {
+                let h = super::fill::clear_height_cm(s) as f32 / 100.0;
+                for r in s.parts() {
+                    let (w, d) = (r.width_cm() as f32 / 100.0, r.depth_cm() as f32 / 100.0);
+                    if s.role.is_circulation() {
+                        band_w.push(w.min(d));
+                        clear_band.push(h);
+                    } else {
+                        room_min.push(w.min(d));
+                        clear.push(h);
+                        // Lo ancho que es un sitio para lo alto que es. Una nave de 33 m con el
+                        // techo a 3 sale a 11: eso no se lee como sala grande, se lee como
+                        // aparcamiento.
+                        ratio.push(w.max(d) / h);
+                    }
+                }
+            }
+        }
+    }
+
+    let stat = |mut v: Vec<f32>| -> (f32, f32, f32) {
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let med = v[v.len() / 2];
+        (v[0], med, v[v.len() - 1])
+    };
+    let show = |label: &str, v: Vec<f32>, in_players: bool| {
+        let (lo, med, hi) = stat(v);
+        if in_players {
+            println!(
+                "[escala] {label:<22} min {lo:5.2} m  mediana {med:5.2} m  max {hi:6.2} m   \
+                 | mediana = {:.2} jugadores",
+                med / PLAYER_M
+            );
+        } else {
+            println!("[escala] {label:<22} min {lo:5.2}  mediana {med:5.2}  max {hi:6.2}");
+        }
+    };
+
+    println!(
+        "[escala] jugador {PLAYER_M} m — {} regiones, semilla servida",
+        AUDIT_REGIONS.len()
+    );
+    show("ancho de banda", band_w, true);
+    show("techo de banda", clear_band, true);
+    show("lado menor de sala", room_min, true);
+    show("techo de sala", clear, true);
+    show("ancho/alto de sala", ratio, false);
+}

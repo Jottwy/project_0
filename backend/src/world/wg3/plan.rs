@@ -1390,9 +1390,14 @@ struct Node {
 ///
 /// **El suelo NO se mueve.** Bajar una cota es trabajo de `rise_cm` y arrastra escalones, vecinos y
 /// vanos; mover el techo no arrastra nada más que el faldón del vano.
-pub const CEILING_MIN_CM: i32 = 240;
+pub const CEILING_MIN_CM: i32 = 300;
 /// El otro extremo del rango normal.
-pub const CEILING_MAX_CM: i32 = 340;
+///
+/// **Por debajo de [`CEILING_TALL_MIN_CM`], y esa separación es la regla.** Subiéndolo a 420 el rango
+/// normal se metía dentro del alto: un sorteo corriente salía a 400 y contaba como doble altura, con
+/// lo que la excepción pasaba del 8 % al 15 % de los espacios y dejaba de leerse como excepción. Lo
+/// que hace que un techo alto se note no es su número, es que el de al lado no lo tenga.
+pub const CEILING_MAX_CM: i32 = 380;
 
 /// A qué escalón se cuantiza. Diez centímetros: por debajo la diferencia no se lee desde dentro y
 /// sólo ensucia el histograma.
@@ -1400,7 +1405,12 @@ const CEILING_STEP_CM: i32 = 10;
 
 /// Exponente del sesgo, `u^k`. Con `k > 1` la masa se va al extremo BAJO, que es lo que hace que un
 /// techo alto se note: con reparto plano, «alto» es la mitad del mundo y deja de significar nada.
-const CEILING_SKEW: f32 = 2.2;
+///
+/// **Bajado de 2,2 a 1,15 con el jugador delante**, que mide 1,86 m. Con 2,2 la mediana MEDIDA del
+/// mundo servido era 2,50 m de techo: 64 cm por encima de la cabeza, 1,34 alturas de jugador. Eso no
+/// es el techo bajo de Backrooms, es un sótano. El sesgo sigue existiendo —lo bajo sigue siendo más
+/// probable que lo alto— pero deja de ser el mundo entero.
+const CEILING_SKEW: f32 = 1.15;
 
 /// Superficie a partir de la cual un espacio puede pedir doble altura, en m².
 pub const CEILING_TALL_AREA_M2: f32 = 200.0;

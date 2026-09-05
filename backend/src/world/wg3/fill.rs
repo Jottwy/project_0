@@ -324,7 +324,7 @@ const KNOBS: [Knobs; 5] = [
         soffit: 0.10,
         cornice: 0.10,
         platform: 0.05,
-        ceiling_cap_cm: 240,
+        ceiling_cap_cm: 300,
         round_pillar: 0.20,
         octagon_pillar: 0.20,
         round_pilaster: 0.30,
@@ -356,7 +356,7 @@ const KNOBS: [Knobs; 5] = [
         soffit: 0.20,
         cornice: 0.45,
         platform: 0.15,
-        ceiling_cap_cm: 200,
+        ceiling_cap_cm: 270,
         round_pillar: 0.55,
         octagon_pillar: 0.25,
         round_pilaster: 0.50,
@@ -1595,7 +1595,6 @@ fn wall_pilasters(
         if n == 0 {
             keep_out.extend(pit_rects_of(building, segments));
         }
-
         for (i, s) in plan.built() {
             if !(s.role.is_circulation() || s.role == SpaceRole::Hall)
                 || s.is_composite()
@@ -6667,6 +6666,14 @@ mod apron_tests {
                         && !o.is_decoration()
                         // Lo que arranca del suelo de su planta: vigas, cornisas y colgados van
                         // en el techo, se emiten después, y no estorban el paso.
+                        //
+                        // **Por PLANTA y no por una ventana de 50 cm.** La ventana daba por vecinos a
+                        // dos macizos de plantas distintas en cuanto el techo de la de abajo se
+                        // acercaba al suelo de la de arriba: con los techos subidos a 3,00-3,80, una
+                        // cornisa de la planta 0 a 298 queda a 34 cm del forjado de la 1, y el test
+                        // acusaba de amontonarse a dos cosas separadas por una losa.
+                        && crate::world::wg3::plan::storey_of_floor_cm(o.bottom_y_cm)
+                            == crate::world::wg3::plan::storey_of_floor_cm(blk.bottom_y_cm)
                         && (o.bottom_y_cm - blk.bottom_y_cm).abs() <= 50
                         && rect_of(o).overlaps(&gap)
                 });
@@ -6707,12 +6714,28 @@ mod apron_tests {
         println!("[bloque] {blocks} bloques gruesos en 39 semillas");
     }
 
+    /// La huella en el MUNDO de un macizo, con su giro aplicado.
+    ///
+    /// **Un macizo girado no ocupa su caja.** Una media luna viaja como su caja SIN girar —cuerda ×
+    /// panza, centrada en la huella— y es el `yaw` el que la pone contra su pared; `segment.rs` y el
+    /// ráster ya lo saben. Leyendo la caja cruda, una pilastra de media luna contra una pared de x
+    /// mínima se declara 100 cm de ancho donde ocupa 50, y se sale 25 cm al otro lado del muro:
+    /// entonces este test la ve pegada a un bloque que tiene a 85 cm y acusa de amontonarse a
+    /// geometría que ni se toca. Salió al subir los techos, que es lo que hizo aparecer pilastras
+    /// donde antes no cabían.
     fn rect_of(s: &Wg3Solid) -> super::super::plan::PlanRect {
+        let (cx, cz) = (s.x_cm + s.size_x_cm / 2, s.z_cm + s.size_z_cm / 2);
+        // Sólo los cuartos de vuelta, que es lo único que emite el relleno.
+        let (sx, sz) = if s.yaw_deg % 180 == 90 {
+            (s.size_z_cm, s.size_x_cm)
+        } else {
+            (s.size_x_cm, s.size_z_cm)
+        };
         super::super::plan::PlanRect {
-            min_x_cm: s.x_cm,
-            min_z_cm: s.z_cm,
-            max_x_cm: s.x_cm + s.size_x_cm,
-            max_z_cm: s.z_cm + s.size_z_cm,
+            min_x_cm: cx - sx / 2,
+            min_z_cm: cz - sz / 2,
+            max_x_cm: cx - sx / 2 + sx,
+            max_z_cm: cz - sz / 2 + sz,
         }
     }
 
