@@ -14060,3 +14060,40 @@ techo mediano de sala sigue en 3,10 m. Una megasala es una excepción o no es na
   que verlo.
 - **Aviso a ADR-128 (×2):** estas constantes son del PLAN, así que la escala ×2 llevaría la megasala a
   32 m servidos. Si eso no es lo que se quiere, se ajusta `ATRIUM_MEGA_MAX_STOREYS`, no el ×2.
+
+---
+
+## ADR-104 — enmienda 5: corrección de la enmienda 4, y una sonda que medía su propio parámetro
+
+**Fecha:** 2026-09-05 · **Estado:** corrección de medida · **Wire:** sin cambios.
+
+**Lo que la enmienda 4 dice mal.** Afirma que «el barrido de 49 regiones da 47 edificios de 2 plantas,
+2 de 1, ninguno de 3». **Es falso, y el error es de método:** la sonda contaba plantas sobre
+`tests::building_of`, que planifica con `STOREYS = 2` —el corte de ADR-102 D1— y por tanto **sólo podía
+contestar «dos»**. El mundo servido planifica `plan::REGION_STOREYS = 10`.
+
+Medido otra vez sobre el edificio servido (`tests::served_building_of`, añadido aquí precisamente para
+que esto no se repita), 49 regiones:
+
+| plantas | 1 | 2 | 3 | 4 | 5 |
+|---|---|---|---|---|---|
+| regiones | 2 | 13 | **27** | 5 | 2 |
+
+**Qué NO cambia.** La decisión de la enmienda 4 se sostiene entera: la condición sigue siendo que no
+haya nada construido en ninguna planta por encima, y `void_storeys_above` sigue contando hasta la
+última. Con edificios de 3 a 5 plantas eso es *más* difícil de cumplir, no menos, así que la megasala
+es más rara de lo que la enmienda 4 suponía — no más común. Y el vano por planta, que la enmienda 4
+justificaba con un mundo de dos plantas, es **imprescindible** con uno de cinco: ahí sí hay forjados
+intermedios que un cajón único se llevaría por delante.
+
+**Lo que el playtest añade, y no es de este ADR.** Con el jugador dentro de la megasala de 9,72 m en
+`(263,2, 68,9)`, semilla 42: **se anda, y no se ve nada.** La colisión está —el jugador se sostiene a
+`y = 1,8` y camina sesenta metros sin caerse— y la pantalla es negro puro, no la penumbra del ambiente
+plano. Las salas vecinas se dibujan. O sea que **un atrio no dibuja sus superficies**, y eso es el bug
+del día 1 de `WG3-ALPHA1-ROADMAP` («los techos negros en los atrios») visto entero en vez de por un
+trozo de techo: no es un recorte del techo, es la sala. La megasala no lo causa; lo hace grande.
+
+Segunda observación del mismo playtest, aparte: arrancar sesión con la posición guardada en varios
+puntos de la región (1,0) —incluida una sala corriente de 3,10 m en `(211,5, 36,0)`— deja al jugador
+cayendo, con la cota AUTORITATIVA por debajo del forjado. En otros puntos de la misma región no pasa.
+No se ha diagnosticado.

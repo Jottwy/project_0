@@ -5858,6 +5858,25 @@ fn building_of(rx: i32, rz: i32) -> plan::RegionBuilding {
     plan::plan_building(region.composer_seed(SERVED_SEED), bounds, &gates, STOREYS)
 }
 
+/// El edificio **tal y como lo sirve el backend**: [`plan::REGION_STOREYS`] plantas, no [`STOREYS`].
+///
+/// La diferencia no es un detalle y ya costó una medición entera. `building_of` planifica DOS
+/// plantas a propósito —es el corte de ADR-102 D1—, así que cualquier sonda que cuente plantas sobre
+/// él sólo puede contestar «dos»: fue esa sonda la que dijo «47 de 49 edificios tienen 2 plantas»,
+/// que era la respuesta de su propio parámetro y no la del mundo. Todo lo que se afirme sobre la
+/// ALTURA del mundo servido se mide aquí.
+fn served_building_of(rx: i32, rz: i32) -> plan::RegionBuilding {
+    let region = Wg3RegionCoord { x: rx, z: rz };
+    let bounds = region.bounds();
+    let gates = junction::gates_of_region(composer_seed(SERVED_SEED), rx, rz, bounds);
+    plan::plan_building(
+        region.composer_seed(SERVED_SEED),
+        bounds,
+        &gates,
+        plan::REGION_STOREYS,
+    )
+}
+
 /// **Un barrido, no las cuatro de referencia, y esa lección ya costó una vez.**
 ///
 /// El hueco de escalera depende de que COINCIDAN dos geometrías planificadas por separado: que un
@@ -7935,7 +7954,8 @@ fn probe_how_many_atria() {
     let mut t_void_above = 0usize;
 
     for (rx, rz) in AUDIT_REGIONS {
-        let b = building_of(rx, rz);
+        // El edificio SERVIDO: ver `served_building_of`.
+        let b = served_building_of(rx, rz);
         let mut atria = 0usize;
         let mut halls = 0usize;
         let mut void_above = 0usize;
@@ -8011,6 +8031,18 @@ fn probe_how_many_atria() {
             .map(|(k, _)| k)
             .max()
             .unwrap_or(0);
+        // Y DÓNDE están, que es lo que hace falta para ir a mirarlas en partida.
+        for p in &b.storeys {
+            for s in p.spaces.iter().filter(|s| s.atrium_storeys > 2) {
+                let (cx, cz) = s.rect.centre_m();
+                println!(
+                    "         MEGASALA en ({cx:.1}, {cz:.1}) · suelo a {:.2} m · {:.0} m² · \n                     {:.2} m de altura",
+                    s.floor_y_cm as f32 / 100.0,
+                    s.area_m2(),
+                    (s.atrium_storeys as i32 * plan::STOREY_HEIGHT_CM - 24) as f32 / 100.0
+                );
+            }
+        }
         println!(
             "         alturas de planta por atrio: {hist:?} (índice = plantas) · más alto \
              {:.2} m",
@@ -8031,7 +8063,7 @@ fn probe_how_many_atria() {
     let mut storeys = [0usize; 12];
     for rx in -3..=3 {
         for rz in -3..=3 {
-            storeys[building_of(rx, rz).storeys.len().min(11)] += 1;
+            storeys[served_building_of(rx, rz).storeys.len().min(11)] += 1;
         }
     }
     println!("[atrio] plantas por edificio en 49 regiones: {storeys:?}");
@@ -12217,5 +12249,31 @@ fn dump_region_sections() {
             std::fs::write(&path, svg).expect("escribir el corte");
             println!("[corte] {path}");
         }
+    }
+}
+
+/// SONDA — qué hay de verdad en la columna del ráster SERVIDO bajo un punto.
+///
+/// Existe porque el plan y el mundo servido se pueden contradecir sin que ningún contador se queje:
+/// una megasala con el suelo a cota 0 en el plan y un jugador que atraviesa esa cota en partida es
+/// exactamente ese caso. Imprime los tramos macizos, que es lo único que la colisión mira.
+#[test]
+#[ignore]
+fn probe_column_under_point() {
+    let m = real_manifest();
+    for (rx, rz, x, z) in [
+        (1, 0, 263.2f32, 52.1f32),
+        (1, 0, 263.2, 68.9),
+        (1, 0, 263.2, 44.0),
+        (1, 0, 263.2, 40.0),
+        (1, 0, 263.2, 76.0),
+        (1, 0, 263.2, 80.0),
+        (1, 0, 250.0, 60.0),
+        (1, 0, 263.2, 60.0),
+    ] {
+        let region = Wg3RegionCoord { x: rx, z: rz };
+        let served = Wg3ServedWorld::plan_region(&m, SERVED_SEED, region);
+        let rasters = super::validate::RegionRasters::build(&m, &served, region);
+        println!("[columna] ({x:.1}, {z:.1}) → {:?}", rasters.column(x, z));
     }
 }
