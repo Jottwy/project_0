@@ -24,6 +24,10 @@ namespace BackroomsSurvival.WorldGen3
     /// </summary>
     public static class Wg3MeshBuilder
     {
+        /// <summary>Repeticiones de textura por metro de mundo. Era 1 (una repetición por metro,
+        /// que en pared se leía como grano); a 0,5 cada baldosa del papel mide dos metros.</summary>
+        public const float UvPerMetre = 0.5f;
+
         public static class SubMesh
         {
             public const int Floor = 0;
@@ -88,6 +92,10 @@ namespace BackroomsSurvival.WorldGen3
                 : UnityEngine.Rendering.IndexFormat.UInt16;
             mesh.SetVertices(verts);
             mesh.SetNormals(normals);
+            // Joel, 2026-09-06: «las texturas se ven muy pequeñas, reduce la repetición a la
+            // mitad». Las UV se emiten en METROS en todos los emisores; el factor va aquí, una vez,
+            // y no en cada material, para que gotelé, moqueta, techo y marco repitan igual.
+            for (int i = 0; i < uvs.Count; i++) uvs[i] *= UvPerMetre;
             mesh.SetUVs(0, uvs);
             mesh.subMeshCount = SubMesh.Count;
             for (int i = 0; i < SubMesh.Count; i++) mesh.SetTriangles(tris[i], i);

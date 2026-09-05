@@ -26,6 +26,35 @@ para tablas y listones (Joel elige: material de decoración = madera para todo, 
 «madera» sólo para tablas y listones, wire 61); una pasada a los tintes por rol (Frente A) para que el
 amarillo domine sin borrar la separación por tono. Todo con captura antes/después.
 
+#### Objetivo visual del día 2: la foto de la oficina abandonada (Joel, 2026-09-06)
+
+Referencia: oficina real abandonada — techo de placas 60×60 con paneles fluorescentes 60×120 en
+fila, mesas y archivadores grises, sillas de oficina, pizarra blanca con garabatos, papeles por el
+suelo, avisos en la pared, mampara. «Al mismo nivel de detalle, exactamente así.» Cinco capas, de la
+más barata a la más cara, y lo que YA hay para cada una:
+
+1. **Repetición de textura a la mitad** — HECHO el 2026-09-06: `Wg3MeshBuilder.UvPerMetre` = 0,5,
+   un solo factor sobre todas las UV (se emiten en metros). Captura `uv05_*` frente a `w58q_arco`.
+2. **Techo de placas y paneles en fila.** Ya existe `Assets/Resources/Textures/CeilingTiles.png` con
+   su material; falta ponerlo en `Wg3_Ceiling` con la rejilla a 60 cm y sustituir la luminaria
+   puntual de ADR-107 por paneles de 60×120 en fila (una malla emisiva por panel, luz de área o
+   varias puntuales alineadas). Es la capa que más «oficina» da por hora.
+3. **Atrezo de oficina.** Ya está convertido a URP el pack `AK Studio Art/Business Office` (147
+   prefabs: Desk 1–4, Chair 1–3, Cupboard, Shelf 1–2, Monitor, Keyboard, Office Phone, Paper Tray,
+   Trash Can, Wall Clock, Whiteboard) y `GroceryStorePropsCollection/OfficeFurniture` (mesa, silla,
+   caja). **Lo que NO existe es quién los coloca**: hace falta un sistema de anclas de atrezo —
+   ADR nuevo — que el servidor emita por sala según su rol (oficina: mesa+silla+monitor contra
+   pared, archivador en esquina, pizarra en pared larga) y el cliente instancie. Determinista por
+   semilla, con colisión, y esquivando bocas, pilares, pozos y bloques como hacen los emisores de
+   `fill.rs`. Es la capa cara: un día de servidor y otro de cliente.
+4. **Desorden.** Papeles por el suelo, cajas, sillas caídas: decals o mallas planas sin colisión,
+   sembradas por densidad. `OfficePapers` del pack de supermercado ya tiene mallas de papel.
+5. **Luz y suciedad.** Paneles con parpadeo y alguno apagado (el `FluorescentHumDirector` ya
+   existe), manchas en el techo, tono cálido/verdoso de la foto en el post-proceso.
+
+Con 1 y 2 una sala se lee como oficina; con 3 se lee como ESTA oficina. La 3 no cabe en la semana
+de cierre sin sacar otra cosa: decisión de Joel.
+
 ### Día 3 — Rendimiento
 Cada macizo es hoy un GameObject con su collider; una región lleva del orden de 3 000. El fundido por
 chunk (una malla por chunk y submalla, colliders combinados) lleva pendiente desde F0 (nota en
