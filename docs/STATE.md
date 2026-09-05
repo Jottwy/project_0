@@ -6,8 +6,8 @@
 ## Estado
 - **WorldGen3 es el mundo servido.** Wire **60** en las dos puntas (`ipc/server.rs:38`, `WireSchema.cs:25`).
 - **Contrato en marcha: WG3 v1 = Alpha 1** en una semana de cierre (`docs/WG3-ALPHA1-ROADMAP.md`). Día 1 hecho.
-- Suite: `cargo test --release --bin backrooms_server` 1377/1377, `world::wg3` 157/157, clippy `-D warnings` y fmt limpios.
-- Cliente: `CompileCheckClient` 0 errores en las 4 asambleas. Backend desplegado a `Builds/Backend` (SHA256 16BFA3F1…).
+- Suite: `cargo test --bin backrooms_server` **1376/1376**, clippy `-D warnings` y fmt limpios. `CompileCheckClient` 0 errores en las 4 asambleas.
+- **El commit tiene gate** (`tools/dev/validate-scope.ps1`, hook PreToolUse): rojo = el commit no se ejecuta. Alcance por `git diff --cached`.
 - Alpha 1 itch nov 2026 · Next Fest feb 2027 · EA primavera 2027 (`docs/SCALING-ROADMAP.md:196-198`). E0 de red cerrada y medida.
 
 ## Próximo paso ÚNICO
@@ -16,38 +16,37 @@
 - Antes hace falta **la decisión de Joel sobre la madera**: material de decoración para todo (sin wire) o estilo propio (wire 61).
 
 ## En curso
-- **ADR-128, mundo ×2: núcleo escrito, PROBADO, NO commiteado.** PLAN intacto, MUNDO ×2 con la conversión en
-  `Wg3ServedWorld`. 32 tests en rojo y dos síntomas reales: 0 celdas de planta alta y un atrio de 5,80 m — la
-  vertical no escala entera. Revertido; parche en `scratchpad/scale_patch.py`, verbatim en `docs/SESSION-LOG.md`.
+- **ADR-128, mundo ×2: tercera pasada, NO commiteado.** De 32 a **24 tests** en rojo. `MAX_SEGMENT_M` NO se toca (D3
+  anulado: bajarlo repartía otro mundo); `bounds()` pasa a metros de MUNDO con `plan_bounds()` para el plan. **Sigue
+  sin verificarse que lo servido salga ×2.** Parche en `scratchpad/scale_patch.py`, verbatim en `docs/SESSION-LOG.md`.
 - **Contrato WG3 v1**, 5 días. Día 1 cerrado: el atrio ya no se abre a la nada (ADR-104 enm. 3, `65d267c3`).
   Días 1–2 materiales · día 3 rendimiento (fundido por chunk) · día 4 rampa + tabique diagonal + anti-enfilada · día 5 verificación y etiqueta `wg3-v1-alpha1`.
-- **Saneamiento** (auditoría 2026-09-04): **B1 cerrado**. Quedan B2 (docs y gates), B3 (repo, pendiente de Joel) y B4 (código muerto).
+- **Saneamiento: B1–B4 CERRADOS** (2026-09-05). Queda B5 (cabeza: el agujero de autoridad) y la lista de Joel para podar ramas.
 - **Migración STP servidor-autoritativo**: Steps 1–2 y slice 3.1 (plumbing) hechos y verificados. Falta slice 3.2
   (capa L2 de predicción), reescribir los 8 call sites de `Inventory` y retirar `PlayerController.cs` (DEPRECATED por ADR-009).
 - ADR-014 fase 2 (borrado diferido 200 ms + reserva host-only anti-duplicado): backend implementado, **pendiente de playtest**.
 - ADR-123 (agacharse y conductos) PROPUESTO, pendiente de Joel. ADR-127 (rampa de techo, wire 61) propuesto para el día 4.
 
 ## Riesgos abiertos
-- **Tres agujeros de autoridad en el servidor, lo más grave del proyecto hoy.** `process_stp_build_add` y
-  `process_stp_demolish` (`backend/src/game_loop.rs:5086-5186`) no comprueban `owner_id` ni distancia;
-  `process_stp_harvest_hit` (`:5278-5312`) acepta el `amount` del cliente; `process_authoritative_interaction`
-  (`:5399-5443`) se fía de la posición que declara el paquete. Anula el territorio de ADR-081. ~1 día de trabajo.
+- **AGUJERO DE AUTORIDAD, cabeza de B5 y lo siguiente tras WG3.** De los tres, dos cerrados (`78e156e6` dueño en
+  demoler; `ebb42911`/`bb3c7e5c` cantidad y posición contra el roster). **Queda `process_stp_build_add`
+  (`game_loop.rs:7297`): ni `owner_id` ni distancia**, y `process_stp_demolish` no mide distancia. ADR-081, ~1 día.
+- **Espejos C#↔Rust sin oráculo.** Sin `the_identity_mirror_golden_values` (B4-b), `Wg3Identity.cs` queda verde sin
+  nada que lo contraste; igual el hash de `ChunkLootRoll` (dos copias que divergían en negativos) y los goldens de
+  `scale`/`density`. Un oráculo JSON común es una sesión: **B5**.
 - **Relay sin VPS**: `DefaultRelayAddress` vacío y nadie ha entrado por relay en internet. Dos jugadores en redes
   distintas hoy NO se juntan (medido en el playtest del 02-09). ADR-117 está en código, no en servicio.
-- **Crafteo P1 sin cerrar**: las recetas consumen un enum Rust de 9 variantes abstractas, no items; ADR-064 validada
-  con slice 1 diferido y cero efecto en juego. Sin esto, minar no sirve para nada y los tres tiers son texto muerto.
-- **ADR-009 L2 a medias**: `MovementReconciler` y el consumidor de `delta_update` se borraron y nunca se
-  reemplazaron. Causa raíz compartida de la salud al borde de la muerte y del respawn invisible. Plan con ADR, no parche.
-- **Dos mundos de colisión** (histórico, revisar si WG3 lo cierra): el backend colisiona contra su generador y el
-  cliente contra lo que streamea. Anotado desde 2026-06-19; con WG3 como autoridad hay que volver a medirlo.
-- `handle_spawn_world_chest` (`game_loop.rs`) y `World::spawn_corpse` (`world/corpse.rs`) aceptan la posición del
-  cliente sin validar andabilidad. Ausencia total de gate, no el desajuste 2,5/5 m.
+- **Crafteo P1 sin cerrar**: las recetas consumen un enum Rust de 9 variantes abstractas, no items (ADR-064). Sin esto, minar no sirve.
+- **ADR-009 L2 a medias**: falta la predicción/reconciliación del CLIENTE (`MovementReconciler` se borró y nunca se
+  reemplazó; el `delta_update` sí lo consume `AuthoritativePoseApplier`). Causa raíz de la salud al borde de la muerte y del respawn invisible.
+- **Dos mundos de colisión** (histórico): el backend colisiona contra su generador y el cliente contra lo que streamea. Con WG3 hay que remedirlo.
+- `handle_spawn_world_chest` (`game_loop.rs`) y `World::spawn_corpse` (`world/corpse.rs`) aceptan la posición del cliente sin validar andabilidad.
 - Sin anti-cheat de posesión ni cantidad en `consume_item` (ADR-030): trust-the-client asumido y documentado.
 - `IPCClient.cs`: cuatro `catch { }` mudos en los notificadores de listeners — pueden tragar fallos hoy mismo.
 - La suite EditMode arrastra rojos conocidos; el del lanzamiento del backend sólo pasa con `BACKROOMS_VERBOSE_LOG=1`.
-- **Trabajo en paralelo sin integrar**: `claude/unity-lighting-cadence-bfdd2a` (cadencia de luces, 2 commits, 7 tests
-  sin ejecutar) va 51 commits por detrás y está fuera del contrato; y `migration/worldgraph-v1` ya lleva ADR-128
-  (doble escala) escrito por otra sesión. Al integrar hay que regenerar `DECISIONS-INDEX.md` o el gate sale en rojo.
+- **Ramas sin fusionar con trabajo dentro**: `claude/angry-jackson-46d314` (95 commits), `gallant-einstein-f805cf`
+  (87), `happy-carson-641071` (79), `feat/occluders` (8) y `backrooms-layout-validator-5e9d98` (4). Y el worktree
+  `wf_09042814-13d-4` lleva **99 ficheros trackeados sucios desde el 27-08**. Nada se poda sin lista de Joel.
 
 ## NO tocar
 > Detalle completo, verbatim, en `docs/SESSION-LOG.md` (bloques «NO tocar» y «Última sesión» de 2026-08-03).
@@ -67,15 +66,13 @@
 - `SilentHealthUIBridge` sincroniza `fillAmount` por reflexión: cambios en `HealthUI`/`Health` deben conservar los nombres.
 
 ## Deuda declarada
-- **`#![allow(dead_code)]` de crate** (`backend/src/main.rs:23`): enmascara ~137 warnings. Inventario de 2026-08-10
-  (112 únicos) caducado. Bajarlo a `#[allow]` por módulo es sesión propia: puede poner `clippy -D warnings` en rojo.
-- **Sin consumidores de producción**: `wg3::identity::LevelProfile`/`LevelAnchor`/`ANCHOR_PROFILES`
-  (`identity.rs:81-172`) y `SpaceRole::Junction`, que no se asigna nunca.
-- **`ChunkRenderer.cs`** (3 925 líneas) inerte desde `GameBootstrap.cs:22`; borrado decidido en
-  `docs/AUDIT-2026-08-03.md` y nunca ejecutado. `ChunkLootRoll.cs:14` espeja su hash.
-- **`world/volumetric_grid.rs`** (3 702 líneas) sólo vive tras `seed == SHOWCASE_SEED`.
+- **`#![allow(dead_code)]` de crate** (`backend/src/main.rs`): recontado el 2026-09-05, **294 warnings únicos en el
+  binario y 308 con `--all-targets`** — eran 112/121 el 10-08, o sea ×2,6 en un mes. El argumento que lo sostenía
+  («~120 sitios en movimiento») ya no describe lo que hay. Bajarlo por módulo es sesión propia y puede poner clippy en rojo.
+- **`world/volumetric_grid.rs`** (3 702 líneas) sólo vive tras `seed == SHOWCASE_SEED`, pero **NO es borrable**: su
+  campo está en `ChunkView` y lo consume `ChunkVisualLifecycle.cs:91-93` (entra en el hash de revisión). Retirarlo
+  es bump de wire con ADR, no un `git rm`. **B5.**
 - **`scale` y `density`**: espejos C#↔Rust con golden values copiados a mano en dos suites, sin oráculo JSON que los ate (`scale.rs:147`, `density.rs:225`).
-- **Comentarios que mienten**: `MovementReconciler` en `IPCClient.cs:626`, `IPCMessages.Player.cs:70` y `PlayerPoseTransmitter.cs:13` — la clase ya no existe.
 - **WG3, del contrato para adelante**: relieve de techo sin hacer aunque `height_cm` es por tramo; el dintel
   (`Wg3Carve` con banda vertical) sigue sin usarse; salas ≥ 300 m² con una sola entrada, 31,6 %; catálogo apagado
   (0,6 piezas por región: las 19 miden para el mundo viejo). Pozos sin salida de la cámara: loot y cuerdas son ADR-126 D6, lista v2.
@@ -85,15 +82,26 @@
   backlog anclada en `DECISIONS.md`. `require_walkable_above`/`_below` se generan y ningún llamador los consume.
 - **Farmeo y almacenaje**: E4 pendiente y Bloque A sin empezar (dos decisiones de Joel); el sync de contenedores
   construidos está diferido y pide ADR nuevo con bump de wire, 2-3 días (`docs/FARMING-ROADMAP.md:451`).
-- **Atribución de teleports**: `TP_WATCH`/`RESOLVE_DIAG` siguen activos en `game_loop.rs` marcados «REMOVE after
-  diagnosis»; falta un playtest con la instrumentación y LEER los logs. Gate de las partes 1–2 de ADR-026.
-- **Entidades PvE (Lurker/Crawler/Shadow) con daño DESACTIVADO** desde 2026-07-07: eran la causa de las muertes
-  silenciosas. Implementadas en el backend y apagadas a propósito.
-- **`docs/DECISIONS.md`** (1,38 MB) sigue siendo ilegible entero; ya se lee por `DECISIONS-INDEX.md` + `grep`.
-  Alternativa sin decidir: partirlo en un fichero por ADR (122 ficheros, ~15 referencias y un hook que rehacer).
+- **Atribución de teleports**: `TP_WATCH`/`RESOLVE_DIAG` activos en `game_loop.rs` («REMOVE after diagnosis»); falta playtest y LEER los logs (ADR-026).
+- **Entidades PvE (Lurker/Crawler/Shadow) con daño DESACTIVADO** desde 2026-07-07: eran la causa de las muertes silenciosas. Apagadas a propósito.
+- **`docs/DECISIONS.md`** (1,38 MB) ilegible entero; se lee por `DECISIONS-INDEX.md` + `grep`. Alternativa sin decidir: un fichero por ADR.
+- **El gate de C# no valida nada en un worktree recién creado**, y no lo hizo mientras se trabajó así: los `*.csproj`
+  y `Library/` los genera Unity, están gitignorados y viven sólo en el clon principal, así que
+  `CompileCheckClient.sh` salía `MISSING csproj` en las cuatro asambleas. Arreglado y documentado (`c99db43a`,
+  `docs/DEV-ENVIRONMENT.md`): copiar los `.csproj`, unión de directorio a `Library` y los dos runners `_Claude*`.
 - Menores: `MPTRACE` sin commitear en cuatro ficheros del vendor STP; `TODO(balance)` de loot; doc-comments stale.
 
 ## Últimas tandas
+
+### 2026-09-05 — 22.ª tanda: el saneamiento entero (B2–B4) y el primer rojo que caza el gate
+- **B2, gate de commit** (`9a5c680e`): `validate-scope.ps1` por alcance de `git diff --cached`, disparado por un
+  PreToolUse; cuatro hooks fusionados en dos y *fail closed*. El parser del índice de ADR perdía en SILENCIO
+  cualquier encabezado que no encajara (`## ADR-121 y ADR-122`): 164 en el fichero, 163 en el índice.
+- **B2 docs** (`5a80d295`): 10 ficheros a `docs/archive/` con cabecera CONGELADO; de `AGENTS.md` sobrevive UNA regla (la 13) y de `LEEME.md` ninguna.
+- **B3** (`b4d3112c`) 50,1 MB fuera; `STP/Demo` NO se toca (dentro vive `STP_Showcase.unity`, la escena real). **B4**:
+  `ChunkRenderer.cs` (3 925 líneas), el campo de identidad de ADR-103, `SpaceRole::Junction`, `BackroomsWithSTP.unity`
+  y tres comentarios que mandaban a clases borradas. El gate cazó su primer rojo: un test llevaba veintitantos
+  commits en rojo, tapado por su guarda de cobertura (la serie, medida commit a commit, en el log).
 
 ### 2026-09-04 — 21.ª tanda: auditoría del proyecto y B1 del saneamiento (arranque de sesión)
 - **La regla dura #1 era incumplible, no cara.** `Read` rechaza `STATE.md` entero (tope 256 KB) y todo

@@ -2965,3 +2965,19 @@ sensible al orden.
   El código se revirtió otra vez y `Builds/Backend` se redesplegó sano (3A3BA36C): el ×2 a medias deja un mundo peor que sin él. El parche íntegro y reproducible desde HEAD sigue en `scratchpad/scale_patch.py` (ya con el arreglo de CRLF y el import de `CM_PER_M`), más `bounds()` en metros de MUNDO con `plan_bounds()` para alimentar al plan.
 
 4i-bis. **Diseño original (sigue vigente):** Joel: «el player es dos veces más grande… el tamaño de la generación debe ser 2 veces en todos los valores». Doblar a mano es inviable: **248 constantes con unidades** y los tests fijan invariantes sobre casi todas. Diseño elegido y medido: dos sistemas de unidades (PLAN, que no cambia ni un número, y MUNDO) con la conversión en UN punto, `Wg3ServedWorld` (los cinco métodos que sirven por chunk), más `REGION_CHUNKS` 3→6 (la región pasa a 300 m de mundo, el chunk sigue a 50) y `MAX_SEGMENT_M` 25→12,5 metros de plan (25 m de mundo: si no, un tramo llena un chunk y muere «una pieza, un chunk»). Espejos del cliente: `Wg3Identity.RegionM` y `Wg3LiveBootstrap.RegionMeters` 150→300; el resto del cliente NO cambia (el wire sigue en centímetros de mundo). **Estado: compila y sirve; 27 tests de `world::wg3` en rojo** porque sondean el ráster con coordenadas del plan, y los dorados de `the_identity_mirror_golden_values` cambian porque la celda de identidad se mide en regiones. El parche completo y reproducible desde HEAD está en `scratchpad/scale_patch.py`; el código se revirtió para no dejar el repo en rojo (regla 8). Siguiente sesión: aplicar el script y adaptar esos 27 tests (mecánico: la sonda se multiplica por `WG3_SCALE`) más `validate.rs`.
+
+### ADR-128, tercera pasada (2026-09-05) — VERBATIM de STATE.md
+
+> Escrito por la otra sesion en `2961bf7b`. Al rebasar `chore/saneamiento-arranque` no cabe en
+> el STATE denso; el resumen vigente esta en `docs/STATE.md`, seccion «En curso».
+
+4i. **EL MUNDO A DOBLE ESCALA (ADR-128): tercera pasada — de 32 a 24 fallos, dos causas raíz cazadas, sigue SIN commitear.**
+
+  Lo aprendido esta pasada, todo dentro de `scratchpad/scale_patch.py`:
+  - **`MAX_SEGMENT_M` NO se toca.** Bajarlo a 12,5 (D3 del ADR) cambia la partición de tramos y con ella el mundo entero: **11 tests más en rojo**. Un tramo escalado puede llenar un chunk; «una pieza, un chunk» sólo la necesitan los macizos y las piezas, que se reparten por su CENTRO. D3 queda anulado.
+  - **`Wg3RegionCoord::bounds()` pasa a metros de MUNDO y se añade `plan_bounds()`** para alimentar al plan y al compositor. Sin eso el validador planificaba regiones de 300×300 metros-plan: **750 espacios y 5 plantas** en vez de 166 y 3,2, o sea otro mundo.
+  - **El validador sondeaba en unidades mezcladas**: puertas de junta y rectángulos de espacio salen del plan y se medían contra el ráster de mundo. Corregido con dos ayudantes (`w`, `w_cm`) en `validate.rs`.
+  - **El volcado de sondas (`probe_dump_regions_json`) también planifica con los límites de mundo**, así que su JSON NO refleja lo servido: por eso mostraba XZ escalado y alturas sin escalar a la vez. No usarlo como prueba hasta arreglarlo.
+
+  **Sigue sin verificarse que el mundo servido salga ×2**: la evidencia que parecía decir que no (atrio de 5,80 m) se explica por sondas en coordenadas de plan, pero no está confirmada. Quedan **24 tests** de `world::wg3`, casi todos sondas, más los dorados de identidad.
+
