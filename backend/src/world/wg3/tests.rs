@@ -6962,6 +6962,8 @@ fn plan_with_a_gap(blocked: bool) -> plan::RegionPlan {
             rise_step_cm: plan::STEP_RISE_CM,
             max_clear_cm: 0,
             void_above: false,
+            void_storeys_above: 0,
+            atrium_storeys: 0,
             ceiling_clear_cm: 0,
         }
     };
@@ -7993,6 +7995,27 @@ fn probe_how_many_atria() {
             "         naves bajo la planta alta: {free} sin nadie encima · {carved} talladas · \
              {vetoed} VETADAS por circulación"
         );
+        println!("         plantas del edificio: {}", b.storeys.len());
+        // ADR-104 enm. 4 — cuántas ALTURAS DE PLANTA mide cada atrio, que es lo que separa un atrio
+        // de una MEGASALA. Un histograma y no una media: lo que importa es que la cola exista.
+        let mut hist = [0usize; 8];
+        for p in &b.storeys {
+            for s in p.spaces.iter().filter(|s| s.atrium_storeys > 0) {
+                hist[(s.atrium_storeys as usize).min(7)] += 1;
+            }
+        }
+        let tallest = hist
+            .iter()
+            .enumerate()
+            .filter(|(_, &c)| c > 0)
+            .map(|(k, _)| k)
+            .max()
+            .unwrap_or(0);
+        println!(
+            "         alturas de planta por atrio: {hist:?} (índice = plantas) · más alto \
+             {:.2} m",
+            (tallest as i32 * plan::STOREY_HEIGHT_CM - 24) as f32 / 100.0
+        );
         t_atria += atria;
         t_halls += halls;
         t_void_above += void_above;
@@ -8001,6 +8024,17 @@ fn probe_how_many_atria() {
     println!(
         "[atrio] TOTAL — {t_atria} atrios · {t_halls} naves · {t_void_above} con vacío encima"
     );
+
+    // **Cuántas plantas levanta el mundo de verdad**, que es el techo real de una megasala apilada:
+    // un atrio no puede vaciar una planta que no existe. Barrido de 49 y no las cuatro de referencia,
+    // por lo mismo que `dig_wells`: la altura del edificio es coincidencia de semilla.
+    let mut storeys = [0usize; 12];
+    for rx in -3..=3 {
+        for rz in -3..=3 {
+            storeys[building_of(rx, rz).storeys.len().min(11)] += 1;
+        }
+    }
+    println!("[atrio] plantas por edificio en 49 regiones: {storeys:?}");
 }
 
 /// ADR-104, verificaciones (a) y (b) — **un atrio mide dos plantas EN EL RÁSTER, y encima no hay losa

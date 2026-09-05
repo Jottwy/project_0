@@ -86,7 +86,7 @@ pub(super) fn clear_height_by_role(role: SpaceRole) -> i32 {
 /// no del papel del espacio. Cero quiere decir que no hay nada encima, y entonces la nave es una nave.
 pub(super) fn clear_height_cm(space: &PlannedSpace) -> i32 {
     if is_atrium(space) {
-        return ATRIUM_CLEAR_CM;
+        return atrium_clear_cm(space);
     }
     // **El espacio manda sobre el papel.** `ceiling_clear_cm` a cero no es un techo de cero: es que
     // este espacio no ha pedido nada —o que la perilla de `plan::CEILING_VARIETY` está apagada— y
@@ -113,6 +113,21 @@ pub(super) fn clear_height_cm(space: &PlannedSpace) -> i32 {
 /// techo del atrio ocupa el sitio del techo de la planta de arriba, y contar una sola losa deja dos
 /// caras coplanares — el z-fighting que costó 456 pares y hasta 94,8 m² en ADR-102.
 const ATRIUM_CLEAR_CM: i32 = 2 * STOREY_HEIGHT_CM - 2 * SLAB_THICKNESS_CM;
+
+/// La altura libre de ESTE atrio: tantas alturas de planta como diga el plan, menos dos losas.
+///
+/// [`ATRIUM_CLEAR_CM`] es este mismo número con las dos plantas de ADR-104, que sigue siendo el caso
+/// normal. La **MEGASALA** (ADR-104 enm. 4) es el mismo atrio pidiendo hasta cinco: `5 * 332 - 24 =
+/// 1636 cm`. Quién puede pedirlas y por qué el número no sale de contar vacíos está en
+/// `plan::atrium_storeys_for`.
+///
+/// El `max(2)` es una red y no una rama: `is_atrium` ya exige `void_above`, así que el plan siempre
+/// ha puesto aquí un dos o más. Sin él, un espacio marcado a mano en un test pediría menos altura que
+/// una planta y el fallo se leería como un techo bajo cualquiera en vez de como un dato mal puesto.
+pub(super) fn atrium_clear_cm(space: &PlannedSpace) -> i32 {
+    let storeys = (space.atrium_storeys as i32).max(2);
+    storeys * STOREY_HEIGHT_CM - 2 * SLAB_THICKNESS_CM
+}
 
 /// Si este espacio es un atrio: una NAVE con la planta de arriba vacía justo encima.
 ///
@@ -4302,7 +4317,6 @@ fn atrium_carves(building: &RegionBuilding) -> Vec<Wg3Carve> {
     let grow = (CARVE_DEPTH_M * CM_PER_M) as i32;
 
     for (n, plan) in building.storeys.iter().enumerate() {
-        let up = building.storeys.get(n + 1);
         for s in plan.spaces.iter().filter(|s| is_atrium(s)) {
             // ADR-104 enm. 3 — **el vano se abre LADO A LADO, y sólo hacia una sala construida de
             // arriba.** Un solo vano en anillo tiraba también el muro alto del atrio por los lados
@@ -4310,24 +4324,40 @@ fn atrium_carves(building: &RegionBuilding) -> Vec<Wg3Carve> {
             // veía la nada: los «techos negros» de la galería del 2026-09-04. Donde no hay nadie
             // que mire, el muro de 6,40 se queda: una nave de doble altura tapiada es
             // arquitectura; un agujero a la nada no.
-            for side in bands_of(&s.rect, grow) {
-                let someone_up = up.is_some_and(|plan_up| {
-                    plan_up
-                        .spaces
-                        .iter()
-                        .any(|t| t.role.is_built() && t.hits_rect(&side))
-                });
-                if !someone_up {
-                    continue;
+            // **UN VANO POR PLANTA, y no un cajón desde la primera hasta la última** (ADR-104
+            // enm. 4). Con una sola planta de vacío las dos formas dan lo mismo y por eso el cajón
+            // duró dos ADRs. Con una MEGASALA de cinco no: el cajón va de `floor + 332` a
+            // `floor + 1636` y ahí dentro caen los forjados de las plantas intermedias, que cuelgan
+            // en `[k*332 - 12, k*332]`. Medido tal cual al intentarlo:
+            // `[walk] espacio 0 (spine) a cota 664 con suelo en el 0 % de sus celdas`.
+            //
+            // Cada vano arranca en el TECHO del forjado de su planta y muere dos losas por debajo
+            // del siguiente: se lleva el muro y deja el suelo, que es justo lo que hace balcón.
+            // Y sólo hasta donde HAY planta: la megasala sube por encima del edificio (ver
+            // `plan::atrium_storeys_for`), y ahí arriba no hay forjado que abrir ni nadie que mire.
+            for k in 1..=(s.void_storeys_above as usize).max(1) {
+                let plan_up = building.storeys.get(n + k);
+                let bottom = s.floor_y_cm + k as i32 * STOREY_HEIGHT_CM;
+                let top = bottom + STOREY_HEIGHT_CM - 2 * SLAB_THICKNESS_CM;
+                for side in bands_of(&s.rect, grow) {
+                    let someone_up = plan_up.is_some_and(|plan_up| {
+                        plan_up
+                            .spaces
+                            .iter()
+                            .any(|t| t.role.is_built() && t.hits_rect(&side))
+                    });
+                    if !someone_up {
+                        continue;
+                    }
+                    out.push(Wg3Carve {
+                        x_cm: side.min_x_cm,
+                        z_cm: side.min_z_cm,
+                        size_x_cm: side.width_cm(),
+                        size_z_cm: side.depth_cm(),
+                        bottom_y_cm: bottom,
+                        top_y_cm: top,
+                    });
                 }
-                out.push(Wg3Carve {
-                    x_cm: side.min_x_cm,
-                    z_cm: side.min_z_cm,
-                    size_x_cm: side.width_cm(),
-                    size_z_cm: side.depth_cm(),
-                    bottom_y_cm: s.floor_y_cm + STOREY_HEIGHT_CM,
-                    top_y_cm: s.floor_y_cm + ATRIUM_CLEAR_CM,
-                });
             }
         }
     }
@@ -4385,7 +4415,7 @@ fn atrium_aprons(building: &RegionBuilding) -> Vec<Wg3Solid> {
             }
             let low_top = (atrium.floor_y_cm + clear_height_cm(atrium))
                 .min(other.floor_y_cm + clear_height_cm(other));
-            let high_top = atrium.floor_y_cm + ATRIUM_CLEAR_CM;
+            let high_top = atrium.floor_y_cm + atrium_clear_cm(atrium);
             if high_top <= low_top + SLAB_THICKNESS_CM {
                 continue;
             }

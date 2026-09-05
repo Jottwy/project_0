@@ -90,6 +90,8 @@ const SALT_WEIRD_UP: u32 = 0x9A17_000B;
 const SALT_SHAPE: u32 = 0x9A17_000C;
 /// Sal de la altura de techo por espacio.
 const SALT_CEILING: u32 = 0x9A17_000D;
+/// Sal de la MEGASALA: cuántas plantas de vacío pide una nave por encima de sí misma.
+const SALT_MEGA: u32 = 0x9A17_000E;
 
 /// ADR-120 D3 — las perillas de la GRAMÁTICA de composición.
 ///
@@ -734,6 +736,24 @@ pub struct PlannedSpace {
     ///
     /// Sólo lo pone [`cap_headroom_under`], que por definición se llama con una planta encima delante.
     pub void_above: bool,
+
+    /// **Cuántas plantas seguidas hay vacías justo encima de esta huella.**
+    ///
+    /// `void_above` es esto mismo preguntado con un sí o un no, y durante dos ADRs bastó porque la
+    /// respuesta sólo se usaba para decidir si una nave medía una planta o dos. La MEGASALA necesita
+    /// el número: su altura libre es `(1 + n)` plantas menos dos losas, y el vano que abre en el muro
+    /// se recorta **planta por planta** — un solo cajón desde la primera hasta la última se lleva por
+    /// delante los forjados intermedios, que es exactamente cómo se midió el fallo:
+    /// `espacio 0 (spine) a cota 664 con suelo en el 0 % de sus celdas`.
+    ///
+    /// Cuenta sólo plantas que EXISTEN: la última del edificio vale cero, igual que `void_above`.
+    pub void_storeys_above: u8,
+
+    /// **Cuántas alturas de planta mide este atrio.** `0` = no es atrio.
+    ///
+    /// Dos es el atrio de ADR-104; más es una MEGASALA (enm. 4). Lo pone [`atrium_storeys_for`] al
+    /// cerrar el edificio, que es el único sitio donde se sabe cuántas plantas hay encima.
+    pub atrium_storeys: u8,
 
     /// **La altura libre que ESTE espacio pide, en centímetros. `0` = la de su papel.**
     ///
@@ -1424,6 +1444,62 @@ pub const CEILING_TALL_MIN_CM: i32 = 400;
 /// El techo del techo.
 pub const CEILING_TALL_MAX_CM: i32 = 600;
 
+/// **LA MEGASALA: superficie a partir de la cual una nave puede pedir más de un vacío encima.**
+///
+/// Cuatrocientos metros cuadrados son veinte por veinte. El número no es un gusto: quince metros de
+/// altura sobre doscientos metros cuadrados no es una nave, es un hueco de ascensor, y desde dentro
+/// se lee como un fallo del generador y no como arquitectura. La proporción es la que decide si un
+/// volumen alto se siente grande o se siente estrecho.
+pub const ATRIUM_MEGA_AREA_M2: f32 = 400.0;
+
+/// Y la superficie a la que ya pide el máximo. Entre las dos se interpola.
+pub const ATRIUM_MEGA_FULL_AREA_M2: f32 = 900.0;
+
+/// Con qué probabilidad una nave que cumple el área lo pide. Una de cada cinco de las que YA son
+/// candidatas — que son pocas — porque lo que hace grande a una megasala es que no haya otra.
+const ATRIUM_MEGA_CHANCE: f32 = 0.20;
+
+/// Cuántas alturas de planta llega a medir una megasala. Un atrio corriente mide dos.
+///
+/// Cinco son `5 * 332 - 24 = 1636 cm`: dieciséis metros y medio de altura libre, casi nueve alturas de
+/// jugador. Es el volumen que se pidió.
+const ATRIUM_MEGA_MAX_STOREYS: u8 = 5;
+
+/// **Cuántas alturas de planta mide este atrio.** Dos es el atrio de ADR-104; más es una MEGASALA.
+///
+/// # Por qué el número NO sale de contar vacíos
+///
+/// Ése fue el primer intento y está medido: en 49 regiones el mundo levanta **2 plantas en 47 y 1 en
+/// 2 — nunca 3**. Un atrio no puede vaciar una planta que no existe, así que apilar vacíos tiene un
+/// tope duro de dos alturas y la megasala era imposible por construcción, no por un número mal
+/// elegido. El vacío que faltaba no está entre plantas: está **encima del edificio**.
+///
+/// Por eso la condición es que no haya nada construido en NINGUNA planta de arriba —
+/// `void_storeys_above` cuenta hasta la última, así que eso es que las cuente todas—. Cumplida, subir
+/// el techo no atraviesa nada: sale por el tejado, y por dentro no hay tejado que mirar.
+///
+/// Determinista por posición como todo lo demás, y **por el rectángulo de la nave**: si la
+/// composición de huellas la deforma, el sorteo sigue cayendo donde caía.
+fn atrium_storeys_for(seed: i32, s: &PlannedSpace, storeys_above: u8) -> u8 {
+    const PLAIN: u8 = 2;
+    let area = s.area_m2();
+    if area <= ATRIUM_MEGA_AREA_M2 || s.void_storeys_above < storeys_above {
+        return PLAIN;
+    }
+    let (cx, cz) = s.rect.centre_m();
+    let mut st = hash::stream_at(seed, cx, cz, SALT_MEGA);
+    if st.next01() >= ATRIUM_MEGA_CHANCE {
+        return PLAIN;
+    }
+    // Interpolada por área: una nave justa se queda en tres alturas, una enorme llega arriba. Quince
+    // metros sobre cuatrocientos metros cuadrados ya es un volumen esbelto; sobre novecientos es una
+    // nave.
+    let t = ((area - ATRIUM_MEGA_AREA_M2) / (ATRIUM_MEGA_FULL_AREA_M2 - ATRIUM_MEGA_AREA_M2))
+        .clamp(0.0, 1.0);
+    let h = PLAIN as f32 + 1.0 + t * (ATRIUM_MEGA_MAX_STOREYS - PLAIN - 1) as f32;
+    (h.round() as u8).clamp(PLAIN + 1, ATRIUM_MEGA_MAX_STOREYS)
+}
+
 /// **LA PERILLA: qué parte de los espacios sortea su propia altura.**
 ///
 /// `0` la apaga entera y **el mundo vuelve a ser el de antes al centímetro** —todo espacio se queda
@@ -1968,6 +2044,44 @@ pub fn plan_building_with(
     for n in 1..out.len() {
         let (below, above) = out.split_at_mut(n);
         cap_headroom_under(&mut below[n - 1], &above[0]);
+    }
+
+    // **Y cuántas plantas seguidas hay vacías encima, que es lo que separa un atrio de una MEGASALA.**
+    //
+    // Va aparte de `cap_headroom_under` a propósito: aquél mira exactamente una planta —es lo único
+    // que necesita para poner el tope— y esto mira la columna entera. Se cuenta hacia arriba y se
+    // para en la primera planta con algo construido encima; la última planta del edificio no cuenta
+    // ninguna, por el mismo motivo por el que no tiene `void_above`: no hay planta que vaciar.
+    for n in 0..out.len() {
+        let counts: Vec<u8> = out[n]
+            .spaces
+            .iter()
+            .map(|s| {
+                let mut k = 0u8;
+                for above in &out[n + 1..] {
+                    if above
+                        .spaces
+                        .iter()
+                        .any(|t| t.role.is_built() && t.rect.overlaps(&s.rect))
+                    {
+                        break;
+                    }
+                    k += 1;
+                }
+                k
+            })
+            .collect();
+        let above = (out.len() - 1 - n).min(u8::MAX as usize) as u8;
+        for (s, k) in out[n].spaces.iter_mut().zip(counts) {
+            s.void_storeys_above = k;
+            // Y con el número de plantas vacías ya puesto, la altura del atrio. Va aquí y no en
+            // `fill` porque es una decisión del PLAN, igual que `ceiling_clear_cm`: el relleno la lee.
+            s.atrium_storeys = if s.void_above && s.role == SpaceRole::Hall && !s.is_composite() {
+                atrium_storeys_for(seed, s, above)
+            } else {
+                0
+            };
+        }
     }
 
     RegionBuilding {
@@ -3777,6 +3891,8 @@ impl Planner {
             max_clear_cm: 0,
             // Y esto sólo lo sabe el edificio: una planta sola no puede saber si tiene otra encima.
             void_above: false,
+            void_storeys_above: 0,
+            atrium_storeys: 0,
             // La sortea `assign_ceilings` al cerrar la planta, con la huella ya definitiva.
             ceiling_clear_cm: 0,
         });

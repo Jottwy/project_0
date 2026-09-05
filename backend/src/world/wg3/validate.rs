@@ -46,9 +46,18 @@ use crate::world::Vec3;
 /// peldaños— contaba como suelo pisable en el que nadie cabe, y salía como una isla por pozo. No es
 /// un sitio: es el hueco bajo la escalera, y con 1,8 m deja de contarse solo.
 const HEAD_M: f32 = super::collision::PLAYER_BODY_M;
-/// Hueco de cabeza por encima del cual una cota deja de contar (tejados y azoteas). Mismo que las
-/// sondas desde ADR-102 D5.
-const CEILING_CAP_M: f32 = 7.0;
+/// Hueco de cabeza por encima del cual una cota deja de contar (la cara de arriba de una pared).
+///
+/// **Subido de 7,0 a 17,0 por la MEGASALA (ADR-104 enm. 4), y el motivo es que 7,0 dejó de significar
+/// lo que decía.** El tejado —el caso que el nombre sugiere— no lo descarta este tope sino no tener
+/// NADA encima: `levels_at` le da `f32::MAX`. Lo que 7,0 descartaba de verdad era el suelo de un sitio
+/// más alto que un atrio, y hasta ADR-104 enm. 4 no había ninguno. Con megasalas de hasta
+/// `5 * 332 - 24 = 1636 cm` sí los hay, y el tope se llevaba por delante **el suelo entero de la sala
+/// más grande del mundo**: medido tal cual, `espacio 9 (hall) a cota 0 con suelo en el 0 % de sus
+/// celdas`, con la sala perfectamente construida.
+///
+/// Diecisiete metros son la megasala más alta que el plan puede pedir, más holgura de ráster.
+const CEILING_CAP_M: f32 = 17.0;
 /// Una mancha pisable por debajo de esto es ruido del ráster (una celda sobre una losa, un rellano
 /// suelto); por encima es un sitio en el que alguien podría aparecer y no poder salir.
 pub const ISLAND_MIN_CELLS: usize = 40;

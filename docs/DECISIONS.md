@@ -14003,3 +14003,60 @@ mide hoy. Cuesta más tramos por región, que es gratis.
 - El barrido de 27 regiones (mancha, islas, nav) debe salir **igual que la línea base**: la escala no
   cambia la topología, y cualquier desvío es un sitio donde se mezclaron las dos unidades.
 - Playtest: cruzar una puerta, subir una escalera y caer por un pozo con el cuerpo real.
+
+---
+
+## ADR-104 — enmienda 4: la MEGASALA, y el vacío que faltaba estaba encima del edificio
+
+**Fecha:** 2026-09-05 · **Estado:** implementado · **Wire:** sin cambios.
+
+**Contexto.** Se pide una sala excepcional de unos quince metros de altura. ADR-104 D1 fija el atrio
+en dos plantas (`ATRIUM_CLEAR_CM = 2 × 332 − 24 = 640 cm`) y esa constante está escrita en tres
+sitios del relleno, así que el primer intento fue el evidente: contar cuántas plantas seguidas hay
+vacías encima de una nave y pedir tantas alturas como vacíos. **Está medido y no funciona.**
+
+- Encadenar vacíos exige plantas que vaciar, y el barrido de 49 regiones da
+  **`[0, 2, 47, 0, …]`: 47 edificios de 2 plantas, 2 de 1, ninguno de 3.** El tope de la pila es dos
+  alturas por construcción, no por un número mal elegido.
+- Y subir la altura sin tocar el vano rompe el edificio: el cajón de `atrium_carves` iba de
+  `floor + 332` a `floor + 1636` de una pieza, y ahí dentro caen los forjados intermedios, que cuelgan
+  en `[k × 332 − 12, k × 332]`. Medido: `[walk] espacio 0 (spine) a cota 664 con suelo en el 0 % de
+  sus celdas`.
+
+**Decisión.** El vacío que hace falta no está entre plantas: está **encima del edificio**. Una nave
+puede pedir hasta cinco alturas de planta —`5 × 332 − 24 = 1636 cm`, 16,36 m— si **no hay nada
+construido en ninguna planta por encima de ella**, que es lo que dice `void_storeys_above` cuando
+cuenta todas las que quedan. Cumplida esa condición, subir el techo no atraviesa nada: sale por el
+tejado, y por dentro no hay tejado que mirar.
+
+- `PlannedSpace::void_storeys_above` — cuántas plantas seguidas hay vacías encima. Se calcula al
+  cerrar el edificio, después de `cap_headroom_under`, porque es lo único que ve la columna entera.
+- `PlannedSpace::atrium_storeys` — cuántas alturas mide este atrio; `0` = no es atrio. Dos es el atrio
+  de siempre. Lo decide `plan::atrium_storeys_for`: área > 400 m², una de cada cinco, y la altura
+  interpolada entre 400 y 900 m² — quince metros sobre doscientos metros cuadrados es un hueco de
+  ascensor y no una nave.
+- `fill::atrium_clear_cm` lee el campo; `ATRIUM_CLEAR_CM` se queda como el caso de dos plantas.
+- **El vano se abre planta por planta**, cada uno del techo de su forjado a dos losas por debajo del
+  siguiente, y sólo hasta donde HAY planta. Es lo que deja el suelo del vecino como balcón en vez de
+  llevárselo.
+- `validate::CEILING_CAP_M` sube de 7,0 a 17,0 m. **Ese tope había dejado de significar lo que dice:**
+  el tejado no lo descarta él sino no tener nada encima (`levels_at` devuelve `f32::MAX`); lo que 7,0
+  descartaba de verdad era el suelo de un sitio más alto que un atrio, y hasta hoy no había ninguno.
+  Con la megasala se llevaba por delante el suelo entero de la sala más grande del mundo:
+  `espacio 9 (hall) a cota 0 con suelo en el 0 % de sus celdas`, con la sala perfectamente construida.
+
+**Lo que NO cambia.** Ni el wire, ni el BSP, ni `PlannedSpace: Copy`, ni la mediana del mundo: el
+techo mediano de sala sigue en 3,10 m. Una megasala es una excepción o no es nada.
+
+### Verificaciones
+
+- `player_scale_reality` (sonda): techo de sala **máx 6,40 → 16,36 m**, mediana 3,10 m sin mover.
+- `probe_how_many_atria` (sonda): histograma de alturas por atrio, con la cola visible
+  (`[0,0,3,1,1,1,0,0]` en la región (1,0)) y el barrido de plantas por edificio que descarta la pila.
+- Suite: 1381 verdes, clippy limpio. Las cuatro regiones de referencia vuelven a 4/4 válidas, con la
+  mancha mayor en 99,9 % y las islas bajando de 1,0 a 0,8.
+- Pendiente de playtest: la lámpara ya cuelga a 3 m en techo alto (`HangHeight`), así que el suelo se
+  alumbra igual y el techo de dieciséis metros queda en penumbra — que es lo que se quiere, pero hay
+  que verlo.
+- **Aviso a ADR-128 (×2):** estas constantes son del PLAN, así que la escala ×2 llevaría la megasala a
+  32 m servidos. Si eso no es lo que se quiere, se ajusta `ATRIUM_MEGA_MAX_STOREYS`, no el ×2.
