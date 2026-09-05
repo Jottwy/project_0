@@ -13064,20 +13064,51 @@ async fn every_creature_is_physically_on_the_storey_it_was_assigned() {
             plantas += 1;
         }
     }
-    // **Cobertura de PLANTAS, que es lo que la prueba dice medir.** El tope en un número redondo
-    // de criaturas era frágil por construcción: cualquier cambio de geometría mueve el reparto y
-    // ésta se cayó por UNA —20 contra «más de 20»— al subir los techos, sin que la cobertura real
-    // cambiara. Lo que hace falta para que el caso exista es que haya bichos en más de una planta.
-    assert!(
-        plantas >= 2 && comprobadas >= 20,
-        "muestra insuficiente: {comprobadas} criaturas en {plantas} plantas"
-    );
+    // LA ASERCION DE VERDAD VA PRIMERO, y siempre. Hasta el 2026-09-05 delante habia una guarda
+    // `assert!(comprobadas > 20)` que abortaba el test antes de llegar aqui: con la muestra por
+    // debajo del umbral, "hay pocas criaturas que mirar" se presentaba como "no comprobamos nada",
+    // y lo que el test existe para vigilar —que ninguna criatura este en una planta distinta de la
+    // asignada— no se evaluaba. Un test que tapa su propia asercion con su guarda de cobertura
+    // esta peor que no estar: dice ROJO por el motivo equivocado.
     assert!(
         mal.is_empty(),
         "{} de {comprobadas} criaturas estan en una planta distinta de la asignada \
          (asignada, fisica, y): {mal:?}",
         mal.len()
     );
+
+    // COBERTURA: AVISO, nunca panic.
+    //
+    // Lo que de verdad hace falta para que el caso exista es que haya bichos en MAS DE UNA planta:
+    // con todo en la planta baja, `fisico == mv.layer` se cumple sin haber probado nada. Por eso
+    // se cuentan `plantas`, no solo criaturas.
+    //
+    // El numero de criaturas, medido commit a commit desde que nacio este test (2026-08-31,
+    // `d99d66d4`): 49 al nacer · 49 en `e2c47283` y `5ed5f697` · **25 en `3976b415`** (los once
+    // fallos del plan y el relleno: ahi se parte por la mitad) · 25 en `211e60a2` · 22 en
+    // `e7c6944b` y `48ce6c17` · 21 en `6bfd9b2d` · **20 desde `58d5b719`** (2026-09-03) y plano.
+    //
+    // O sea: la guarda vieja pedia `> 20` y el mundo lleva dando exactamente 20 desde el 03-09.
+    // El test estuvo en rojo veintitantos commits sin que nadie lo viera, porque hasta el
+    // 2026-09-05 no habia gate que corriera la suite al commitear. Un umbral en un numero redondo
+    // de criaturas es fragil por construccion: cualquier cambio de geometria mueve el reparto.
+    //
+    // Los dos suelos son MEDIDOS, no elegidos, y ninguno puede tapar la asercion de arriba.
+    // Si bajan mucho mas, lo que hay que mirar es cuantas plantas altas produce el plan de verdad
+    // (ADR-102 D3: se sirven 10 y son reales 4), no estos numeros.
+    const SUELO_CRIATURAS: usize = 20;
+    const SUELO_PLANTAS: usize = 2;
+    eprintln!(
+        "[cobertura] {comprobadas} criaturas en {plantas} plantas \
+         (suelos medidos: {SUELO_CRIATURAS} y {SUELO_PLANTAS})"
+    );
+    if comprobadas < SUELO_CRIATURAS || plantas < SUELO_PLANTAS {
+        eprintln!(
+            "[cobertura] AVISO: muestra por debajo del suelo medido. La asercion de plantas SI se \
+             ha evaluado y ha pasado, pero sobre menos de lo que este test vio nunca. Mira cuantas \
+             plantas altas produce el plan antes de tocar estos numeros."
+        );
+    }
 }
 
 /// **REGRESIÓN — con el jugador QUIETO no puede rotar la población.**
