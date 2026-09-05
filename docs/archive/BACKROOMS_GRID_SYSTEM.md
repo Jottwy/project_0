@@ -1,3 +1,9 @@
+> **CONGELADO — 2026-09-05.** Último cambio real: 2026-06-12. Describe `grid_gen` con celda de
+> 2,5 m, que ya no es el mundo servido: desde ADR-100 lo sirve **WorldGen3** y su celda mide 0,5 m,
+> así que toda constante de aquí cambió de significado. Vigente:
+> [`docs/WG3-ROADMAP.md`](../WG3-ROADMAP.md), [`docs/WORLDGEN3-BRIEF.md`](../WORLDGEN3-BRIEF.md) y
+> los ADR-100 y siguientes. No se actualiza.
+
 # Sistema de generación procedural Backrooms — Documento de diseño técnico
 
 > Plano de implementación. Diseño cerrado y validado visualmente.

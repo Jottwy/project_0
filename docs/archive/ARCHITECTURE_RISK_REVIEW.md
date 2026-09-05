@@ -1,3 +1,7 @@
+> **CONGELADO — 2026-09-05.** Último cambio real: 2026-08-10. Se conserva por su valor histórico;
+> no se actualiza. Los riesgos vigentes viven en [`docs/STATE.md`](../STATE.md) («Riesgos
+> abiertos») y la arquitectura con sus contratos en [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md).
+
 # Architecture Risk Review
 
 > Date: 2026-06-08

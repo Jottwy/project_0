@@ -1,3 +1,10 @@
+> **CONGELADO — 2026-09-05.** Es una FOTO generada el 2026-08-18, no una lista viva: sus 68 ítems
+> no se han vuelto a puntuar desde entonces y varios se ejecutaron después (el código muerto, en el
+> bloque B4 del saneamiento del 2026-09-05). La deuda vigente vive en
+> [`STATE.md`](STATE.md) → «Deuda declarada», y la auditoría que lo sucede es
+> [`AUDIT-2026-08-28.md`](AUDIT-2026-08-28.md). Se conserva por el porqué de cada nota. No se
+> actualiza.
+
 # DEBT-ROADMAP.md — Hoja de ruta de deuda técnica
 
 > Generado el 2026-08-18 a partir de una auditoría de solo-lectura (20 pasadas de descubrimiento +

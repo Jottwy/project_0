@@ -1,3 +1,19 @@
+> **CONGELADO — 2026-09-05.** Era el LÉEME de instalación del pack de configuración de Claude,
+> escrito antes de la primera sesión. Se instaló hace tres meses: el paso 1 dice «copia el
+> contenido de esta carpeta a la RAÍZ de tu repo», que ya no aplica a nadie.
+>
+> **Nada se conservó**, y el diff regla a regla es corto:
+> - *Rutina diaria* (`/siguiente → /plan → implementar → /auditar → /checkpoint → /clear`): ya está
+>   en [`CLAUDE.md`](../../CLAUDE.md), sección «Flujo estándar». Aquí además cita `/ruta`, que se
+>   absorbió en `/siguiente` el 2026-09-05.
+> - *Política de modelos:* caducada por fecha propia — «incluido en los límites del plan Max hasta
+>   el 22-jun-2026». Y nombra Sonnet 4.6 / Opus 4.8 / Fable 5 como si fueran los de hoy.
+> - *Reglas de oro anti-tokens:* las cinco están cubiertas por las reglas duras 3, 5 y 6 de
+>   `CLAUDE.md` y por los subagentes ya configurados. La quinta («si un doc crece >200 líneas,
+>   recórtalo») dejó de ser un consejo y pasó a ser un gate medido:
+>   `tools/dev/CheckStateBudget.py`.
+> - *Primera sesión recomendada:* ADR-003 y ADR-004 están validados desde hace tres meses.
+
 # Pack de configuración Claude — Backrooms Survival MMO
 
 ## Instalación (5 min)

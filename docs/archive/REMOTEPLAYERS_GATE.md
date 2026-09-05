@@ -1,3 +1,7 @@
+> **CONGELADO — 2026-09-05.** Último cambio real: 2026-06-08. El gate que describe se pasó hace
+> mucho: la sincronización de peers vive hoy en ADR-009 y ADR-044 y su estado en
+> [`docs/STATE.md`](../STATE.md). No se actualiza.
+
 # RemotePlayers=1 Gate
 
 ## Objective

@@ -1,3 +1,9 @@
+> **CONGELADO — 2026-09-05.** Último cambio real: 2026-06-08. Se conserva por su valor
+> histórico; **no describe el proyecto de hoy** y no se actualiza. La arquitectura vigente está
+> en [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md) y las decisiones en `docs/DECISIONS.md`
+> (índice: [`docs/DECISIONS-INDEX.md`](../DECISIONS-INDEX.md)). Aquí, entre otras cosas, el render
+> es Built-in: dejó de serlo en ADR-065 (URP, 2026-08-11).
+
 # BACKROOMS SURVIVAL — ARCHITECTURE DOCUMENT v1.0
 ## Sesión 1 Output: Distributed P2P Architecture
 

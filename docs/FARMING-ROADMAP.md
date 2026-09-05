@@ -1,3 +1,6 @@
+> **VIGENTE — 2026-09-05.** E0–E2 hechos (2026-08-22); **E3 (visual por slot) y E4 pendientes**, y
+> el Bloque A sin empezar. Fuera del contrato WG3 v1: no se toca hasta que ese contrato cierre.
+
 # FARMING-ROADMAP.md — cierre mínimo del farmeo y el almacenaje para Alpha 1
 
 > Escrito el 2026-08-22 tras la sesión de diseño con Joel. Pensado para **ejecutarse tal cual**:

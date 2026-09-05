@@ -1,3 +1,7 @@
+> **CONGELADO — 2026-09-05.** Último cambio real: 2026-06-08. El «Current State» del título es el
+> de hace tres meses: el nombre mentía y por eso se archiva. Los riesgos vigentes viven en
+> [`docs/STATE.md`](../STATE.md), sección «Riesgos abiertos». No se actualiza.
+
 # Stability Audit — Current State
 
 > Date: 2026-06-08

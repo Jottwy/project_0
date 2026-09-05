@@ -57,7 +57,7 @@
 - [web/README.md](web/README.md) — artifacts publicados y su sincronización.
 
 ## Congelado (análisis útil, estado NO vigente)
-- [AUDIT-2026-08-03.md](AUDIT-2026-08-03.md) · [AUDIT-2026-08-13.md](AUDIT-2026-08-13.md)
-- [STABILITY_AUDIT_CURRENT.md](STABILITY_AUDIT_CURRENT.md) · [ARCHITECTURE_RISK_REVIEW.md](ARCHITECTURE_RISK_REVIEW.md) — 2026-06-08 pese al nombre.
-- [REMOTEPLAYERS_GATE.md](REMOTEPLAYERS_GATE.md) — superado.
-- [archive/](archive/) · [legacy/](legacy/) · [measurements/](measurements/)
+- [archive/](archive/) — desde 2026-09-05 TODO lo congelado vive aquí, cada fichero con cabecera
+  «CONGELADO + fecha + qué lo sucede». · [measurements/](measurements/)
+
+> Cada roadmap lleva cabecera **VIGENTE / COMPLETADO / CONGELADO + fecha** en su primera línea.

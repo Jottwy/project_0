@@ -25,5 +25,7 @@ Cliente: Unity 6 + URP 17.0.4 Forward+ (C#) — real desde ADR-065 (2026-08-11);
 
 12. Nunca uses `git add -A`, `git add --all`, `git add .`, `git add :/` ni `git commit -a/--all`; estaciona solo rutas revisadas de esta sesión.
 
+13. Determinismo del worldgen (venía de `AGENTS.md`): jamás emitas salida iterando un `HashSet`/`HashMap` sin ordenar antes; `item_id` y `entity_id` estables; y todo cambio de reglas de layout necesita test de conectividad desde el spawn.
+
 ## Flujo estándar
 /siguiente → /plan → (validación humana) → implementar → /auditar → /checkpoint → /clear

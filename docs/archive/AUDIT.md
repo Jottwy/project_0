@@ -1,3 +1,9 @@
+> **CONGELADO — 2026-09-05.** Último cambio real: 2026-06-30. Se conserva por su valor
+> histórico; no se actualiza. Lo que de esta auditoría sigue siendo LEY vive en
+> [`docs/STATE.md`](../STATE.md) («NO tocar»: nunca editar clases nativas de STP, el asmdef de
+> `PolymindGames` no puede referenciar `Assembly-CSharp`) y en los ADR de la integración
+> (ADR-037, ADR-081).
+
 # AUDIT.md — Auditoría de código STP (Survival Template Pro / PolymindGames)
 
 > Objetivo: documentar las APIs públicas de STP relevantes para 8 sistemas, de cara a
