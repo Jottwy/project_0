@@ -384,7 +384,12 @@ namespace BackroomsSurvival.WorldGen3
                     // visibles cuenta LUCES, no volumen, y aquí no se añade ni una. Lo que sube es el
                     // trabajo de clustering, y por eso el número no es 20.
                     light.range = 11f;
-                    light.intensity = 1.35f;
+                    // **El doble de 1,35, a petición de Joel tras el playtest del 2026-09-05.** Con
+                    // 1,35 y el ambiente plano en 0,30 una sala corriente se leía a media luz y había
+                    // que acercarse a una pared para ver de qué color era. No sube el coste de
+                    // Forward+: el clustering cuenta volumen y luces, y ni el alcance ni el número
+                    // cambian aquí.
+                    light.intensity = 2.7f;
                     light.color = new Color(1f, 0.96f, 0.78f);
                     // La PRIMERA de un tramo grande proyecta; las demás no. Con 2 × 2 como tope por
                     // eje, eso es una de cuatro en el peor caso.
@@ -631,7 +636,10 @@ namespace BackroomsSurvival.WorldGen3
             var light = go.AddComponent<Light>();
             light.type = LightType.Point;
             light.color = new Color(1f, 0.97f, 0.88f);
-            light.intensity = 1.6f;
+            // El doble, por lo mismo y a la vez que el plafón de tramo: dos sistemas de luz con
+            // intensidades que se separan al doble dejan las piezas del catálogo leyéndose como
+            // agujeros oscuros dentro de una sala ya iluminada.
+            light.intensity = 3.2f;
             // Acotado a 9 m: la fórmula abierta llegaba a 21,75 m en la pieza más grande, y una
             // puntual así cruza decenas de clusters de Forward+ ella sola. Una pieza grande queda
             // con penumbra en los bordes hasta que declare sus propias luces (R32), que es el plan.
