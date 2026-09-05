@@ -910,3 +910,25 @@ lo que no cabe en un `u16`.
 
 `WireSchema.Expected` (C#) a 55 en el mismo commit — lo vigila
 `the_csharp_mirror_declares_the_same_wire_schema_version`.
+
+## v56 a v60 — en el registro de ADR, no aquí (2026-09-04)
+
+Cinco bumps del mismo día, todos del canal de macizos de WG3: v56 giro y forma (`yaw_deg`, `shape`;
+ADR-121 D1 + ADR-125), v57 el arco (`SHAPE_ARCH`; ADR-125 enm. 1), v58 el bit de decoración
+0x80 en `style` (ADR-125 enm. 2), v59 los pozos y el estilo 7 (ADR-126), v60 el estilo 8 de la pared
+del pozo (ADR-126 enm. 1). El detalle de cada uno está en `docs/DECISIONS.md`; `WireSchema.Expected`
+se movió en el mismo commit cada vez.
+
+## v61 — ADR-129: las anclas de ATREZO viajan, y el bit 0x40 de `style` (2026-09-06)
+
+**Qué lleva.** Lista nueva `props` en `wg3_chunk`, por el CENTRO como los macizos (se instancian):
+`Wg3PropWire { x_cm, z_cm, y_cm, yaw_deg, kind, style }`. `kind` es una tabla cerrada (1 mesa,
+2 silla, 3 archivador, 4 estantería, 5 pizarra, 6 papelera, 7 caja, 8 papel, 9 monitor) que el
+cliente resuelve a un prefab de `Resources/Wg3Props`. Y semántica nueva del byte `style` de los
+macizos: **0x40 = INVISIBLE**, el ráster lo estampa y el cliente le pone collider sin dibujarlo — es
+la colisión de los muebles que frenan, para que servidor y Unity choquen igual sin mallas por el
+cable.
+
+**Lado cliente.** `Wg3PropMsg` y `Wg3ChunkMsg.props` en `IPCMessages.Wg3.cs`; `Wg3SolidMsg.IsHidden`
+y `BaseStyle` sin los dos bits; `Wg3SceneAssembler.AssembleProp` y `Wg3PropCatalog`.
+`WireSchema.Expected` a 61 en el mismo commit.

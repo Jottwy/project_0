@@ -1229,7 +1229,7 @@ pub async fn run(
                     // horneadas: sin ellos, una pieza colocada en un espacio planificado nace
                     // sellada, y el mundo servido no puede usar contenido autorado.
                     let coord = crate::world::wg3::chunk::Wg3ChunkCoord { x: cx, z: cz };
-                    let (placements, segments, carves, solids) = match wg3.manifest() {
+                    let (placements, segments, carves, solids, props) = match wg3.manifest() {
                         Some(manifest) if wg3.is_enabled() => {
                             let region = wg3_world.region_for(manifest, net.world_seed, coord);
                             let placements = region
@@ -1298,9 +1298,22 @@ pub async fn run(
                                     shape: s.shape,
                                 })
                                 .collect();
-                            (placements, segments, carves, solids)
+                            // ADR-129 — las anclas de atrezo, por su posición, como los macizos.
+                            let props = region
+                                .props_owned_by_chunk(coord)
+                                .into_iter()
+                                .map(|p| crate::ipc::Wg3PropWire {
+                                    x_cm: p.x_cm,
+                                    z_cm: p.z_cm,
+                                    y_cm: p.y_cm,
+                                    yaw_deg: p.yaw_deg,
+                                    kind: p.kind,
+                                    style: p.style,
+                                })
+                                .collect();
+                            (placements, segments, carves, solids, props)
                         }
-                        _ => (Vec::new(), Vec::new(), Vec::new(), Vec::new()),
+                        _ => (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()),
                     };
 
                     let _ = to_clients.send(ServerMessage::Wg3Chunk(crate::ipc::Wg3ChunkView {
@@ -1310,6 +1323,7 @@ pub async fn run(
                         segments,
                         carves,
                         solids,
+                        props,
                     }));
                 }
                 ClientMessage::RequestChunk { cx, cz, layer } => {

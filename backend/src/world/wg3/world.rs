@@ -54,7 +54,7 @@ use super::manifest::Wg3Manifest;
 use super::placement::Wg3Placement;
 use super::plan;
 use super::route;
-use super::segment::{Wg3Carve, Wg3Segment, Wg3Solid};
+use super::segment::{Wg3Carve, Wg3Prop, Wg3Segment, Wg3Solid};
 
 /// Tope de piezas del mundo interino.
 ///
@@ -173,6 +173,8 @@ pub struct Wg3ServedWorld {
     /// ADR-105 — los MACIZOS: materia que se anade y a la que los vanos no tocan (D2). Aparte de
     /// los tramos porque no son la cascara de ninguna sala.
     solids: Vec<Wg3Solid>,
+    /// ADR-129 — las anclas de atrezo. Se reparten por su posición, como los macizos por su centro.
+    props: Vec<Wg3Prop>,
 }
 
 /// Los ajustes con los que se compone una región del mundo SERVIDO.
@@ -328,6 +330,7 @@ impl Wg3ServedWorld {
             segments: filled.segments,
             carves: filled.carves,
             solids: filled.solids,
+            props: filled.props,
         }
     }
 
@@ -376,6 +379,7 @@ impl Wg3ServedWorld {
             carves: composed.carves,
             // El compositor por bocas es legado y no emite macizos: ADR-105 vive en el PLAN.
             solids: Vec::new(),
+            props: Vec::new(),
         }
     }
 
@@ -406,6 +410,7 @@ impl Wg3ServedWorld {
             carves: composed.carves,
             // El compositor por bocas es legado y no emite macizos: ADR-105 vive en el PLAN.
             solids: Vec::new(),
+            props: Vec::new(),
         }
     }
 
@@ -606,6 +611,18 @@ impl Wg3ServedWorld {
             .filter(|s| {
                 let (cx, cz) = s.centre();
                 Wg3ChunkCoord::containing(cx, cz) == coord
+            })
+            .copied()
+            .collect()
+    }
+
+    /// ADR-129 — las anclas de atrezo de las que este chunk es DUEÑO, por su posición. Como los
+    /// macizos: se instancian, y el cliente monta un GameObject por chunk sin deduplicar.
+    pub fn props_owned_by_chunk(&self, coord: Wg3ChunkCoord) -> Vec<Wg3Prop> {
+        self.props
+            .iter()
+            .filter(|p| {
+                Wg3ChunkCoord::containing(p.x_cm as f32 / 100.0, p.z_cm as f32 / 100.0) == coord
             })
             .copied()
             .collect()

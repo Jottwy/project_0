@@ -8863,6 +8863,11 @@ fn probe_dump_regions_json() {
                 })
             })
             .collect();
+        let props: Vec<_> = f
+            .props
+            .iter()
+            .map(|p| json!({"x": p.x_cm, "z": p.z_cm, "y": p.y_cm, "yaw": p.yaw_deg, "kind": p.kind, "style": p.style}))
+            .collect();
         let segments: Vec<_> = f
             .segments
             .iter()
@@ -8986,6 +8991,7 @@ fn probe_dump_regions_json() {
             "region": [rx, rz],
             "bounds": [(min_x * 100.0) as i32, (min_z * 100.0) as i32, (max_x * 100.0) as i32, (max_z * 100.0) as i32],
             "storeys": b.storeys.len(),
+            "props": props,
             "spaces": spaces, "segments": segments, "solids": solids, "carves": carves,
         }));
     }

@@ -241,8 +241,12 @@ namespace BackroomsSurvival.Net
         /// la submalla de decoración y no lleva collider; el servidor tampoco lo rasteriza.</summary>
         public const byte DecorBit = 0x80;
         public bool IsDecoration => (style & DecorBit) != 0;
-        /// <summary>El aspecto sin el bit: lo que consume <c>Wg3StyleMaterials.Resolve</c>.</summary>
-        public byte BaseStyle => (byte)(style & ~DecorBit);
+        /// <summary>ADR-129 D2 (wire 61) — bit 0x40 de <c>style</c>: INVISIBLE. Frena (collider) y no
+        /// se dibuja: la malla la pone el prefab del mueble (<see cref="Wg3PropMsg"/>).</summary>
+        public const byte HiddenBit = 0x40;
+        public bool IsHidden => (style & HiddenBit) != 0;
+        /// <summary>El aspecto sin los bits: lo que consume <c>Wg3StyleMaterials.Resolve</c>.</summary>
+        public byte BaseStyle => (byte)(style & ~(DecorBit | HiddenBit));
 
         public static Wg3SolidMsg Parse(MsgPackReader r)
         {
@@ -263,6 +267,37 @@ namespace BackroomsSurvival.Net
                 else r.Skip();
             }
             return s;
+        }
+    }
+
+    /// <summary>ADR-129 D1 (wire 61) — un ancla de atrezo: dónde va un mueble y cuál. El cliente
+    /// resuelve <see cref="kind"/> → prefab de <c>Resources/Wg3Props</c>.</summary>
+    public class Wg3PropMsg
+    {
+        public int xCm, zCm, yCm;
+        public short yawDeg;
+        public byte kind;
+        public byte style;
+
+        public const byte Desk = 1, Chair = 2, Cabinet = 3, Shelf = 4, Whiteboard = 5,
+            Trash = 6, Box = 7, Paper = 8, Monitor = 9;
+
+        public static Wg3PropMsg Parse(MsgPackReader r)
+        {
+            var p = new Wg3PropMsg();
+            int n = r.ReadMapHeader();
+            for (int i = 0; i < n; i++)
+            {
+                var k = r.ReadKey();
+                if (MsgPackReader.Is(k, "x_cm")) p.xCm = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "z_cm")) p.zCm = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "y_cm")) p.yCm = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "yaw_deg")) p.yawDeg = (short)r.ReadInt();
+                else if (MsgPackReader.Is(k, "kind")) p.kind = (byte)r.ReadInt();
+                else if (MsgPackReader.Is(k, "style")) p.style = (byte)r.ReadInt();
+                else r.Skip();
+            }
+            return p;
         }
     }
 
@@ -297,6 +332,10 @@ namespace BackroomsSurvival.Net
         /// </summary>
         public readonly List<Wg3SolidMsg> solids = new List<Wg3SolidMsg>();
 
+        /// <summary>ADR-129 (wire 61) — las anclas de atrezo de las que este chunk es DUEÑO, por su
+        /// posición. Como los macizos: se instancian.</summary>
+        public readonly List<Wg3PropMsg> props = new List<Wg3PropMsg>();
+
         public static Wg3ChunkMsg Parse(MsgPackReader r, int remainingPairs)
         {
             var m = new Wg3ChunkMsg();
@@ -324,6 +363,11 @@ namespace BackroomsSurvival.Net
                 {
                     int c = r.ReadArrayHeader();
                     for (int j = 0; j < c; j++) m.solids.Add(Wg3SolidMsg.Parse(r));
+                }
+                else if (MsgPackReader.Is(k, "props"))
+                {
+                    int c = r.ReadArrayHeader();
+                    for (int j = 0; j < c; j++) m.props.Add(Wg3PropMsg.Parse(r));
                 }
                 else r.Skip();
             }

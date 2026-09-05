@@ -456,6 +456,30 @@ namespace BackroomsSurvival.WorldGen3
         /// así que no hay nada que sobrescribir por lámpara. Un MPB aquí, además, rompería el SRP
         /// Batcher para las ~900 luminarias de un radio 1.
         /// </summary>
+        /// <summary>
+        /// ADR-129 — un mueble: el prefab de <c>Resources/Wg3Props/&lt;Kind&gt;</c> instanciado en el
+        /// ancla que manda el servidor. Sin colisión propia: la que frena es el macizo invisible
+        /// que viaja con él, así que aquí se apagan los colliders del prefab (un prefab con
+        /// collider y un macizo debajo sería una mesa que frena dos veces, con dos formas).
+        /// </summary>
+        public static GameObject AssembleProp(BackroomsSurvival.Net.Wg3PropMsg prop, Transform parent,
+            int layer, string name)
+        {
+            if (parent == null) return null;
+            GameObject prefab = Wg3PropCatalog.Prefab(prop.kind);
+            if (prefab == null) return null;
+            var go = Object.Instantiate(prefab, parent);
+            go.name = name;
+            go.hideFlags = HideFlags.DontSave;
+            go.transform.position = new Vector3(prop.xCm * 0.01f, prop.yCm * 0.01f, prop.zCm * 0.01f);
+            go.transform.rotation = Quaternion.Euler(0f, prop.yawDeg, 0f);
+            uint mask = Wg3StoreyLayers.ForLight(prop.yCm * 0.01f);
+            foreach (Transform t in go.GetComponentsInChildren<Transform>(true)) t.gameObject.layer = layer;
+            foreach (Renderer r in go.GetComponentsInChildren<Renderer>(true)) r.renderingLayerMask = mask;
+            foreach (Collider c in go.GetComponentsInChildren<Collider>(true)) c.enabled = false;
+            return go;
+        }
+
         /// <summary>Placa del techo de la oficina: 60 cm. Los paneles se alinean a ella.</summary>
         public const float CeilingTileM = 0.6f;
         /// <summary>Panel fluorescente: dos placas de largo, una de ancho, como en la foto.</summary>
@@ -597,6 +621,14 @@ namespace BackroomsSurvival.WorldGen3
             go.hideFlags = HideFlags.DontSave;
             go.transform.SetParent(parent, false);
             go.transform.position = origin;
+
+            // ADR-129 D2 — el macizo INVISIBLE: sólo collider. La malla la pone el prefab del
+            // mueble que va encima; dibujar la caja aquí la mostraría debajo de la mesa.
+            if (solid.IsHidden)
+            {
+                AddColliders(go, volumes, origin);
+                return go;
+            }
 
             Mesh mesh = Wg3MeshBuilder.Build(volumes, origin);
             mesh.name = $"wg3_{name}";

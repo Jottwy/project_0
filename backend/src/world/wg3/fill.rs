@@ -44,9 +44,11 @@ use super::plan::{
 use super::raster::CM_PER_M;
 use super::route::{self, Mouth, PlannedRoute, Rect, RouteSettings};
 use super::segment::{
-    Wg3Carve, Wg3Opening, Wg3Segment, Wg3Solid, CARVE_FLOOR_GUARD_CM, CASING_IN_CM,
-    CASING_PROUD_CM, CASING_W_CM, MAX_SEGMENT_M, MIN_GENERATED_WIDTH_CM, SHAPE_ARCH, SHAPE_BOX,
-    SHAPE_CYLINDER, SHAPE_HALF_CYLINDER, SHAPE_OCTAGON, STYLE_DECOR_BIT, WALL_THICKNESS_M,
+    Wg3Carve, Wg3Opening, Wg3Prop, Wg3Segment, Wg3Solid, CARVE_FLOOR_GUARD_CM, CASING_IN_CM,
+    CASING_PROUD_CM, CASING_W_CM, MAX_SEGMENT_M, MIN_GENERATED_WIDTH_CM, PROP_BOX, PROP_CABINET,
+    PROP_CHAIR, PROP_DESK, PROP_MONITOR, PROP_PAPER, PROP_TRASH, PROP_WHITEBOARD, SHAPE_ARCH,
+    SHAPE_BOX, SHAPE_CYLINDER, SHAPE_HALF_CYLINDER, SHAPE_OCTAGON, STYLE_DECOR_BIT,
+    STYLE_HIDDEN_BIT, WALL_THICKNESS_M,
 };
 
 /// ADR-099 D3 — cuánto entra el vano a cada lado de la cara de contacto, en metros. Mismo número que
@@ -214,6 +216,8 @@ pub(super) struct Knobs {
     pub round_pilaster: f32,
     /// ADR-125 enm. 1 — qué proporción de las puertas con dintel llevan ARCO LISO bajo él.
     pub arch_door: f32,
+    /// ADR-129 D3 — qué proporción de salas se viste con atrezo de oficina.
+    pub props: f32,
 }
 
 const KNOBS: [Knobs; 5] = [
@@ -248,6 +252,7 @@ const KNOBS: [Knobs; 5] = [
         octagon_pillar: 0.20,
         round_pilaster: 0.25,
         arch_door: 0.20,
+        props: 0.35,
     },
     Knobs {
         character: Character::Office,
@@ -280,6 +285,7 @@ const KNOBS: [Knobs; 5] = [
         octagon_pillar: 0.15,
         round_pilaster: 0.15,
         arch_door: 0.25,
+        props: 0.8,
     },
     Knobs {
         character: Character::Hall,
@@ -312,6 +318,7 @@ const KNOBS: [Knobs; 5] = [
         octagon_pillar: 0.25,
         round_pilaster: 0.30,
         arch_door: 0.35,
+        props: 0.25,
     },
     Knobs {
         character: Character::Maze,
@@ -344,6 +351,7 @@ const KNOBS: [Knobs; 5] = [
         octagon_pillar: 0.20,
         round_pilaster: 0.30,
         arch_door: 0.30,
+        props: 0.2,
     },
     Knobs {
         character: Character::Weird,
@@ -376,6 +384,7 @@ const KNOBS: [Knobs; 5] = [
         octagon_pillar: 0.25,
         round_pilaster: 0.50,
         arch_door: 0.50,
+        props: 0.45,
     },
 ];
 
@@ -444,6 +453,9 @@ pub struct FilledRegion {
     /// suelo, techo y cuatro paredes: un pilar hecho de tramo dejaria dos losas coplanares con las
     /// del atrio, que es el z-fighting que ADR-102 pago con 456 pares.
     pub solids: Vec<Wg3Solid>,
+    /// ADR-129 — las anclas de atrezo. Aparte de los macizos porque no son geometría: son «aquí
+    /// va una mesa», y la mesa la pone el cliente.
+    pub props: Vec<Wg3Prop>,
 
     /// Espacios resueltos con una pieza del catálogo, y con tramos generados. **Los dos números
     /// juntos son la salud del catálogo frente al plan**, y hoy el primero es pequeño: ver la
@@ -492,6 +504,7 @@ impl FilledRegion {
         self.segments.extend(other.segments);
         self.carves.extend(other.carves);
         self.solids.extend(other.solids);
+        self.props.extend(other.props);
         self.spaces_by_piece += other.spaces_by_piece;
         self.spaces_by_segment += other.spaces_by_segment;
         self.spaces_unbuilt += other.spaces_unbuilt;
@@ -621,6 +634,11 @@ pub fn fill_building(building: &RegionBuilding, manifest: &Wg3Manifest) -> Fille
         &out.segments,
         &blocks_for_platforms,
     ));
+    // ADR-129 — el atrezo, el último: esquiva todo lo que está a ras de suelo, y lo que frena deja
+    // su macizo invisible.
+    let (props, hidden) = office_props(building, &out.segments, &out.solids, &out.carves);
+    out.props.extend(props);
+    out.solids.extend(hidden);
     out
 }
 
@@ -1474,6 +1492,428 @@ fn wall_blocks(
         }
     }
     out
+}
+
+/// ADR-129 D3 — huellas del atrezo, en centímetros de plan. Son la tabla del servidor; el prefab
+/// real se mide en el cliente y esta tabla se ajusta a él, no al revés.
+// Medidos en el editor sobre los prefabs del catálogo (`Wg3PropCatalogBuilder`, 2026-09-06):
+// mesa 2,30 × 0,75 × 1,02; silla 0,67 × 1,17 × 0,71; «archivador» (Cupboard) 0,89 × 0,79 × 0,46;
+// caja 0,40 × 0,29 × 0,29; pizarra 1,50 × 1,09 con el pivote en su centro.
+const DESK_W_CM: i32 = 230;
+const DESK_D_CM: i32 = 102;
+const DESK_H_CM: i32 = 75;
+const CHAIR_CM: i32 = 70;
+const CABINET_W_CM: i32 = 90;
+const CABINET_D_CM: i32 = 46;
+const CABINET_H_CM: i32 = 80;
+const BOX_CM: i32 = 40;
+const BOX_H_CM: i32 = 30;
+const WHITEBOARD_W_CM: i32 = 150;
+/// Cota del CENTRO de la pizarra (su pivote): a 1,40 el borde inferior queda a 0,85.
+const WHITEBOARD_Y_CM: i32 = 140;
+/// Lo que el atrezo deja a toda boca de cualquier tramo.
+const PROP_MOUTH_CLEAR_CM: i32 = 100;
+/// Lo que deja a todo macizo a ras de suelo.
+const PROP_GAP_CM: i32 = 40;
+/// Sal del sorteo de atrezo.
+const SALT_PROPS: u32 = 0xA9_04_05;
+
+/// ADR-129 D3 — **vestir la sala**: mesas contra la pared larga con su silla, su monitor y una
+/// papelera; archivador en una esquina; pizarra en la pared de enfrente; cajas sueltas; papeles por
+/// el suelo. Dentro de UN tramo (la lección de los pozos), esquivando bocas de cualquier tramo,
+/// macizos a ras de suelo, vanos de pared, pozos, rellanos y huecos de escalera. Lo que frena (mesa,
+/// archivador, caja) emite además su macizo invisible.
+#[allow(clippy::too_many_arguments)]
+fn office_props(
+    building: &RegionBuilding,
+    segments: &[Wg3Segment],
+    solids: &[Wg3Solid],
+    carves: &[Wg3Carve],
+) -> (Vec<Wg3Prop>, Vec<Wg3Solid>) {
+    let mut props: Vec<Wg3Prop> = Vec::new();
+    let mut hidden: Vec<Wg3Solid> = Vec::new();
+    let seed = building.seed;
+    let mouths: Vec<(i32, i32, i32, i32)> = segments
+        .iter()
+        .flat_map(|g| {
+            let (w, d) = (g.size_x_cm as f32 / 100.0, g.size_z_cm as f32 / 100.0);
+            g.openings.iter().map(move |o| {
+                let (lx, lz) =
+                    super::placement::local_point(o.side, o.offset_cm as f32 / 100.0, w, d);
+                (
+                    g.x_cm + (lx * 100.0).round() as i32,
+                    g.z_cm + (lz * 100.0).round() as i32,
+                    o.width_cm / 2 + PROP_MOUTH_CLEAR_CM,
+                    g.floor_y_cm,
+                )
+            })
+        })
+        .collect();
+    let rect_of = |x: i32, z: i32, w: i32, d: i32| super::plan::PlanRect {
+        min_x_cm: x,
+        min_z_cm: z,
+        max_x_cm: x + w,
+        max_z_cm: z + d,
+    };
+    let box_overlaps = |r: &super::plan::PlanRect, o: &Wg3Solid| -> bool {
+        o.x_cm < r.max_x_cm
+            && o.x_cm + o.size_x_cm > r.min_x_cm
+            && o.z_cm < r.max_z_cm
+            && o.z_cm + o.size_z_cm > r.min_z_cm
+    };
+
+    for (n, plan) in building.storeys.iter().enumerate() {
+        let landings: Vec<super::plan::PlanRect> = building
+            .wells
+            .iter()
+            .filter(|w| w.storey_below + 1 == n)
+            .map(|w| w.rect.shrunk(-50))
+            .collect();
+        let wells_here: Vec<super::plan::PlanRect> = building
+            .wells
+            .iter()
+            .filter(|w| w.storey_below == n)
+            .map(|w| w.rect.shrunk(-50))
+            .collect();
+        let holes_above = hole_squares_above(building, n);
+        let pits_here = if n == 0 {
+            pit_rects_of(building, segments)
+        } else {
+            Vec::new()
+        };
+        for (_, s) in plan.built() {
+            if s.role.is_circulation() || s.role == SpaceRole::Stair || s.rise_cm != 0 {
+                continue;
+            }
+            let kn = knobs_of(seed, s);
+            let (cx, cz) = s.rect.centre_m();
+            let mut st = super::hash::stream_at(seed, cx, cz, SALT_PROPS);
+            if st.next01() >= kn.props {
+                continue;
+            }
+            let floor = s.floor_y_cm;
+            let top = floor + clear_height_cm(s);
+            // El tramo anfitrión: el mayor de los suyos a su cota.
+            let host = segments
+                .iter()
+                .filter(|g| {
+                    g.floor_y_cm == floor
+                        && s.covers_rect(&rect_of(g.x_cm, g.z_cm, g.size_x_cm, g.size_z_cm))
+                })
+                .max_by_key(|g| g.size_x_cm as i64 * g.size_z_cm as i64);
+            let Some(g) = host else {
+                continue;
+            };
+            let inner = rect_of(
+                g.x_cm + WALL_T_CM,
+                g.z_cm + WALL_T_CM,
+                g.size_x_cm - 2 * WALL_T_CM,
+                g.size_z_cm - 2 * WALL_T_CM,
+            );
+            if inner.width_cm() < 300 || inner.depth_cm() < 300 {
+                continue;
+            }
+            let own_hole = hole_square(&s.rect).shrunk(-50);
+            let style = style_of(s.role);
+            let mut placed: Vec<super::plan::PlanRect> = Vec::new();
+            // ¿Cabe aquí, sin pisar nada? `gap` es la holgura con macizos y con lo ya puesto.
+            let free = |r: &super::plan::PlanRect,
+                        gap: i32,
+                        placed: &Vec<super::plan::PlanRect>,
+                        mind_solids: bool|
+             -> bool {
+                let grown = r.shrunk(-gap);
+                if !inner.contains_rect(r) || !s.covers_rect(r) {
+                    return false;
+                }
+                if mouths.iter().any(|&(mx, mz, half, fl)| {
+                    (fl - floor).abs() < 100
+                        && mx + half > r.min_x_cm
+                        && mx - half < r.max_x_cm
+                        && mz + half > r.min_z_cm
+                        && mz - half < r.max_z_cm
+                }) {
+                    return false;
+                }
+                if landings.iter().any(|l| l.overlaps(&grown))
+                    || wells_here.iter().any(|w| w.overlaps(&grown))
+                    || holes_above.iter().any(|h| h.overlaps(&grown))
+                    || pits_here.iter().any(|p| p.overlaps(&grown))
+                    || (n > 0 && own_hole.overlaps(&grown))
+                    || placed.iter().any(|p| p.overlaps(&grown))
+                {
+                    return false;
+                }
+                if mind_solids
+                    && solids.iter().any(|o| {
+                        !o.is_decoration()
+                            && o.bottom_y_cm < floor + 200
+                            && o.top_y_cm > floor
+                            && box_overlaps(&grown, o)
+                    })
+                {
+                    return false;
+                }
+                if carves.iter().any(|k| {
+                    k.bottom_y_cm < top
+                        && k.top_y_cm > floor
+                        && k.x_cm < grown.max_x_cm
+                        && k.x_cm + k.size_x_cm > grown.min_x_cm
+                        && k.z_cm < grown.max_z_cm
+                        && k.z_cm + k.size_z_cm > grown.min_z_cm
+                }) {
+                    return false;
+                }
+                true
+            };
+            let put = |props: &mut Vec<Wg3Prop>,
+                       hidden: &mut Vec<Wg3Solid>,
+                       placed: &mut Vec<super::plan::PlanRect>,
+                       r: super::plan::PlanRect,
+                       y: i32,
+                       yaw: i16,
+                       kind: u8,
+                       h: i32| {
+                props.push(Wg3Prop {
+                    x_cm: (r.min_x_cm + r.max_x_cm) / 2,
+                    z_cm: (r.min_z_cm + r.max_z_cm) / 2,
+                    y_cm: y,
+                    yaw_deg: yaw,
+                    kind,
+                    style,
+                });
+                if h > 0 {
+                    hidden.push(Wg3Solid {
+                        x_cm: r.min_x_cm,
+                        z_cm: r.min_z_cm,
+                        size_x_cm: r.width_cm(),
+                        size_z_cm: r.depth_cm(),
+                        bottom_y_cm: y,
+                        top_y_cm: y + h,
+                        style: style | STYLE_HIDDEN_BIT,
+                        yaw_deg: 0,
+                        shape: SHAPE_BOX,
+                    });
+                    placed.push(r);
+                } else {
+                    placed.push(r);
+                }
+            };
+
+            // Las mesas, contra la pared larga; la pizarra, en la de enfrente.
+            let along_x = inner.width_cm() >= inner.depth_cm();
+            let len = if along_x {
+                inner.width_cm()
+            } else {
+                inner.depth_cm()
+            };
+            let desk_wall_min = st.next01() < 0.5;
+            let count = (len / 350).clamp(0, 3);
+            for k in 0..count {
+                let u = if along_x {
+                    inner.min_x_cm
+                } else {
+                    inner.min_z_cm
+                } + (len * (2 * k + 1)) / (2 * count)
+                    - DESK_W_CM / 2;
+                let (r, yaw) = if along_x {
+                    let z = if desk_wall_min {
+                        inner.min_z_cm + 5
+                    } else {
+                        inner.max_z_cm - 5 - DESK_D_CM
+                    };
+                    (
+                        rect_of(u, z, DESK_W_CM, DESK_D_CM),
+                        if desk_wall_min { 0 } else { 180 },
+                    )
+                } else {
+                    let x = if desk_wall_min {
+                        inner.min_x_cm + 5
+                    } else {
+                        inner.max_x_cm - 5 - DESK_D_CM
+                    };
+                    (
+                        rect_of(x, u, DESK_D_CM, DESK_W_CM),
+                        if desk_wall_min { 90 } else { 270 },
+                    )
+                };
+                if !free(&r, PROP_GAP_CM, &placed, true) {
+                    continue;
+                }
+                let desk_centre = ((r.min_x_cm + r.max_x_cm) / 2, (r.min_z_cm + r.max_z_cm) / 2);
+                put(
+                    &mut props,
+                    &mut hidden,
+                    &mut placed,
+                    r,
+                    floor,
+                    yaw,
+                    PROP_DESK,
+                    DESK_H_CM,
+                );
+                // El monitor, encima, mirando como la mesa.
+                props.push(Wg3Prop {
+                    x_cm: desk_centre.0,
+                    z_cm: desk_centre.1,
+                    y_cm: floor + DESK_H_CM,
+                    yaw_deg: yaw,
+                    kind: PROP_MONITOR,
+                    style,
+                });
+                // La silla, delante, mirando a la mesa.
+                let out = DESK_D_CM / 2 + 45;
+                let (sx, sz) = match yaw {
+                    0 => (desk_centre.0, desk_centre.1 + out),
+                    180 => (desk_centre.0, desk_centre.1 - out),
+                    90 => (desk_centre.0 + out, desk_centre.1),
+                    _ => (desk_centre.0 - out, desk_centre.1),
+                };
+                let chair = rect_of(sx - CHAIR_CM / 2, sz - CHAIR_CM / 2, CHAIR_CM, CHAIR_CM);
+                // Sin holgura con la mesa: la silla va pegada a ella a propósito.
+                if free(&chair, 0, &placed, true) {
+                    put(
+                        &mut props,
+                        &mut hidden,
+                        &mut placed,
+                        chair,
+                        floor,
+                        (yaw + 180) % 360,
+                        PROP_CHAIR,
+                        0,
+                    );
+                }
+                // La papelera, a un lado, en la primera mesa.
+                if k == 0 {
+                    let (tx, tz) = if along_x {
+                        (r.min_x_cm - 30, (r.min_z_cm + r.max_z_cm) / 2)
+                    } else {
+                        ((r.min_x_cm + r.max_x_cm) / 2, r.min_z_cm - 40)
+                    };
+                    let trash = rect_of(tx - 20, tz - 20, 40, 40);
+                    if free(&trash, 10, &placed, true) {
+                        put(
+                            &mut props,
+                            &mut hidden,
+                            &mut placed,
+                            trash,
+                            floor,
+                            0,
+                            PROP_TRASH,
+                            0,
+                        );
+                    }
+                }
+            }
+            // El archivador, en una esquina, con la espalda a la pared corta.
+            let corner = (st.next01() * 4.0) as i32 % 4;
+            let (cxr, czr, cyaw) = match corner {
+                0 => (inner.min_x_cm + 10, inner.min_z_cm + 10, 90),
+                1 => (inner.max_x_cm - 10 - CABINET_W_CM, inner.min_z_cm + 10, 270),
+                2 => (inner.min_x_cm + 10, inner.max_z_cm - 10 - CABINET_D_CM, 90),
+                _ => (
+                    inner.max_x_cm - 10 - CABINET_W_CM,
+                    inner.max_z_cm - 10 - CABINET_D_CM,
+                    270,
+                ),
+            };
+            let cab = rect_of(cxr, czr, CABINET_W_CM, CABINET_D_CM);
+            if free(&cab, PROP_GAP_CM, &placed, true) {
+                put(
+                    &mut props,
+                    &mut hidden,
+                    &mut placed,
+                    cab,
+                    floor,
+                    cyaw,
+                    PROP_CABINET,
+                    CABINET_H_CM,
+                );
+            }
+            // La pizarra, en la pared de enfrente de las mesas, colgada a 90.
+            let (wb, wyaw) = if along_x {
+                let z = if desk_wall_min {
+                    inner.max_z_cm - 10
+                } else {
+                    inner.min_z_cm
+                };
+                let x = (inner.min_x_cm + inner.max_x_cm) / 2 - WHITEBOARD_W_CM / 2;
+                (
+                    rect_of(x, z, WHITEBOARD_W_CM, 10),
+                    if desk_wall_min { 180 } else { 0 },
+                )
+            } else {
+                let x = if desk_wall_min {
+                    inner.max_x_cm - 10
+                } else {
+                    inner.min_x_cm
+                };
+                let z = (inner.min_z_cm + inner.max_z_cm) / 2 - WHITEBOARD_W_CM / 2;
+                (
+                    rect_of(x, z, 10, WHITEBOARD_W_CM),
+                    if desk_wall_min { 270 } else { 90 },
+                )
+            };
+            if free(&wb, 30, &placed, true) {
+                put(
+                    &mut props,
+                    &mut hidden,
+                    &mut placed,
+                    wb,
+                    floor + WHITEBOARD_Y_CM,
+                    wyaw,
+                    PROP_WHITEBOARD,
+                    0,
+                );
+            }
+            // Cajas sueltas.
+            let boxes = (st.next01() * 3.0) as i32;
+            for _ in 0..boxes {
+                let bx = inner.min_x_cm
+                    + 100
+                    + (st.next01() * (inner.width_cm() - 200 - BOX_CM).max(1) as f32) as i32;
+                let bz = inner.min_z_cm
+                    + 100
+                    + (st.next01() * (inner.depth_cm() - 200 - BOX_CM).max(1) as f32) as i32;
+                let b = rect_of(bx, bz, BOX_CM, BOX_CM);
+                if free(&b, 30, &placed, true) {
+                    let yaw = ((st.next01() * 360.0) as i32 / 15 * 15) as i16;
+                    put(
+                        &mut props,
+                        &mut hidden,
+                        &mut placed,
+                        b,
+                        floor,
+                        yaw,
+                        PROP_BOX,
+                        BOX_H_CM,
+                    );
+                }
+            }
+            // Papeles por el suelo: no frenan y no esquivan macizos, sólo pozos y bocas.
+            let papers = 4 + (st.next01() * 10.0) as i32;
+            for _ in 0..papers {
+                let px = inner.min_x_cm
+                    + 40
+                    + (st.next01() * (inner.width_cm() - 80).max(1) as f32) as i32;
+                let pz = inner.min_z_cm
+                    + 40
+                    + (st.next01() * (inner.depth_cm() - 80).max(1) as f32) as i32;
+                let p = rect_of(px - 15, pz - 15, 30, 30);
+                if free(&p, 0, &Vec::new(), false) {
+                    let yaw = (st.next01() * 360.0) as i16;
+                    props.push(Wg3Prop {
+                        x_cm: px,
+                        z_cm: pz,
+                        y_cm: floor,
+                        yaw_deg: yaw,
+                        kind: PROP_PAPER,
+                        style,
+                    });
+                }
+            }
+        }
+    }
+    (props, hidden)
 }
 
 /// ADR-104 D3 — **abrir el atrio por arriba, porque hasta aquí era un pozo SELLADO.**
@@ -6528,7 +6968,7 @@ mod apron_tests {
                 }
                 // ADR-126 — las paredes de la cámara de un pozo miden grosor de pared y viven
                 // bajo el suelo a propósito.
-                if s.style == PIT_STYLE || s.style == PIT_SHAFT_STYLE {
+                if s.style == PIT_STYLE || s.style == PIT_SHAFT_STYLE || s.is_hidden() {
                     continue;
                 }
                 if floors
@@ -6694,6 +7134,7 @@ mod apron_tests {
                 let crowd = solids.iter().find(|o| {
                     !std::ptr::eq(*o, blk)
                         && !o.is_decoration()
+                        && !o.is_hidden()
                         // Lo que arranca del suelo de su planta: vigas, cornisas y colgados van
                         // en el techo, se emiten después, y no estorban el paso.
                         //
@@ -6753,6 +7194,86 @@ mod apron_tests {
     /// entonces este test la ve pegada a un bloque que tiene a 85 cm y acusa de amontonarse a
     /// geometría que ni se toca. Salió al subir los techos, que es lo que hizo aparecer pilastras
     /// donde antes no cabían.
+    /// ADR-129 — el atrezo existe, cada ancla está dentro de su tramo, a un metro de toda boca, y
+    /// cada mesa y cada archivador llevan su macizo invisible debajo (frenan igual en los dos
+    /// lados). Los papeles no frenan.
+    #[test]
+    fn props_sit_in_their_room_and_off_everything() {
+        let m = no_catalogue();
+        let mut desks = 0usize;
+        let mut total = 0usize;
+        for seed in 1..40 {
+            let b = building(seed);
+            let f = fill_building(&b, &m);
+            let mouths: Vec<(i32, i32, i32, i32)> = f
+                .segments
+                .iter()
+                .flat_map(|g| {
+                    let (w, d) = (g.size_x_cm as f32 / 100.0, g.size_z_cm as f32 / 100.0);
+                    g.openings.iter().map(move |o| {
+                        let (lx, lz) = super::super::placement::local_point(
+                            o.side,
+                            o.offset_cm as f32 / 100.0,
+                            w,
+                            d,
+                        );
+                        (
+                            g.x_cm + (lx * 100.0).round() as i32,
+                            g.z_cm + (lz * 100.0).round() as i32,
+                            o.width_cm / 2 + 60,
+                            g.floor_y_cm,
+                        )
+                    })
+                })
+                .collect();
+            for p in &f.props {
+                total += 1;
+                let inside = f.segments.iter().any(|g| {
+                    p.x_cm > g.x_cm + WALL_T_CM
+                        && p.x_cm < g.x_cm + g.size_x_cm - WALL_T_CM
+                        && p.z_cm > g.z_cm + WALL_T_CM
+                        && p.z_cm < g.z_cm + g.size_z_cm - WALL_T_CM
+                        && (p.y_cm - g.floor_y_cm) >= 0
+                        && (p.y_cm - g.floor_y_cm) < 200
+                });
+                assert!(inside, "semilla {seed}: ancla {p:?} fuera de todo tramo");
+                if p.kind != PROP_PAPER {
+                    assert!(
+                        !mouths
+                            .iter()
+                            .any(|&(mx, mz, half, fl)| (fl - p.y_cm).abs() < 150
+                                && (mx - p.x_cm).abs() < half
+                                && (mz - p.z_cm).abs() < half),
+                        "semilla {seed}: ancla {p:?} en una boca"
+                    );
+                }
+                if p.kind == PROP_DESK || p.kind == PROP_CABINET {
+                    desks += 1;
+                    let under = f.solids.iter().any(|h| {
+                        h.is_hidden()
+                            && h.x_cm <= p.x_cm
+                            && h.x_cm + h.size_x_cm >= p.x_cm
+                            && h.z_cm <= p.z_cm
+                            && h.z_cm + h.size_z_cm >= p.z_cm
+                            && h.bottom_y_cm == p.y_cm
+                    });
+                    assert!(under, "semilla {seed}: {p:?} sin macizo invisible debajo");
+                }
+            }
+            for h in f.solids.iter().filter(|h| h.is_hidden()) {
+                assert!(
+                    !h.is_decoration(),
+                    "semilla {seed}: un macizo no puede ser invisible y decoración a la vez"
+                );
+            }
+        }
+        assert!(
+            desks >= 30,
+            "sólo {desks} mesas y archivadores en 39 semillas"
+        );
+        println!("[atrezo] {total} anclas, {desks} mesas y archivadores en 39 semillas");
+    }
+
     fn rect_of(s: &Wg3Solid) -> super::super::plan::PlanRect {
         let (cx, cz) = (s.x_cm + s.size_x_cm / 2, s.z_cm + s.size_z_cm / 2);
         // Sólo los cuartos de vuelta, que es lo único que emite el relleno.

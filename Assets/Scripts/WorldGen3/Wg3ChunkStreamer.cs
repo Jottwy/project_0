@@ -361,6 +361,14 @@ namespace BackroomsSurvival.WorldGen3
                 _builtSolids++;
             }
 
+            // ADR-129 — el ATREZO, por su posición como los macizos. Los prefabs no frenan: frena
+            // el macizo invisible que viaja con cada mueble.
+            for (int i = 0; i < chunk.props.Count; i++)
+            {
+                var prop = chunk.props[i];
+                Wg3SceneAssembler.AssembleProp(prop, root.transform, root.layer, $"prop_{i:D3}_k{prop.kind}");
+            }
+
             // ADR-107 D3 — UN alta por chunk, con el root del chunk como dueño: el lote se retira solo
             // cuando ese root muera con el chunk, así que no hay baja explícita que se pueda olvidar
             // ni fuente que quede huérfana al descargar.

@@ -35,11 +35,11 @@ más barata a la más cara, y lo que YA hay para cada una:
 
 1. **Repetición de textura a la mitad** — HECHO el 2026-09-06: `Wg3MeshBuilder.UvPerMetre` = 0,5,
    un solo factor sobre todas las UV (se emiten en metros). Captura `uv05_*` frente a `w58q_arco`.
-2. **Techo de placas y paneles en fila.** Ya existe `Assets/Resources/Textures/CeilingTiles.png` con
+2. **Techo de placas y paneles en fila** — HECHO el 2026-09-06 (`510223b8`). Ya existía `Assets/Resources/Textures/CeilingTiles.png` con
    su material; falta ponerlo en `Wg3_Ceiling` con la rejilla a 60 cm y sustituir la luminaria
    puntual de ADR-107 por paneles de 60×120 en fila (una malla emisiva por panel, luz de área o
    varias puntuales alineadas). Es la capa que más «oficina» da por hora.
-3. **Atrezo de oficina.** Ya está convertido a URP el pack `AK Studio Art/Business Office` (147
+3. **Atrezo de oficina** — HECHO el 2026-09-06 (ADR-129, wire 61): anclas del servidor + prefabs del cliente + macizo invisible. Ya está convertido a URP el pack `AK Studio Art/Business Office` (147
    prefabs: Desk 1–4, Chair 1–3, Cupboard, Shelf 1–2, Monitor, Keyboard, Office Phone, Paper Tray,
    Trash Can, Wall Clock, Whiteboard) y `GroceryStorePropsCollection/OfficeFurniture` (mesa, silla,
    caja). **Lo que NO existe es quién los coloca**: hace falta un sistema de anclas de atrezo —

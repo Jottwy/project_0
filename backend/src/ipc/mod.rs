@@ -407,6 +407,22 @@ pub struct Wg3ChunkView {
     /// sola en este sistema.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub solids: Vec<Wg3SolidWire>,
+
+    /// ADR-129 (wire 61) — las anclas de ATREZO de las que este chunk es dueño, por su posición.
+    /// Como los macizos: se instancian. El cliente resuelve `kind` → prefab.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub props: Vec<Wg3PropWire>,
+}
+
+/// ADR-129 D1 (wire 61) — un ancla de atrezo: dónde y qué, no cómo.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Wg3PropWire {
+    pub x_cm: i32,
+    pub z_cm: i32,
+    pub y_cm: i32,
+    pub yaw_deg: i16,
+    pub kind: u8,
+    pub style: u8,
 }
 
 /// ADR-078 — lo que el backend entrega a Unity por cada trozo de trazo ajeno. Es
@@ -1428,6 +1444,16 @@ mod tests {
                 yaw_deg: 45,
                 shape: 2,
             }],
+            // ADR-129 (wire 61) — y un ancla, por lo mismo: sin su clave el cliente no viste una
+            // sola sala y el mundo se ve como antes de que existieran.
+            props: vec![Wg3PropWire {
+                x_cm: 910,
+                z_cm: -40,
+                y_cm: 332,
+                yaw_deg: 90,
+                kind: 1,
+                style: 3,
+            }],
         }))
         .unwrap();
 
@@ -1461,6 +1487,9 @@ mod tests {
             "carves",
             "bottom_y_cm",
             "top_y_cm",
+            "props",
+            "y_cm",
+            "kind",
         ] {
             assert!(
                 body.contains(key),

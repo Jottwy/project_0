@@ -14004,6 +14004,63 @@ mide hoy. Cuesta más tramos por región, que es gratis.
   cambia la topología, y cualquier desvío es un sitio donde se mezclaron las dos unidades.
 - Playtest: cruzar una puerta, subir una escalera y caer por un pozo con el cuerpo real.
 
+## ADR-129 — VESTIR LAS SALAS: anclas de atrezo del servidor, prefabs del cliente, y el macizo invisible (2026-09-06) — ACEPTADA (Joel: la foto de la oficina abandonada, «al mismo nivel de detalle, exactamente así… aplica lo dicho»; entra en lugar del día 4 de gramática)
+
+### Contexto
+
+La foto de referencia es una oficina: mesas y archivadores contra las paredes, sillas, pizarra,
+papelera, cajas, papeles por el suelo. La geometría ya está (sala, puerta, techo de placas con
+paneles desde `510223b8`); los prefabs también (pack `AK Studio Art/Business Office` en URP y los
+papeles de `GroceryStorePropsCollection`). Lo que no existe es **quién decide dónde va cada cosa**.
+Y tiene que decidirlo el servidor: un mueble que frena tiene que frenar igual en los dos lados, y una
+mesa colocada por el cliente no existe para el ráster.
+
+### D1 — `Wg3Prop`: una ancla, no una malla
+
+`Wg3Prop { x_cm, z_cm, y_cm, yaw_deg, kind, style }`: posición del pivote en el suelo, giro horario
+visto desde arriba, y un `kind` de una tabla cerrada: 1 mesa, 2 silla, 3 archivador, 4 estantería,
+5 pizarra, 6 papelera, 7 caja, 8 papel, 9 monitor. El cliente resuelve `kind` → prefab en
+`Resources/Wg3Props/<Kind>.prefab` (copias del pack hechas por un script de editor, para que el build
+las lleve). El servidor NO sabe qué malla es: sólo dónde y qué.
+
+### D2 — El MACIZO INVISIBLE: bit 0x40 de `style`
+
+Lo que frena (mesa, archivador, estantería, caja) emite además un `Wg3Solid` con su huella y su alto
+y `STYLE_HIDDEN_BIT` = 0x40: el ráster lo estampa y el cliente le pone collider **sin dibujarlo**. La
+malla la pone el prefab. Así una mesa frena igual en el servidor y en Unity sin CSG ni mallas por el
+cable, y sin que el cliente dibuje una caja debajo del mueble. Silla, pizarra, papelera, papel y
+monitor no frenan (el jugador pasa; un papel que frena es una pared invisible de 2 cm).
+
+### D3 — Dónde: `office_props`, por sala y rol
+
+En espacios construidos que no sean circulación ni escalera, con `Knobs::props` por carácter
+(oficina 0,80, abierto 0,35, nave 0,25, laberinto 0,20, raro 0,45), dentro de UN tramo (la lección de
+los pozos): mesas contra la pared más larga sin bocas, con su silla delante y su monitor encima;
+archivador en una esquina; pizarra en la pared opuesta a las mesas, a 90 cm; papelera junto a una
+mesa; cajas sueltas; papeles por el suelo. Todo esquiva bocas de cualquier tramo (1 m), macizos a ras
+de suelo (40 cm), vanos de pared, pozos, rellanos y huecos de escalera. Determinista por posición.
+
+### D4 — Wire 60 → 61
+
+Lista nueva `props` en el chunk (por el CENTRO, como los macizos: se dibuja) y el bit 0x40 en `style`
+a los dos lados en el mismo commit. La rampa de ADR-122 pasa a wire 62.
+
+### D5 — Lo que NO resuelve
+
+Pivotes y tamaños reales de los prefabs (la huella del macizo invisible es una tabla del servidor;
+se ajusta midiendo los bounds en el cliente), papeles como decals (hoy mallas del pack), variación de
+prefabs por `kind` (una mesa, una silla), y el ×2 de ADR-128 (el script tendrá que escalar `Wg3Prop`
+como escala `Wg3Solid`).
+
+### Verificaciones
+
+- Rust: `props_sit_in_their_room_and_off_everything`: cada prop dentro del interior de su tramo, a
+  ≥ 1 m de toda boca, sin pisar macizo a ras de suelo ni pozo; cada mesa con su macizo invisible
+  debajo; hay props en las cuatro regiones.
+- Ráster: el macizo invisible estampa (`blocked_standing_at` sobre una mesa).
+- C#: `Wg3PropMsg` se parsea por clave; un macizo invisible monta collider y ningún renderer.
+- Captura: una oficina con mesa, silla, archivador, pizarra y papeles.
+
 ---
 
 ## ADR-104 — enmienda 4: la MEGASALA, y el vacío que faltaba estaba encima del edificio

@@ -187,6 +187,37 @@ pub const SHAPE_ARCH: u8 = 4;
 /// centro. El cliente lo refleja (`Wg3MeshBuilder.ArchKeyM`).
 pub const ARCH_KEY_CM: i32 = 10;
 
+/// ADR-129 D2 — bit 0x40 de `style`: el macizo es INVISIBLE. El ráster lo estampa y el cliente le
+/// pone collider, pero nadie lo dibuja: la malla la pone el prefab del mueble que va encima
+/// (`Wg3Prop`). Es lo que hace que una mesa frene igual en los dos lados sin mandar mallas por el
+/// cable ni dibujar una caja debajo del mueble.
+pub const STYLE_HIDDEN_BIT: u8 = 0x40;
+
+/// ADR-129 D1 — un ANCLA de atrezo: dónde va un mueble y cuál, no cómo es. El cliente resuelve
+/// `kind` → prefab; el servidor sólo decide posición y giro, y para lo que frena emite además un
+/// macizo invisible ([`STYLE_HIDDEN_BIT`]) con su huella. `x_cm`/`z_cm` es el pivote en el suelo
+/// (centro de la huella), `y_cm` la cota del suelo (o de la mesa, para lo que va encima).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Wg3Prop {
+    pub x_cm: i32,
+    pub z_cm: i32,
+    pub y_cm: i32,
+    /// Giro horario visto desde arriba, 0 = mira a +z (la convención de Unity y de `yaw_deg`).
+    pub yaw_deg: i16,
+    pub kind: u8,
+    pub style: u8,
+}
+
+pub const PROP_DESK: u8 = 1;
+pub const PROP_CHAIR: u8 = 2;
+pub const PROP_CABINET: u8 = 3;
+pub const PROP_SHELF: u8 = 4;
+pub const PROP_WHITEBOARD: u8 = 5;
+pub const PROP_TRASH: u8 = 6;
+pub const PROP_BOX: u8 = 7;
+pub const PROP_PAPER: u8 = 8;
+pub const PROP_MONITOR: u8 = 9;
+
 /// ADR-125 enm. 2 — bit alto de `style`: el macizo es DECORACIÓN. Se dibuja y nada más: ni el
 /// ráster lo estampa ni el cliente le cuelga collider. Existe porque un marco de puerta que
 /// sobresale 2 cm de la pared cerraría media celda del ráster (50 cm) a cada lado de la boca.
@@ -213,6 +244,11 @@ pub const YAW_STEP_DEG: i16 = 15;
 pub const ROTATED_SIDE_MIN_CM: i32 = 45;
 
 impl Wg3Solid {
+    /// ADR-129 D2 — ¿es invisible (frena y no se dibuja)? Ver [`STYLE_HIDDEN_BIT`].
+    pub fn is_hidden(&self) -> bool {
+        self.style & STYLE_HIDDEN_BIT != 0
+    }
+
     /// ADR-125 enm. 2 — ¿es decoración? Ver [`STYLE_DECOR_BIT`].
     pub fn is_decoration(&self) -> bool {
         self.style & STYLE_DECOR_BIT != 0
