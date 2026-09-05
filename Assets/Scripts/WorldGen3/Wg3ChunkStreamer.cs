@@ -71,8 +71,31 @@ namespace BackroomsSurvival.WorldGen3
         private float _nextRefresh;
         private bool _digestChecked;
 
+        /// <summary>
+        /// El AMBIENTE de una sesión WG3, y existe porque hasta hoy no lo ponía nadie.
+        ///
+        /// `ProceduralWorldGenerator.ApplyAmbienceForZone` es quien escribe `RenderSettings` en el
+        /// mundo de WG2, por capa y por tipo de zona. En una sesión de WG3 ese componente no
+        /// interviene, así que el ambiente se quedaba en lo que trajera la escena — gris 0,104 en
+        /// `SampleScene` — y con eso un pasillo a más de tres metros de una lámpara es NEGRO PURO.
+        /// Medido en el playtest: a nueve metros del spawn la pantalla no tiene un solo píxel que no
+        /// sea el HUD.
+        ///
+        /// Y no es que falten lámparas: una puntual de radio 6 colgada a 3 m de altura llega al
+        /// suelo con 3 m de radio útil, y el tope es de dos por eje. El resto del sitio lo tiene que
+        /// llenar el ambiente, que además es lo canónico — la luz de Backrooms es plana, sin fuente
+        /// y sin sombra propia; las lámparas sólo ponen el charco.
+        /// </summary>
+        private static readonly Color Wg3Ambient = new Color(0.30f, 0.28f, 0.21f);
+
         private void OnEnable()
         {
+            // Se escribe aquí y no en la escena para que valga en las tres —`SampleScene`,
+            // `WorldGen3Live` y `WorldGen3Test`— sin tener que tocar tres ficheros YAML a mano, que
+            // es justo la operación que ya se ha comido zonas enteras en este proyecto.
+            RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Flat;
+            RenderSettings.ambientLight = Wg3Ambient;
+
             // Por Wg3ActiveCatalog y no por Wg3Catalog directamente: el exportador del manifiesto
             // hace esta misma pregunta, y si cada uno la respondiera por su cuenta el servidor
             // colocaría de un catálogo y el cliente dibujaría de otro.

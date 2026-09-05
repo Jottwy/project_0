@@ -12085,3 +12085,103 @@ fn player_scale_reality() {
     show("techo de sala", clear, true);
     show("ancho/alto de sala", ratio, false);
 }
+
+/// **CORTES VERTICALES DEL MUNDO SERVIDO.** Lo único que enseña un techo sin abrir el juego.
+///
+/// El volcado de planta contesta «dónde se puede ir»; ésta contesta «qué altura tiene esto». Corta la
+/// región por planos de Z y dibuja, en X–Y, los tramos macizos que el ráster tiene en cada columna:
+/// suelos, techos, forjados y macizos. Con la silueta del jugador a escala al lado, para que la
+/// pregunta —¿esto se siente bajo?— se conteste mirando y no calculando.
+///
+/// `WG3_MAP_DIR=... cargo test --release dump_region_sections -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn dump_region_sections() {
+    /// Ancho de píxel por metro, en horizontal.
+    const PX: f32 = 6.0;
+    /// Y en vertical, exagerado: sin esto una planta de 3 m al lado de 150 de ancho es una raya.
+    const PY: f32 = 26.0;
+    /// Lo que mide el jugador.
+    const PLAYER_M: f32 = 1.86;
+
+    let dir = std::env::var("WG3_MAP_DIR").expect("WG3_MAP_DIR: carpeta donde escribir los cortes");
+    let m = real_manifest();
+    let regions: Vec<(i32, i32)> = AUDIT_REGIONS.to_vec();
+
+    for (rx, rz) in regions {
+        let region = Wg3RegionCoord { x: rx, z: rz };
+        let inside = super::validate::region_inside(&m, SERVED_SEED, region);
+        let (min_x, min_z, _, _) = region.bounds();
+
+        // Cinco cortes repartidos por la región, evitando los bordes.
+        for (k, frac) in [0.2f32, 0.35, 0.5, 0.65, 0.8].iter().enumerate() {
+            let z = min_z + REGION_M * frac;
+            let h_m = 14.0f32;
+            let (w, h) = (REGION_M * PX, h_m * PY + 40.0);
+            let mut svg = format!(
+                "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {w:.0} {h:.0}\" \
+                 width=\"{w:.0}\" height=\"{h:.0}\">\n<rect width=\"100%\" height=\"100%\" \
+                 fill=\"#14161a\"/>\n"
+            );
+            // Y hacia ARRIBA en el mundo, hacia abajo en SVG.
+            let to_y = |y_m: f32| (h_m - y_m) * PY;
+
+            let mut cell = 0.0f32;
+            while cell < REGION_M {
+                let x = min_x + cell + WG3_CELL_M * 0.5;
+                for (b, t) in inside.rasters.column(x, z) {
+                    let (y0, y1) = (b as f32 / 100.0, t as f32 / 100.0);
+                    if y1 < -1.0 || y0 > h_m {
+                        continue;
+                    }
+                    // Una losa fina se lee como suelo o techo; lo grueso es muro o macizo.
+                    let thin = y1 - y0 <= 0.30;
+                    let fill = if thin { "#38bdf8" } else { "#64748b" };
+                    svg += &format!(
+                        "<rect x=\"{:.1}\" y=\"{:.1}\" width=\"{:.1}\" height=\"{:.1}\" \
+                         fill=\"{fill}\" fill-opacity=\"0.85\"/>\n",
+                        cell * PX,
+                        to_y(y1),
+                        WG3_CELL_M * PX,
+                        (y1 - y0) * PY
+                    );
+                }
+                cell += WG3_CELL_M;
+            }
+
+            // Las cotas de planta, para leer de un vistazo dónde cae cada forjado.
+            let storey_m = super::plan::STOREY_HEIGHT_CM as f32 / 100.0;
+            let mut n = 0;
+            while (n as f32) * storey_m <= h_m {
+                let y = to_y(n as f32 * storey_m);
+                svg += &format!(
+                    "<line x1=\"0\" y1=\"{y:.1}\" x2=\"{w:.0}\" y2=\"{y:.1}\" stroke=\"#f59e0b\" \
+                     stroke-width=\"0.7\" stroke-dasharray=\"6 6\" opacity=\"0.5\"/>\n"
+                );
+                n += 1;
+            }
+
+            // El jugador, a escala, sobre el primer suelo que haya cerca del centro.
+            let px = w * 0.5;
+            svg += &format!(
+                "<rect x=\"{:.1}\" y=\"{:.1}\" width=\"{:.1}\" height=\"{:.1}\" fill=\"#f87171\" \
+                 opacity=\"0.9\"/>\n<text x=\"{:.1}\" y=\"{:.1}\" fill=\"#f87171\" \
+                 font-family=\"sans-serif\" font-size=\"11\">1,86 m</text>\n",
+                px,
+                to_y(PLAYER_M),
+                0.45 * PX,
+                PLAYER_M * PY,
+                px + 8.0,
+                to_y(PLAYER_M) + 12.0
+            );
+            svg += &format!(
+                "<text x=\"8\" y=\"16\" fill=\"#e2e8f0\" font-family=\"sans-serif\" \
+                 font-size=\"13\">region ({rx},{rz}) — corte en z = {z:.0} m</text>\n"
+            );
+            svg += "</svg>\n";
+            let path = format!("{dir}/wg3_section_{rx}_{rz}_{k}.svg");
+            std::fs::write(&path, svg).expect("escribir el corte");
+            println!("[corte] {path}");
+        }
+    }
+}

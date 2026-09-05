@@ -357,8 +357,17 @@ namespace BackroomsSurvival.WorldGen3
                     // 6 m, el mismo techo que WG2 (`BackroomsLighting` acota lampRange ≤ 6). Con 9 m
                     // el volumen iluminado por lámpara era 3,4 veces el de WG2 y el clustering de
                     // Forward+ lo pagaba entero cada frame.
-                    light.range = 6f;
-                    light.intensity = 1.1f;
+                    // **Once metros, y el número sale de dónde CUELGA.** Con 6 y la lámpara a 3 m
+                    // de altura, al suelo le quedaba un radio útil de 3 m —el resto se lo come la
+                    // vertical—, así que cada plafón dibujaba un charco de seis metros de diámetro y
+                    // entre charco y charco no había nada. Con 11 el radio en el suelo pasa a 10,6 y
+                    // dos plafones del mismo tramo se solapan en vez de dejar un vacío.
+                    //
+                    // El coste de Forward+ no sube en la misma proporción: el tope de 256 luces
+                    // visibles cuenta LUCES, no volumen, y aquí no se añade ni una. Lo que sube es el
+                    // trabajo de clustering, y por eso el número no es 20.
+                    light.range = 11f;
+                    light.intensity = 1.35f;
                     light.color = new Color(1f, 0.96f, 0.78f);
                     // La PRIMERA de un tramo grande proyecta; las demás no. Con 2 × 2 como tope por
                     // eje, eso es una de cuatro en el peor caso.
