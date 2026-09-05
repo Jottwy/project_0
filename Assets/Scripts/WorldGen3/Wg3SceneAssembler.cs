@@ -103,6 +103,23 @@ namespace BackroomsSurvival.WorldGen3
         /// <summary>La capa de una LUZ: sólo la planta de su suelo.</summary>
         public static uint ForLight(float floorY) => 1u << StoreyOf(floorY);
 
+        /// <summary>
+        /// Las capas de una luz que vive dentro de un VOLUMEN: las mismas que ese volumen.
+        /// </summary>
+        /// <remarks>
+        /// **La de una sola planta no vale desde que los techos suben de 3,32.** La losa de techo de
+        /// una sala de 3,80 arranca por encima del suelo de la planta 1, así que <see
+        /// cref="ForSurface"/> le da la capa 1 — y la lámpara de esa misma sala, con la capa de su
+        /// suelo, tenía la 0. Sin bit común, **el techo de la sala no lo iluminaba su propia
+        /// lámpara**: quedaba a merced del ambiente y salía casi negro mientras el suelo estaba bien
+        /// iluminado. Es exactamente lo que se ve en las capturas del playtest.
+        ///
+        /// La fuga que la máscara vino a cerrar sigue cerrada: lo que se pide es la capa del volumen
+        /// de la lámpara, no «todas». Una lámpara de la planta baja no alcanza la sala de arriba
+        /// porque el volumen de su sala no llega ahí.
+        /// </remarks>
+        public static uint ForLightIn(float floorY, float height) => ForSurface(floorY, height);
+
         /// <summary>Las capas de una SUPERFICIE: todas las que su volumen atraviesa.</summary>
         public static uint ForSurface(float floorY, float height)
         {
@@ -388,7 +405,8 @@ namespace BackroomsSurvival.WorldGen3
                     // puede deducir mirando el objeto: un plafón parece inofensivo.
                     // `Light.renderingLayerMask` es int y el del Renderer es uint: la conversión
                     // es explícita a propósito en la API de Unity, no un descuido de aquí.
-                    light.renderingLayerMask = (int)Wg3StoreyLayers.ForLight(segment.FloorY);
+                    light.renderingLayerMask =
+                        (int)Wg3StoreyLayers.ForLightIn(segment.FloorY, segment.Height);
 
                     // ADR-107 D2 — **la luminaria, que hasta hoy no existía: había luz sin lámpara.**
                     // Es decorativa y sin collider, igual que la de WG2, porque un plafón que frena
@@ -440,6 +458,7 @@ namespace BackroomsSurvival.WorldGen3
             r.sharedMaterial = lampMaterial;
             // La luminaria pertenece a la planta de su lámpara (ADR-104 enmienda 2): si no, la de
             // abajo se ve iluminada desde arriba y vuelve el síntoma que esa enmienda quitó.
+            // La luminaria es una SUPERFICIE, y va con la capa de la planta en la que cuelga.
             r.renderingLayerMask = Wg3StoreyLayers.ForLight(parent.position.y);
         }
 
