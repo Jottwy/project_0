@@ -587,9 +587,12 @@ pub enum SpaceRole {
     /// callejón que baja tres peldaños es además exactamente lo que se busca — el sitio raro del que
     /// no se sale a otro lado.
     Stair,
-    /// Donde dos bandas se cruzan. Es un espacio propio porque una intersección es un sitio, no una
-    /// arista: es donde se decide por dónde seguir, y merece leerse distinto.
-    Junction,
+    // BORRADA `Junction` («donde dos bandas se cruzan») el 2026-09-05, bloque B4 del saneamiento:
+    // estaba declarada y en tres `match`, y NADIE se la asignaba nunca a un espacio. El cruce de
+    // dos bandas sí existe en el plan, pero como `LinkKind::Junction` (un enlace, que sí se
+    // produce en `plan.rs`), no como papel de un espacio. Dos cosas distintas con el mismo nombre,
+    // y sólo una viva. Si algún día una intersección tiene que leerse como sitio propio, esto se
+    // vuelve a añadir CON su productor en el mismo commit.
     /// Sala grande y diáfana.
     Hall,
     /// El caso normal: una sala con una o dos salidas.
@@ -616,10 +619,7 @@ impl SpaceRole {
     ///
     /// `Stair` NO lo es: es una sala hundida con una sola puerta, no un sitio por el que se pasa.
     pub fn is_circulation(&self) -> bool {
-        matches!(
-            self,
-            SpaceRole::Spine | SpaceRole::Corridor | SpaceRole::Junction
-        )
+        matches!(self, SpaceRole::Spine | SpaceRole::Corridor)
     }
     /// ¿Se rellena con contenido? El vacío no.
     pub fn is_built(&self) -> bool {
@@ -631,7 +631,6 @@ impl SpaceRole {
             SpaceRole::Spine => "spine",
             SpaceRole::Corridor => "corridor",
             SpaceRole::Stair => "stair",
-            SpaceRole::Junction => "junction",
             SpaceRole::Hall => "hall",
             SpaceRole::Office => "office",
             SpaceRole::Service => "service",

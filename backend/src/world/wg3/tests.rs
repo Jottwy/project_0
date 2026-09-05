@@ -6718,7 +6718,6 @@ fn probe_region_plan() {
         for role in [
             SpaceRole::Spine,
             SpaceRole::Corridor,
-            SpaceRole::Junction,
             SpaceRole::Hall,
             SpaceRole::Office,
             SpaceRole::Service,
@@ -7707,7 +7706,6 @@ fn dump_region_plans() {
                 // La escalera en verde ácido: es lo único que no es plano, y en un plano de planta
                 // hay que poder localizarlo de un vistazo.
                 SpaceRole::Stair => ("#65a30d", "#a3e635", ""),
-                SpaceRole::Junction => ("#ea580c", "#fb923c", ""),
                 SpaceRole::Hall => ("#0369a1", "#38bdf8", ""),
                 SpaceRole::Office => ("#334155", "#94a3b8", ""),
                 SpaceRole::Service => ("#5b21b6", "#a78bfa", ""),
