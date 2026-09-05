@@ -6991,6 +6991,156 @@ async fn stp_demolish_of_a_standalone_piece_leaves_pose_cells_alone() {
     );
 }
 
+// ------------------------------------------------------------------------------------------
+// ADR-081, la TERCERA puerta: aportar material a una obra.
+//
+// Colocar y demoler ya comprobaban dueño; aportar no comprobaba nada — ni quién, ni desde dónde.
+// Un territorio defendido en dos de sus tres puertas es un territorio sin defender.
+// ------------------------------------------------------------------------------------------
+
+/// Material aportado a una pieza, por material. `None` = la pieza no existe.
+fn build_progress(net: &NetworkManager, id: u32, material_id: i32) -> Option<u16> {
+    let building = net.stp_buildings.iter().find(|b| b.id == id)?;
+    Some(
+        building
+            .added
+            .iter()
+            .find(|p| p.material_id == material_id)
+            .map_or(0, |p| p.count),
+    )
+}
+
+/// Coloca un claim del peer 1 y una pieza suya dentro, y devuelve `(net, posición, id)`.
+async fn a_piece_owned_by_peer_1() -> (NetworkManager, [f32; 3], u32) {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let position = build_room_centre(42);
+    claim_at(&mut net, 1, position);
+    process_stp_place(
+        1,
+        111,
+        position,
+        0.0,
+        0,
+        true,
+        1,
+        &mut net,
+        &wg3_off(),
+        &mut wg3_cache(),
+    );
+    let id = placed_pieces(&net)[0];
+    (net, position, id)
+}
+
+/// El dueño, y a un brazo de distancia: el caso legítimo. Va primero para que los tres de abajo
+/// no puedan pasar por estar todo bloqueado.
+#[tokio::test]
+async fn stp_build_add_by_the_owner_within_reach_is_accepted() {
+    let (mut net, position, id) = a_piece_owned_by_peer_1().await;
+
+    process_stp_build_add(700, id, 7, 1, Some(Vec3::from_array(position)), &mut net);
+
+    assert_eq!(
+        build_progress(&net, id, 7),
+        Some(1),
+        "el dueño, al lado de su obra, sí aporta material"
+    );
+}
+
+/// **El agujero, en una línea:** cualquier peer conectado aportaba material a la obra de
+/// cualquier otro. `requester_id` sale de la CABECERA del paquete y no del payload — si saliera
+/// del payload, el cliente diría ser quien le conviene.
+#[tokio::test]
+async fn stp_build_add_by_a_stranger_is_denied() {
+    let (mut net, position, id) = a_piece_owned_by_peer_1().await;
+
+    // El peer 2, plantado justo encima de la obra del peer 1: la distancia está bien y aun así no.
+    process_stp_build_add(701, id, 7, 2, Some(Vec3::from_array(position)), &mut net);
+
+    assert_eq!(
+        build_progress(&net, id, 7),
+        Some(0),
+        "un peer que no es el dueño no aporta a la obra de otro ni estando encima"
+    );
+}
+
+/// La otra mitad del agujero: el dueño, pero desde el otro extremo del mundo. Se mide contra la
+/// pose que el host YA CONOCE, nunca contra el paquete.
+#[tokio::test]
+async fn stp_build_add_from_far_away_is_denied() {
+    let (mut net, position, id) = a_piece_owned_by_peer_1().await;
+
+    let lejos = Vec3::new(
+        position[0] + STP_PICKUP_MAX_DISTANCE + 1.0,
+        position[1],
+        position[2],
+    );
+    process_stp_build_add(702, id, 7, 1, Some(lejos), &mut net);
+    assert_eq!(
+        build_progress(&net, id, 7),
+        Some(0),
+        "ni el dueño aporta desde fuera de alcance"
+    );
+
+    // Y justo dentro del tope sí, para que el test mida el borde y no «todo rechazado».
+    let cerca = Vec3::new(
+        position[0] + STP_PICKUP_MAX_DISTANCE - 0.5,
+        position[1],
+        position[2],
+    );
+    process_stp_build_add(703, id, 7, 1, Some(cerca), &mut net);
+    assert_eq!(
+        build_progress(&net, id, 7),
+        Some(1),
+        "dentro del tope, el dueño sí aporta"
+    );
+}
+
+/// Sin pose no se puede medir alcance, así que no se acepta. Diverge a propósito de
+/// `pickup_within_reach`, que ante un hueco de información deja pasar: allí el hueco es una
+/// ventana de milisegundos al entrar; una obra no se mueve y quien aporta lleva rato conectado.
+#[tokio::test]
+async fn stp_build_add_without_a_known_pose_is_denied() {
+    let (mut net, _position, id) = a_piece_owned_by_peer_1().await;
+
+    process_stp_build_add(704, id, 7, 1, None, &mut net);
+
+    assert_eq!(
+        build_progress(&net, id, 7),
+        Some(0),
+        "aceptar sin saber dónde está quien pide deja abierto el agujero que esto cierra"
+    );
+}
+
+/// `owner_id == 0` es lo que traen las piezas de un save anterior a ADR-081. La demolición ya
+/// decidió que no las toca nadie; aportar sigue la MISMA regla, y el precio se dice en voz alta:
+/// una obra huérfana de un save viejo no se puede terminar ni retirar. Ninguna pieza colocada
+/// desde ADR-081 puede caer ahí — `process_stp_place` escribe `owner_id` en todas.
+#[tokio::test]
+async fn stp_build_add_to_a_piece_without_owner_is_denied_to_everyone() {
+    let (mut net, position, id) = a_piece_owned_by_peer_1().await;
+    net.stp_buildings
+        .iter_mut()
+        .find(|b| b.id == id)
+        .expect("la pieza recién puesta")
+        .owner_id = 0;
+
+    for requester in [0u16, 1, 2] {
+        process_stp_build_add(
+            710 + requester as u64,
+            id,
+            7,
+            requester,
+            Some(Vec3::from_array(position)),
+            &mut net,
+        );
+        assert_eq!(
+            build_progress(&net, id, 7),
+            Some(0),
+            "ni el peer {requester} ni nadie aporta a una pieza sin dueño"
+        );
+    }
+}
+
 /// ADR-031's follow-up, closed by ADR-037: cancelling the bed that set the respawn point must
 /// clear it. Goes through handle_action because that is where `player` is in scope.
 #[tokio::test]

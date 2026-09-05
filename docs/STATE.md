@@ -28,9 +28,9 @@
 - ADR-123 (agacharse y conductos) PROPUESTO, pendiente de Joel. ADR-127 (rampa de techo, wire 61) propuesto para el día 4.
 
 ## Riesgos abiertos
-- **AGUJERO DE AUTORIDAD, cabeza de B5 y lo siguiente tras WG3.** De los tres, dos cerrados (`78e156e6` dueño en
-  demoler; `ebb42911`/`bb3c7e5c` cantidad y posición contra el roster). **Queda `process_stp_build_add`
-  (`game_loop.rs:7297`): ni `owner_id` ni distancia**, y `process_stp_demolish` no mide distancia. ADR-081, ~1 día.
+- **Autoridad del servidor: los tres agujeros, CERRADOS** (`78e156e6` dueño al demoler; `ebb42911`/`bb3c7e5c`
+  cantidad y posición contra el roster; y aportar material ya exige dueño y alcance, con 5 tests). Queda **una
+  línea**: `process_stp_demolish` valida dueño pero **no distancia** — se demuele lo tuyo desde donde sea.
 - **Espejos C#↔Rust sin oráculo.** Sin `the_identity_mirror_golden_values` (B4-b), `Wg3Identity.cs` queda verde sin
   nada que lo contraste; igual el hash de `ChunkLootRoll` (dos copias que divergían en negativos) y los goldens de
   `scale`/`density`. Un oráculo JSON común es una sesión: **B5**.

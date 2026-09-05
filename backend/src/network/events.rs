@@ -95,10 +95,17 @@ pub enum NetworkEvent {
         requester_id: PeerId,
     },
     /// Phase B2: a joiner asks the host to add one unit of a build material to a piece.
+    ///
+    /// `requester_id` sale de la CABECERA del paquete, nunca del payload — mismo motivo que en
+    /// `StpPlaceRequest` y `StpDemolishRequest` (ADR-081): es contra esa identidad contra la que el
+    /// host comprueba que quien aporta material es el dueño de la pieza, y contra su pose conocida
+    /// contra la que mide el alcance. Si el payload pudiera declararla, mentir en un campo bastaría
+    /// para construir en la obra de otro desde el otro extremo del mundo.
     StpBuildAddRequest {
         add_id: u64,
         building_id: u32,
         material_id: i32,
+        requester_id: PeerId,
     },
     /// ADR-037: a joiner asks the host to retire a placed-but-unbuilt piece it just cancelled.
     ///

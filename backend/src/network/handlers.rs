@@ -399,9 +399,22 @@ impl NetworkManager {
 
         }
         [
-            StpBuildAddRequest { add_id, building_id, material_id },
         ]
         {
+            // ADR-081 llevado también a APORTAR MATERIAL, que era el último de los tres verbos de
+            // construcción sin dueño: colocar y demoler ya se comprobaban y añadir no. Por eso este
+            // arm no puede vivir en la lista 1:1 de arriba — necesita `sender_id`.
+            PacketPayload::StpBuildAddRequest {
+                add_id,
+                building_id,
+                material_id,
+            } => Some(NetworkEvent::StpBuildAddRequest {
+                add_id,
+                building_id,
+                material_id,
+                requester_id: sender_id,
+            }),
+
             // Alcance de cosecha: el host lo mide contra la pose conocida de quien manda el golpe,
             // así que `requester_id` sale de la CABECERA y no del payload.
             PacketPayload::StpHarvestHitRequest {
