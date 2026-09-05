@@ -357,6 +357,12 @@ namespace BackroomsSurvival.WorldGen3
             int nz = Mathf.Clamp(Mathf.RoundToInt(segment.SizeZ / Spacing), 1, MaxPerAxis);
             float y = Mathf.Min(segment.Height - 0.2f, HangHeight);
 
+            // Día 2 del cierre (Joel: la foto de la oficina) — los PANELES fluorescentes de 60×120
+            // en rejilla sobre las placas del techo, en vez de una luminaria cuadrada por lámpara.
+            // Son mallas emisivas, no luces: las luces siguen siendo las de siempre (≤ 2 × 2 por
+            // tramo), así que Forward+ no paga nada por esto.
+            if (lampMaterial != null) AddPanels(go.transform, segment, lampMaterial);
+
             for (int ix = 0; ix < nx; ix++)
             {
                 for (int iz = 0; iz < nz; iz++)
@@ -416,7 +422,6 @@ namespace BackroomsSurvival.WorldGen3
                     // ADR-107 D2 — **la luminaria, que hasta hoy no existía: había luz sin lámpara.**
                     // Es decorativa y sin collider, igual que la de WG2, porque un plafón que frena
                     // es una viga invisible a la altura de la cabeza.
-                    if (lampMaterial != null) AddLuminaire(lamp.transform, lampMaterial);
 
                     // ADR-107 D3 — y el zumbido. Pitch y fase salen de la POSICIÓN con las mismas
                     // funciones que usa WG2, así que dos jugadores oyen la misma lámpara, la misma
@@ -451,20 +456,63 @@ namespace BackroomsSurvival.WorldGen3
         /// así que no hay nada que sobrescribir por lámpara. Un MPB aquí, además, rompería el SRP
         /// Batcher para las ~900 luminarias de un radio 1.
         /// </summary>
-        private static void AddLuminaire(Transform parent, Material lampMaterial)
+        /// <summary>Placa del techo de la oficina: 60 cm. Los paneles se alinean a ella.</summary>
+        public const float CeilingTileM = 0.6f;
+        /// <summary>Panel fluorescente: dos placas de largo, una de ancho, como en la foto.</summary>
+        public const float PanelLongM = 1.2f;
+        public const float PanelShortM = 0.6f;
+        /// <summary>Paso de la rejilla de paneles, en placas. Cuatro placas = 2,4 m: una fila de
+        /// paneles cada dos metros y pico, que es lo que se ve en las referencias del Nivel 0.</summary>
+        private const int PanelPitchTiles = 4;
+        /// <summary>Tope de paneles por tramo: en una nave de 25 × 25 el paso se abre hasta
+        /// cumplirlo. Son mallas, no luces, pero mil paneles en radio 1 también pesan.</summary>
+        private const int MaxPanelsPerSegment = 40;
+
+        /// <summary>
+        /// Los paneles fluorescentes de un tramo, en rejilla alineada a las placas del techo. Se
+        /// omite el que caería a menos de una placa de la pared. El eje largo del panel sigue el
+        /// eje largo del tramo. Sin collider: es decoración del techo. Y para un tramo de doble
+        /// altura cuelga con su planta de arriba (la del techo), que es la que lo alumbra.
+        /// </summary>
+        private static void AddPanels(Transform parent, Wg3Segment segment, Material lampMaterial)
         {
-            var go = new GameObject("Luminaire");
-            go.hideFlags = HideFlags.DontSave;
-            go.transform.SetParent(parent, false);
-            go.transform.localPosition = Vector3.zero;
-            go.transform.localScale = new Vector3(1.65f, 0.08f, 1.65f);
-            go.AddComponent<MeshFilter>().sharedMesh = LuminaireMesh();
-            var r = go.AddComponent<MeshRenderer>();
-            r.sharedMaterial = lampMaterial;
-            // La luminaria pertenece a la planta de su lámpara (ADR-104 enmienda 2): si no, la de
-            // abajo se ve iluminada desde arriba y vuelve el síntoma que esa enmienda quitó.
-            // La luminaria es una SUPERFICIE, y va con la capa de la planta en la que cuelga.
-            r.renderingLayerMask = Wg3StoreyLayers.ForLight(parent.position.y);
+            float pitch = PanelPitchTiles * CeilingTileM;
+            int cx = Mathf.Max(1, Mathf.FloorToInt(segment.SizeX / pitch));
+            int cz = Mathf.Max(1, Mathf.FloorToInt(segment.SizeZ / pitch));
+            while (cx * cz > MaxPanelsPerSegment)
+            {
+                pitch += CeilingTileM;
+                cx = Mathf.Max(1, Mathf.FloorToInt(segment.SizeX / pitch));
+                cz = Mathf.Max(1, Mathf.FloorToInt(segment.SizeZ / pitch));
+            }
+            bool alongX = segment.SizeX >= segment.SizeZ;
+            var size = alongX
+                ? new Vector3(PanelLongM, 0.05f, PanelShortM)
+                : new Vector3(PanelShortM, 0.05f, PanelLongM);
+            // Centrado: el sobrante de la rejilla se reparte a los dos lados.
+            float ox = (segment.SizeX - cx * pitch) * 0.5f + pitch * 0.5f;
+            float oz = (segment.SizeZ - cz * pitch) * 0.5f + pitch * 0.5f;
+            float y = segment.Height - size.y * 0.5f + 0.01f;
+            uint mask = Wg3StoreyLayers.ForLight(segment.FloorY + segment.Height - 0.1f);
+            for (int ix = 0; ix < cx; ix++)
+            {
+                for (int iz = 0; iz < cz; iz++)
+                {
+                    float px = ox + ix * pitch, pz = oz + iz * pitch;
+                    if (px < CeilingTileM + size.x * 0.5f || px > segment.SizeX - CeilingTileM - size.x * 0.5f
+                        || pz < CeilingTileM + size.z * 0.5f || pz > segment.SizeZ - CeilingTileM - size.z * 0.5f)
+                        continue;
+                    var go = new GameObject($"panel_{ix}_{iz}");
+                    go.hideFlags = HideFlags.DontSave;
+                    go.transform.SetParent(parent, false);
+                    go.transform.localPosition = new Vector3(px, y, pz);
+                    go.transform.localScale = size;
+                    go.AddComponent<MeshFilter>().sharedMesh = LuminaireMesh();
+                    var r = go.AddComponent<MeshRenderer>();
+                    r.sharedMaterial = lampMaterial;
+                    r.renderingLayerMask = mask;
+                }
+            }
         }
 
         /// <summary>
