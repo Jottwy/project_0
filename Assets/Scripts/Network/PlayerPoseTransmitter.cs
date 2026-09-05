@@ -10,7 +10,13 @@ namespace BackroomsSurvival.Net
 {
     /// <summary>
     /// Single, motor-independent transmitter of the LOCAL player's pose over IPC (~30 Hz).
-    /// Replaces the deleted PlayerPoseSender / LocalPoseSendGate / MovementReconciler stack.
+    /// Sustituye a PlayerPoseSender y LocalPoseSendGate, que se borraron.
+    ///
+    /// **NO sustituye al MovementReconciler**, aunque hasta el 2026-09-05 esta línea los metía a
+    /// los tres en el mismo saco. Aquélla era la capa L2 de ADR-009 —predicción local y
+    /// reconciliación contra el delta autoritativo— y vive en el lado de RECEPCIÓN, no en el de
+    /// envío: se borró y nunca se reemplazó, y sigue siendo la causa raíz compartida de la salud
+    /// al borde de la muerte y del respawn invisible. Este transmisor sólo manda la pose.
     ///
     /// Three hard lessons baked into the design (do not regress):
     ///   1. Reads <c>_motor.transform.position</c>, NEVER the Player root. Only the

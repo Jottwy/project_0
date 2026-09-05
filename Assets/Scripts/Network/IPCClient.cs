@@ -623,7 +623,12 @@ namespace BackroomsSurvival.Net
                     _pendingStateNotify.Enqueue(ws);
                     break;
                 case ProtocolMessageTypes.DeltaUpdate:
-                    // ADR-009 §2: 20 Hz movement delta → MovementReconciler.
+                    // ADR-009 §2: delta de movimiento a 20 Hz. Lo consume
+                    // AuthoritativePoseApplier.OnMovementDelta, NO un "MovementReconciler":
+                    // esa clase se borró y nunca se reemplazó (ADR-009 L2 a medias), y hasta el
+                    // 2026-09-05 este comentario y otros dos seguían mandando al lector a
+                    // buscarla. Lo que falta de L2 es la predicción/reconciliación del lado
+                    // cliente, no el consumidor del paquete.
                     _pendingDeltaNotify.Enqueue(MovementDeltaMsg.Parse(r, remaining));
                     break;
                 case ProtocolMessageTypes.ChunkData:
