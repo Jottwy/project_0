@@ -15061,3 +15061,27 @@ sala elija su sitio (hoy sale donde el reparto ya dejó una pareja del tamaño j
 
 > Nota de fusión (2026-09-06): la rama nació como «Enmienda 19»; al fusionar, la 19 era la de los materiales por función y la 20
 > la del falso techo roto, así que ésta es la **Enmienda 21**.
+
+## ADR-129 — Enmienda 1, nota de cierre: la captura en juego y el cartel en ESPEJO (2026-09-06)
+
+La captura que quedaba pendiente ya está hecha (`Temp/captures/sign_*.png`, región (0,0) semilla 42,
+1 253 carteles montados en radio 1) y encontró un fallo que **ningún test podía ver**: el texto salía
+al revés.
+
+**La causa.** Mirando de frente a un quad cuya normal es +z, la cámara está en +z mirando a −z, y
+ahí su «derecha» es el −x del MUNDO: el borde izquierdo de la textura acaba a la derecha de la
+pantalla. Las UV van, por tanto, al revés que la X local. Se arregla en `Wg3SignCatalog.MeshOf`, y
+sólo ahí.
+
+**Por qué no se vio antes, que es lo que hay que recordar.** El quad se emitió con las DOS caras
+—para que un giro mal calculado no diera un cartel invisible— y una cara de más convierte el fallo
+de orientación en un fallo de contenido: se ve un cartel, en su sitio, con el texto en espejo. Lo
+barato hubiera sido una cara sola: entonces «no se ve nada» habría apuntado al giro desde el primer
+minuto.
+
+**Y el diagnóstico costó tres vueltas por una trampa ya escrita**: `FindObjectsByType` no ve
+`HideFlags.DontSave`, y TODO lo que monta WG3 lo lleva, así que el primer arnés contó «0 carteles y
+0 atrezo» con 2 974 anclas montadas. Con `Resources.FindObjectsOfTypeAll` el número apareció. De ahí
+sale el contador permanente del informe del streamer (`atrezo 2974/2974 anclas y carteles
+1253/1253`): un ancla que llega y no monta nada es invisible de la peor manera, porque el mundo sale
+entero y sólo que vacío.

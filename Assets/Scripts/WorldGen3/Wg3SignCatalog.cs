@@ -119,10 +119,16 @@ namespace BackroomsSurvival.WorldGen3
                 new Vector3(-hx, -hy, 0f), new Vector3(hx, -hy, 0f),
                 new Vector3(hx, hy, 0f), new Vector3(-hx, hy, 0f),
             };
+            // **La U va al revés que la X local, y no es un capricho.** Mirando de frente a un quad
+            // cuya normal es +z, la cámara está en +z mirando a −z, y ahí su «derecha» es el −x del
+            // mundo: el borde de la izquierda de la textura acaba a la derecha de la pantalla. Sin
+            // este cambio el cartel sale en ESPEJO, que es exactamente como salió la primera
+            // captura en juego («SOSRUCER SONAMUH»), y con las dos caras puestas no había forma de
+            // notarlo desde el código.
             mesh.uv = new[]
             {
-                new Vector2(uv.xMin, uv.yMin), new Vector2(uv.xMax, uv.yMin),
-                new Vector2(uv.xMax, uv.yMax), new Vector2(uv.xMin, uv.yMax),
+                new Vector2(uv.xMax, uv.yMin), new Vector2(uv.xMin, uv.yMin),
+                new Vector2(uv.xMin, uv.yMax), new Vector2(uv.xMax, uv.yMax),
             };
             mesh.normals = new[] { Vector3.forward, Vector3.forward, Vector3.forward, Vector3.forward };
             // Las dos caras sobre los mismos cuatro vértices. La de atrás queda DENTRO de la pared

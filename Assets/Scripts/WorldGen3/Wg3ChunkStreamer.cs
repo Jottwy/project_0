@@ -387,8 +387,20 @@ namespace BackroomsSurvival.WorldGen3
                 var prop = chunk.props[i];
                 // Los materiales van con el ancla porque el deterioro de la enm. 20 no tiene
                 // prefab: lo dibuja el ensamblador con el material de placa o el de luminaria.
-                Wg3SceneAssembler.AssembleProp(prop, root.transform, root.layer,
+                var built = Wg3SceneAssembler.AssembleProp(prop, root.transform, root.layer,
                     $"prop_{i:D3}_k{prop.kind}", EffectiveMaterials(), LampMaterial());
+                // Se cuenta lo que LLEGA y lo que se MONTA por separado: un ancla que llega y no
+                // monta nada (prefab que falta, atlas sin importar) es invisible de la peor manera
+                // —el mundo sale entero, sólo que vacío— y sin estos dos números el diagnóstico
+                // empieza por mirar la pared. Los carteles (ADR-129 enm. 1) aparte, que no son
+                // prefab sino quad con su atlas.
+                _propAnchors++;
+                if (built != null) _builtProps++;
+                if (prop.kind == BackroomsSurvival.Net.Wg3PropMsg.Sign)
+                {
+                    _signAnchors++;
+                    if (built != null) _builtSigns++;
+                }
             }
 
             // Detalle de oficina, SOLO CLIENTE: teléfono, impresora, aire y crujido de silla por
@@ -684,6 +696,10 @@ namespace BackroomsSurvival.WorldGen3
         private int _builtPieces;
         private int _builtSegments;
         private int _builtSolids;
+        private int _propAnchors;
+        private int _builtProps;
+        private int _signAnchors;
+        private int _builtSigns;
         private bool _reported;
 
         /// <summary>
@@ -703,6 +719,7 @@ namespace BackroomsSurvival.WorldGen3
 
             Debug.Log($"[WG3] streamer: {_builtChunks} chunks con geometría y {_emptyChunks} vacíos; " +
                       $"{_builtPieces} piezas, {_builtSegments} tramos, {_builtSolids} macizos y {_builtLamps} lamparas con zumbido montados; " +
+                      $"atrezo {_builtProps}/{_propAnchors} anclas y carteles {_builtSigns}/{_signAnchors}; " +
                       $"{_builtOfficeSources} fuentes de oficina. materiales " +
                       $"{(materials?.floor != null ? "propios" : "de WG2 por respaldo — los propios sin asignar")}; " +
                       $"radio {radius}.", this);
