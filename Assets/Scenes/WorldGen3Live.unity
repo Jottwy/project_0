@@ -170,7 +170,7 @@ MonoBehaviour:
   refreshSeconds: 0.5
   spawnLights: 1
   lightCullDistance: 30
-  ambience: {fileID: 0}
+  ambience: {fileID: 11400000, guid: 655a1fcc2a801bf498435ee1402ba1c6, type: 2}
   viewer: {fileID: 983734160}
 --- !u!4 &830275888
 Transform:
