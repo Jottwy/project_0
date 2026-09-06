@@ -414,6 +414,11 @@ namespace BackroomsSurvival.WorldGen3
                         emitters[i], root.transform, root.layer, $"amb_{i:D2}_{emitters[i].kind}");
                 }
 
+                // La máscara de «esto es pared» es del mundo, no del audio: el director sondea la
+                // oclusión con lo que le den, y sin esto no filtra nada (falla ABIERTO, que es lo
+                // que se quiere: un teléfono sin filtrar es peor que uno que no suena).
+                Audio.OfficeAmbienceDirector.GeometryMask =
+                    BackroomsSurvival.Gameplay.GridWorld.GridChunkBuilder.GeoMask;
                 Audio.OfficeAmbienceDirector.RegisterChunk(root.transform, emitters);
                 _builtOfficeSources += emitters.Count;
             }

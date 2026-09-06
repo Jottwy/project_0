@@ -443,9 +443,42 @@ namespace BackroomsSurvival.Gameplay.Audio
             public long key = NoKey;
             public Kind kind;
             public SlotMode mode;
-            public float target;   // volumen destino del continuo
+            public float target;   // volumen destino del continuo, SIN la oclusión
             public float busyUntil; // reloj local hasta el que el one-shot ocupa el hueco
+            public AudioLowPassFilter lowPass; // la pared de por medio
+            public float occlusion;    // OBJETIVO que fija la sonda: 0 a la vista, 1 tapada
+            public float occlusionNow; // el suavizado, que es el que se oye
         }
+
+        // ── Oclusión ────────────────────────────────────────────────────────────
+        //
+        // Mismo diseño que el zumbido, y aquí importa MÁS: el teléfono alcanza 18 m, o sea que casi
+        // siempre suena desde otra sala. Sin filtro, un timbre a 15 m con dos tabiques por medio
+        // llega tan nítido como si estuviera en la mesa de al lado, y eso destruye justo la
+        // sensación que el alcance largo existe para dar.
+        //
+        // Se filtra Y se baja: un paso-bajo solo sigue leyéndose como cercano.
+
+        private const float CutoffOpen = 22000f;
+        private const float CutoffOccluded = 900f;
+        private const float OcclusionTau = 0.25f;  // cruzar un vano no da un salto
+        private const float OccludedVolume = 0.45f;
+
+        /// <summary>Una sonda por FRAME rotando entre las seis fuentes: el coste queda plano en
+        /// vez de en picos, y cada fuente se revisa ~10 veces por segundo a 60 fps.</summary>
+        private int _occlusionCursor;
+
+        /// <summary>
+        /// Máscara de capas contra la que se sonda la oclusión. **La pone el llamante** (el
+        /// streaming, con <c>GridChunkBuilder.GeoMask</c>); a 0 no se sonda y todo suena abierto.
+        ///
+        /// Es un campo y no una referencia directa a <c>GridChunkBuilder</c> a propósito: el audio
+        /// no tiene por qué saber cómo se llaman las capas del worldgen, y esa dependencia
+        /// arrastraba las seis partes de una clase parcial hasta cualquier arnés que quisiera
+        /// compilar este fichero sin Unity. La capa que decide qué es «pared» es del mundo, no del
+        /// sonido.
+        /// </summary>
+        public static int GeometryMask { get; set; }
 
         private readonly Slot[] _slots = new Slot[SourceBudget];
         private bool _routed;
@@ -473,7 +506,12 @@ namespace BackroomsSurvival.Gameplay.Audio
                 src.maxDistance = 12f;
                 src.volume = 0f;
 
-                _slots[i] = new Slot { src = src, tr = go.transform };
+                // Un paso-bajo POR FUENTE y no uno global: puedes tener la rejilla a la vista y el
+                // teléfono detrás de un tabique en el mismo instante.
+                var lp = go.AddComponent<AudioLowPassFilter>();
+                lp.cutoffFrequency = CutoffOpen;
+
+                _slots[i] = new Slot { src = src, tr = go.transform, lowPass = lp };
             }
 
             _routeDeadline = Time.unscaledTime + 5f;
@@ -553,6 +591,41 @@ namespace BackroomsSurvival.Gameplay.Audio
         private static readonly Comparison<Candidate> ByDistance =
             (a, b) => a.distance.CompareTo(b.distance);
 
+        /// <summary>Qué hacer con la cita de un emisor episódico.</summary>
+        public enum ScheduleAction : byte
+        {
+            /// <summary>Todavía no toca.</summary>
+            Wait = 0,
+            /// <summary>Toca: compite por un hueco.</summary>
+            Fire = 1,
+            /// <summary>La cita está podrida: se reprograma SIN sonar.</summary>
+            Resync = 2,
+        }
+
+        /// <summary>
+        /// La regla del horario, aparte del bucle para poder probarla sin escena.
+        ///
+        /// HORARIO CADUCADO, y es un fallo real que tuvo el sistema: un emisor fuera de alcance no
+        /// se mira, así que su cita se queda en el pasado mientras el jugador está lejos. Al entrar
+        /// en la sala el suceso estaba vencido y sonaba EN EL ACTO — y siempre, cada vez. Un
+        /// teléfono que suena cada vez que cruzas la puerta no es un suceso, es un disparador.
+        ///
+        /// El umbral es UN periodo entero: por debajo, un retraso normal (el reparto no encontró
+        /// hueco, o hubo un tirón de frames) sigue sonando; por encima, la cita es de otra época y
+        /// se tira.
+        /// </summary>
+        public static ScheduleAction ActionFor(float now, float nextAt, float period)
+        {
+            if (period <= 0f) return ScheduleAction.Wait;
+            if (now - nextAt > period) return ScheduleAction.Resync;
+            return now >= nextAt ? ScheduleAction.Fire : ScheduleAction.Wait;
+        }
+
+        /// <summary>La cita nueva tras un <see cref="ScheduleAction.Resync"/>: la misma fase
+        /// determinista del emisor, contada desde ahora.</summary>
+        public static float ResyncAt(float now, float period, float phase01) =>
+            now + phase01 * period;
+
         private void Update()
         {
             if (_slots[0] == null) return; // copia duplicada a medio destruir
@@ -570,7 +643,24 @@ namespace BackroomsSurvival.Gameplay.Audio
                 else ReleaseAll();
             }
 
+            StepOcclusionProbe();
             DriveSlots(dt, now);
+        }
+
+        /// <summary>
+        /// Una sonda por frame, rotando. Contra la geometría del mundo y nada más: ni el atrezo, ni
+        /// los jugadores, ni el propio rig deben tapar una fuente, y <c>Ignore</c> evita que un
+        /// volumen de disparo cuente como pared.
+        /// </summary>
+        private void StepOcclusionProbe()
+        {
+            if (_listener == null || GeometryMask == 0) return;
+            _occlusionCursor = (_occlusionCursor + 1) % _slots.Length;
+            Slot slot = _slots[_occlusionCursor];
+            if (slot.mode == SlotMode.Idle) { slot.occlusion = 0f; return; }
+
+            slot.occlusion = Physics.Linecast(_listener.position, slot.tr.position,
+                GeometryMask, QueryTriggerInteraction.Ignore) ? 1f : 0f;
         }
 
         private void PruneDeadBatches()
@@ -624,17 +714,15 @@ namespace BackroomsSurvival.Gameplay.Audio
 
                     if (e.period <= 0f) { _loops.Add(cand); continue; }
 
-                    // HORARIO CADUCADO. Un emisor fuera de alcance no se mira, así que su cita se
-                    // queda en el pasado mientras el jugador está lejos: al entrar en la sala
-                    // sonaría EN EL ACTO, y siempre. Un teléfono que suena cada vez que cruzas la
-                    // puerta no es un suceso, es un disparador. Si la cita lleva vencida más de un
-                    // periodo entero, se reprograma sin sonar.
-                    if (now - batch.nextAt[i] > e.period)
+                    switch (ActionFor(now, batch.nextAt[i], e.period))
                     {
-                        batch.nextAt[i] = now + e.phase01 * e.period;
-                        continue;
+                        case ScheduleAction.Resync:
+                            batch.nextAt[i] = ResyncAt(now, e.period, e.phase01);
+                            break;
+                        case ScheduleAction.Fire:
+                            _due.Add(cand);
+                            break;
                     }
-                    if (now >= batch.nextAt[i]) _due.Add(cand);
                 }
             }
 
@@ -737,6 +825,7 @@ namespace BackroomsSurvival.Gameplay.Audio
             slot.src.maxDistance = KindMaxDistance[k];
             slot.src.volume = 0f;
             slot.target = KindVolume[k] * _masterVolume;
+            SnapOcclusion(slot);
             slot.src.Play();
         }
 
@@ -760,7 +849,26 @@ namespace BackroomsSurvival.Gameplay.Audio
             slot.src.volume = 1f; // el nivel va en el PlayOneShot, no aquí
             slot.target = 0f;
             slot.busyUntil = now + clip.length + 0.05f;
+            SnapOcclusion(slot);
+            slot.src.volume = Mathf.Lerp(1f, OccludedVolume, slot.occlusionNow);
             slot.src.PlayOneShot(clip, KindVolume[k] * _masterVolume);
+        }
+
+        /// <summary>
+        /// Mide la oclusión YA y sin suavizar, al ocupar el hueco.
+        ///
+        /// Sin esto, un hueco hereda el estado del inquilino anterior: un timbre que empieza al
+        /// otro lado de una pared sonaría abierto durante el primer cuarto de segundo —justo el
+        /// ataque, que es lo que se oye— y sólo después se cerraría. Y al revés, uno a la vista
+        /// entraría filtrado. Una sonda por suceso, no por frame.
+        /// </summary>
+        private void SnapOcclusion(Slot slot)
+        {
+            slot.occlusion = _listener != null && GeometryMask != 0 && Physics.Linecast(
+                _listener.position, slot.tr.position,
+                GeometryMask, QueryTriggerInteraction.Ignore) ? 1f : 0f;
+            slot.occlusionNow = slot.occlusion;
+            slot.lowPass.cutoffFrequency = Mathf.Lerp(CutoffOpen, CutoffOccluded, slot.occlusionNow);
         }
 
         private void DriveSlots(float dt, float now)
@@ -769,10 +877,19 @@ namespace BackroomsSurvival.Gameplay.Audio
             for (int s = 0; s < _slots.Length; s++)
             {
                 Slot slot = _slots[s];
+
+                // El suavizado va aquí y no en la sonda porque la sonda solo toca UNA fuente por
+                // frame: sin esto, cruzar un vano daría un escalón de filtro y de volumen.
+                slot.occlusionNow = Mathf.Lerp(slot.occlusionNow, slot.occlusion,
+                    Mathf.Clamp01(dt / OcclusionTau));
+                slot.lowPass.cutoffFrequency =
+                    Mathf.Lerp(CutoffOpen, CutoffOccluded, slot.occlusionNow);
+                float duck = Mathf.Lerp(1f, OccludedVolume, slot.occlusionNow);
+
                 switch (slot.mode)
                 {
                     case SlotMode.Loop:
-                        slot.src.volume = Mathf.MoveTowards(slot.src.volume, slot.target, step);
+                        slot.src.volume = Mathf.MoveTowards(slot.src.volume, slot.target * duck, step);
                         if (slot.target <= 0f && slot.src.volume <= 0f)
                         {
                             slot.src.Stop();
@@ -783,6 +900,10 @@ namespace BackroomsSurvival.Gameplay.Audio
                         break;
 
                     case SlotMode.OneShot:
+                        // El nivel del one-shot va en el PlayOneShot; `volume` es el multiplicador
+                        // que sí se puede mover con el suceso ya sonando, y es por donde entra la
+                        // oclusión de un timbre que empieza a la vista y acaba tras una puerta.
+                        slot.src.volume = duck;
                         if (now >= slot.busyUntil)
                         {
                             slot.mode = SlotMode.Idle;
@@ -860,10 +981,12 @@ namespace BackroomsSurvival.Gameplay.Audio
             var buf = new float[sc];
             const double TwoPi = 2.0 * Math.PI;
 
-            // 24 y 48 Hz: el fundamental del ventilador y su segundo. Ambos enteros por
-            // segundo, así que el bucle empalma exacto.
+            // EL RUMBLE ES EL ACOMPAÑAMIENTO, NO EL SONIDO. La primera versión ponía aquí 0,30 y
+            // 0,18 y filtraba el ruido a 440 Hz: el resultado era un retumbe con casi toda la
+            // energía por debajo de 100 Hz — en unos altavoces de portátil, silencio, y en cascos,
+            // un motor, no una rejilla. Una salida de aire real es sobre todo BANDA ANCHA.
             float[] hz = { 24f, 48f, 96f };
-            float[] amp = { 0.30f, 0.18f, 0.06f };
+            float[] amp = { 0.10f, 0.06f, 0.03f };
             for (int p = 0; p < hz.Length; p++)
             {
                 double w = TwoPi * hz[p] / sampleRate;
@@ -874,13 +997,22 @@ namespace BackroomsSurvival.Gameplay.Audio
             int total = sc + fade;
             var air = new float[total];
             var rng = new System.Random(90210);
-            // Paso-bajo de un polo: el soplido es todo grave y medio, sin el filo del siseo.
-            float lp = 0f;
+            // Ruido de BANDA, 180–2500 Hz: paso-alto de un polo que quita el barro y paso-bajo que
+            // quita el filo del siseo. Lo de abajo ya lo pone el rumble y lo de arriba suena a
+            // estática, no a aire.
+            const float HighPassA = 0.974f; // ≈180 Hz a 44,1 kHz
+            const float LowPassK = 0.356f;  // ≈2 500 Hz
+            float hpIn = 0f, hpOut = 0f, lp = 0f;
             for (int i = 0; i < total; i++)
             {
                 float x = (float)(rng.NextDouble() * 2.0 - 1.0);
-                lp += 0.06f * (x - lp);
-                air[i] = lp * 1.9f;
+                hpOut = HighPassA * (hpOut + x - hpIn);
+                hpIn = x;
+                lp += LowPassK * (hpOut - lp);
+                // Turbulencia: medio hercio, o sea UN ciclo exacto en los dos segundos del bucle.
+                // Sin ella el soplido es una máscara de ruido plana y el oído la deja de oír.
+                float wobble = 1f + 0.18f * (float)Math.Sin(TwoPi * 0.5 * i / sampleRate);
+                air[i] = lp * 2.6f * wobble;
             }
             for (int i = 0; i < fade; i++)
             {

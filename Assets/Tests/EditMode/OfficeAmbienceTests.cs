@@ -3,6 +3,7 @@ using BackroomsSurvival.Gameplay.Audio;
 using NUnit.Framework;
 using UnityEngine;
 
+using Action = BackroomsSurvival.Gameplay.Audio.OfficeAmbienceDirector.ScheduleAction;
 using Emitter = BackroomsSurvival.Gameplay.Audio.OfficeAmbienceDirector.Emitter;
 using Kind = BackroomsSurvival.Gameplay.Audio.OfficeAmbienceDirector.Kind;
 using PropSpec = BackroomsSurvival.Gameplay.Audio.OfficeAmbienceDirector.PropSpec;
@@ -372,6 +373,51 @@ namespace BackroomsSurvival.Tests
             Assert.Less(rings, 120, $"{rings}/300: hay un teléfono en casi cada despacho");
         }
 
+        // ── El horario de los episódicos ────────────────────────────────────────
+
+        private const float Period = 200f;
+
+        [Test]
+        public void Horario_AntesDeLaCitaNoSuena()
+        {
+            Assert.AreEqual(Action.Wait, OfficeAmbienceDirector.ActionFor(100f, 150f, Period));
+        }
+
+        [Test]
+        public void Horario_EnLaCitaSuena()
+        {
+            Assert.AreEqual(Action.Fire, OfficeAmbienceDirector.ActionFor(150f, 150f, Period));
+            // Un retraso normal (sin hueco libre, o un tirón de frames) SIGUE sonando.
+            Assert.AreEqual(Action.Fire, OfficeAmbienceDirector.ActionFor(150f + Period - 1f, 150f, Period));
+        }
+
+        [Test]
+        public void Horario_UnaCitaPodridaSeTiraEnVezDeSonar()
+        {
+            // Esto es el fallo que tenía: el jugador estuvo lejos diez minutos, la cita quedó en el
+            // pasado, y al cruzar la puerta el teléfono sonaba en el acto. Y cada vez.
+            Assert.AreEqual(Action.Resync, OfficeAmbienceDirector.ActionFor(150f + Period + 1f, 150f, Period));
+            Assert.AreEqual(Action.Resync, OfficeAmbienceDirector.ActionFor(10000f, 150f, Period));
+        }
+
+        [Test]
+        public void Horario_LaCitaNuevaCaeDentroDelPeriodo()
+        {
+            for (int i = 0; i <= 10; i++)
+            {
+                float phase = i / 10f;
+                float at = OfficeAmbienceDirector.ResyncAt(500f, Period, phase);
+                Assert.GreaterOrEqual(at, 500f, "una cita nueva no puede nacer vencida");
+                Assert.LessOrEqual(at, 500f + Period);
+            }
+        }
+
+        [Test]
+        public void Horario_UnContinuoNoTieneCita()
+        {
+            Assert.AreEqual(Action.Wait, OfficeAmbienceDirector.ActionFor(1e6f, 0f, 0f));
+        }
+
         // ── Los placeholders sintéticos ─────────────────────────────────────────
 
         private const int Rate = 44100;
@@ -419,6 +465,33 @@ namespace BackroomsSurvival.Tests
             float[] data = OfficeAmbienceDirector.RenderAirConSamples(Rate, 2);
             float jump = Mathf.Abs(data[data.Length - 1] - data[0]);
             Assert.Less(jump, 0.08f, $"salto de {jump:F3} en la costura del bucle");
+        }
+
+        [Test]
+        public void ElAireEsBandaAnchaYNoUnRetumbe()
+        {
+            // Una rejilla suena a AIRE, y el aire es banda ancha. La primera versión de este clip
+            // tenía casi toda la energía por debajo de 100 Hz: en unos altavoces de portátil eso es
+            // silencio. Se mide con un paso-alto de un polo a ~200 Hz.
+            //
+            // El umbral es 0,80 Y ESTÁ MEDIDO, no elegido: la versión vieja da 0,52 y la de ahora
+            // 0,96. Con el 0,45 que se puso primero, el retumbe TAMBIÉN pasaba — un paso-alto de un
+            // polo cae 6 dB por octava y no es tan selectivo como parece. Un test que no distingue
+            // el fallo que lo motiva no vale nada.
+            float[] data = OfficeAmbienceDirector.RenderAirConSamples(Rate, 2);
+
+            double raw = 0.0, high = 0.0;
+            float prevIn = 0f, prevOut = 0f;
+            const float A = 0.971f; // ≈200 Hz a 44,1 kHz
+            for (int i = 0; i < data.Length; i++)
+            {
+                prevOut = A * (prevOut + data[i] - prevIn);
+                prevIn = data[i];
+                raw += (double)data[i] * data[i];
+                high += (double)prevOut * prevOut;
+            }
+            double ratio = Mathf.Sqrt((float)(high / raw));
+            Assert.Greater(ratio, 0.80f, $"sólo el {ratio:P0} de la señal pasa de 200 Hz: es un retumbe");
         }
 
         [Test]
