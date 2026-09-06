@@ -14404,3 +14404,20 @@ El ambiente cálido tira todo lo neutro hacia el oliva, así que la tela se lee 
 frío; enfriarla más es pelearse con una iluminación validada, y el tinte queda como mando por si Joel
 la quiere más fría. Siguen fuera los avisos y carteles de mampara (ADR-131 y la tanda de señalética),
 y la melamina del canto superior de la mampara.
+
+### Nota (2026-09-06) — la tela SÍ se enfría, y el «lo que no entra» de arriba estaba mal por dos motivos
+
+Joel, viendo la captura: «la mampara más fría, gris de verdad». Y tenía razón dos veces.
+
+**(1) La corrección se puede hacer y no toca la luz.** Un gris de verdad bajo luz cálida no se
+consigue con un albedo neutro: hay que fabricarlo CONTRA la luz. Tinte `0,72 / 0,79 / 0,93`, que
+hunde el rojo y sube el azul **conservando la luminancia media (0,81)**: gira el tono y no toca el
+balance validado. En la captura la mampara pasa a leerse gris franco contra el caqui de la pared.
+
+**(2) Lo que se juzgó no era lo que se había generado.** Las dos correcciones de la enmienda —el
+perfil oscuro del techo y el enfriado de la tela— se dispararon con el menú ANTES de que Unity
+recompilara el script, así que el editor ejecutó el código VIEJO y devolvió `MENU DONE` igual. Los
+assets del primer commit (`d39d2932`) llevaban el perfil claro y el tinte cálido, y la captura que
+los juzgó parecía haber cambiado. **Se caza mirando `Library/ScriptAssemblies/<asamblea>.dll`: hasta
+que su fecha no pasa de la del `.cs`, un `MENU DONE` miente.** Es la misma factura que
+`CompileCheckClient` con un `.csproj` viejo, en el otro sentido.

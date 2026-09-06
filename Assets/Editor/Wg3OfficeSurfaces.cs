@@ -74,12 +74,16 @@ namespace BackroomsSurvival.EditorTools
                   new Color(0.42f, 0.44f, 0.50f, 1f), 0.03f);
             Write($"{MaterialFolder}/Wg3_CeilingOffice.mat", ceilingTex, ceilingNm, CeilingScale,
                   new Color(0.80f, 0.80f, 0.77f, 1f), 0.04f);
-            // La mampara NO copia el tinte cálido de `Wg3_Structure` (0,86/0,86/0,82): con el
-            // ambiente cálido de la escena la tela salía oliva, o sea del color de la pared, que es
-            // exactamente lo que esto viene a arreglar. Neutro y un punto frío para que la luz la
-            // devuelva a gris en vez de pasarla de largo.
+            // La mampara NO copia el tinte cálido de `Wg3_Structure` (0,86/0,86/0,82), y tampoco vale
+            // uno neutro: **la luz de la escena es cálida, así que un albedo gris sale caqui**. Un
+            // gris de verdad hay que fabricarlo CONTRA la luz, hundiendo el rojo y subiendo el azul
+            // hasta que el producto de los dos vuelva a ser plano. El primer intento (0,82/0,83/0,85)
+            // era neutro sobre el papel y en la captura seguía siendo del color de la pared.
+            //
+            // La luminancia se conserva —la media sigue en 0,81—, así que esto no toca el balance de
+            // luz que Joel dio por bueno: sólo gira el tono.
             Write($"{MaterialFolder}/Wg3_Partition.mat", fabricTex, fabricNm, FabricScale,
-                  new Color(0.82f, 0.83f, 0.85f, 1f), 0.05f);
+                  new Color(0.72f, 0.79f, 0.93f, 1f), 0.05f);
 
             AssetDatabase.SaveAssets();
             AssetDatabase.Refresh();
