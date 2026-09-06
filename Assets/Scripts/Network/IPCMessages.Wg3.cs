@@ -289,6 +289,11 @@ namespace BackroomsSurvival.Net
         /// en el `kind` y en el `style` que ya viajaban: no sube el wire.</summary>
         public const byte Sign = 15;
 
+        /// <summary>ADR-105 enm. 19 — el deterioro del falso techo. Estos DOS no tienen prefab: los
+        /// construye <c>Wg3SceneAssembler</c> a mano, porque una placa colgando y una luminaria
+        /// descolgada piden inclinación y un <c>Wg3Solid</c> sólo gira en Y.</summary>
+        public const byte CeilingTileHung = 21, LightHung = 22;
+
         public static Wg3PropMsg Parse(MsgPackReader r)
         {
             var p = new Wg3PropMsg();

@@ -224,6 +224,12 @@ pub const PROP_PHONE: u8 = 11;
 pub const PROP_KEYBOARD: u8 = 12;
 pub const PROP_TRAY: u8 = 13;
 pub const PROP_CHAIR_FALLEN: u8 = 14;
+/// ADR-105 enm. 19 (2026-09-06) — el deterioro del falso techo: una placa que cuelga de un lado y
+/// una luminaria descolgada en diagonal. **No tienen prefab**: el cliente los construye a mano
+/// (caja fina inclinada con el material de placa o de luminaria) porque `Wg3Solid` sólo gira en Y y
+/// una placa colgando pide inclinación. Kinds nuevos, no wire nuevo: `kind` ya era un byte.
+pub const PROP_CEILING_TILE_HUNG: u8 = 21;
+pub const PROP_LIGHT_HUNG: u8 = 22;
 
 /// ADR-129 enm. 1 (2026-09-06) — **un CARTEL**: la única superficie del mundo con TEXTO. Placa de
 /// despacho junto a una puerta, rótulo en una mampara de cubículo, señal de salida en un pasillo,
