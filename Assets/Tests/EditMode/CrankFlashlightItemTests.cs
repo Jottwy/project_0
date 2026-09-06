@@ -29,6 +29,7 @@ namespace BackroomsSurvival.Tests
         private const string PrefabPath = "Assets/Prefabs/Wieldables/BR_Wieldable_CrankFlashlight.prefab";
         private const string BodyMeshPath = "Assets/Art/Items/CrankFlashlight/BR_CrankFlashlight_Body_Mesh.asset";
         private const string CrankMeshPath = "Assets/Art/Items/CrankFlashlight/BR_CrankFlashlight_Crank_Mesh.asset";
+        private const string IconPath = "Assets/Art/Items/BR_CrankFlashlight_Icon.png";
 
         private static ItemDefinition Definition => ItemDefinition.GetWithName(ItemName);
 
@@ -172,6 +173,111 @@ namespace BackroomsSurvival.Tests
             Assert.AreEqual(1, live,
                 "tiene que haber exactamente una luz viva: el haz. Cero = no alumbra y los peers " +
                 "no la ven (ADR-042); dos = la llama heredada sigue encendida");
+        }
+
+        /// <summary>
+        /// EL FALLO QUE ERA UN BUG Y NO ARTE PRESTADO. `Pickup != null` pasaba en verde con el pickup
+        /// de la ANTORCHA, que es lo que la linterna heredó del donante — y ese prefab es el que
+        /// instancian las tres rutas (el `DropAction` al soltar, `StpItemReplicator` en todos los
+        /// clientes, los spawns de loot) y el que `ProxyHeldItemHook` cuelga de la mano del avatar
+        /// remoto (ADR-023). Una linterna en el suelo era una antorcha para todo el mundo.
+        ///
+        /// Se comprueba la MALLA y no el nombre del prefab: el nombre se cambia sin arreglar nada.
+        /// Y las DOS mallas, porque una linterna del suelo sin manivela es otro objeto.
+        /// </summary>
+        [Test]
+        public void TheDroppedFlashlightShowsBothBakedMeshesAndNotTheDonor()
+        {
+            var definition = Definition;
+            Assert.IsNotNull(definition);
+            Assert.IsNotNull(definition.Pickup, "sin _pickup no aparece nunca en el suelo");
+
+            var body = UnityEditor.AssetDatabase.LoadAssetAtPath<Mesh>(BodyMeshPath);
+            var crank = UnityEditor.AssetDatabase.LoadAssetAtPath<Mesh>(CrankMeshPath);
+            Assert.IsNotNull(body);
+            Assert.IsNotNull(crank);
+
+            var filter = definition.Pickup.GetComponent<MeshFilter>();
+            Assert.IsNotNull(filter, "el prefab del suelo tiene que traer su malla en el root");
+            Assert.AreSame(body, filter.sharedMesh,
+                "el objeto del suelo no enseña el cuerpo horneado. Ejecuta " +
+                "'Backrooms/Linterna/Crear la linterna del suelo'.");
+
+            var crankNode = definition.Pickup.transform.Find("Crank");
+            Assert.IsNotNull(crankNode, "el pickup no tiene el hijo 'Crank': en el suelo no hay manivela");
+            var crankFilter = crankNode.GetComponent<MeshFilter>();
+            Assert.IsNotNull(crankFilter);
+            Assert.AreSame(crank, crankFilter.sharedMesh, "la manivela del suelo no es la horneada");
+        }
+
+        /// <summary>
+        /// Y que dentro del pickup vaya el item CORRECTO: un clon del prefab donante llega con el
+        /// `_item` del donante, así que recoger la linterna del suelo metía OTRA COSA en la mochila.
+        /// </summary>
+        [Test]
+        public void ThePickupHandsBackTheFlashlightAndNotTheDonorItem()
+        {
+            var definition = Definition;
+            Assert.IsNotNull(definition);
+            Assert.IsNotNull(definition.Pickup);
+
+            var serialized = new UnityEditor.SerializedObject(definition.Pickup);
+            var value = serialized.FindProperty("_item").FindPropertyRelative("_value");
+
+            Assert.AreEqual(definition.Id, value.intValue,
+                "el ItemPickup del suelo entrega otro item distinto de la linterna");
+        }
+
+        /// <summary>
+        /// Ni un trozo del objeto del suelo puede seguir siendo geometría del vendor: el donante
+        /// traía dos hijos de LOD con la malla del HACHA, y sin quitarlos la linterna se convierte
+        /// en hacha a partir de cierta distancia — en una banda donde nadie mira mientras prueba.
+        /// El único hijo con malla permitido es la manivela, y con la malla horneada.
+        /// </summary>
+        [Test]
+        public void NoPartOfTheDroppedFlashlightIsStillVendorGeometry()
+        {
+            var definition = Definition;
+            Assert.IsNotNull(definition);
+            Assert.IsNotNull(definition.Pickup);
+
+            var body = UnityEditor.AssetDatabase.LoadAssetAtPath<Mesh>(BodyMeshPath);
+            var crank = UnityEditor.AssetDatabase.LoadAssetAtPath<Mesh>(CrankMeshPath);
+
+            Assert.IsNull(definition.Pickup.GetComponent<LODGroup>(),
+                "el LODGroup del hacha sigue en el pickup");
+
+            foreach (var filter in definition.Pickup.GetComponentsInChildren<MeshFilter>(true))
+            {
+                var mesh = filter.sharedMesh;
+                Assert.IsTrue(mesh == body || mesh == crank,
+                    $"'{filter.gameObject.name}' lleva la malla '{(mesh != null ? mesh.name : "null")}', " +
+                    "que no es ni el cuerpo ni la manivela horneados: geometría del donante");
+            }
+        }
+
+        /// <summary>
+        /// El icono es el propio, importado como Sprite en FullRect. Sin Sprite no se puede asignar
+        /// y la linterna se queda con la antorcha en el inventario; con el mesh en `Tight` Unity
+        /// recorta el borde transparente y el hueco cuadrado del inventario la estira.
+        /// </summary>
+        [Test]
+        public void TheIconIsItsOwnFullRectSprite()
+        {
+            var definition = Definition;
+            Assert.IsNotNull(definition);
+
+            var sprite = UnityEditor.AssetDatabase.LoadAssetAtPath<Sprite>(IconPath);
+            Assert.IsNotNull(sprite, $"falta '{IconPath}' o no se importó como Sprite. " +
+                "Ejecuta 'tools/dev/MakeItemIcon.py' y 'Backrooms/Linterna/Asignar icono de la linterna'.");
+            Assert.AreSame(sprite, definition.Icon, "la definición no lleva el icono propio");
+
+            var importer = UnityEditor.AssetImporter.GetAtPath(IconPath) as UnityEditor.TextureImporter;
+            Assert.IsNotNull(importer);
+            var settings = new UnityEditor.TextureImporterSettings();
+            importer.ReadTextureSettings(settings);
+            Assert.AreEqual(SpriteMeshType.FullRect, settings.spriteMeshType,
+                "con Tight el inventario estira el icono");
         }
 
         /// <summary>Activo de verdad DENTRO del prefab: `activeSelf` propio y el de todos sus

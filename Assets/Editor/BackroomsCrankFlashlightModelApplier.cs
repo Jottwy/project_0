@@ -107,6 +107,14 @@ namespace BackroomsSurvival.EditorTools
         private static float CrankPivotX(Mesh body, Mesh crank)
             => body.bounds.extents.x + crank.bounds.extents.x + CrankClearance;
 
+        /// <summary>
+        /// Dónde va la manivela respecto del cuerpo, en local. Lo usan DOS sitios —la linterna de
+        /// la mano y la del suelo— y tiene que salir el mismo número en los dos: una linterna
+        /// tirada con la manivela en otro sitio es otro objeto.
+        /// </summary>
+        internal static Vector3 CrankLocalPosition(Mesh body, Mesh crank)
+            => new(CrankPivotX(body, crank), body.bounds.size.y * CrankAlongBody, 0f);
+
         private const int MaxTextureSize = 1024;
         private const int TriangleWarnThreshold = 30000;
 
@@ -591,9 +599,9 @@ namespace BackroomsSurvival.EditorTools
                 var body = NewMeshChild(node.transform, BodyNodeName, bodyMesh, material, layer);
                 var crank = NewMeshChild(node.transform, CrankNodeName, crankMesh, material, layer);
 
-                float pivotX = CrankPivotX(bodyMesh, crankMesh);
-                float pivotY = bodyMesh.bounds.size.y * CrankAlongBody;
-                crank.transform.localPosition = new Vector3(pivotX, pivotY, 0f);
+                var pivot = CrankLocalPosition(bodyMesh, crankMesh);
+                float pivotX = pivot.x, pivotY = pivot.y;
+                crank.transform.localPosition = pivot;
                 Debug.Log($"[CrankFlashlightModel] Eje de la manivela en ({pivotX:F4}, {pivotY:F4}, 0): " +
                           $"semiancho del cuerpo {bodyMesh.bounds.extents.x:F4} + semiancho de la manivela " +
                           $"{crankMesh.bounds.extents.x:F4} + {CrankClearance:F3} de aire.");

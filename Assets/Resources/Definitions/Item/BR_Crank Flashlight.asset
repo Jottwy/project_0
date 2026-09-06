@@ -14,13 +14,13 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   _id: 116611173
   _parentGroup: {fileID: 11400000, guid: c26c90643cd4e1346b73cebfb3e7b81e, type: 2}
-  _icon: {fileID: 21300000, guid: 41100e1e992cf9942bf403374f14f356, type: 3}
+  _icon: {fileID: 21300000, guid: 0d42c55777e15104ebb89b0f941e48ca, type: 3}
   _description: De manivela. No necesita pilas, necesita brazo.
   _longDescription: "Carcasa de pl\xE1stico duro y una dinamo dentro que cruje. Treinta
     segundos de brazo te dan un minuto de pasillo, m\xE1s o menos, seg\xFAn lo vieja
     que est\xE9.\n\nMientras le das cuerda no corres, y la luz hace lo que le da
     la gana."
-  _pickup: {fileID: 8296172669144270187, guid: 320f9d5c5f1873442818fc5b70dda38d, type: 3}
+  _pickup: {fileID: 375143188622409950, guid: fd8ca10313e3a0f4b9f2dc5229481e54, type: 3}
   _stackPickup: {fileID: 5039848590447293739, guid: 60f7bf66f2292d34d86470c5b3928e92, type: 3}
   _weight: 0.6
   _stackSize: 1
