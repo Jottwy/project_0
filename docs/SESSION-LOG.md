@@ -3032,3 +3032,16 @@ sensible al orden.
 resolviendo conflictos, o descartar), si los dos experimentos de cliente (teselado, decals) se abren en Unity o se archivan, y
 si las sondas de `J:/wg3*` valen algo o se borran. Las ramas viejas (`angry-jackson` 95, `gallant-einstein` 87, `happy-carson` 79,
 `wf_09042814-13d-*`) siguen como estaban: nada se poda sin lista.
+
+---
+
+## Tanda movida desde STATE.md por presupuesto (2026-09-06) — VERBATIM
+
+### 2026-09-04 — 18.ª tanda: nivel 1 del catálogo, catorce variaciones sin wire
+- Seis commits en `fill.rs`, cada uno con test de forma sobre el ráster servido: medios muros bajo y colgado, laberinto
+  en peine, pilastras con zapata y capitel, arcadas y bóvedas, rejillas y ventanas en serie, tarimas y viguetas.
+- **Regla que sale de aquí: los tests clasifican los macizos por su FORMA** (15 faldón/dintel/arco, 20 pretil, 25
+  pilastra, 30 división, 35 parteluz, 40 viga, ≥ 200 pilar). Todo macizo nuevo necesita una forma que ninguna otra tenga.
+- `plan.links` guarda el punto medio de una ruta, no su boca en la pared: `segment_door_points` saca las bocas reales
+  y divisiones y pilastras las esquivan.
+- Barrido de 27 regiones sin regresión: mancha 99,5 %, islas 1,4, nav 100 %, cotas −0,07 %.

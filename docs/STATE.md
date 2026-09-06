@@ -5,22 +5,22 @@
 
 ## Estado
 - **WorldGen3 es el mundo servido.** Wire **61** en las dos puntas (`ipc/server.rs:38`, `WireSchema.cs:25`) — ADR-129 lo subió el 06-09.
-- **Contrato en marcha: WG3 v1 = Alpha 1** (`docs/WG3-ALPHA1-ROADMAP.md`). Días 1–2 hechos; el día 4 lo ocupa ADR-129. Quedan 3 y 5.
+- **Contrato WG3 v1 = Alpha 1** (`docs/WG3-ALPHA1-ROADMAP.md`): días 1–2 hechos; 3 y 5 APARCADOS detrás de la tanda de oficinas (Joel, 06-09).
 - Suite tras la fusión del 06-09: `cargo test --bin backrooms_server` **1382/1382 (81 ignorados)**, `CompileCheckClient` 0 errores en las 4 asambleas.
 - **El commit tiene gate** (`tools/dev/validate-scope.ps1`, hook PreToolUse): rojo = el commit no se ejecuta. Alcance por `git diff --cached`.
 - Alpha 1 itch nov 2026 · Next Fest feb 2027 · EA primavera 2027 (`docs/SCALING-ROADMAP.md:196-198`). E0 de red cerrada y medida.
 
 ## Próximo paso ÚNICO
-- **Día 3 del contrato: rendimiento** — fundido por chunk (una malla por chunk y submalla, colliders combinados; nota en
-  `Wg3MeshBuilder`). Medir ANTES y después: draw calls, tiempo de construcción de chunk, memoria. Sin número no hay «cerrado».
-- Pendientes de Joel, no bloquean el día 3: tintes por rol (día 2), el ×2 de ADR-128, y a quién va el wire 62 (rampa o streaming vertical).
+- **ADR-131, los VIGILANTES sentados**: escribir el ADR y luego servidor (espécie `Watcher` en `network/faceling.rs`, nace sentado en
+  una silla de puesto, neutral, «sentado» en un bit libre de pose) y cliente (pose sentada horneada por script, cabeza que sigue ±90° en
+  `LateUpdate`, salto de pose al perderte). Después: ADR-130 r2 decay, día 3 (fundido), r3 streaming vertical (wire 62), r4 torre.
 
 ## En curso
 - **ADR-128, mundo ×2: tercera pasada, NO commiteado.** 24 tests en rojo; `MAX_SEGMENT_M` no se toca (D3 anulado), `bounds()` en metros
   de MUNDO con `plan_bounds()`. **Sigue sin verificarse que lo servido salga ×2.** Parche verbatim en `docs/SESSION-LOG.md`.
 - **Contrato WG3 v1**, 5 días. Día 1 (`65d267c3`) y día 2 (`c7c9dd01`, `510223b8`, ADR-129) cerrados; el día 4 de gramática lo sustituyó
   ADR-129 (rampa, tabique diagonal y anti-enfilada pasan a v2 salvo decisión). Quedan día 3 (rendimiento) y día 5 (verificación, etiqueta).
-- **Después de congelar v1**: ADR-130 rebanadas 2–4 (la 1 es `11cc3444`); animación 3P fase 1 (`cf3d8543`) pendiente de play-test con un peer.
+- **Tanda de oficinas (06-09)**: 1 falso techo + cubículos HECHA (`b02df08f`, enm. 18) · 2 ADR-131 vigilantes · 3 ADR-130 r2 · día 3 · r3 wire 62 · r4.
 - **Saneamiento: B1–B4 fusionados en `migration/worldgraph-v1`** (06-09). Queda B5 (cabeza: el agujero de autoridad) y la lista de Joel para podar ramas.
 - **Migración STP servidor-autoritativo**: Steps 1–2 y slice 3.1 (plumbing) hechos y verificados. Falta slice 3.2
   (capa L2 de predicción), reescribir los 8 call sites de `Inventory` y retirar `PlayerController.cs` (DEPRECATED por ADR-009).
@@ -94,6 +94,14 @@
 
 ## Últimas tandas
 
+### 2026-09-06 — 27.ª tanda: la planta de oficinas, rebanada 1 — falso techo y cubículos (ADR-105 enm. 18)
+- `b02df08f`: `office_ceiling_cm` (270, 300) sólo en despachos/servicios/almacenes del carácter Office, por sala en pasos de 10; naves
+  y circulación no cambian. 669 de 898 despachos bajo 3,00 en 39 semillas. El forjado (332) no se toca.
+- `office_cubicles`: celdas 2,60 × 2,40, mampara 12 × 140 (el 8 era el barrote de rejilla), pasillo 1,50, filas espalda con espalda;
+  mesa + silla (15 % caída) + monitor/teclado/teléfono/bandeja + papelera; una de cada siete vacía. Un metro + grosor a los macizos previos.
+- Capturas `Temp/captures/cub_*.png` (B2/B3 de (0,0)): se lee como oficina. Sonda `probe_cubicle_spots`. Barrido 27/27, islas 6,4 = 6,4.
+- Plan de la tanda acordado con Joel (cinco rebanadas, memoria `wg3-oficinas-tanda-plan`); el cierre v1 queda detrás.
+
 ### 2026-09-06 — 26.ª tanda: las dos ramas que quedaban, fusionadas — occluders y cadencia de luces
 - `feat/occluders` (8 commits del 03/04-09): desalineación de vanos (`DOOR_MISALIGN_CHANCE` 0,75), oclusores intra-espacio
   (`OCCLUDER_DENSITY` 1,0, grosor 45 porque el 40 es la viga) y métricas de layout. Conflictos en `fill.rs`/`plan.rs` re-aplicados.
@@ -166,12 +174,3 @@
 - **ADR-124 «menos pasillos» probado tres veces y revertido** (`c3f5b043`): `CORRIDOR_DEPTH` 2 da lo pedido pero rompe
   6 de 300 regiones. **El enrutador es el límite, no una constante**: es una sesión de `route.rs`.
 - Lección de medida: la repetición LOCAL sube con la zonificación y la GLOBAL baja. Antes de vender un «50 %», decir cuál.
-
-### 2026-09-04 — 18.ª tanda: nivel 1 del catálogo, catorce variaciones sin wire
-- Seis commits en `fill.rs`, cada uno con test de forma sobre el ráster servido: medios muros bajo y colgado, laberinto
-  en peine, pilastras con zapata y capitel, arcadas y bóvedas, rejillas y ventanas en serie, tarimas y viguetas.
-- **Regla que sale de aquí: los tests clasifican los macizos por su FORMA** (15 faldón/dintel/arco, 20 pretil, 25
-  pilastra, 30 división, 35 parteluz, 40 viga, ≥ 200 pilar). Todo macizo nuevo necesita una forma que ninguna otra tenga.
-- `plan.links` guarda el punto medio de una ruta, no su boca en la pared: `segment_door_points` saca las bocas reales
-  y divisiones y pilastras las esquivan.
-- Barrido de 27 regiones sin regresión: mancha 99,5 %, islas 1,4, nav 100 %, cotas −0,07 %.

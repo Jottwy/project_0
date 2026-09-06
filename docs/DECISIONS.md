@@ -14261,3 +14261,73 @@ Quedan ambiguos 150×300, 150×350 y 200×400: un bloque con esas medidas sigue 
 
 Cliente: `Wg3SceneAssembler.BasementLayers = 3` desplaza las capas de luz (calle = capa 3).
 Sin wire: los sótanos viajan como plantas a cota negativa por el canal de siempre.
+
+---
+
+## ADR-105 — Enmienda 18: la PLANTA DE OFICINAS — falso techo y cubículos con mamparas (2026-09-06) — ACEPTADA (Joel: «seguir mejorando lo de las alturas de las oficinas y más detalles de oficina»)
+
+### Contexto
+
+Con el atrezo de ADR-129 una sala de oficina se lee como «sala con mesas». La foto de la oficina
+abandonada que Joel puso de referencia tiene dos cosas más que el mundo no tenía: el techo BAJO de
+placas (una oficina real va a 2,70–3,00, y el mundo sorteaba 3,00–3,80 con mediana 3,10) y los
+PUESTOS: mamparas de metro y medio en rejilla con un pasillo entre cada dos filas. Es lo que
+convierte la sala en planta de oficinas. Sin wire: son macizos y anclas de atrezo, que el cliente
+ya dibuja.
+
+### D1 — Falso techo por carácter, sólo en los despachos
+
+`Knobs.office_ceiling_cm = (270, 300)` en el carácter `Office`, `(0, 0)` en el resto. Lo aplica
+`ceiling_cap_cm` como tope del sorteo de techos, **sólo a `Office`, `Service` y `Storage`**: las
+naves y la circulación del mismo carácter conservan su techo, que es lo que deja leer la
+diferencia al salir de un despacho a un pasillo. Sorteo por sala en pasos de 10 cm, por posición
+(R3): dos despachos seguidos no miden lo mismo. El forjado (`STOREY_HEIGHT_CM` 332) no se toca —
+subirlo rompe las escaleras (probado 380–480, deuda en STATE)—; el falso techo baja el techo, no
+sube la planta. Medido: 669 de 898 despachos de oficina por debajo de 3,00 en 39 semillas.
+
+### D2 — Cubículos: celdas, filas y pasillo
+
+`office_cubicles` en `fill.rs`, ANTES del atrezo de pared y en su lugar para el despacho que los
+lleva (`office_props` recibe la lista y lo salta). Sólo en `SpaceRole::Office` ≥ 60 m², de una
+sola parte, con probabilidad por carácter (`Knobs.cubicles`: Office 0,60, Open 0,10, Weird 0,05,
+Hall y Maze 0). Rejilla en el eje largo del tramo anfitrión: celdas de **2,60 × 2,40** (la mesa de
+2,30 y quince centímetros a cada lado), filas apiladas en el eje corto — abierta hacia el pasillo,
+**pasillo de 1,50**, abierta hacia el mismo pasillo, y la siguiente espalda con espalda —; una
+fila sólo entra si le queda su pasillo delante. Tope 24 celdas por despacho. Por celda: mampara
+al fondo, mamparas en las fronteras entre celdas (una por frontera, no dos), mesa contra la del
+fondo con su macizo invisible (ADR-129 D2), silla hacia el pasillo (15 % caída), monitor,
+teclado, teléfono y bandeja sobre la mesa con las probabilidades del atrezo de pared, papelera en
+el rincón (40 %); una de cada siete celdas se queda con las mamparas y nada más.
+
+### D3 — Lo que una celda esquiva, y por qué el paso está garantizado por construcción
+
+Cada celda se comprueba entera, con medio metro de holgura, contra las bocas de todos los tramos
+(`PROP_MOUTH_CLEAR_CM`), rellanos, huecos de escalera y de forjado, pozos (ADR-126), los recortes
+de la pared (ventanas, rendijas) y **los macizos que ya había con un metro MÁS el grosor de la
+mampara** — un metro es lo que un bloque exento (enm. 17) exige a su alrededor, y el grosor
+porque la mampara de la frontera se planta justo fuera de la celda que la pide (costó un test:
+93 cm de un bloque en vez de 99). Una celda que no pasa se salta, y **ese hueco es el paso**: la
+celda delante de una puerta no existe, así que de la puerta al pasillo siempre hay camino. Una
+mampara sólo existe donde existe su celda, así que no puede tapar una boca que la celda no tapa.
+Barrido de 27 regiones: mancha mayor 99,7 %, islas 6,4 (= antes), nav 100 %.
+
+### D4 — La forma de la mampara es su identidad
+
+**12 × 140 cm.** Los tests clasifican los macizos por su forma (8 barrote de rejilla, 15 dintel,
+20 pretil, 30 división, 35 parteluz, 40 viga, 45 oclusor); el primer intento fue 8 y
+`is_grille_bar` se la quedaba. `is_cubicle_wall` es el reconocedor, el visor la nombra, y
+`nothing_but_a_cubicle_wall_has_the_shape_of_one` vigila que ningún otro emisor mida 12.
+
+### Verificaciones
+
+`cubicles_fill_big_offices_and_stay_off_everything` (468 mamparas y 163 puestos en 39 semillas,
+todas dentro de su tramo, fuera de bocas y sin pisar macizo ajeno),
+`office_rooms_get_a_lower_ceiling_than_the_rest`, `nothing_but_a_cubicle_wall_has_the_shape_of_one`;
+`thick_blocks_stand_free…` y `props_sit_in_their_room…` siguen verdes. Sonda `probe_cubicle_spots`
+para las capturas: `Temp/captures/cub_*.png` (B2 y B3 de la región (0,0), semilla 42) — mamparas,
+mesa, monitor, silla caída, paneles. Commit `b02df08f`.
+
+### Lo que no entra
+
+Mamparas con material propio (tela o melamina: hoy son yeso, como la pared), avisos y carteles en
+las mamparas, y los VIGILANTES sentados en las sillas de los puestos — ADR propio (131).
