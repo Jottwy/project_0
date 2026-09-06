@@ -395,7 +395,11 @@ namespace BackroomsSurvival.WorldGen3
             // sala. El papel de cada sala se deduce del atrezo que se acaba de montar y de la
             // altura libre (el falso techo), así que va DESPUÉS del bucle de props. El lote muere
             // con la raíz del chunk, igual que el del zumbido.
-            if (officeRooms.Count > 0 && chunk.props.Count > 0)
+            //
+            // Y la guarda es SÓLO por salas, no por atrezo: la rejilla de aire no depende de que
+            // haya un mueble, la decide el falso techo. Pedir `props.Count > 0` dejaba mudo un chunk
+            // entero de despachos vacíos, que en este mundo son la mitad.
+            if (officeRooms.Count > 0)
             {
                 var officeProps = new List<Audio.OfficeAmbienceDirector.PropSpec>(chunk.props.Count);
                 for (int i = 0; i < chunk.props.Count; i++)
@@ -403,11 +407,25 @@ namespace BackroomsSurvival.WorldGen3
                     var p = chunk.props[i];
                     officeProps.Add(new Audio.OfficeAmbienceDirector.PropSpec
                     {
-                        xCm = p.xCm, yCm = p.yCm, zCm = p.zCm, kind = p.kind,
+                        xCm = p.xCm, yCm = p.yCm, zCm = p.zCm, yawDeg = p.yawDeg, kind = p.kind,
                     });
                 }
                 var emitters = new List<Audio.OfficeAmbienceDirector.Emitter>();
                 Audio.OfficeAmbienceDirector.BuildEmitters(worldSeed, officeRooms, officeProps, emitters);
+
+                // El prop VISIBLE de cada fuente, antes de dar de alta el lote: la rejilla de aire y
+                // la impresora. Sin esto una fuente puntual no se puede ni señalar ni diagnosticar.
+                for (int i = 0; i < emitters.Count; i++)
+                {
+                    Wg3SceneAssembler.AssembleAmbienceProp(
+                        emitters[i], root.transform, root.layer, $"amb_{i:D2}_{emitters[i].kind}");
+                }
+
+                // La máscara de «esto es pared» es del mundo, no del audio: el director sondea la
+                // oclusión con lo que le den, y sin esto no filtra nada (falla ABIERTO, que es lo
+                // que se quiere: un teléfono sin filtrar es peor que uno que no suena).
+                Audio.OfficeAmbienceDirector.GeometryMask =
+                    BackroomsSurvival.Gameplay.GridWorld.GridChunkBuilder.GeoMask;
                 Audio.OfficeAmbienceDirector.RegisterChunk(root.transform, emitters);
                 _builtOfficeSources += emitters.Count;
             }

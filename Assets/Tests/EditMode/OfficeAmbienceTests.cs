@@ -1,8 +1,10 @@
 using System.Collections.Generic;
 using BackroomsSurvival.Gameplay.Audio;
+using BackroomsSurvival.WorldGen3;
 using NUnit.Framework;
 using UnityEngine;
 
+using Action = BackroomsSurvival.Gameplay.Audio.OfficeAmbienceDirector.ScheduleAction;
 using Emitter = BackroomsSurvival.Gameplay.Audio.OfficeAmbienceDirector.Emitter;
 using Kind = BackroomsSurvival.Gameplay.Audio.OfficeAmbienceDirector.Kind;
 using PropSpec = BackroomsSurvival.Gameplay.Audio.OfficeAmbienceDirector.PropSpec;
@@ -105,13 +107,134 @@ namespace BackroomsSurvival.Tests
         }
 
         [Test]
-        public void AirCon_CuelgaDelPlenumYEnElCentro()
+        public void AirCon_VaEnElPlanoDelFalsoTechoYFueraDelPanel()
         {
+            // 6 × 4 m. La retícula de luminarias sale 2 × 1 con paso 2,4 y origen (1,8; 2,0), o
+            // sea que en X hay UN hueco, en 3,0; en Z no hay ninguno y la rejilla se centra en 2,0.
+            // El pivote es la cara superior, así que la cota es la del falso techo EXACTA.
             Emitter e = Get(Classify(Room(600, 400, 280)), Kind.AirCon);
-            Assert.AreEqual(13.0f, e.position.x, 1e-3f);  // 1000 + 600/2 cm
-            Assert.AreEqual(22.0f, e.position.z, 1e-3f);  // 2000 + 400/2 cm
-            Assert.AreEqual(2.60f, e.position.y, 1e-3f);  // 2,80 − 0,20 del plenum
+            Assert.AreEqual(13.0f, e.position.x, 1e-3f);
+            Assert.AreEqual(22.0f, e.position.z, 1e-3f);
+            Assert.AreEqual(2.80f, e.position.y, 1e-3f);
             Assert.AreEqual(0f, e.period, "el aire es continuo, no un suceso");
+        }
+
+        [Test]
+        public void AirCon_NuncaSeSaleDeLaSala()
+        {
+            // El desplazamiento de media retícula no puede empujar la rejilla contra el muro ni
+            // fuera de la sala, ni en la más pequeña que admite rejilla (3 × 3 m).
+            for (int wCm = 300; wCm <= 2500; wCm += 50)
+            {
+                for (int dCm = 300; dCm <= 2500; dCm += 550)
+                {
+                    // TODAS las rejillas, no sólo la primera: una sala grande lleva varias.
+                    foreach (Emitter e in Classify(Room(wCm, dCm, 280), Cubicles()))
+                    {
+                        if (e.kind != Kind.AirCon) continue;
+                        float lx = e.position.x - 10f, lz = e.position.z - 20f;
+                        Assert.GreaterOrEqual(lx, 0.6f, $"{wCm}×{dCm}: rejilla contra el muro en X");
+                        Assert.GreaterOrEqual(lz, 0.6f, $"{wCm}×{dCm}: rejilla contra el muro en Z");
+                        Assert.LessOrEqual(lx, wCm * 0.01f - 0.6f, $"{wCm}×{dCm}: rejilla fuera en X");
+                        Assert.LessOrEqual(lz, dCm * 0.01f - 0.6f, $"{wCm}×{dCm}: rejilla fuera en Z");
+                    }
+                }
+            }
+        }
+
+        [Test]
+        public void AirCon_LaRejillaNuncaPisaUnaLuminaria()
+        {
+            // LA propiedad del sistema, y la que la versión «a ojo» fallaba: el origen de la
+            // retícula depende del sobrante de la sala, no de su centro, así que centrarse acierta
+            // el hueco con un número par de paneles y cae DENTRO de la luminaria con uno impar.
+            //
+            // Se mide rectángulo contra rectángulo con la misma orientación que AddPanels: el panel
+            // mide 1,2 × 0,6 con el lado largo en el eje largo del tramo, y la rejilla 0,6 × 0,6.
+            for (int wCm = 300; wCm <= 3000; wCm += 25)
+            {
+                for (int dCm = 300; dCm <= 3000; dCm += 275)
+                {
+                    float sx = wCm * 0.01f, sz = dCm * 0.01f;
+                    Wg3CeilingGrid.Solve(sx, sz,
+                        out float pitch, out int cx, out int cz, out float ox, out float oz);
+                    bool alongX = sx >= sz;
+                    float halfX = (alongX ? 0.6f : 0.3f) + 0.3f;
+                    float halfZ = (alongX ? 0.3f : 0.6f) + 0.3f;
+
+                    foreach (Emitter e in Classify(Room(wCm, dCm, 280), Cubicles()))
+                    {
+                        if (e.kind != Kind.AirCon) continue;
+                        float lx = e.position.x - 10f, lz = e.position.z - 20f;
+                        for (int i = 0; i < cx; i++)
+                        {
+                            for (int j = 0; j < cz; j++)
+                            {
+                                float px = ox + i * pitch, pz = oz + j * pitch;
+                                bool onPanel = Mathf.Abs(lx - px) < halfX - 1e-3f
+                                            && Mathf.Abs(lz - pz) < halfZ - 1e-3f;
+                                Assert.IsFalse(onPanel,
+                                    $"{wCm}×{dCm}: rejilla en ({lx:F2},{lz:F2}) pisa el panel ({px:F2},{pz:F2})");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        [Test]
+        public void AirCon_UnaNaveLlevaVariasRejillasYUnDespachoUna()
+        {
+            // El alcance del aire son 9 m: una sola rejilla en una planta diáfana no se oye desde
+            // ninguna parte. Y el tope existe porque son continuas y compiten por las seis fuentes.
+            Assert.AreEqual(1, CountOf(Classify(Room(400, 400, 280), Cubicles()), Kind.AirCon));
+            Assert.Greater(CountOf(Classify(Room(2000, 2000, 280), Cubicles()), Kind.AirCon), 1);
+            Assert.LessOrEqual(CountOf(Classify(Room(4000, 4000, 280), Cubicles()), Kind.AirCon), 4);
+        }
+
+        [Test]
+        public void AirCon_DosRejillasNoCaenEnElMismoSitio()
+        {
+            var es = Classify(Room(2500, 2500, 280), Cubicles());
+            var seen = new List<Vector3>();
+            foreach (Emitter e in es)
+            {
+                if (e.kind != Kind.AirCon) continue;
+                foreach (Vector3 p in seen)
+                    Assert.Greater(Vector3.Distance(p, e.position), 1f, "dos rejillas encimadas");
+                seen.Add(e.position);
+            }
+            Assert.Greater(seen.Count, 1);
+        }
+
+        private static int CountOf(List<Emitter> es, Kind k)
+        {
+            int n = 0;
+            foreach (Emitter e in es) if (e.kind == k) n++;
+            return n;
+        }
+
+        // ── El prop que se ve ───────────────────────────────────────────────────
+
+        [Test]
+        public void CadaFuenteInvisibleTieneSuProp()
+        {
+            // La regla: si la fuente no sale de un mueble que el servidor puso, tiene que traer el
+            // suyo. Un ventilador que suena de la nada no se puede ni señalar ni diagnosticar.
+            Assert.AreEqual("Vent", OfficeAmbienceDirector.VisualPrefabOf(Kind.AirCon));
+            Assert.AreEqual("Printer", OfficeAmbienceDirector.VisualPrefabOf(Kind.Printer));
+            // Estos dos ya se ven: están anclados EN el teléfono y EN la silla de ADR-129.
+            Assert.IsNull(OfficeAmbienceDirector.VisualPrefabOf(Kind.Phone));
+            Assert.IsNull(OfficeAmbienceDirector.VisualPrefabOf(Kind.ChairCreak));
+        }
+
+        [Test]
+        public void LaRejillaSeEscalaALaPlacaDelTecho()
+        {
+            // 0,8065 m de la malla × la escala tiene que dar la placa de 0,60 de
+            // Wg3SceneAssembler.CeilingTileM, o se lee como una rejilla mal puesta.
+            Assert.AreEqual(0.60f, 0.8065203f * OfficeAmbienceDirector.VisualScaleOf(Kind.AirCon), 5e-3f);
+            Assert.AreEqual(1f, OfficeAmbienceDirector.VisualScaleOf(Kind.Printer), 1e-6f);
         }
 
         private static List<Emitter> Classify(RoomSpec room) => Classify(room, Cubicles());
@@ -146,6 +269,46 @@ namespace BackroomsSurvival.Tests
                 found = Has(Classify(room, shifted), Kind.Printer);
             }
             Assert.IsTrue(found, "ningún archivo de 40 plantas sacó impresora: el sorteo está muerto");
+        }
+
+        [Test]
+        public void Archivo_LaImpresoraSeApoyaEncimaDelMueble()
+        {
+            // El armario mide 0,79 de alto (su BoxCollider). La impresora va ARRIBA, no flotando.
+            var props = new List<PropSpec>
+            {
+                P(Cabinet, 1100, 2100), P(Shelf, 1500, 2100), P(Box, 1700, 2100),
+            };
+            for (int floor = 0; floor < 40; floor++)
+            {
+                var shifted = new List<PropSpec>();
+                foreach (PropSpec p in props) shifted.Add(P(p.kind, p.xCm, p.zCm, floor * 332));
+                var es = Classify(Room(700, 500, 332, floorYCm: floor * 332), shifted);
+                if (!Has(es, Kind.Printer)) continue;
+                Emitter e = Get(es, Kind.Printer);
+                float over = e.position.y - floor * 3.32f;
+                Assert.IsTrue(Mathf.Abs(over - 0.79f) < 1e-3f || Mathf.Abs(over - 0.29f) < 1e-3f,
+                    $"la impresora quedó a {over:F2} m del suelo: ni sobre el armario ni sobre la caja");
+                return;
+            }
+            Assert.Fail("ningún archivo sacó impresora");
+        }
+
+        [Test]
+        public void Archivo_SoloDeEstanteriasNoLlevaImpresora()
+        {
+            // Una estantería son 5 m de balda contra el muro: una impresora ahí es un error de
+            // colocación evidente. Sin armario ni caja, no hay impresora.
+            for (int floor = 0; floor < 40; floor++)
+            {
+                var props = new List<PropSpec>
+                {
+                    P(Shelf, 1100, 2100, floor * 332), P(Shelf, 1500, 2100, floor * 332),
+                    P(Shelf, 1900, 2100, floor * 332),
+                };
+                var es = Classify(Room(700, 500, 332, floorYCm: floor * 332), props);
+                Assert.IsFalse(Has(es, Kind.Printer), $"planta {floor}: impresora sobre una balda");
+            }
         }
 
         [Test]
@@ -285,6 +448,51 @@ namespace BackroomsSurvival.Tests
             Assert.Less(rings, 120, $"{rings}/300: hay un teléfono en casi cada despacho");
         }
 
+        // ── El horario de los episódicos ────────────────────────────────────────
+
+        private const float Period = 200f;
+
+        [Test]
+        public void Horario_AntesDeLaCitaNoSuena()
+        {
+            Assert.AreEqual(Action.Wait, OfficeAmbienceDirector.ActionFor(100f, 150f, Period));
+        }
+
+        [Test]
+        public void Horario_EnLaCitaSuena()
+        {
+            Assert.AreEqual(Action.Fire, OfficeAmbienceDirector.ActionFor(150f, 150f, Period));
+            // Un retraso normal (sin hueco libre, o un tirón de frames) SIGUE sonando.
+            Assert.AreEqual(Action.Fire, OfficeAmbienceDirector.ActionFor(150f + Period - 1f, 150f, Period));
+        }
+
+        [Test]
+        public void Horario_UnaCitaPodridaSeTiraEnVezDeSonar()
+        {
+            // Esto es el fallo que tenía: el jugador estuvo lejos diez minutos, la cita quedó en el
+            // pasado, y al cruzar la puerta el teléfono sonaba en el acto. Y cada vez.
+            Assert.AreEqual(Action.Resync, OfficeAmbienceDirector.ActionFor(150f + Period + 1f, 150f, Period));
+            Assert.AreEqual(Action.Resync, OfficeAmbienceDirector.ActionFor(10000f, 150f, Period));
+        }
+
+        [Test]
+        public void Horario_LaCitaNuevaCaeDentroDelPeriodo()
+        {
+            for (int i = 0; i <= 10; i++)
+            {
+                float phase = i / 10f;
+                float at = OfficeAmbienceDirector.ResyncAt(500f, Period, phase);
+                Assert.GreaterOrEqual(at, 500f, "una cita nueva no puede nacer vencida");
+                Assert.LessOrEqual(at, 500f + Period);
+            }
+        }
+
+        [Test]
+        public void Horario_UnContinuoNoTieneCita()
+        {
+            Assert.AreEqual(Action.Wait, OfficeAmbienceDirector.ActionFor(1e6f, 0f, 0f));
+        }
+
         // ── Los placeholders sintéticos ─────────────────────────────────────────
 
         private const int Rate = 44100;
@@ -335,6 +543,33 @@ namespace BackroomsSurvival.Tests
         }
 
         [Test]
+        public void ElAireEsBandaAnchaYNoUnRetumbe()
+        {
+            // Una rejilla suena a AIRE, y el aire es banda ancha. La primera versión de este clip
+            // tenía casi toda la energía por debajo de 100 Hz: en unos altavoces de portátil eso es
+            // silencio. Se mide con un paso-alto de un polo a ~200 Hz.
+            //
+            // El umbral es 0,80 Y ESTÁ MEDIDO, no elegido: la versión vieja da 0,52 y la de ahora
+            // 0,96. Con el 0,45 que se puso primero, el retumbe TAMBIÉN pasaba — un paso-alto de un
+            // polo cae 6 dB por octava y no es tan selectivo como parece. Un test que no distingue
+            // el fallo que lo motiva no vale nada.
+            float[] data = OfficeAmbienceDirector.RenderAirConSamples(Rate, 2);
+
+            double raw = 0.0, high = 0.0;
+            float prevIn = 0f, prevOut = 0f;
+            const float A = 0.971f; // ≈200 Hz a 44,1 kHz
+            for (int i = 0; i < data.Length; i++)
+            {
+                prevOut = A * (prevOut + data[i] - prevIn);
+                prevIn = data[i];
+                raw += (double)data[i] * data[i];
+                high += (double)prevOut * prevOut;
+            }
+            double ratio = Mathf.Sqrt((float)(high / raw));
+            Assert.Greater(ratio, 0.80f, $"sólo el {ratio:P0} de la señal pasa de 200 Hz: es un retumbe");
+        }
+
+        [Test]
         public void ElTimbreSonDosRafagas()
         {
             // La forma del timbre ES lo que se reconoce desde un pasillo. Si se convierte en
@@ -348,8 +583,14 @@ namespace BackroomsSurvival.Tests
                 return sum / Mathf.Max(1, b - a);
             }
             Assert.Greater(Energy(0.1f, 0.9f), 0.05f, "primera ráfaga muda");
-            Assert.Less(Energy(1.05f, 1.45f), 0.01f, "el silencio entre ráfagas no está");
+            Assert.Less(Energy(1.25f, 1.45f), 0.01f, "el silencio entre ráfagas no está");
             Assert.Greater(Energy(1.6f, 2.4f), 0.05f, "segunda ráfaga muda");
+
+            // Y LA CAMPANA SE APAGA SOLA. El interruptor abre y el metal sigue sonando unas
+            // décimas; cortar la ráfaga en seco es lo que hacía la versión de dos senos, y es
+            // justo lo que delata un timbre sintetizado. La cola vive en [1,00; 1,10].
+            Assert.Greater(Energy(1.0f, 1.1f), 0.002f, "el timbre se corta en vez de apagarse");
+            Assert.Less(Energy(1.0f, 1.1f), Energy(0.1f, 0.9f), "la cola no puede sonar como la ráfaga");
         }
     }
 }

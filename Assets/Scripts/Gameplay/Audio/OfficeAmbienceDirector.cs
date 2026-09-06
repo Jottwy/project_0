@@ -109,6 +109,7 @@ namespace BackroomsSurvival.Gameplay.Audio
         public struct PropSpec
         {
             public int xCm, yCm, zCm;
+            public short yawDeg;
             public byte kind;
         }
 
@@ -117,9 +118,45 @@ namespace BackroomsSurvival.Gameplay.Audio
         {
             public Vector3 position; // MUNDO, en metros
             public Kind kind;
+            public float yawDeg;  // giro del prop visible, si el tipo tiene uno
             public float period;  // segundos entre sucesos; 0 en los continuos
             public float phase01; // 0..1 del primer suceso dentro del periodo
         }
+
+        // ── El prop que se VE ───────────────────────────────────────────────────
+        //
+        // «Donde hay sonido de ventilador o aires, debería estar el prop» (Joel, 06-09), y no es
+        // sólo cosmética: una fuente puntual invisible es indiagnosticable. Con la rejilla puesta,
+        // que el aire suene desplazado o dentro de una viga se VE en una captura en vez de
+        // discutirse de oído.
+        //
+        // El teléfono y la silla NO llevan prop propio: ya están anclados EN el mueble que el
+        // servidor colocó (ADR-129), y duplicarlo pondría dos teléfonos en la misma mesa.
+
+        /// <summary>Prefab bajo <c>Resources/Wg3Props</c> que hace visible la fuente, o
+        /// <c>null</c> si el tipo ya suena desde un mueble que el servidor puso.</summary>
+        public static string VisualPrefabOf(Kind kind)
+        {
+            switch (kind)
+            {
+                case Kind.AirCon: return "Vent";
+                case Kind.Printer: return "Printer";
+                default: return null;
+            }
+        }
+
+        /// <summary>
+        /// Escala del prop visible. La rejilla del pack mide 0,81 m y el techo de oficina está
+        /// aplacado a 0,60 (<c>Wg3SceneAssembler.CeilingTileM</c>): a tamaño original se sale de la
+        /// placa y se lee como un error de rejilla, no como una salida de aire. 0,60/0,8065.
+        /// </summary>
+        public static float VisualScaleOf(Kind kind) => kind == Kind.AirCon ? 0.7439f : 1f;
+
+        // LÍMITE CONOCIDO, no resuelto: el cliente no sabe qué hueco del techo está libre — los
+        // macizos de ADR-105 (vigas, dinteles) llegan como geometría, no como ocupación. Una
+        // rejilla puede caer dentro de una viga. Se ve en cuanto pasa, que es justo lo que da
+        // ponerle prop; el arreglo, si aparece, es que el servidor mande el ancla como hace con el
+        // atrezo, y eso ya sería wire.
 
         // Los `kind` del atrezo (espejo de Wg3PropMsg; se copian y no se referencian para no
         // atar el audio al parser del cable).
@@ -163,8 +200,8 @@ namespace BackroomsSurvival.Gameplay.Audio
             if (into == null) return;
 
             int desks = 0, chairs = 0, storage = 0, officeProps = 0;
-            int bestChair = -1, bestStorage = -1, bestPhone = -1;
-            ulong bestChairH = ulong.MaxValue, bestStorageH = ulong.MaxValue, bestPhoneH = ulong.MaxValue;
+            int bestChair = -1, bestStand = -1, bestPhone = -1;
+            ulong bestChairH = ulong.MaxValue, bestStandH = ulong.MaxValue, bestPhoneH = ulong.MaxValue;
 
             int n = props?.Count ?? 0;
             for (int i = 0; i < n; i++)
@@ -191,9 +228,14 @@ namespace BackroomsSurvival.Gameplay.Audio
                 {
                     bestChairH = h; bestChair = i;
                 }
-                if ((p.kind == PropCabinet || p.kind == PropShelf || p.kind == PropBox) && h < bestStorageH)
+                // La impresora se apoya en algo con SUPERFICIE LIBRE, y de eso hay dos: el armario
+                // (0,79 m de alto, contra la pared, nada encima) y la caja (0,29). La estantería
+                // NO: son 5 m de balda contra el muro y una impresora en una balda es un error de
+                // colocación evidente. Es la razón de que esto no sea el mismo conjunto que
+                // `storage`, que sólo cuenta para decidir que la sala ES un archivo.
+                if ((p.kind == PropCabinet || p.kind == PropBox) && h < bestStandH)
                 {
-                    bestStorageH = h; bestStorage = i;
+                    bestStandH = h; bestStand = i;
                 }
                 if (p.kind == PropPhone && h < bestPhoneH)
                 {
@@ -213,20 +255,7 @@ namespace BackroomsSurvival.Gameplay.Audio
             bool falseCeiling = room.heightCm <= OfficeCeilingMaxCm
                                 && (room.heightCm < OfficeCeilingMaxCm || officeProps >= 2)
                                 && areaM2 >= 9f;
-            if (falseCeiling)
-            {
-                into.Add(new Emitter
-                {
-                    // Centro de la sala, colgada del plenum: la rejilla está EN el falso techo.
-                    position = new Vector3(
-                        (room.xCm + room.sizeXCm * 0.5f) * 0.01f,
-                        floorM + room.heightCm * 0.01f - 0.20f,
-                        (room.zCm + room.sizeZCm * 0.5f) * 0.01f),
-                    kind = Kind.AirCon,
-                    period = 0f,
-                    phase01 = 0f,
-                });
-            }
+            if (falseCeiling) AddVents(room, areaM2, floorM, into);
 
             // 2. CUBÍCULOS — mesas y sillas en cantidad. Una silla cruje, y solo una: el
             //    presupuesto no da para que la sala entera se asiente a la vez, y con dos
@@ -236,15 +265,20 @@ namespace BackroomsSurvival.Gameplay.Audio
             {
                 PropSpec c = props[bestChair];
                 AddEpisodic(worldSeed, into, Kind.ChairCreak, SaltCreak, 1f,
-                    new Vector3(c.xCm * 0.01f, c.yCm * 0.01f + 0.50f, c.zCm * 0.01f), c.xCm, c.zCm, room.floorYCm);
+                    new Vector3(c.xCm * 0.01f, c.yCm * 0.01f + 0.50f, c.zCm * 0.01f), c.yawDeg,
+                    c.xCm, c.zCm, room.floorYCm);
             }
 
-            // 3. ARCHIVO — armarios y cajas sin puestos de trabajo.
-            if (!cubicles && storage >= 3 && desks <= 1 && bestStorage >= 0)
+            // 3. ARCHIVO — armarios y cajas sin puestos de trabajo. La impresora se apoya ENCIMA
+            //    del mueble, y por eso hace falta un mueble con superficie: sin él no hay
+            //    impresora, que es mejor que una impresora flotando a 90 cm de nada.
+            if (!cubicles && storage >= 3 && desks <= 1 && bestStand >= 0)
             {
-                PropSpec s = props[bestStorage];
+                PropSpec s = props[bestStand];
+                float top = s.kind == PropCabinet ? CabinetTopM : BoxTopM;
                 AddEpisodic(worldSeed, into, Kind.Printer, SaltPrinter, PrinterChance,
-                    new Vector3(s.xCm * 0.01f, s.yCm * 0.01f + 0.90f, s.zCm * 0.01f), s.xCm, s.zCm, room.floorYCm);
+                    new Vector3(s.xCm * 0.01f, s.yCm * 0.01f + top, s.zCm * 0.01f), s.yawDeg,
+                    s.xCm, s.zCm, room.floorYCm);
             }
 
             // 4. DESPACHO — uno o dos puestos, con teléfono, y pequeño. Es la sala que se
@@ -253,12 +287,118 @@ namespace BackroomsSurvival.Gameplay.Audio
             {
                 PropSpec p = props[bestPhone];
                 AddEpisodic(worldSeed, into, Kind.Phone, SaltPhone, PhoneChance,
-                    new Vector3(p.xCm * 0.01f, p.yCm * 0.01f + 0.02f, p.zCm * 0.01f), p.xCm, p.zCm, room.floorYCm);
+                    new Vector3(p.xCm * 0.01f, p.yCm * 0.01f + 0.02f, p.zCm * 0.01f), p.yawDeg,
+                    p.xCm, p.zCm, room.floorYCm);
             }
         }
 
+        /// <summary>Lo que la rejilla de aire respeta hasta la pared: una placa.</summary>
+        private const float VentClearanceM = 0.6f;
+
+        /// <summary>Metros cuadrados por rejilla. Una sola rejilla en una planta diáfana de
+        /// 25 × 25 no se oye desde ninguna parte: el alcance son 9 m.</summary>
+        private const float VentAreaPerUnitM2 = 80f;
+
+        /// <summary>Tope de rejillas por sala. Son continuas y compiten por el presupuesto de
+        /// seis fuentes: una sala no puede quedárselo entero.</summary>
+        private const int MaxVentsPerRoom = 4;
+
+        /// <summary>
+        /// Las rejillas de aire de una sala con falso techo, EN LOS HUECOS de la retícula de
+        /// luminarias.
+        ///
+        /// Antes esto era «el centro de la sala, más media retícula si cabe», y era a ojo: acertaba
+        /// el hueco cuando la cuenta de paneles salía par y lo fallaba cuando salía impar, porque el
+        /// origen de la retícula depende del sobrante de la sala, no de su centro. Ahora los huecos
+        /// los da <see cref="Wg3CeilingGrid"/>, que es la MISMA función que coloca los paneles: no
+        /// pueden discrepar.
+        ///
+        /// Con una sola luminaria por eje no hay hueco en ese eje y la rejilla se centra, que es lo
+        /// que se hace en un despacho pequeño de verdad.
+        /// </summary>
+        private static void AddVents(RoomSpec room, float areaM2, float floorM, List<Emitter> into)
+        {
+            float sizeX = room.sizeXCm * 0.01f, sizeZ = room.sizeZCm * 0.01f;
+            Wg3CeilingGrid.Solve(sizeX, sizeZ,
+                out float pitch, out int cx, out int cz, out float ox, out float oz);
+
+            int gx = Wg3CeilingGrid.GapCount(cx), gz = Wg3CeilingGrid.GapCount(cz);
+
+            // UN SOLO PANEL EN TODA LA SALA. Sin hueco en ningún eje, centrarse es caer JUSTO
+            // encima de la luminaria — pasa en cualquier despacho de 3 × 3, que son muchos. Ahí la
+            // rejilla se aparta a un lado del panel. Con hueco en al menos un eje no hace falta:
+            // la rejilla ya pasa entre dos luminarias por ese eje, y centrarse en el otro es
+            // exactamente lo que se quiere.
+            bool asideOfPanel = gx == 0 && gz == 0;
+            var xs = AxisSlots(gx, ox, pitch, sizeX, asideOfPanel);
+            var zs = AxisSlots(gz, oz, pitch, sizeZ, asideOfPanel);
+            if (xs.Count == 0 || zs.Count == 0) return; // sala demasiado justa: sin rejilla
+
+            int slots = xs.Count * zs.Count;
+            int want = Mathf.Clamp(Mathf.RoundToInt(areaM2 / VentAreaPerUnitM2), 1, MaxVentsPerRoom);
+            int n = Mathf.Min(want, slots);
+
+            float y = floorM + room.heightCm * 0.01f; // el pivote de la rejilla es su cara SUPERIOR
+            for (int i = 0; i < n; i++)
+            {
+                // Repartidas por el índice aplanado, no consecutivas: dos rejillas pegadas dejan
+                // media sala sin aire y suenan como una.
+                int k = Mathf.Min(slots - 1, (int)((i + 0.5f) * slots / n));
+                into.Add(new Emitter
+                {
+                    position = new Vector3(
+                        room.xCm * 0.01f + xs[k / zs.Count],
+                        y,
+                        room.zCm * 0.01f + zs[k % zs.Count]),
+                    kind = Kind.AirCon,
+                    yawDeg = 0f,
+                    period = 0f,
+                    phase01 = 0f,
+                });
+            }
+        }
+
+        /// <summary>Media luminaria (0,6 de su lado largo) más media rejilla (0,3): lo que hay que
+        /// apartarse de un panel para no tocarlo.</summary>
+        private const float PanelClearM = 0.9f;
+
+        // Los puntos utilizables de un eje. Se descarta lo que quede a menos de una placa de la
+        // pared, y una lista vacía significa «aquí no cabe rejilla», no «ponla donde sea».
+        private static List<float> AxisSlots(int gaps, float origin, float pitch, float size,
+            bool asideOfPanel)
+        {
+            var slots = new List<float>(Mathf.Max(2, gaps));
+            if (gaps <= 0)
+            {
+                // Sin hueco en el eje: o el centro del único panel, o a un lado de él.
+                if (asideOfPanel)
+                {
+                    Add(slots, origin - PanelClearM, size);
+                    Add(slots, origin + PanelClearM, size);
+                }
+                else
+                {
+                    Add(slots, size * 0.5f, size);
+                }
+                return slots;
+            }
+            for (int i = 0; i < gaps; i++) Add(slots, Wg3CeilingGrid.GapAt(origin, pitch, i), size);
+            if (slots.Count == 0) Add(slots, size * 0.5f, size);
+            return slots;
+        }
+
+        private static void Add(List<float> slots, float v, float size)
+        {
+            if (v >= VentClearanceM && v <= size - VentClearanceM) slots.Add(v);
+        }
+
+        /// <summary>Cara superior del armario (`Cupboard`, 0,89 × 0,79 × 0,46) y de la caja de
+        /// cartón (0,40 × 0,29 × 0,29), medidas de su BoxCollider. La impresora se apoya ahí.</summary>
+        private const float CabinetTopM = 0.79f;
+        private const float BoxTopM = 0.29f;
+
         private static void AddEpisodic(int worldSeed, List<Emitter> into, Kind kind, uint salt,
-            float chance, Vector3 position, int xCm, int zCm, int floorYCm)
+            float chance, Vector3 position, float yawDeg, int xCm, int zCm, int floorYCm)
         {
             // La COTA entra en la mezcla: dos salas superpuestas en plantas distintas caen en
             // el mismo (x,z) y sin ella sortearían igual.
@@ -271,6 +411,7 @@ namespace BackroomsSurvival.Gameplay.Audio
             {
                 position = position,
                 kind = kind,
+                yawDeg = yawDeg,
                 period = PeriodMin[k] + timing.Next01() * PeriodSpan[k],
                 phase01 = timing.Next01(),
             });
@@ -365,10 +506,44 @@ namespace BackroomsSurvival.Gameplay.Audio
             public AudioSource src;
             public Transform tr;
             public long key = NoKey;
+            public Kind kind;
             public SlotMode mode;
-            public float target;   // volumen destino del continuo
+            public float target;   // volumen destino del continuo, SIN la oclusión
             public float busyUntil; // reloj local hasta el que el one-shot ocupa el hueco
+            public AudioLowPassFilter lowPass; // la pared de por medio
+            public float occlusion;    // OBJETIVO que fija la sonda: 0 a la vista, 1 tapada
+            public float occlusionNow; // el suavizado, que es el que se oye
         }
+
+        // ── Oclusión ────────────────────────────────────────────────────────────
+        //
+        // Mismo diseño que el zumbido, y aquí importa MÁS: el teléfono alcanza 18 m, o sea que casi
+        // siempre suena desde otra sala. Sin filtro, un timbre a 15 m con dos tabiques por medio
+        // llega tan nítido como si estuviera en la mesa de al lado, y eso destruye justo la
+        // sensación que el alcance largo existe para dar.
+        //
+        // Se filtra Y se baja: un paso-bajo solo sigue leyéndose como cercano.
+
+        private const float CutoffOpen = 22000f;
+        private const float CutoffOccluded = 900f;
+        private const float OcclusionTau = 0.25f;  // cruzar un vano no da un salto
+        private const float OccludedVolume = 0.45f;
+
+        /// <summary>Una sonda por FRAME rotando entre las seis fuentes: el coste queda plano en
+        /// vez de en picos, y cada fuente se revisa ~10 veces por segundo a 60 fps.</summary>
+        private int _occlusionCursor;
+
+        /// <summary>
+        /// Máscara de capas contra la que se sonda la oclusión. **La pone el llamante** (el
+        /// streaming, con <c>GridChunkBuilder.GeoMask</c>); a 0 no se sonda y todo suena abierto.
+        ///
+        /// Es un campo y no una referencia directa a <c>GridChunkBuilder</c> a propósito: el audio
+        /// no tiene por qué saber cómo se llaman las capas del worldgen, y esa dependencia
+        /// arrastraba las seis partes de una clase parcial hasta cualquier arnés que quisiera
+        /// compilar este fichero sin Unity. La capa que decide qué es «pared» es del mundo, no del
+        /// sonido.
+        /// </summary>
+        public static int GeometryMask { get; set; }
 
         private readonly Slot[] _slots = new Slot[SourceBudget];
         private bool _routed;
@@ -396,7 +571,12 @@ namespace BackroomsSurvival.Gameplay.Audio
                 src.maxDistance = 12f;
                 src.volume = 0f;
 
-                _slots[i] = new Slot { src = src, tr = go.transform };
+                // Un paso-bajo POR FUENTE y no uno global: puedes tener la rejilla a la vista y el
+                // teléfono detrás de un tabique en el mismo instante.
+                var lp = go.AddComponent<AudioLowPassFilter>();
+                lp.cutoffFrequency = CutoffOpen;
+
+                _slots[i] = new Slot { src = src, tr = go.transform, lowPass = lp };
             }
 
             _routeDeadline = Time.unscaledTime + 5f;
@@ -476,6 +656,41 @@ namespace BackroomsSurvival.Gameplay.Audio
         private static readonly Comparison<Candidate> ByDistance =
             (a, b) => a.distance.CompareTo(b.distance);
 
+        /// <summary>Qué hacer con la cita de un emisor episódico.</summary>
+        public enum ScheduleAction : byte
+        {
+            /// <summary>Todavía no toca.</summary>
+            Wait = 0,
+            /// <summary>Toca: compite por un hueco.</summary>
+            Fire = 1,
+            /// <summary>La cita está podrida: se reprograma SIN sonar.</summary>
+            Resync = 2,
+        }
+
+        /// <summary>
+        /// La regla del horario, aparte del bucle para poder probarla sin escena.
+        ///
+        /// HORARIO CADUCADO, y es un fallo real que tuvo el sistema: un emisor fuera de alcance no
+        /// se mira, así que su cita se queda en el pasado mientras el jugador está lejos. Al entrar
+        /// en la sala el suceso estaba vencido y sonaba EN EL ACTO — y siempre, cada vez. Un
+        /// teléfono que suena cada vez que cruzas la puerta no es un suceso, es un disparador.
+        ///
+        /// El umbral es UN periodo entero: por debajo, un retraso normal (el reparto no encontró
+        /// hueco, o hubo un tirón de frames) sigue sonando; por encima, la cita es de otra época y
+        /// se tira.
+        /// </summary>
+        public static ScheduleAction ActionFor(float now, float nextAt, float period)
+        {
+            if (period <= 0f) return ScheduleAction.Wait;
+            if (now - nextAt > period) return ScheduleAction.Resync;
+            return now >= nextAt ? ScheduleAction.Fire : ScheduleAction.Wait;
+        }
+
+        /// <summary>La cita nueva tras un <see cref="ScheduleAction.Resync"/>: la misma fase
+        /// determinista del emisor, contada desde ahora.</summary>
+        public static float ResyncAt(float now, float period, float phase01) =>
+            now + phase01 * period;
+
         private void Update()
         {
             if (_slots[0] == null) return; // copia duplicada a medio destruir
@@ -493,7 +708,24 @@ namespace BackroomsSurvival.Gameplay.Audio
                 else ReleaseAll();
             }
 
+            StepOcclusionProbe();
             DriveSlots(dt, now);
+        }
+
+        /// <summary>
+        /// Una sonda por frame, rotando. Contra la geometría del mundo y nada más: ni el atrezo, ni
+        /// los jugadores, ni el propio rig deben tapar una fuente, y <c>Ignore</c> evita que un
+        /// volumen de disparo cuente como pared.
+        /// </summary>
+        private void StepOcclusionProbe()
+        {
+            if (_listener == null || GeometryMask == 0) return;
+            _occlusionCursor = (_occlusionCursor + 1) % _slots.Length;
+            Slot slot = _slots[_occlusionCursor];
+            if (slot.mode == SlotMode.Idle) { slot.occlusion = 0f; return; }
+
+            slot.occlusion = Physics.Linecast(_listener.position, slot.tr.position,
+                GeometryMask, QueryTriggerInteraction.Ignore) ? 1f : 0f;
         }
 
         private void PruneDeadBatches()
@@ -546,7 +778,16 @@ namespace BackroomsSurvival.Gameplay.Audio
                     };
 
                     if (e.period <= 0f) { _loops.Add(cand); continue; }
-                    if (now >= batch.nextAt[i]) _due.Add(cand);
+
+                    switch (ActionFor(now, batch.nextAt[i], e.period))
+                    {
+                        case ScheduleAction.Resync:
+                            batch.nextAt[i] = ResyncAt(now, e.period, e.phase01);
+                            break;
+                        case ScheduleAction.Fire:
+                            _due.Add(cand);
+                            break;
+                    }
                 }
             }
 
@@ -561,38 +802,40 @@ namespace BackroomsSurvival.Gameplay.Audio
                 Batch batch = _batches[c.batch];
                 batch.nextAt[c.index] = now + batch.emitters[c.index].period;
 
-                int slot = FreeOrLoopSlot(now);
+                int slot = FreeOrLoopSlot();
                 if (slot < 0) continue;
                 StartOneShot(_slots[slot], c, now);
             }
 
             // Y los continuos con lo que sobre, por cercanía.
+            //
+            // PRIMERO se refresca lo que ya suena y sólo DESPUÉS se llenan huecos, y ese orden es
+            // el arreglo de dos fallos: (a) un continuo que empezó a fundirse y vuelve a estar en
+            // alcance se quedaba mudo hasta terminar de apagarse, porque nada le devolvía el
+            // volumen; (b) `MasterVolume` se leía sólo al arrancar la fuente, así que moverlo en
+            // vivo no tocaba nada que ya estuviera sonando.
             _loops.Sort(ByDistance);
-            int taken = 0;
-            for (int i = 0; i < _loops.Count && taken < _slots.Length; i++)
-            {
-                Candidate c = _loops[i];
-                if (HoldsKey(c.key)) { taken++; continue; }
-                int slot = FreeSlot(now);
-                if (slot < 0) break;
-                StartLoop(_slots[slot], c);
-                taken++;
-            }
-
-            // Un continuo cuya fuente ya no es candidata se apaga con fundido.
             for (int s = 0; s < _slots.Length; s++)
             {
                 Slot slot = _slots[s];
                 if (slot.mode != SlotMode.Loop) continue;
-                if (!StillCandidate(slot.key)) slot.target = 0f;
+                slot.target = StillCandidate(slot.key) ? KindVolume[(int)slot.kind] * _masterVolume : 0f;
+            }
+
+            for (int i = 0; i < _loops.Count; i++)
+            {
+                Candidate c = _loops[i];
+                if (HoldsKey(c.key)) continue;
+                int slot = FreeSlot();
+                if (slot < 0) break; // presupuesto agotado: los demás no suenan, y es el diseño
+                StartLoop(_slots[slot], c);
             }
         }
 
         private bool HoldsKey(long key)
         {
             for (int s = 0; s < _slots.Length; s++)
-                if (_slots[s].mode == SlotMode.Loop && _slots[s].key == key && _slots[s].target > 0f)
-                    return true;
+                if (_slots[s].mode == SlotMode.Loop && _slots[s].key == key) return true;
             return false;
         }
 
@@ -602,7 +845,7 @@ namespace BackroomsSurvival.Gameplay.Audio
             return false;
         }
 
-        private int FreeSlot(float now)
+        private int FreeSlot()
         {
             for (int s = 0; s < _slots.Length; s++)
                 if (_slots[s].mode == SlotMode.Idle) return s;
@@ -610,9 +853,9 @@ namespace BackroomsSurvival.Gameplay.Audio
         }
 
         // Para un episódico: primero un hueco libre, y si no hay, el continuo MÁS LEJANO.
-        private int FreeOrLoopSlot(float now)
+        private int FreeOrLoopSlot()
         {
-            int free = FreeSlot(now);
+            int free = FreeSlot();
             if (free >= 0) return free;
             int worst = -1;
             float worstDist = -1f;
@@ -638,6 +881,7 @@ namespace BackroomsSurvival.Gameplay.Audio
             int k = (int)c.kind;
 
             slot.key = c.key;
+            slot.kind = c.kind;
             slot.mode = SlotMode.Loop;
             slot.tr.position = c.position;
             slot.src.clip = clip;
@@ -646,6 +890,7 @@ namespace BackroomsSurvival.Gameplay.Audio
             slot.src.maxDistance = KindMaxDistance[k];
             slot.src.volume = 0f;
             slot.target = KindVolume[k] * _masterVolume;
+            SnapOcclusion(slot);
             slot.src.Play();
         }
 
@@ -661,6 +906,7 @@ namespace BackroomsSurvival.Gameplay.Audio
             slot.src.clip = null;
             slot.src.loop = false;
             slot.key = c.key;
+            slot.kind = c.kind;
             slot.mode = SlotMode.OneShot;
             slot.tr.position = c.position;
             slot.src.minDistance = KindMinDistance[k];
@@ -668,7 +914,26 @@ namespace BackroomsSurvival.Gameplay.Audio
             slot.src.volume = 1f; // el nivel va en el PlayOneShot, no aquí
             slot.target = 0f;
             slot.busyUntil = now + clip.length + 0.05f;
+            SnapOcclusion(slot);
+            slot.src.volume = Mathf.Lerp(1f, OccludedVolume, slot.occlusionNow);
             slot.src.PlayOneShot(clip, KindVolume[k] * _masterVolume);
+        }
+
+        /// <summary>
+        /// Mide la oclusión YA y sin suavizar, al ocupar el hueco.
+        ///
+        /// Sin esto, un hueco hereda el estado del inquilino anterior: un timbre que empieza al
+        /// otro lado de una pared sonaría abierto durante el primer cuarto de segundo —justo el
+        /// ataque, que es lo que se oye— y sólo después se cerraría. Y al revés, uno a la vista
+        /// entraría filtrado. Una sonda por suceso, no por frame.
+        /// </summary>
+        private void SnapOcclusion(Slot slot)
+        {
+            slot.occlusion = _listener != null && GeometryMask != 0 && Physics.Linecast(
+                _listener.position, slot.tr.position,
+                GeometryMask, QueryTriggerInteraction.Ignore) ? 1f : 0f;
+            slot.occlusionNow = slot.occlusion;
+            slot.lowPass.cutoffFrequency = Mathf.Lerp(CutoffOpen, CutoffOccluded, slot.occlusionNow);
         }
 
         private void DriveSlots(float dt, float now)
@@ -677,10 +942,19 @@ namespace BackroomsSurvival.Gameplay.Audio
             for (int s = 0; s < _slots.Length; s++)
             {
                 Slot slot = _slots[s];
+
+                // El suavizado va aquí y no en la sonda porque la sonda solo toca UNA fuente por
+                // frame: sin esto, cruzar un vano daría un escalón de filtro y de volumen.
+                slot.occlusionNow = Mathf.Lerp(slot.occlusionNow, slot.occlusion,
+                    Mathf.Clamp01(dt / OcclusionTau));
+                slot.lowPass.cutoffFrequency =
+                    Mathf.Lerp(CutoffOpen, CutoffOccluded, slot.occlusionNow);
+                float duck = Mathf.Lerp(1f, OccludedVolume, slot.occlusionNow);
+
                 switch (slot.mode)
                 {
                     case SlotMode.Loop:
-                        slot.src.volume = Mathf.MoveTowards(slot.src.volume, slot.target, step);
+                        slot.src.volume = Mathf.MoveTowards(slot.src.volume, slot.target * duck, step);
                         if (slot.target <= 0f && slot.src.volume <= 0f)
                         {
                             slot.src.Stop();
@@ -691,6 +965,10 @@ namespace BackroomsSurvival.Gameplay.Audio
                         break;
 
                     case SlotMode.OneShot:
+                        // El nivel del one-shot va en el PlayOneShot; `volume` es el multiplicador
+                        // que sí se puede mover con el suceso ya sonando, y es por donde entra la
+                        // oclusión de un timbre que empieza a la vista y acaba tras una puerta.
+                        slot.src.volume = duck;
                         if (now >= slot.busyUntil)
                         {
                             slot.mode = SlotMode.Idle;
@@ -768,10 +1046,12 @@ namespace BackroomsSurvival.Gameplay.Audio
             var buf = new float[sc];
             const double TwoPi = 2.0 * Math.PI;
 
-            // 24 y 48 Hz: el fundamental del ventilador y su segundo. Ambos enteros por
-            // segundo, así que el bucle empalma exacto.
+            // EL RUMBLE ES EL ACOMPAÑAMIENTO, NO EL SONIDO. La primera versión ponía aquí 0,30 y
+            // 0,18 y filtraba el ruido a 440 Hz: el resultado era un retumbe con casi toda la
+            // energía por debajo de 100 Hz — en unos altavoces de portátil, silencio, y en cascos,
+            // un motor, no una rejilla. Una salida de aire real es sobre todo BANDA ANCHA.
             float[] hz = { 24f, 48f, 96f };
-            float[] amp = { 0.30f, 0.18f, 0.06f };
+            float[] amp = { 0.10f, 0.06f, 0.03f };
             for (int p = 0; p < hz.Length; p++)
             {
                 double w = TwoPi * hz[p] / sampleRate;
@@ -782,13 +1062,22 @@ namespace BackroomsSurvival.Gameplay.Audio
             int total = sc + fade;
             var air = new float[total];
             var rng = new System.Random(90210);
-            // Paso-bajo de un polo: el soplido es todo grave y medio, sin el filo del siseo.
-            float lp = 0f;
+            // Ruido de BANDA, 180–2500 Hz: paso-alto de un polo que quita el barro y paso-bajo que
+            // quita el filo del siseo. Lo de abajo ya lo pone el rumble y lo de arriba suena a
+            // estática, no a aire.
+            const float HighPassA = 0.974f; // ≈180 Hz a 44,1 kHz
+            const float LowPassK = 0.356f;  // ≈2 500 Hz
+            float hpIn = 0f, hpOut = 0f, lp = 0f;
             for (int i = 0; i < total; i++)
             {
                 float x = (float)(rng.NextDouble() * 2.0 - 1.0);
-                lp += 0.06f * (x - lp);
-                air[i] = lp * 1.9f;
+                hpOut = HighPassA * (hpOut + x - hpIn);
+                hpIn = x;
+                lp += LowPassK * (hpOut - lp);
+                // Turbulencia: medio hercio, o sea UN ciclo exacto en los dos segundos del bucle.
+                // Sin ella el soplido es una máscara de ruido plana y el oído la deja de oír.
+                float wobble = 1f + 0.18f * (float)Math.Sin(TwoPi * 0.5 * i / sampleRate);
+                air[i] = lp * 2.6f * wobble;
             }
             for (int i = 0; i < fade; i++)
             {
@@ -849,20 +1138,72 @@ namespace BackroomsSurvival.Gameplay.Audio
             int sc = Mathf.Max(256, (int)(sampleRate * 2.5f));
             var buf = new float[sc];
             const double TwoPi = 2.0 * Math.PI;
+            var rng = new System.Random(1997);
+
+            // UN BADAJO GOLPEANDO DOS CAMPANAS, no dos senos multiplicados por un seno. La primera
+            // versión era exactamente eso —1 000 y 1 250 Hz por un trémolo de 20 Hz— y sonaba a
+            // tono de prueba: en un timbre real lo que se reconoce es el GOLPE, un ataque
+            // instantáneo con cola, no una amplitud que sube y baja suave. El interruptor da 20
+            // ciclos por segundo y cada medio ciclo el badajo cambia de campana: 40 golpes.
+            //
+            // Y cada campana SIGUE SONANDO mientras golpean la otra: los golpes van cada 25 ms y la
+            // cola dura 45, así que se solapan sin fundirse en una nota plana. El número está
+            // medido entre dos fallos opuestos: con la cola cortada a la duración del golpe el
+            // factor de cresta se dispara a 8,6 —nueve decibelios de RMS perdidos para el mismo
+            // pico, y el timbre queda flaco—, y con 130 ms el pulso de cada golpe desaparece y
+            // vuelve a sonar a tono continuo. A 45 ms: cresta 3,5 y el golpe se sigue oyendo.
+            const double StrikesPerSecond = 40.0;
+            const float RingTauSeconds = 0.045f;
+
+            // Parciales INARMÓNICOS: es lo que distingue el metal de un tubo. Una campana no tiene
+            // armónicos enteros, y con ellos suena a órgano.
+            float[] partialRatio = { 1f, 2.76f, 5.40f };
+            float[] partialAmp = { 1.00f, 0.26f, 0.11f };
+
+            float decayPerSample = Mathf.Exp(-1f / (RingTauSeconds * sampleRate));
+            float ringA = 0f, ringB = 0f; // la energía viva de cada campana
+            int lastStrike = -1;
 
             for (int i = 0; i < sc; i++)
             {
                 float t = (float)i / sampleRate;
-                // Ráfagas: [0,00–1,00] y [1,50–2,50].
-                float gate = (t < 1.0f) ? 1f : (t >= 1.5f ? 1f : 0f);
-                if (gate <= 0f) continue;
-                // Bordes suavizados: un corte seco en una senoide es un click.
+
+                ringA *= decayPerSample;
+                ringB *= decayPerSample;
+
+                // Ráfagas: [0,00–1,00] y [1,50–2,50]. En el silencio las campanas se apagan solas
+                // en vez de cortarse, que es lo que hace un timbre cuando el interruptor abre.
+                bool ringing = t < 1.0f || t >= 1.5f;
+                double strike = t * StrikesPerSecond;
+                int index = (int)strike;
+                if (ringing && index != lastStrike)
+                {
+                    lastStrike = index;
+                    if ((index & 1) == 0) ringA = 1f; else ringB = 1f;
+                }
+                float inStrike = (float)(strike - index);
+
+                // Bordes suavizados: un corte seco es un click.
                 float local = t < 1.0f ? t : t - 1.5f;
-                float env = Mathf.Clamp01(local / 0.02f) * Mathf.Clamp01((1.0f - local) / 0.04f);
-                float warble = 0.5f + 0.5f * (float)Math.Sin(TwoPi * 20.0 * i / sampleRate);
-                float tone = (float)(Math.Sin(TwoPi * 1000.0 * i / sampleRate) * 0.55
-                                     + Math.Sin(TwoPi * 1250.0 * i / sampleRate) * 0.45);
-                buf[i] = tone * (0.35f + 0.65f * warble) * env;
+                float env = ringing
+                    ? Mathf.Clamp01(local / 0.01f) * Mathf.Clamp01((1.0f - local) / 0.04f)
+                    : 1f;
+
+                double tone = 0.0;
+                for (int p = 0; p < partialRatio.Length; p++)
+                {
+                    double w = TwoPi * partialRatio[p] * i / sampleRate;
+                    tone += partialAmp[p] * (ringA * Math.Sin(w * 1000.0)
+                                             + ringB * Math.Sin(w * 1250.0));
+                }
+
+                // El badajo tocando el metal: unos milisegundos de ruido en el ataque de cada
+                // golpe. Sin él el golpe es limpio y vuelve a sonar sintetizado.
+                float clapper = ringing && inStrike < 0.12f
+                    ? (float)(rng.NextDouble() * 2.0 - 1.0) * (0.12f - inStrike) * 1.6f
+                    : 0f;
+
+                buf[i] = (float)tone * 0.55f * env + clapper * env;
             }
 
             return Normalize(buf, 0.85f);

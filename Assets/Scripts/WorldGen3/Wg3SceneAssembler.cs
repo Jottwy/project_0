@@ -814,18 +814,59 @@ namespace BackroomsSurvival.WorldGen3
         /// holgura: 22° la bajan 45 cm.</summary>
         private const float HungLampTiltDeg = 22f;
 
+        /// El prop VISIBLE de una fuente de ambiente de oficina — la rejilla de aire, la impresora.
+        ///
+        /// No llega por el cable: no tiene `kind`, lo decide el cliente en el mismo sitio donde
+        /// pone la fuente. Existe porque una fuente puntual invisible es indiagnosticable: con la
+        /// rejilla puesta, que el aire suene desplazado o dentro de una viga se VE en una captura.
+        ///
+        /// Misma disciplina que <see cref="AssembleProp"/>: sin colliders (es atrezo, no frena),
+        /// capa del chunk y máscara de la cota, y <c>DontSave</c> para que no acabe en la escena.
+        /// </summary>
+        public static GameObject AssembleAmbienceProp(
+            BackroomsSurvival.Gameplay.Audio.OfficeAmbienceDirector.Emitter e,
+            Transform parent, int layer, string name)
+        {
+            if (parent == null) return null;
+            string resource = BackroomsSurvival.Gameplay.Audio.OfficeAmbienceDirector.VisualPrefabOf(e.kind);
+            if (resource == null) return null; // el teléfono y la silla ya se ven: son atrezo servido
+            GameObject prefab = Resources.Load<GameObject>("Wg3Props/" + resource);
+            if (prefab == null)
+            {
+                WarnMissingAmbienceProp(resource);
+                return null;
+            }
+
+            var go = Object.Instantiate(prefab, parent);
+            go.name = name;
+            go.hideFlags = HideFlags.DontSave;
+            go.transform.position = e.position;
+            go.transform.rotation = Quaternion.Euler(0f, e.yawDeg, 0f);
+            float s = BackroomsSurvival.Gameplay.Audio.OfficeAmbienceDirector.VisualScaleOf(e.kind);
+            if (s != 1f) go.transform.localScale = new Vector3(s, s, s);
+            uint mask = Wg3StoreyLayers.ForLight(e.position.y);
+            foreach (Transform t in go.GetComponentsInChildren<Transform>(true)) t.gameObject.layer = layer;
+            foreach (Renderer r in go.GetComponentsInChildren<Renderer>(true)) r.renderingLayerMask = mask;
+            foreach (Collider c in go.GetComponentsInChildren<Collider>(true)) c.enabled = false;
+            return go;
+        }
+
+        // Un aviso por prefab y sesión: sin esto, una rejilla que falte deja una línea por sala de
+        // oficina de cada chunk, que son miles.
+        private static readonly HashSet<string> _warnedAmbienceProps = new HashSet<string>();
+
+        private static void WarnMissingAmbienceProp(string resource)
+        {
+            if (!_warnedAmbienceProps.Add(resource)) return;
+            Debug.LogWarning($"[wg3] sin prefab de ambiente 'Wg3Props/{resource}': " +
+                             "ejecuta Backrooms/WG3/Build Prop Catalog. La fuente se oirá sin verse.");
+        }
+
         /// <summary>Placa del techo de la oficina: 60 cm. Los paneles se alinean a ella.</summary>
-        public const float CeilingTileM = 0.6f;
+        public const float CeilingTileM = Wg3CeilingGrid.TileM;
         /// <summary>Panel fluorescente: dos placas de largo, una de ancho, como en la foto.</summary>
         public const float PanelLongM = 1.2f;
         public const float PanelShortM = 0.6f;
-        /// <summary>Paso de la rejilla de paneles, en placas. Cuatro placas = 2,4 m: una fila de
-        /// paneles cada dos metros y pico, que es lo que se ve en las referencias del Nivel 0.</summary>
-        private const int PanelPitchTiles = 4;
-        /// <summary>Tope de paneles por tramo: en una nave de 25 × 25 el paso se abre hasta
-        /// cumplirlo. Son mallas, no luces, pero mil paneles en radio 1 también pesan.</summary>
-        private const int MaxPanelsPerSegment = 40;
-
         /// <summary>
         /// Los paneles fluorescentes de un tramo, en rejilla alineada a las placas del techo. Se
         /// omite el que caería a menos de una placa de la pared. El eje largo del panel sigue el
@@ -834,22 +875,14 @@ namespace BackroomsSurvival.WorldGen3
         /// </summary>
         private static void AddPanels(Transform parent, Wg3Segment segment, Material lampMaterial)
         {
-            float pitch = PanelPitchTiles * CeilingTileM;
-            int cx = Mathf.Max(1, Mathf.FloorToInt(segment.SizeX / pitch));
-            int cz = Mathf.Max(1, Mathf.FloorToInt(segment.SizeZ / pitch));
-            while (cx * cz > MaxPanelsPerSegment)
-            {
-                pitch += CeilingTileM;
-                cx = Mathf.Max(1, Mathf.FloorToInt(segment.SizeX / pitch));
-                cz = Mathf.Max(1, Mathf.FloorToInt(segment.SizeZ / pitch));
-            }
+            // La retícula vive en Wg3CeilingGrid y no aquí: el detalle sonoro cuelga una rejilla de
+            // aire del techo y necesita los mismos números para no meterla dentro de una luminaria.
+            Wg3CeilingGrid.Solve(segment.SizeX, segment.SizeZ,
+                out float pitch, out int cx, out int cz, out float ox, out float oz);
             bool alongX = segment.SizeX >= segment.SizeZ;
             var size = alongX
                 ? new Vector3(PanelLongM, 0.05f, PanelShortM)
                 : new Vector3(PanelShortM, 0.05f, PanelLongM);
-            // Centrado: el sobrante de la rejilla se reparte a los dos lados.
-            float ox = (segment.SizeX - cx * pitch) * 0.5f + pitch * 0.5f;
-            float oz = (segment.SizeZ - cz * pitch) * 0.5f + pitch * 0.5f;
             float y = segment.Height - size.y * 0.5f + 0.01f;
             uint mask = Wg3StoreyLayers.ForLight(segment.FloorY + segment.Height - 0.1f);
             for (int ix = 0; ix < cx; ix++)
