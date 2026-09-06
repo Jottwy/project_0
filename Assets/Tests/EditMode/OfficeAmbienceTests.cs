@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using BackroomsSurvival.Gameplay.Audio;
+using BackroomsSurvival.WorldGen3;
 using NUnit.Framework;
 using UnityEngine;
 
@@ -108,11 +109,11 @@ namespace BackroomsSurvival.Tests
         [Test]
         public void AirCon_VaEnElPlanoDelFalsoTechoYFueraDelPanel()
         {
-            // 6 × 4 m. El pivote de la rejilla es su cara superior, así que la cota es la del
-            // falso techo EXACTA — no restada. En X cabe la media retícula (3,0 + 1,2 = 4,2, con
-            // 4,8 de tope); en Z no (2,0 + 1,2 = 3,2 > 2,8), y ahí se queda centrada.
+            // 6 × 4 m. La retícula de luminarias sale 2 × 1 con paso 2,4 y origen (1,8; 2,0), o
+            // sea que en X hay UN hueco, en 3,0; en Z no hay ninguno y la rejilla se centra en 2,0.
+            // El pivote es la cara superior, así que la cota es la del falso techo EXACTA.
             Emitter e = Get(Classify(Room(600, 400, 280)), Kind.AirCon);
-            Assert.AreEqual(14.2f, e.position.x, 1e-3f);
+            Assert.AreEqual(13.0f, e.position.x, 1e-3f);
             Assert.AreEqual(22.0f, e.position.z, 1e-3f);
             Assert.AreEqual(2.80f, e.position.y, 1e-3f);
             Assert.AreEqual(0f, e.period, "el aire es continuo, no un suceso");
@@ -127,16 +128,90 @@ namespace BackroomsSurvival.Tests
             {
                 for (int dCm = 300; dCm <= 2500; dCm += 550)
                 {
-                    var es = Classify(Room(wCm, dCm, 280), Cubicles());
-                    if (!Has(es, Kind.AirCon)) continue;
-                    Emitter e = Get(es, Kind.AirCon);
-                    float lx = e.position.x - 10f, lz = e.position.z - 20f;
-                    Assert.GreaterOrEqual(lx, 0.6f, $"{wCm}×{dCm}: rejilla contra el muro en X");
-                    Assert.GreaterOrEqual(lz, 0.6f, $"{wCm}×{dCm}: rejilla contra el muro en Z");
-                    Assert.LessOrEqual(lx, wCm * 0.01f - 0.6f, $"{wCm}×{dCm}: rejilla fuera en X");
-                    Assert.LessOrEqual(lz, dCm * 0.01f - 0.6f, $"{wCm}×{dCm}: rejilla fuera en Z");
+                    // TODAS las rejillas, no sólo la primera: una sala grande lleva varias.
+                    foreach (Emitter e in Classify(Room(wCm, dCm, 280), Cubicles()))
+                    {
+                        if (e.kind != Kind.AirCon) continue;
+                        float lx = e.position.x - 10f, lz = e.position.z - 20f;
+                        Assert.GreaterOrEqual(lx, 0.6f, $"{wCm}×{dCm}: rejilla contra el muro en X");
+                        Assert.GreaterOrEqual(lz, 0.6f, $"{wCm}×{dCm}: rejilla contra el muro en Z");
+                        Assert.LessOrEqual(lx, wCm * 0.01f - 0.6f, $"{wCm}×{dCm}: rejilla fuera en X");
+                        Assert.LessOrEqual(lz, dCm * 0.01f - 0.6f, $"{wCm}×{dCm}: rejilla fuera en Z");
+                    }
                 }
             }
+        }
+
+        [Test]
+        public void AirCon_LaRejillaNuncaPisaUnaLuminaria()
+        {
+            // LA propiedad del sistema, y la que la versión «a ojo» fallaba: el origen de la
+            // retícula depende del sobrante de la sala, no de su centro, así que centrarse acierta
+            // el hueco con un número par de paneles y cae DENTRO de la luminaria con uno impar.
+            //
+            // Se mide rectángulo contra rectángulo con la misma orientación que AddPanels: el panel
+            // mide 1,2 × 0,6 con el lado largo en el eje largo del tramo, y la rejilla 0,6 × 0,6.
+            for (int wCm = 300; wCm <= 3000; wCm += 25)
+            {
+                for (int dCm = 300; dCm <= 3000; dCm += 275)
+                {
+                    float sx = wCm * 0.01f, sz = dCm * 0.01f;
+                    Wg3CeilingGrid.Solve(sx, sz,
+                        out float pitch, out int cx, out int cz, out float ox, out float oz);
+                    bool alongX = sx >= sz;
+                    float halfX = (alongX ? 0.6f : 0.3f) + 0.3f;
+                    float halfZ = (alongX ? 0.3f : 0.6f) + 0.3f;
+
+                    foreach (Emitter e in Classify(Room(wCm, dCm, 280), Cubicles()))
+                    {
+                        if (e.kind != Kind.AirCon) continue;
+                        float lx = e.position.x - 10f, lz = e.position.z - 20f;
+                        for (int i = 0; i < cx; i++)
+                        {
+                            for (int j = 0; j < cz; j++)
+                            {
+                                float px = ox + i * pitch, pz = oz + j * pitch;
+                                bool onPanel = Mathf.Abs(lx - px) < halfX - 1e-3f
+                                            && Mathf.Abs(lz - pz) < halfZ - 1e-3f;
+                                Assert.IsFalse(onPanel,
+                                    $"{wCm}×{dCm}: rejilla en ({lx:F2},{lz:F2}) pisa el panel ({px:F2},{pz:F2})");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        [Test]
+        public void AirCon_UnaNaveLlevaVariasRejillasYUnDespachoUna()
+        {
+            // El alcance del aire son 9 m: una sola rejilla en una planta diáfana no se oye desde
+            // ninguna parte. Y el tope existe porque son continuas y compiten por las seis fuentes.
+            Assert.AreEqual(1, CountOf(Classify(Room(400, 400, 280), Cubicles()), Kind.AirCon));
+            Assert.Greater(CountOf(Classify(Room(2000, 2000, 280), Cubicles()), Kind.AirCon), 1);
+            Assert.LessOrEqual(CountOf(Classify(Room(4000, 4000, 280), Cubicles()), Kind.AirCon), 4);
+        }
+
+        [Test]
+        public void AirCon_DosRejillasNoCaenEnElMismoSitio()
+        {
+            var es = Classify(Room(2500, 2500, 280), Cubicles());
+            var seen = new List<Vector3>();
+            foreach (Emitter e in es)
+            {
+                if (e.kind != Kind.AirCon) continue;
+                foreach (Vector3 p in seen)
+                    Assert.Greater(Vector3.Distance(p, e.position), 1f, "dos rejillas encimadas");
+                seen.Add(e.position);
+            }
+            Assert.Greater(seen.Count, 1);
+        }
+
+        private static int CountOf(List<Emitter> es, Kind k)
+        {
+            int n = 0;
+            foreach (Emitter e in es) if (e.kind == k) n++;
+            return n;
         }
 
         // ── El prop que se ve ───────────────────────────────────────────────────

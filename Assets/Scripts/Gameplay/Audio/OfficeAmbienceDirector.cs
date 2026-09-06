@@ -255,35 +255,7 @@ namespace BackroomsSurvival.Gameplay.Audio
             bool falseCeiling = room.heightCm <= OfficeCeilingMaxCm
                                 && (room.heightCm < OfficeCeilingMaxCm || officeProps >= 2)
                                 && areaM2 >= 9f;
-            if (falseCeiling)
-            {
-                // ENTRE los paneles, no encima de uno. `Wg3SceneAssembler.AddPanels` monta la
-                // rejilla de fluorescentes centrada y a paso de 2,40 m, así que con la sala centrada
-                // hay un panel JUSTO en el centro cuando el número de paneles es impar: la rejilla
-                // de aire caería dentro de la luminaria. Media retícula la deja en el hueco.
-                //
-                // El desplazamiento se rinde si la sala es pequeña — vale más una rejilla centrada
-                // que una pegada a la pared.
-                float halfPitch = PanelPitchM * 0.5f;
-                float ox = room.sizeXCm * 0.005f, oz = room.sizeZCm * 0.005f;
-                if (ox + halfPitch <= room.sizeXCm * 0.01f - VentClearanceM) ox += halfPitch;
-                if (oz + halfPitch <= room.sizeZCm * 0.01f - VentClearanceM) oz += halfPitch;
-
-                into.Add(new Emitter
-                {
-                    // El pivote de la rejilla es su cara SUPERIOR: va en el plano del falso techo y
-                    // la placa cuelga 3 cm. Poner aquí el centro de la sala sin más la metía dentro
-                    // del forjado o a 20 cm de la nada.
-                    position = new Vector3(
-                        room.xCm * 0.01f + ox,
-                        floorM + room.heightCm * 0.01f,
-                        room.zCm * 0.01f + oz),
-                    kind = Kind.AirCon,
-                    yawDeg = 0f,
-                    period = 0f,
-                    phase01 = 0f,
-                });
-            }
+            if (falseCeiling) AddVents(room, areaM2, floorM, into);
 
             // 2. CUBÍCULOS — mesas y sillas en cantidad. Una silla cruje, y solo una: el
             //    presupuesto no da para que la sala entera se asiente a la vez, y con dos
@@ -320,12 +292,105 @@ namespace BackroomsSurvival.Gameplay.Audio
             }
         }
 
-        /// <summary>Paso de la rejilla de fluorescentes, espejo de
-        /// <c>Wg3SceneAssembler.PanelPitchTiles × CeilingTileM</c>.</summary>
-        private const float PanelPitchM = 2.4f;
+        /// <summary>Lo que la rejilla de aire respeta hasta la pared: una placa.</summary>
+        private const float VentClearanceM = 0.6f;
 
-        /// <summary>Lo que la rejilla de aire respeta hasta la pared: una placa larga.</summary>
-        private const float VentClearanceM = 1.2f;
+        /// <summary>Metros cuadrados por rejilla. Una sola rejilla en una planta diáfana de
+        /// 25 × 25 no se oye desde ninguna parte: el alcance son 9 m.</summary>
+        private const float VentAreaPerUnitM2 = 80f;
+
+        /// <summary>Tope de rejillas por sala. Son continuas y compiten por el presupuesto de
+        /// seis fuentes: una sala no puede quedárselo entero.</summary>
+        private const int MaxVentsPerRoom = 4;
+
+        /// <summary>
+        /// Las rejillas de aire de una sala con falso techo, EN LOS HUECOS de la retícula de
+        /// luminarias.
+        ///
+        /// Antes esto era «el centro de la sala, más media retícula si cabe», y era a ojo: acertaba
+        /// el hueco cuando la cuenta de paneles salía par y lo fallaba cuando salía impar, porque el
+        /// origen de la retícula depende del sobrante de la sala, no de su centro. Ahora los huecos
+        /// los da <see cref="Wg3CeilingGrid"/>, que es la MISMA función que coloca los paneles: no
+        /// pueden discrepar.
+        ///
+        /// Con una sola luminaria por eje no hay hueco en ese eje y la rejilla se centra, que es lo
+        /// que se hace en un despacho pequeño de verdad.
+        /// </summary>
+        private static void AddVents(RoomSpec room, float areaM2, float floorM, List<Emitter> into)
+        {
+            float sizeX = room.sizeXCm * 0.01f, sizeZ = room.sizeZCm * 0.01f;
+            Wg3CeilingGrid.Solve(sizeX, sizeZ,
+                out float pitch, out int cx, out int cz, out float ox, out float oz);
+
+            int gx = Wg3CeilingGrid.GapCount(cx), gz = Wg3CeilingGrid.GapCount(cz);
+
+            // UN SOLO PANEL EN TODA LA SALA. Sin hueco en ningún eje, centrarse es caer JUSTO
+            // encima de la luminaria — pasa en cualquier despacho de 3 × 3, que son muchos. Ahí la
+            // rejilla se aparta a un lado del panel. Con hueco en al menos un eje no hace falta:
+            // la rejilla ya pasa entre dos luminarias por ese eje, y centrarse en el otro es
+            // exactamente lo que se quiere.
+            bool asideOfPanel = gx == 0 && gz == 0;
+            var xs = AxisSlots(gx, ox, pitch, sizeX, asideOfPanel);
+            var zs = AxisSlots(gz, oz, pitch, sizeZ, asideOfPanel);
+            if (xs.Count == 0 || zs.Count == 0) return; // sala demasiado justa: sin rejilla
+
+            int slots = xs.Count * zs.Count;
+            int want = Mathf.Clamp(Mathf.RoundToInt(areaM2 / VentAreaPerUnitM2), 1, MaxVentsPerRoom);
+            int n = Mathf.Min(want, slots);
+
+            float y = floorM + room.heightCm * 0.01f; // el pivote de la rejilla es su cara SUPERIOR
+            for (int i = 0; i < n; i++)
+            {
+                // Repartidas por el índice aplanado, no consecutivas: dos rejillas pegadas dejan
+                // media sala sin aire y suenan como una.
+                int k = Mathf.Min(slots - 1, (int)((i + 0.5f) * slots / n));
+                into.Add(new Emitter
+                {
+                    position = new Vector3(
+                        room.xCm * 0.01f + xs[k / zs.Count],
+                        y,
+                        room.zCm * 0.01f + zs[k % zs.Count]),
+                    kind = Kind.AirCon,
+                    yawDeg = 0f,
+                    period = 0f,
+                    phase01 = 0f,
+                });
+            }
+        }
+
+        /// <summary>Media luminaria (0,6 de su lado largo) más media rejilla (0,3): lo que hay que
+        /// apartarse de un panel para no tocarlo.</summary>
+        private const float PanelClearM = 0.9f;
+
+        // Los puntos utilizables de un eje. Se descarta lo que quede a menos de una placa de la
+        // pared, y una lista vacía significa «aquí no cabe rejilla», no «ponla donde sea».
+        private static List<float> AxisSlots(int gaps, float origin, float pitch, float size,
+            bool asideOfPanel)
+        {
+            var slots = new List<float>(Mathf.Max(2, gaps));
+            if (gaps <= 0)
+            {
+                // Sin hueco en el eje: o el centro del único panel, o a un lado de él.
+                if (asideOfPanel)
+                {
+                    Add(slots, origin - PanelClearM, size);
+                    Add(slots, origin + PanelClearM, size);
+                }
+                else
+                {
+                    Add(slots, size * 0.5f, size);
+                }
+                return slots;
+            }
+            for (int i = 0; i < gaps; i++) Add(slots, Wg3CeilingGrid.GapAt(origin, pitch, i), size);
+            if (slots.Count == 0) Add(slots, size * 0.5f, size);
+            return slots;
+        }
+
+        private static void Add(List<float> slots, float v, float size)
+        {
+            if (v >= VentClearanceM && v <= size - VentClearanceM) slots.Add(v);
+        }
 
         /// <summary>Cara superior del armario (`Cupboard`, 0,89 × 0,79 × 0,46) y de la caja de
         /// cartón (0,40 × 0,29 × 0,29), medidas de su BoxCollider. La impresora se apoya ahí.</summary>
