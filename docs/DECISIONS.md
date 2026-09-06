@@ -14647,3 +14647,31 @@ función `decay` es la de ADR-130 D4.
 > el clon principal y otra sesión estaba editando `Wg3SceneAssembler.cs` ahí mismo (mtime a tres
 > minutos), que es uno de los ficheros que habría que parchear para capturar; entrar en Play y
 > pisar `Builds/Backend` era chocar con ella. Queda para cuando el editor esté libre.
+## ADR-131 — Enmienda 3: el salto seco de D6 se sustituye por un CUELLO, con su tope y su desenrosque (2026-09-06)
+
+D6 resolvía el punto ciego con un salto: al salirte del cono, la cabeza saltaba en un fotograma a
+otra pose sorteada. El argumento era que un seguimiento que se pierde despacio se lee como un muñeco
+mal orientado. **Jugado, el salto se lee peor todavía**: como un muñeco que cambia de postura, no
+como alguien que te pierde de vista. Joel, tras verlo: «que si les vas por el punto ciego su cara
+siga como intentando seguirte pero en plan sin girar 360 grados, como una persona que no pueda mirar
+a su espalda: pues vuelve a girar al lado contrario hasta que llega a ver».
+
+**Lo que hace ahora**: el ángulo APLICADO gira a velocidad finita hacia el deseado ya recortado a
+±`_coneDeg`. Con el jugador delante es un seguimiento continuo; cuando te pasas del tope, la cabeza
+se queda FORZANDO en él —sigue mirando a tu lado, no a otra parte—; y cuando cruzas al otro lado por
+detrás, el recortado salta de +tope a −tope y la cabeza **desenrosca por delante** hasta volver a
+verte.
+
+**Y no hay ninguna máquina de estados detrás, que es la parte que merece estar escrita.** No hace
+falta detectar «me ha rebasado» ni elegir por dónde volver: basta con que el ángulo aplicado y su
+objetivo vivan siempre dentro de [−tope, +tope]. El camino entre dos números de ese intervalo pasa
+por delante **por aritmética**, así que la nuca es inalcanzable por construcción y el 360° no puede
+ocurrir ni con un bug de datos. Dos velocidades (160 °/s siguiendo, 300 °/s desenroscando) porque
+cruzar la cara entera al ritmo del seguimiento fino se lee como una cabeza que flota.
+
+Con esto **desaparecen** las cinco poses de cabeza sorteadas de D6; nada las echa de menos.
+
+**Verificación**: medido en una sesión de Play real con el arnés (`_ClaudeWatcherPreview` escribe el
+ángulo aplicado): con la cámara a **−116°** del frente del cuerpo —o sea a su espalda, pasada del
+tope— la cabeza se queda en **−89°**, forzando hacia ese lado, en vez de saltar a una pose. La
+captura del recorrido del desenrosque queda pendiente: el editor lo estaba usando otra sesión.
