@@ -3454,9 +3454,19 @@ async fn handle_network_event(
             add_id,
             building_id,
             material_id,
+            requester_id,
         } => {
             if net.is_host {
-                process_stp_build_add(add_id, building_id, material_id, net);
+                // La pose contra la que se mide el alcance sale del roster, nunca del paquete.
+                let requester_pos = authoritative_requester_pos(net, player.position, requester_id);
+                process_stp_build_add(
+                    add_id,
+                    building_id,
+                    material_id,
+                    requester_id,
+                    requester_pos,
+                    net,
+                );
             }
         }
 
@@ -5727,8 +5737,21 @@ async fn handle_action(
                 return;
             }
             if net.is_host {
-                process_stp_build_add(add_id, building_id, material_id, net);
+                // Acción del jugador LOCAL: su identidad es `net.local_id` y su pose la que este
+                // backend ya tiene, sin pasar por la red. El host se comprueba a sí mismo igual
+                // que a cualquier otro — si la puerta sólo se aplicara a los joiners, el agujero
+                // seguiría abierto para quien corre el host.
+                process_stp_build_add(
+                    add_id,
+                    building_id,
+                    material_id,
+                    net.local_id,
+                    Some(player.position),
+                    net,
+                );
             } else {
+                // El joiner no valida: reenvía. `requester_id` NO va en el payload — lo pone el
+                // host desde la cabecera del paquete (ADR-081).
                 let payload = crate::network::protocol::PacketPayload::StpBuildAddRequest {
                     add_id,
                     building_id,
@@ -7308,10 +7331,21 @@ fn process_stp_place(
 /// Accumulates one unit of `material_id` into the piece's `added` list. Deduped by the
 /// client-generated `add_id` (reliable retransmit safe). The 10 Hz relay propagates the
 /// updated `stp_buildings`, where StpBuildingReplicator derives the per-client progress.
+/// ADR-081 hasta el final: **aportar material a una obra también tiene dueño y también tiene
+/// alcance.** Colocar y demoler ya se comprobaban; añadir era el tercer verbo de construcción y
+/// era el único que seguía aceptando a cualquiera desde cualquier sitio — o sea que el territorio
+/// estaba defendido en dos de sus tres puertas, que es como no estarlo: un peer podía terminar (o
+/// llenar de material) la obra de otro desde el otro extremo del mundo.
+///
+/// `requester_id` sale de la CABECERA del paquete y `requester_pos` de la pose que el host YA
+/// CONOCE. Ninguno de los dos viaja en el payload, así que la comprobación no cuesta un solo byte
+/// de protocolo: el wire se queda en 60.
 fn process_stp_build_add(
     add_id: u64,
     building_id: u32,
     material_id: i32,
+    requester_id: u16,
+    requester_pos: Option<Vec3>,
     net: &mut NetworkManager,
 ) {
     if add_id != 0 && !net.processed_stp_build_adds.insert(add_id) {
@@ -7322,8 +7356,23 @@ fn process_stp_build_add(
         return;
     }
 
-    let building = match net.stp_buildings.iter_mut().find(|b| b.id == building_id) {
-        Some(b) => b,
+    // La pose es OBLIGATORIA, igual que en `process_authoritative_interaction` y al revés que en
+    // la recogida: allí el hueco de información es una ventana de milisegundos al entrar y dejar
+    // pasar es lo razonable, pero una obra no se mueve y quien aporta a ella lleva rato conectado.
+    // Aceptar sin saber dónde está el que pide deja abierto justo el agujero que esto cierra.
+    let Some(requester_pos) = requester_pos else {
+        info!(
+            "MPTRACE step=BM event=stp_build_add_denied building_id={} add_id={} requester_id={} reason=unknown_pose",
+            building_id, add_id, requester_id
+        );
+        return;
+    };
+
+    // Se busca el ÍNDICE, no una referencia prestada, para poder leer dueño y posición y decidir
+    // antes de tomar el préstamo mutable con el que se escribe el progreso. Misma forma que
+    // `process_stp_demolish`.
+    let index = match net.stp_buildings.iter().position(|b| b.id == building_id) {
+        Some(i) => i,
         None => {
             info!(
                 "MPTRACE step=BM event=stp_build_add_no_building building_id={} add_id={} ignored=true",
@@ -7332,6 +7381,35 @@ fn process_stp_build_add(
             return;
         }
     };
+
+    // DUEÑO. Misma regla, letra por letra, que `process_stp_demolish`: `owner_id` se guarda en
+    // TODA pieza desde ADR-081 y el 0 —lo que traen las piezas de un save anterior— **no lo acepta
+    // nadie**. El precio, aceptado en su día para la demolición y que ahora también aplica aquí:
+    // una obra huérfana de un save viejo no se puede terminar ni retirar. Ninguna pieza colocada
+    // desde ADR-081 puede caer en ese caso — `process_stp_place` escribe `owner_id: requester_id`
+    // en todas.
+    let owner_id = net.stp_buildings[index].owner_id;
+    if owner_id == 0 || owner_id != requester_id {
+        info!(
+            "MPTRACE step=BM event=stp_build_add_denied building_id={} add_id={} owner_id={} requester_id={} reason=not_owner",
+            building_id, add_id, owner_id, requester_id
+        );
+        return;
+    }
+
+    // ALCANCE, contra la pose que el host ya conoce y nunca contra el paquete. El tope se
+    // REUTILIZA a propósito en vez de inventar otro, igual que hizo la cosecha: aquél empezó en
+    // 5 m y hubo que subirlo a 8 en playtest porque 5 clavados daban `too_far` con el objetivo al
+    // lado. Construir tiene el mismo brazo y el mismo problema.
+    if !pickup_within_reach(Some(requester_pos), net.stp_buildings[index].position) {
+        info!(
+            "MPTRACE step=BM event=stp_build_add_denied building_id={} add_id={} requester_id={} reason=too_far max={:.2}",
+            building_id, add_id, requester_id, STP_PICKUP_MAX_DISTANCE
+        );
+        return;
+    }
+
+    let building = &mut net.stp_buildings[index];
 
     match building
         .added

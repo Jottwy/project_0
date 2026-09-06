@@ -1,5 +1,4 @@
 using System.Text;
-using BackroomsSurvival.Gameplay;
 using BackroomsSurvival.Net;
 using UnityEngine;
 using UnityEngine.UI;
@@ -29,7 +28,6 @@ namespace BackroomsSurvival.UI
 
         private Canvas _canvas;
         private Text _text;
-        private ChunkRenderer _chunkRenderer;
         private readonly StringBuilder _sb = new StringBuilder(512);
 
         /// <summary>
@@ -47,8 +45,6 @@ namespace BackroomsSurvival.UI
 
         private void Start()
         {
-            _chunkRenderer = FindFirstObjectByType<ChunkRenderer>();
-
             _canvas = new GameObject("PoiDebugCanvas").AddComponent<Canvas>();
             _canvas.renderMode = RenderMode.ScreenSpaceOverlay;
             _canvas.sortingOrder = 90;
@@ -136,15 +132,17 @@ namespace BackroomsSurvival.UI
             _text.text = _sb.ToString();
         }
 
-        private float ResolveChunkSize()
-        {
-            if (_chunkRenderer == null)
-                _chunkRenderer = FindFirstObjectByType<ChunkRenderer>();
-
-            return _chunkRenderer != null && _chunkRenderer.chunkSize > 0f
-                ? _chunkRenderer.chunkSize
-                : FallbackChunkSize;
-        }
+        /// <summary>
+        /// Tamaño de chunk en metros. Constante a propósito.
+        ///
+        /// Hasta el 2026-09-05 esto buscaba un <c>ChunkRenderer</c> en la escena y leía su
+        /// <c>chunkSize</c>, con esta constante de reserva. Pero <c>ChunkRenderer</c> lleva inerte
+        /// desde que <c>GameBootstrap</c> dejó de añadirlo y la escena viva no lo instancia, así
+        /// que la búsqueda devolvía null SIEMPRE y lo que corría ya era la reserva: era una
+        /// dependencia de compilación, no de comportamiento, y la única que le quedaba a
+        /// <c>ChunkRenderer.cs</c> antes de borrarlo.
+        /// </summary>
+        private static float ResolveChunkSize() => FallbackChunkSize;
 
         private static ChunkViewMsg FindCurrentChunk(WorldStateMsg state, int chunkX, int chunkZ)
         {

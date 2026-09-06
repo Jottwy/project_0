@@ -1,3 +1,6 @@
+> **VIGENTE — 2026-09-05.** Contrato en marcha y prioridad número uno. De sus 13 entregables hay
+> **1 cerrado** (día 1, `65d267c3`). Manda sobre el orden de `WG3-ROADMAP.md`.
+
 # WorldGen3 v1 — cierre para Alpha 1
 
 Acordado con Joel el 2026-09-04 (noche), tras la 20.ª tanda: «si le dedicamos otra semana más a

@@ -866,7 +866,6 @@ fn probe_architecture_metrics() {
                         SpaceRole::Spine => 0,
                         SpaceRole::Corridor => 1,
                         SpaceRole::Stair => 2,
-                        SpaceRole::Junction => 3,
                         SpaceRole::Hall => 4,
                         SpaceRole::Office => 5,
                         SpaceRole::Service => 6,

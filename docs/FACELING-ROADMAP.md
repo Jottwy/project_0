@@ -1,3 +1,6 @@
+> **VIGENTE — 2026-09-05.** Al día hasta ADR-094 enm. 13 (2026-08-25); lo de «qué falta» sigue sin
+> hacer. Fuera del contrato WG3 v1.
+
 # Facelings — hoja de ruta de comportamiento
 
 Estado y siguientes pasos de la IA de facelings (ADR-094 y sus enmiendas). Escrito al cierre de

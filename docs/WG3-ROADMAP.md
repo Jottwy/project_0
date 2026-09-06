@@ -1,3 +1,9 @@
+> **CONGELADO — 2026-09-05.** Escrito el 2026-08-28 para ordenar cuatro frentes que competían por
+> el mismo tiempo. Ese orden lo fija ahora
+> [`WG3-ALPHA1-ROADMAP.md`](WG3-ALPHA1-ROADMAP.md) (contrato del 2026-09-04), y el Frente A se
+> cerró el 2026-08-29. **Sus medidas siguen valiendo**; su lista de prioridades ya no. No se
+> actualiza.
+
 # WG3-ROADMAP.md — plan de trabajo de WorldGen3
 
 > Escrito el 2026-08-28 al cerrar la sesión de ADR-102 (plantas apiladas), con el mundo de dos plantas

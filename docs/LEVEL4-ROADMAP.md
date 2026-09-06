@@ -1,3 +1,7 @@
+> **VIGENTE — 2026-09-05.** Plan aprobado, **cero etapas ejecutadas** (E0–E6 sin empezar). Fuera
+> del contrato WG3 v1, y con un prerrequisito propio sin cumplir: el playtest de ADR-088..092 antes
+> de E5.
+
 # LEVEL4-ROADMAP — Plan de implementación troceado de ADR-093
 
 > Estado: plan aprobado pendiente de ejecución. Cada etapa es un diff ≤~300 líneas, con test y

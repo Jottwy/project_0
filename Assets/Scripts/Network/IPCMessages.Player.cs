@@ -66,9 +66,14 @@ namespace BackroomsSurvival.Net
     }
 
     /// <summary>
-    /// ADR-009 §2 DeltaUpdate: the 20 Hz authoritative movement delta consumed by
-    /// the MovementReconciler — pose to detect desync, velocity to snap to, and
-    /// ackInputSeq to align with the client's input ring buffer.
+    /// ADR-009 §2 DeltaUpdate: el delta de movimiento autoritativo a 20 Hz — pose para detectar
+    /// el desfase, velocidad a la que engancharse y <c>ackInputSeq</c> para alinear con el anillo
+    /// de inputs del cliente.
+    ///
+    /// Lo consume <c>AuthoritativePoseApplier.OnMovementDelta</c>. Hasta el 2026-09-05 aquí ponía
+    /// «consumed by the MovementReconciler»: esa clase se borró y nunca se reemplazó (ADR-009 L2 a
+    /// medias). Lo que falta de L2 es la predicción y la reconciliación del lado cliente —
+    /// <c>ackInputSeq</c> no lo usa nadie todavía—, no el consumidor de este paquete.
     /// </summary>
     public class MovementDeltaMsg
     {

@@ -6751,7 +6751,6 @@ fn probe_region_plan() {
         for role in [
             SpaceRole::Spine,
             SpaceRole::Corridor,
-            SpaceRole::Junction,
             SpaceRole::Hall,
             SpaceRole::Office,
             SpaceRole::Service,
@@ -7740,7 +7739,6 @@ fn dump_region_plans() {
                 // La escalera en verde ácido: es lo único que no es plano, y en un plano de planta
                 // hay que poder localizarlo de un vistazo.
                 SpaceRole::Stair => ("#65a30d", "#a3e635", ""),
-                SpaceRole::Junction => ("#ea580c", "#fb923c", ""),
                 SpaceRole::Hall => ("#0369a1", "#38bdf8", ""),
                 SpaceRole::Office => ("#334155", "#94a3b8", ""),
                 SpaceRole::Service => ("#5b21b6", "#a78bfa", ""),
@@ -11510,236 +11508,34 @@ fn the_phantom_draw_reaches_upper_storeys() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// ADR-103 — el campo de identidad. Fase 1: nadie lo consume todavia, asi que lo unico que se
-// puede exigir aqui es lo que el ADR llama verificacion (a) —pureza de posicion— mas las guardas
-// estructurales de D4, D5 y D6. La guardia (b) —Threshold puro produce el mundo de hoy byte a
-// byte— es trivialmente cierta mientras el plan no lea el perfil, y se convertira en test con
-// dientes el dia que lo lea.
+// ADR-103 — el campo de identidad. De sus seis tests sobrevive UNO, y con la mitad de su cuerpo.
+// El 2026-09-05 (bloque B4 del saneamiento) se borro el campo de mezcla entero de `identity.rs`
+// —`LevelAnchor`, `LevelProfile`, `ANCHOR_PROFILES`, `LevelMix`, `at`, `for_region`,
+// `nearest_anchor`, `max_band_width_mul`— por no tener un solo consumidor de produccion. Con el se
+// fueron `the_identity_field_is_pure_position`, `pure_threshold_is_all_ones_exactly`,
+// `band_width_never_shrinks_and_the_max_is_known`, `the_mix_brackets_neighbours_and_pure_poles_exist`
+// y `the_identity_mirror_golden_values`: los cinco afirmaban sobre codigo que ya no existe.
+//
+// El sexto, `an_identity_cell_never_splits_a_region`, medía dos cosas a la vez —que ninguna region
+// cae a caballo de dos celdas, y que la celda mide 6 regiones—. La primera se iba con `at()`; la
+// segunda es la que se queda, porque `IDENTITY_CELL_M` sigue vivo: lo lee
+// `world::spawn_distribution`, que reparte los spawns una celda por jugador.
+//
+// OJO al reescribir el campo: `the_identity_mirror_golden_values` era el oraculo que ataba este
+// lado con `Wg3IdentityTests.cs` bit a bit. El lado C# sigue en pie y sigue verde por su cuenta,
+// pero ya no hay nada que lo contraste.
 // ---------------------------------------------------------------------------------------------
 
-use super::identity::{self, LevelAnchor, LevelProfile};
+use super::identity;
 
-/// Verificacion (a): funcion pura de la posicion. Misma consulta, misma respuesta; la `y` esta en
-/// la firma (D7) y NO participa.
+/// D4 — la celda de identidad es multiplo EXACTO de la region: 6 x 150 m. Es lo que garantiza que
+/// la frontera de identidad sea siempre frontera de region, o sea un sitio donde el mundo ya
+/// cambia de mano y ya hay contrato.
 #[test]
-fn the_identity_field_is_pure_position() {
-    let seed = super::world::composer_seed(SERVED_SEED);
-    for &(x, z) in &[
-        (0.0f32, 0.0f32),
-        (75.0, 75.0),
-        (-3000.0, 4500.0),
-        (899.9, -0.1),
-    ] {
-        let a = identity::at(seed, x, 0.0, z);
-        let b = identity::at(seed, x, 0.0, z);
-        assert_eq!(a, b, "dos consultas identicas discrepan en ({x},{z})");
-        let c = identity::at(seed, x, 332.0, z);
-        assert_eq!(a, c, "la y participa en fase 1 y D7 la clava a 0");
-    }
-}
-
-/// D4: la celda es multiplo exacto de la region, asi que una region nunca cae a caballo de dos
-/// celdas — todos sus puntos interiores leen lo mismo que su centro, tambien en el hemisferio
-/// negativo, que es donde la division truncada espejaria el campo.
-#[test]
-fn an_identity_cell_never_splits_a_region() {
-    use super::world::{Wg3RegionCoord, REGION_M};
-    let composer = super::world::composer_seed(SERVED_SEED);
-    for rx in -7i32..7 {
-        for rz in -7i32..7 {
-            let region = Wg3RegionCoord { x: rx, z: rz };
-            let centre = identity::for_region(SERVED_SEED, region);
-            let (min_x, min_z, max_x, max_z) = region.bounds();
-            for &(x, z) in &[
-                (min_x + 0.5, min_z + 0.5),
-                (max_x - 0.5, min_z + 0.5),
-                (min_x + 0.5, max_z - 0.5),
-                (max_x - 0.5, max_z - 0.5),
-            ] {
-                let corner = identity::at(composer, x, 0.0, z);
-                assert_eq!(
-                    centre, corner,
-                    "la region ({rx},{rz}) cae a caballo de dos celdas de identidad: \
-                     su esquina ({x},{z}) no lee lo que su centro"
-                );
-            }
-        }
-    }
-    // Y el multiplo en si, con el numero a la vista: 6 regiones de 150 m.
+fn an_identity_cell_is_an_exact_multiple_of_a_region() {
+    use super::world::REGION_M;
     assert_eq!(identity::IDENTITY_CELL_M, 6.0 * REGION_M);
-}
-
-/// D5: Threshold con todos los factores a 1.0 EXACTAMENTE. No es pereza, es la guardia de
-/// regresion: el dia que el plan lea el perfil, una celda pura de Level 0 tiene que producir el
-/// mundo de hoy byte a byte, y eso solo es posible si el perfil neutro es neutro de verdad.
-#[test]
-fn pure_threshold_is_all_ones_exactly() {
-    let p = LevelProfile::THRESHOLD;
-    assert_eq!(p.target_area_mul, 1.0);
-    assert_eq!(p.weird_spread_mul, 1.0);
-    assert_eq!(p.void_chance_mul, 1.0);
-    assert_eq!(p.clear_height_mul, 1.0);
-    assert_eq!(p.band_width_mul, 1.0);
-    assert_eq!(p.max_depth_delta, 0.0);
-
-    // Y una mezcla pura devuelve el perfil del ancla sin que el blend meta ruido de coma flotante.
-    let pure = identity::LevelMix {
-        lower: LevelAnchor::Threshold,
-        upper: LevelAnchor::Threshold,
-        toward_upper: 0.0,
-    };
-    assert_eq!(pure.profile(), LevelProfile::THRESHOLD);
-}
-
-/// D6: `band_width_mul` solo puede SUBIR — por debajo de 240 cm el raster conservador no deja
-/// pasar (ADR-098) y un pasillo dibujado abierto que no se cruza es el peor fallo de su clase. Y
-/// el maximo es el que tiene que usar `GATE_CLEARANCE_CM` cuando el plan lea perfiles, o dos
-/// identidades vecinas nacen selladas por su junta (ya paso: ADR-100 enmienda 1).
-#[test]
-fn band_width_never_shrinks_and_the_max_is_known() {
-    for anchor in [
-        LevelAnchor::Threshold,
-        LevelAnchor::ZenithStation,
-        LevelAnchor::RemodeledMess,
-        LevelAnchor::IcyRooms,
-    ] {
-        let pure = identity::LevelMix {
-            lower: anchor,
-            upper: anchor,
-            toward_upper: 0.0,
-        };
-        assert!(
-            pure.profile().band_width_mul >= 1.0,
-            "{anchor:?} estrecha la banda: D6 lo prohibe"
-        );
-    }
-    assert_eq!(identity::max_band_width_mul(), 1.25);
-}
-
-/// D2: el peso queda en [0,1), las anclas de una mezcla son VECINAS en la escalera, y los polos
-/// puros existen — la fraccion de celdas puras ronda `PURITY_CHANCE`, que es lo que evita la
-/// papilla gris de mezclarlo todo.
-#[test]
-fn the_mix_brackets_neighbours_and_pure_poles_exist() {
-    let seed = super::world::composer_seed(SERVED_SEED);
-    let mut pure = 0usize;
-    let total = 61 * 61;
-    for cx in -30i32..=30 {
-        for cz in -30i32..=30 {
-            let m = identity::at(
-                seed,
-                cx as f32 * identity::IDENTITY_CELL_M + 1.0,
-                0.0,
-                cz as f32 * identity::IDENTITY_CELL_M + 1.0,
-            );
-            assert!(
-                (0.0..1.0).contains(&m.toward_upper),
-                "peso fuera de [0,1) en la celda ({cx},{cz}): {}",
-                m.toward_upper
-            );
-            if m.is_pure() {
-                pure += 1;
-                assert_eq!(m.toward_upper, 0.0);
-            } else {
-                assert_eq!(
-                    m.upper as u8,
-                    m.lower as u8 + 1,
-                    "mezcla entre anclas no vecinas en ({cx},{cz})"
-                );
-            }
-        }
-    }
-    let f = pure as f32 / total as f32;
-    assert!(
-        (0.40..=0.50).contains(&f),
-        "fraccion de celdas puras {f}: no ronda PURITY_CHANCE=0.45"
-    );
-}
-
-/// El oraculo del espejo: los MISMOS valores, bit a bit, estan afirmados en
-/// `Wg3IdentityTests.cs`. Si cualquiera de los dos lados se mueve, su test se pone rojo — es la
-/// misma tecnica que ata `Wg3ScaleField` al oraculo de composicion, en pequeño.
-#[test]
-fn the_identity_mirror_golden_values() {
-    let seed = 20260901i32;
-    let expect = |x: f32, z: f32, lower: LevelAnchor, upper: LevelAnchor, w: f32| {
-        let m = identity::at(seed, x, 0.0, z);
-        assert_eq!(m.lower, lower, "lower en ({x},{z})");
-        assert_eq!(m.upper, upper, "upper en ({x},{z})");
-        assert_eq!(m.toward_upper.to_bits(), w.to_bits(), "peso en ({x},{z})");
-    };
-    expect(
-        75.0,
-        75.0,
-        LevelAnchor::RemodeledMess,
-        LevelAnchor::IcyRooms,
-        f32::from_bits(0x3F1E_7E7A), // 0.6191174
-    );
-    expect(
-        975.0,
-        75.0,
-        LevelAnchor::Threshold,
-        LevelAnchor::Threshold,
-        0.0,
-    );
-    // Frontera EXACTA de celda: 900.0 pertenece a la celda 1 (misma que 975), y -900.0 a la
-    // celda -1 (misma que -825). Es el punto donde una division truncada espejaria el campo.
-    expect(
-        900.0,
-        75.0,
-        LevelAnchor::Threshold,
-        LevelAnchor::Threshold,
-        0.0,
-    );
-    expect(
-        -900.0,
-        75.0,
-        LevelAnchor::RemodeledMess,
-        LevelAnchor::IcyRooms,
-        f32::from_bits(0x3E53_D69C),
-    );
-    expect(
-        -825.0,
-        75.0,
-        LevelAnchor::RemodeledMess,
-        LevelAnchor::IcyRooms,
-        f32::from_bits(0x3E53_D69C), // 0.20687336
-    );
-    expect(
-        75.0,
-        -825.0,
-        LevelAnchor::RemodeledMess,
-        LevelAnchor::RemodeledMess,
-        0.0,
-    );
-    expect(
-        4575.0,
-        4575.0,
-        LevelAnchor::IcyRooms,
-        LevelAnchor::IcyRooms,
-        0.0,
-    );
-    expect(
-        -4425.0,
-        -4425.0,
-        LevelAnchor::Threshold,
-        LevelAnchor::ZenithStation,
-        f32::from_bits(0x3F12_B55C), // 0.5730798
-    );
-    expect(
-        13575.0,
-        -8925.0,
-        LevelAnchor::ZenithStation,
-        LevelAnchor::ZenithStation,
-        0.0,
-    );
-    expect(
-        -13425.0,
-        9075.0,
-        LevelAnchor::RemodeledMess,
-        LevelAnchor::IcyRooms,
-        f32::from_bits(0x3DFD_C6BC), // 0.12391421
-    );
+    assert_eq!(identity::IDENTITY_CELL_REGIONS, 6);
 }
 
 // ── ADR-116 / ADR-045 enm. 1: el reparto y la posición restaurada, contra el mundo servido ──

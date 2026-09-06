@@ -55,28 +55,31 @@ def run_check(label, command, repo_root, timeout):
     return False
 
 
-def validate_csharp(paths, repo_root):
-    project = os.path.join(repo_root, "Assembly-CSharp.csproj")
-    dotnet = shutil.which("dotnet")
-    script = os.path.join(repo_root, "tools", "dev", "CompileCheckClient.sh")
-    bash = shutil.which("bash")
-    if bash and os.path.isfile(script):
-        run_check("C# compile-check", [bash, script], repo_root, 300)
-    elif dotnet and os.path.isfile(project):
-        print("[stop-validation] C# compile-check: Bash no disponible; usando dotnet build --no-restore.")
-        run_check("C# compile-check", [dotnet, "build", "Assembly-CSharp.csproj", "--no-restore"], repo_root, 300)
-    else:
-        print("[stop-validation] C# compile-check: OMITIDO; no hay Bash/script ni proyecto dotnet compatible.")
+def report_startup_budget(repo_root):
+    """Aviso NO bloqueante del presupuesto de arranque de sesion.
 
-    if not dotnet or not os.path.isfile(project):
-        print("[stop-validation] C# dotnet format: OMITIDO; no hay dotnet + Assembly-CSharp.csproj generado compatible.")
+    El gate de verdad es /checkpoint; esto solo pone la cifra delante para que nadie descubra que
+    STATE.md ha vuelto a crecer tres semanas despues.
+    """
+    script = os.path.join(repo_root, "tools", "dev", "CheckStateBudget.py")
+    if not os.path.isfile(script):
         return
-    relative = []
-    for path in paths:
-        absolute = path if os.path.isabs(path) else os.path.join(repo_root, path)
-        relative.append(os.path.relpath(absolute, repo_root))
-    command = [dotnet, "format", "Assembly-CSharp.csproj", "--verify-no-changes", "--include"] + relative
-    run_check("C# dotnet format", command, repo_root, 300)
+    python = shutil.which("python") or shutil.which("python3")
+    if not python:
+        return
+    environment = dict(os.environ, PYTHONIOENCODING="utf-8")
+    try:
+        result = subprocess.run(
+            [python, script], cwd=repo_root, capture_output=True, text=True, timeout=30, env=environment,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        print(f"[stop-validation] presupuesto de arranque: OMITIDO por entorno: {error}")
+        return
+    for line in result.stdout.splitlines():
+        if line.startswith(("lineas ", "bytes  ", "SUMA", "ROJO:", "  - ")):
+            print(f"[stop-validation] arranque: {line}")
+    if result.returncode != 0:
+        print("[stop-validation] arranque: en ROJO. Lo bloquea /checkpoint, no este aviso.")
 
 
 def main():
@@ -90,28 +93,26 @@ def main():
     repo_root = os.environ.get("CLAUDE_HOOK_REPO_ROOT", REPO_ROOT)
     paths, ledger, _ = read_scope(payload, repo_root)
     try:
+        if any(path.startswith("docs/") or path == "CLAUDE.md" for path in paths):
+            report_startup_budget(repo_root)
         rust_touched = any(path.endswith(".rs") for path in paths)
         csharp_paths = [path for path in paths if path.endswith(".cs")]
         if not rust_touched and not csharp_paths:
             print("[stop-validation] solo docs/config/tooling; no se ejecutan suites de codigo.")
             return 0
 
+        # Solo fmt. clippy y cargo test viven en /checkpoint, que SI bloquea; aqui corrian en
+        # CADA Stop del modelo con timeout de 600 s -- diez paradas eran hasta diez suites enteras
+        # para un aviso que nunca bloquea. Mismo motivo para el compile-check de C#.
         if rust_touched:
             prefix = ["cargo", "+stable-x86_64-pc-windows-gnu"]
             run_check(
                 "Rust fmt", prefix + ["fmt", "--manifest-path", "backend/Cargo.toml", "--all", "--", "--check"],
                 repo_root, 120,
             )
-            run_check(
-                "Rust clippy", prefix + ["clippy", "--manifest-path", "backend/Cargo.toml", "--all-targets", "--", "-D", "warnings"],
-                repo_root, 300,
-            )
-            run_check(
-                "Rust tests", prefix + ["test", "--manifest-path", "backend/Cargo.toml"],
-                repo_root, 300,
-            )
+            print("[stop-validation] clippy y tests: NO se ejecutan aqui; son el gate de /checkpoint.")
         if csharp_paths:
-            validate_csharp(csharp_paths, repo_root)
+            print("[stop-validation] C#: compile-check y format son el gate de /checkpoint.")
         return 0
     finally:
         if ledger:

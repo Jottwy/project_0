@@ -66,7 +66,7 @@ pub(super) fn clear_height_by_role(role: SpaceRole) -> i32 {
     match role {
         SpaceRole::Hall => 450,
         SpaceRole::Spine => 360,
-        SpaceRole::Corridor | SpaceRole::Junction => 320,
+        SpaceRole::Corridor => 320,
         SpaceRole::Service | SpaceRole::Storage => 280,
         // La escalera va HOLGADA de techo: sus peldaños suben, y con la altura de un corredor el
         // último quedaría a 2,60 del techo mientras el primero está a 3,20. Se ve como que el techo
@@ -6906,7 +6906,7 @@ fn opening_in(w: &Wanted, x0: i32, z0: i32, x1: i32, z1: i32) -> Option<Wg3Openi
 fn style_of(role: SpaceRole) -> u8 {
     match role {
         SpaceRole::Spine => 1,
-        SpaceRole::Corridor | SpaceRole::Junction => 2,
+        SpaceRole::Corridor => 2,
         SpaceRole::Hall => 3,
         SpaceRole::Service | SpaceRole::Storage => 4,
         SpaceRole::DeadEnd => 5,

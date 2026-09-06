@@ -6991,6 +6991,156 @@ async fn stp_demolish_of_a_standalone_piece_leaves_pose_cells_alone() {
     );
 }
 
+// ------------------------------------------------------------------------------------------
+// ADR-081, la TERCERA puerta: aportar material a una obra.
+//
+// Colocar y demoler ya comprobaban dueño; aportar no comprobaba nada — ni quién, ni desde dónde.
+// Un territorio defendido en dos de sus tres puertas es un territorio sin defender.
+// ------------------------------------------------------------------------------------------
+
+/// Material aportado a una pieza, por material. `None` = la pieza no existe.
+fn build_progress(net: &NetworkManager, id: u32, material_id: i32) -> Option<u16> {
+    let building = net.stp_buildings.iter().find(|b| b.id == id)?;
+    Some(
+        building
+            .added
+            .iter()
+            .find(|p| p.material_id == material_id)
+            .map_or(0, |p| p.count),
+    )
+}
+
+/// Coloca un claim del peer 1 y una pieza suya dentro, y devuelve `(net, posición, id)`.
+async fn a_piece_owned_by_peer_1() -> (NetworkManager, [f32; 3], u32) {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let position = build_room_centre(42);
+    claim_at(&mut net, 1, position);
+    process_stp_place(
+        1,
+        111,
+        position,
+        0.0,
+        0,
+        true,
+        1,
+        &mut net,
+        &wg3_off(),
+        &mut wg3_cache(),
+    );
+    let id = placed_pieces(&net)[0];
+    (net, position, id)
+}
+
+/// El dueño, y a un brazo de distancia: el caso legítimo. Va primero para que los tres de abajo
+/// no puedan pasar por estar todo bloqueado.
+#[tokio::test]
+async fn stp_build_add_by_the_owner_within_reach_is_accepted() {
+    let (mut net, position, id) = a_piece_owned_by_peer_1().await;
+
+    process_stp_build_add(700, id, 7, 1, Some(Vec3::from_array(position)), &mut net);
+
+    assert_eq!(
+        build_progress(&net, id, 7),
+        Some(1),
+        "el dueño, al lado de su obra, sí aporta material"
+    );
+}
+
+/// **El agujero, en una línea:** cualquier peer conectado aportaba material a la obra de
+/// cualquier otro. `requester_id` sale de la CABECERA del paquete y no del payload — si saliera
+/// del payload, el cliente diría ser quien le conviene.
+#[tokio::test]
+async fn stp_build_add_by_a_stranger_is_denied() {
+    let (mut net, position, id) = a_piece_owned_by_peer_1().await;
+
+    // El peer 2, plantado justo encima de la obra del peer 1: la distancia está bien y aun así no.
+    process_stp_build_add(701, id, 7, 2, Some(Vec3::from_array(position)), &mut net);
+
+    assert_eq!(
+        build_progress(&net, id, 7),
+        Some(0),
+        "un peer que no es el dueño no aporta a la obra de otro ni estando encima"
+    );
+}
+
+/// La otra mitad del agujero: el dueño, pero desde el otro extremo del mundo. Se mide contra la
+/// pose que el host YA CONOCE, nunca contra el paquete.
+#[tokio::test]
+async fn stp_build_add_from_far_away_is_denied() {
+    let (mut net, position, id) = a_piece_owned_by_peer_1().await;
+
+    let lejos = Vec3::new(
+        position[0] + STP_PICKUP_MAX_DISTANCE + 1.0,
+        position[1],
+        position[2],
+    );
+    process_stp_build_add(702, id, 7, 1, Some(lejos), &mut net);
+    assert_eq!(
+        build_progress(&net, id, 7),
+        Some(0),
+        "ni el dueño aporta desde fuera de alcance"
+    );
+
+    // Y justo dentro del tope sí, para que el test mida el borde y no «todo rechazado».
+    let cerca = Vec3::new(
+        position[0] + STP_PICKUP_MAX_DISTANCE - 0.5,
+        position[1],
+        position[2],
+    );
+    process_stp_build_add(703, id, 7, 1, Some(cerca), &mut net);
+    assert_eq!(
+        build_progress(&net, id, 7),
+        Some(1),
+        "dentro del tope, el dueño sí aporta"
+    );
+}
+
+/// Sin pose no se puede medir alcance, así que no se acepta. Diverge a propósito de
+/// `pickup_within_reach`, que ante un hueco de información deja pasar: allí el hueco es una
+/// ventana de milisegundos al entrar; una obra no se mueve y quien aporta lleva rato conectado.
+#[tokio::test]
+async fn stp_build_add_without_a_known_pose_is_denied() {
+    let (mut net, _position, id) = a_piece_owned_by_peer_1().await;
+
+    process_stp_build_add(704, id, 7, 1, None, &mut net);
+
+    assert_eq!(
+        build_progress(&net, id, 7),
+        Some(0),
+        "aceptar sin saber dónde está quien pide deja abierto el agujero que esto cierra"
+    );
+}
+
+/// `owner_id == 0` es lo que traen las piezas de un save anterior a ADR-081. La demolición ya
+/// decidió que no las toca nadie; aportar sigue la MISMA regla, y el precio se dice en voz alta:
+/// una obra huérfana de un save viejo no se puede terminar ni retirar. Ninguna pieza colocada
+/// desde ADR-081 puede caer ahí — `process_stp_place` escribe `owner_id` en todas.
+#[tokio::test]
+async fn stp_build_add_to_a_piece_without_owner_is_denied_to_everyone() {
+    let (mut net, position, id) = a_piece_owned_by_peer_1().await;
+    net.stp_buildings
+        .iter_mut()
+        .find(|b| b.id == id)
+        .expect("la pieza recién puesta")
+        .owner_id = 0;
+
+    for requester in [0u16, 1, 2] {
+        process_stp_build_add(
+            710 + requester as u64,
+            id,
+            7,
+            requester,
+            Some(Vec3::from_array(position)),
+            &mut net,
+        );
+        assert_eq!(
+            build_progress(&net, id, 7),
+            Some(0),
+            "ni el peer {requester} ni nadie aporta a una pieza sin dueño"
+        );
+    }
+}
+
 /// ADR-031's follow-up, closed by ADR-037: cancelling the bed that set the respawn point must
 /// clear it. Goes through handle_action because that is where `player` is in scope.
 #[tokio::test]
@@ -13064,20 +13214,51 @@ async fn every_creature_is_physically_on_the_storey_it_was_assigned() {
             plantas += 1;
         }
     }
-    // **Cobertura de PLANTAS, que es lo que la prueba dice medir.** El tope en un número redondo
-    // de criaturas era frágil por construcción: cualquier cambio de geometría mueve el reparto y
-    // ésta se cayó por UNA —20 contra «más de 20»— al subir los techos, sin que la cobertura real
-    // cambiara. Lo que hace falta para que el caso exista es que haya bichos en más de una planta.
-    assert!(
-        plantas >= 2 && comprobadas >= 20,
-        "muestra insuficiente: {comprobadas} criaturas en {plantas} plantas"
-    );
+    // LA ASERCION DE VERDAD VA PRIMERO, y siempre. Hasta el 2026-09-05 delante habia una guarda
+    // `assert!(comprobadas > 20)` que abortaba el test antes de llegar aqui: con la muestra por
+    // debajo del umbral, "hay pocas criaturas que mirar" se presentaba como "no comprobamos nada",
+    // y lo que el test existe para vigilar —que ninguna criatura este en una planta distinta de la
+    // asignada— no se evaluaba. Un test que tapa su propia asercion con su guarda de cobertura
+    // esta peor que no estar: dice ROJO por el motivo equivocado.
     assert!(
         mal.is_empty(),
         "{} de {comprobadas} criaturas estan en una planta distinta de la asignada \
          (asignada, fisica, y): {mal:?}",
         mal.len()
     );
+
+    // COBERTURA: AVISO, nunca panic.
+    //
+    // Lo que de verdad hace falta para que el caso exista es que haya bichos en MAS DE UNA planta:
+    // con todo en la planta baja, `fisico == mv.layer` se cumple sin haber probado nada. Por eso
+    // se cuentan `plantas`, no solo criaturas.
+    //
+    // El numero de criaturas, medido commit a commit desde que nacio este test (2026-08-31,
+    // `d99d66d4`): 49 al nacer · 49 en `e2c47283` y `5ed5f697` · **25 en `3976b415`** (los once
+    // fallos del plan y el relleno: ahi se parte por la mitad) · 25 en `211e60a2` · 22 en
+    // `e7c6944b` y `48ce6c17` · 21 en `6bfd9b2d` · **20 desde `58d5b719`** (2026-09-03) y plano.
+    //
+    // O sea: la guarda vieja pedia `> 20` y el mundo lleva dando exactamente 20 desde el 03-09.
+    // El test estuvo en rojo veintitantos commits sin que nadie lo viera, porque hasta el
+    // 2026-09-05 no habia gate que corriera la suite al commitear. Un umbral en un numero redondo
+    // de criaturas es fragil por construccion: cualquier cambio de geometria mueve el reparto.
+    //
+    // Los dos suelos son MEDIDOS, no elegidos, y ninguno puede tapar la asercion de arriba.
+    // Si bajan mucho mas, lo que hay que mirar es cuantas plantas altas produce el plan de verdad
+    // (ADR-102 D3: se sirven 10 y son reales 4), no estos numeros.
+    const SUELO_CRIATURAS: usize = 20;
+    const SUELO_PLANTAS: usize = 2;
+    eprintln!(
+        "[cobertura] {comprobadas} criaturas en {plantas} plantas \
+         (suelos medidos: {SUELO_CRIATURAS} y {SUELO_PLANTAS})"
+    );
+    if comprobadas < SUELO_CRIATURAS || plantas < SUELO_PLANTAS {
+        eprintln!(
+            "[cobertura] AVISO: muestra por debajo del suelo medido. La asercion de plantas SI se \
+             ha evaluado y ha pasado, pero sobre menos de lo que este test vio nunca. Mira cuantas \
+             plantas altas produce el plan antes de tocar estos numeros."
+        );
+    }
 }
 
 /// **REGRESIÓN — con el jugador QUIETO no puede rotar la población.**

@@ -11,15 +11,23 @@
 //!   CONNECT_TO  — Peer address to join on startup (e.g. "127.0.0.1:7778")
 //!   WORLD_SEED  — World generation seed (default: 42)
 
-// Auditoría (2026-08-10): inventario medido quitando este `allow` y compilando —
-// 112 warnings `dead_code` únicos en el binario, 121 en total contando lo que solo aparece
-// bajo `--all-targets` (código de test-only). La inmensa mayoría es scaffolding de la
-// migración `grid_gen`/world-graph en curso (ver `docs/STATE.md`): generadores V0 alternativos,
-// exportadores ASCII de debug, capas de validación de nivel 0 que aún no se cablean —
-// intencional, no descuido acumulado. `#[allow]` selectivos por-item quedan diferidos a
-// cuando la migración cierre: con ~120 sitios en movimiento activo, targeted allows serían un
-// diff enorme y volátil que se reescribiría en cada sesión de migración. Ver STATE.md
-// "Auditoría: dead_code inventariado".
+// RECUENTO 2026-09-05, medido quitando este `allow` y compilando:
+//   294 warnings `dead_code` únicos en el binario
+//   308 con `--all-targets` (los 14 de más son código sólo-de-test)
+//
+// La cifra anterior escrita aquí era la del 2026-08-10: 112 y 121. **Se ha multiplicado por 2,6
+// en menos de un mes**, y eso no es un detalle de contabilidad: el argumento con el que este
+// `allow` de crate se justificaba —«~120 sitios en movimiento activo, los `#[allow]` por ítem
+// serían un diff volátil que se reescribe en cada sesión de migración»— ya no describe lo que
+// hay. WorldGen3 ha traído su propio andamio encima del de `grid_gen`, y con casi 300 sitios la
+// pregunta deja de ser si el diff sería volátil y pasa a ser cuánto código muerto está tapando
+// esta línea.
+//
+// Sigue siendo scaffelding de migración en su mayoría (generadores V0 alternativos, exportadores
+// ASCII de debug, capas de validación que no se cablean todavía), y sigue siendo intencional. Lo
+// que cambia es que ya no cabe darlo por bueno sin mirar: bajarlo a `#[allow]` por módulo es una
+// sesión propia y puede poner `clippy -D warnings` en rojo, así que va anotado como deuda con
+// número, no como nota al pie. Ver `docs/STATE.md` → «Deuda declarada».
 #![allow(dead_code)]
 
 mod crafting;

@@ -1,3 +1,8 @@
+> **COMPLETADO — 2026-09-05.** Lo que este plan pedía se implementó y se midió: ADR-083 enm. 1–3,
+> ADR-084 (multi-chunk) y ADR-085 enm. 3, con wire 41. Lo que queda pendiente **no lo bloquea este
+> plan**: el catálogo de salas autoradas está apagado por deuda de wire desde ADR-100, y volver a
+> encenderlo pide ADR nuevo. No se actualiza; el estado vive en [`STATE.md`](STATE.md).
+
 # ROOMS-ROADMAP.md — plan de trabajo de las salas autoradas
 
 > Escrito el 2026-08-20 al cerrar la sesión que implementó ADR-083 enmiendas 1 y 2.

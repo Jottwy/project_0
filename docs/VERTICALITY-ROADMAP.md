@@ -1,3 +1,7 @@
+> **VIGENTE — 2026-09-05.** Sus decisiones siguen ABIERTAS: D1 (cómo subir de las 4 plantas reales
+> a las 10 servidas) es una sesión de plan entera y está en la **lista v2** del contrato WG3 v1, o
+> sea después de Alpha 1. Se lee antes de tocar nada vertical; no se ejecuta todavía.
+
 # Verticality Roadmap — geometrías verticales de WG3
 
 Plan de trabajo, no ADR: aquí se recogen las decisiones ABIERTAS y lo medido.

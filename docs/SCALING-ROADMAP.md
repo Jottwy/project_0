@@ -1,3 +1,7 @@
+> **VIGENTE — 2026-09-05.** Documento vivo: de él salen las fechas que cita `STATE.md` (Alpha 1
+> itch nov 2026 · Next Fest feb 2027 · EA primavera 2027, líneas 196-198). E0 de red cerrada y
+> medida; el resto sin empezar.
+
 # Hoja de ruta de escalado — de host-as-server al MMO (ADR-073)
 
 > Documento VIVO. La ley es [ADR-073](DECISIONS.md) (etapas, gates, topología aplazada) y
