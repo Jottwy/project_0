@@ -45,9 +45,9 @@
 - La suite EditMode arrastra rojos conocidos; el del lanzamiento del backend sólo pasa con `BACKROOMS_VERBOSE_LOG=1`.
 - **Auditoría del 02-09, tres ALTO sin corregir** (`AUDIT-2026-08-28.md`): A28-29 un sobre «Relayed» se cree sin comparar el origen UDP con
   el relay (`classify_inbound`); A28-30 descripción UPnP sin tope (`StackOverflowException`); A28-31 `spawnedOnDeplete` nunca vuelve a `false`.
-- **Ramas sin fusionar con trabajo dentro** (06-09): `feat/occluders` (8, choca en `fill.rs`/`plan.rs`), `unity-lighting-cadence` (3, choca en
-  `Wg3SceneAssembler.cs`), `layout-validator` (4), `angry-jackson` (95), `gallant-einstein` (87), `happy-carson` (79). Tres experimentos del 03-09
-  SIN commitear en worktrees: stochastic tiling, decals de suciedad, `skeptic_boxes.rs`. `wf_09042814-13d-4` sucio desde el 27-08. Lista de Joel.
+- **Ramas sin fusionar con trabajo dentro** (06-09): `angry-jackson` (95), `gallant-einstein` (87), `happy-carson` (79); `layout-validator` (4) ya
+  está dentro de occluders. Tres experimentos del 03-09 en rama `wip`: stochastic tiling (`558afb54`), decals (`cb61b99c`), sonda de cajas
+  (`1c8237ff`). `wf_09042814-13d-4` sucio desde el 27-08. Lista de Joel.
 
 ## NO tocar
 > Detalle completo, verbatim, en `docs/SESSION-LOG.md` (bloques «NO tocar» y «Última sesión» de 2026-08-03).
@@ -89,10 +89,20 @@
 - **El gate de C# no valida nada en un worktree recién creado**: `*.csproj` y `Library/` los genera Unity y viven sólo en el clon principal
   (`CompileCheckClient.sh` daba `MISSING csproj`). Arreglado y documentado (`c99db43a`, `docs/DEV-ENVIRONMENT.md`): copiar `.csproj`, unir `Library`.
 - **`STOREY_HEIGHT_CM` (332) no sube con un número** (380–480: 1/9 regiones válidas); `storey_of_floor_cm` clasifica una planta ABAJO en la costura de 664.
-- **El runner de tests del editor no contesta** (06-09); un arnés .NET ad hoc contra `UnityEngine.CoreModule.dll` corrió `ProxyLocomotionMathTests` 15/15.
+- **El runner de tests del editor no contesta** (06-09); el arnés .NET corrió `ProxyLocomotionMathTests` 15/15 pero NO `Wg3LightCadenceTests` (ECall nativa).
 - Menores: `MPTRACE` sin commitear en cuatro ficheros del vendor STP; `TODO(balance)` de loot; doc-comments stale.
 
 ## Últimas tandas
+
+### 2026-09-06 — 26.ª tanda: las dos ramas que quedaban, fusionadas — occluders y cadencia de luces
+- `feat/occluders` (8 commits del 03/04-09): desalineación de vanos (`DOOR_MISALIGN_CHANCE` 0,75), oclusores intra-espacio
+  (`OCCLUDER_DENSITY` 1,0, grosor 45 porque el 40 es la viga) y métricas de layout. Conflictos en `fill.rs`/`plan.rs` re-aplicados.
+- Destapó un bug de HEAD: el vano «lado a lado» del atrio (ADR-104 enm. 3) se cortaba en la banda ENTERA, también sobre el
+  muro compartido con otro atrio sin sala encima y cuando un pasillo sólo rozaba la esquina. Ahora se recorta sólo bajo cada sala.
+- Los oclusores esquivan ahora pozos, ventanas y bocas de tramo (los emisores de HEAD son posteriores a la rama); bloques sin longitud múltiplo de 50.
+- `unity-lighting-cadence` (3): tubos muertos, jitter en celda, tinte ±200 K, parpadeo, sobre 11 m / 2,7 y paneles; tubo muerto = sin Light.
+- Verificación: cargo 1393/1393, clippy y fmt limpios, barrido 27/27 (pisable −0,6 %, mancha 99,7 %, islas 6,4 = 6,4);
+  CompileCheck 0. Los 7 tests de la cadencia NO corrieron: `CorrelatedColorTemperatureToRGB` es nativa; pide el editor.
 
 ### 2026-09-06 — 25.ª tanda: la fusión — seis commits sueltos de cuatro sesiones y el saneamiento sobre la rama principal
 - Suelto desde el 02/03-09 y ahora commiteado: `.meta` huérfanos del relay (`c2cd88af`), A28-29…33 al registro (`0a3cede5`), facelings
@@ -100,7 +110,7 @@
 - Animación 3P fase 1 (`cf3d8543`): 15/15 en arnés .NET porque el runner del editor no contestó; `m_IsKinematic` del prefab intactos.
 - `chore/saneamiento-arranque` (22 commits, B1–B4) fusionada con `--no-ff`; único conflicto `docs/STATE.md`, resuelto al formato denso con
   las tandas 23–25 y el verbatim de 4j–4l en `SESSION-LOG.md`. Índice de ADR regenerado: 129 y 130 faltaban (170 entradas).
-- Sin fusionar y medido: `feat/occluders` choca en `fill.rs`/`plan.rs`; `unity-lighting-cadence` en `Wg3SceneAssembler.cs`. Decisión de Joel.
+- Sin fusionar y medido: `feat/occluders` choca en `fill.rs`/`plan.rs`; `unity-lighting-cadence` en `Wg3SceneAssembler.cs` (fusionadas en la 26.ª).
 - Cierre de 22 sesiones (28-08 → 06-09) en `SESSION-LOG.md`; tres experimentos a rama: `558afb54` teselado, `cb61b99c` decals, `1c8237ff` sonda.
 
 ### 2026-09-06 — 24.ª tanda: la foto de la oficina (ADR-129, wire 61) y los sótanos en el plan (ADR-130 rebanada 1)
