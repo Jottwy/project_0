@@ -14542,3 +14542,36 @@ sótano B3, un vigilante sentado en la silla de su puesto con las manos en la me
 misma corrida: caderas a 0,49 m del suelo, pies a 0,09, cabeza a 1,14. Sondas
 `probe_watcher_capture_spots` (dónde hay un vigilante) y `probe_watcher_camera_spots` (dónde cabe la
 cámara con línea de visión: a ojo no sale, tres intentos cayeron dentro de una mampara).
+
+## ADR-131 — Enmienda 2: los números de D3 daban TRES vigilantes por región, y un puesto de oficina no es abundante (2026-09-06)
+
+D3 eligió 0,06 por silla en la calle, +0,06 por sótano, tope 0,45, con el argumento de que en la
+calle «una silla de cada dieciséis» ya se nota. **La suposición de fondo era que hay muchas sillas, y
+es falsa.** Medido sobre la región (0,0), semilla 42, con la sonda `probe_watcher_capture_spots`:
+
+| planta | sillas | vigilantes con D3 | con esta enmienda |
+|---|---|---|---|
+| 0 (calle) | 14 | 0 | 5 |
+| −1 | 6 | 0 | 4 |
+| −2 | 23 | 0 | 13 |
+| −3 | 15 | 3 | 13 |
+| **total** | **60** | **3** | **35** |
+
+Sesenta sillas en cinco plantas, catorce en la planta baja: el 6 % dejaba a la calle con MEDIA
+persona sentada y a la región entera con tres, las tres en el sótano más hondo. Joel, jugando:
+«no los veo». Una densidad que sólo existe en la cola de la distribución no es una densidad baja, es
+una ausencia con un número al lado.
+
+**Los números nuevos: 0,25 en la calle, +0,12 por sótano, tope 0,70.** La calle pasa a una silla
+ocupada de cada cuatro —suficiente para que la planta baja se lea como una oficina con gente— y el
+tope se alcanza en B4 en vez de en B7, así que el descenso de ADR-130 llega antes a «casi todos los
+puestos ocupados». La razón de subir el tope de 0,45 a 0,70 es la misma que la de subir la base: con
+sesenta sillas por región, 0,45 en el fondo son siete personas repartidas en treinta plantas.
+
+Lo que **no** cambia: la profundidad sigue mandando (el fondo casi triplica a la calle), el reparto
+sigue siendo por silla y determinista, y el cap de 48 sigue siendo el techo — con 35 por región y un
+radio de 60 m, un jugador rara vez tendrá más de una docena activos a la vez.
+
+**Lo que esto NO arregla, y queda dicho:** que un puesto de oficina sea escaso es un hecho de
+`office_cubicles` (ADR-105 enm. 18), no de esta especie. Si Joel quiere oficinas llenas de verdad, lo
+que hay que subir son los PUESTOS, y eso es otra rebanada.

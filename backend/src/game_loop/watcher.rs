@@ -35,12 +35,20 @@ const WATCHER_MIN_SPAWN_DISTANCE: f32 = 8.0;
 /// un `Vec`: ni ráster, ni A\*, ni paso.
 const WATCHER_ACTIVE_CAP: usize = 48;
 
-/// ADR-131 D3 — probabilidad de que una silla de la CALLE tenga a alguien sentado.
-const WATCHER_CHAIR_BASE: f32 = 0.06;
-/// Cuánto sube por cada planta bajo rasante.
-const WATCHER_CHAIR_PER_STOREY: f32 = 0.06;
-/// Tope. Con los 30 sótanos de ADR-130 D3 se alcanza en B7.
-const WATCHER_CHAIR_MAX: f32 = 0.45;
+/// ADR-131 D3, **recalibrado por la enmienda 2**: probabilidad de que una silla de la CALLE tenga a
+/// alguien sentado.
+///
+/// Los primeros números (0,06 + 0,06 por sótano) salieron de suponer que un puesto de oficina es
+/// abundante. **No lo es**: la región (0,0) entera tiene 60 sillas repartidas en cinco plantas —14
+/// en la calle—, así que el 6 % dejaba la planta baja con MEDIA persona sentada y toda la población
+/// de la región en tres. Joel, jugando: «no los veo».
+const WATCHER_CHAIR_BASE: f32 = 0.25;
+/// Cuánto sube por cada planta bajo rasante. Doce puntos y no seis: con el tope en 0,70 el fondo
+/// sigue siendo casi el doble que la calle, que es lo que hace que bajar signifique algo.
+const WATCHER_CHAIR_PER_STOREY: f32 = 0.12;
+/// Tope. Con los 30 sótanos de ADR-130 D3 se alcanza en B4, y a partir de ahí siete de cada diez
+/// puestos están ocupados — que es tanto como se puede llenar sin que la sala deje de leerse.
+const WATCHER_CHAIR_MAX: f32 = 0.70;
 
 /// La sal que separa este sorteo de todos los demás consumidores de `chunk_seed_layer` — mismo
 /// truco y mismo motivo que `FACELING_ADULT_DRAW_SALT`.
