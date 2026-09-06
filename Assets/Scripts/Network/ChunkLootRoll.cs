@@ -72,10 +72,28 @@ namespace BackroomsSurvival.Net
         // TODO(balance): a 10 entradas equiprobables, un bote sale en ~1/10 de los slots de esta
         // pool. Es deliberadamente encontrable — marcar el camino es la mecánica, no el premio —
         // pero nadie ha medido todavía cuántos botes acumula una sesión larga.
+        // ADR-133: "Crank Flashlight" entra AQUÍ por la misma restricción dura y con el mismo
+        // razonamiento que el bote — una pool propia exigiría un peso nuevo en ZoneLootProfile y en
+        // el ZoneLootTable.asset ya serializado. Y es una pool honesta para ella: una linterna
+        // encontrada en un edificio, junto a la antorcha, que es lo más parecido que había.
+        //
+        // Su ItemDefinition existe y resuelve (`BR_Crank Flashlight` → Name "Crank Flashlight"),
+        // que es la condición para poder nombrarla aquí: con el asset sin generar, `GetWithName`
+        // devolvería null y ChunkLootManager descartaría el slot con un warning.
+        //
+        // NO SALE TODAVÍA, y no es un descuido: `RestrictCacheCatalog` (abajo) sigue en true, así
+        // que el mundo suelto sólo suelta lo que hay en `RestrictedCachePool`. Meterla ahí es una
+        // decisión de BALANCE de Joel y no de esta tanda — esa pool es equiprobable, así que
+        // añadirla sin más la convertiría en la mitad del botín del mundo.
+        //
+        // TODO(balance): a 11 entradas equiprobables sale ~1/11 de los slots de esta pool el día
+        // que se levante el recorte. Una linterna es más valiosa que un bote y debería ser MÁS
+        // rara, no igual de rara — pero la pool no admite pesos por entrada, así que la palanca
+        // real es la zona, no esta lista.
         private static readonly string[] MaterialPool =
         {
             "Stick", "Rope", "Cloth", "Leather", "Metal Shard", "Stone Shard", "Feather", "Duct Tape",
-            "Wooden Torch", "Spray Can"
+            "Wooden Torch", "Spray Can", "Crank Flashlight"
         };
         // Recorte de catálogo vendor: fuera el rifle y el arco (armas de fuego/caza ajenas al tono)
         // y el kit de caza (Hunting Axe/Knife, Stone/Wooden Spear). Quedan los dos que se leen como
@@ -317,7 +335,12 @@ namespace BackroomsSurvival.Net
                 consumableWeight = 1f, medicalWeight = 3f, ammoWeight = 1f, materialWeight = 2f,
                 logWeight = 20f, stoneWeight = 50f, metalWeight = 30f,
             },
-            new ZoneLootProfile // 7  ZONE_BLACKOUT — TODO(balance): no battery/flashlight item yet; material-heavy stand-in
+            // ADR-133: la linterna YA existe y viaja en MaterialPool, así que el hueco que este
+            // TODO describía está tapado a medias — el peso de material sigue siendo el más alto de
+            // todas las zonas, que es la palanca que tiene esta clase para hacerla más probable
+            // aquí que en ningún sitio. Lo que falta para que salga de verdad es levantar
+            // `RestrictCacheCatalog`, y eso es decisión de balance, no de esta zona.
+            new ZoneLootProfile // 7  ZONE_BLACKOUT — la zona a oscuras: material-heavy, y ahí es donde vive la linterna
             {
                 itemCacheChance = 0.05f, carryableZoneChance = 0f, weaponRollChance = 0.10f,
                 consumableWeight = 1f, medicalWeight = 2f, ammoWeight = 1f, materialWeight = 3f,

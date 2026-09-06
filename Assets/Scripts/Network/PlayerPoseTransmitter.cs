@@ -457,6 +457,14 @@ namespace BackroomsSurvival.Net
                 bits |= RemoteButtons.Spraying;
 
             var wieldable = ActiveWieldable();
+
+            // ADR-133: "está dando cuerda". Se pregunta al WIELDABLE ACTIVO y no a un estático
+            // porque, a diferencia del bote, el estado vive en el propio objeto — no hay nada que
+            // pueda quedarse rancio al cambiar de arma. Va ANTES del corte por arma de fuego de
+            // abajo, por la misma razón que el spray: una linterna no es un `IFirearm`.
+            if (wieldable is CrankFlashlightWieldable flashlight && flashlight.IsCranking)
+                bits |= RemoteButtons.Cranking;
+
             if (wieldable is not IFirearm firearm)
                 return bits;
 

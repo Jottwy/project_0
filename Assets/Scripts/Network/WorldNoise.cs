@@ -39,6 +39,17 @@ namespace BackroomsSurvival.Net
         public const float DropLoudness = 12f;
 
         /// <summary>
+        /// ADR-133: una vuelta de la manivela de la linterna (10 m). Entre el paso (~9 m) y el
+        /// objeto que cae, y muy por debajo del arma más silenciosa (25 m): dar cuerda te delata en
+        /// el pasillo de al lado, no en toda la planta.
+        ///
+        /// Y cierra el triángulo que hace cara la linterna: mientras das cuerda estás QUIETO (0,40
+        /// de velocidad), a OSCURAS a ratos (los destellos) y haciendo RUIDO. Sin esta línea las
+        /// otras dos son un incordio sin consecuencia.
+        /// </summary>
+        public const float CrankLoudness = 10f;
+
+        /// <summary>
         /// Report a world noise at <paramref name="at"/>. Silently a no-op without a live IPC client
         /// (bare test scene, or before the backend is up) — a noise that cannot be delivered is not
         /// an error, it just was not heard.

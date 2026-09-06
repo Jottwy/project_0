@@ -1,3 +1,4 @@
+using BackroomsSurvival.Net;
 using PolymindGames;
 using PolymindGames.InventorySystem;
 using PolymindGames.WieldableSystem;
@@ -310,8 +311,31 @@ namespace BackroomsSurvival.Gameplay
                 float max = Mathf.Max(secondsPerRevolutionMin, secondsPerRevolutionMax);
                 Charge += Random.Range(min, max) / CapacitySeconds;
 
+                ReportCrankNoise();
                 CrankRevolutionCompleted?.Invoke();
             }
+        }
+
+        /// <summary>
+        /// El chirrido, UNA VEZ POR VUELTA y no por fotograma: la unidad de la manivela es la
+        /// vuelta, igual que lo es para la carga, así que el estímulo y lo que ganas suenan al
+        /// mismo ritmo — el jugador aprende cuánto cuesta cada vuelta oyéndola.
+        ///
+        /// Va por <see cref="WorldNoise"/> y no por `SendReportNoise`, que es la regla de ADR-090:
+        /// la tabla de sonoridades vive en un sitio, y ahí se ve de un vistazo que la manivela es
+        /// más discreta que un martillazo y más ruidosa que un paso.
+        ///
+        /// Se reporta la posición del PERSONAJE, no la del viewmodel: el arma de mano vive en una
+        /// jerarquía de cámara que puede estar a medio metro del cuerpo, y el robapieles caza
+        /// posiciones del mundo. Si no hay personaje todavía, no se inventa un sitio: no suena.
+        /// </summary>
+        private void ReportCrankNoise()
+        {
+            var character = Character;
+            if (character == null)
+                return;
+
+            WorldNoise.Report(character.transform.position, WorldNoise.CrankLoudness);
         }
 
         /// <summary>

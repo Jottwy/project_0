@@ -59,6 +59,26 @@ namespace BackroomsSurvival.Net
         /// </summary>
         public const int Seated = 1 << 5;
 
+        /// <summary>
+        /// ADR-133 — este peer está DANDO CUERDA a su linterna de manivela. Séptimo bit y primero
+        /// libre tras el sentado de ADR-131.
+        ///
+        /// NIVEL y no contador, por el mismo criterio de ADR-044 que ya decidió `Spraying`: dar
+        /// cuerda DURA. Un datagrama perdido lo corrige el siguiente, y aquí ni siquiera importa
+        /// perder uno — lo que se pinta es un giro continuo, no un golpe que haya que contar. Las
+        /// vueltas sueltas sí serían contador, pero nadie necesita saber cuántas ha dado el vecino:
+        /// lo que se ve es que está ocupado.
+        ///
+        /// Y ES LO QUE MÁS DICE DE UN VECINO en este juego, más que apuntar o recargar: quien da
+        /// cuerda está clavado al 40 % de velocidad, parpadeando y haciendo ruido. Es el momento en
+        /// el que no puede correr.
+        ///
+        /// Cero coste de wire: el campo ya viaja y el backend lo relaya sin mirarlo. Un cliente
+        /// viejo decodifica el bit, no lo interpreta, y dibuja al vecino quieto sin más — la
+        /// degradación correcta.
+        /// </summary>
+        public const int Cranking = 1 << 6;
+
         public static bool Has(int buttons, int bit) => (buttons & bit) != 0;
     }
 }
