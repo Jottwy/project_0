@@ -34,21 +34,38 @@ namespace BackroomsSurvival.Tests
         private static Mesh Build(Wg3Volume v, Vector3 origin) =>
             Wg3MeshBuilder.Build(new List<Wg3Volume> { v }, origin);
 
-        /// <summary>La UV del vértice que está en <paramref name="worldPoint"/>. Se busca por
-        /// posición y no por índice: el orden de las caras es un detalle del emisor.</summary>
-        private static Vector2 UvAt(Mesh mesh, Vector3 origin, Vector3 worldPoint)
+        /// <summary>La cara que mira a −z, que es el frente de una pared tendida sobre el eje X.
+        /// Es la que tiene la U a lo largo del muro, que es donde se ve la costura.</summary>
+        private static readonly Vector3 Frente = Vector3.back;
+
+        /// <summary>
+        /// La UV del vértice que está en <paramref name="worldPoint"/> y pertenece a la cara cuya
+        /// normal es <paramref name="face"/>.
+        ///
+        /// **LA NORMAL NO ES OPCIONAL, y sin ella este arnés mentía.** Una caja se emite con 24
+        /// vértices —cuatro por cara, para que cada una tenga su normal dura
+        /// (<c>Wg3MeshBuilder.AddBox</c>)—, así que en la esquina de la caja coinciden TRES vértices
+        /// en la misma posición, uno por cada cara que se junta ahí. Buscar sólo por posición
+        /// devuelve el primero de los tres, y en una pared de 0,2 m de grosor ése es el del CANTO:
+        /// los tres tests de continuidad medían la textura del canto y daban 0,1 donde tocaba 2,0.
+        /// </summary>
+        private static Vector2 UvAt(Mesh mesh, Vector3 origin, Vector3 worldPoint, Vector3 face)
         {
             Vector3[] verts = mesh.vertices;
+            Vector3[] norms = mesh.normals;
             Vector2[] uvs = mesh.uv;
             int best = -1;
             float bestD = float.MaxValue;
             for (int i = 0; i < verts.Length; i++)
             {
+                if (Vector3.Dot(norms[i], face) < 0.99f) continue;
                 float d = (verts[i] + origin - worldPoint).sqrMagnitude;
                 if (d < bestD) { bestD = d; best = i; }
             }
+            Assert.GreaterOrEqual(best, 0, $"ninguna cara con normal {face} en la malla");
             Assert.Less(Mathf.Sqrt(bestD), Eps,
-                $"ningún vértice en {worldPoint}: el más cercano estaba a {Mathf.Sqrt(bestD):0.###} m");
+                $"ningún vértice de la cara {face} en {worldPoint}: el más cercano estaba a " +
+                $"{Mathf.Sqrt(bestD):0.###} m");
             return uvs[best];
         }
 
@@ -75,7 +92,7 @@ namespace BackroomsSurvival.Tests
 
             // La esquina compartida, en la cara que mira a −z, al ras del suelo.
             var junta = new Vector3(12f, 0f, -0.1f);
-            AssertSameTexel(UvAt(ma, Vector3.zero, junta), UvAt(mb, Vector3.zero, junta),
+            AssertSameTexel(UvAt(ma, Vector3.zero, junta, Frente), UvAt(mb, Vector3.zero, junta, Frente),
                 "la junta entre dos tramos alineados");
 
             Object.DestroyImmediate(ma);
@@ -97,7 +114,7 @@ namespace BackroomsSurvival.Tests
             Mesh m2 = Build(v, o2);
 
             var punto = new Vector3(35f, 0f, 10.9f);
-            AssertSameTexel(UvAt(m1, o1, punto), UvAt(m2, o2, punto), "dos orígenes de malla");
+            AssertSameTexel(UvAt(m1, o1, punto, Frente), UvAt(m2, o2, punto, Frente), "dos orígenes de malla");
 
             Object.DestroyImmediate(m1);
             Object.DestroyImmediate(m2);
@@ -120,9 +137,9 @@ namespace BackroomsSurvival.Tests
             Mesh mH = Build(Wall(baseCentre + new Vector3(p * 0.5f, 0f, 0f), size), Vector3.zero);
 
             var esquina = new Vector3(8f, 0f, -0.1f);
-            Vector2 u0 = UvAt(m0, Vector3.zero, esquina);
-            Vector2 uP = UvAt(mP, Vector3.zero, esquina + new Vector3(p, 0f, 0f));
-            Vector2 uH = UvAt(mH, Vector3.zero, esquina + new Vector3(p * 0.5f, 0f, 0f));
+            Vector2 u0 = UvAt(m0, Vector3.zero, esquina, Frente);
+            Vector2 uP = UvAt(mP, Vector3.zero, esquina + new Vector3(p, 0f, 0f), Frente);
+            Vector2 uH = UvAt(mH, Vector3.zero, esquina + new Vector3(p * 0.5f, 0f, 0f), Frente);
 
             AssertSameTexel(u0, uP, "un periodo entero de desplazamiento");
 
@@ -143,8 +160,8 @@ namespace BackroomsSurvival.Tests
             var v = Wall(new Vector3(10f, 1.5f, 0f), new Vector3(4f, 3f, 0.2f));
             Mesh m = Build(v, Vector3.zero);
 
-            Vector2 izq = UvAt(m, Vector3.zero, new Vector3(8f, 0f, -0.1f));
-            Vector2 der = UvAt(m, Vector3.zero, new Vector3(12f, 0f, -0.1f));
+            Vector2 izq = UvAt(m, Vector3.zero, new Vector3(8f, 0f, -0.1f), Frente);
+            Vector2 der = UvAt(m, Vector3.zero, new Vector3(12f, 0f, -0.1f), Frente);
 
             Assert.That(Mathf.Abs(der.x - izq.x), Is.EqualTo(4f * Wg3MeshBuilder.UvPerMetre).Within(Eps),
                 "4 m de pared son 2 repeticiones con UvPerMetre 0,5");
