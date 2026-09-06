@@ -14331,3 +14331,65 @@ mesa, monitor, silla caída, paneles. Commit `b02df08f`.
 
 Mamparas con material propio (tela o melamina: hoy son yeso, como la pared), avisos y carteles en
 las mamparas, y los VIGILANTES sentados en las sillas de los puestos — ADR propio (131).
+
+---
+
+## ADR-105 — enmienda 19: el falso techo ROTO (deterioro de oficina, servidor y cliente)
+
+**Fecha:** 2026-09-06 · **Estado:** implementado · **Wire:** sin cambios (61).
+
+**Contexto.** La enm. 18 bajó el techo de los despachos a 2,70–3,00 y lo dejó liso y entero. Lo que
+lee como Backrooms no es el falso techo: es el falso techo CAÍDO. Se pide deterioro determinista en
+las salas que llevan `office_ceiling_cm` (KNOBS, `fill.rs`), con la densidad subiendo hacia abajo
+(ADR-130 D4).
+
+**Decisión.** Un emisor nuevo, `office_decay`, el ÚLTIMO del relleno (esquiva también el atrezo que
+acaba de caer). Sólo en `Office | Service | Storage` de un carácter con falso techo, sorteo por sala
+con `SALT_DECAY` (`0xA9_04_09`) y la luminaria de cada planta con `SALT_DECAY_LAMP` (`0xA9_04_0A`).
+Cuatro piezas:
+
+1. **Placas caídas** en el suelo: macizo de 60 × 60 y **4 cm de canto**, giro libre en pasos de 15°,
+   `STYLE_DECOR_BIT`.
+2. **Placas colgando** de un lado del techo: **prop** (kind 15), en la cota del techo.
+3. **Una luminaria descolgada en diagonal POR PLANTA**: prop (kind 16), elegida entre las anclas de
+   las salas de esa planta.
+4. **Baldosa de suelo técnico levantada**: macizo de 60 × 60 y **9 cm**, decoración igual.
+
+**Por qué props y no macizos para lo que cuelga.** `Wg3Solid` sólo gira en Y (ADR-121 D1) y lo que
+hace legible una placa medio caída es la INCLINACIÓN. Tampoco son prefabs: el pack de oficina no
+trae ni placa ni luminaria de techo, y las dos son una caja fina. Los construye el cliente
+(`Wg3SceneAssembler.AssembleHungDecay`) con el material de techo o el de luminaria, bisagra en el
+borde que sigue agarrado y 34° la placa / 22° la luminaria — su punta queda sobre 2,30 m con techo
+de 2,70. Sin collider, como todo lo que cuelga del techo. Kinds nuevos NO son wire nuevo: `kind` ya
+era un byte, y un kind desconocido el cliente lo avisa una vez y lo salta.
+
+**La forma propia.** Los grosores en planta están cogidos de 8 a 45 (8 barrote, 12 mampara,
+15 dintel, 20 pretil, 25 pilastra, 30 división, 35 parteluz, 40 viga, 45 oclusor), así que la forma
+del deterioro es la HUELLA cuadrada de 60 × 60 más su canto: `is_fallen_plate` y
+`is_raised_floor_tile` son las dos únicas puertas y el clasificador de `tests.rs` las mira ANTES que
+la decoración (si no, salían «marco»). El canto de 4 solo no vale: un rodapié también mide 4.
+
+**La profundidad.** `decay_at` = `d²` con `d` = plantas bajo la calle / fondo servido. `d` contra
+los −100 m de ADR-130 D1 daría 0,01 en B3 con las tres plantas de la rebanada 1 —ni se mide ni se
+ve—; los dos extremos coinciden con D4 (calle 0, fondo 1) y la rebanada 2 traerá la función canónica
+y se llevará ésta. Medido, por sala con falso techo: **calle 0,25 piezas, B3 1,56**.
+
+**Nada de esto frena.** Todo el deterioro es decoración o prop: `raster::add_solid` se salta la
+decoración y los props no tienen macizo invisible, así que islas y nav no se mueven. Se esquivan
+bocas (`PROP_MOUTH_CLEAR_CM`), rellanos, pozos de escalera, huecos de forjado, pozos del Nivel 0,
+macizos previos, vanos y el atrezo ya puesto. **Los despachos con cubículos sólo reciben lo que
+cuelga del techo**: una placa caída pisaría un puesto.
+
+**En el cliente, además:** una decoración de canto ≤ 15 cm deja de ser `Casing` y pasa a
+`Decoration` —caja lisa: el perfil de dos escalones y el zócalo de un marco sobre una loseta de dos
+centímetros son ruido— y su submalla se pinta con el material de TECHO (placa) o de SUELO (baldosa).
+
+**Verificación.** `cargo test --bin backrooms_server` **1399/1399**; nuevos
+`the_decay_has_shapes_of_its_own` (907 placas y 72 baldosas en 19 semillas),
+`the_decay_grows_with_depth` y `the_decay_keeps_off_mouths_and_cubicles`. Barrido
+`WG3_SWEEP_SEEDS=3`, 27/27 válidas y las medias **idénticas** al antes: pisable 183 756 cotas,
+mancha 99,7 %, **6,4 islas**, nav 100 % (coste de `fill` 11,1 → 13,1 ms). Sonda `probe_decay_spots`
+para las capturas.
+
+**Lo que no entra.** Manchas de humedad y goteras, cables colgando del plenum, placas con material
+propio (hoy es el de techo), y que una placa caída se pueda coger o romper.

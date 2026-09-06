@@ -8940,7 +8940,13 @@ fn probe_dump_regions_json() {
                 let long = s.size_x_cm.max(s.size_z_cm);
                 let h = s.top_y_cm - s.bottom_y_cm;
                 let standing = floors.contains(&s.bottom_y_cm);
-                let (kind, new) = if s.is_decoration() {
+                let (kind, new) = if fill::is_fallen_plate(s) {
+                    // ADR-105 enm. 19 — van ANTES que el marco: las dos son decoración, y la
+                    // decoración se clasifica por su forma como todo lo demás.
+                    ("placa caída", true)
+                } else if fill::is_raised_floor_tile(s) {
+                    ("baldosa levantada", true)
+                } else if s.is_decoration() {
                     ("marco", true)
                 } else if s.shape == segment::SHAPE_ARCH {
                     ("arco liso", true)
@@ -9530,6 +9536,76 @@ fn probe_cubicle_spots() {
                 p.z_cm as f32 / 100.0,
                 p.yaw_deg
             );
+        }
+    }
+}
+
+/// Deterioro del falso techo (ADR-105 enm. 19): dónde mirar en el mundo SERVIDO. Imprime, por
+/// planta, cuántas placas caídas y baldosas levantadas hay y las primeras posiciones, que es lo que
+/// hace falta para apuntar la cámara de una captura.
+#[test]
+#[ignore]
+fn probe_decay_spots() {
+    let m = real_manifest();
+    for (rx, rz) in [(0, 0), (1, 0), (0, 1)] {
+        let b = served_building_of(rx, rz);
+        let f = fill::fill_building(&b, &m);
+        for (n, st) in b.storeys.iter().enumerate() {
+            let Some(floor) = st.spaces.first().map(|s| s.floor_y_cm) else {
+                continue;
+            };
+            let plates = f
+                .solids
+                .iter()
+                .filter(|s| fill::is_fallen_plate(s) && s.bottom_y_cm == floor)
+                .count();
+            let tiles = f
+                .solids
+                .iter()
+                .filter(|s| fill::is_raised_floor_tile(s) && s.bottom_y_cm == floor)
+                .count();
+            let hung: Vec<&segment::Wg3Prop> = f
+                .props
+                .iter()
+                .filter(|p| {
+                    (p.kind == segment::PROP_CEILING_TILE_HUNG
+                        || p.kind == segment::PROP_LIGHT_HUNG)
+                        && p.y_cm > floor
+                        && p.y_cm < floor + 500
+                })
+                .collect();
+            if plates + tiles + hung.len() == 0 {
+                continue;
+            }
+            println!(
+                "[deterioro] ({rx},{rz}) planta {n} (suelo {:.2} m, calle en la {}) — {plates} placas caídas, {tiles} baldosas, {} colgando",
+                floor as f32 / 100.0,
+                b.ground,
+                hung.len()
+            );
+            for s in f
+                .solids
+                .iter()
+                .filter(|s| fill::is_fallen_plate(s) && s.bottom_y_cm == floor)
+                .take(4)
+            {
+                println!(
+                    "  placa en ({:.2}, {:.2}, {:.2})",
+                    s.x_cm as f32 / 100.0,
+                    s.bottom_y_cm as f32 / 100.0,
+                    s.z_cm as f32 / 100.0
+                );
+            }
+            for p in hung.iter().take(3) {
+                println!(
+                    "  colgando kind {} en ({:.2}, {:.2}, {:.2}) yaw {}",
+                    p.kind,
+                    p.x_cm as f32 / 100.0,
+                    p.y_cm as f32 / 100.0,
+                    p.z_cm as f32 / 100.0,
+                    p.yaw_deg
+                );
+            }
         }
     }
 }

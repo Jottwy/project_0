@@ -46,9 +46,10 @@ use super::route::{self, Mouth, PlannedRoute, Rect, RouteSettings};
 use super::segment::{
     Wg3Carve, Wg3Opening, Wg3Prop, Wg3Segment, Wg3Solid, CARVE_FLOOR_GUARD_CM, CASING_IN_CM,
     CASING_PROUD_CM, CASING_W_CM, MAX_SEGMENT_M, MIN_GENERATED_WIDTH_CM, PROP_BOX, PROP_CABINET,
-    PROP_CHAIR, PROP_CHAIR_FALLEN, PROP_CLOCK, PROP_DESK, PROP_KEYBOARD, PROP_MONITOR, PROP_PAPER,
-    PROP_PHONE, PROP_TRASH, PROP_TRAY, PROP_WHITEBOARD, SHAPE_ARCH, SHAPE_BOX, SHAPE_CYLINDER,
-    SHAPE_HALF_CYLINDER, SHAPE_OCTAGON, STYLE_DECOR_BIT, STYLE_HIDDEN_BIT, WALL_THICKNESS_M,
+    PROP_CEILING_TILE_HUNG, PROP_CHAIR, PROP_CHAIR_FALLEN, PROP_CLOCK, PROP_DESK, PROP_KEYBOARD,
+    PROP_LIGHT_HUNG, PROP_MONITOR, PROP_PAPER, PROP_PHONE, PROP_TRASH, PROP_TRAY, PROP_WHITEBOARD,
+    SHAPE_ARCH, SHAPE_BOX, SHAPE_CYLINDER, SHAPE_HALF_CYLINDER, SHAPE_OCTAGON, STYLE_DECOR_BIT,
+    STYLE_HIDDEN_BIT, WALL_THICKNESS_M,
 };
 
 /// ADR-099 D3 — cuánto entra el vano a cada lado de la cara de contacto, en metros. Mismo número que
@@ -712,6 +713,18 @@ pub fn fill_building_with(
     let (props, hidden) = office_props(building, &out.segments, &out.solids, &out.carves, &taken);
     out.props.extend(props);
     out.solids.extend(hidden);
+    // ADR-105 enm. 19 — el DETERIORO del falso techo, y va el último de todos: es lo único que
+    // tiene que esquivar además el atrezo que acaba de caer (una placa sobre una silla se ve).
+    let (decay_solids, decay_props) = office_decay(
+        building,
+        &out.segments,
+        &out.solids,
+        &out.carves,
+        &out.props,
+        &taken,
+    );
+    out.solids.extend(decay_solids);
+    out.props.extend(decay_props);
     out
 }
 
@@ -2515,6 +2528,376 @@ fn office_props(
         }
     }
     (props, hidden)
+}
+
+// ─────────────────── deterioro del falso techo (ADR-105 enm. 19) ───────────────────
+//
+// El falso techo de la enm. 18 es una superficie continua y limpia; lo que hace Backrooms una
+// planta de oficinas no es el techo, es el techo ROTO. Cuatro piezas, todas donde hay falso techo
+// (la sala que no lo lleva no tiene placas que caer):
+//
+//   1. placas caídas en el suelo (macizo fino con giro, decoración: ni frena ni entra al ráster),
+//   2. placas colgando de un lado del techo (PROP: `Wg3Solid` sólo gira en Y, y una placa colgando
+//      pide inclinación, así que la construye el cliente),
+//   3. una luminaria descolgada en diagonal POR PLANTA (prop, por lo mismo),
+//   4. alguna baldosa de suelo técnico levantada (macizo fino, decoración).
+//
+// Nada de esto frena ni se estampa: `add_solid` se salta la decoración, así que islas y nav no se
+// mueven. Y el atrezo de suelo se salta los despachos con cubículos: la mampara mide 1,40 y las
+// placas del techo cuelgan por encima, pero una placa caída SÍ pisaría un puesto.
+
+/// Lado de una placa de falso techo, en cm. Es la del cliente (`Wg3SceneAssembler.CeilingTileM`):
+/// las placas caídas son las que faltan arriba.
+const CEILING_PLATE_CM: i32 = 60;
+/// Canto de una placa caída en el suelo. La forma que ningún otro emisor tiene es la HUELLA
+/// cuadrada de 60 × 60 más este canto: los cantos finos ya existen sueltos (un rodapié mide 4 de
+/// canto y 6,83 m de largo), y los grosores en planta están cogidos de 8 a 45 (8 barrote,
+/// 12 mampara, 15 dintel, 20 pretil, 25 pilastra, 30 división, 35 parteluz, 40 viga, 45 oclusor).
+pub(super) const FALLEN_PLATE_H_CM: i32 = 4;
+/// Cuánto se levanta una baldosa de suelo técnico. Nueve por lo mismo que los cuatro de arriba, y
+/// por debajo del escalón que sube un `CharacterController` sin frenarse.
+pub(super) const RAISED_TILE_H_CM: i32 = 9;
+/// Lo que el deterioro deja a la pared del tramo.
+const DECAY_MARGIN_CM: i32 = 40;
+/// Lo que deja a un macizo o a un mueble ya puestos.
+const DECAY_GAP_CM: i32 = 25;
+/// Tope de placas caídas por sala.
+const FALLEN_MAX_PER_ROOM: i32 = 8;
+/// Tope de placas colgando por sala.
+const HUNG_MAX_PER_ROOM: i32 = 4;
+/// Cuántas plantas de sótano hay entre la calle y el fondo del descenso (ADR-130 D1: B30 a −99,6).
+const BASEMENT_SPAN_STOREYS: i32 = 30;
+/// Sal del sorteo de deterioro.
+const SALT_DECAY: u32 = 0xA9_04_09;
+/// Sal de la luminaria descolgada de cada planta.
+const SALT_DECAY_LAMP: u32 = 0xA9_04_0A;
+
+/// ADR-130 D4 — **el decaimiento por profundidad**, `depth²`, entre 0 en la calle y 1 en el fondo.
+///
+/// La profundidad se mide contra el fondo SERVIDO, no contra los −100 m del ADR: con los tres
+/// sótanos de la rebanada 1, `depth² ` sobre −100 m daría 0,01 en B3 —invisible— y la regla
+/// «sube con la profundidad» no se podría ni medir ni ver. Los dos extremos coinciden con D4 (la
+/// calle da 0 y el sótano más hondo da 1) y cuando lleguen los treinta, `BASEMENT_SPAN_STOREYS` es
+/// el denominador. La rebanada 2 de ADR-130 traerá la función canónica y ésta se irá con ella.
+fn decay_at(building: &RegionBuilding, n: usize) -> f32 {
+    let below = building.ground as i32 - n as i32;
+    if below <= 0 {
+        return 0.0;
+    }
+    let deepest = building.ground.min(BASEMENT_SPAN_STOREYS as usize) as i32;
+    let d = below as f32 / deepest.max(1) as f32;
+    (d * d).clamp(0.0, 1.0)
+}
+
+/// ¿Es una placa de falso techo caída en el suelo? Por su forma, como todo macizo.
+pub(super) fn is_fallen_plate(s: &Wg3Solid) -> bool {
+    s.is_decoration()
+        && s.top_y_cm - s.bottom_y_cm == FALLEN_PLATE_H_CM
+        && s.size_x_cm == CEILING_PLATE_CM
+        && s.size_z_cm == CEILING_PLATE_CM
+}
+
+/// ¿Es una baldosa de suelo técnico levantada? Por su forma.
+pub(super) fn is_raised_floor_tile(s: &Wg3Solid) -> bool {
+    s.is_decoration()
+        && s.top_y_cm - s.bottom_y_cm == RAISED_TILE_H_CM
+        && s.size_x_cm == CEILING_PLATE_CM
+        && s.size_z_cm == CEILING_PLATE_CM
+}
+
+/// **El deterioro del falso techo.** Ver el bloque de arriba. Devuelve los macizos de decoración
+/// (placas caídas y baldosas levantadas) y los props (placas colgando y la luminaria de la planta).
+fn office_decay(
+    building: &RegionBuilding,
+    segments: &[Wg3Segment],
+    solids: &[Wg3Solid],
+    carves: &[Wg3Carve],
+    props: &[Wg3Prop],
+    cubicled: &[(usize, usize)],
+) -> (Vec<Wg3Solid>, Vec<Wg3Prop>) {
+    let mut out_solids: Vec<Wg3Solid> = Vec::new();
+    let mut out_props: Vec<Wg3Prop> = Vec::new();
+    let seed = building.seed;
+    let mouths: Vec<(i32, i32, i32, i32)> = segments
+        .iter()
+        .flat_map(|g| {
+            let (w, d) = (g.size_x_cm as f32 / 100.0, g.size_z_cm as f32 / 100.0);
+            g.openings.iter().map(move |o| {
+                let (lx, lz) =
+                    super::placement::local_point(o.side, o.offset_cm as f32 / 100.0, w, d);
+                (
+                    g.x_cm + (lx * 100.0).round() as i32,
+                    g.z_cm + (lz * 100.0).round() as i32,
+                    o.width_cm / 2 + PROP_MOUTH_CLEAR_CM,
+                    g.floor_y_cm,
+                )
+            })
+        })
+        .collect();
+    let rect_of = |x: i32, z: i32, w: i32, d: i32| super::plan::PlanRect {
+        min_x_cm: x,
+        min_z_cm: z,
+        max_x_cm: x + w,
+        max_z_cm: z + d,
+    };
+
+    for (n, plan) in building.storeys.iter().enumerate() {
+        let landings: Vec<super::plan::PlanRect> = building
+            .wells
+            .iter()
+            .filter(|w| w.storey_below + 1 == n)
+            .map(|w| w.rect.shrunk(-50))
+            .collect();
+        let wells_here: Vec<super::plan::PlanRect> = building
+            .wells
+            .iter()
+            .filter(|w| w.storey_below == n)
+            .map(|w| w.rect.shrunk(-50))
+            .collect();
+        let holes_above = hole_squares_above(building, n);
+        let pits_here = if n == building.ground {
+            pit_rects_of(building, segments)
+        } else {
+            Vec::new()
+        };
+        let decay = decay_at(building, n);
+        // Las anclas de luminaria de ESTA planta: una sola cuelga, y se elige al final.
+        let mut lamp_spots: Vec<(i32, i32, i32, i16)> = Vec::new();
+
+        for (i, s) in plan.built() {
+            // Sólo donde hay falso techo, que es lo que se rompe: los despachos, servicios y
+            // almacenes del carácter que lo pide (enm. 18).
+            let is_room = matches!(
+                s.role,
+                SpaceRole::Office | SpaceRole::Service | SpaceRole::Storage
+            );
+            if !is_room || s.rise_cm != 0 || s.is_composite() {
+                continue;
+            }
+            let kn = knobs_of(seed, s);
+            if kn.office_ceiling_cm.1 == 0 {
+                continue;
+            }
+            let (cx, cz) = s.rect.centre_m();
+            let mut st = super::hash::stream_at(seed, cx, cz, SALT_DECAY);
+            // Una sala de cada dos arriba, casi todas abajo: el deterioro es lo que crece.
+            if st.next01() >= 0.45 + 0.5 * decay {
+                continue;
+            }
+            let floor = s.floor_y_cm;
+            let clear = clear_height_cm(s);
+            let ceiling = floor + clear;
+            let host = segments
+                .iter()
+                .filter(|g| {
+                    g.floor_y_cm == floor
+                        && s.covers_rect(&rect_of(g.x_cm, g.z_cm, g.size_x_cm, g.size_z_cm))
+                })
+                .max_by_key(|g| g.size_x_cm as i64 * g.size_z_cm as i64);
+            let Some(g) = host else {
+                continue;
+            };
+            let inner = rect_of(
+                g.x_cm + WALL_T_CM + DECAY_MARGIN_CM,
+                g.z_cm + WALL_T_CM + DECAY_MARGIN_CM,
+                g.size_x_cm - 2 * (WALL_T_CM + DECAY_MARGIN_CM),
+                g.size_z_cm - 2 * (WALL_T_CM + DECAY_MARGIN_CM),
+            );
+            if inner.width_cm() < CEILING_PLATE_CM || inner.depth_cm() < CEILING_PLATE_CM {
+                continue;
+            }
+            let own_hole = hole_square(&s.rect).shrunk(-50);
+            let style = style_of(s.role);
+
+            // Lo que atraviesa el techo y lo que hay a ras de suelo. `at_floor` distingue las dos
+            // alturas: una placa colgando no la estorba una mesa, y una caída sí.
+            let clear_of_openings = |r: &super::plan::PlanRect| -> bool {
+                if !inner.contains_rect(r) || !s.covers_rect(r) {
+                    return false;
+                }
+                let grown = r.shrunk(-DECAY_GAP_CM);
+                if mouths.iter().any(|&(mx, mz, half, fl)| {
+                    (fl - floor).abs() < 100
+                        && mx + half > r.min_x_cm
+                        && mx - half < r.max_x_cm
+                        && mz + half > r.min_z_cm
+                        && mz - half < r.max_z_cm
+                }) {
+                    return false;
+                }
+                !(landings.iter().any(|l| l.overlaps(&grown))
+                    || wells_here.iter().any(|w| w.overlaps(&grown))
+                    || holes_above.iter().any(|h| h.overlaps(&grown))
+                    || pits_here.iter().any(|p| p.overlaps(&grown))
+                    || (n > 0 && own_hole.overlaps(&grown)))
+            };
+            let free = |r: &super::plan::PlanRect, at_floor: bool| -> bool {
+                if !clear_of_openings(r) {
+                    return false;
+                }
+                let grown = r.shrunk(-DECAY_GAP_CM);
+                // Los macizos: a ras de suelo los que están a la altura de una pierna; en el techo,
+                // sólo los que llegan hasta él (un pilar, una viga colgada).
+                let (lo, hi) = if at_floor {
+                    (floor, floor + 200)
+                } else {
+                    (ceiling - 40, ceiling + 40)
+                };
+                if solids.iter().any(|o| {
+                    !o.is_decoration()
+                        && o.bottom_y_cm < hi
+                        && o.top_y_cm > lo
+                        && o.x_cm < grown.max_x_cm
+                        && o.x_cm + o.size_x_cm > grown.min_x_cm
+                        && o.z_cm < grown.max_z_cm
+                        && o.z_cm + o.size_z_cm > grown.min_z_cm
+                }) {
+                    return false;
+                }
+                if carves.iter().any(|k| {
+                    k.bottom_y_cm < ceiling
+                        && k.top_y_cm > floor
+                        && k.x_cm < grown.max_x_cm
+                        && k.x_cm + k.size_x_cm > grown.min_x_cm
+                        && k.z_cm < grown.max_z_cm
+                        && k.z_cm + k.size_z_cm > grown.min_z_cm
+                }) {
+                    return false;
+                }
+                // El atrezo ya puesto: la mesa y el archivador llevan macizo invisible, pero la
+                // silla, la papelera y los papeles no, y una placa encima de una silla se ve.
+                if at_floor
+                    && props.iter().any(|p| {
+                        (p.y_cm - floor).abs() < 120
+                            && p.x_cm > grown.min_x_cm
+                            && p.x_cm < grown.max_x_cm
+                            && p.z_cm > grown.min_z_cm
+                            && p.z_cm < grown.max_z_cm
+                    })
+                {
+                    return false;
+                }
+                true
+            };
+            // Un punto al azar de la rejilla de placas de la sala, alineado a la esquina interior.
+            let cols = (inner.width_cm() / CEILING_PLATE_CM).max(1);
+            let rows = (inner.depth_cm() / CEILING_PLATE_CM).max(1);
+            let spot = |st: &mut super::hash::Stream| -> super::plan::PlanRect {
+                let c = (st.next01() * cols as f32) as i32;
+                let r = (st.next01() * rows as f32) as i32;
+                rect_of(
+                    inner.min_x_cm + c.min(cols - 1) * CEILING_PLATE_CM,
+                    inner.min_z_cm + r.min(rows - 1) * CEILING_PLATE_CM,
+                    CEILING_PLATE_CM,
+                    CEILING_PLATE_CM,
+                )
+            };
+            let area = s.area_m2();
+            let on_cubicles = cubicled.contains(&(n, i));
+
+            // 1 — las placas caídas. Nada en un despacho con cubículos: pisarían un puesto.
+            if !on_cubicles {
+                let want = (((1.0 + 3.0 * decay) * area / 35.0).round() as i32)
+                    .clamp(0, FALLEN_MAX_PER_ROOM);
+                for _ in 0..want {
+                    let r = spot(&mut st);
+                    // Múltiplo de 15, que es lo que exige `every_served_solid_is_well_formed`.
+                    let yaw = ((st.next01() * 360.0) as i32 / 15 * 15) as i16;
+                    if free(&r, true) {
+                        out_solids.push(Wg3Solid {
+                            x_cm: r.min_x_cm,
+                            z_cm: r.min_z_cm,
+                            size_x_cm: CEILING_PLATE_CM,
+                            size_z_cm: CEILING_PLATE_CM,
+                            bottom_y_cm: floor,
+                            top_y_cm: floor + FALLEN_PLATE_H_CM,
+                            style: style | STYLE_DECOR_BIT,
+                            yaw_deg: yaw,
+                            shape: SHAPE_BOX,
+                        });
+                    }
+                }
+                // 4 — la baldosa de suelo técnico levantada, una y a veces dos.
+                let tiles = if st.next01() < 0.20 + 0.45 * decay {
+                    1 + i32::from(st.next01() < 0.25 + 0.35 * decay)
+                } else {
+                    0
+                };
+                for _ in 0..tiles {
+                    let r = spot(&mut st);
+                    let yaw = ((st.next01() * 90.0) as i32 / 15 * 15) as i16;
+                    if free(&r, true) {
+                        out_solids.push(Wg3Solid {
+                            x_cm: r.min_x_cm,
+                            z_cm: r.min_z_cm,
+                            size_x_cm: CEILING_PLATE_CM,
+                            size_z_cm: CEILING_PLATE_CM,
+                            bottom_y_cm: floor,
+                            top_y_cm: floor + RAISED_TILE_H_CM,
+                            style: style | STYLE_DECOR_BIT,
+                            yaw_deg: yaw,
+                            shape: SHAPE_BOX,
+                        });
+                    }
+                }
+            }
+
+            // 2 — las placas colgando. Éstas sí en los despachos con cubículos: cuelgan del techo,
+            // a metro y medio por encima de la mampara.
+            let want =
+                (((0.5 + 1.5 * decay) * area / 45.0).round() as i32).clamp(0, HUNG_MAX_PER_ROOM);
+            for _ in 0..want {
+                let r = spot(&mut st);
+                let yaw = ((st.next01() * 4.0) as i32).min(3) as i16 * 90;
+                if free(&r, false) {
+                    out_props.push(Wg3Prop {
+                        x_cm: (r.min_x_cm + r.max_x_cm) / 2,
+                        z_cm: (r.min_z_cm + r.max_z_cm) / 2,
+                        y_cm: ceiling,
+                        yaw_deg: yaw,
+                        kind: PROP_CEILING_TILE_HUNG,
+                        style,
+                    });
+                }
+            }
+
+            // 3 — el ancla de luminaria de la sala, candidata para la de la planta.
+            let r = spot(&mut st);
+            if free(&r, false) {
+                let yaw = ((st.next01() * 4.0) as i32).min(3) as i16 * 90;
+                lamp_spots.push((
+                    (r.min_x_cm + r.max_x_cm) / 2,
+                    (r.min_z_cm + r.max_z_cm) / 2,
+                    ceiling,
+                    yaw,
+                ));
+            }
+        }
+
+        // 3 — UNA luminaria descolgada por planta, elegida entre las anclas de la planta. El orden
+        // de `lamp_spots` es el de `built()`, que es estable, así que el sorteo también lo es.
+        if !lamp_spots.is_empty() {
+            // Por la PRIMERA ancla de la planta, que es de la planta y de nadie más: no hay
+            // coordenada de región a mano aquí, y la cota sola repetiría el sorteo entre regiones.
+            let mut st = super::hash::stream_at(
+                seed,
+                lamp_spots[0].0 as f32 / CM_PER_M,
+                lamp_spots[0].1 as f32 / CM_PER_M,
+                SALT_DECAY_LAMP,
+            );
+            let k = ((st.next01() * lamp_spots.len() as f32) as usize).min(lamp_spots.len() - 1);
+            let (x, z, y, yaw) = lamp_spots[k];
+            out_props.push(Wg3Prop {
+                x_cm: x,
+                z_cm: z,
+                y_cm: y,
+                yaw_deg: yaw,
+                kind: PROP_LIGHT_HUNG,
+                style: style_of(SpaceRole::Office),
+            });
+        }
+    }
+    (out_solids, out_props)
 }
 
 /// ADR-104 D3 — **abrir el atrio por arriba, porque hasta aquí era un pozo SELLADO.**
@@ -8488,7 +8871,10 @@ mod apron_tests {
                             && p.z_cm > g.z_cm + WALL_T_CM
                             && p.z_cm < g.z_cm + g.size_z_cm - WALL_T_CM
                             && (p.y_cm - g.floor_y_cm) >= 0
-                            && (p.y_cm - g.floor_y_cm) < 250
+                            // El tope ata el ancla a SU planta. Los 250 valían mientras todo el
+                            // atrezo se apoyaba en algo; el deterioro de la enm. 19 cuelga del
+                            // techo, así que el tope es la altura del tramo cuando es mayor.
+                            && (p.y_cm - g.floor_y_cm) <= g.height_cm.max(250)
                     })
                     .map(|g| g.floor_y_cm);
                 let inside = host_floor.is_some();
@@ -8681,6 +9067,199 @@ mod apron_tests {
             "el falso techo no baja: {low} de {office_rooms} bajo 3,00"
         );
         println!("[falso techo] {low} de {office_rooms} despachos por debajo de 3,00");
+    }
+
+    /// El deterioro de la enm. 19, por su forma: `is_fallen_plate` y `is_raised_floor_tile` son las
+    /// únicas puertas, así que nadie más puede emitir una caja de 60 × 60 de canto 4 o 9.
+    #[test]
+    fn the_decay_has_shapes_of_its_own() {
+        let m = no_catalogue();
+        let mut plates = 0usize;
+        let mut tiles = 0usize;
+        for seed in 1..20 {
+            let b = plan::plan_building_at(
+                seed,
+                (0.0, 0.0, 150.0, 150.0),
+                &[],
+                4,
+                plan::REGION_BASEMENTS,
+            );
+            let f = fill_building(&b, &m);
+            for s in &f.solids {
+                let h = s.top_y_cm - s.bottom_y_cm;
+                // La forma es la HUELLA cuadrada de una placa más su canto: un rodapié de 4 cm de
+                // canto también existe, pero mide 6,83 m de largo y 36 de fondo.
+                if s.size_x_cm == CEILING_PLATE_CM
+                    && s.size_z_cm == CEILING_PLATE_CM
+                    && (h == FALLEN_PLATE_H_CM || h == RAISED_TILE_H_CM)
+                {
+                    assert!(
+                        is_fallen_plate(s) || is_raised_floor_tile(s),
+                        "semilla {seed}: un macizo de 60 × 60 y canto {h} que no es deterioro: {s:?}"
+                    );
+                }
+                if is_fallen_plate(s) {
+                    plates += 1;
+                }
+                if is_raised_floor_tile(s) {
+                    tiles += 1;
+                }
+            }
+        }
+        assert!(
+            plates >= 50 && tiles >= 5,
+            "el deterioro no sale: {plates} placas caídas y {tiles} baldosas en 19 semillas"
+        );
+        println!("[deterioro] {plates} placas caídas, {tiles} baldosas levantadas en 19 semillas");
+    }
+
+    /// ADR-130 D4 — el deterioro SUBE con la profundidad: por sala, el sótano más hondo tiene que
+    /// dar más piezas que la calle.
+    #[test]
+    fn the_decay_grows_with_depth() {
+        let m = no_catalogue();
+        let (mut street, mut street_rooms) = (0usize, 0usize);
+        let (mut deep, mut deep_rooms) = (0usize, 0usize);
+        for seed in 1..20 {
+            let b = plan::plan_building_at(
+                seed,
+                (0.0, 0.0, 150.0, 150.0),
+                &[],
+                4,
+                plan::REGION_BASEMENTS,
+            );
+            let f = fill_building(&b, &m);
+            let rooms_at = |n: usize| {
+                b.storeys[n]
+                    .built()
+                    .filter(|(_, s)| {
+                        matches!(
+                            s.role,
+                            SpaceRole::Office | SpaceRole::Service | SpaceRole::Storage
+                        ) && knobs_of(seed, s).office_ceiling_cm.1 > 0
+                    })
+                    .count()
+            };
+            let pieces_at = |floor: i32| {
+                f.solids
+                    .iter()
+                    .filter(|s| {
+                        (is_fallen_plate(s) || is_raised_floor_tile(s)) && s.bottom_y_cm == floor
+                    })
+                    .count()
+            };
+            let street_y = b.storeys[b.ground].spaces[0].floor_y_cm;
+            street += pieces_at(street_y);
+            street_rooms += rooms_at(b.ground);
+            deep += pieces_at(b.storeys[0].spaces[0].floor_y_cm);
+            deep_rooms += rooms_at(0);
+        }
+        assert!(
+            street_rooms > 0 && deep_rooms > 0,
+            "el barrido no tiene salas con falso techo arriba ({street_rooms}) o abajo ({deep_rooms})"
+        );
+        let (a, c) = (
+            street as f32 / street_rooms as f32,
+            deep as f32 / deep_rooms as f32,
+        );
+        println!("[deterioro] calle {a:.2} piezas por sala, B3 {c:.2}");
+        assert!(
+            c > a * 1.5,
+            "el deterioro no crece hacia abajo: calle {a:.2}, fondo {c:.2}"
+        );
+    }
+
+    /// Nada del deterioro pisa una boca ni un puesto de cubículos.
+    #[test]
+    fn the_decay_keeps_off_mouths_and_cubicles() {
+        let m = no_catalogue();
+        let mut checked = 0usize;
+        for seed in 1..20 {
+            let b = plan::plan_building_at(
+                seed,
+                (0.0, 0.0, 150.0, 150.0),
+                &[],
+                4,
+                plan::REGION_BASEMENTS,
+            );
+            let f = fill_building(&b, &m);
+            let floor_decay: Vec<&Wg3Solid> = f
+                .solids
+                .iter()
+                .filter(|s| is_fallen_plate(s) || is_raised_floor_tile(s))
+                .collect();
+            // Las bocas de todos los tramos, con su holgura.
+            for g in &f.segments {
+                let (w, d) = (g.size_x_cm as f32 / 100.0, g.size_z_cm as f32 / 100.0);
+                for o in &g.openings {
+                    let (lx, lz) = crate::world::wg3::placement::local_point(
+                        o.side,
+                        o.offset_cm as f32 / 100.0,
+                        w,
+                        d,
+                    );
+                    let (mx, mz) = (
+                        g.x_cm + (lx * 100.0).round() as i32,
+                        g.z_cm + (lz * 100.0).round() as i32,
+                    );
+                    let half = o.width_cm / 2 + PROP_MOUTH_CLEAR_CM;
+                    for s in &floor_decay {
+                        if (s.bottom_y_cm - g.floor_y_cm).abs() >= 100 {
+                            continue;
+                        }
+                        let hit = mx + half > s.x_cm
+                            && mx - half < s.x_cm + s.size_x_cm
+                            && mz + half > s.z_cm
+                            && mz - half < s.z_cm + s.size_z_cm;
+                        assert!(!hit, "semilla {seed}: deterioro sobre una boca: {s:?}");
+                    }
+                }
+            }
+            // Los cubículos: la huella de las mamparas de cada sala, sin nada del deterioro dentro.
+            for storey in &b.storeys {
+                for (_, sp) in storey.built() {
+                    let walls: Vec<&Wg3Solid> = f
+                        .solids
+                        .iter()
+                        .filter(|s| {
+                            is_cubicle_wall(s)
+                                && s.bottom_y_cm == sp.floor_y_cm
+                                && sp.covers_rect(&plan::PlanRect {
+                                    min_x_cm: s.x_cm,
+                                    min_z_cm: s.z_cm,
+                                    max_x_cm: s.x_cm + s.size_x_cm,
+                                    max_z_cm: s.z_cm + s.size_z_cm,
+                                })
+                        })
+                        .collect();
+                    if walls.is_empty() {
+                        continue;
+                    }
+                    checked += 1;
+                    let (mut x0, mut z0, mut x1, mut z1) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
+                    for w in &walls {
+                        x0 = x0.min(w.x_cm);
+                        z0 = z0.min(w.z_cm);
+                        x1 = x1.max(w.x_cm + w.size_x_cm);
+                        z1 = z1.max(w.z_cm + w.size_z_cm);
+                    }
+                    for s in &floor_decay {
+                        if s.bottom_y_cm != sp.floor_y_cm {
+                            continue;
+                        }
+                        let hit = s.x_cm < x1
+                            && s.x_cm + s.size_x_cm > x0
+                            && s.z_cm < z1
+                            && s.z_cm + s.size_z_cm > z0;
+                        assert!(
+                            !hit,
+                            "semilla {seed}: deterioro dentro de los cubículos: {s:?}"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(checked >= 10, "sólo {checked} salas con cubículos miradas");
     }
 
     fn rect_of(s: &Wg3Solid) -> super::super::plan::PlanRect {

@@ -518,9 +518,13 @@ namespace BackroomsSurvival.WorldGen3
         /// collider y un macizo debajo sería una mesa que frena dos veces, con dos formas).
         /// </summary>
         public static GameObject AssembleProp(BackroomsSurvival.Net.Wg3PropMsg prop, Transform parent,
-            int layer, string name)
+            int layer, string name, Wg3Materials materials = null, Material lampMaterial = null)
         {
             if (parent == null) return null;
+            // ADR-105 enm. 19 — el deterioro del falso techo no tiene prefab: se construye aquí.
+            if (prop.kind == BackroomsSurvival.Net.Wg3PropMsg.CeilingTileHung
+                || prop.kind == BackroomsSurvival.Net.Wg3PropMsg.LightHung)
+                return AssembleHungDecay(prop, parent, layer, name, materials, lampMaterial);
             GameObject prefab = Wg3PropCatalog.Prefab(prop.kind, prop.xCm, prop.zCm);
             if (prefab == null) return null;
             var go = Object.Instantiate(prefab, parent);
@@ -541,6 +545,80 @@ namespace BackroomsSurvival.WorldGen3
             foreach (Collider c in go.GetComponentsInChildren<Collider>(true)) c.enabled = false;
             return go;
         }
+
+        /// <summary>
+        /// ADR-105 enm. 19 — **lo que cuelga del falso techo roto**: una placa descolgada de un
+        /// lado (kind 15) y una luminaria caída en diagonal (kind 16).
+        ///
+        /// No son prefabs y no son macizos. Prefab no, porque el pack de oficina no trae ni placa
+        /// ni luminaria de techo y las dos son una caja fina; macizo tampoco, porque
+        /// <c>Wg3Solid</c> sólo gira en Y (ADR-121 D1) y lo que hace legible una placa caída a
+        /// medias es justo la INCLINACIÓN. Así que la bisagra la pone el cliente: el ancla que
+        /// manda el servidor es el borde que sigue agarrado al techo, y la pieza baja desde ahí.
+        ///
+        /// Sin collider, como los paneles y como toda la decoración del techo: lo que cuelga a 2,3
+        /// m no puede frenar a nadie, y el servidor tampoco lo estampa en el ráster.
+        /// </summary>
+        private static GameObject AssembleHungDecay(BackroomsSurvival.Net.Wg3PropMsg prop,
+            Transform parent, int layer, string name, Wg3Materials materials, Material lampMaterial)
+        {
+            bool lamp = prop.kind == BackroomsSurvival.Net.Wg3PropMsg.LightHung;
+            Material mat = lampMaterial;
+            if (!lamp)
+            {
+                Material[] mats = Wg3StyleMaterials.Resolve(materials, prop.style);
+                mat = mats != null && mats.Length > Wg3MeshBuilder.SubMesh.Ceiling
+                    ? mats[Wg3MeshBuilder.SubMesh.Ceiling]
+                    : null;
+            }
+            if (mat == null) return null;
+
+            var size = lamp
+                ? new Vector3(PanelLongM, 0.05f, PanelShortM)
+                : new Vector3(CeilingTileM, 0.02f, CeilingTileM);
+            float tilt = lamp ? HungLampTiltDeg : HungTileTiltDeg;
+
+            var root = new GameObject(name);
+            root.hideFlags = HideFlags.DontSave;
+            root.transform.SetParent(parent, false);
+            root.transform.position = new Vector3(prop.xCm * 0.01f, prop.yCm * 0.01f, prop.zCm * 0.01f);
+            // La luminaria va girada respecto a la rejilla de placas: es lo que se lee como
+            // "descolgada en diagonal" y no como "un panel más, torcido".
+            root.transform.rotation = Quaternion.Euler(0f, prop.yawDeg + (lamp ? 25f : 0f), 0f);
+
+            // La bisagra: el borde que sigue arriba. La pieza gira alrededor de él y su otro
+            // extremo cae `largo · sen(tilt)` — 34 cm la placa, 45 la luminaria.
+            var hinge = new GameObject("hinge");
+            hinge.hideFlags = HideFlags.DontSave;
+            hinge.transform.SetParent(root.transform, false);
+            hinge.transform.localPosition = new Vector3(-size.x * 0.5f, -size.y * 0.5f, 0f);
+            hinge.transform.localRotation = Quaternion.Euler(0f, 0f, -tilt);
+
+            var go = new GameObject(lamp ? "lamp" : "tile");
+            go.hideFlags = HideFlags.DontSave;
+            go.transform.SetParent(hinge.transform, false);
+            go.transform.localPosition = new Vector3(size.x * 0.5f, 0f, 0f);
+            go.transform.localScale = size;
+            go.AddComponent<MeshFilter>().sharedMesh = LuminaireMesh();
+            var r = go.AddComponent<MeshRenderer>();
+            r.sharedMaterial = mat;
+            r.renderingLayerMask = Wg3StoreyLayers.ForLight(prop.yCm * 0.01f);
+            foreach (Transform t in root.GetComponentsInChildren<Transform>(true))
+                t.gameObject.layer = layer;
+            return root;
+        }
+
+        /// <summary>ADR-105 enm. 19 — canto por debajo del cual una decoración es una LOSETA lisa y
+        /// no un marco. Quince centímetros: la placa caída mide 4 y la baldosa 9, y la jamba de un
+        /// marco mide dos metros.</summary>
+        private const float FlatDecorationMaxM = 0.15f;
+
+        /// <summary>Cuánto se descuelga una placa: 34° deja su punta a 2,36 m con techo de 2,70, o
+        /// sea por encima de la cabeza y por debajo del plano del techo.</summary>
+        private const float HungTileTiltDeg = 34f;
+        /// <summary>La luminaria es el doble de larga, así que cae menos grados para dejar la misma
+        /// holgura: 22° la bajan 45 cm.</summary>
+        private const float HungLampTiltDeg = 22f;
 
         /// <summary>Placa del techo de la oficina: 60 cm. Los paneles se alinean a ella.</summary>
         public const float CeilingTileM = 0.6f;
@@ -675,7 +753,14 @@ namespace BackroomsSurvival.WorldGen3
                     // ADR-125 enm. 2 — un marco es decoración: submalla de decoración y sin
                     // collider (`IsSolid` falso), igual que un rodapié. `Casing` y no `Decoration`
                     // para que el constructor le talle el perfil y el zócalo.
-                    kind = solid.IsDecoration ? Wg3VolumeKind.Casing : Wg3VolumeKind.Pillar,
+                    //
+                    // ADR-105 enm. 19 — salvo una LOSETA: una placa de techo caída (4 cm de canto)
+                    // o una baldosa levantada (9) son cajas lisas, y el perfil de dos escalones y
+                    // el zócalo del marco sobre una pieza de dos centímetros no son un marco, son
+                    // ruido. El corte va por el canto porque un marco es una banda de dos metros.
+                    kind = !solid.IsDecoration
+                        ? Wg3VolumeKind.Pillar
+                        : (sy <= FlatDecorationMaxM ? Wg3VolumeKind.Decoration : Wg3VolumeKind.Casing),
                 }
             };
 
@@ -700,6 +785,17 @@ namespace BackroomsSurvival.WorldGen3
             go.AddComponent<MeshFilter>().sharedMesh = mesh;
             var renderer = go.AddComponent<MeshRenderer>();
             Material[] mats = Wg3StyleMaterials.Resolve(materials, solid.BaseStyle);
+            // ADR-105 enm. 19 — una loseta se dibuja con el material del TECHO: una placa caída es
+            // la que falta arriba, y la submalla de decoración traería el material del rodapié.
+            if (mats != null && solid.IsDecoration && sy <= FlatDecorationMaxM
+                && mats.Length > Wg3MeshBuilder.SubMesh.Decoration)
+            {
+                mats = (Material[])mats.Clone();
+                // Y la baldosa levantada (9 cm) con el del SUELO, que es de donde sale.
+                mats[Wg3MeshBuilder.SubMesh.Decoration] = sy <= 0.05f
+                    ? mats[Wg3MeshBuilder.SubMesh.Ceiling]
+                    : mats[Wg3MeshBuilder.SubMesh.Floor];
+            }
             if (mats != null) renderer.sharedMaterials = mats;
             // Un megapilar cruza el atrio de suelo a techo, así que lleva las dos plantas y se
             // ilumina desde las dos. Un pretil vive en una sola.

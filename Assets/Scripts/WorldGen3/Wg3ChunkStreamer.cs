@@ -375,7 +375,10 @@ namespace BackroomsSurvival.WorldGen3
             for (int i = 0; i < chunk.props.Count; i++)
             {
                 var prop = chunk.props[i];
-                Wg3SceneAssembler.AssembleProp(prop, root.transform, root.layer, $"prop_{i:D3}_k{prop.kind}");
+                // Los materiales van con el ancla porque el deterioro de la enm. 19 no tiene
+                // prefab: lo dibuja el ensamblador con el material de placa o el de luminaria.
+                Wg3SceneAssembler.AssembleProp(prop, root.transform, root.layer,
+                    $"prop_{i:D3}_k{prop.kind}", EffectiveMaterials(), LampMaterial());
             }
 
             // ADR-107 D3 — UN alta por chunk, con el root del chunk como dueño: el lote se retira solo

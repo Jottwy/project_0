@@ -20,7 +20,7 @@
   de MUNDO con `plan_bounds()`. **Sigue sin verificarse que lo servido salga ×2.** Parche verbatim en `docs/SESSION-LOG.md`.
 - **Contrato WG3 v1**, 5 días. Día 1 (`65d267c3`) y día 2 (`c7c9dd01`, `510223b8`, ADR-129) cerrados; el día 4 de gramática lo sustituyó
   ADR-129 (rampa, tabique diagonal y anti-enfilada pasan a v2 salvo decisión). Quedan día 3 (rendimiento) y día 5 (verificación, etiqueta).
-- **Tanda de oficinas (06-09)**: 1 falso techo + cubículos HECHA (`b02df08f`, enm. 18) · 2 ADR-131 vigilantes · 3 ADR-130 r2 · día 3 · r3 wire 62 · r4.
+- **Tanda de oficinas (06-09)**: 1 falso techo + cubículos y 1b techo ROTO, HECHAS (enm. 18 y 19) · 2 ADR-131 · 3 ADR-130 r2 · día 3 · r3 wire 62 · r4.
 - **Saneamiento: B1–B4 fusionados en `migration/worldgraph-v1`** (06-09). Queda B5 (cabeza: el agujero de autoridad) y la lista de Joel para podar ramas.
 - **Migración STP servidor-autoritativo**: Steps 1–2 y slice 3.1 (plumbing) hechos y verificados. Falta slice 3.2
   (capa L2 de predicción), reescribir los 8 call sites de `Inventory` y retirar `PlayerController.cs` (DEPRECATED por ADR-009).
@@ -93,6 +93,16 @@
 - Menores: `MPTRACE` sin commitear en cuatro ficheros del vendor STP; `TODO(balance)` de loot; doc-comments stale.
 
 ## Últimas tandas
+
+### 2026-09-06 — 28.ª tanda: el falso techo ROTO (ADR-105 enm. 19), servidor y cliente, sin wire
+- `office_decay`, el último emisor del relleno, en las salas con `office_ceiling_cm`: placas caídas (60×60×**4**, decoración
+  con giro), baldosa de suelo técnico levantada (60×60×**9**), placas colgando (prop 15) y UNA luminaria descolgada por planta (prop 16).
+- Lo que cuelga es prop y no macizo porque `Wg3Solid` sólo gira en Y; y no es prefab porque el pack no trae placa ni luminaria: lo
+  construye `AssembleHungDecay` con el material de techo o de luminaria, bisagra en el borde de arriba, 34°/22°. Kind nuevo ≠ wire nuevo.
+- Densidad por sala con `SALT_DECAY`, y sube con la profundidad (ADR-130 D4, `d²` contra el fondo SERVIDO): calle 0,25 piezas por sala, B3 1,56.
+- Nada frena: decoración y props, así que el barrido sale IDÉNTICO (27/27, pisable 183 756, mancha 99,7 %, 6,4 islas, nav 100 %). Suite 1399/1399.
+- Cliente además: decoración de canto ≤ 15 cm pasa de `Casing` a `Decoration` y se pinta con el material de techo o de suelo.
+- **Sin captura**: el editor del clon principal está ocupado por otra sesión (escena STP_Showcase, `Wg3PropCatalog` tocado). Sonda `probe_decay_spots`.
 
 ### 2026-09-06 — 27.ª tanda: la planta de oficinas, rebanada 1 — falso techo y cubículos (ADR-105 enm. 18)
 - `b02df08f`: `office_ceiling_cm` (270, 300) sólo en despachos/servicios/almacenes del carácter Office, por sala en pasos de 10; naves
