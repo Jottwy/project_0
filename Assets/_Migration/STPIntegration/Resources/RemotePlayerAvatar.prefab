@@ -229,6 +229,9 @@ PrefabInstance:
     - targetCorrespondingSourceObject: {fileID: 4393350218367588728, guid: 9c77748e311350b4b829d3b6fedbe177, type: 3}
       insertIndex: -1
       addedObject: {fileID: 2152646272436353175}
+    - targetCorrespondingSourceObject: {fileID: 4393350218367588728, guid: 9c77748e311350b4b829d3b6fedbe177, type: 3}
+      insertIndex: -1
+      addedObject: {fileID: 3950797210700161178}
   m_SourcePrefab: {fileID: 100100000, guid: 9c77748e311350b4b829d3b6fedbe177, type: 3}
 --- !u!1 &720040130759283984 stripped
 GameObject:
@@ -719,6 +722,24 @@ MonoBehaviour:
   _lifetime: 0.22
   _size: 0.025
   _rate: 70
+--- !u!114 &3950797210700161178
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 720040130759283984}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 801fe806f3e7fdb4d81083b711f30bbe, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  _seatedClip: {fileID: 7400000, guid: 0dd94f59d721c364a9abd009124ca1cd, type: 2}
+  _coneDeg: 90
+  _pitchClampDeg: 35
+  _neckShare: 0.4
+  _breathDeg: 0.8
+  _breathHz: 0.22
 --- !u!95 &1662395652399180242 stripped
 Animator:
   m_CorrespondingSourceObject: {fileID: 2455671371295466938, guid: 9c77748e311350b4b829d3b6fedbe177, type: 3}

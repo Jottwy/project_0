@@ -456,6 +456,12 @@ impl Wg3ServedWorld {
         &self.segments
     }
 
+    /// ADR-129 — todas las anclas de atrezo de la región, sin repartir por chunk. Lo piden las
+    /// sondas y las pruebas que miden sobre la región entera (ADR-131: las sillas de los puestos).
+    pub fn props(&self) -> &[Wg3Prop] {
+        &self.props
+    }
+
     /// ADR-109 D5 — el espacio de MÁS ABAJO en esa vertical, sin saber la cota.
     ///
     /// Lo pide el reparto de criaturas: sortea un punto en XZ y no tiene cota que darle —la que traía

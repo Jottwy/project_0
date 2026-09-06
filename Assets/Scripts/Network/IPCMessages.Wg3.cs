@@ -286,7 +286,13 @@ namespace BackroomsSurvival.Net
         /// <summary>ADR-105 enm. 19 — el deterioro del falso techo. Estos DOS no tienen prefab: los
         /// construye <c>Wg3SceneAssembler</c> a mano, porque una placa colgando y una luminaria
         /// descolgada piden inclinación y un <c>Wg3Solid</c> sólo gira en Y.</summary>
-        public const byte CeilingTileHung = 15, LightHung = 16;
+        public const byte CeilingTileHung = 21, LightHung = 22;
+
+        /// <summary>ADR-129 enm. 1 — un CARTEL. No tiene prefab: es un quad con una celda del
+        /// atlas de <see cref="BackroomsSurvival.WorldGen3.Wg3SignCatalog"/>, y para él —y sólo
+        /// para él— <see cref="style"/> es el índice de VARIANTE, no el aspecto del espacio. Cabe
+        /// en el `kind` y en el `style` que ya viajaban: no sube el wire.</summary>
+        public const byte Sign = 15;
 
         public static Wg3PropMsg Parse(MsgPackReader r)
         {

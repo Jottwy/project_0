@@ -433,7 +433,10 @@ namespace BackroomsSurvival.Net
             // player until the matching "Backrooms ▸ Facelings ▸ Build * Avatar Prefab" has been
             // run — never a missing-reference error).
             GameObject prefab = remotePlayerPrefab;
-            if (species == 1 && facelingAdultPrefab != null)
+            // ADR-131: el VIGILANTE (species 3) lleva el cuerpo del adulto. Es un faceling adulto
+            // sentado, no una criatura con su propio modelo: lo único que lo distingue en pantalla
+            // es la postura, y esa la decide el bit `RemoteButtons.Seated`, no el prefab.
+            if ((species == 1 || species == 3) && facelingAdultPrefab != null)
                 prefab = facelingAdultPrefab;
             else if (species == 2 && facelingChildPrefab != null)
                 prefab = facelingChildPrefab;

@@ -14084,3 +14084,367 @@ async fn registering_harvestables_adds_without_forgetting_what_was_harvested() {
     send!(register(vec![(99, [0.0, 0.0, 0.0])]));
     assert_eq!(3, net.stp_harvestables.len(), "un joiner no registra props");
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADR-131 — LOS VIGILANTES
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// La semilla del mundo SERVIDO (`wg3::tests::SERVED_SEED`). Las sillas de las que nacen los
+/// vigilantes son las del mundo que se juega, no las de una maqueta.
+const WATCHER_SEED: u64 = 42;
+
+/// Una silla EN PIE de la región (0,0), con su giro. `basement` pide una bajo rasante, que es donde
+/// ADR-131 D3 concentra la población.
+fn a_chair_in_region(basement: bool) -> Option<(Vec3, f32)> {
+    use crate::world::wg3::plan::storey_of_floor_cm;
+    use crate::world::wg3::segment::PROP_CHAIR;
+
+    let m = audit_manifest();
+    let coord = crate::world::wg3::world::Wg3RegionCoord { x: 0, z: 0 };
+    let served = crate::world::wg3::world::Wg3ServedWorld::plan_region(&m, WATCHER_SEED, coord);
+    served
+        .props()
+        .iter()
+        .find(|p| p.kind == PROP_CHAIR && (storey_of_floor_cm(p.y_cm) < 0) == basement)
+        .map(|p| {
+            (
+                Vec3::new(
+                    p.x_cm as f32 / 100.0,
+                    p.y_cm as f32 / 100.0 + crate::world::collision::PLAYER_BASE_Y,
+                    p.z_cm as f32 / 100.0,
+                ),
+                p.yaw_deg as f32,
+            )
+        })
+}
+
+/// El jugador, a 12 m de la silla: fuera del mínimo de nacimiento (8 m) y dentro del radio de
+/// activación (60 m), y a la MISMA cota, que es lo que `same_level` exige para no retirarlo.
+fn watcher_probe_player(chair: Vec3) -> Vec3 {
+    Vec3::new(chair.x + 12.0, chair.y, chair.z)
+}
+
+/// **ADR-131 D1 — un vigilante no se mueve y no pega, y esto lo mide con el bucle real.**
+///
+/// No es una tautología por no existir `step`: el reconcile corre cien veces con un jugador al lado,
+/// que es exactamente la situación en la que el adulto cambia de estado, se pasea y golpea. Si
+/// alguien le da conducta a esta especie, esta prueba es la que se pone roja.
+#[tokio::test]
+async fn a_watcher_never_moves_and_never_attacks() {
+    let m = audit_manifest();
+    let mut worlds = wg3_cache();
+    let Some((chair, _)) = a_chair_in_region(true) else {
+        panic!("la región (0,0) no tiene ni una silla de sótano: revisa office_cubicles");
+    };
+    let player = watcher_probe_player(chair);
+
+    let mut net = NetworkManager::bind(0, 1, WATCHER_SEED, true)
+        .await
+        .unwrap();
+    net.world_seed = WATCHER_SEED;
+    let mut driver = WatcherDriver::new();
+
+    let mut before: Option<Vec<(PeerId, [f32; 3])>> = None;
+    for _ in 0..100 {
+        driver.sync_population(
+            &mut net,
+            player,
+            1.0,
+            Some(crate::game_loop::faceling::Wg3SpawnCtx {
+                worlds: &mut worlds,
+                manifest: &m,
+                world_seed: WATCHER_SEED,
+            }),
+        );
+        // Ordenado por id: lo que se vigila es la POSICIÓN de cada vigilante y la estabilidad del
+        // roster, no el orden en que el reconcile los fue metiendo en el `Vec`.
+        let mut now: Vec<(PeerId, [f32; 3])> = driver
+            .watchers
+            .iter()
+            .map(|w| (w.id, net.peers[&w.id].position))
+            .collect();
+        now.sort_by_key(|(id, _)| *id);
+        match &before {
+            None => before = Some(now),
+            Some(prev) => assert_eq!(
+                prev, &now,
+                "un vigilante se movió: ADR-131 D1 dice que su posición se escribe una vez"
+            ),
+        }
+    }
+    assert!(
+        !driver.watchers.is_empty(),
+        "ningún vigilante nació junto a una silla de sótano"
+    );
+}
+
+/// ADR-131 D2 — sólo sillas EN PIE, y siempre EXACTAMENTE en el ancla.
+#[tokio::test]
+async fn watchers_only_sit_on_standing_chairs() {
+    use crate::world::wg3::segment::{PROP_CHAIR, PROP_CHAIR_FALLEN};
+
+    let m = audit_manifest();
+    let mut worlds = wg3_cache();
+    let Some((chair, _)) = a_chair_in_region(true) else {
+        panic!("la región (0,0) no tiene ni una silla de sótano");
+    };
+
+    let mut net = NetworkManager::bind(0, 1, WATCHER_SEED, true)
+        .await
+        .unwrap();
+    net.world_seed = WATCHER_SEED;
+    let mut driver = WatcherDriver::new();
+    driver.sync_population(
+        &mut net,
+        watcher_probe_player(chair),
+        1.0,
+        Some(crate::game_loop::faceling::Wg3SpawnCtx {
+            worlds: &mut worlds,
+            manifest: &m,
+            world_seed: WATCHER_SEED,
+        }),
+    );
+    assert!(!driver.watchers.is_empty(), "no nació ningún vigilante");
+
+    let coord = crate::world::wg3::world::Wg3RegionCoord { x: 0, z: 0 };
+    let served = crate::world::wg3::world::Wg3ServedWorld::plan_region(&m, WATCHER_SEED, coord);
+    for w in &driver.watchers {
+        let hit = served.props().iter().find(|p| {
+            (p.x_cm as f32 / 100.0 - w.at.x).abs() < 0.01
+                && (p.z_cm as f32 / 100.0 - w.at.z).abs() < 0.01
+                && (p.y_cm as f32 / 100.0 + crate::world::collision::PLAYER_BASE_Y - w.at.y).abs()
+                    < 0.01
+        });
+        let Some(prop) = hit else {
+            panic!(
+                "un vigilante en ({:.2},{:.2}) no está sobre ningún ancla de atrezo",
+                w.at.x, w.at.z
+            );
+        };
+        assert_eq!(
+            PROP_CHAIR, prop.kind,
+            "un vigilante se sentó en el atrezo {} — y {} es una silla VOLCADA",
+            prop.kind, PROP_CHAIR_FALLEN
+        );
+    }
+}
+
+/// ADR-131 D4 — el peer nace con la especie y con el bit «sentado», y el bit es el 5 de `buttons`.
+/// Si alguien lo mueve, el cliente (que lee `RemoteButtons.Seated`) deja de sentarlos sin decir nada.
+#[tokio::test]
+async fn a_watcher_is_seated_on_the_wire() {
+    let m = audit_manifest();
+    let mut worlds = wg3_cache();
+    let Some((chair, _)) = a_chair_in_region(true) else {
+        panic!("la región (0,0) no tiene ni una silla de sótano");
+    };
+
+    let mut net = NetworkManager::bind(0, 1, WATCHER_SEED, true)
+        .await
+        .unwrap();
+    net.world_seed = WATCHER_SEED;
+    let mut driver = WatcherDriver::new();
+    driver.sync_population(
+        &mut net,
+        watcher_probe_player(chair),
+        1.0,
+        Some(crate::game_loop::faceling::Wg3SpawnCtx {
+            worlds: &mut worlds,
+            manifest: &m,
+            world_seed: WATCHER_SEED,
+        }),
+    );
+    assert!(!driver.watchers.is_empty(), "no nació ningún vigilante");
+
+    for w in &driver.watchers {
+        let peer = &net.peers[&w.id];
+        assert_eq!(
+            3, peer.species,
+            "la especie del vigilante es la 3 (ADR-131 D1)"
+        );
+        assert_ne!(
+            0,
+            peer.buttons & (1 << 5),
+            "el bit 5 de `buttons` es «sentado» (ADR-131 D4) y tiene que venir puesto de nacimiento"
+        );
+        assert!(peer.relay_only, "un vigilante no tiene backend detrás");
+        assert!(net.is_faceling(w.id), "un vigilante ES un faceling");
+    }
+}
+
+/// ADR-131 D3 — la densidad sube con la profundidad. Se mide sobre las MISMAS sillas (las de la
+/// región (0,0)) preguntándole al sorteo por plantas distintas: así el número que se compara es la
+/// tasa por silla y no el reparto de sillas, que cambia de planta a planta.
+#[test]
+fn watcher_density_rises_with_depth() {
+    use crate::world::wg3::segment::PROP_CHAIR;
+
+    let m = audit_manifest();
+    let coord = crate::world::wg3::world::Wg3RegionCoord { x: 0, z: 0 };
+    let served = crate::world::wg3::world::Wg3ServedWorld::plan_region(&m, WATCHER_SEED, coord);
+    let chairs: Vec<_> = served
+        .props()
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.kind == PROP_CHAIR)
+        .collect();
+    assert!(
+        chairs.len() > 50,
+        "muestra degenerada: {} sillas",
+        chairs.len()
+    );
+
+    let rate_at = |storey: i32| -> f32 {
+        let taken = chairs
+            .iter()
+            .filter(|(i, p)| {
+                let c = crate::world::wg3::chunk::Wg3ChunkCoord::containing(
+                    p.x_cm as f32 / 100.0,
+                    p.z_cm as f32 / 100.0,
+                );
+                super::watcher::WatcherDriver::seat_is_taken(WATCHER_SEED, c, storey, *i)
+            })
+            .count();
+        taken as f32 / chairs.len() as f32
+    };
+
+    let calle = rate_at(0);
+    let b3 = rate_at(-3);
+    println!(
+        "PROBE vigilantes: calle={calle:.3} B3={b3:.3} sillas={}",
+        chairs.len()
+    );
+    assert!(
+        b3 > calle * 2.0,
+        "B3 ({b3:.3}) no dobla a la calle ({calle:.3}): WATCHER_CHAIR_PER_STOREY dejó de significar profundidad"
+    );
+}
+
+/// ADR-131 — sonda para las capturas: dónde hay un vigilante sentado en un sótano con cubículos de
+/// la región (0,0). Imprime la silla, su giro y un punto de cámara a 3 m por delante de ella.
+#[test]
+#[ignore = "sonda: imprime sitios de captura"]
+fn probe_watcher_capture_spots() {
+    use crate::world::wg3::plan::storey_of_floor_cm;
+    use crate::world::wg3::segment::PROP_CHAIR;
+
+    let m = audit_manifest();
+    let coord = crate::world::wg3::world::Wg3RegionCoord { x: 0, z: 0 };
+    let served = crate::world::wg3::world::Wg3ServedWorld::plan_region(&m, WATCHER_SEED, coord);
+
+    let mut shown = 0;
+    for (index, p) in served.props().iter().enumerate() {
+        if p.kind != PROP_CHAIR {
+            continue;
+        }
+        let storey = storey_of_floor_cm(p.y_cm);
+        if storey >= 0 {
+            continue;
+        }
+        let c = crate::world::wg3::chunk::Wg3ChunkCoord::containing(
+            p.x_cm as f32 / 100.0,
+            p.z_cm as f32 / 100.0,
+        );
+        if !super::watcher::WatcherDriver::seat_is_taken(WATCHER_SEED, c, storey, index) {
+            continue;
+        }
+        let (x, y, z) = (
+            p.x_cm as f32 / 100.0,
+            p.y_cm as f32 / 100.0,
+            p.z_cm as f32 / 100.0,
+        );
+        // La cámara, delante de la cara: la silla mira a `yaw_deg`, así que se avanza 2,5 m en esa
+        // dirección y se mira hacia ella (yaw + 180).
+        let rad = (p.yaw_deg as f32).to_radians();
+        let (cx, cz) = (x + rad.sin() * 2.5, z + rad.cos() * 2.5);
+        println!(
+            "PROBE silla planta {storey} silla=({x:.2},{y:.2},{z:.2}) yaw={} camara=({cx:.2},{y:.2},{cz:.2}) mirando={}",
+            p.yaw_deg,
+            (p.yaw_deg as i32 + 180) % 360
+        );
+        shown += 1;
+        if shown == 6 {
+            break;
+        }
+    }
+    assert!(shown > 0, "ni un vigilante en sótano de la región (0,0)");
+}
+
+/// ADR-131 — dónde poner la CÁMARA para fotografiar a un vigilante: un sitio pisable con línea de
+/// visión limpia hasta la silla. A ojo no sale: los puestos están cercados por mamparas de 1,40 y
+/// tres intentos de capturar cayeron dentro de una.
+#[test]
+#[ignore = "sonda: imprime sitios de cámara"]
+fn probe_watcher_camera_spots() {
+    use crate::world::wg3::collision::Wg3CollisionCache;
+    use crate::world::wg3::nav;
+    use crate::world::wg3::plan::storey_of_floor_cm;
+    use crate::world::wg3::segment::PROP_CHAIR;
+
+    let m = audit_manifest();
+    let mut worlds = wg3_cache();
+    let coord = crate::world::wg3::world::Wg3RegionCoord { x: 0, z: 0 };
+    let served = crate::world::wg3::world::Wg3ServedWorld::plan_region(&m, WATCHER_SEED, coord);
+
+    let mut cache = Wg3CollisionCache::new();
+    let mut shown = 0;
+
+    for (index, p) in served.props().iter().enumerate() {
+        if p.kind != PROP_CHAIR {
+            continue;
+        }
+        let storey = storey_of_floor_cm(p.y_cm);
+        if storey >= 0 {
+            continue;
+        }
+        let c = crate::world::wg3::chunk::Wg3ChunkCoord::containing(
+            p.x_cm as f32 / 100.0,
+            p.z_cm as f32 / 100.0,
+        );
+        if !super::watcher::WatcherDriver::seat_is_taken(WATCHER_SEED, c, storey, index) {
+            continue;
+        }
+        let (x, y, z) = (
+            p.x_cm as f32 / 100.0,
+            p.y_cm as f32 / 100.0,
+            p.z_cm as f32 / 100.0,
+        );
+        let chair = Vec3::new(x, y + 1.0, z);
+        cache.prewarm_for_move(&mut worlds, &m, WATCHER_SEED, chair, chair);
+
+        for step in 0..36 {
+            let ang = (step as f32) * 10.0f32.to_radians();
+            for d in [2.0f32, 2.6, 3.2, 4.0] {
+                let (cx, cz) = (x + ang.sin() * d, z + ang.cos() * d);
+                let Some(floor) = nav::floor_at(&cache, cx, cz, y + 0.5) else {
+                    continue;
+                };
+                if (floor - y).abs() > 0.6 {
+                    continue;
+                }
+                let eye = Vec3::new(cx, floor + 1.6, cz);
+                if !nav::line_of_sight(&cache, eye, chair) {
+                    continue;
+                }
+                // El yaw que mira a la silla, en la convención del arnés (0 = +Z, horario).
+                let yaw = (x - cx).atan2(z - cz).to_degrees();
+                println!(
+                    "PROBE camara=({cx:.2},{floor:.2},{cz:.2}) yaw={yaw:.0} d={d:.1} silla=({x:.2},{y:.2},{z:.2}) yaw_silla={}",
+                    p.yaw_deg
+                );
+                shown += 1;
+                break;
+            }
+            if shown >= 8 {
+                break;
+            }
+        }
+        if shown >= 8 {
+            break;
+        }
+    }
+    assert!(
+        shown > 0,
+        "ninguna cámara con línea de visión a un vigilante"
+    );
+}

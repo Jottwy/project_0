@@ -228,8 +228,56 @@ pub const PROP_CHAIR_FALLEN: u8 = 14;
 /// una luminaria descolgada en diagonal. **No tienen prefab**: el cliente los construye a mano
 /// (caja fina inclinada con el material de placa o de luminaria) porque `Wg3Solid` sólo gira en Y y
 /// una placa colgando pide inclinación. Kinds nuevos, no wire nuevo: `kind` ya era un byte.
-pub const PROP_CEILING_TILE_HUNG: u8 = 15;
-pub const PROP_LIGHT_HUNG: u8 = 16;
+pub const PROP_CEILING_TILE_HUNG: u8 = 21;
+pub const PROP_LIGHT_HUNG: u8 = 22;
+
+/// ADR-129 enm. 1 (2026-09-06) — **un CARTEL**: la única superficie del mundo con TEXTO. Placa de
+/// despacho junto a una puerta, rótulo en una mampara de cubículo, señal de salida en un pasillo,
+/// tablón de corcho en una sala grande, calendario parado. No es un prefab: el cliente monta un
+/// quad con la celda que le toque de un atlas de decals, y por eso el ancla no lleva tamaño (lo da
+/// la variante, con la tabla de [`sign_size_cm`] a los dos lados).
+///
+/// **No sube el wire**: el `kind` es un `u8` con catorce valores gastados, y el `variant` viaja en
+/// el `style` que ya existe y que el cliente no leía para el atrezo.
+pub const PROP_SIGN: u8 = 15;
+
+/// ADR-129 enm. 1 — lo que un cartel se despega de la superficie a la que va pegado, en cm. Un
+/// centímetro: pegado a ras es z-fighting garantizado, y a más de eso se lee como una bandeja.
+/// El servidor ya emite el ancla DESPLAZADA, así que el cliente instancia donde le dicen.
+pub const SIGN_PROUD_CM: i32 = 1;
+
+/// ADR-129 enm. 1 — la variante de un cartel, en los seis bits bajos de `style`: 0–31 el texto
+/// bueno, 32–63 el mismo cartel con el texto ESTROPEADO (letras cambiadas, fechas imposibles), que
+/// es lo que se sirve al bajar (ADR-130 D4). Sumar esto a una variante buena da su gemela rota, y
+/// por eso el atlas es de 8 × 8 celdas: fila `v / 8`, columna `v % 8`.
+pub const SIGN_GARBLED_BASE: u8 = 32;
+/// Primera variante de cada familia y cuántas hay. El cliente refleja exactamente esta tabla.
+pub const SIGN_DOOR_PLATE: u8 = 0;
+pub const SIGN_DOOR_PLATE_N: u8 = 8;
+pub const SIGN_CUBICLE_TAG: u8 = 8;
+pub const SIGN_CUBICLE_TAG_N: u8 = 8;
+pub const SIGN_EXIT: u8 = 16;
+pub const SIGN_EXIT_N: u8 = 4;
+pub const SIGN_CORKBOARD: u8 = 20;
+pub const SIGN_CORKBOARD_N: u8 = 4;
+pub const SIGN_CALENDAR: u8 = 24;
+pub const SIGN_CALENDAR_N: u8 = 4;
+
+/// ADR-129 enm. 1 — el tamaño del quad de una variante, `(ancho, alto)` en cm. **Espejo exacto de
+/// `Wg3SignCatalog.SizeCm`**: el servidor lo necesita para no colgar un tablón de corcho encima de
+/// una ventana, y el cliente para dibujarlo del tamaño con el que se midió el hueco.
+pub fn sign_size_cm(variant: u8) -> (i32, i32) {
+    match variant % SIGN_GARBLED_BASE {
+        v if v < SIGN_CUBICLE_TAG => (30, 12),
+        v if v < SIGN_EXIT => (24, 9),
+        v if v < SIGN_CORKBOARD => (40, 15),
+        v if v < SIGN_CALENDAR => (120, 90),
+        v if v < SIGN_CALENDAR + SIGN_CALENDAR_N => (30, 42),
+        // 28–31 están libres en el atlas: si alguien las emite, que se vean del tamaño de una placa
+        // y no de cero por cero.
+        _ => (30, 12),
+    }
+}
 
 /// ADR-125 enm. 2 — bit alto de `style`: el macizo es DECORACIÓN. Se dibuja y nada más: ni el
 /// ráster lo estampa ni el cliente le cuelga collider. Existe porque un marco de puerta que

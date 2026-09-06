@@ -112,6 +112,7 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
                 WireStanceHook(instance);
                 WireLeanHook(instance);
                 WireSprayHook(instance);
+                WireSeatedHook(instance);
                 FreezeRagdollBodies(instance);
 
                 PrefabUtility.SaveAsPrefabAsset(instance, OutputPath, out bool ok);
@@ -931,6 +932,41 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
             SetFeederFloat(so, "_lifetime", 0.22f);
             SetFeederFloat(so, "_size", 0.025f);
             SetFeederFloat(so, "_rate", 70f);
+            so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        // ADR-131 D5/D6: el vigilante sentado. Misma forma que WireLeanHook y WireSprayHook, y por
+        // el mismo motivo no toca wire — el estado viaja en otro bit libre de `buttons`. Lo único
+        // que este hook necesita cableado es la POSE horneada: el clip vive fuera de Resources, así
+        // que no se puede cargar en runtime y tiene que venir en el prefab.
+        //
+        // Un clip que todavía no existe NO es un error: se avisa y el vigilante sale de pie hasta
+        // que se ejecute 'Backrooms ▸ Facelings ▸ Build Seated Pose Clip'. Mismo criterio que el
+        // resto de los assets pendientes de este builder.
+        private static void WireSeatedHook(GameObject root)
+        {
+            var hook = root.GetComponent<ProxySeatedHook>();
+            if (hook == null)
+                hook = root.AddComponent<ProxySeatedHook>();
+
+            var clip = AssetDatabase.LoadAssetAtPath<AnimationClip>(
+                FacelingSeatedPoseBuilder.OutputPath);
+            if (clip == null)
+            {
+                Debug.LogWarning("[RemoteAvatarPrefabBuilder] Sin pose sentada en " +
+                    $"'{FacelingSeatedPoseBuilder.OutputPath}': los vigilantes saldrán de pie. " +
+                    "Ejecuta 'Backrooms ▸ Facelings ▸ Build Seated Pose Clip' y vuelve a hornear.");
+            }
+
+            var so = new SerializedObject(hook);
+            var prop = so.FindProperty("_seatedClip");
+            if (prop != null)
+                prop.objectReferenceValue = clip;
+            SetFeederFloat(so, "_coneDeg", 90f);
+            SetFeederFloat(so, "_pitchClampDeg", 35f);
+            SetFeederFloat(so, "_neckShare", 0.4f);
+            SetFeederFloat(so, "_breathDeg", 0.8f);
+            SetFeederFloat(so, "_breathHz", 0.22f);
             so.ApplyModifiedPropertiesWithoutUndo();
         }
 
