@@ -3960,7 +3960,7 @@ const SIGN_BAND_CM: i32 = 25;
 const SIGN_MAX_PER_SPACE: usize = 4;
 /// Cuántas mamparas de cubículo llevan rótulo.
 const SIGN_TAG_CHANCE: f32 = 0.35;
-const SALT_SIGNS: u32 = 0xA9_04_09;
+const SALT_SIGNS: u32 = 0xA9_04_0D;
 /// ADR-130 D4 — cuánto texto sale mal ya en el primer sótano. El decaimiento (`depth²`) sólo se
 /// nota a partir de −50 m, y los carteles son lo PRIMERO que deja de tener sentido al bajar: de
 /// aquí arranca la rampa, y llega a 1,0 en el fondo.
