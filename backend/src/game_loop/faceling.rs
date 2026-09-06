@@ -510,6 +510,29 @@ impl AdultDriver {
                     }
                     None => pos,
                 };
+                // **NADIE NACE MÁS ALLÁ DEL RADIO QUE LO RETIRA** (auditoría ADR-120).
+                //
+                // La oficina despierta ENTERA y sólo su hueco más cercano pasa el radio de
+                // activación (ADR-094: la unidad es el chunk), pero la retirada mide criatura a
+                // criatura contra `FACELING_DEACTIVATE_RADIUS`. Un chunk mide 50 m, así que un hueco
+                // del mismo chunk puede caer setenta metros más lejos que el que abrió la puerta: esa
+                // criatura nace y se retira al reconcile siguiente — aparece delante del jugador y
+                // desaparece, que es exactamente el parpadeo que este bloque ya vino a quitar una vez.
+                //
+                // Estaba latente desde siempre y no se veía porque ningún chunk había repartido sus
+                // huecos tan lejos; con las huellas compuestas de ADR-120 la región auditada empezó a
+                // hacerlo y el contador saltó a la primera: 19 criaturas en el tick 0 y 18 en el 1,
+                // con el jugador quieto y la que faltaba a 100,3 m.
+                //
+                // Se corta aquí y no subiendo el radio de retirada: subirlo mantendría vivas
+                // criaturas a 140 m «por si acaso», que es pagar población activa por un fallo de
+                // reparto.
+                if players
+                    .iter()
+                    .all(|q| q.distance_xz(Vec3::from_array(pos)) > FACELING_DEACTIVATE_RADIUS)
+                {
+                    continue;
+                }
                 let id = net.spawn_faceling("Faceling", pos, 1, self.wg3.as_ref());
                 let spawn_pos = net
                     .peers
