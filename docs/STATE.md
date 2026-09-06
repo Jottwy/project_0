@@ -6,14 +6,14 @@
 ## Estado
 - **WorldGen3 es el mundo servido.** Wire **61** en las dos puntas (`ipc/server.rs:38`, `WireSchema.cs:25`) — ADR-129 lo subió el 06-09.
 - **Contrato WG3 v1 = Alpha 1** (`docs/WG3-ALPHA1-ROADMAP.md`): días 1–2 hechos; 3 y 5 APARCADOS detrás de la tanda de oficinas (Joel, 06-09).
-- Suite del 06-09 con ADR-131 y carteles: `cargo test --bin backrooms_server` **1402/1402 (86 ignorados)**, `CompileCheckClient` 0 errores en las 4 asambleas.
+- Suite del 06-09 con ADR-131, carteles, techo roto y decaimiento: `cargo test --bin backrooms_server` **1407/1407 (87 ign.)**, `CompileCheckClient` 0.
 - **El commit tiene gate** (`tools/dev/validate-scope.ps1`, hook PreToolUse): rojo = el commit no se ejecuta. Alcance por `git diff --cached`.
 - Alpha 1 itch nov 2026 · Next Fest feb 2027 · EA primavera 2027 (`docs/SCALING-ROADMAP.md:196-198`). E0 de red cerrada y medida.
 
 ## Próximo paso ÚNICO
-- **ADR-130 rebanada 2, el decaimiento sobre los 3 sótanos** (`decay(depth) = depth²` en las perillas por planta). Después: día 3 del
-  contrato (fundido por chunk), r3 streaming vertical (wire 62) y r4 torre. La rebanada 2 de la tanda de oficinas (ADR-131, vigilantes
-  sentados) está HECHA y verificada con captura.
+- **ADR-130 rebanada 2b, el decaimiento del CLIENTE**: paneles apagados (`decay·0,8`), parpadeo, tintes a gris y `1−0,5·decay`, placas de
+  techo que faltan. Pisa `Wg3SceneAssembler.cs`/`Wg3LightCadence.cs`, así que espera a la rama de materiales por función. La 2a (servidor)
+  está HECHA (ADR-130 enm. 1). Después: día 3 del contrato, r3 streaming vertical (wire 62) y r4 torre.
 
 ## En curso
 - **ADR-128, mundo ×2: tercera pasada, NO commiteado.** 24 tests en rojo; `MAX_SEGMENT_M` no se toca (D3 anulado), `bounds()` en metros
@@ -95,6 +95,26 @@
 
 ## Últimas tandas
 
+### 2026-09-06 — 31.ª tanda: ADR-130 rebanada 2a — el decaimiento del servidor (ADR-130 enm. 1)
+- `decay_of(space)` por la COTA (la calle está en 0) y `d²` contra el fondo SERVIDO; `knobs_of` deja de devolver la fila de `KNOBS` y
+  devuelve una COPIA movida por `decayed`: los 22 sitios del relleno decaen sin tocar ni un emisor. Agujeros de forjado 0,26 → 0,80.
+- **El atrezo NO decae, y es corrección a D4**: con `props` al 0,55 la (0,0) bajaba de 60 sillas a 43 y los VIGILANTES de ADR-131 se
+  quedaban sin sitio donde sentarse. Con 30 sótanos la curva reparte; con 3 manda ADR-131. Los cubículos, igual.
+- **Boquetes** (`decay_breaches`): carve de 1–2 m, +30 a +215, `decay·0,5` por pared, sólo entre DOS tramos (fuera hay tierra) y lejos de
+  bocas y de lo ya recortado — un boquete sobre una ventana le quita el antepecho y la vuelve puerta; lo cazó su test.
+- Barrido 27/27 con **islas 6,4 → 6,0** y nav 100 %; pisable −0,3 %. `fill` 13 → 19 ms (los pares de tramos). Suite **1407/1407**.
+- Fuera, declarado: `WEIRD_SPREAD` por profundidad (vive en la subdivisión del plan) y TODO el cliente (r2b), que pisa la rama de materiales.
+
+### 2026-09-06 — 30.ª tanda: el falso techo ROTO (ADR-105 enm. 20), servidor y cliente, sin wire
+- `office_decay`, el último emisor del relleno, en las salas con `office_ceiling_cm`: placas caídas (60×60×**4**, decoración
+  con giro), baldosa de suelo técnico levantada (60×60×**9**), placas colgando (prop 21) y UNA luminaria descolgada por planta (prop 22).
+- Lo que cuelga es prop y no macizo porque `Wg3Solid` sólo gira en Y; y no es prefab porque el pack no trae placa ni luminaria: lo
+  construye `AssembleHungDecay` con el material de techo o de luminaria, bisagra en el borde de arriba, 34°/22°. Kind nuevo ≠ wire nuevo.
+- Densidad por sala con `SALT_DECAY`, y sube con la profundidad (ADR-130 D4, `d²` contra el fondo SERVIDO): calle 0,25 piezas por sala, B3 1,56.
+- Nada frena: decoración y props, así que el barrido sale IDÉNTICO (27/27, pisable 183 756, mancha 99,7 %, 6,4 islas, nav 100 %). Suite 1399/1399.
+- Cliente además: decoración de canto ≤ 15 cm pasa de `Casing` a `Decoration`, pintada con el material de techo o de suelo.
+- **Sin captura** (el editor estaba ocupado). Sonda `probe_decay_spots`: (0,0) B2 a −6,64 m y B3 a −9,96. Al fusionar, los kinds pasan a 21 y 22.
+
 ### 2026-09-06 — 29.ª tanda: ocho sesiones en paralelo; luces, audio y carteles fusionados
 - Joel lanzó a la vez un prompt por punto del «10 de 10» de oficina; el reparto de números (ADR, prop kind, grosor, SALT) llegó tarde.
 - `2148fce3` luces (`e38570d6`): monitor azul 1 de 5 SIN Light (el hash lleva la cota: sin ella se encendía la columna entera), despacho
@@ -148,20 +168,3 @@
 - **ADR-130 rebanada 1** (`11cc3444`, `897ac86a`): `basements_for` ((rx·3+rz·5) mod 4 == 0), `REGION_BASEMENTS = 3`, `ground`; la calle de
   una torre no se hunde, bajo tierra ni atrios ni pozos. wg3 162/162. Capturas `d_b3_hall_*` a −9,96 con luz, moqueta y puerta.
 - Queda de la foto: variedad por `kind`, desorden, avisos, tintes (Joel), suciedad. El wire 62 lo disputan la rampa y el streaming vertical.
-
-### 2026-09-05 — 23.ª tanda: los techos al canon, la luz sin dueño y la megasala (ADR-104 enm. 4–5)
-- `42993519`: mediana de techo 2,50 → 3,10 m (`CEILING_MIN_CM` 300, `MAX` 380, `SKEW` 1,15); `[nav]` mide la componente MAYOR; `rect_of` gira.
-- `af82069c`: nadie ponía `RenderSettings` en WG3 (era el camino de WG2): ahora `Wg3ChunkStreamer.OnEnable`; alcance de lámpara 6 → 11 m
-  porque a 3 m de altura una puntual de 6 deja 3 de radio útil. `2d66a544`: la luz pide la máscara de SU VOLUMEN (`ForLightIn`), no la del suelo.
-- `a4c2c1f4`: megasala hasta 16,36 m sólo sin planta encima (`void_storeys_above`); `CEILING_CAP_M` 7 → 17. `957d8a18`: la sonda medía
-  STOREYS = 2, no el mundo (49 regiones: 27 de 3 plantas). `f250600f`: luces al doble (2,7 / 3,2) a petición de Joel tras el playtest.
-
-### 2026-09-05 — 22.ª tanda: el saneamiento entero (B2–B4) y el primer rojo que caza el gate
-- **B2, gate de commit** (`9a5c680e`): `validate-scope.ps1` por alcance de `git diff --cached`, disparado por un
-  PreToolUse; cuatro hooks fusionados en dos y *fail closed*. El parser del índice de ADR perdía en SILENCIO
-  cualquier encabezado que no encajara (`## ADR-121 y ADR-122`): 164 en el fichero, 163 en el índice.
-- **B2 docs** (`5a80d295`): 10 ficheros a `docs/archive/` con cabecera CONGELADO; de `AGENTS.md` sobrevive UNA regla (la 13) y de `LEEME.md` ninguna.
-- **B3** (`b4d3112c`) 50,1 MB fuera; `STP/Demo` NO se toca (dentro vive `STP_Showcase.unity`, la escena real). **B4**:
-  `ChunkRenderer.cs` (3 925 líneas), el campo de identidad de ADR-103, `SpaceRole::Junction`, `BackroomsWithSTP.unity`
-  y tres comentarios que mandaban a clases borradas. El gate cazó su primer rojo: un test llevaba veintitantos
-  commits en rojo, tapado por su guarda de cobertura (la serie, medida commit a commit, en el log).

@@ -175,6 +175,10 @@ pub(super) enum Character {
 
 /// Las perillas de un carácter. Una tabla y no un `match` por consumidor: así se lee entera de una
 /// vez, y cambiar cómo se siente una zona es cambiar una fila.
+///
+/// `Copy` desde ADR-130 r2: lo que consume el relleno ya no es la fila de la tabla sino **una copia
+/// movida por la profundidad** (ver [`decayed`]). La tabla sigue siendo la del carácter en la calle.
+#[derive(Clone, Copy)]
 pub(super) struct Knobs {
     pub character: Character,
     pub pillar_room: f32,
@@ -439,13 +443,92 @@ pub(super) fn character_at(seed: i32, x_m: f32, z_m: f32) -> Character {
 }
 
 /// Las perillas del espacio, por el centro de su envolvente: una sala es de UN carácter entero.
-pub(super) fn knobs_of(seed: i32, space: &PlannedSpace) -> &'static Knobs {
+///
+/// **Y por su PROFUNDIDAD** (ADR-130 D4, rebanada 2): lo que sale de aquí es la fila del carácter
+/// movida por [`decayed`], que es la única puerta del decaimiento. Por eso la función devuelve una
+/// copia y no la fila: en la calle son idénticas, y a −100 no.
+pub(super) fn knobs_of(seed: i32, space: &PlannedSpace) -> Knobs {
     let (cx, cz) = space.rect.centre_m();
     let c = character_at(seed, cx, cz);
-    KNOBS
+    let base = KNOBS
         .iter()
         .find(|k| k.character == c)
-        .expect("la tabla cubre los cinco caracteres")
+        .expect("la tabla cubre los cinco caracteres");
+    decayed(base, decay_of(space))
+}
+
+/// ADR-130 D1 y D4 — **la profundidad de un espacio, y el decaimiento que le toca.**
+///
+/// La cota manda: la calle está en 0 (`RegionBuilding::floor_of` cuenta desde `ground`), así que
+/// todo lo que tiene `floor_y_cm` negativo es sótano y la profundidad son plantas bajo la calle.
+///
+/// **El denominador es el fondo SERVIDO y no los −100 m de D1.** Con los tres sótanos de la
+/// rebanada 1, `depth²` sobre cien metros vale 0,01 en B3: ni se ve ni se puede medir, y una regla
+/// que no se puede medir no es una regla. Los dos extremos son los de D4 —la calle da 0 y el
+/// sótano más hondo da 1— y el día que `REGION_BASEMENTS` sean treinta, esta misma división da la
+/// curva del ADR sin tocar nada.
+pub(super) fn decay_of(space: &PlannedSpace) -> f32 {
+    decay_of_floor(space.floor_y_cm)
+}
+
+/// [`decay_of`] por la COTA sola, para lo que no tiene espacio a mano (una pared entre dos tramos).
+pub(super) fn decay_of_floor(floor_y_cm: i32) -> f32 {
+    if floor_y_cm >= 0 {
+        return 0.0;
+    }
+    let below = (-floor_y_cm) as f32 / super::plan::STOREY_HEIGHT_CM as f32;
+    let d = (below / super::plan::REGION_BASEMENTS.max(1) as f32).clamp(0.0, 1.0);
+    d * d
+}
+
+/// ADR-130 D4 — **el decaimiento: una función, todas las perillas.**
+///
+/// Cada perilla se interpola de su valor de calle al valor del FONDO, y el sentido lo dice el ADR:
+/// más divisiones, bloques y laberinto; menos carpintería (pilastras, dinteles, arcos, cornisas,
+/// listones, tarimas, arcadas y bóvedas: a −100 nadie remató nada); menos atrezo, y el techo baja.
+/// Lo que NO se mueve es la geometría de la cáscara —tramos, paredes, losas—: eso es el plan.
+fn decayed(base: &Knobs, d: f32) -> Knobs {
+    if d <= 0.0 {
+        return *base;
+    }
+    let to = |from: f32, bottom: f32| from + (bottom - from) * d;
+    Knobs {
+        // Lo que CRECE: la planta se rompe en trozos.
+        partition_room: to(base.partition_room, 1.0),
+        block: to(base.block, (base.block + 0.5).min(1.0)),
+        maze: to(base.maze, (base.maze + 0.35).min(1.0)),
+        grid_maze: to(base.grid_maze, (base.grid_maze + 0.35).min(1.0)),
+        // Lo que DESAPARECE: la carpintería y el remate.
+        pilaster_room: to(base.pilaster_room, 0.0),
+        round_pilaster: to(base.round_pilaster, 0.0),
+        lintel: to(base.lintel, 0.0),
+        arch_door: to(base.arch_door, 0.0),
+        arcade: to(base.arcade, 0.0),
+        vault: to(base.vault, 0.0),
+        cornice: to(base.cornice, 0.0),
+        soffit: to(base.soffit, 0.0),
+        platform: to(base.platform, 0.0),
+        joist: to(base.joist, 0.0),
+        // El atrezo. **El ADR dice 0,80 → 0,10 y aquí NO se llega hasta ahí**, porque ese 0,10 es
+        // el de la planta −100 y el fondo servido hoy es B3: aplicarle el extremo comprime cien
+        // metros en diez y choca de frente con ADR-131, que siembra los VIGILANTES en las anclas
+        // `PROP_CHAIR` y cuya enmienda 2 subió la densidad justo abajo porque Joel no los veía. Un
+        // sótano sin sillas es un sótano sin vigilantes. Con treinta plantas, `decay_of` reparte
+        // esto mismo a lo largo del descenso y el fondo sí baja al 0,10 del ADR.
+        // Medido: con `props` cayendo al 0,55 la región (0,0) baja de 60 sillas a 43 y
+        // `watcher_density_rises_with_depth` se queda sin muestra. Así que el atrezo **no se toca**
+        // mientras el fondo sea B3; el que decae la planta de abajo es el resto de la lista, más
+        // las placas caídas de la enmienda 20 de ADR-105, que sí crecen con la profundidad.
+        props: base.props,
+        cubicles: base.cubicles,
+        // Y el techo, sesenta centímetros más bajo en el fondo.
+        ceiling_cap_cm: if base.ceiling_cap_cm > 0 {
+            base.ceiling_cap_cm - (60.0 * d) as i32
+        } else {
+            base.ceiling_cap_cm
+        },
+        ..*base
+    }
 }
 
 /// El tope de altura libre que el carácter impone a un espacio, 0 si ninguno. Lo aplica
@@ -635,6 +718,10 @@ pub fn fill_building_with(
     out.carves.extend(atrium_carves(building));
     out.carves.extend(hole_carves(building));
     out.carves.extend(well_mouth_carves(building));
+    // ADR-130 D4 (rebanada 2) — los BOQUETES, y van aquí porque todo lo que viene después consulta
+    // `out.carves` para esquivar: un mueble delante de un boquete lo tapa.
+    let breaches = decay_breaches(building, &out.segments, &out.carves);
+    out.carves.extend(breaches);
     // ADR-126 — las rejillas de pozos de la planta baja: vanos en la losa, tierra y cámara.
     let (pit_carves, pit_solids) = pit_geometry(building, &out.segments);
     out.carves.extend(pit_carves);
@@ -816,6 +903,9 @@ const HOLE_SIDE_CM: i32 = 200;
 /// miro jugando.
 const HOLE_CHANCE: f32 = 0.26;
 
+/// ADR-130 D4 — la misma probabilidad en el sótano más hondo. El número es del ADR.
+const HOLE_CHANCE_DEEP: f32 = 0.80;
+
 /// Sal del sorteo de agujeros.
 const SALT_HOLE: u32 = 0xA9_04_01;
 
@@ -902,7 +992,10 @@ fn hole_carves(building: &RegionBuilding) -> Vec<Wg3Carve> {
 
             let (cx, cz) = s.rect.centre_m();
             let mut st = super::hash::stream_at(building.seed, cx, cz, SALT_HOLE);
-            if st.next01() >= HOLE_CHANCE {
+            // ADR-130 D4 — el forjado se rompe hacia abajo: 0,26 en la calle y 0,80 en el fondo.
+            // Va aquí y no en `KNOBS` porque el agujero no es del carácter de la zona, es del
+            // edificio: lo pide la planta, no la sala.
+            if st.next01() >= HOLE_CHANCE + (HOLE_CHANCE_DEEP - HOLE_CHANCE) * decay_of(s) {
                 continue;
             }
 
@@ -2119,7 +2212,7 @@ const VARIANT_AISLE_CM: i32 = 150;
 /// Lo que se le deja a una silla por detrás de la mesa para sentarse.
 const VARIANT_SEAT_CM: i32 = 90;
 /// Sal del sorteo de variante.
-const SALT_VARIANT: u32 = 0xA9_04_0B;
+const SALT_VARIANT: u32 = 0xA9_04_0C;
 
 /// Las cinco variantes de sala. El orden es el de la fila `variants` de [`Knobs`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -4228,6 +4321,163 @@ fn office_signs(
     }
 
     signs
+}
+
+// ─────────────────── los BOQUETES (ADR-130 D4, rebanada 2) ───────────────────
+
+/// Ancho mínimo de un boquete. **Dos metros no**: un boquete no es una puerta, y por eso puede ser
+/// más estrecho que `MIN_GENERATED_WIDTH_CM` — lo que el ráster deje pasar es asunto del validador,
+/// que es quien decide si esto mejora o empeora la planta.
+const BREACH_MIN_W_CM: i32 = 100;
+const BREACH_MAX_W_CM: i32 = 200;
+/// Desde dónde y hasta dónde se rompe la pared. Arranca por encima del zócalo para que quede el
+/// borde roto abajo, y se queda por debajo del techo: lo que cae es el paño, no el forjado.
+const BREACH_SILL_CM: i32 = 30;
+const BREACH_TOP_CM: i32 = 215;
+/// Lo que un boquete deja a la esquina de la pared y a cualquier boca.
+const BREACH_EDGE_CM: i32 = 80;
+/// ADR-130 D4 — probabilidad por pared en el fondo: `decay · 0,5`.
+const BREACH_CHANCE_DEEP: f32 = 0.5;
+const SALT_BREACH: u32 = 0xA9_04_0B;
+
+/// **Los BOQUETES**: paredes rotas entre dos tramos de la misma planta, sólo bajo tierra y más
+/// abajo cuanto más hondo (ADR-130 D4).
+///
+/// Van entre dos tramos y nunca contra el exterior: en un sótano, al otro lado de la fachada hay
+/// tierra, y un agujero a la tierra es una ventana al vacío. Por eso se buscan PAREDES COMPARTIDAS
+/// —dos tramos a la misma cota cuyos bordes se tocan— y se rompe el trozo que solapan.
+///
+/// **Sí abren paso** (decisión de Joel, 06-09): un boquete conecta las dos salas, y quien manda es
+/// el validador — si islas o nav empeoran en el barrido, baja la probabilidad, no la regla.
+fn decay_breaches(
+    building: &RegionBuilding,
+    segments: &[Wg3Segment],
+    carves: &[Wg3Carve],
+) -> Vec<Wg3Carve> {
+    let mut out: Vec<Wg3Carve> = Vec::new();
+    let seed = building.seed;
+    // Las bocas: un boquete al lado de una puerta es una puerta más ancha, no una ruina.
+    let mouths: Vec<(i32, i32, i32, i32)> = segments
+        .iter()
+        .flat_map(|g| {
+            let (w, d) = (g.size_x_cm as f32 / 100.0, g.size_z_cm as f32 / 100.0);
+            g.openings.iter().map(move |o| {
+                let (lx, lz) =
+                    super::placement::local_point(o.side, o.offset_cm as f32 / 100.0, w, d);
+                (
+                    g.x_cm + (lx * 100.0).round() as i32,
+                    g.z_cm + (lz * 100.0).round() as i32,
+                    o.width_cm / 2 + BREACH_EDGE_CM,
+                    g.floor_y_cm,
+                )
+            })
+        })
+        .collect();
+
+    // Por cota, que es lo que separa las plantas: sólo las de debajo de la calle se rompen.
+    let mut floors: Vec<i32> = segments
+        .iter()
+        .map(|g| g.floor_y_cm)
+        .filter(|&f| f < 0)
+        .collect();
+    floors.sort_unstable();
+    floors.dedup();
+
+    for floor in floors {
+        let decay = decay_of_floor(floor);
+        if decay <= 0.0 {
+            continue;
+        }
+        let here: Vec<&Wg3Segment> = segments.iter().filter(|g| g.floor_y_cm == floor).collect();
+        for (i, a) in here.iter().enumerate() {
+            for b in here.iter().skip(i + 1) {
+                // ¿Comparten pared? Dos tramos la comparten cuando el borde de uno cae sobre el del
+                // otro (a menos de dos grosores) y sus otros dos bordes se solapan.
+                for axis in 0..2 {
+                    let (a0, a1, b0, b1) = if axis == 0 {
+                        (a.x_cm, a.x_cm + a.size_x_cm, b.x_cm, b.x_cm + b.size_x_cm)
+                    } else {
+                        (a.z_cm, a.z_cm + a.size_z_cm, b.z_cm, b.z_cm + b.size_z_cm)
+                    };
+                    let wall = if (a1 - b0).abs() <= 2 * WALL_T_CM {
+                        (a1 + b0) / 2
+                    } else if (b1 - a0).abs() <= 2 * WALL_T_CM {
+                        (b1 + a0) / 2
+                    } else {
+                        continue;
+                    };
+                    // El solape en el otro eje: es el trozo de pared que se puede romper.
+                    let (c0, c1, d0, d1) = if axis == 0 {
+                        (a.z_cm, a.z_cm + a.size_z_cm, b.z_cm, b.z_cm + b.size_z_cm)
+                    } else {
+                        (a.x_cm, a.x_cm + a.size_x_cm, b.x_cm, b.x_cm + b.size_x_cm)
+                    };
+                    let (lo, hi) = (c0.max(d0) + BREACH_EDGE_CM, c1.min(d1) - BREACH_EDGE_CM);
+                    if hi - lo < BREACH_MIN_W_CM {
+                        continue;
+                    }
+                    let mut st = super::hash::stream_at(
+                        seed,
+                        wall as f32 / CM_PER_M,
+                        (lo + hi) as f32 / 2.0 / CM_PER_M,
+                        SALT_BREACH,
+                    );
+                    if st.next01() >= decay * BREACH_CHANCE_DEEP {
+                        continue;
+                    }
+                    let width = BREACH_MIN_W_CM
+                        + (st.next01() * (BREACH_MAX_W_CM - BREACH_MIN_W_CM) as f32) as i32;
+                    let width = width.min(hi - lo);
+                    let at = lo + (st.next01() * (hi - lo - width).max(0) as f32) as i32;
+                    // Cubre el grosor entero del contacto, como todo `Wg3Carve` (ADR-099 D3): medio
+                    // boquete es un muro con una marca.
+                    let (x, z, sx, sz) = if axis == 0 {
+                        (wall - WALL_T_CM, at, 2 * WALL_T_CM, width)
+                    } else {
+                        (at, wall - WALL_T_CM, width, 2 * WALL_T_CM)
+                    };
+                    let (mx, mz) = (x + sx / 2, z + sz / 2);
+                    if mouths.iter().any(|&(ox, oz, half, fl)| {
+                        fl == floor && (ox - mx).abs() < half + width / 2 && (oz - mz).abs() < half
+                    }) {
+                        continue;
+                    }
+                    // Y esquiva lo que ya está recortado en esa pared. **Costó un rojo**: un
+                    // boquete sobre una ventana se lleva por delante su antepecho, y entonces la
+                    // ventana deja pasar un cuerpo de pie — que es exactamente lo que
+                    // `windows_are_seen_through_and_not_walked_through` existe para impedir.
+                    let grown_lo = floor + BREACH_SILL_CM - BREACH_EDGE_CM;
+                    let grown_hi = floor + BREACH_TOP_CM + BREACH_EDGE_CM;
+                    if carves.iter().any(|k| {
+                        k.bottom_y_cm < grown_hi
+                            && k.top_y_cm > grown_lo
+                            && k.x_cm < x + sx + BREACH_EDGE_CM
+                            && k.x_cm + k.size_x_cm > x - BREACH_EDGE_CM
+                            && k.z_cm < z + sz + BREACH_EDGE_CM
+                            && k.z_cm + k.size_z_cm > z - BREACH_EDGE_CM
+                    }) {
+                        continue;
+                    }
+                    out.push(Wg3Carve {
+                        x_cm: x,
+                        z_cm: z,
+                        size_x_cm: sx,
+                        size_z_cm: sz,
+                        bottom_y_cm: floor + BREACH_SILL_CM,
+                        top_y_cm: floor + BREACH_TOP_CM,
+                    });
+                }
+            }
+        }
+    }
+    out
+}
+
+/// ¿Es un boquete de ADR-130 D4? Por su forma, como todo lo que emite el relleno.
+pub(super) fn is_breach(c: &Wg3Carve) -> bool {
+    c.top_y_cm - c.bottom_y_cm == BREACH_TOP_CM - BREACH_SILL_CM
+        && c.size_x_cm.min(c.size_z_cm) == 2 * WALL_T_CM
+        && (BREACH_MIN_W_CM..=BREACH_MAX_W_CM).contains(&c.size_x_cm.max(c.size_z_cm))
 }
 
 /// ADR-104 D3 — **abrir el atrio por arriba, porque hasta aquí era un pozo SELLADO.**
@@ -10516,6 +10766,117 @@ mod apron_tests {
             "el falso techo no baja: {low} de {office_rooms} bajo 3,00"
         );
         println!("[falso techo] {low} de {office_rooms} despachos por debajo de 3,00");
+    }
+
+    /// ADR-130 D4 (rebanada 2) — el decaimiento mueve las perillas, y en el sentido que dice el
+    /// ADR: hacia abajo hay MÁS divisiones y MENOS carpintería, y el techo baja.
+    #[test]
+    fn the_knobs_decay_with_depth() {
+        let mut checked = 0usize;
+        for seed in 1..20 {
+            let b = plan::plan_building_at(
+                seed,
+                (0.0, 0.0, 150.0, 150.0),
+                &[],
+                4,
+                plan::REGION_BASEMENTS,
+            );
+            for (n, st) in b.storeys.iter().enumerate() {
+                for (_, s) in st.built() {
+                    let d = decay_of(s);
+                    assert_eq!(
+                        d > 0.0,
+                        n < b.ground,
+                        "semilla {seed}: la planta {n} (suelo {}) decae {d}",
+                        s.floor_y_cm
+                    );
+                    if d <= 0.0 {
+                        continue;
+                    }
+                    // La misma sala, sin profundidad: la fila cruda de su carácter.
+                    let (cx, cz) = s.rect.centre_m();
+                    let base = KNOBS
+                        .iter()
+                        .find(|k| k.character == character_at(seed, cx, cz))
+                        .unwrap();
+                    let kn = knobs_of(seed, s);
+                    assert!(
+                        kn.partition_room >= base.partition_room
+                            && kn.block >= base.block
+                            && kn.maze >= base.maze,
+                        "semilla {seed}: bajo tierra tiene que haber MÁS masa, no menos"
+                    );
+                    assert!(
+                        kn.pilaster_room <= base.pilaster_room
+                            && kn.lintel <= base.lintel
+                            && kn.cornice <= base.cornice
+                            && kn.platform <= base.platform,
+                        "semilla {seed}: a −100 no hay carpintería"
+                    );
+                    if base.ceiling_cap_cm > 0 {
+                        assert!(kn.ceiling_cap_cm < base.ceiling_cap_cm);
+                    }
+                    // ADR-131: el atrezo NO decae mientras el fondo sea B3, o los vigilantes se
+                    // quedan sin sillas donde Joel pidió verlos.
+                    assert_eq!(kn.props, base.props);
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 200, "sólo {checked} salas de sótano miradas");
+        println!("[decaimiento] {checked} salas de sótano con las perillas movidas");
+    }
+
+    /// Los BOQUETES: sólo bajo tierra, con su forma, entre dos tramos y lejos de bocas y ventanas.
+    #[test]
+    fn breaches_only_break_walls_below_ground() {
+        let m = no_catalogue();
+        let mut total = 0usize;
+        let mut deepest = 0usize;
+        for seed in 1..20 {
+            let b = plan::plan_building_at(
+                seed,
+                (0.0, 0.0, 150.0, 150.0),
+                &[],
+                4,
+                plan::REGION_BASEMENTS,
+            );
+            let f = fill_building(&b, &m);
+            let bottom = b.storeys[0].spaces[0].floor_y_cm;
+            for c in f.carves.iter().filter(|c| is_breach(c)) {
+                total += 1;
+                assert!(
+                    c.bottom_y_cm < 0,
+                    "semilla {seed}: un boquete sobre la calle: {c:?}"
+                );
+                if c.bottom_y_cm - BREACH_SILL_CM == bottom {
+                    deepest += 1;
+                }
+                // Entre dos tramos: la pared rota tiene tramo a los dos lados.
+                let floor = c.bottom_y_cm - BREACH_SILL_CM;
+                let (mx, mz) = (c.x_cm + c.size_x_cm / 2, c.z_cm + c.size_z_cm / 2);
+                let sides = f
+                    .segments
+                    .iter()
+                    .filter(|g| {
+                        g.floor_y_cm == floor
+                            && g.x_cm - WALL_T_CM <= mx
+                            && mx <= g.x_cm + g.size_x_cm + WALL_T_CM
+                            && g.z_cm - WALL_T_CM <= mz
+                            && mz <= g.z_cm + g.size_z_cm + WALL_T_CM
+                    })
+                    .count();
+                assert!(
+                    sides >= 2,
+                    "semilla {seed}: un boquete con {sides} tramos al lado: {c:?}"
+                );
+            }
+        }
+        assert!(
+            total >= 20 && deepest * 2 >= total / 3,
+            "los boquetes no salen o no se hunden: {total} en total, {deepest} en el fondo"
+        );
+        println!("[boquetes] {total} en 19 semillas, {deepest} en el sótano más hondo");
     }
 
     /// El deterioro de la enm. 20, por su forma: `is_fallen_plate` y `is_raised_floor_tile` son las

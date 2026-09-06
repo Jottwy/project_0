@@ -8,6 +8,26 @@
 > la sesión viva, el próximo paso, lo que está en curso, lo que no se toca, la deuda conocida y
 > los riesgos abiertos. Aquí solo vive lo que ya pasó, de lo más reciente a lo más antiguo.
 
+## Trasladado de STATE.md el 2026-09-06 (segundo corte del dia): las tandas 22 y 23
+
+### 2026-09-05 — 23.ª tanda: los techos al canon, la luz sin dueño y la megasala (ADR-104 enm. 4–5)
+- `42993519`: mediana de techo 2,50 → 3,10 m (`CEILING_MIN_CM` 300, `MAX` 380, `SKEW` 1,15); `[nav]` mide la componente MAYOR; `rect_of` gira.
+- `af82069c`: nadie ponía `RenderSettings` en WG3 (era el camino de WG2): ahora `Wg3ChunkStreamer.OnEnable`; alcance de lámpara 6 → 11 m
+  porque a 3 m de altura una puntual de 6 deja 3 de radio útil. `2d66a544`: la luz pide la máscara de SU VOLUMEN (`ForLightIn`), no la del suelo.
+- `a4c2c1f4`: megasala hasta 16,36 m sólo sin planta encima (`void_storeys_above`); `CEILING_CAP_M` 7 → 17. `957d8a18`: la sonda medía
+  STOREYS = 2, no el mundo (49 regiones: 27 de 3 plantas). `f250600f`: luces al doble (2,7 / 3,2) a petición de Joel tras el playtest.
+
+### 2026-09-05 — 22.ª tanda: el saneamiento entero (B2–B4) y el primer rojo que caza el gate
+- **B2, gate de commit** (`9a5c680e`): `validate-scope.ps1` por alcance de `git diff --cached`, disparado por un
+  PreToolUse; cuatro hooks fusionados en dos y *fail closed*. El parser del índice de ADR perdía en SILENCIO
+  cualquier encabezado que no encajara (`## ADR-121 y ADR-122`): 164 en el fichero, 163 en el índice.
+- **B2 docs** (`5a80d295`): 10 ficheros a `docs/archive/` con cabecera CONGELADO; de `AGENTS.md` sobrevive UNA regla (la 13) y de `LEEME.md` ninguna.
+- **B3** (`b4d3112c`) 50,1 MB fuera; `STP/Demo` NO se toca (dentro vive `STP_Showcase.unity`, la escena real). **B4**:
+  `ChunkRenderer.cs` (3 925 líneas), el campo de identidad de ADR-103, `SpaceRole::Junction`, `BackroomsWithSTP.unity`
+  y tres comentarios que mandaban a clases borradas. El gate cazó su primer rojo: un test llevaba veintitantos
+  commits en rojo, tapado por su guarda de cobertura (la serie, medida commit a commit, en el log).
+
+
 - Fecha: 2026-08-03 (mañana — **la tanda de comportamiento del robapieles, y dos regresiones propias cazadas en playtest**)
 - COMMITS: `845ff23`, `2be49bb`, `a559352`, `56d0021`(re-bake), `e95940d`, más los de audio (`8f3d298`, y el de los rugidos). Backend release desplegado en `Builds/Backend/` a las **3:48:54 (5.083.304 B)**. Wire sigue en **18** (ADR-048, sin cambios nuevos de protocolo). Backend `cargo test` **531/531** tres veces seguidas, clippy `--all-targets -D warnings` limpio, `fmt` limpio. Cliente Roslyn **0 errores en los cuatro ensamblados**.
 
