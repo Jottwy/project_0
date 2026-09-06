@@ -400,11 +400,20 @@ namespace BackroomsSurvival.WorldGen3
                     var p = chunk.props[i];
                     officeProps.Add(new Audio.OfficeAmbienceDirector.PropSpec
                     {
-                        xCm = p.xCm, yCm = p.yCm, zCm = p.zCm, kind = p.kind,
+                        xCm = p.xCm, yCm = p.yCm, zCm = p.zCm, yawDeg = p.yawDeg, kind = p.kind,
                     });
                 }
                 var emitters = new List<Audio.OfficeAmbienceDirector.Emitter>();
                 Audio.OfficeAmbienceDirector.BuildEmitters(worldSeed, officeRooms, officeProps, emitters);
+
+                // El prop VISIBLE de cada fuente, antes de dar de alta el lote: la rejilla de aire y
+                // la impresora. Sin esto una fuente puntual no se puede ni señalar ni diagnosticar.
+                for (int i = 0; i < emitters.Count; i++)
+                {
+                    Wg3SceneAssembler.AssembleAmbienceProp(
+                        emitters[i], root.transform, root.layer, $"amb_{i:D2}_{emitters[i].kind}");
+                }
+
                 Audio.OfficeAmbienceDirector.RegisterChunk(root.transform, emitters);
                 _builtOfficeSources += emitters.Count;
             }

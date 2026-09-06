@@ -15,6 +15,7 @@ namespace BackroomsSurvival.EditorTools
         private const string Out = "Assets/Resources/Wg3Props";
         private const string Office = "Assets/AK Studio Art/Business Office/Prefabs/Office/";
         private const string Boxes = "Assets/AK Studio Art/Business Office/Prefabs/Cardboard Boxes/";
+        private const string Diffusers = "Assets/AK Studio Art/Business Office/Prefabs/Diffusers/";
         private const string Grocery = "Assets/GroceryStorePropsCollection/Prefabs/URP/";
 
         // Variantes: la primera se guarda como <Kind>, las demás como <Kind>_2, <Kind>_3…; el
@@ -35,6 +36,12 @@ namespace BackroomsSurvival.EditorTools
             ("Phone", new[] { Office + "Office Phone.prefab" }),
             ("Keyboard", new[] { Office + "Keyboard.prefab" }),
             ("Tray", new[] { Office + "Paper Tray.prefab" }),
+            // Los DOS del detalle sonoro de oficina: no llegan por el cable (no tienen `kind`), los
+            // instancia el cliente donde pone una fuente, para que se vea de dónde sale el ruido.
+            // «Diffuser 1» es la rejilla de techo (0,81 × 0,03 × 0,81, pivote arriba); «Diffuser 2»
+            // es una rejilla de PARED y no vale para esto.
+            ("Vent", new[] { Diffusers + "Diffuser 1.prefab" }),
+            ("Printer", new[] { Office + "Laserjet Print.prefab" }),
         };
 
         [MenuItem("Backrooms/WG3/Build Prop Catalog")]

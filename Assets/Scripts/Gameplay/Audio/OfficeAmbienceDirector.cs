@@ -109,6 +109,7 @@ namespace BackroomsSurvival.Gameplay.Audio
         public struct PropSpec
         {
             public int xCm, yCm, zCm;
+            public short yawDeg;
             public byte kind;
         }
 
@@ -117,9 +118,45 @@ namespace BackroomsSurvival.Gameplay.Audio
         {
             public Vector3 position; // MUNDO, en metros
             public Kind kind;
+            public float yawDeg;  // giro del prop visible, si el tipo tiene uno
             public float period;  // segundos entre sucesos; 0 en los continuos
             public float phase01; // 0..1 del primer suceso dentro del periodo
         }
+
+        // ── El prop que se VE ───────────────────────────────────────────────────
+        //
+        // «Donde hay sonido de ventilador o aires, debería estar el prop» (Joel, 06-09), y no es
+        // sólo cosmética: una fuente puntual invisible es indiagnosticable. Con la rejilla puesta,
+        // que el aire suene desplazado o dentro de una viga se VE en una captura en vez de
+        // discutirse de oído.
+        //
+        // El teléfono y la silla NO llevan prop propio: ya están anclados EN el mueble que el
+        // servidor colocó (ADR-129), y duplicarlo pondría dos teléfonos en la misma mesa.
+
+        /// <summary>Prefab bajo <c>Resources/Wg3Props</c> que hace visible la fuente, o
+        /// <c>null</c> si el tipo ya suena desde un mueble que el servidor puso.</summary>
+        public static string VisualPrefabOf(Kind kind)
+        {
+            switch (kind)
+            {
+                case Kind.AirCon: return "Vent";
+                case Kind.Printer: return "Printer";
+                default: return null;
+            }
+        }
+
+        /// <summary>
+        /// Escala del prop visible. La rejilla del pack mide 0,81 m y el techo de oficina está
+        /// aplacado a 0,60 (<c>Wg3SceneAssembler.CeilingTileM</c>): a tamaño original se sale de la
+        /// placa y se lee como un error de rejilla, no como una salida de aire. 0,60/0,8065.
+        /// </summary>
+        public static float VisualScaleOf(Kind kind) => kind == Kind.AirCon ? 0.7439f : 1f;
+
+        // LÍMITE CONOCIDO, no resuelto: el cliente no sabe qué hueco del techo está libre — los
+        // macizos de ADR-105 (vigas, dinteles) llegan como geometría, no como ocupación. Una
+        // rejilla puede caer dentro de una viga. Se ve en cuanto pasa, que es justo lo que da
+        // ponerle prop; el arreglo, si aparece, es que el servidor mande el ancla como hace con el
+        // atrezo, y eso ya sería wire.
 
         // Los `kind` del atrezo (espejo de Wg3PropMsg; se copian y no se referencian para no
         // atar el audio al parser del cable).
@@ -163,8 +200,8 @@ namespace BackroomsSurvival.Gameplay.Audio
             if (into == null) return;
 
             int desks = 0, chairs = 0, storage = 0, officeProps = 0;
-            int bestChair = -1, bestStorage = -1, bestPhone = -1;
-            ulong bestChairH = ulong.MaxValue, bestStorageH = ulong.MaxValue, bestPhoneH = ulong.MaxValue;
+            int bestChair = -1, bestStand = -1, bestPhone = -1;
+            ulong bestChairH = ulong.MaxValue, bestStandH = ulong.MaxValue, bestPhoneH = ulong.MaxValue;
 
             int n = props?.Count ?? 0;
             for (int i = 0; i < n; i++)
@@ -191,9 +228,14 @@ namespace BackroomsSurvival.Gameplay.Audio
                 {
                     bestChairH = h; bestChair = i;
                 }
-                if ((p.kind == PropCabinet || p.kind == PropShelf || p.kind == PropBox) && h < bestStorageH)
+                // La impresora se apoya en algo con SUPERFICIE LIBRE, y de eso hay dos: el armario
+                // (0,79 m de alto, contra la pared, nada encima) y la caja (0,29). La estantería
+                // NO: son 5 m de balda contra el muro y una impresora en una balda es un error de
+                // colocación evidente. Es la razón de que esto no sea el mismo conjunto que
+                // `storage`, que sólo cuenta para decidir que la sala ES un archivo.
+                if ((p.kind == PropCabinet || p.kind == PropBox) && h < bestStandH)
                 {
-                    bestStorageH = h; bestStorage = i;
+                    bestStandH = h; bestStand = i;
                 }
                 if (p.kind == PropPhone && h < bestPhoneH)
                 {
@@ -215,14 +257,29 @@ namespace BackroomsSurvival.Gameplay.Audio
                                 && areaM2 >= 9f;
             if (falseCeiling)
             {
+                // ENTRE los paneles, no encima de uno. `Wg3SceneAssembler.AddPanels` monta la
+                // rejilla de fluorescentes centrada y a paso de 2,40 m, así que con la sala centrada
+                // hay un panel JUSTO en el centro cuando el número de paneles es impar: la rejilla
+                // de aire caería dentro de la luminaria. Media retícula la deja en el hueco.
+                //
+                // El desplazamiento se rinde si la sala es pequeña — vale más una rejilla centrada
+                // que una pegada a la pared.
+                float halfPitch = PanelPitchM * 0.5f;
+                float ox = room.sizeXCm * 0.005f, oz = room.sizeZCm * 0.005f;
+                if (ox + halfPitch <= room.sizeXCm * 0.01f - VentClearanceM) ox += halfPitch;
+                if (oz + halfPitch <= room.sizeZCm * 0.01f - VentClearanceM) oz += halfPitch;
+
                 into.Add(new Emitter
                 {
-                    // Centro de la sala, colgada del plenum: la rejilla está EN el falso techo.
+                    // El pivote de la rejilla es su cara SUPERIOR: va en el plano del falso techo y
+                    // la placa cuelga 3 cm. Poner aquí el centro de la sala sin más la metía dentro
+                    // del forjado o a 20 cm de la nada.
                     position = new Vector3(
-                        (room.xCm + room.sizeXCm * 0.5f) * 0.01f,
-                        floorM + room.heightCm * 0.01f - 0.20f,
-                        (room.zCm + room.sizeZCm * 0.5f) * 0.01f),
+                        room.xCm * 0.01f + ox,
+                        floorM + room.heightCm * 0.01f,
+                        room.zCm * 0.01f + oz),
                     kind = Kind.AirCon,
+                    yawDeg = 0f,
                     period = 0f,
                     phase01 = 0f,
                 });
@@ -236,15 +293,20 @@ namespace BackroomsSurvival.Gameplay.Audio
             {
                 PropSpec c = props[bestChair];
                 AddEpisodic(worldSeed, into, Kind.ChairCreak, SaltCreak, 1f,
-                    new Vector3(c.xCm * 0.01f, c.yCm * 0.01f + 0.50f, c.zCm * 0.01f), c.xCm, c.zCm, room.floorYCm);
+                    new Vector3(c.xCm * 0.01f, c.yCm * 0.01f + 0.50f, c.zCm * 0.01f), c.yawDeg,
+                    c.xCm, c.zCm, room.floorYCm);
             }
 
-            // 3. ARCHIVO — armarios y cajas sin puestos de trabajo.
-            if (!cubicles && storage >= 3 && desks <= 1 && bestStorage >= 0)
+            // 3. ARCHIVO — armarios y cajas sin puestos de trabajo. La impresora se apoya ENCIMA
+            //    del mueble, y por eso hace falta un mueble con superficie: sin él no hay
+            //    impresora, que es mejor que una impresora flotando a 90 cm de nada.
+            if (!cubicles && storage >= 3 && desks <= 1 && bestStand >= 0)
             {
-                PropSpec s = props[bestStorage];
+                PropSpec s = props[bestStand];
+                float top = s.kind == PropCabinet ? CabinetTopM : BoxTopM;
                 AddEpisodic(worldSeed, into, Kind.Printer, SaltPrinter, PrinterChance,
-                    new Vector3(s.xCm * 0.01f, s.yCm * 0.01f + 0.90f, s.zCm * 0.01f), s.xCm, s.zCm, room.floorYCm);
+                    new Vector3(s.xCm * 0.01f, s.yCm * 0.01f + top, s.zCm * 0.01f), s.yawDeg,
+                    s.xCm, s.zCm, room.floorYCm);
             }
 
             // 4. DESPACHO — uno o dos puestos, con teléfono, y pequeño. Es la sala que se
@@ -253,12 +315,25 @@ namespace BackroomsSurvival.Gameplay.Audio
             {
                 PropSpec p = props[bestPhone];
                 AddEpisodic(worldSeed, into, Kind.Phone, SaltPhone, PhoneChance,
-                    new Vector3(p.xCm * 0.01f, p.yCm * 0.01f + 0.02f, p.zCm * 0.01f), p.xCm, p.zCm, room.floorYCm);
+                    new Vector3(p.xCm * 0.01f, p.yCm * 0.01f + 0.02f, p.zCm * 0.01f), p.yawDeg,
+                    p.xCm, p.zCm, room.floorYCm);
             }
         }
 
+        /// <summary>Paso de la rejilla de fluorescentes, espejo de
+        /// <c>Wg3SceneAssembler.PanelPitchTiles × CeilingTileM</c>.</summary>
+        private const float PanelPitchM = 2.4f;
+
+        /// <summary>Lo que la rejilla de aire respeta hasta la pared: una placa larga.</summary>
+        private const float VentClearanceM = 1.2f;
+
+        /// <summary>Cara superior del armario (`Cupboard`, 0,89 × 0,79 × 0,46) y de la caja de
+        /// cartón (0,40 × 0,29 × 0,29), medidas de su BoxCollider. La impresora se apoya ahí.</summary>
+        private const float CabinetTopM = 0.79f;
+        private const float BoxTopM = 0.29f;
+
         private static void AddEpisodic(int worldSeed, List<Emitter> into, Kind kind, uint salt,
-            float chance, Vector3 position, int xCm, int zCm, int floorYCm)
+            float chance, Vector3 position, float yawDeg, int xCm, int zCm, int floorYCm)
         {
             // La COTA entra en la mezcla: dos salas superpuestas en plantas distintas caen en
             // el mismo (x,z) y sin ella sortearían igual.
@@ -271,6 +346,7 @@ namespace BackroomsSurvival.Gameplay.Audio
             {
                 position = position,
                 kind = kind,
+                yawDeg = yawDeg,
                 period = PeriodMin[k] + timing.Next01() * PeriodSpan[k],
                 phase01 = timing.Next01(),
             });
@@ -365,6 +441,7 @@ namespace BackroomsSurvival.Gameplay.Audio
             public AudioSource src;
             public Transform tr;
             public long key = NoKey;
+            public Kind kind;
             public SlotMode mode;
             public float target;   // volumen destino del continuo
             public float busyUntil; // reloj local hasta el que el one-shot ocupa el hueco
@@ -546,6 +623,17 @@ namespace BackroomsSurvival.Gameplay.Audio
                     };
 
                     if (e.period <= 0f) { _loops.Add(cand); continue; }
+
+                    // HORARIO CADUCADO. Un emisor fuera de alcance no se mira, así que su cita se
+                    // queda en el pasado mientras el jugador está lejos: al entrar en la sala
+                    // sonaría EN EL ACTO, y siempre. Un teléfono que suena cada vez que cruzas la
+                    // puerta no es un suceso, es un disparador. Si la cita lleva vencida más de un
+                    // periodo entero, se reprograma sin sonar.
+                    if (now - batch.nextAt[i] > e.period)
+                    {
+                        batch.nextAt[i] = now + e.phase01 * e.period;
+                        continue;
+                    }
                     if (now >= batch.nextAt[i]) _due.Add(cand);
                 }
             }
@@ -561,38 +649,40 @@ namespace BackroomsSurvival.Gameplay.Audio
                 Batch batch = _batches[c.batch];
                 batch.nextAt[c.index] = now + batch.emitters[c.index].period;
 
-                int slot = FreeOrLoopSlot(now);
+                int slot = FreeOrLoopSlot();
                 if (slot < 0) continue;
                 StartOneShot(_slots[slot], c, now);
             }
 
             // Y los continuos con lo que sobre, por cercanía.
+            //
+            // PRIMERO se refresca lo que ya suena y sólo DESPUÉS se llenan huecos, y ese orden es
+            // el arreglo de dos fallos: (a) un continuo que empezó a fundirse y vuelve a estar en
+            // alcance se quedaba mudo hasta terminar de apagarse, porque nada le devolvía el
+            // volumen; (b) `MasterVolume` se leía sólo al arrancar la fuente, así que moverlo en
+            // vivo no tocaba nada que ya estuviera sonando.
             _loops.Sort(ByDistance);
-            int taken = 0;
-            for (int i = 0; i < _loops.Count && taken < _slots.Length; i++)
-            {
-                Candidate c = _loops[i];
-                if (HoldsKey(c.key)) { taken++; continue; }
-                int slot = FreeSlot(now);
-                if (slot < 0) break;
-                StartLoop(_slots[slot], c);
-                taken++;
-            }
-
-            // Un continuo cuya fuente ya no es candidata se apaga con fundido.
             for (int s = 0; s < _slots.Length; s++)
             {
                 Slot slot = _slots[s];
                 if (slot.mode != SlotMode.Loop) continue;
-                if (!StillCandidate(slot.key)) slot.target = 0f;
+                slot.target = StillCandidate(slot.key) ? KindVolume[(int)slot.kind] * _masterVolume : 0f;
+            }
+
+            for (int i = 0; i < _loops.Count; i++)
+            {
+                Candidate c = _loops[i];
+                if (HoldsKey(c.key)) continue;
+                int slot = FreeSlot();
+                if (slot < 0) break; // presupuesto agotado: los demás no suenan, y es el diseño
+                StartLoop(_slots[slot], c);
             }
         }
 
         private bool HoldsKey(long key)
         {
             for (int s = 0; s < _slots.Length; s++)
-                if (_slots[s].mode == SlotMode.Loop && _slots[s].key == key && _slots[s].target > 0f)
-                    return true;
+                if (_slots[s].mode == SlotMode.Loop && _slots[s].key == key) return true;
             return false;
         }
 
@@ -602,7 +692,7 @@ namespace BackroomsSurvival.Gameplay.Audio
             return false;
         }
 
-        private int FreeSlot(float now)
+        private int FreeSlot()
         {
             for (int s = 0; s < _slots.Length; s++)
                 if (_slots[s].mode == SlotMode.Idle) return s;
@@ -610,9 +700,9 @@ namespace BackroomsSurvival.Gameplay.Audio
         }
 
         // Para un episódico: primero un hueco libre, y si no hay, el continuo MÁS LEJANO.
-        private int FreeOrLoopSlot(float now)
+        private int FreeOrLoopSlot()
         {
-            int free = FreeSlot(now);
+            int free = FreeSlot();
             if (free >= 0) return free;
             int worst = -1;
             float worstDist = -1f;
@@ -638,6 +728,7 @@ namespace BackroomsSurvival.Gameplay.Audio
             int k = (int)c.kind;
 
             slot.key = c.key;
+            slot.kind = c.kind;
             slot.mode = SlotMode.Loop;
             slot.tr.position = c.position;
             slot.src.clip = clip;
@@ -661,6 +752,7 @@ namespace BackroomsSurvival.Gameplay.Audio
             slot.src.clip = null;
             slot.src.loop = false;
             slot.key = c.key;
+            slot.kind = c.kind;
             slot.mode = SlotMode.OneShot;
             slot.tr.position = c.position;
             slot.src.minDistance = KindMinDistance[k];

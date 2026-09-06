@@ -105,13 +105,60 @@ namespace BackroomsSurvival.Tests
         }
 
         [Test]
-        public void AirCon_CuelgaDelPlenumYEnElCentro()
+        public void AirCon_VaEnElPlanoDelFalsoTechoYFueraDelPanel()
         {
+            // 6 × 4 m. El pivote de la rejilla es su cara superior, así que la cota es la del
+            // falso techo EXACTA — no restada. En X cabe la media retícula (3,0 + 1,2 = 4,2, con
+            // 4,8 de tope); en Z no (2,0 + 1,2 = 3,2 > 2,8), y ahí se queda centrada.
             Emitter e = Get(Classify(Room(600, 400, 280)), Kind.AirCon);
-            Assert.AreEqual(13.0f, e.position.x, 1e-3f);  // 1000 + 600/2 cm
-            Assert.AreEqual(22.0f, e.position.z, 1e-3f);  // 2000 + 400/2 cm
-            Assert.AreEqual(2.60f, e.position.y, 1e-3f);  // 2,80 − 0,20 del plenum
+            Assert.AreEqual(14.2f, e.position.x, 1e-3f);
+            Assert.AreEqual(22.0f, e.position.z, 1e-3f);
+            Assert.AreEqual(2.80f, e.position.y, 1e-3f);
             Assert.AreEqual(0f, e.period, "el aire es continuo, no un suceso");
+        }
+
+        [Test]
+        public void AirCon_NuncaSeSaleDeLaSala()
+        {
+            // El desplazamiento de media retícula no puede empujar la rejilla contra el muro ni
+            // fuera de la sala, ni en la más pequeña que admite rejilla (3 × 3 m).
+            for (int wCm = 300; wCm <= 2500; wCm += 50)
+            {
+                for (int dCm = 300; dCm <= 2500; dCm += 550)
+                {
+                    var es = Classify(Room(wCm, dCm, 280), Cubicles());
+                    if (!Has(es, Kind.AirCon)) continue;
+                    Emitter e = Get(es, Kind.AirCon);
+                    float lx = e.position.x - 10f, lz = e.position.z - 20f;
+                    Assert.GreaterOrEqual(lx, 0.6f, $"{wCm}×{dCm}: rejilla contra el muro en X");
+                    Assert.GreaterOrEqual(lz, 0.6f, $"{wCm}×{dCm}: rejilla contra el muro en Z");
+                    Assert.LessOrEqual(lx, wCm * 0.01f - 0.6f, $"{wCm}×{dCm}: rejilla fuera en X");
+                    Assert.LessOrEqual(lz, dCm * 0.01f - 0.6f, $"{wCm}×{dCm}: rejilla fuera en Z");
+                }
+            }
+        }
+
+        // ── El prop que se ve ───────────────────────────────────────────────────
+
+        [Test]
+        public void CadaFuenteInvisibleTieneSuProp()
+        {
+            // La regla: si la fuente no sale de un mueble que el servidor puso, tiene que traer el
+            // suyo. Un ventilador que suena de la nada no se puede ni señalar ni diagnosticar.
+            Assert.AreEqual("Vent", OfficeAmbienceDirector.VisualPrefabOf(Kind.AirCon));
+            Assert.AreEqual("Printer", OfficeAmbienceDirector.VisualPrefabOf(Kind.Printer));
+            // Estos dos ya se ven: están anclados EN el teléfono y EN la silla de ADR-129.
+            Assert.IsNull(OfficeAmbienceDirector.VisualPrefabOf(Kind.Phone));
+            Assert.IsNull(OfficeAmbienceDirector.VisualPrefabOf(Kind.ChairCreak));
+        }
+
+        [Test]
+        public void LaRejillaSeEscalaALaPlacaDelTecho()
+        {
+            // 0,8065 m de la malla × la escala tiene que dar la placa de 0,60 de
+            // Wg3SceneAssembler.CeilingTileM, o se lee como una rejilla mal puesta.
+            Assert.AreEqual(0.60f, 0.8065203f * OfficeAmbienceDirector.VisualScaleOf(Kind.AirCon), 5e-3f);
+            Assert.AreEqual(1f, OfficeAmbienceDirector.VisualScaleOf(Kind.Printer), 1e-6f);
         }
 
         private static List<Emitter> Classify(RoomSpec room) => Classify(room, Cubicles());
@@ -146,6 +193,46 @@ namespace BackroomsSurvival.Tests
                 found = Has(Classify(room, shifted), Kind.Printer);
             }
             Assert.IsTrue(found, "ningún archivo de 40 plantas sacó impresora: el sorteo está muerto");
+        }
+
+        [Test]
+        public void Archivo_LaImpresoraSeApoyaEncimaDelMueble()
+        {
+            // El armario mide 0,79 de alto (su BoxCollider). La impresora va ARRIBA, no flotando.
+            var props = new List<PropSpec>
+            {
+                P(Cabinet, 1100, 2100), P(Shelf, 1500, 2100), P(Box, 1700, 2100),
+            };
+            for (int floor = 0; floor < 40; floor++)
+            {
+                var shifted = new List<PropSpec>();
+                foreach (PropSpec p in props) shifted.Add(P(p.kind, p.xCm, p.zCm, floor * 332));
+                var es = Classify(Room(700, 500, 332, floorYCm: floor * 332), shifted);
+                if (!Has(es, Kind.Printer)) continue;
+                Emitter e = Get(es, Kind.Printer);
+                float over = e.position.y - floor * 3.32f;
+                Assert.IsTrue(Mathf.Abs(over - 0.79f) < 1e-3f || Mathf.Abs(over - 0.29f) < 1e-3f,
+                    $"la impresora quedó a {over:F2} m del suelo: ni sobre el armario ni sobre la caja");
+                return;
+            }
+            Assert.Fail("ningún archivo sacó impresora");
+        }
+
+        [Test]
+        public void Archivo_SoloDeEstanteriasNoLlevaImpresora()
+        {
+            // Una estantería son 5 m de balda contra el muro: una impresora ahí es un error de
+            // colocación evidente. Sin armario ni caja, no hay impresora.
+            for (int floor = 0; floor < 40; floor++)
+            {
+                var props = new List<PropSpec>
+                {
+                    P(Shelf, 1100, 2100, floor * 332), P(Shelf, 1500, 2100, floor * 332),
+                    P(Shelf, 1900, 2100, floor * 332),
+                };
+                var es = Classify(Room(700, 500, 332, floorYCm: floor * 332), props);
+                Assert.IsFalse(Has(es, Kind.Printer), $"planta {floor}: impresora sobre una balda");
+            }
         }
 
         [Test]

@@ -542,6 +542,55 @@ namespace BackroomsSurvival.WorldGen3
             return go;
         }
 
+        /// <summary>
+        /// El prop VISIBLE de una fuente de ambiente de oficina — la rejilla de aire, la impresora.
+        ///
+        /// No llega por el cable: no tiene `kind`, lo decide el cliente en el mismo sitio donde
+        /// pone la fuente. Existe porque una fuente puntual invisible es indiagnosticable: con la
+        /// rejilla puesta, que el aire suene desplazado o dentro de una viga se VE en una captura.
+        ///
+        /// Misma disciplina que <see cref="AssembleProp"/>: sin colliders (es atrezo, no frena),
+        /// capa del chunk y máscara de la cota, y <c>DontSave</c> para que no acabe en la escena.
+        /// </summary>
+        public static GameObject AssembleAmbienceProp(
+            BackroomsSurvival.Gameplay.Audio.OfficeAmbienceDirector.Emitter e,
+            Transform parent, int layer, string name)
+        {
+            if (parent == null) return null;
+            string resource = BackroomsSurvival.Gameplay.Audio.OfficeAmbienceDirector.VisualPrefabOf(e.kind);
+            if (resource == null) return null; // el teléfono y la silla ya se ven: son atrezo servido
+            GameObject prefab = Resources.Load<GameObject>("Wg3Props/" + resource);
+            if (prefab == null)
+            {
+                WarnMissingAmbienceProp(resource);
+                return null;
+            }
+
+            var go = Object.Instantiate(prefab, parent);
+            go.name = name;
+            go.hideFlags = HideFlags.DontSave;
+            go.transform.position = e.position;
+            go.transform.rotation = Quaternion.Euler(0f, e.yawDeg, 0f);
+            float s = BackroomsSurvival.Gameplay.Audio.OfficeAmbienceDirector.VisualScaleOf(e.kind);
+            if (s != 1f) go.transform.localScale = new Vector3(s, s, s);
+            uint mask = Wg3StoreyLayers.ForLight(e.position.y);
+            foreach (Transform t in go.GetComponentsInChildren<Transform>(true)) t.gameObject.layer = layer;
+            foreach (Renderer r in go.GetComponentsInChildren<Renderer>(true)) r.renderingLayerMask = mask;
+            foreach (Collider c in go.GetComponentsInChildren<Collider>(true)) c.enabled = false;
+            return go;
+        }
+
+        // Un aviso por prefab y sesión: sin esto, una rejilla que falte deja una línea por sala de
+        // oficina de cada chunk, que son miles.
+        private static readonly HashSet<string> _warnedAmbienceProps = new HashSet<string>();
+
+        private static void WarnMissingAmbienceProp(string resource)
+        {
+            if (!_warnedAmbienceProps.Add(resource)) return;
+            Debug.LogWarning($"[wg3] sin prefab de ambiente 'Wg3Props/{resource}': " +
+                             "ejecuta Backrooms/WG3/Build Prop Catalog. La fuente se oirá sin verse.");
+        }
+
         /// <summary>Placa del techo de la oficina: 60 cm. Los paneles se alinean a ella.</summary>
         public const float CeilingTileM = 0.6f;
         /// <summary>Panel fluorescente: dos placas de largo, una de ancho, como en la foto.</summary>
