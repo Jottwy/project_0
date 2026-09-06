@@ -8941,7 +8941,7 @@ fn probe_dump_regions_json() {
                 let h = s.top_y_cm - s.bottom_y_cm;
                 let standing = floors.contains(&s.bottom_y_cm);
                 let (kind, new) = if fill::is_fallen_plate(s) {
-                    // ADR-105 enm. 19 — van ANTES que el marco: las dos son decoración, y la
+                    // ADR-105 enm. 20 — van ANTES que el marco: las dos son decoración, y la
                     // decoración se clasifica por su forma como todo lo demás.
                     ("placa caída", true)
                 } else if fill::is_raised_floor_tile(s) {
@@ -9540,7 +9540,7 @@ fn probe_cubicle_spots() {
     }
 }
 
-/// Deterioro del falso techo (ADR-105 enm. 19): dónde mirar en el mundo SERVIDO. Imprime, por
+/// Deterioro del falso techo (ADR-105 enm. 20): dónde mirar en el mundo SERVIDO. Imprime, por
 /// planta, cuántas placas caídas y baldosas levantadas hay y las primeras posiciones, que es lo que
 /// hace falta para apuntar la cámara de una captura.
 #[test]

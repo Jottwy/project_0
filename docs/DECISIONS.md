@@ -14650,7 +14650,7 @@ función `decay` es la de ADR-130 D4.
 
 ---
 
-## ADR-105 — enmienda 19: el falso techo ROTO (deterioro de oficina, servidor y cliente)
+## ADR-105 — enmienda 20: el falso techo ROTO (deterioro de oficina, servidor y cliente)
 
 **Fecha:** 2026-09-06 · **Estado:** implementado · **Wire:** sin cambios (61).
 

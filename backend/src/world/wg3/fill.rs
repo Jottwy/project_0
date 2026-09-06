@@ -719,7 +719,7 @@ pub fn fill_building_with(
     // (la cáscara y las mamparas) y esquivan todo lo que ya se ha puesto contra ellas.
     let signs = office_signs(building, &out.segments, &out.solids, &out.carves);
     out.props.extend(signs);
-    // ADR-105 enm. 19 — el DETERIORO del falso techo, y va el último de todos: es lo único que
+    // ADR-105 enm. 20 — el DETERIORO del falso techo, y va el último de todos: es lo único que
     // tiene que esquivar además el atrezo que acaba de caer (una placa sobre una silla se ve).
     let (decay_solids, decay_props) = office_decay(
         building,
@@ -2992,7 +2992,7 @@ fn office_signs(
     signs
 }
 
-// ─────────────────── deterioro del falso techo (ADR-105 enm. 19) ───────────────────
+// ─────────────────── deterioro del falso techo (ADR-105 enm. 20) ───────────────────
 //
 // El falso techo de la enm. 18 es una superficie continua y limpia; lo que hace Backrooms una
 // planta de oficinas no es el techo, es el techo ROTO. Cuatro piezas, todas donde hay falso techo
@@ -9334,7 +9334,7 @@ mod apron_tests {
                             && p.z_cm < g.z_cm + g.size_z_cm - WALL_T_CM
                             && (p.y_cm - g.floor_y_cm) >= 0
                             // El tope ata el ancla a SU planta. Los 250 valían mientras todo el
-                            // atrezo se apoyaba en algo; el deterioro de la enm. 19 cuelga del
+                            // atrezo se apoyaba en algo; el deterioro de la enm. 20 cuelga del
                             // techo, así que el tope es la altura del tramo cuando es mayor.
                             && (p.y_cm - g.floor_y_cm) <= g.height_cm.max(250)
                     })
@@ -9650,7 +9650,7 @@ mod apron_tests {
         println!("[falso techo] {low} de {office_rooms} despachos por debajo de 3,00");
     }
 
-    /// El deterioro de la enm. 19, por su forma: `is_fallen_plate` y `is_raised_floor_tile` son las
+    /// El deterioro de la enm. 20, por su forma: `is_fallen_plate` y `is_raised_floor_tile` son las
     /// únicas puertas, así que nadie más puede emitir una caja de 60 × 60 de canto 4 o 9.
     #[test]
     fn the_decay_has_shapes_of_its_own() {

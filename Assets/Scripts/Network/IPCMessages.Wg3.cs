@@ -283,7 +283,7 @@ namespace BackroomsSurvival.Net
             Trash = 6, Box = 7, Paper = 8, Monitor = 9, Clock = 10, Phone = 11, Keyboard = 12,
             Tray = 13, ChairFallen = 14;
 
-        /// <summary>ADR-105 enm. 19 — el deterioro del falso techo. Estos DOS no tienen prefab: los
+        /// <summary>ADR-105 enm. 20 — el deterioro del falso techo. Estos DOS no tienen prefab: los
         /// construye <c>Wg3SceneAssembler</c> a mano, porque una placa colgando y una luminaria
         /// descolgada piden inclinación y un <c>Wg3Solid</c> sólo gira en Y.</summary>
         public const byte CeilingTileHung = 21, LightHung = 22;

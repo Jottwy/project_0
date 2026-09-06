@@ -224,7 +224,7 @@ pub const PROP_PHONE: u8 = 11;
 pub const PROP_KEYBOARD: u8 = 12;
 pub const PROP_TRAY: u8 = 13;
 pub const PROP_CHAIR_FALLEN: u8 = 14;
-/// ADR-105 enm. 19 (2026-09-06) — el deterioro del falso techo: una placa que cuelga de un lado y
+/// ADR-105 enm. 20 (2026-09-06) — el deterioro del falso techo: una placa que cuelga de un lado y
 /// una luminaria descolgada en diagonal. **No tienen prefab**: el cliente los construye a mano
 /// (caja fina inclinada con el material de placa o de luminaria) porque `Wg3Solid` sólo gira en Y y
 /// una placa colgando pide inclinación. Kinds nuevos, no wire nuevo: `kind` ya era un byte.

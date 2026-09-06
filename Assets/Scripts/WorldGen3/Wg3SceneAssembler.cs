@@ -647,7 +647,7 @@ namespace BackroomsSurvival.WorldGen3
             if (parent == null) return null;
             if (prop.kind == BackroomsSurvival.Net.Wg3PropMsg.Sign)
                 return AssembleSign(prop, parent, layer, name);
-            // ADR-105 enm. 19 — el deterioro del falso techo no tiene prefab: se construye aquí.
+            // ADR-105 enm. 20 — el deterioro del falso techo no tiene prefab: se construye aquí.
             if (prop.kind == BackroomsSurvival.Net.Wg3PropMsg.CeilingTileHung
                 || prop.kind == BackroomsSurvival.Net.Wg3PropMsg.LightHung)
                 return AssembleHungDecay(prop, parent, layer, name, materials, lampMaterial);
@@ -738,7 +738,7 @@ namespace BackroomsSurvival.WorldGen3
         }
 
         /// <summary>
-        /// ADR-105 enm. 19 — **lo que cuelga del falso techo roto**: una placa descolgada de un
+        /// ADR-105 enm. 20 — **lo que cuelga del falso techo roto**: una placa descolgada de un
         /// lado (kind 15) y una luminaria caída en diagonal (kind 16).
         ///
         /// No son prefabs y no son macizos. Prefab no, porque el pack de oficina no trae ni placa
@@ -799,7 +799,7 @@ namespace BackroomsSurvival.WorldGen3
             return root;
         }
 
-        /// <summary>ADR-105 enm. 19 — canto por debajo del cual una decoración es una LOSETA lisa y
+        /// <summary>ADR-105 enm. 20 — canto por debajo del cual una decoración es una LOSETA lisa y
         /// no un marco. Quince centímetros: la placa caída mide 4 y la baldosa 9, y la jamba de un
         /// marco mide dos metros.</summary>
         private const float FlatDecorationMaxM = 0.15f;
@@ -945,7 +945,7 @@ namespace BackroomsSurvival.WorldGen3
                     // collider (`IsSolid` falso), igual que un rodapié. `Casing` y no `Decoration`
                     // para que el constructor le talle el perfil y el zócalo.
                     //
-                    // ADR-105 enm. 19 — salvo una LOSETA: una placa de techo caída (4 cm de canto)
+                    // ADR-105 enm. 20 — salvo una LOSETA: una placa de techo caída (4 cm de canto)
                     // o una baldosa levantada (9) son cajas lisas, y el perfil de dos escalones y
                     // el zócalo del marco sobre una pieza de dos centímetros no son un marco, son
                     // ruido. El corte va por el canto porque un marco es una banda de dos metros.
@@ -976,7 +976,7 @@ namespace BackroomsSurvival.WorldGen3
             go.AddComponent<MeshFilter>().sharedMesh = mesh;
             var renderer = go.AddComponent<MeshRenderer>();
             Material[] mats = Wg3StyleMaterials.Resolve(materials, solid.BaseStyle);
-            // ADR-105 enm. 19 — una loseta se dibuja con el material del TECHO: una placa caída es
+            // ADR-105 enm. 20 — una loseta se dibuja con el material del TECHO: una placa caída es
             // la que falta arriba, y la submalla de decoración traería el material del rodapié.
             if (mats != null && solid.IsDecoration && sy <= FlatDecorationMaxM
                 && mats.Length > Wg3MeshBuilder.SubMesh.Decoration)
