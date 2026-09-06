@@ -101,6 +101,7 @@
 - `chore/saneamiento-arranque` (22 commits, B1–B4) fusionada con `--no-ff`; único conflicto `docs/STATE.md`, resuelto al formato denso con
   las tandas 23–25 y el verbatim de 4j–4l en `SESSION-LOG.md`. Índice de ADR regenerado: 129 y 130 faltaban (170 entradas).
 - Sin fusionar y medido: `feat/occluders` choca en `fill.rs`/`plan.rs`; `unity-lighting-cadence` en `Wg3SceneAssembler.cs`. Decisión de Joel.
+- Cierre de 22 sesiones (28-08 → 06-09) en `SESSION-LOG.md`; tres experimentos a rama: `558afb54` teselado, `cb61b99c` decals, `1c8237ff` sonda.
 
 ### 2026-09-06 — 24.ª tanda: la foto de la oficina (ADR-129, wire 61) y los sótanos en el plan (ADR-130 rebanada 1)
 - Día 2 del cierre: `c7c9dd01` UV a 0,5/m (un factor); `510223b8` placas de 60 cm y paneles 60×120 en rejilla por tramo (mallas emisivas).
