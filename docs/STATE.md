@@ -6,7 +6,7 @@
 ## Estado
 - **WorldGen3 es el mundo servido.** Wire **61** en las dos puntas (`ipc/server.rs:38`, `WireSchema.cs:25`) — ADR-129 lo subió el 06-09.
 - **Contrato WG3 v1 = Alpha 1** (`docs/WG3-ALPHA1-ROADMAP.md`): días 1–2 hechos; 3 y 5 APARCADOS detrás de la tanda de oficinas (Joel, 06-09).
-- Suite tras la fusión del 06-09: `cargo test --bin backrooms_server` **1382/1382 (81 ignorados)**, `CompileCheckClient` 0 errores en las 4 asambleas.
+- Suite del 06-09: **1398/1398 (85 ignorados)**; `a_region_is_worth_its_size` es FLAKY (600 ms de reloj bajo carga; solo mide 178–261).
 - **El commit tiene gate** (`tools/dev/validate-scope.ps1`, hook PreToolUse): rojo = el commit no se ejecuta. Alcance por `git diff --cached`.
 - Alpha 1 itch nov 2026 · Next Fest feb 2027 · EA primavera 2027 (`docs/SCALING-ROADMAP.md:196-198`). E0 de red cerrada y medida.
 
@@ -20,7 +20,7 @@
   de MUNDO con `plan_bounds()`. **Sigue sin verificarse que lo servido salga ×2.** Parche verbatim en `docs/SESSION-LOG.md`.
 - **Contrato WG3 v1**, 5 días. Día 1 (`65d267c3`) y día 2 (`c7c9dd01`, `510223b8`, ADR-129) cerrados; el día 4 de gramática lo sustituyó
   ADR-129 (rampa, tabique diagonal y anti-enfilada pasan a v2 salvo decisión). Quedan día 3 (rendimiento) y día 5 (verificación, etiqueta).
-- **Tanda de oficinas (06-09)**: 1 falso techo + cubículos HECHA (`b02df08f`, enm. 18) · 2 ADR-131 vigilantes · 3 ADR-130 r2 · día 3 · r3 wire 62 · r4.
+- **Tanda de oficinas (06-09)**: 1 falso techo + cubículos y 1b variantes HECHAS (`b02df08f`, ADR-129 enm. 1) · 2 ADR-131 · 3 ADR-130 r2 · r3 wire 62 · r4.
 - **Saneamiento: B1–B4 fusionados en `migration/worldgraph-v1`** (06-09). Queda B5 (cabeza: el agujero de autoridad) y la lista de Joel para podar ramas.
 - **Migración STP servidor-autoritativo**: Steps 1–2 y slice 3.1 (plumbing) hechos y verificados. Falta slice 3.2
   (capa L2 de predicción), reescribir los 8 call sites de `Inventory` y retirar `PlayerController.cs` (DEPRECATED por ADR-009).
@@ -93,6 +93,16 @@
 - Menores: `MPTRACE` sin commitear en cuatro ficheros del vendor STP; `TODO(balance)` de loot; doc-comments stale.
 
 ## Últimas tandas
+
+### 2026-09-06 — 28.ª tanda: variantes de sala — la oficina deja de ser una sola sala repetida (ADR-129 enm. 1)
+- Cinco variantes por hash con pesos por carácter en `KNOBS` (`variants: [f32; 5]`, probabilidades ABSOLUTAS): reuniones, recepción,
+  archivo, comedor, servidores. `office_variants` corre ANTES que los cubículos, que les quitaban los despachos grandes.
+- Cinco `kind` nuevos (15–19: mesa larga, mostrador, microondas, nevera, rack) SIN bump de wire — `kind` es un `u8`. Prefabs horneados con
+  bounds medidos; `recentre` en el builder sólo para ellos (el rack traía el pivote en el borde). Rack = `SM_WarehouseShelfSingle`.
+- **Centrar a pelo daba CERO salas de reuniones en (0,0)**: el centro de una sala grande lo ocupa un pilar. Ahora rejilla de un metro por
+  distancia; archivo y servidores prueban dos separaciones de pared (5 y 30) porque a ras choca la pilastra.
+- `props_clear_solids_and_mouths` cazó un fallo PREEXISTENTE de los cubículos: la papelera comía 2 cm de la mampara lateral. Barrido 27/27:
+  pisable −0,04 %, mancha 99,7 % = 99,7 %, islas 6,4 → 6,3, nav 100 %. Capturas `Temp/captures/var_*.png` (la de recepción, tapada).
 
 ### 2026-09-06 — 27.ª tanda: la planta de oficinas, rebanada 1 — falso techo y cubículos (ADR-105 enm. 18)
 - `b02df08f`: `office_ceiling_cm` (270, 300) sólo en despachos/servicios/almacenes del carácter Office, por sala en pasos de 10; naves

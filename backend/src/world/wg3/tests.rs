@@ -12319,3 +12319,192 @@ fn probe_lowest_basement_floorless() {
         eprintln!("({rx},{rz}) planta más baja: {bad}/{total} sin suelo en el centro");
     }
 }
+
+// ─────────── variantes de sala (2026-09-06, ADR-129 enm. 1) ───────────
+
+/// La huella en planta de un ancla de atrezo, ya girada. Los giros que no son múltiplos de 90
+/// (la silla caída, la caja) se miden por su cuadrado circunscrito: es lo que comprobó el emisor.
+fn prop_rect(p: &segment::Wg3Prop) -> Option<(i32, i32, i32, i32, i32)> {
+    let (w, d, h) = fill::prop_footprint_cm(p.kind)?;
+    let (w, d) = match p.yaw_deg.rem_euclid(180) {
+        0 => (w, d),
+        90 => (d, w),
+        _ => (w.max(d), w.max(d)),
+    };
+    Some((
+        p.x_cm - w / 2,
+        p.z_cm - d / 2,
+        p.x_cm + w / 2,
+        p.z_cm + d / 2,
+        h,
+    ))
+}
+
+/// **Ningún mueble pisa un macizo ni una boca.** Vale para todo el atrezo, no sólo para el de las
+/// variantes: lo que se apoya en el suelo tiene huella, y esa huella no puede solapar ni un macizo
+/// que se vea (los invisibles SON los suyos) ni el hueco de una puerta, que es por donde se pasa.
+///
+/// Lo de encima de una mesa y lo colgado no entran: no tienen huella en el suelo y no frenan.
+#[test]
+fn props_clear_solids_and_mouths() {
+    let m = real_manifest();
+    let mut checked = 0usize;
+    for (rx, rz) in AUDIT_REGIONS {
+        let b = served_building_of(rx, rz);
+        let f = fill::fill_building(&b, &m);
+        // Las bocas de todos los tramos, con su media anchura REAL (sin la holgura del emisor).
+        let mouths: Vec<(i32, i32, i32, i32)> = f
+            .segments
+            .iter()
+            .flat_map(|g| {
+                let (w, d) = (g.size_x_cm as f32 / 100.0, g.size_z_cm as f32 / 100.0);
+                g.openings.iter().map(move |o| {
+                    let (lx, lz) = placement::local_point(o.side, o.offset_cm as f32 / 100.0, w, d);
+                    (
+                        g.x_cm + (lx * 100.0).round() as i32,
+                        g.z_cm + (lz * 100.0).round() as i32,
+                        o.width_cm / 2,
+                        g.floor_y_cm,
+                    )
+                })
+            })
+            .collect();
+        for p in &f.props {
+            let Some((x0, z0, x1, z1, h)) = prop_rect(p) else {
+                continue;
+            };
+            // La altura que ocupa: una silla o una papelera no declaran alto, pero ocupan.
+            let (y0, y1) = (p.y_cm, p.y_cm + h.max(80));
+            checked += 1;
+            for s in &f.solids {
+                if s.is_hidden() || s.is_decoration() {
+                    continue;
+                }
+                if s.bottom_y_cm >= y1 || s.top_y_cm <= y0 {
+                    continue;
+                }
+                assert!(
+                    s.x_cm >= x1
+                        || s.x_cm + s.size_x_cm <= x0
+                        || s.z_cm >= z1
+                        || s.z_cm + s.size_z_cm <= z0,
+                    "({rx},{rz}) atrezo {} en ({},{},{}) pisa un macizo {:?}",
+                    p.kind,
+                    p.x_cm,
+                    p.y_cm,
+                    p.z_cm,
+                    (
+                        s.x_cm,
+                        s.z_cm,
+                        s.size_x_cm,
+                        s.size_z_cm,
+                        s.bottom_y_cm,
+                        s.top_y_cm
+                    ),
+                );
+            }
+            for &(mx, mz, half, fl) in &mouths {
+                if (fl - p.y_cm).abs() >= 100 {
+                    continue;
+                }
+                assert!(
+                    mx + half <= x0 || mx - half >= x1 || mz + half <= z0 || mz - half >= z1,
+                    "({rx},{rz}) atrezo {} en ({},{}) pisa la boca de ({mx},{mz}) media {half}",
+                    p.kind,
+                    p.x_cm,
+                    p.z_cm,
+                );
+            }
+        }
+    }
+    assert!(
+        checked > 200,
+        "sólo {checked} anclas con huella: la sonda no mide"
+    );
+}
+
+/// Los pesos de `variants` son probabilidades ABSOLUTAS: su suma es la proporción de despachos con
+/// variante, y pasar de 1,0 sería declarar que todos la llevan — y dejar muertas a las últimas de
+/// la fila, que es un fallo mudo.
+#[test]
+fn variant_weights_are_probabilities() {
+    for kn in fill::KNOBS.iter() {
+        let sum: f32 = kn.variants.iter().sum();
+        assert!(
+            kn.variants.iter().all(|&w| (0.0..=1.0).contains(&w)),
+            "{:?}: un peso fuera de [0,1] en {:?}",
+            kn.character,
+            kn.variants
+        );
+        assert!(
+            sum <= 1.0,
+            "{:?}: los pesos suman {sum}, y por encima de 1,0 las últimas variantes no salen nunca",
+            kn.character
+        );
+    }
+}
+
+/// Sonda: dónde cae cada variante. `WG3_PROBE_REGION="rx,rz"`, en coordenadas de región.
+#[test]
+#[ignore]
+fn probe_variant_spots() {
+    let spec = std::env::var("WG3_PROBE_REGION").unwrap_or_else(|_| "0,0".into());
+    let mut it = spec.split(',').map(|v| v.trim().parse::<i32>().unwrap());
+    let (rx, rz) = (it.next().unwrap(), it.next().unwrap());
+    let m = real_manifest();
+    let b = served_building_of(rx, rz);
+    let f = fill::fill_building(&b, &m);
+    for (kind, name) in [
+        (segment::PROP_TABLE_LONG, "mesa larga"),
+        (segment::PROP_COUNTER, "mostrador"),
+        (segment::PROP_FRIDGE, "nevera"),
+        (segment::PROP_MICROWAVE, "microondas"),
+        (segment::PROP_RACK, "rack"),
+    ] {
+        let hits: Vec<&segment::Wg3Prop> = f.props.iter().filter(|p| p.kind == kind).collect();
+        println!("[variantes] ({rx},{rz}) {name}: {} anclas", hits.len());
+        for p in hits.iter().take(12) {
+            println!(
+                "  ({:.2}, {:.2}, {:.2}) giro {}",
+                p.x_cm as f32 / 100.0,
+                p.y_cm as f32 / 100.0,
+                p.z_cm as f32 / 100.0,
+                p.yaw_deg
+            );
+        }
+    }
+    // El archivo no tiene mueble propio: se reconoce por la FILA — cuatro archivadores o más
+    // alineados y a menos de un metro y medio entre vecinos.
+    let mut cabs: Vec<&segment::Wg3Prop> = f
+        .props
+        .iter()
+        .filter(|p| p.kind == segment::PROP_CABINET)
+        .collect();
+    cabs.sort_by_key(|p| (p.y_cm, p.z_cm, p.x_cm));
+    println!("[variantes] ({rx},{rz}) archivadores: {}", cabs.len());
+    let mut row: Vec<&segment::Wg3Prop> = Vec::new();
+    let mut flush = |row: &Vec<&segment::Wg3Prop>| {
+        if row.len() >= 3 {
+            let p = row[row.len() / 2];
+            println!(
+                "[variantes] ({rx},{rz}) archivo: fila de {} en ({:.2}, {:.2}, {:.2})",
+                row.len(),
+                p.x_cm as f32 / 100.0,
+                p.y_cm as f32 / 100.0,
+                p.z_cm as f32 / 100.0
+            );
+        }
+    };
+    for c in cabs {
+        let same = row.last().is_some_and(|p: &&segment::Wg3Prop| {
+            let (dx, dz) = ((p.x_cm - c.x_cm).abs(), (p.z_cm - c.z_cm).abs());
+            p.y_cm == c.y_cm && ((dz < 50 && dx < 150) || (dx < 50 && dz < 150))
+        });
+        if !same {
+            flush(&row);
+            row.clear();
+        }
+        row.push(c);
+    }
+    flush(&row);
+}

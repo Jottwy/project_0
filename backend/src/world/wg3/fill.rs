@@ -46,9 +46,10 @@ use super::route::{self, Mouth, PlannedRoute, Rect, RouteSettings};
 use super::segment::{
     Wg3Carve, Wg3Opening, Wg3Prop, Wg3Segment, Wg3Solid, CARVE_FLOOR_GUARD_CM, CASING_IN_CM,
     CASING_PROUD_CM, CASING_W_CM, MAX_SEGMENT_M, MIN_GENERATED_WIDTH_CM, PROP_BOX, PROP_CABINET,
-    PROP_CHAIR, PROP_CHAIR_FALLEN, PROP_CLOCK, PROP_DESK, PROP_KEYBOARD, PROP_MONITOR, PROP_PAPER,
-    PROP_PHONE, PROP_TRASH, PROP_TRAY, PROP_WHITEBOARD, SHAPE_ARCH, SHAPE_BOX, SHAPE_CYLINDER,
-    SHAPE_HALF_CYLINDER, SHAPE_OCTAGON, STYLE_DECOR_BIT, STYLE_HIDDEN_BIT, WALL_THICKNESS_M,
+    PROP_CHAIR, PROP_CHAIR_FALLEN, PROP_CLOCK, PROP_COUNTER, PROP_DESK, PROP_FRIDGE, PROP_KEYBOARD,
+    PROP_MICROWAVE, PROP_MONITOR, PROP_PAPER, PROP_PHONE, PROP_RACK, PROP_TABLE_LONG, PROP_TRASH,
+    PROP_TRAY, PROP_WHITEBOARD, SHAPE_ARCH, SHAPE_BOX, SHAPE_CYLINDER, SHAPE_HALF_CYLINDER,
+    SHAPE_OCTAGON, STYLE_DECOR_BIT, STYLE_HIDDEN_BIT, WALL_THICKNESS_M,
 };
 
 /// ADR-099 D3 — cuánto entra el vano a cada lado de la cara de contacto, en metros. Mismo número que
@@ -226,9 +227,15 @@ pub(super) struct Knobs {
     /// **Cubículos** (2026-09-06): probabilidad de que un despacho grande se reparta en puestos
     /// con mamparas. Ver [`office_cubicles`].
     pub cubicles: f32,
+    /// **Variantes de sala** (2026-09-06, ADR-129 enm. 1): peso de cada una, en el orden de
+    /// [`Variant::ALL`] — reuniones, recepción, archivo, comedor, servidores. Son probabilidades
+    /// ABSOLUTAS y su suma es la proporción de despachos que se viste con una variante; el resto
+    /// cae en el atrezo de pared de siempre. Sumar más de 1,0 en una fila sería declarar que
+    /// TODOS los despachos del carácter llevan variante, y lo comprueba un test.
+    pub variants: [f32; Variant::ALL.len()],
 }
 
-const KNOBS: [Knobs; 5] = [
+pub(super) const KNOBS: [Knobs; 5] = [
     Knobs {
         character: Character::Open,
         pillar_room: 0.15,
@@ -263,6 +270,7 @@ const KNOBS: [Knobs; 5] = [
         props: 0.35,
         office_ceiling_cm: (0, 0),
         cubicles: 0.10,
+        variants: [0.04, 0.02, 0.05, 0.04, 0.02],
     },
     Knobs {
         character: Character::Office,
@@ -298,6 +306,7 @@ const KNOBS: [Knobs; 5] = [
         props: 0.8,
         office_ceiling_cm: (270, 300),
         cubicles: 0.60,
+        variants: [0.16, 0.08, 0.14, 0.10, 0.07],
     },
     Knobs {
         character: Character::Hall,
@@ -333,6 +342,7 @@ const KNOBS: [Knobs; 5] = [
         props: 0.25,
         office_ceiling_cm: (0, 0),
         cubicles: 0.00,
+        variants: [0.02, 0.02, 0.06, 0.02, 0.03],
     },
     Knobs {
         character: Character::Maze,
@@ -368,6 +378,7 @@ const KNOBS: [Knobs; 5] = [
         props: 0.2,
         office_ceiling_cm: (0, 0),
         cubicles: 0.00,
+        variants: [0.00, 0.00, 0.05, 0.00, 0.03],
     },
     Knobs {
         character: Character::Weird,
@@ -403,6 +414,7 @@ const KNOBS: [Knobs; 5] = [
         props: 0.45,
         office_ceiling_cm: (0, 0),
         cubicles: 0.05,
+        variants: [0.03, 0.02, 0.06, 0.03, 0.06],
     },
 ];
 
@@ -704,11 +716,20 @@ pub fn fill_building_with(
     // su macizo invisible.
     // Los CUBÍCULOS (2026-09-06) van antes: reparten el despacho en puestos con mamparas, y el
     // atrezo de pared de siempre se queda para los despachos que no los llevan.
-    let (walls, cub_props, cub_hidden, taken) =
-        office_cubicles(building, &out.segments, &out.solids, &out.carves);
+    // Las VARIANTES DE SALA (2026-09-06) van PRIMERO: se quedan el despacho entero, y las que
+    // piden más sitio (la mesa de reuniones mide 5,30) sólo caben en los despachos grandes, que
+    // son justo los que los cubículos se llevaban por delante. Con el orden al revés no salía
+    // ninguna sala de reuniones ni ningún comedor en toda una región.
+    let (var_props, var_hidden, mut taken) =
+        office_variants(building, &out.segments, &out.solids, &out.carves);
+    out.props.extend(var_props);
+    out.solids.extend(var_hidden);
+    let (walls, cub_props, cub_hidden, cub_taken) =
+        office_cubicles(building, &out.segments, &out.solids, &out.carves, &taken);
     out.solids.extend(walls);
     out.props.extend(cub_props);
     out.solids.extend(cub_hidden);
+    taken.extend(cub_taken);
     let (props, hidden) = office_props(building, &out.segments, &out.solids, &out.carves, &taken);
     out.props.extend(props);
     out.solids.extend(hidden);
@@ -1667,6 +1688,8 @@ fn office_cubicles(
     segments: &[Wg3Segment],
     solids: &[Wg3Solid],
     carves: &[Wg3Carve],
+    // Los despachos que ya se quedó una VARIANTE de sala: ésos no son puestos de trabajo.
+    skip: &[(usize, usize)],
 ) -> Cubicles {
     let mut walls: Vec<Wg3Solid> = Vec::new();
     let mut props: Vec<Wg3Prop> = Vec::new();
@@ -1723,6 +1746,9 @@ fn office_cubicles(
         };
         for (i, s) in plan.built() {
             if s.role != SpaceRole::Office || s.rise_cm != 0 || s.is_composite() {
+                continue;
+            }
+            if skip.contains(&(n, i)) {
                 continue;
             }
             if s.area_m2() < CUBICLE_MIN_AREA_M2 {
@@ -2009,7 +2035,10 @@ fn office_cubicles(
                     // La papelera, en el rincón del fondo.
                     if st.next01() < 0.40 {
                         let (tu, tv) = (
-                            ua + 30,
+                            // Del GROSOR de la mampara lateral hacia dentro, y no de la frontera de
+                            // la celda: con 30 la papelera (40 de ancho) se comía dos centímetros
+                            // de la mampara, y eso es un mueble metido en un macizo.
+                            ua + CUBICLE_T_CM + 30,
                             if open_plus {
                                 back + CUBICLE_T_CM + 25
                             } else {
@@ -2034,6 +2063,845 @@ fn office_cubicles(
         }
     }
     (walls, props, hidden, taken)
+}
+
+// ─────────────────── variantes de sala (2026-09-06) ───────────────────
+//
+// Joel, sobre la tanda de oficinas: «hoy todos los despachos son iguales». Y lo eran: un despacho
+// que no lleva cubículos lleva SIEMPRE lo mismo — mesas contra la pared larga, archivador en una
+// esquina, pizarra enfrente. Una variante se queda la sala ENTERA y la amuebla con una intención:
+// aquí se reúne gente, aquí se entra, aquí se guardan papeles, aquí se come, aquí zumban las
+// máquinas. El sorteo es el de siempre (posición + sal), así que la misma sala es la misma sala.
+//
+// Lo que respeta es lo que respetan los cubículos, y por el mismo camino: bocas de cualquier tramo
+// con su holgura, rellanos, tiros de escalera, huecos de forjado, pozos, los macizos que ya había
+// y los recortes de la pared. Cada mueble se comprueba por separado: el que no cabe no se pone, y
+// si no cabe el mueble PRINCIPAL la sala no se reclama y le toca el atrezo de pared de siempre.
+
+/// Huellas de los cinco muebles nuevos, medidas sobre el prefab horneado (`Wg3PropCatalogBuilder`
+/// las imprime al hornear). El eje LARGO es la X local del prefab: la que corre en `x` con giro 0.
+const TABLE_LONG_W_CM: i32 = 530;
+const TABLE_LONG_D_CM: i32 = 160;
+const TABLE_LONG_H_CM: i32 = 75;
+const COUNTER_W_CM: i32 = 485;
+const COUNTER_D_CM: i32 = 70;
+const COUNTER_H_CM: i32 = 105;
+const MICROWAVE_W_CM: i32 = 55;
+const MICROWAVE_D_CM: i32 = 49;
+const FRIDGE_W_CM: i32 = 80;
+const FRIDGE_D_CM: i32 = 71;
+const FRIDGE_H_CM: i32 = 181;
+const RACK_W_CM: i32 = 115;
+const RACK_D_CM: i32 = 91;
+const RACK_H_CM: i32 = 260;
+/// Pasillo entre dos filas enfrentadas, en archivo y en servidores. El mismo metro y medio de los
+/// cubículos: por debajo, dos personas no se cruzan y la sala se lee como un almacén.
+const VARIANT_AISLE_CM: i32 = 150;
+/// Lo que se le deja a una silla por detrás de la mesa para sentarse.
+const VARIANT_SEAT_CM: i32 = 90;
+/// Sal del sorteo de variante.
+const SALT_VARIANT: u32 = 0xA9_04_09;
+
+/// Las cinco variantes de sala. El orden es el de la fila `variants` de [`Knobs`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Variant {
+    /// Mesa larga, ocho sillas y pizarra.
+    Meeting,
+    /// Mostrador atravesado, sillas de espera y papeles.
+    Reception,
+    /// Archivadores en fila pegados a las dos paredes largas, con cajas encima.
+    Archive,
+    /// Mesa larga con sillas, y contra la pared corta el mueble con el microondas y la nevera.
+    Canteen,
+    /// Racks en dos filas con su pasillo.
+    Server,
+}
+
+impl Variant {
+    pub(super) const ALL: [Variant; 5] = [
+        Variant::Meeting,
+        Variant::Reception,
+        Variant::Archive,
+        Variant::Canteen,
+        Variant::Server,
+    ];
+
+    /// Nombre corto, para las sondas.
+    pub(super) fn name(self) -> &'static str {
+        match self {
+            Variant::Meeting => "reuniones",
+            Variant::Reception => "recepción",
+            Variant::Archive => "archivo",
+            Variant::Canteen => "comedor",
+            Variant::Server => "servidores",
+        }
+    }
+
+    /// Huella libre mínima DENTRO del tramo, `(largo, ancho)` en cm. El largo va por el eje mayor.
+    fn min_inner_cm(self) -> (i32, i32) {
+        match self {
+            // La mesa (530) más medio metro por cada testero, y a lo ancho la mesa (160) más una
+            // silla a cada lado.
+            Variant::Meeting | Variant::Canteen => {
+                (TABLE_LONG_W_CM + 120, TABLE_LONG_D_CM + 2 * VARIANT_SEAT_CM)
+            }
+            Variant::Reception => (COUNTER_W_CM + 80, 300),
+            // Dos filas de archivadores de fondo 46 y su pasillo.
+            Variant::Archive => (400, 2 * CABINET_D_CM + VARIANT_AISLE_CM + 40),
+            // Dos filas de racks de fondo 91 y su pasillo.
+            Variant::Server => (400, 2 * RACK_D_CM + VARIANT_AISLE_CM),
+        }
+    }
+
+    /// Altura libre mínima que pide la variante. Sólo el rack la tiene: mide 2,60 y bajo un falso
+    /// techo de 2,70 entra por diez centímetros.
+    fn min_clear_cm(self) -> i32 {
+        match self {
+            Variant::Server => RACK_H_CM + 10,
+            _ => 0,
+        }
+    }
+}
+
+/// Huella en planta de un mueble que se APOYA EN EL SUELO: `(ancho, fondo, alto)` en cm con giro 0,
+/// donde el ancho corre por la X local del prefab. `None` para lo que no ocupa suelo — lo que va
+/// encima de una mesa, la pizarra, el reloj y el papel, que no frenan a nadie.
+///
+/// Existe para los TESTS: el ancla que viaja por el cable es un punto, y sin la huella no hay forma
+/// desde fuera de comprobar que el atrezo no pisa un macizo ni una boca.
+pub(super) fn prop_footprint_cm(kind: u8) -> Option<(i32, i32, i32)> {
+    match kind {
+        PROP_DESK => Some((DESK_W_CM, DESK_D_CM, DESK_H_CM)),
+        PROP_CHAIR | PROP_CHAIR_FALLEN => Some((CHAIR_CM, CHAIR_CM, 0)),
+        PROP_CABINET => Some((CABINET_W_CM, CABINET_D_CM, CABINET_H_CM)),
+        PROP_BOX => Some((BOX_CM, BOX_CM, BOX_H_CM)),
+        PROP_TRASH => Some((40, 40, 0)),
+        PROP_TABLE_LONG => Some((TABLE_LONG_W_CM, TABLE_LONG_D_CM, TABLE_LONG_H_CM)),
+        PROP_COUNTER => Some((COUNTER_W_CM, COUNTER_D_CM, COUNTER_H_CM)),
+        PROP_FRIDGE => Some((FRIDGE_W_CM, FRIDGE_D_CM, FRIDGE_H_CM)),
+        PROP_RACK => Some((RACK_W_CM, RACK_D_CM, RACK_H_CM)),
+        _ => None,
+    }
+}
+
+/// Lo que sale de [`office_variants`]: atrezo, los macizos invisibles de lo que frena, y los
+/// despachos reclamados como (planta, espacio) para que [`office_props`] no los vuelva a vestir.
+type Variants = (Vec<Wg3Prop>, Vec<Wg3Solid>, Vec<(usize, usize)>);
+
+/// **Las variantes de sala.** Ver el bloque de arriba. Corre la PRIMERA de las tres pasadas de
+/// atrezo: se queda los despachos que reclama y le pasa la lista a [`office_cubicles`] y a
+/// [`office_props`], que se reparten lo que sobra.
+fn office_variants(
+    building: &RegionBuilding,
+    segments: &[Wg3Segment],
+    solids: &[Wg3Solid],
+    carves: &[Wg3Carve],
+) -> Variants {
+    let mut props: Vec<Wg3Prop> = Vec::new();
+    let mut hidden: Vec<Wg3Solid> = Vec::new();
+    let mut taken: Vec<(usize, usize)> = Vec::new();
+    let seed = building.seed;
+    let mouths: Vec<(i32, i32, i32, i32)> = segments
+        .iter()
+        .flat_map(|g| {
+            let (w, d) = (g.size_x_cm as f32 / 100.0, g.size_z_cm as f32 / 100.0);
+            g.openings.iter().map(move |o| {
+                let (lx, lz) =
+                    super::placement::local_point(o.side, o.offset_cm as f32 / 100.0, w, d);
+                (
+                    g.x_cm + (lx * 100.0).round() as i32,
+                    g.z_cm + (lz * 100.0).round() as i32,
+                    o.width_cm / 2 + PROP_MOUTH_CLEAR_CM,
+                    g.floor_y_cm,
+                )
+            })
+        })
+        .collect();
+    let rect_of = |x: i32, z: i32, w: i32, d: i32| super::plan::PlanRect {
+        min_x_cm: x,
+        min_z_cm: z,
+        max_x_cm: x + w,
+        max_z_cm: z + d,
+    };
+    let box_overlaps = |r: &super::plan::PlanRect, o: &Wg3Solid| -> bool {
+        o.x_cm < r.max_x_cm
+            && o.x_cm + o.size_x_cm > r.min_x_cm
+            && o.z_cm < r.max_z_cm
+            && o.z_cm + o.size_z_cm > r.min_z_cm
+    };
+
+    for (n, plan) in building.storeys.iter().enumerate() {
+        let landings: Vec<super::plan::PlanRect> = building
+            .wells
+            .iter()
+            .filter(|w| w.storey_below + 1 == n)
+            .map(|w| w.rect.shrunk(-50))
+            .collect();
+        let wells_here: Vec<super::plan::PlanRect> = building
+            .wells
+            .iter()
+            .filter(|w| w.storey_below == n)
+            .map(|w| w.rect.shrunk(-50))
+            .collect();
+        let holes_above = hole_squares_above(building, n);
+        let pits_here = if n == building.ground {
+            pit_rects_of(building, segments)
+        } else {
+            Vec::new()
+        };
+        for (i, s) in plan.built() {
+            if s.role != SpaceRole::Office || s.rise_cm != 0 || s.is_composite() {
+                continue;
+            }
+            let kn = knobs_of(seed, s);
+            let (cx, cz) = s.rect.centre_m();
+            let mut st = super::hash::stream_at(seed, cx, cz, SALT_VARIANT);
+            // Pesos absolutos: la suma es la proporción de despachos con variante.
+            let t = st.next01();
+            let mut acc = 0.0;
+            let mut chosen: Option<Variant> = None;
+            for (k, v) in Variant::ALL.iter().enumerate() {
+                acc += kn.variants[k];
+                if t < acc {
+                    chosen = Some(*v);
+                    break;
+                }
+            }
+            let Some(variant) = chosen else { continue };
+            let floor = s.floor_y_cm;
+            let clear = clear_height_cm(s);
+            if clear < variant.min_clear_cm() {
+                continue;
+            }
+            let top = floor + clear;
+            let host = segments
+                .iter()
+                .filter(|g| {
+                    g.floor_y_cm == floor
+                        && s.covers_rect(&rect_of(g.x_cm, g.z_cm, g.size_x_cm, g.size_z_cm))
+                })
+                .max_by_key(|g| g.size_x_cm as i64 * g.size_z_cm as i64);
+            let Some(g) = host else {
+                continue;
+            };
+            let inner = rect_of(
+                g.x_cm + WALL_T_CM,
+                g.z_cm + WALL_T_CM,
+                g.size_x_cm - 2 * WALL_T_CM,
+                g.size_z_cm - 2 * WALL_T_CM,
+            );
+            // Eje largo `u`, eje corto `v`: como en los cubículos.
+            let along_x = inner.width_cm() >= inner.depth_cm();
+            let (u0, u1, v0, v1) = if along_x {
+                (
+                    inner.min_x_cm,
+                    inner.max_x_cm,
+                    inner.min_z_cm,
+                    inner.max_z_cm,
+                )
+            } else {
+                (
+                    inner.min_z_cm,
+                    inner.max_z_cm,
+                    inner.min_x_cm,
+                    inner.max_x_cm,
+                )
+            };
+            let (need_u, need_v) = variant.min_inner_cm();
+            if u1 - u0 < need_u || v1 - v0 < need_v {
+                continue;
+            }
+
+            let own_hole = hole_square(&s.rect).shrunk(-50);
+            let style = style_of(s.role);
+            let mut placed: Vec<super::plan::PlanRect> = Vec::new();
+            let free = |r: &super::plan::PlanRect,
+                        gap: i32,
+                        placed: &Vec<super::plan::PlanRect>|
+             -> bool {
+                let grown = r.shrunk(-gap);
+                if !inner.contains_rect(r) || !s.covers_rect(r) {
+                    return false;
+                }
+                if mouths.iter().any(|&(mx, mz, half, fl)| {
+                    (fl - floor).abs() < 100
+                        && mx + half > r.min_x_cm
+                        && mx - half < r.max_x_cm
+                        && mz + half > r.min_z_cm
+                        && mz - half < r.max_z_cm
+                }) {
+                    return false;
+                }
+                if landings.iter().any(|l| l.overlaps(&grown))
+                    || wells_here.iter().any(|w| w.overlaps(&grown))
+                    || holes_above.iter().any(|h| h.overlaps(&grown))
+                    || pits_here.iter().any(|p| p.overlaps(&grown))
+                    || (n > 0 && own_hole.overlaps(&grown))
+                    || placed.iter().any(|p| p.overlaps(&grown))
+                {
+                    return false;
+                }
+                if solids.iter().any(|o| {
+                    !o.is_decoration()
+                        && o.bottom_y_cm < floor + 200
+                        && o.top_y_cm > floor
+                        && box_overlaps(&grown, o)
+                }) {
+                    return false;
+                }
+                if carves.iter().any(|k| {
+                    k.bottom_y_cm < top
+                        && k.top_y_cm > floor
+                        && k.x_cm < grown.max_x_cm
+                        && k.x_cm + k.size_x_cm > grown.min_x_cm
+                        && k.z_cm < grown.max_z_cm
+                        && k.z_cm + k.size_z_cm > grown.min_z_cm
+                }) {
+                    return false;
+                }
+                true
+            };
+            let put = |props: &mut Vec<Wg3Prop>,
+                       hidden: &mut Vec<Wg3Solid>,
+                       placed: &mut Vec<super::plan::PlanRect>,
+                       r: super::plan::PlanRect,
+                       y: i32,
+                       yaw: i16,
+                       kind: u8,
+                       h: i32| {
+                props.push(Wg3Prop {
+                    x_cm: (r.min_x_cm + r.max_x_cm) / 2,
+                    z_cm: (r.min_z_cm + r.max_z_cm) / 2,
+                    y_cm: y,
+                    yaw_deg: yaw,
+                    kind,
+                    style,
+                });
+                if h > 0 {
+                    hidden.push(Wg3Solid {
+                        x_cm: r.min_x_cm,
+                        z_cm: r.min_z_cm,
+                        size_x_cm: r.width_cm(),
+                        size_z_cm: r.depth_cm(),
+                        bottom_y_cm: y,
+                        top_y_cm: y + h,
+                        style: style | STYLE_HIDDEN_BIT,
+                        yaw_deg: 0,
+                        shape: SHAPE_BOX,
+                    });
+                }
+                placed.push(r);
+            };
+            // De (u, v) a mundo, y el giro de un mueble que mira hacia +v o hacia −v.
+            let world = |ua: i32, va: i32, ub: i32, vb: i32| -> super::plan::PlanRect {
+                if along_x {
+                    rect_of(ua, va, ub - ua, vb - va)
+                } else {
+                    rect_of(va, ua, vb - va, ub - ua)
+                }
+            };
+            let face = |plus_v: bool| -> i16 {
+                match (along_x, plus_v) {
+                    (true, true) => 0,
+                    (true, false) => 180,
+                    (false, true) => 90,
+                    (false, false) => 270,
+                }
+            };
+            // Y el giro de un mueble que mira a lo largo del eje `u`.
+            let face_u = |plus_u: bool| -> i16 {
+                match (along_x, plus_u) {
+                    (true, true) => 90,
+                    (true, false) => 270,
+                    (false, true) => 0,
+                    (false, false) => 180,
+                }
+            };
+            let (uc, vc) = ((u0 + u1) / 2, (v0 + v1) / 2);
+
+            // **Buscar sitio, no centrar a pelo.** Un mueble grande centrado en la sala choca con
+            // el pilar, el bloque o la tarima que ya hay ahí: con el centro fijo no salía ni una
+            // sala de reuniones ni un comedor en toda una región (medido). Rejilla de un metro
+            // ordenada por distancia al centro, y gana la primera posición libre; `v_fixed` es para
+            // lo que va contra una pared. Devuelve el centro en coordenadas (u, v).
+            let scan = |du: i32,
+                        dv: i32,
+                        gap: i32,
+                        placed: &Vec<super::plan::PlanRect>,
+                        v_fixed: Option<i32>|
+             -> Option<(i32, i32)> {
+                let (mut best, mut best_d) = (None, i32::MAX);
+                let mut u = u0 + du / 2;
+                while u + du / 2 <= u1 {
+                    let mut v = v_fixed.unwrap_or(v0 + dv / 2);
+                    loop {
+                        let d = (u - uc).abs() + (v - vc).abs();
+                        if d < best_d
+                            && free(
+                                &world(u - du / 2, v - dv / 2, u + du / 2, v + dv / 2),
+                                gap,
+                                placed,
+                            )
+                        {
+                            best = Some((u, v));
+                            best_d = d;
+                        }
+                        if v_fixed.is_some() {
+                            break;
+                        }
+                        v += 100;
+                        if v + dv / 2 > v1 {
+                            break;
+                        }
+                    }
+                    u += 100;
+                }
+                best
+            };
+
+            let claimed = match variant {
+                Variant::Meeting | Variant::Canteen => {
+                    // La mesa larga, con su eje por el eje largo de la sala y lo más cerca del
+                    // centro que la deje el resto.
+                    match scan(TABLE_LONG_W_CM, TABLE_LONG_D_CM, 30, &placed, None) {
+                        None => false,
+                        Some((uc, vc)) => {
+                            let table = world(
+                                uc - TABLE_LONG_W_CM / 2,
+                                vc - TABLE_LONG_D_CM / 2,
+                                uc + TABLE_LONG_W_CM / 2,
+                                vc + TABLE_LONG_D_CM / 2,
+                            );
+                            put(
+                                &mut props,
+                                &mut hidden,
+                                &mut placed,
+                                table,
+                                floor,
+                                face(true),
+                                PROP_TABLE_LONG,
+                                TABLE_LONG_H_CM,
+                            );
+                            // Las sillas: tres por lado largo y una por testero en reuniones (ocho),
+                            // dos por lado y una por testero en el comedor (seis).
+                            let side_us: &[i32] = if variant == Variant::Meeting {
+                                &[-180, 0, 180]
+                            } else {
+                                &[-130, 130]
+                            };
+                            let out = TABLE_LONG_D_CM / 2 + 45;
+                            for &du in side_us {
+                                for plus in [true, false] {
+                                    let dv = if plus { out } else { -out };
+                                    let (a, b) = (uc + du, vc + dv);
+                                    let c = world(
+                                        a - CHAIR_CM / 2,
+                                        b - CHAIR_CM / 2,
+                                        a + CHAIR_CM / 2,
+                                        b + CHAIR_CM / 2,
+                                    );
+                                    if free(&c, 0, &placed) {
+                                        // Mirando a la mesa: la de +v mira a −v.
+                                        put(
+                                            &mut props,
+                                            &mut hidden,
+                                            &mut placed,
+                                            c,
+                                            floor,
+                                            face(!plus),
+                                            PROP_CHAIR,
+                                            0,
+                                        );
+                                    }
+                                }
+                            }
+                            for plus in [true, false] {
+                                let du = TABLE_LONG_W_CM / 2 + 45;
+                                let a = if plus { uc + du } else { uc - du };
+                                let c = world(
+                                    a - CHAIR_CM / 2,
+                                    vc - CHAIR_CM / 2,
+                                    a + CHAIR_CM / 2,
+                                    vc + CHAIR_CM / 2,
+                                );
+                                if free(&c, 0, &placed) {
+                                    put(
+                                        &mut props,
+                                        &mut hidden,
+                                        &mut placed,
+                                        c,
+                                        floor,
+                                        face_u(!plus),
+                                        PROP_CHAIR,
+                                        0,
+                                    );
+                                }
+                            }
+                            if variant == Variant::Meeting {
+                                // La pizarra, en un testero, colgada a la altura de siempre.
+                                let wb_plus = st.next01() < 0.5;
+                                let a = if wb_plus { u1 - 10 } else { u0 };
+                                let wb = world(
+                                    a,
+                                    vc - WHITEBOARD_W_CM / 2,
+                                    a + 10,
+                                    vc + WHITEBOARD_W_CM / 2,
+                                );
+                                if free(&wb, 20, &placed) {
+                                    put(
+                                        &mut props,
+                                        &mut hidden,
+                                        &mut placed,
+                                        wb,
+                                        floor + WHITEBOARD_Y_CM,
+                                        face_u(!wb_plus),
+                                        PROP_WHITEBOARD,
+                                        0,
+                                    );
+                                }
+                                // Y papeles y una bandeja sobre la mesa.
+                                let table_top = floor + TABLE_LONG_H_CM;
+                                for k in 0..4 {
+                                    if st.next01() >= 0.55 {
+                                        continue;
+                                    }
+                                    let du = -200 + k * 130 + (st.next01() * 60.0) as i32;
+                                    let dv = (st.next01() * 100.0) as i32 - 50;
+                                    let p = world(
+                                        uc + du - 15,
+                                        vc + dv - 15,
+                                        uc + du + 15,
+                                        vc + dv + 15,
+                                    );
+                                    props.push(Wg3Prop {
+                                        x_cm: (p.min_x_cm + p.max_x_cm) / 2,
+                                        z_cm: (p.min_z_cm + p.max_z_cm) / 2,
+                                        y_cm: table_top,
+                                        yaw_deg: (st.next01() * 360.0) as i16,
+                                        kind: if k == 0 { PROP_TRAY } else { PROP_PAPER },
+                                        style,
+                                    });
+                                }
+                            } else {
+                                // El comedor: contra un testero, el mueble con el microondas encima y
+                                // la nevera al lado.
+                                let plus = st.next01() < 0.5;
+                                let (ca, cb) = if plus {
+                                    (u1 - 10 - CABINET_D_CM, u1 - 10)
+                                } else {
+                                    (u0 + 10, u0 + 10 + CABINET_D_CM)
+                                };
+                                let cab =
+                                    world(ca, vc - CABINET_W_CM / 2, cb, vc + CABINET_W_CM / 2);
+                                if free(&cab, 20, &placed) {
+                                    put(
+                                        &mut props,
+                                        &mut hidden,
+                                        &mut placed,
+                                        cab,
+                                        floor,
+                                        face_u(!plus),
+                                        PROP_CABINET,
+                                        CABINET_H_CM,
+                                    );
+                                    // El microondas, encima y sin macizo: nadie choca con él.
+                                    let mw = world(
+                                        ca,
+                                        vc - MICROWAVE_W_CM / 2,
+                                        ca + MICROWAVE_D_CM,
+                                        vc + MICROWAVE_W_CM / 2,
+                                    );
+                                    props.push(Wg3Prop {
+                                        x_cm: (mw.min_x_cm + mw.max_x_cm) / 2,
+                                        z_cm: (mw.min_z_cm + mw.max_z_cm) / 2,
+                                        y_cm: floor + CABINET_H_CM,
+                                        yaw_deg: face_u(!plus),
+                                        kind: PROP_MICROWAVE,
+                                        style,
+                                    });
+                                }
+                                // La nevera, al lado del mueble; a un lado o al otro, porque la
+                                // mesa no siempre queda centrada y por un lado se sale del tramo.
+                                for side in [-1, 1] {
+                                    let fv = if side < 0 {
+                                        vc - CABINET_W_CM / 2 - 20 - FRIDGE_W_CM
+                                    } else {
+                                        vc + CABINET_W_CM / 2 + 20
+                                    };
+                                    let fr = world(ca, fv, ca + FRIDGE_D_CM, fv + FRIDGE_W_CM);
+                                    if free(&fr, 20, &placed) {
+                                        put(
+                                            &mut props,
+                                            &mut hidden,
+                                            &mut placed,
+                                            fr,
+                                            floor,
+                                            face_u(!plus),
+                                            PROP_FRIDGE,
+                                            FRIDGE_H_CM,
+                                        );
+                                        break;
+                                    }
+                                }
+                                let tr = world(u0 + 40, v0 + 40, u0 + 80, v0 + 80);
+                                if free(&tr, 10, &placed) {
+                                    put(
+                                        &mut props,
+                                        &mut hidden,
+                                        &mut placed,
+                                        tr,
+                                        floor,
+                                        0,
+                                        PROP_TRASH,
+                                        0,
+                                    );
+                                }
+                            }
+                            true
+                        }
+                    }
+                }
+                Variant::Reception => {
+                    // El mostrador, atravesado y contra una de las paredes largas.
+                    let plus = st.next01() < 0.5;
+                    let (ca, cb) = if plus {
+                        (v1 - 5 - COUNTER_D_CM, v1 - 5)
+                    } else {
+                        (v0 + 5, v0 + 5 + COUNTER_D_CM)
+                    };
+                    // Contra la pared, y corriéndolo por ella hasta encontrar sitio.
+                    let cv = (ca + cb) / 2;
+                    match scan(COUNTER_W_CM, COUNTER_D_CM, 20, &placed, Some(cv)) {
+                        None => false,
+                        Some((uc, _)) => {
+                            let counter =
+                                world(uc - COUNTER_W_CM / 2, ca, uc + COUNTER_W_CM / 2, cb);
+                            let yaw = face(!plus);
+                            put(
+                                &mut props,
+                                &mut hidden,
+                                &mut placed,
+                                counter,
+                                floor,
+                                yaw,
+                                PROP_COUNTER,
+                                COUNTER_H_CM,
+                            );
+                            // Sobre el mostrador: teléfono y bandeja, cada uno con su dado.
+                            let top_y = floor + COUNTER_H_CM;
+                            for (du, kind, chance) in
+                                [(-120, PROP_PHONE, 0.75), (140, PROP_TRAY, 0.55)]
+                            {
+                                if st.next01() >= chance {
+                                    continue;
+                                }
+                                let r = world(uc + du - 20, cv - 20, uc + du + 20, cv + 20);
+                                props.push(Wg3Prop {
+                                    x_cm: (r.min_x_cm + r.max_x_cm) / 2,
+                                    z_cm: (r.min_z_cm + r.max_z_cm) / 2,
+                                    y_cm: top_y,
+                                    yaw_deg: yaw,
+                                    kind,
+                                    style,
+                                });
+                            }
+                            // Las sillas de espera, contra la pared de enfrente y mirando al mostrador.
+                            let wv = if plus { v0 + 45 } else { v1 - 45 };
+                            for k in -1..=1 {
+                                let a = uc + k * 90;
+                                let c = world(
+                                    a - CHAIR_CM / 2,
+                                    wv - CHAIR_CM / 2,
+                                    a + CHAIR_CM / 2,
+                                    wv + CHAIR_CM / 2,
+                                );
+                                if free(&c, 0, &placed) {
+                                    put(
+                                        &mut props,
+                                        &mut hidden,
+                                        &mut placed,
+                                        c,
+                                        floor,
+                                        face(plus),
+                                        PROP_CHAIR,
+                                        0,
+                                    );
+                                }
+                            }
+                            // El reloj sobre el mostrador y papeles por el suelo: una recepción vacía.
+                            if st.next01() < 0.7 {
+                                let a = if plus { v1 - 10 } else { v0 };
+                                let ck = world(uc - 15, a, uc + 15, a + 10);
+                                if free(&ck, 10, &placed) {
+                                    put(
+                                        &mut props,
+                                        &mut hidden,
+                                        &mut placed,
+                                        ck,
+                                        floor + 210,
+                                        yaw,
+                                        PROP_CLOCK,
+                                        0,
+                                    );
+                                }
+                            }
+                            true
+                        }
+                    }
+                }
+                Variant::Archive => {
+                    // Archivadores en fila pegados a las dos paredes largas. Dos separaciones de
+                    // la pared: a ras, y a treinta — que es lo que hace falta para pasar por
+                    // delante de una pilastra (25 de fondo), y sin eso la fila salía de dos o tres
+                    // en una sala que sí cabía entera.
+                    let mut spots: Vec<(super::plan::PlanRect, i16)> = Vec::new();
+                    let cells = ((u1 - u0 - 80) / (CABINET_W_CM + 5)).clamp(0, 14);
+                    let start_u = u0 + ((u1 - u0) - cells * (CABINET_W_CM + 5)) / 2;
+                    for plus in [true, false] {
+                        for k in 0..cells {
+                            let ua = start_u + k * (CABINET_W_CM + 5);
+                            for off in [5, 30] {
+                                let (ca, cb) = if plus {
+                                    (v1 - off - CABINET_D_CM, v1 - off)
+                                } else {
+                                    (v0 + off, v0 + off + CABINET_D_CM)
+                                };
+                                let cab = world(ua, ca, ua + CABINET_W_CM, cb);
+                                if free(&cab, 10, &placed)
+                                    && !spots.iter().any(|(r, _)| r.overlaps(&cab))
+                                {
+                                    spots.push((cab, face(!plus)));
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    // Menos de cuatro no es un archivo, es un despacho con un mueble: se le deja
+                    // la sala al atrezo de pared de siempre.
+                    if spots.len() < 4 {
+                        false
+                    } else {
+                        for (cab, yaw) in spots {
+                            put(
+                                &mut props,
+                                &mut hidden,
+                                &mut placed,
+                                cab,
+                                floor,
+                                yaw,
+                                PROP_CABINET,
+                                CABINET_H_CM,
+                            );
+                            // Una caja encima de uno de cada tres, sin macizo: está a 80 cm.
+                            if st.next01() < 0.35 {
+                                props.push(Wg3Prop {
+                                    x_cm: (cab.min_x_cm + cab.max_x_cm) / 2,
+                                    z_cm: (cab.min_z_cm + cab.max_z_cm) / 2,
+                                    y_cm: floor + CABINET_H_CM,
+                                    yaw_deg: ((st.next01() * 360.0) as i32 / 15 * 15) as i16,
+                                    kind: PROP_BOX,
+                                    style,
+                                });
+                            }
+                        }
+                        // Y cajas por el pasillo.
+                        for _ in 0..3 {
+                            if st.next01() >= 0.5 {
+                                continue;
+                            }
+                            let ua = u0 + 60 + (st.next01() * (u1 - u0 - 120).max(1) as f32) as i32;
+                            let b = world(ua, vc - BOX_CM / 2, ua + BOX_CM, vc + BOX_CM / 2);
+                            if free(&b, 20, &placed) {
+                                put(
+                                    &mut props,
+                                    &mut hidden,
+                                    &mut placed,
+                                    b,
+                                    floor,
+                                    ((st.next01() * 360.0) as i32 / 15 * 15) as i16,
+                                    PROP_BOX,
+                                    BOX_H_CM,
+                                );
+                            }
+                        }
+                        true
+                    }
+                }
+                Variant::Server => {
+                    // Dos filas de racks contra las paredes largas, con el pasillo en medio. Misma
+                    // holgura de pared que el archivo, y por lo mismo.
+                    let mut spots: Vec<(super::plan::PlanRect, i16)> = Vec::new();
+                    let step = RACK_W_CM + 15;
+                    let cells = ((u1 - u0 - 80) / step).clamp(0, 10);
+                    let start_u = u0 + ((u1 - u0) - cells * step) / 2;
+                    for plus in [true, false] {
+                        for k in 0..cells {
+                            let ua = start_u + k * step;
+                            // Uno de cada seis huecos se queda sin rack: la sala a medio montar.
+                            if st.next01() < 0.17 {
+                                continue;
+                            }
+                            for off in [5, 30] {
+                                let (ca, cb) = if plus {
+                                    (v1 - off - RACK_D_CM, v1 - off)
+                                } else {
+                                    (v0 + off, v0 + off + RACK_D_CM)
+                                };
+                                let r = world(ua, ca, ua + RACK_W_CM, cb);
+                                if free(&r, 10, &placed)
+                                    && !spots.iter().any(|(o, _)| o.overlaps(&r))
+                                {
+                                    spots.push((r, face(!plus)));
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if spots.len() < 3 {
+                        false
+                    } else {
+                        for (r, yaw) in spots {
+                            put(
+                                &mut props,
+                                &mut hidden,
+                                &mut placed,
+                                r,
+                                floor,
+                                yaw,
+                                PROP_RACK,
+                                RACK_H_CM,
+                            );
+                        }
+                        // Un archivador con papeles al final del pasillo.
+                        let cab = world(
+                            u0 + 20,
+                            vc - CABINET_W_CM / 2,
+                            u0 + 20 + CABINET_D_CM,
+                            vc + CABINET_W_CM / 2,
+                        );
+                        if free(&cab, 20, &placed) {
+                            put(
+                                &mut props,
+                                &mut hidden,
+                                &mut placed,
+                                cab,
+                                floor,
+                                face_u(true),
+                                PROP_CABINET,
+                                CABINET_H_CM,
+                            );
+                        }
+                        true
+                    }
+                }
+            };
+
+            if claimed {
+                taken.push((n, i));
+            }
+        }
+    }
+    (props, hidden, taken)
 }
 
 /// ADR-129 D3 — **vestir la sala**: mesas contra la pared larga con su silla, su monitor y una

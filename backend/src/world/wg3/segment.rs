@@ -224,6 +224,18 @@ pub const PROP_PHONE: u8 = 11;
 pub const PROP_KEYBOARD: u8 = 12;
 pub const PROP_TRAY: u8 = 13;
 pub const PROP_CHAIR_FALLEN: u8 = 14;
+/// ADR-129 enm. 1 (2026-09-06) — **las variantes de sala**: los cinco tipos que no tenían sustituto
+/// entre los catorce de arriba. `kind` es un byte y no entra en la forma del mensaje, así que
+/// añadir valores NO sube el wire: un cliente viejo no resuelve el prefab, avisa una vez y se salta
+/// el mueble (`Wg3PropCatalog.NameOf` → `null`). Las huellas, medidas sobre el prefab horneado y en
+/// centímetros: mesa larga 530 × 160 × 75, mostrador 485 × 70 × 105, microondas 55 × 49 × 34,
+/// nevera 80 × 71 × 181, rack 115 × 91 × 260. El eje LARGO del prefab es su X local, o sea el que
+/// corre en `x` con `yaw_deg` 0.
+pub const PROP_TABLE_LONG: u8 = 15;
+pub const PROP_COUNTER: u8 = 16;
+pub const PROP_MICROWAVE: u8 = 17;
+pub const PROP_FRIDGE: u8 = 18;
+pub const PROP_RACK: u8 = 19;
 
 /// ADR-125 enm. 2 — bit alto de `style`: el macizo es DECORACIÓN. Se dibuja y nada más: ni el
 /// ráster lo estampa ni el cliente le cuelga collider. Existe porque un marco de puerta que

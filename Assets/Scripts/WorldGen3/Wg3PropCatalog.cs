@@ -30,6 +30,13 @@ namespace BackroomsSurvival.WorldGen3
                 case 12: return "Keyboard";
                 case 13: return "Tray";
                 case 14: return "Chair";
+                // Variantes de sala (ADR-129 enm. 1). `kind` es un byte: valores nuevos no cambian
+                // el formato del cable, y un cliente viejo cae en el `default` y se salta el mueble.
+                case 15: return "TableLong";
+                case 16: return "Counter";
+                case 17: return "Microwave";
+                case 18: return "Fridge";
+                case 19: return "Rack";
                 default: return null;
             }
         }
