@@ -25,4 +25,7 @@ pub mod segment;
 pub mod world;
 
 #[cfg(test)]
+mod skeptic_boxes;
+
+#[cfg(test)]
 mod tests;
