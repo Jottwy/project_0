@@ -3114,6 +3114,24 @@ si las sondas de `J:/wg3*` valen algo o se borran. Las ramas viejas (`angry-jack
   una torre no se hunde, bajo tierra ni atrios ni pozos. wg3 162/162. Capturas `d_b3_hall_*` a −9,96 con luz, moqueta y puerta.
 - Queda de la foto: variedad por `kind`, desorden, avisos, tintes (Joel), suciedad. El wire 62 lo disputan la rampa y el streaming vertical.
 
+### 2026-09-06 — 27.ª tanda: la planta de oficinas, rebanada 1 — falso techo y cubículos (ADR-105 enm. 18)
+- `b02df08f`: `office_ceiling_cm` (270, 300) sólo en despachos/servicios/almacenes del carácter Office, por sala en pasos de 10; naves
+  y circulación no cambian. 669 de 898 despachos bajo 3,00 en 39 semillas. El forjado (332) no se toca.
+- `office_cubicles`: celdas 2,60 × 2,40, mampara 12 × 140 (el 8 era el barrote de rejilla), pasillo 1,50, filas espalda con espalda;
+  mesa + silla (15 % caída) + monitor/teclado/teléfono/bandeja + papelera; una de cada siete vacía. Un metro + grosor a los macizos previos.
+- Capturas `Temp/captures/cub_*.png` (B2/B3 de (0,0)): se lee como oficina. Sonda `probe_cubicle_spots`. Barrido 27/27, islas 6,4 = 6,4.
+- Plan de la tanda acordado con Joel (cinco rebanadas, memoria `wg3-oficinas-tanda-plan`); el cierre v1 queda detrás.
+
+### 2026-09-06 — 26.ª tanda: las dos ramas que quedaban, fusionadas — occluders y cadencia de luces
+- `feat/occluders` (8 commits del 03/04-09): desalineación de vanos (`DOOR_MISALIGN_CHANCE` 0,75), oclusores intra-espacio
+  (`OCCLUDER_DENSITY` 1,0, grosor 45 porque el 40 es la viga) y métricas de layout. Conflictos en `fill.rs`/`plan.rs` re-aplicados.
+- Destapó un bug de HEAD: el vano «lado a lado» del atrio (ADR-104 enm. 3) se cortaba en la banda ENTERA, también sobre el
+  muro compartido con otro atrio sin sala encima y cuando un pasillo sólo rozaba la esquina. Ahora se recorta sólo bajo cada sala.
+- Los oclusores esquivan ahora pozos, ventanas y bocas de tramo (los emisores de HEAD son posteriores a la rama); bloques sin longitud múltiplo de 50.
+- `unity-lighting-cadence` (3): tubos muertos, jitter en celda, tinte ±200 K, parpadeo, sobre 11 m / 2,7 y paneles; tubo muerto = sin Light.
+- Verificación: cargo 1393/1393, clippy y fmt limpios, barrido 27/27 (pisable −0,6 %, mancha 99,7 %, islas 6,4 = 6,4);
+  CompileCheck 0. Los 7 tests de la cadencia NO corrieron: `CorrelatedColorTemperatureToRGB` es nativa; pide el editor.
+
 ### 2026-09-06 — 25.ª tanda: la fusión — seis commits sueltos de cuatro sesiones y el saneamiento sobre la rama principal
 - Suelto desde el 02/03-09 y ahora commiteado: `.meta` huérfanos del relay (`c2cd88af`), A28-29…33 al registro (`0a3cede5`), facelings
   que nacían fuera del radio de retirada (`2440ef25`, 13/13), materiales del Nivel 0 (`5d281833`), escena re-guardada (`674fdba1`).

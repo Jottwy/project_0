@@ -11,9 +11,9 @@
 - Alpha 1 itch nov 2026 · Next Fest feb 2027 · EA primavera 2027 (`docs/SCALING-ROADMAP.md:196-198`). E0 de red cerrada y medida.
 
 ## Próximo paso ÚNICO
-- **ADR-130 rebanada 2b, el decaimiento del CLIENTE**: paneles apagados (`decay·0,8`), parpadeo, tintes a gris y `1−0,5·decay`, placas de
-  techo que faltan. Pisa `Wg3SceneAssembler.cs`/`Wg3LightCadence.cs`, así que espera a la rama de materiales por función. La 2a (servidor)
-  está HECHA (ADR-130 enm. 1). Después: día 3 del contrato, r3 streaming vertical (wire 62) y r4 torre.
+- **Día 3 del contrato, el RENDIMIENTO**: fundido por chunk (una malla por chunk y submalla, colliders combinados); hoy cada macizo es un
+  GameObject con su collider y una región lleva ~3 000 (nota desde F0 en `Wg3MeshBuilder`). Medir draw calls, tiempo de construcción y
+  memoria ANTES y después. Bloquea r3 (vertical, wire 62) y las 34 plantas. La r2b está HECHA (`5bc25920`), sin ver en juego.
 
 ## En curso
 - **ADR-128, mundo ×2: tercera pasada, NO commiteado.** 24 tests en rojo; `MAX_SEGMENT_M` no se toca (D3 anulado), `bounds()` en metros
@@ -45,9 +45,8 @@
   **flaquea con la máquina cargada** (06-09): rojo 2 de 5 corridas completas, verde 3/3 aislado. Tiempo real dentro de un test.
 - **Auditoría del 02-09, tres ALTO sin corregir** (`AUDIT-2026-08-28.md`): A28-29 un sobre «Relayed» se cree sin comparar el origen UDP con
   el relay (`classify_inbound`); A28-30 descripción UPnP sin tope (`StackOverflowException`); A28-31 `spawnedOnDeplete` nunca vuelve a `false`.
-- **Ramas sin fusionar con trabajo dentro** (06-09): `angry-jackson` (95), `gallant-einstein` (87), `happy-carson` (79); `layout-validator` (4) ya
-  está dentro de occluders. Tres experimentos del 03-09 en rama `wip`: stochastic tiling (`558afb54`), decals (`cb61b99c`), sonda de cajas
-  (`1c8237ff`). `wf_09042814-13d-4` sucio desde el 27-08. Lista de Joel.
+- **Ramas viejas CERRADO** (06-09, 34.ª tanda). Aparcados a propósito por Joel: tres wip del 03-09 con base vieja y rebase pendiente —
+  teselado estocástico (`558afb54`), decals de suciedad (`cb61b99c`), sonda de cajas (`1c8237ff`).
 
 ## NO tocar
 > Detalle completo, verbatim, en `docs/SESSION-LOG.md` (bloques «NO tocar» y «Última sesión» de 2026-08-03).
@@ -89,11 +88,21 @@
 - **El gate de C# no valida nada en un worktree recién creado**: `*.csproj` y `Library/` los genera Unity y viven sólo en el clon principal
   (`CompileCheckClient.sh` daba `MISSING csproj`). Arreglado y documentado (`c99db43a`, `docs/DEV-ENVIRONMENT.md`): copiar `.csproj`, unir `Library`.
 - **`STOREY_HEIGHT_CM` (332) no sube con un número** (380–480: 1/9 regiones válidas); `storey_of_floor_cm` clasifica una planta ABAJO en la costura de 664.
-- **El runner de tests del editor no contesta** (06-09); el arnés .NET corrió `ProxyLocomotionMathTests` 15/15 pero NO `Wg3LightCadenceTests` (ECall nativa).
-- **Sin ver en juego (06-09)**: monitor y despacho oscuro, recepción, techo roto, pasada en Play del audio (clips sintéticos); los carteles SÍ (espejo cazado).
+- **Sin ver en juego (06-09)**: monitor y despacho oscuro, recepción, techo roto, decaimiento del cliente en B3 (r2b), pasada en Play del
+  audio (clips sintéticos); los carteles SÍ (espejo cazado). El runner del editor ya NO es deuda: le faltaba FOCO (34.ª tanda).
 - Menores: `MPTRACE` sin commitear en cuatro ficheros del vendor STP; `TODO(balance)` de loot; doc-comments stale.
 
 ## Últimas tandas
+
+### 2026-09-06 — 34.ª tanda: el decaimiento del CLIENTE (ADR-130 r2b) y el cierre de las ramas viejas
+- **Los «95/87/79 sin fusionar» eran falsa alarma**: `git cherry` deja 0, 1 y 2 propios. Podadas angry-jackson, gallant-einstein y
+  happy-carson (PR #1 cerrado, su fix cae sobre `architecture/` legacy) y awesome-kare, que BORRABA ADR-094 vivo. `nightly-audit-base` dentro.
+- **r2b, `5bc25920`, sin wire y sin campo nuevo**: `DecayOfFloor` espeja `fill::decay_of_floor` y sus constantes (3,32 y 3) ya estaban en
+  `Wg3StoreyLayers`. Plafones `off + (1−off)·decay·0,80`, parpadeo del 40 % de los vivos, color a su luminancia por `1−0,5·decay`, 45 % de
+  luminarias arrancadas (sal `PMIS`, con la COTA en el hash).
+- **Mover UMBRALES, no añadir tiradas** (el orden es contrato), y **el gris va DESPUÉS del producto**: el tinte es un cociente en torno a (1,1,1).
+- `cargo test` **1414/1414**, `CompileCheck` 4/4, EditMode `Wg3LightCadence` **12/12**, y el barrido del tronco YA fusionado (que nadie
+  había medido): 27/27, 4,2 plantas, 268 espacios, mancha 99,7 %, islas 6,0, nav 100 %, pisable 182 857 (−0,2 %). Sin ver en juego.
 
 ### 2026-09-06 — 33.ª tanda: las ocho sesiones de oficina, fusionadas en un solo tronco
 - Once merges en `migration/worldgraph-v1` (`0394e426`): variantes, materiales, deterioro, sala grande y los incrementos de audio, carteles,
@@ -151,21 +160,3 @@
   (medido: cámara a −116°, cabeza clavada en −89°). Lo que viene encima lo decide ADR-132, con sus decisiones ya en memoria.
 - Cliente: `FacelingSeated.anim` horneado por script y `ProxySeatedHook` (override del idle, cabeza, respiración). **Enm. 1**: el
   Animator que se posa lo dice la MALLA, y la altura del asiento se MIDE cada fotograma. Capturas `vig5_*` del B3 de (0,0).
-
-### 2026-09-06 — 27.ª tanda: la planta de oficinas, rebanada 1 — falso techo y cubículos (ADR-105 enm. 18)
-- `b02df08f`: `office_ceiling_cm` (270, 300) sólo en despachos/servicios/almacenes del carácter Office, por sala en pasos de 10; naves
-  y circulación no cambian. 669 de 898 despachos bajo 3,00 en 39 semillas. El forjado (332) no se toca.
-- `office_cubicles`: celdas 2,60 × 2,40, mampara 12 × 140 (el 8 era el barrote de rejilla), pasillo 1,50, filas espalda con espalda;
-  mesa + silla (15 % caída) + monitor/teclado/teléfono/bandeja + papelera; una de cada siete vacía. Un metro + grosor a los macizos previos.
-- Capturas `Temp/captures/cub_*.png` (B2/B3 de (0,0)): se lee como oficina. Sonda `probe_cubicle_spots`. Barrido 27/27, islas 6,4 = 6,4.
-- Plan de la tanda acordado con Joel (cinco rebanadas, memoria `wg3-oficinas-tanda-plan`); el cierre v1 queda detrás.
-
-### 2026-09-06 — 26.ª tanda: las dos ramas que quedaban, fusionadas — occluders y cadencia de luces
-- `feat/occluders` (8 commits del 03/04-09): desalineación de vanos (`DOOR_MISALIGN_CHANCE` 0,75), oclusores intra-espacio
-  (`OCCLUDER_DENSITY` 1,0, grosor 45 porque el 40 es la viga) y métricas de layout. Conflictos en `fill.rs`/`plan.rs` re-aplicados.
-- Destapó un bug de HEAD: el vano «lado a lado» del atrio (ADR-104 enm. 3) se cortaba en la banda ENTERA, también sobre el
-  muro compartido con otro atrio sin sala encima y cuando un pasillo sólo rozaba la esquina. Ahora se recorta sólo bajo cada sala.
-- Los oclusores esquivan ahora pozos, ventanas y bocas de tramo (los emisores de HEAD son posteriores a la rama); bloques sin longitud múltiplo de 50.
-- `unity-lighting-cadence` (3): tubos muertos, jitter en celda, tinte ±200 K, parpadeo, sobre 11 m / 2,7 y paneles; tubo muerto = sin Light.
-- Verificación: cargo 1393/1393, clippy y fmt limpios, barrido 27/27 (pisable −0,6 %, mancha 99,7 %, islas 6,4 = 6,4);
-  CompileCheck 0. Los 7 tests de la cadencia NO corrieron: `CorrelatedColorTemperatureToRGB` es nativa; pide el editor.
