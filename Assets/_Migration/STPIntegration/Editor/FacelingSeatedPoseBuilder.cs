@@ -46,12 +46,12 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
             ("Spine Front-Back", 0.10f),
             ("Chest Front-Back", 0.05f),
 
-            ("Left Upper Leg Front-Back", 0.75f),
-            ("Right Upper Leg Front-Back", 0.75f),
+            ("Left Upper Leg Front-Back", -0.75f),
+            ("Right Upper Leg Front-Back", -0.75f),
             ("Left Upper Leg In-Out", 0.18f),
             ("Right Upper Leg In-Out", 0.18f),
-            ("Left Lower Leg Stretch", -0.75f),
-            ("Right Lower Leg Stretch", -0.75f),
+            ("Left Lower Leg Stretch", -0.45f),
+            ("Right Lower Leg Stretch", -0.45f),
             ("Left Foot Up-Down", 0.15f),
             ("Right Foot Up-Down", 0.15f),
 
@@ -145,21 +145,63 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
                 }
 
                 float bind = HipHeight(animator);
+                float ankleBind = AnkleAboveRoot(animator, instance.transform);
                 clip.SampleAnimation(instance, 0f);
                 float seated = HipHeight(animator);
-                float drop = bind - seated;
+                float ankleSeated = AnkleAboveRoot(animator, instance.transform);
 
-                if (drop < 0.15f)
+                if (Mathf.Abs(bind - seated) < 0.02f)
                 {
-                    Debug.LogError("[FacelingSeatedPoseBuilder] LA POSE NO HIZO NADA: la cadera bajó " +
-                        $"{drop:0.000} m (de {bind:0.000} a {seated:0.000}). O los nombres de músculo " +
-                        "no son los de este rig, o el Animator no es Humanoid.");
+                    Debug.LogError("[FacelingSeatedPoseBuilder] LA POSE NO HIZO NADA: la cadera sigue " +
+                        $"a {seated:0.000} m sobre los pies. O los nombres de músculo no son los de " +
+                        "este rig, o el Animator no es Humanoid.");
+                    return;
                 }
+
+                // **LA POSE SE MIDE POR EL MUSLO Y LA ESPINILLA, no por una sola altura.** Con la
+                // cadera clavada (un clip de músculos no traslada la raíz), «la cadera bajó mucho»
+                // puede significar tanto «se sentó» como «encogió las piernas hasta el pecho», y las
+                // dos son la misma cifra. El muslo tiene que salir HORIZONTAL hacia delante y la
+                // espinilla caer casi a plomo: eso, y sólo eso, es estar sentado.
+                var hips = animator.GetBoneTransform(HumanBodyBones.Hips);
+                var knee = animator.GetBoneTransform(HumanBodyBones.LeftLowerLeg);
+                var foot = animator.GetBoneTransform(HumanBodyBones.LeftFoot);
+                if (hips == null || knee == null || foot == null)
+                {
+                    Debug.LogWarning("[FacelingSeatedPoseBuilder] Sin cadera, rodilla o pie: la pose " +
+                        $"queda medida sólo por altura ({seated:0.000} m sobre los pies).");
+                    return;
+                }
+
+                Vector3 down = -instance.transform.up;
+                float thigh = Vector3.Angle(knee.position - hips.position, down);
+                float shin = Vector3.Angle(foot.position - knee.position, down);
+                float forward = Vector3.Dot(foot.position - hips.position, instance.transform.forward);
+
+                // **CUÁNTO SE DESPLAZA EL CUERPO AL SENTARSE, para el que lea el log.**
+                //
+                // No es una constante que nadie escriba: `ProxySeatedHook.PlantFeet` la vuelve a
+                // medir en juego, sobre el rig que de verdad se dibuja. Se imprime aquí porque el
+                // signo desconcierta —un clip Humanoid lleva su propia posición de cuerpo y ésta
+                // deja los tobillos POR DEBAJO del suelo, así que sentarse es SUBIR— y porque un
+                // salto grande entre horneados es la primera señal de que la pose ha cambiado de
+                // sitio. Con el rig del vendor sale ~0,67 m; el cuerpo del faceling, que es otro
+                // esqueleto, pide otro número, y por eso el hook no se fía de éste.
+                float suggestedLift = ankleBind - ankleSeated;
+
+                string verdict =
+                    thigh > 60f && thigh < 115f && shin < 35f && forward > 0.10f ? "OK" : "FUERA DE BANDA";
+                string line = $"[FacelingSeatedPoseBuilder] Pose medida ({verdict}): muslo {thigh:0.} ° " +
+                    $"de la vertical (banda 60-115), espinilla {shin:0.} ° (banda < 35), pie " +
+                    $"{forward:0.00} m por delante de la cadera (banda > 0,10), cadera a " +
+                    $"{seated:0.000} m sobre los pies (de pie: {bind:0.000}). " +
+                    $"el cuerpo del vendor subiría {suggestedLift:0.00} m (tobillo sobre el raíz: " +
+                    $"de pie {ankleBind:0.000}, sentado {ankleSeated:0.000}); con esa altura la cadera " +
+                    $"queda a {hips.position.y - instance.transform.position.y + suggestedLift:0.000} m del suelo.";
+                if (verdict == "OK")
+                    Debug.Log(line);
                 else
-                {
-                    Debug.Log($"[FacelingSeatedPoseBuilder] Pose medida: la cadera baja {drop:0.000} m " +
-                        $"(de {bind:0.000} a {seated:0.000}). SeatDropM del hook debe casar con esto.");
-                }
+                    Debug.LogError(line + " Ajusta la tabla SeatedPose.");
             }
             finally
             {
@@ -175,6 +217,19 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
                     return a;
             }
             return null;
+        }
+
+        /// <summary>Altura del tobillo más bajo sobre el raíz del avatar, en metros.</summary>
+        private static float AnkleAboveRoot(Animator animator, Transform root)
+        {
+            var left = animator.GetBoneTransform(HumanBodyBones.LeftFoot);
+            var right = animator.GetBoneTransform(HumanBodyBones.RightFoot);
+            if (left == null && right == null)
+                return 0f;
+            float y = Mathf.Min(
+                left != null ? left.position.y : float.MaxValue,
+                right != null ? right.position.y : float.MaxValue);
+            return y - root.position.y;
         }
 
         /// <summary>Altura de la cadera sobre el pie más bajo, en metros de mundo.</summary>

@@ -962,7 +962,6 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
             var prop = so.FindProperty("_seatedClip");
             if (prop != null)
                 prop.objectReferenceValue = clip;
-            SetFeederFloat(so, "_seatDrop", 0.45f);
             SetFeederFloat(so, "_coneDeg", 90f);
             SetFeederFloat(so, "_pitchClampDeg", 35f);
             SetFeederFloat(so, "_neckShare", 0.4f);

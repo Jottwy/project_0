@@ -14319,3 +14319,129 @@ fn watcher_density_rises_with_depth() {
         "B3 ({b3:.3}) no dobla a la calle ({calle:.3}): WATCHER_CHAIR_PER_STOREY dejó de significar profundidad"
     );
 }
+
+/// ADR-131 — sonda para las capturas: dónde hay un vigilante sentado en un sótano con cubículos de
+/// la región (0,0). Imprime la silla, su giro y un punto de cámara a 3 m por delante de ella.
+#[test]
+#[ignore = "sonda: imprime sitios de captura"]
+fn probe_watcher_capture_spots() {
+    use crate::world::wg3::plan::storey_of_floor_cm;
+    use crate::world::wg3::segment::PROP_CHAIR;
+
+    let m = audit_manifest();
+    let coord = crate::world::wg3::world::Wg3RegionCoord { x: 0, z: 0 };
+    let served = crate::world::wg3::world::Wg3ServedWorld::plan_region(&m, WATCHER_SEED, coord);
+
+    let mut shown = 0;
+    for (index, p) in served.props().iter().enumerate() {
+        if p.kind != PROP_CHAIR {
+            continue;
+        }
+        let storey = storey_of_floor_cm(p.y_cm);
+        if storey >= 0 {
+            continue;
+        }
+        let c = crate::world::wg3::chunk::Wg3ChunkCoord::containing(
+            p.x_cm as f32 / 100.0,
+            p.z_cm as f32 / 100.0,
+        );
+        if !super::watcher::WatcherDriver::seat_is_taken(WATCHER_SEED, c, storey, index) {
+            continue;
+        }
+        let (x, y, z) = (
+            p.x_cm as f32 / 100.0,
+            p.y_cm as f32 / 100.0,
+            p.z_cm as f32 / 100.0,
+        );
+        // La cámara, delante de la cara: la silla mira a `yaw_deg`, así que se avanza 2,5 m en esa
+        // dirección y se mira hacia ella (yaw + 180).
+        let rad = (p.yaw_deg as f32).to_radians();
+        let (cx, cz) = (x + rad.sin() * 2.5, z + rad.cos() * 2.5);
+        println!(
+            "PROBE silla planta {storey} silla=({x:.2},{y:.2},{z:.2}) yaw={} camara=({cx:.2},{y:.2},{cz:.2}) mirando={}",
+            p.yaw_deg,
+            (p.yaw_deg as i32 + 180) % 360
+        );
+        shown += 1;
+        if shown == 6 {
+            break;
+        }
+    }
+    assert!(shown > 0, "ni un vigilante en sótano de la región (0,0)");
+}
+
+/// ADR-131 — dónde poner la CÁMARA para fotografiar a un vigilante: un sitio pisable con línea de
+/// visión limpia hasta la silla. A ojo no sale: los puestos están cercados por mamparas de 1,40 y
+/// tres intentos de capturar cayeron dentro de una.
+#[test]
+#[ignore = "sonda: imprime sitios de cámara"]
+fn probe_watcher_camera_spots() {
+    use crate::world::wg3::collision::Wg3CollisionCache;
+    use crate::world::wg3::nav;
+    use crate::world::wg3::plan::storey_of_floor_cm;
+    use crate::world::wg3::segment::PROP_CHAIR;
+
+    let m = audit_manifest();
+    let mut worlds = wg3_cache();
+    let coord = crate::world::wg3::world::Wg3RegionCoord { x: 0, z: 0 };
+    let served = crate::world::wg3::world::Wg3ServedWorld::plan_region(&m, WATCHER_SEED, coord);
+
+    let mut cache = Wg3CollisionCache::new();
+    let mut shown = 0;
+
+    for (index, p) in served.props().iter().enumerate() {
+        if p.kind != PROP_CHAIR {
+            continue;
+        }
+        let storey = storey_of_floor_cm(p.y_cm);
+        if storey >= 0 {
+            continue;
+        }
+        let c = crate::world::wg3::chunk::Wg3ChunkCoord::containing(
+            p.x_cm as f32 / 100.0,
+            p.z_cm as f32 / 100.0,
+        );
+        if !super::watcher::WatcherDriver::seat_is_taken(WATCHER_SEED, c, storey, index) {
+            continue;
+        }
+        let (x, y, z) = (
+            p.x_cm as f32 / 100.0,
+            p.y_cm as f32 / 100.0,
+            p.z_cm as f32 / 100.0,
+        );
+        let chair = Vec3::new(x, y + 1.0, z);
+        cache.prewarm_for_move(&mut worlds, &m, WATCHER_SEED, chair, chair);
+
+        for step in 0..36 {
+            let ang = (step as f32) * 10.0f32.to_radians();
+            for d in [2.0f32, 2.6, 3.2, 4.0] {
+                let (cx, cz) = (x + ang.sin() * d, z + ang.cos() * d);
+                let Some(floor) = nav::floor_at(&cache, cx, cz, y + 0.5) else {
+                    continue;
+                };
+                if (floor - y).abs() > 0.6 {
+                    continue;
+                }
+                let eye = Vec3::new(cx, floor + 1.6, cz);
+                if !nav::line_of_sight(&cache, eye, chair) {
+                    continue;
+                }
+                // El yaw que mira a la silla, en la convención del arnés (0 = +Z, horario).
+                let yaw = (x - cx).atan2(z - cz).to_degrees();
+                println!(
+                    "PROBE camara=({cx:.2},{floor:.2},{cz:.2}) yaw={yaw:.0} d={d:.1} silla=({x:.2},{y:.2},{z:.2}) yaw_silla={}",
+                    p.yaw_deg
+                );
+                shown += 1;
+                break;
+            }
+            if shown >= 8 {
+                break;
+            }
+        }
+        if shown >= 8 {
+            break;
+        }
+    }
+    assert!(shown > 0, "ninguna cámara con línea de visión a un vigilante");
+}

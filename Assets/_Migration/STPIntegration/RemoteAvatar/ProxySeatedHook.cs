@@ -15,9 +15,12 @@ namespace BackroomsSurvival.Migration.STPIntegration
     /// 1. **La pose.** Un `AnimatorOverrideController` sustituye el clip de IDLE del
     ///    `ProxyLocomotionController` por la pose horneada (<c>FacelingSeatedPoseBuilder</c>). Sin
     ///    estado nuevo en el controller y sin transición: un vigilante no sale de idle porque no se
-    ///    mueve, así que el árbol de locomoción se queda en su centro para siempre. Y el cuerpo baja
-    ///    <see cref="_seatDrop"/> en LOCAL, porque la posición que manda el servidor es la del SUELO
-    ///    (el asiento es geometría del cliente: la silla y la cadera de este esqueleto).
+    ///    mueve, así que el árbol de locomoción se queda en su centro para siempre. Y la ALTURA la
+    ///    resuelve <see cref="PlantFeet"/> midiendo, no una constante: un clip Humanoid trae su
+    ///    propia posición de cuerpo y dónde deja los pies depende del rig, así que el cuerpo se
+    ///    desplaza cada fotograma lo justo para que la planta toque el suelo del proxy. Va en el
+    ///    cliente porque es geometría del modelo, y una constante de modelo en el servidor deja de
+    ///    significar lo que dice su comentario al primer re-horneado.
     ///
     /// 2. **La cabeza.** Sigue a la cámara local mientras esté dentro de ±<see cref="_coneDeg"/>
     ///    respecto del yaw del CUERPO — que no se gira nunca: mira a donde mira la silla. Cuando te
@@ -47,10 +50,6 @@ namespace BackroomsSurvival.Migration.STPIntegration
         [Tooltip("La pose sentada horneada por 'Backrooms ▸ Facelings ▸ Build Seated Pose Clip'. " +
                  "La cablea RemoteAvatarPrefabBuilder; sin ella el vigilante sale de pie.")]
         [SerializeField] private AnimationClip _seatedClip;
-
-        [Tooltip("Cuánto baja el cuerpo para que las nalgas queden en el asiento. La posición que " +
-                 "manda el servidor es la del SUELO (ADR-131 D2): esto es la altura de la silla.")]
-        [SerializeField, Min(0f)] private float _seatDrop = 0.45f;
 
         [Header("Cabeza")]
         [Tooltip("Medio cono de seguimiento, en grados de yaw respecto del cuerpo. ADR-131 D6: ±90.")]
@@ -83,10 +82,9 @@ namespace BackroomsSurvival.Migration.STPIntegration
 
         private RemotePlayerManager _manager;
         private Animator _animator;
-        private Transform _body, _head, _neck, _chest;
+        private Transform _head, _neck, _chest;
         private RuntimeAnimatorController _originalController;
         private AnimatorOverrideController _override;
-        private Vector3 _bodyRest;
         private bool _seated;
         private bool _hadTarget;
         private Vector2 _awayPose;
@@ -94,12 +92,45 @@ namespace BackroomsSurvival.Migration.STPIntegration
 
         private void Awake()
         {
-            foreach (var a in GetComponentsInChildren<Animator>(true))
+            // **EL ANIMATOR ES EL QUE MUEVE LA MALLA QUE SE VE, y hay que preguntárselo a la
+            // MALLA, no al animator.**
+            //
+            // Un proxy lleva varios Animator humanoides: el del vendor en el raíz y, en el prefab del
+            // faceling, el de su propio cuerpo colgando de un hijo. Tres heurísticas fallaron, y las
+            // tres se vieron en captura como «un tío DE PIE dentro de su silla»: coger el primero
+            // posaba al invisible; coger el primero que cuelga de un hijo fallaba al revés en el
+            // avatar humano; y preguntar «¿tiene alguna malla encendida debajo?» siempre contesta que
+            // sí en el raíz, porque debajo del raíz está TODO.
+            //
+            // La respuesta exacta la da el propio `SkinnedMeshRenderer`: sus huesos pertenecen a UN
+            // esqueleto, y el Animator de ese esqueleto es el primero que se encuentra subiendo desde
+            // el hueso. Ése es el que hay que posar.
+            foreach (var smr in GetComponentsInChildren<SkinnedMeshRenderer>(true))
             {
-                if (!a.isHuman)
+                if (!smr.enabled || !smr.gameObject.activeInHierarchy)
                     continue;
-                _animator = a;
+                var bone = smr.rootBone != null ? smr.rootBone
+                    : (smr.bones != null && smr.bones.Length > 0 ? smr.bones[0] : null);
+                if (bone == null)
+                    continue;
+                var owner = bone.GetComponentInParent<Animator>();
+                if (owner == null || !owner.isHuman)
+                    continue;
+                _animator = owner;
                 break;
+            }
+            // Sin malla encendida todavía (un cuerpo que enciende sus renderers más tarde): se coge
+            // el primer humanoide y `Awake` no vuelve a correr, pero el caso no se da en los prefabs
+            // que existen hoy y un vigilante de pie es una degradación visible, no un error mudo.
+            if (_animator == null)
+            {
+                foreach (var a in GetComponentsInChildren<Animator>(true))
+                {
+                    if (!a.isHuman)
+                        continue;
+                    _animator = a;
+                    break;
+                }
             }
             if (_animator == null)
                 return;
@@ -109,21 +140,6 @@ namespace BackroomsSurvival.Migration.STPIntegration
             _chest = _animator.GetBoneTransform(HumanBodyBones.Chest)
                 ?? _animator.GetBoneTransform(HumanBodyBones.Spine);
 
-            // El cuerpo que se baja al asiento es el hijo que cuelga del raíz, no el raíz: el raíz
-            // lo coloca RemotePlayerManager con la pose de red cada fotograma, así que cualquier
-            // desplazamiento que se le escriba aquí lo pisa el siguiente paquete.
-            _body = _animator.transform == transform ? null : TopChildOf(_animator.transform);
-            if (_body != null)
-                _bodyRest = _body.localPosition;
-        }
-
-        /// <summary>El hijo directo de este raíz del que cuelga <paramref name="descendant"/>.</summary>
-        private Transform TopChildOf(Transform descendant)
-        {
-            var t = descendant;
-            while (t != null && t.parent != transform)
-                t = t.parent;
-            return t;
         }
 
         // Un proxy reciclado del pool no hereda ni la pose ni el controller del anterior: `buttons`
@@ -136,8 +152,6 @@ namespace BackroomsSurvival.Migration.STPIntegration
             // Fase por instancia y no por id: el id no está resuelto todavía en OnEnable, y lo único
             // que hace falta es que dos vigilantes no coincidan.
             _phase = Random.value * Mathf.PI * 2f;
-            if (_body != null)
-                _body.localPosition = _bodyRest;
         }
 
         private void OnDisable() => SetSeated(false);
@@ -151,6 +165,7 @@ namespace BackroomsSurvival.Migration.STPIntegration
             if (!_seated)
                 return;
 
+            PlantFeet();
             AimHead();
             Breathe();
         }
@@ -170,16 +185,12 @@ namespace BackroomsSurvival.Migration.STPIntegration
 
             if (value)
             {
+                // La altura la resuelve `PlantFeet` con el cuerpo ya posado.
                 ApplyOverride();
-                if (_body != null)
-                    _body.localPosition = _bodyRest + Vector3.down * _seatDrop;
             }
-            else
+            else if (_originalController != null)
             {
-                if (_originalController != null)
-                    _animator.runtimeAnimatorController = _originalController;
-                if (_body != null)
-                    _body.localPosition = _bodyRest;
+                _animator.runtimeAnimatorController = _originalController;
             }
         }
 
@@ -232,6 +243,45 @@ namespace BackroomsSurvival.Migration.STPIntegration
             }
 
             _animator.runtimeAnimatorController = _override;
+        }
+
+        /// <summary>
+        /// **LA ALTURA DEL ASIENTO SE MIDE, NO SE ESCRIBE — y costó cuatro capturas.**
+        ///
+        /// Un clip Humanoid lleva su propia posición de cuerpo, y dónde deja los pies depende del
+        /// RIG: una constante calibrada con un esqueleto deja al otro medio metro en el aire o medio
+        /// metro bajo tierra (visto: caderas a 19 cm BAJO el suelo con la pose puesta). En vez de un
+        /// número por especie se corrige el error real: estamos en LateUpdate, o sea con el cuerpo ya
+        /// posado por el Animator, así que se mira dónde ha quedado el pie más bajo y se sube o baja
+        /// el esqueleto lo justo para que la PLANTA toque el suelo del proxy.
+        ///
+        /// **Se mueve la CADERA y no un hijo del raíz.** El raíz lo reescribe `RemotePlayerManager`
+        /// con la pose de red cada fotograma, y el cuerpo visible no siempre cuelga de un hijo: en el
+        /// avatar humano el Animator está en el propio raíz. La cadera es la raíz del esqueleto en
+        /// los dos casos, arrastra a todo el cuerpo con ella, y el Animator la vuelve a escribir en
+        /// el fotograma siguiente — así que esto no acumula.
+        ///
+        /// `leftFeetBottomHeight` es la distancia del tobillo a la planta que Unity deriva del propio
+        /// Avatar: el suelo del pie sale del rig y no de otra constante a mano.
+        /// </summary>
+        private void PlantFeet()
+        {
+            var hips = _animator.GetBoneTransform(HumanBodyBones.Hips);
+            var left = _animator.GetBoneTransform(HumanBodyBones.LeftFoot);
+            var right = _animator.GetBoneTransform(HumanBodyBones.RightFoot);
+            if (hips == null || (left == null && right == null))
+                return;
+
+            float lowest = Mathf.Min(
+                left != null ? left.position.y : float.MaxValue,
+                right != null ? right.position.y : float.MaxValue);
+            float error = lowest - (transform.position.y + _animator.leftFeetBottomHeight);
+            if (Mathf.Abs(error) < 0.001f)
+                return;
+
+            var p = hips.position;
+            p.y -= error;
+            hips.position = p;
         }
 
         private void AimHead()
