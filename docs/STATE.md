@@ -98,11 +98,11 @@
 - `Watcher` (`species` 3) en `game_loop/watcher.rs`: **sin `step`**, sólo reconcile. Nace en las anclas `PROP_CHAIR` de ADR-129 (sitio,
   cota y giro los da el mundo), cap 48 por cercanía, radios 60/90/8. «Sentado» = **bit 5 de `buttons`** (ADR-044), sin bump de wire. El
   despertar mide la cota con `same_level` como la retirada, o una silla del piso de arriba nace y muere cada segundo (lo cazó un test).
-- **Enm. 2**: 60 sillas por región hacían que 0,06 por silla diera **3 vigilantes** en toda ella, los tres en B3 — «no los veo» (Joel).
-  Ahora 0,25 + 0,12 por sótano, tope 0,70: **35 por región**, 5 en la calle.
-- Cliente: `FacelingSeated.anim` horneado por script (16 curvas de músculo, un fotograma) y `ProxySeatedHook` (override del idle,
-  cabeza ±90° con salto seco al perderte, respiración). **Enm. 1**: el Animator que se posa lo dice la MALLA (dos esqueletos vivos) y
-  la altura del asiento se MIDE cada fotograma (`PlantFeet` mueve la cadera). Capturas `vig5_*` del B3 de (0,0): sentado en su silla.
+- **Enm. 2**: 0,06 por silla daba **3 vigilantes** por región (60 sillas en total) — «no los veo» (Joel); ahora 0,25 + 0,12 por sótano,
+  tope 0,70: **35 por región**, 5 en la calle. **Enm. 3**: la cabeza pasa de salto seco a CUELLO con tope y desenrosque por delante
+  (medido: cámara a −116°, cabeza clavada en −89°). Lo que viene encima lo decide ADR-132, con sus decisiones ya en memoria.
+- Cliente: `FacelingSeated.anim` horneado por script y `ProxySeatedHook` (override del idle, cabeza, respiración). **Enm. 1**: el
+  Animator que se posa lo dice la MALLA, y la altura del asiento se MIDE cada fotograma. Capturas `vig5_*` del B3 de (0,0).
 
 ### 2026-09-06 — 27.ª tanda: la planta de oficinas, rebanada 1 — falso techo y cubículos (ADR-105 enm. 18)
 - `b02df08f`: `office_ceiling_cm` (270, 300) sólo en despachos/servicios/almacenes del carácter Office, por sala en pasos de 10; naves
