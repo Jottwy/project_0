@@ -15085,3 +15085,71 @@ minuto.
 sale el contador permanente del informe del streamer (`atrezo 2974/2974 anclas y carteles
 1253/1253`): un ancla que llega y no monta nada es invisible de la peor manera, porque el mundo sale
 entero y sólo que vacío.
+
+## ADR-133 — LA LINTERNA DE MANIVELA: la única luz que no se acaba, y por eso la que más cara se paga (2026-09-07) — ACEPTADA (Joel: «una linterna de estilo manivela que se va recargando, afecta al movimiento en porcentajes… el consumo debe ser la barra que ya está planteada y que se recargue al darle cuerda»)
+
+**Contexto.** Hasta hoy la única luz de mano era la antorcha del vendor: se gasta, se acaba y no
+hay nada que hacer al respecto. En un mundo cuya mecánica es la profundidad, eso convierte la luz
+en un contador de cuánto puedes bajar antes de dar la vuelta. La linterna de manivela cambia la
+pregunta: no es «¿cuánta luz me queda?» sino «¿me puedo permitir pararme AHORA a recargarla?».
+
+**Decisión 1 — la carga vive en `Durability`, la propiedad de instancia del vendor.** No una
+propiedad propia y no un campo del componente. El prefab del wieldable es único y compartido:
+guardar la carga en el componente haría que todas las linternas del mundo compartieran depósito.
+Con `Durability` salen gratis tres cosas que ya están escritas: la carga es por INSTANCIA, se
+guarda y sobrevive al saqueo del cadáver; `WieldableItem` bloquea el uso por debajo de 0,01; y la
+UI del vendor que pinta el estado del wieldable equipado ya la lee. Es la misma decisión que tomó
+ADR-068 para la pintura del bote, y por las mismas razones.
+
+**Decisión 2 — una propiedad NUEVA, `BR_Battery Health`, para lo que rinde CADA linterna.** Se
+sortea al nacer entre 0,80 y 1,00 y no cambia nunca. Es lo que hace que encontrar otra linterna
+signifique algo: sin ella, todas rinden lo mismo y la segunda es un objeto redundante. Persiste
+sin tocar el esquema de guardado porque el restaurador de inventario devuelve propiedades de
+instancia por id sin conocerlas (ADR-045 fase 3).
+
+**Decisión 3 — hereda de `Wieldable` en vez de colgarse de un `WieldableTool`.** La manivela es un
+MANTENIDO, y `FPSWieldablesInput` entrega la fase `Hold` haciendo `wieldable as IUseInputHandler`
+sobre el componente wieldable: no busca en los hijos. Un componente puente como el del bote no vería
+`Hold` jamás. Se hereda de la clase del vendor sin editarla, que es legal en esta dirección — nuestro
+asmdef referencia a PolymindGames y el suyo no puede referenciarnos.
+
+**Decisión 4 — el parpadeo va por `intensity` y NUNCA por `Light.enabled`.** ADR-042 relaya
+`light_on` como «¿hay alguna `Light` habilitada bajo el wieldable activo?» a 10 Hz. Apagar el
+componente para hacer un destello pone ese bit a bailar: los peers verían un estrobo y la detección
+por linterna de ADR-080 (te ven a 38 m) te perdería y te recuperaría en cada muestra. El
+interruptor sí toca `enabled`, que es exactamente lo que debe verse desde fuera.
+
+**Decisión 5 — los tres números que Joel eligió, y el triángulo que forman.** Dando cuerda vas al
+**0,40** de velocidad y no puedes correr; la luz **parpadea en ráfagas aleatorias** (0,15–0,45 de
+intensidad, 40–160 ms, con huecos de 0,2–0,8 s) porque la batería es vieja y protesta; y cada
+vuelta hace **ruido de 10 m** por `report_noise` (ADR-041, vía la tabla de ADR-090), entre el paso
+y el objeto que cae. Las tres juntas son la mecánica: recargar es quedarse quieto, medio a oscuras
+y haciendo ruido. Cualquiera de las tres sola es un incordio sin consecuencia.
+
+**Decisión 6 — nada de esto es determinista, a propósito.** Cada vuelta entrega 18–22 s sorteados,
+el gasto lleva una deriva de ±5 % por ruido Perlin (lento, no por fotograma: una batería que rinde
+distinto cada rato, no una barra que tiembla) y la linterna encontrada nace con el 10–50 % de
+carga. Ninguno toca worldgen ni viaja por el wire, así que el determinismo de la regla 13 no está
+en juego. El único aleatorio que PERSISTE es la salud de la batería.
+
+**Decisión 7 — el bit 6 de `buttons`, y ningún campo nuevo.** «Está dando cuerda» es un estado
+SOSTENIDO, así que va de nivel y no de contador (mismo criterio que ADR-044 aplicó a `Spraying` y
+ADR-131 al sentado). Sin bump de wire: el campo ya viaja desde ADR-009 y el backend lo relaya sin
+mirarlo. Es el bit que más dice de un vecino, más que apuntar o recargar: quien da cuerda es quien
+no puede correr.
+
+**Decisión 8 — el modelo son DOS mallas, no una.** El cuerpo y la manivela llegan de Meshy por
+separado y se montan como padre-hijo, con el pivote de la manivela en su EJE. Fundirlas en una
+malla haría que la manivela no pudiera girar. Y tres números que NO se eligen a mano porque
+elegirlos ya salió mal: el pivote sale de un test de grosor (el eje es el extremo grueso), el eje
+de giro es la perpendicular a la chapa donde va montada (con el otro, medio barrido pasa por dentro
+de la carcasa) y la separación se deriva de las dos mallas — semiancho del cuerpo más semiancho de
+la manivela más 2 mm —, que es la condición exacta de no intersección en todo ángulo y se
+recalcula sola al rehornear.
+
+**Lo que queda fuera, declarado.** El sonido de la manivela para el jugador (el estímulo de IA sí
+está; el clip no existe). El pickup propio: la linterna hereda el de la antorcha, así que una
+tirada al suelo se ve como una antorcha, al recogerla entrega una antorcha, y un vecino que lleve
+una en la mano enseña una antorcha — el proxy muestra el prefab del PICKUP (ADR-023). Y el loot: el
+nombre está en `MaterialPool` pero `RestrictCacheCatalog` sigue en true, así que todavía no sale;
+meterla en la pool restringida es una decisión de balance, no de este ADR.
