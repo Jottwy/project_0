@@ -97,8 +97,12 @@ namespace BackroomsSurvival.WorldGen3
         /// El epsilon positivo es para el suelo de una planta alta: 3,32 / 3,32 puede dar 0,99999 en
         /// <c>float</c> y caer una planta por debajo.
         /// </remarks>
+        /// <summary>ADR-130 — sótanos que caben en las capas. Espejo de
+        /// <c>plan::REGION_BASEMENTS</c>: la calle pasa a la capa 3 y B1–B3 a la 2, 1 y 0.</summary>
+        public const int BasementLayers = 3;
+
         private static int StoreyOf(float y) =>
-            Mathf.Clamp(Mathf.FloorToInt(y / StoreyM + 0.001f), 0, MaxLayer);
+            Mathf.Clamp(Mathf.FloorToInt(y / StoreyM + 0.001f) + BasementLayers, 0, MaxLayer);
 
         /// <summary>La capa de una LUZ: sólo la planta de su suelo.</summary>
         public static uint ForLight(float floorY) => 1u << StoreyOf(floorY);

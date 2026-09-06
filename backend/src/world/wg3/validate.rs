@@ -268,11 +268,12 @@ pub fn gates_of(world_seed: u64, region: Wg3RegionCoord) -> Vec<Wg3Gate> {
 /// El edificio de una región, planificado como lo sirve el backend.
 pub fn building_of(world_seed: u64, region: Wg3RegionCoord, storeys: usize) -> RegionBuilding {
     let gates = gates_of(world_seed, region);
-    plan::plan_building(
+    plan::plan_building_at(
         region.composer_seed(world_seed),
         region.bounds(),
         &gates,
         storeys,
+        plan::basements_for(region.x, region.z),
     )
 }
 
@@ -558,7 +559,11 @@ fn geometry_problems(segments: &[Wg3Segment], building: &RegionBuilding) -> Vec<
     }
 
     // Todo tramo dentro de la caja de su región (con la holgura de una celda del ráster).
-    if let Some(b) = building.storeys.first().and_then(|s| s.bounds_cm) {
+    if let Some(b) = building
+        .storeys
+        .get(building.ground)
+        .and_then(|s| s.bounds_cm)
+    {
         let slack = (WG3_CELL_M * 100.0) as i32;
         let outside = segments
             .iter()
@@ -887,7 +892,8 @@ fn walk_region(
     stats.storey_reach = vec![(0, 0); storeys];
     for c in 0..cells * cells {
         for (li, y) in floors[c].iter().enumerate() {
-            let s = plan::storey_of_floor_cm((y * 100.0).round() as i32);
+            // ADR-130 — la cota dice la planta RELATIVA a la calle; el índice es sobre `ground`.
+            let s = plan::storey_of_floor_cm((y * 100.0).round() as i32) + building.ground as i32;
             if s < 0 || s as usize >= storeys {
                 continue;
             }
@@ -1003,7 +1009,7 @@ fn walk_region(
         ));
     }
     for (n, (total, reached)) in stats.storey_reach.iter().enumerate() {
-        if n == 0 || *total == 0 {
+        if n == building.ground || *total == 0 {
             continue;
         }
         // Una planta servida a la que no se llega es decorado (ADR-102). Se exige la mitad porque

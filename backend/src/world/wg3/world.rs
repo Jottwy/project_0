@@ -296,11 +296,13 @@ impl Wg3ServedWorld {
         // **ADR-102 — y ahora son PLANTAS.** Lo que se sirve es un edificio y no un plano: la baja
         // completa, la de encima recortada al corte principal de la de abajo, y el suelo de arriba
         // perforado por donde sube la escalera.
-        let building = plan::plan_building(
+        let building = plan::plan_building_at(
             region.composer_seed(world_seed),
             bounds,
             &gates,
             plan::REGION_STOREYS,
+            // ADR-130 D2 — una de cada cuatro regiones es torre y baja.
+            plan::basements_for(region.x, region.z),
         );
         let filled = fill::fill_building(&building, manifest);
 

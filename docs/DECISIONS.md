@@ -14238,3 +14238,26 @@ Segunda observación del mismo playtest, aparte: arrancar sesión con la posici�
 puntos de la región (1,0) —incluida una sala corriente de 3,10 m en `(211,5, 36,0)`— deja al jugador
 cayendo, con la cota AUTORITATIVA por debajo del forjado. En otros puntos de la misma región no pasa.
 No se ha diagnosticado.
+
+### ADR-130 — Nota de implementación, rebanada 1 (2026-09-06): los sótanos existen en el plan
+
+`plan_building_at(seed, bounds, gates, storeys, basements)` con `basements = basements_for(rx, rz)`
+(`(rx·3 + rz·5) mod 4 == 0`, resto euclídeo: (0,0) y (−1,−1) son torres) y `REGION_BASEMENTS = 3`.
+`RegionBuilding.ground` es el índice de la calle; los sótanos van delante en `storeys`, con sus
+pozos de escalera `storey_below = ground − k`. Tres cosas que el ADR no decía y el código exigió:
+
+1. **La calle de una torre NO se hunde.** Una terraza hundida a −12 es la losa del techo de B1:
+   medido, 41 pares de caras coplanares a −0,24 en (0,0). Mismo motivo por el que una planta alta
+   nunca se hunde sobre la de abajo.
+2. **Bajo tierra no hay atrios.** `cap_headroom_under` marcaba `void_above` en toda nave de B1
+   sin sala encima, y seis salían a 6,39 m y perforaban la calle. Donde arriba no hay sala hay
+   TIERRA: el sótano se recorta siempre a `STOREY − 2·SLAB`.
+3. **En una torre no hay pozos** (ADR-126): la cámara a −10…−50 atravesaría los sótanos.
+
+Y una deuda de clasificación que el primer sótano destapó: `is_pillar` daba por brazo de cruz
+cualquier caja de «entre dos celdas y la mitad del lado», y un bloque exento de 100×250 (enm. 17)
+pasaba por pilar a 395 cm de una puerta. Ahora el brazo es exactamente el que emite la cruz.
+Quedan ambiguos 150×300, 150×350 y 200×400: un bloque con esas medidas sigue midiéndose como pilar.
+
+Cliente: `Wg3SceneAssembler.BasementLayers = 3` desplaza las capas de luz (calle = capa 3).
+Sin wire: los sótanos viajan como plantas a cota negativa por el canal de siempre.

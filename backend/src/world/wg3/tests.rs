@@ -5823,8 +5823,14 @@ fn plan_of(m: &Wg3Manifest, rx: i32, rz: i32) -> RegionPlan {
     // mismo mundo tienen que planificar edificios distintos. La de las PUERTAS es la del mundo, por
     // lo mismo de siempre — la de la región difiere a cada lado del borde y daría dos listas que no
     // casan (`junction`).
-    let _ = m;
-    plan::plan_region(region.composer_seed(SERVED_SEED), bounds, &gates)
+    let _ = (m, bounds, gates);
+    // ADR-130 — la planta de CALLE del edificio servido: en una torre la calle no se hunde y el
+    // índice no es 0, y un plan a solas mediría un mundo que no existe.
+    let b = served_building_of(rx, rz);
+    b.storeys
+        .into_iter()
+        .nth(b.ground)
+        .expect("la calle siempre existe")
 }
 
 #[test]
@@ -5855,7 +5861,13 @@ fn building_of(rx: i32, rz: i32) -> plan::RegionBuilding {
     let region = Wg3RegionCoord { x: rx, z: rz };
     let bounds = region.bounds();
     let gates = junction::gates_of_region(composer_seed(SERVED_SEED), rx, rz, bounds);
-    plan::plan_building(region.composer_seed(SERVED_SEED), bounds, &gates, STOREYS)
+    plan::plan_building_at(
+        region.composer_seed(SERVED_SEED),
+        bounds,
+        &gates,
+        STOREYS,
+        plan::basements_for(rx, rz),
+    )
 }
 
 /// El edificio **tal y como lo sirve el backend**: [`plan::REGION_STOREYS`] plantas, no [`STOREYS`].
@@ -5869,11 +5881,12 @@ fn served_building_of(rx: i32, rz: i32) -> plan::RegionBuilding {
     let region = Wg3RegionCoord { x: rx, z: rz };
     let bounds = region.bounds();
     let gates = junction::gates_of_region(composer_seed(SERVED_SEED), rx, rz, bounds);
-    plan::plan_building(
+    plan::plan_building_at(
         region.composer_seed(SERVED_SEED),
         bounds,
         &gates,
         plan::REGION_STOREYS,
+        plan::basements_for(rx, rz),
     )
 }
 
@@ -5920,7 +5933,7 @@ fn every_upper_storey_has_a_stair_that_lands_somewhere() {
         let b = building_of(rx, rz);
         assert_eq!(
             STOREYS,
-            b.storeys.len(),
+            b.storeys.len() - b.ground,
             "({rx},{rz}) no levantó las plantas"
         );
         assert!(
@@ -6064,7 +6077,7 @@ fn probe_the_well_column() {
             println!("[wg3] ({rx},{rz}) SIN hueco: se queda en una planta");
             continue;
         };
-        let stair = b.storeys[0].spaces[w.space_below];
+        let stair = b.storeys[b.ground].spaces[w.space_below];
         println!(
             "[wg3] ({rx},{rz}) escalera {:?} sube {} paso {} entra por {}",
             stair.rect, stair.rise_cm, stair.rise_step_cm, stair.rise_from_side
@@ -6429,8 +6442,9 @@ fn the_storey_stair_reaches_the_floor_above() {
     let m = real_manifest();
     for (rx, rz) in AUDIT_REGIONS {
         let b = building_of(rx, rz);
-        let filled = fill::fill_with(&b.storeys[0], &m, false);
-        for w in &b.wells {
+        let filled = fill::fill_with(&b.storeys[b.ground], &m, false);
+        // Sólo los pozos que arrancan en la CALLE: es la única planta rellenada aquí.
+        for w in b.wells.iter().filter(|w| w.storey_below == b.ground) {
             let stair = &b.storeys[w.storey_below].spaces[w.space_below];
             let top = filled
                 .segments
@@ -6487,7 +6501,7 @@ fn cutting_the_stair_out_of_a_room_loses_no_floor() {
 fn an_upper_storey_is_not_a_photocopy_of_the_one_below() {
     for (rx, rz) in AUDIT_REGIONS {
         let b = building_of(rx, rz);
-        let (lo, hi) = (&b.storeys[0], &b.storeys[1]);
+        let (lo, hi) = (&b.storeys[b.ground], &b.storeys[b.ground + 1]);
         // Comparadas por huella y papel, ignorando la cota: si el único cambio fuera la Y, esto sería
         // la misma planta a otra altura.
         let same = hi.spaces.iter().filter(|h| {
@@ -9492,17 +9506,9 @@ fn on_the_upper_storey_wg3_does_not_freeze_you() {
         // contra el que se pregunta es el de `plan_region`, que levanta `REGION_STOREYS`; con un
         // edificio de dos plantas aquí, una sala de la planta 1 podía ser en el mundo servido el
         // pozo de la escalera a la planta 2, y el test medía dos mundos distintos.
-        let region = Wg3RegionCoord { x: rx, z: rz };
-        let bounds = region.bounds();
-        let gates = junction::gates_of_region(composer_seed(SERVED_SEED), rx, rz, bounds);
-        let b = plan::plan_building(
-            region.composer_seed(SERVED_SEED),
-            bounds,
-            &gates,
-            plan::REGION_STOREYS,
-        );
+        let b = served_building_of(rx, rz);
         // La planta ALTA: es la que congelaba. Sin ella no hay nada que probar.
-        let Some(upper) = b.storeys.get(1) else {
+        let Some(upper) = b.storeys.get(b.ground + 1) else {
             continue;
         };
         let mut worlds = Wg3WorldCache::default();
@@ -9535,7 +9541,16 @@ fn on_the_upper_storey_wg3_does_not_freeze_you() {
             let y = cache.floor_y(pos);
             let drop = pos.y - y;
             assert!(
-                drop.abs() < STOREY_M * 0.5,
+                drop.abs() < STOREY_M * 0.5 || {
+                    eprintln!(
+                        "[freeze] ({rx},{rz}) espacio {:?} en ({:.1},{:.1}) cota {}",
+                        space.role,
+                        pos.x,
+                        pos.z,
+                        space.floor_y_cm
+                    );
+                    false
+                },
                 "({rx},{rz}) en la planta alta a y={:.2} el suelo sale a {y:.2}: se cae {drop:.2} m, \
                  o sea que el ráster no ve el forjado de su planta",
                 pos.y
@@ -12281,5 +12296,28 @@ fn probe_column_under_point() {
         let served = Wg3ServedWorld::plan_region(&m, SERVED_SEED, region);
         let rasters = super::validate::RegionRasters::build(&m, &served, region);
         println!("[columna] ({x:.1}, {z:.1}) → {:?}", rasters.column(x, z));
+    }
+}
+
+/// ADR-130 — SONDA: dónde están las escaleras de la torre (0,0), sótanos incluidos, para ir a
+/// capturarlas. `cargo test --release probe_tower_wells -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn probe_tower_wells() {
+    let b = served_building_of(0, 0);
+    eprintln!("ground {} storeys {}", b.ground, b.storeys.len());
+    for w in &b.wells {
+        let st = &b.storeys[w.storey_below];
+        let sp = st.spaces[w.space_below];
+        let (cx, cz) = w.rect.centre_m();
+        eprintln!(
+            "well below {} -> {} rect ({:.1},{:.1}) cota {} rise {}",
+            w.storey_below,
+            w.storey_below + 1,
+            cx,
+            cz,
+            sp.floor_y_cm,
+            sp.rise_cm
+        );
     }
 }

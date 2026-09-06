@@ -82,6 +82,8 @@ vertical por banda de plantas —wire 62, sin él el cliente no aguanta 34 plant
 números y las perillas están en el ADR; el primer día es una sesión de `plan.rs` (apilado espejado,
 `ground`).
 
+**Rebanada 1 HECHA (2026-09-06):** sótanos en el plan con tope 3, `ground`, torres (0,0) y (−1,−1); capturados B1–B3. Quedan 2–4. El wire 62 lo reclaman la rampa (ADR-122) y el streaming vertical (ADR-130 D5): el primero que entre se lo queda y el otro pasa a 63.
+
 ## Lo que NO cabe: lista v2 (decidido, no opinable)
 
 - **Verticalidad.** El servidor sirve 10 plantas y sólo 4 son reales (ADR-102 D3); cómo subir es una

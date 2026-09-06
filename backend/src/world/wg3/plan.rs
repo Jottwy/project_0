@@ -1706,8 +1706,13 @@ pub struct StairWell {
 /// aprender una tercera coordenada.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct RegionBuilding {
+    /// De abajo arriba: sótanos primero (B_b … B_1), la calle en [`RegionBuilding::ground`], y las
+    /// plantas altas después. `n − 1` es SIEMPRE la planta de debajo de `n`, sea sótano o no.
     pub storeys: Vec<RegionPlan>,
     pub wells: Vec<StairWell>,
+    /// ADR-130 — el índice de la CALLE en `storeys`. Cero si no hay sótanos, que es lo de siempre.
+    /// Todo lo que antes preguntaba por `storeys[0]` pregunta por esto.
+    pub ground: usize,
     /// La semilla con la que se planificó, para los sorteos que se hacen al RELLENAR (los agujeros
     /// de forjado). Auditoría 2026-09-02: `fill::hole_carves` sorteaba con semilla 0, así que dos
     /// mundos distintos ponían los agujeros en el mismo sitio si un espacio caía igual — y ningún
@@ -1731,7 +1736,8 @@ impl RegionBuilding {
             }
             // La cota es de la planta entera y no de cada espacio: si dos plantas comparten cota, lo
             // que hay no son dos plantas sino dos edificios cruzados en el mismo aire.
-            let want = n as i32 * STOREY_HEIGHT_CM;
+            // ADR-130 — la cota es relativa a la calle: los sótanos van por debajo.
+            let want = (n as i32 - self.ground as i32) * STOREY_HEIGHT_CM;
             if let Some(s) = plan.spaces.iter().find(|s| s.floor_y_cm != want) {
                 out.push(format!(
                     "planta {n}: un espacio a cota {} cuando la planta está a {want}",
@@ -1821,6 +1827,32 @@ pub fn plan_building(
     plan_building_with(seed, bounds, gates, storeys, CEILING_VARIETY)
 }
 
+/// ADR-130 — tope de sótanos de la REBANADA 1: tres, para medir con el validador y andarlos antes
+/// de que exista el streaming vertical (D5). Los treinta de D1 esperan a ese wire.
+pub const REGION_BASEMENTS: usize = 3;
+
+/// ADR-130 D2 — ¿cuántos sótanos tiene esta región? Una de cada cuatro es TORRE; las demás,
+/// ninguno. Por coordenada de región y no por semilla: la identidad de una región es su sitio, y
+/// así la (0,0) —la de todas las sondas y capturas— es torre.
+pub fn basements_for(rx: i32, rz: i32) -> usize {
+    if (rx * 3 + rz * 5).rem_euclid(4) == 0 {
+        REGION_BASEMENTS
+    } else {
+        0
+    }
+}
+
+/// [`plan_building`] con sótanos: lo que sirve el backend.
+pub fn plan_building_at(
+    seed: i32,
+    bounds: (f32, f32, f32, f32),
+    gates: &[Wg3Gate],
+    storeys: usize,
+    basements: usize,
+) -> RegionBuilding {
+    plan_building_deep(seed, bounds, gates, storeys, basements, CEILING_VARIETY)
+}
+
 /// [`plan_building`] con la perilla de techos a la vista. Ver [`CEILING_VARIETY`].
 pub fn plan_building_with(
     seed: i32,
@@ -1829,14 +1861,34 @@ pub fn plan_building_with(
     storeys: usize,
     ceiling_variety: f32,
 ) -> RegionBuilding {
-    // La planta baja SÍ se hunde: debajo de ella no hay nada que perforar.
+    plan_building_deep(seed, bounds, gates, storeys, 0, ceiling_variety)
+}
+
+/// ADR-130 D3 — el edificio entero: `storeys` plantas hacia arriba (contando la calle) y
+/// `basements` sótanos hacia abajo, con **el mismo apilado, espejado**: la calle se recorta al corte
+/// de la de arriba subiendo, y cada sótano se planifica bajo el anterior y le abre un pozo de
+/// escalera igual que una planta alta se lo abre a la de debajo. Los sótanos usan la huella entera
+/// de la región (bajo tierra no hay silueta que estrechar), no tienen puertas de junta (ADR-096 sólo
+/// negocia la calle) ni atrios hacia arriba, y no se hunden.
+pub fn plan_building_deep(
+    seed: i32,
+    bounds: (f32, f32, f32, f32),
+    gates: &[Wg3Gate],
+    storeys: usize,
+    basements: usize,
+    ceiling_variety: f32,
+) -> RegionBuilding {
+    // La planta baja SÍ se hunde: debajo de ella no hay nada que perforar… **salvo que haya
+    // sótanos** (ADR-130). Una terraza hundida a −12 es exactamente la losa del techo de B1 —
+    // medido: 41 pares de caras coplanares a −0,24 en la región (0,0)—, por lo mismo que una
+    // planta alta no se hunde sobre la de abajo.
     // La planta baja no tiene nada debajo, así que no hay atrios que abrirle a nadie.
     let mut out = vec![plan_storey_with(
         seed,
         bounds,
         gates,
         0,
-        true,
+        basements == 0,
         &[],
         ceiling_variety,
     )];
@@ -1939,6 +1991,66 @@ pub fn plan_building_with(
         wells.extend(dug);
         out.push(plan);
     }
+
+    // ADR-130 D3 — LOS SÓTANOS. Cada uno se planifica bajo el anterior (o bajo la calle) y le
+    // abre un pozo de escalera con `dig_wells`, exactamente como una planta alta se lo abre a la
+    // de debajo: aquí el sótano es el `below` y el de arriba el `above`. Si el pozo no encaja, el
+    // edificio deja de bajar, por lo mismo que deja de subir: un sótano al que no se llega es
+    // geometría que cuesta y no se pisa.
+    let mut downs: Vec<RegionPlan> = Vec::new();
+    let mut down_wells: Vec<StairWell> = Vec::new();
+    for k in 1..=basements {
+        let mut lower = plan_storey_with(
+            storey_seed(seed, 1000 + k),
+            bounds,
+            &[],
+            -(k as i32) * STOREY_HEIGHT_CM,
+            false,
+            &[],
+            ceiling_variety,
+        );
+        if lower.links.is_empty() {
+            break;
+        }
+        let dug = {
+            let above: &RegionPlan = if k == 1 { &out[0] } else { &downs[k - 2] };
+            let dug = dig_wells(&mut lower, above, k, seed, &[]);
+            // **Y el techo del sótano se recorta bajo el forjado de arriba**, como el de cualquier
+            // planta (ADR-102): sin esto una nave de B1 sube 6,40 y atraviesa la calle — medido,
+            // 41 pares de caras coplanares a −0,12 y los espacios hundidos de la calle abiertos.
+            cap_headroom_under(&mut lower, above);
+            // Bajo tierra NO hay atrios: donde arriba no hay sala hay TIERRA, no cielo. Sin esto
+            // seis naves de B1 salían a 6,39 m, se convertían en atrio y perforaban la calle.
+            for s in &mut lower.spaces {
+                if s.void_above {
+                    s.void_above = false;
+                    s.max_clear_cm = STOREY_HEIGHT_CM - 2 * SLAB_THICKNESS_CM;
+                }
+            }
+            dug
+        };
+        if dug.is_empty() {
+            break;
+        }
+        down_wells.extend(dug);
+        downs.push(lower);
+    }
+    // De abajo arriba: B_b … B_1, calle, altas. Los índices de los pozos se reasignan a ese orden:
+    // el pozo abierto en B_k tiene a B_k en `b − k`, y los de arriba se desplazan `b`.
+    let ground = downs.len();
+    let mut storeys_all: Vec<RegionPlan> = downs.into_iter().rev().collect();
+    storeys_all.extend(out);
+    let mut wells_all: Vec<StairWell> = Vec::with_capacity(down_wells.len() + wells.len());
+    for mut w in down_wells {
+        w.storey_below = ground - w.storey_below;
+        wells_all.push(w);
+    }
+    for mut w in wells {
+        w.storey_below += ground;
+        wells_all.push(w);
+    }
+    let mut out = storeys_all;
+    let wells = wells_all;
 
     // **ADR-120 — LA COMPOSICIÓN DE HUELLAS, y va AQUÍ.**
     //
@@ -2088,6 +2200,7 @@ pub fn plan_building_with(
         storeys: out,
         wells,
         seed,
+        ground,
     }
 }
 

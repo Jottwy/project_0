@@ -525,7 +525,7 @@ fn probe_region_inside() {
         let x = g.x - nx * 0.75;
         let z = g.z - nz * 0.75;
         let blob = grid.blob_at(x, z, 0.0);
-        let ground = &inside.building.storeys[0];
+        let ground = &inside.building.storeys[inside.building.ground];
         let pg = ground.gates.iter().find(|pg| {
             (pg.x_cm as f32 / 100.0 - g.x).abs() < 0.05
                 && (pg.z_cm as f32 / 100.0 - g.z).abs() < 0.05
@@ -2029,7 +2029,14 @@ fn pillars_land_where_the_grammar_says() {
                     assert!(
                         (dx - mid_x).abs() >= DOOR_CLEAR_CM || (dz - mid_z).abs() >= DOOR_CLEAR_CM,
                         "semilla {seed:#x} región ({rx},{rz}): pilar en ({mid_x},{mid_z}) a menos \
-                         de {DOOR_CLEAR_CM} cm de la puerta ({dx},{dz})"
+                         de {DOOR_CLEAR_CM} cm de la puerta ({dx},{dz}) [planta {n} espacio {i}                          cota {} tamaño {}x{} alto {}..{} estilo {} ground {}]",
+                        sp.floor_y_cm,
+                        p.size_x_cm,
+                        p.size_z_cm,
+                        p.bottom_y_cm,
+                        p.top_y_cm,
+                        p.style,
+                        inside.building.ground
                     );
                 }
 

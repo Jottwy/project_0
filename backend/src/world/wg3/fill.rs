@@ -976,9 +976,14 @@ pub(super) fn pit_clusters_of(
     building: &RegionBuilding,
     segments: &[Wg3Segment],
 ) -> Vec<PitCluster> {
+    // ADR-130 — en una TORRE no hay pozos: la cámara a −10…−50 m atravesaría los sótanos. Allí se
+    // baja por la escalera y por los agujeros de forjado.
+    if building.ground > 0 {
+        return Vec::new();
+    }
     building
         .storeys
-        .first()
+        .get(building.ground)
         .map(|plan| {
             plan.spaces
                 .iter()
@@ -1353,7 +1358,7 @@ fn wall_blocks(
             .map(|w| w.rect.shrunk(-50))
             .collect();
         let holes_above = hole_squares_above(building, n);
-        let pits_here = if n == 0 {
+        let pits_here = if n == building.ground {
             pit_rects_of(building, segments)
         } else {
             Vec::new()
@@ -1576,7 +1581,7 @@ fn office_props(
             .map(|w| w.rect.shrunk(-50))
             .collect();
         let holes_above = hole_squares_above(building, n);
-        let pits_here = if n == 0 {
+        let pits_here = if n == building.ground {
             pit_rects_of(building, segments)
         } else {
             Vec::new()
@@ -2124,7 +2129,7 @@ fn wall_pilasters(
             .map(|w| w.rect.shrunk(-50))
             .collect();
         keep_out.extend(hole_squares_above(building, n));
-        if n == 0 {
+        if n == building.ground {
             keep_out.extend(pit_rects_of(building, segments));
         }
         for (i, s) in plan.built() {
@@ -2293,8 +2298,12 @@ pub(super) fn is_pillar(s: &Wg3Solid) -> bool {
     let (a, b) = (s.size_x_cm.min(s.size_z_cm), s.size_x_cm.max(s.size_z_cm));
     let long_ok =
         (PILLAR_SIDE_MIN_CM..=PILLAR_SIDE_MAX_CM).contains(&b) && b % PILLAR_SIDE_STEP_CM == 0;
-    long_ok
-        && (a == b || (a >= 2 * PILLAR_SIDE_STEP_CM && a <= b / 2 && a % PILLAR_SIDE_STEP_CM == 0))
+    // El brazo es EXACTAMENTE el que emite la cruz: la mitad del lado redondeada a la celda, y sólo
+    // desde el lado mínimo de cruz. Antes valía «entre dos celdas y la mitad», y un bloque exento
+    // de 100×250 (enm. 17) pasaba por brazo — salió en el primer sótano de ADR-130, a 395 cm de una
+    // puerta, que es una regla de pilares y no de bloques.
+    let arm = (b / 2) / PILLAR_SIDE_STEP_CM * PILLAR_SIDE_STEP_CM;
+    long_ok && (a == b || (b >= PILLAR_CROSS_MIN_SIDE_CM && a == arm))
 }
 
 /// Superficie mínima de un atrio para que lleve pilares, en m².
@@ -2557,7 +2566,7 @@ fn hall_pillars(
         // lo hicieron, y `a_hole_drops_you_a_whole_storey` bajó de 8 a 7.
         let holes_above = hole_squares_above(building, n);
         // ADR-126 D5 — y la rejilla de pozos de la planta baja, por lo mismo.
-        let pits_here = if n == 0 {
+        let pits_here = if n == building.ground {
             pit_rects_of(building, segments)
         } else {
             Vec::new()
@@ -3208,7 +3217,7 @@ fn interior_partitions(
         // agujero de (-1,2), y `a_hole_drops_you_a_whole_storey` lo cazó.
         let holes_above = hole_squares_above(building, n);
         // ADR-126 D5 — y la rejilla de pozos de la planta baja, por lo mismo.
-        let pits_here = if n == 0 {
+        let pits_here = if n == building.ground {
             pit_rects_of(building, segments)
         } else {
             Vec::new()
@@ -4456,7 +4465,7 @@ fn floor_platforms(
             .map(|w| w.rect.shrunk(-50))
             .collect();
         keep_out.extend(hole_squares_above(building, n));
-        if n == 0 {
+        if n == building.ground {
             keep_out.extend(pit_rects_of(building, segments));
         }
         // ADR-105 enm. 17 — y los bloques gruesos de esta planta, con su hueco de paso.
