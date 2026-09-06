@@ -35,6 +35,17 @@ namespace BackroomsSurvival.Tests
             return faces;
         }
 
+        /// <summary>Vértices crudos. Para comparar por SUMA hace falta esto y no
+        /// <see cref="FaceCount"/>: un prisma emite abanicos de tapa, así que su cuenta de vértices
+        /// no es múltiplo de cuatro y la división entera se comería el resto.</summary>
+        private static int VertexCount(params Wg3Volume[] volumes)
+        {
+            Mesh m = Wg3MeshBuilder.Build(new List<Wg3Volume>(volumes), Vector3.zero);
+            int n = m.vertexCount;
+            Object.DestroyImmediate(m);
+            return n;
+        }
+
         /// <summary>Cuántas caras miran hacia <paramref name="dir"/>.</summary>
         private static int FacesTowards(Vector3 dir, params Wg3Volume[] volumes)
         {
@@ -82,15 +93,21 @@ namespace BackroomsSurvival.Tests
         }
 
         [Test]
-        public void CoberturaPARCIAL_NoPoda()
+        public void CoberturaPARCIAL_NoPoda_YLaRelacionEsASIMETRICA()
         {
-            // LA REGLA QUE IMPIDE EL AGUJERO. La vecina es más baja, así que tapa la mitad de abajo
-            // de la junta y la mitad de arriba se ve. Podarla dejaría ver el interior de la pared.
+            // LA REGLA QUE IMPIDE EL AGUJERO, y el caso que enseña que «tapar» no es mutuo.
+            //
+            // La vecina es más baja. Su cara hacia la alta SÍ desaparece: la alta la cubre entera.
+            // La de la alta hacia ella NO: la baja sólo le tapa el metro de abajo, y podarla dejaría
+            // ver el interior de la pared por los dos metros de arriba. Una sola cara se va, no dos.
             var alta = Box(new Vector3(0f, 1.5f, 0f), new Vector3(2f, 3f, 0.2f));
             var baja = Box(new Vector3(2f, 0.5f, 0f), new Vector3(2f, 1f, 0.2f));
 
-            Assert.AreEqual(12, FaceCount(alta, baja),
-                "media cara tapada sigue siendo media cara que se ve: no se poda ninguna de las dos");
+            Assert.AreEqual(11, FaceCount(alta, baja), "se va UNA cara, la de la baja");
+            Assert.AreEqual(1, FacesTowards(Vector3.right, alta, baja),
+                "la alta CONSERVA su cara hacia la baja, que sólo le tapa el metro de abajo");
+            Assert.AreEqual(1, FacesTowards(Vector3.left, alta, baja),
+                "y hacia −x sólo queda la de la alta: la baja perdió la suya");
         }
 
         [Test]
@@ -121,14 +138,16 @@ namespace BackroomsSurvival.Tests
             var marco = Box(new Vector3(2f, 1.5f, 0f), new Vector3(2f, 3f, 0.2f),
                 kind: Wg3VolumeKind.Casing);
 
-            Assert.AreEqual(1, FacesTowards(Vector3.right, pared),
-                "arnés: la pared suelta tiene UNA cara mirando a +x");
-            Assert.AreEqual(1, FacesTowards(Vector3.right, pared, marco),
-                "y la conserva: el marco no llena su caja, así que no tapa");
+            // Se comparan TOTALES y no caras hacia +x: `AddCasingBox` emite el perfil de dos
+            // escalones, así que el marco aporta varias caras propias mirando a +x y contarlas no
+            // diría nada de la pared. Si la suma cuadra, no se podó nada por ninguno de los dos
+            // lados — que es justo lo que se quiere de un tapador que no tapa.
+            Assert.AreEqual(VertexCount(pared) + VertexCount(marco), VertexCount(pared, marco),
+                "el marco no llena su caja: ni tapa a la pared ni el arnés le poda a él");
         }
 
         [Test]
-        public void AUnMarco_SiSeLePodaElDorso()
+        public void AUnaLosetaPegadaALaPared_SeLePodaElDorso()
         {
             // Al revés sí: el dorso de un rodapié contra la pared no se ve nunca. Es el caso que
             // más piezas quita, porque toda la decoración va pegada a algo.
@@ -154,8 +173,10 @@ namespace BackroomsSurvival.Tests
             var caja = Box(new Vector3(0f, 1.5f, 0f), new Vector3(2f, 3f, 2f));
             var cilindro = Box(new Vector3(2f, 1.5f, 0f), new Vector3(2f, 3f, 2f), shape: 1);
 
-            // La caja conserva su cara hacia el cilindro.
-            Assert.AreEqual(1, FacesTowards(Vector3.right, caja, cilindro));
+            // Por totales, y por lo mismo que el marco: el cilindro aporta caras laterales propias
+            // mirando a +x, así que contarlas por dirección no aísla a la caja.
+            Assert.AreEqual(VertexCount(caja) + VertexCount(cilindro), VertexCount(caja, cilindro),
+                "ni el cilindro tapa a la caja ni la caja al cilindro");
         }
 
         [Test]

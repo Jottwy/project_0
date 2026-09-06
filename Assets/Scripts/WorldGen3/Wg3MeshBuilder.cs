@@ -661,8 +661,10 @@ namespace BackroomsSurvival.WorldGen3
         ///   perpendiculares a los ejes y la comparación de rectángulos dejaría de valer. Los
         ///   volúmenes de tramo no llevan giro, así que esto sólo aparta a una minoría de macizos.
         /// - **Los marcos** (`Casing`): <see cref="AddCasingBox"/> les talla un perfil de dos
-        ///   escalones y un zócalo, así que NO llenan su caja y no pueden tapar nada. Sí se les
-        ///   pueden tapar sus propias caras, que es lo que le pasa al dorso de un rodapié.
+        ///   escalones y un zócalo, así que NO llenan su caja y no pueden tapar nada. Tampoco se les
+        ///   poda a ellos: sus caras las emite `AddCasingBox`, que no lee estas banderas, y el
+        ///   perfil hace que su dorso no sea un rectángulo limpio contra el que comparar. Una LOSETA
+        ///   (ADR-105 enm. 20), que sí es una caja lisa aunque sea decoración, entra por las dos.
         /// - **Los prismas y arcos**: no son cajas; ni tapan ni se les tapa.
         ///
         /// Y sólo mira dentro de la lista que se le pasa. Con el fundido por chunk eso son los
