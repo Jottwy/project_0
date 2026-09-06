@@ -61,6 +61,10 @@ namespace BackroomsSurvival.WorldGen3
             var tris = new List<int>[SubMesh.Count];
             for (int i = 0; i < SubMesh.Count; i++) tris[i] = new List<int>(volumes.Count * 12);
 
+            // Las caras que quedan enterradas contra otra caja no se emiten: sobran triángulos y,
+            // sobre todo, dos caras coplanares se pelean por el mismo píxel (z-fighting).
+            bool[] hidden = HiddenFaces(volumes);
+
             for (int i = 0; i < volumes.Count; i++)
             {
                 Wg3Volume v = volumes[i];
@@ -72,7 +76,8 @@ namespace BackroomsSurvival.WorldGen3
                     // GameObject, y sólo para los vértices. La UV se ancla al mundo, así que dos
                     // cajas de mallas distintas —o de chunks distintos— siguen cosiendo el dibujo.
                     AddBox(verts, normals, uvs, tris[SubMeshFor(v.kind)],
-                        v.center - origin, v.size, v.yawDegrees, v.center);
+                        v.center - origin, v.size, v.yawDegrees, v.center,
+                        hidden, i * FacesPerBox);
                 else if (v.shape == Wg3Shape.Arch && v.kind == Wg3VolumeKind.Casing)
                     AddArchCasing(verts, normals, uvs, tris[SubMeshFor(v.kind)],
                         v.center - origin, v.size);
@@ -147,20 +152,29 @@ namespace BackroomsSurvival.WorldGen3
         /// textura (<see cref="WorldAnchor"/>). Nulo = UV local, que es lo que quiere el cubo
         /// unitario de <see cref="BuildUnitCube"/>: se escala con el transform y no tiene un sitio
         /// propio en el mundo del que colgar nada.</param>
+        /// <param name="hidden">Banderas de <see cref="HiddenFaces"/>, o nulo para emitir las seis.
+        /// El ORDEN de las caras de aquí abajo es el que indexan esas banderas: +x, −x, +z, −z, +y,
+        /// −y. Reordenarlas sin reordenar allí talla agujeros donde no toca.</param>
         private static void AddBox(List<Vector3> verts, List<Vector3> normals, List<Vector2> uvs,
             List<int> tris, Vector3 centre, Vector3 size, float yawDegrees,
-            Vector3? worldCentre = null)
+            Vector3? worldCentre = null, bool[] hidden = null, int faceBase = 0)
         {
             Quaternion rot = Quaternion.Euler(0f, yawDegrees, 0f);
             Vector3 h = size * 0.5f;
 
             // (normal local, tangente U local, tangente V local) por cara.
-            AddFace(verts, normals, uvs, tris, centre, rot, h, Vector3.right, Vector3.forward, Vector3.up, size.z, size.y, worldCentre);
-            AddFace(verts, normals, uvs, tris, centre, rot, h, Vector3.left, Vector3.back, Vector3.up, size.z, size.y, worldCentre);
-            AddFace(verts, normals, uvs, tris, centre, rot, h, Vector3.forward, Vector3.left, Vector3.up, size.x, size.y, worldCentre);
-            AddFace(verts, normals, uvs, tris, centre, rot, h, Vector3.back, Vector3.right, Vector3.up, size.x, size.y, worldCentre);
-            AddFace(verts, normals, uvs, tris, centre, rot, h, Vector3.up, Vector3.right, Vector3.forward, size.x, size.z, worldCentre);
-            AddFace(verts, normals, uvs, tris, centre, rot, h, Vector3.down, Vector3.right, Vector3.back, size.x, size.z, worldCentre);
+            if (hidden == null || !hidden[faceBase + 0])
+                AddFace(verts, normals, uvs, tris, centre, rot, h, Vector3.right, Vector3.forward, Vector3.up, size.z, size.y, worldCentre);
+            if (hidden == null || !hidden[faceBase + 1])
+                AddFace(verts, normals, uvs, tris, centre, rot, h, Vector3.left, Vector3.back, Vector3.up, size.z, size.y, worldCentre);
+            if (hidden == null || !hidden[faceBase + 2])
+                AddFace(verts, normals, uvs, tris, centre, rot, h, Vector3.forward, Vector3.left, Vector3.up, size.x, size.y, worldCentre);
+            if (hidden == null || !hidden[faceBase + 3])
+                AddFace(verts, normals, uvs, tris, centre, rot, h, Vector3.back, Vector3.right, Vector3.up, size.x, size.y, worldCentre);
+            if (hidden == null || !hidden[faceBase + 4])
+                AddFace(verts, normals, uvs, tris, centre, rot, h, Vector3.up, Vector3.right, Vector3.forward, size.x, size.z, worldCentre);
+            if (hidden == null || !hidden[faceBase + 5])
+                AddFace(verts, normals, uvs, tris, centre, rot, h, Vector3.down, Vector3.right, Vector3.back, size.x, size.z, worldCentre);
         }
 
         /// <summary>Ancho de las dos bandas de borde del perfil del marco, a cada lado de la banda
@@ -614,6 +628,129 @@ namespace BackroomsSurvival.WorldGen3
             tris.Add(b); tris.Add(b + 2); tris.Add(b + 1);
             tris.Add(b); tris.Add(b + 3); tris.Add(b + 2);
         }
+
+        /// <summary>Holgura para decidir si dos cajas se tocan: un milímetro. La geometría de WG3
+        /// llega en centímetros ENTEROS por el cable, así que dos caras que deben coincidir
+        /// coinciden exactamente y esto sólo absorbe el error de pasar a metros en float.</summary>
+        private const float TouchEps = 1e-3f;
+
+        /// <summary>Las seis caras de <see cref="AddBox"/>, en su orden: +x, −x, +z, −z, +y, −y.</summary>
+        private const int FacesPerBox = 6;
+
+        /// <summary>
+        /// LAS CARAS ENTERRADAS, que es la otra mitad de la deuda de F0.
+        ///
+        /// # Qué estaba mal
+        ///
+        /// Se emitían las seis caras de cada caja, también las que quedan tapadas contra otra caja.
+        /// Sobran triángulos —eso ya lo decía la nota de F0— pero además **es la causa del
+        /// z-fighting**: dos macizos que se tocan tienen dos caras COPLANARES peleándose por el
+        /// mismo píxel, y el resultado es el parpadeo de superficie que se ve al moverse. Fundir las
+        /// mallas no lo arregla: las caras siguen ahí, sólo que en el mismo `Mesh`.
+        ///
+        /// # La regla, que es conservadora a propósito
+        ///
+        /// Una cara se tapa cuando existe OTRA caja que ocupa el espacio justo por fuera de ella y
+        /// la cubre entera en los dos ejes del plano. Nada de «se solapan un poco»: si la cobertura
+        /// es parcial, la cara se emite. Un falso positivo aquí es un AGUJERO en el mundo —se ve el
+        /// interior de una pared— y eso es infinitamente peor que un triángulo de más.
+        ///
+        /// # Qué queda fuera
+        ///
+        /// - **Las cajas GIRADAS** (ADR-121), ni como tapadas ni como tapadoras: sus caras no son
+        ///   perpendiculares a los ejes y la comparación de rectángulos dejaría de valer. Los
+        ///   volúmenes de tramo no llevan giro, así que esto sólo aparta a una minoría de macizos.
+        /// - **Los marcos** (`Casing`): <see cref="AddCasingBox"/> les talla un perfil de dos
+        ///   escalones y un zócalo, así que NO llenan su caja y no pueden tapar nada. Sí se les
+        ///   pueden tapar sus propias caras, que es lo que le pasa al dorso de un rodapié.
+        /// - **Los prismas y arcos**: no son cajas; ni tapan ni se les tapa.
+        ///
+        /// Y sólo mira dentro de la lista que se le pasa. Con el fundido por chunk eso son los
+        /// macizos de una misma planta y estilo, que es donde están los vecinos que se tocan; dos
+        /// cajas de grupos distintos no se podan mutuamente, y eso es perder una poda, no ganar un
+        /// agujero.
+        /// </summary>
+        /// <returns>Nulo si no hay nada que podar; si no, <c>volumes.Count * 6</c> banderas.</returns>
+        private static bool[] HiddenFaces(IReadOnlyList<Wg3Volume> volumes)
+        {
+            int n = volumes.Count;
+            if (n < 2) return null;
+
+            var min = new Vector3[n];
+            var max = new Vector3[n];
+            var plays = new bool[n];   // participa como tapada
+            var blocks = new bool[n];  // participa como tapadora
+            int candidates = 0;
+
+            for (int i = 0; i < n; i++)
+            {
+                Wg3Volume v = volumes[i];
+                Vector3 h = v.size * 0.5f;
+                min[i] = v.center - h;
+                max[i] = v.center + h;
+
+                bool axisAligned = v.shape == Wg3Shape.Box
+                    && Mathf.Abs(Mathf.DeltaAngle(v.yawDegrees, 0f)) < 0.01f;
+                plays[i] = axisAligned;
+                // El marco no llena su caja: se le puede tapar, pero no tapa.
+                blocks[i] = axisAligned && v.kind != Wg3VolumeKind.Casing;
+                if (axisAligned) candidates++;
+            }
+            if (candidates < 2) return null;
+
+            var hidden = new bool[n * FacesPerBox];
+            for (int i = 0; i < n; i++)
+            {
+                if (!plays[i]) continue;
+                for (int j = 0; j < n; j++)
+                {
+                    if (i == j || !blocks[j]) continue;
+                    // Descarte barato primero: si las cajas ni se rozan, `j` no puede tapar nada de
+                    // `i`. Mata la inmensa mayoría de los pares antes de mirar cara por cara.
+                    if (max[j].x < min[i].x - TouchEps || min[j].x > max[i].x + TouchEps) continue;
+                    if (max[j].y < min[i].y - TouchEps || min[j].y > max[i].y + TouchEps) continue;
+                    if (max[j].z < min[i].z - TouchEps || min[j].z > max[i].z + TouchEps) continue;
+
+                    int b = i * FacesPerBox;
+                    // +x y −x: el rectángulo de la cara vive en (y, z).
+                    if (CoversRect(min[j].y, max[j].y, min[i].y, max[i].y,
+                                   min[j].z, max[j].z, min[i].z, max[i].z))
+                    {
+                        if (min[j].x <= max[i].x + TouchEps && max[j].x > max[i].x + TouchEps)
+                            hidden[b + 0] = true;
+                        if (max[j].x >= min[i].x - TouchEps && min[j].x < min[i].x - TouchEps)
+                            hidden[b + 1] = true;
+                    }
+                    // +z y −z: en (x, y).
+                    if (CoversRect(min[j].x, max[j].x, min[i].x, max[i].x,
+                                   min[j].y, max[j].y, min[i].y, max[i].y))
+                    {
+                        if (min[j].z <= max[i].z + TouchEps && max[j].z > max[i].z + TouchEps)
+                            hidden[b + 2] = true;
+                        if (max[j].z >= min[i].z - TouchEps && min[j].z < min[i].z - TouchEps)
+                            hidden[b + 3] = true;
+                    }
+                    // +y y −y: en (x, z).
+                    if (CoversRect(min[j].x, max[j].x, min[i].x, max[i].x,
+                                   min[j].z, max[j].z, min[i].z, max[i].z))
+                    {
+                        if (min[j].y <= max[i].y + TouchEps && max[j].y > max[i].y + TouchEps)
+                            hidden[b + 4] = true;
+                        if (max[j].y >= min[i].y - TouchEps && min[j].y < min[i].y - TouchEps)
+                            hidden[b + 5] = true;
+                    }
+                }
+            }
+            return hidden;
+        }
+
+        /// <summary>Si el rectángulo de <c>j</c> contiene ENTERO al de <c>i</c> en los dos ejes del
+        /// plano de la cara. Contiene, no solapa: media cara tapada sigue siendo media cara que se
+        /// ve.</summary>
+        private static bool CoversRect(float jaMin, float jaMax, float iaMin, float iaMax,
+                                       float jbMin, float jbMax, float ibMin, float ibMax) =>
+            jaMin <= iaMin + TouchEps && jaMax >= iaMax - TouchEps
+            && jbMin <= ibMin + TouchEps && jbMax >= ibMax - TouchEps;
 
         /// <summary>Metros de mundo que abarca UNA repetición de la textura. Es el inverso de
         /// <see cref="UvPerMetre"/> por definición, y no un número aparte: si allí se cambia el
