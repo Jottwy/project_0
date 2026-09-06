@@ -1,7 +1,7 @@
 namespace BackroomsSurvival.WorldGen3
 {
     /// <summary>
-    /// ADR-105 enm. 20 — QUÉ ES esta superficie, más allá de a qué espacio pertenece.
+    /// ADR-105 enm. 19 — QUÉ ES esta superficie, más allá de a qué espacio pertenece.
     ///
     /// <c>style</c> dice el PAPEL del espacio (espina, pasillo, nave…) y de ahí sale el tinte. Esto
     /// es el otro eje: dentro de un mismo papel, una mampara de cubículo no es una pared y una placa

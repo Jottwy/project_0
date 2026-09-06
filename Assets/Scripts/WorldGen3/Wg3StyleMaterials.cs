@@ -42,7 +42,7 @@ namespace BackroomsSurvival.WorldGen3
     /// Consecuencia para quien añada papeles o ejes: **un delta de albedo del 10 % no existe**. Si
     /// hay que distinguir dos cosas, se mueven en tono o en material, nunca en claridad.
     ///
-    /// # El segundo eje (ADR-105 enm. 20)
+    /// # El segundo eje (ADR-105 enm. 19)
     ///
     /// El papel no es lo único que decide con qué se viste una superficie: dentro de un despacho, una
     /// mampara de cubículo es tela y el falso techo es placa de 60. Eso entra por
@@ -124,7 +124,7 @@ namespace BackroomsSurvival.WorldGen3
         }
 
         /// <summary>
-        /// ADR-105 enm. 20 — los materiales por FUNCIÓN, cargados de <c>Resources/Wg3Materials</c>
+        /// ADR-105 enm. 19 — los materiales por FUNCIÓN, cargados de <c>Resources/Wg3Materials</c>
         /// como el atrezo de ADR-129 y por lo mismo: no hay que cablearlos en ninguna escena ni en
         /// el inspector de un componente que se crea en runtime.
         ///

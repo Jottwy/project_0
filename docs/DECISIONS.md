@@ -14650,7 +14650,7 @@ función `decay` es la de ADR-130 D4.
 
 ---
 
-## ADR-105 — enmienda 19: el falso techo ROTO (deterioro de oficina, servidor y cliente)
+## ADR-105 — enmienda 20: el falso techo ROTO (deterioro de oficina, servidor y cliente)
 
 **Fecha:** 2026-09-06 · **Estado:** implementado · **Wire:** sin cambios (61).
 
@@ -14712,7 +14712,7 @@ propio (hoy es el de techo), y que una placa caída se pueda coger o romper.
 
 ---
 
-## ADR-105 — Enmienda 20: materiales por FUNCIÓN — tela de mampara, placa de 60 y moqueta de oficina (2026-09-06) — ACEPTADA (Joel: «moqueta grafito frío y mampara gris tela»)
+## ADR-105 — Enmienda 19: materiales por FUNCIÓN — tela de mampara, placa de 60 y moqueta de oficina (2026-09-06) — ACEPTADA (Joel: «moqueta grafito frío y mampara gris tela»)
 
 **Cliente puro. Sin bump de wire, sin tocar Rust.**
 

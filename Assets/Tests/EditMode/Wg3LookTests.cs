@@ -4,7 +4,7 @@ using NUnit.Framework;
 namespace BackroomsSurvival.Tests.EditMode
 {
     /// <summary>
-    /// ADR-105 enm. 20 — el material por función se INFIERE, así que lo que hay que vigilar no es que
+    /// ADR-105 enm. 19 — el material por función se INFIERE, así que lo que hay que vigilar no es que
     /// la mampara salga gris: es que la regla que la reconoce siga apuntando a la forma que el
     /// servidor emite.
     ///

@@ -266,7 +266,7 @@ namespace BackroomsSurvival.WorldGen3
             // FRENTE A — el papel del espacio decide con qué se viste. `segment.style` llevaba
             // viajando por el cable desde el wire 48 sin que lo leyera nadie, y por eso un pasillo,
             // un almacén y una nave se dibujaban idénticos.
-            // ADR-105 enm. 20 — y el segundo eje: un despacho lleva moqueta de oficina, y si además
+            // ADR-105 enm. 19 — y el segundo eje: un despacho lleva moqueta de oficina, y si además
             // le bajaron el techo (enm. 18) la placa de 60 con su perfil en T.
             Material[] mats = Wg3StyleMaterials.Resolve(materials, segment.style,
                 Wg3Looks.ForSegment(segment.style, segment.heightCm));
@@ -650,7 +650,7 @@ namespace BackroomsSurvival.WorldGen3
             if (parent == null) return null;
             if (prop.kind == BackroomsSurvival.Net.Wg3PropMsg.Sign)
                 return AssembleSign(prop, parent, layer, name);
-            // ADR-105 enm. 19 — el deterioro del falso techo no tiene prefab: se construye aquí.
+            // ADR-105 enm. 20 — el deterioro del falso techo no tiene prefab: se construye aquí.
             if (prop.kind == BackroomsSurvival.Net.Wg3PropMsg.CeilingTileHung
                 || prop.kind == BackroomsSurvival.Net.Wg3PropMsg.LightHung)
                 return AssembleHungDecay(prop, parent, layer, name, materials, lampMaterial);
@@ -741,7 +741,7 @@ namespace BackroomsSurvival.WorldGen3
         }
 
         /// <summary>
-        /// ADR-105 enm. 19 — **lo que cuelga del falso techo roto**: una placa descolgada de un
+        /// ADR-105 enm. 20 — **lo que cuelga del falso techo roto**: una placa descolgada de un
         /// lado (kind 21) y una luminaria caída en diagonal (kind 22).
         ///
         /// No son prefabs y no son macizos. Prefab no, porque el pack de oficina no trae ni placa
@@ -802,7 +802,7 @@ namespace BackroomsSurvival.WorldGen3
             return root;
         }
 
-        /// <summary>ADR-105 enm. 19 — canto por debajo del cual una decoración es una LOSETA lisa y
+        /// <summary>ADR-105 enm. 20 — canto por debajo del cual una decoración es una LOSETA lisa y
         /// no un marco. Quince centímetros: la placa caída mide 4 y la baldosa 9, y la jamba de un
         /// marco mide dos metros.</summary>
         private const float FlatDecorationMaxM = 0.15f;
@@ -948,7 +948,7 @@ namespace BackroomsSurvival.WorldGen3
                     // collider (`IsSolid` falso), igual que un rodapié. `Casing` y no `Decoration`
                     // para que el constructor le talle el perfil y el zócalo.
                     //
-                    // ADR-105 enm. 19 — salvo una LOSETA: una placa de techo caída (4 cm de canto)
+                    // ADR-105 enm. 20 — salvo una LOSETA: una placa de techo caída (4 cm de canto)
                     // o una baldosa levantada (9) son cajas lisas, y el perfil de dos escalones y
                     // el zócalo del marco sobre una pieza de dos centímetros no son un marco, son
                     // ruido. El corte va por el canto porque un marco es una banda de dos metros.
@@ -978,12 +978,12 @@ namespace BackroomsSurvival.WorldGen3
 
             go.AddComponent<MeshFilter>().sharedMesh = mesh;
             var renderer = go.AddComponent<MeshRenderer>();
-            // ADR-105 enm. 20 — una mampara de cubículo se reconoce por su forma (12 × 140) y va en
+            // ADR-105 enm. 19 — una mampara de cubículo se reconoce por su forma (12 × 140) y va en
             // tela gris. Todo lo demás —pilares, pretiles, vigas— es de obra, como en cualquier
             // otro espacio.
             Material[] mats = Wg3StyleMaterials.Resolve(materials, solid.BaseStyle,
                 Wg3Looks.ForSolid(solid.sizeXCm, solid.sizeZCm, solid.bottomYCm, solid.topYCm));
-            // ADR-105 enm. 19 — una loseta se dibuja con el material del TECHO: una placa caída es
+            // ADR-105 enm. 20 — una loseta se dibuja con el material del TECHO: una placa caída es
             // la que falta arriba, y la submalla de decoración traería el material del rodapié.
             if (mats != null && solid.IsDecoration && sy <= FlatDecorationMaxM
                 && mats.Length > Wg3MeshBuilder.SubMesh.Decoration)

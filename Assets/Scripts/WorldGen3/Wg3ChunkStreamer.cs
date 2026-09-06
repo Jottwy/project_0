@@ -385,7 +385,7 @@ namespace BackroomsSurvival.WorldGen3
             for (int i = 0; i < chunk.props.Count; i++)
             {
                 var prop = chunk.props[i];
-                // Los materiales van con el ancla porque el deterioro de la enm. 19 no tiene
+                // Los materiales van con el ancla porque el deterioro de la enm. 20 no tiene
                 // prefab: lo dibuja el ensamblador con el material de placa o el de luminaria.
                 Wg3SceneAssembler.AssembleProp(prop, root.transform, root.layer,
                     $"prop_{i:D3}_k{prop.kind}", EffectiveMaterials(), LampMaterial());

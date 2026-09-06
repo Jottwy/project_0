@@ -7,7 +7,7 @@ using UnityEngine;
 namespace BackroomsSurvival.EditorTools
 {
     /// <summary>
-    /// ADR-105 enm. 20 — las TRES superficies que separan una oficina de un pasillo Backrooms:
+    /// ADR-105 enm. 19 — las TRES superficies que separan una oficina de un pasillo Backrooms:
     /// moqueta grafito fría, placa de falso techo de 60 con su perfil en T, y tela gris de mampara.
     ///
     /// Procedurales y deterministas como <see cref="TextureGenerator"/> (misma escuela: escritura
