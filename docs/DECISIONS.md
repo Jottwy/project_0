@@ -14717,3 +14717,52 @@ para las variantes de atrezo). `office_decay` se llama DESPUÉS de `office_signs
 último criterio: el deterioro esquiva todo lo que ya está puesto. Verificado sobre la fusión:
 **1405/1405**, `CompileCheckClient` 0 errores en las cuatro asambleas y el barrido otra vez idéntico
 (27/27, pisable 183 756, mancha 99,7 %, 6,4 islas, nav 100 %).
+
+---
+
+## ADR-130 — Enmienda 1: la rebanada 2, el decaimiento — una función, y dos números del ADR que con tres sótanos no se pueden aplicar
+
+**Fecha:** 2026-09-06 · **Estado:** implementado · **Wire:** sin cambios (61).
+
+**Contexto.** D4 describe el decaimiento para las 30 plantas de D1 y la rebanada 1 sólo sirve **3**
+(`REGION_BASEMENTS`). Aplicar la curva literal —`depth²` con `depth = −floor_m / 100`— deja B3 en
+**0,01**: el decaimiento no se ve, no se mide y no se puede probar. Y aplicar el EXTREMO de cada
+perilla a B3 comprime cien metros en diez y choca con ADR-131.
+
+**D4.1 — La curva.** `decay_of(space)` = `d²` con `d` = plantas bajo la calle / `REGION_BASEMENTS`.
+La cota manda (la calle está en 0, `RegionBuilding::floor_of` cuenta desde `ground`), así que no hace
+falta llevar la planta por ningún parámetro nuevo. Los dos extremos son los de D4 —calle 0, fondo 1—
+y cuando `REGION_BASEMENTS` sean treinta, esta misma división ES la curva del ADR.
+
+**D4.2 — Una sola puerta.** `knobs_of` deja de devolver la fila `&'static` de `KNOBS` y devuelve una
+COPIA movida por `decayed(base, d)`. Todo el relleno pasa ya por ahí (22 sitios), así que el
+decaimiento entra sin tocar ni un emisor: más `partition_room`, `block`, `maze` y `grid_maze`; menos
+`pilaster_room`, `round_pilaster`, `lintel`, `arch_door`, `arcade`, `vault`, `cornice`, `soffit`,
+`platform` y `joist`; `ceiling_cap_cm` −60 cm en el fondo. Fuera de la tabla, por no ser del carácter
+sino de la planta: los agujeros de forjado, **0,26 → 0,80**, el número que pide D4.
+
+**D4.3 — El atrezo NO decae, y es una corrección a D4.** D4 pide 0,80 → 0,10. Medido: con `props`
+cayendo al 0,55 la región (0,0) baja de 60 sillas a **43** y `watcher_density_rises_with_depth` se
+queda sin muestra — porque ADR-131 siembra los VIGILANTES en las anclas `PROP_CHAIR` y su enmienda 2
+subió la densidad justo abajo, donde Joel dijo «no los veo». **Un sótano sin sillas es un sótano sin
+vigilantes.** Con tres plantas manda ADR-131; con treinta, la curva reparte y el fondo sí baja al
+0,10 del ADR. Los cubículos, por lo mismo, tampoco.
+
+**D4.4 — Los boquetes.** `decay_breaches`: un `Wg3Carve` de 100–200 cm de ancho, de +30 a +215 sobre
+el suelo, con probabilidad `decay · 0,5` por pared. Sólo entre **dos tramos de la misma cota** —en un
+sótano, al otro lado de la fachada hay tierra, y un agujero a la tierra es una ventana al vacío— y
+lejos de bocas y de lo ya recortado: un boquete sobre una ventana se lleva su antepecho y la
+convierte en puerta (lo cazó `windows_are_seen_through_and_not_walked_through`). **Abren paso**, por
+decisión de Joel, y el juez es el validador.
+
+**Lo que NO entra de D4, declarado.** `WEIRD_SPREAD` por profundidad: se decide en `plan.rs` dentro
+de la subdivisión, donde no hay planta a mano, y meterla ahí es plomería del plan y no una perilla.
+Y todo el lado del CLIENTE (paneles apagados, parpadeo, tintes, placas que faltan) queda para la r2b,
+que toca los mismos ficheros que la rama de materiales por función.
+
+**Verificación.** `cargo test` **1407/1407**; nuevos `the_knobs_decay_with_depth` (5 149 salas de
+sótano) y `breaches_only_break_walls_below_ground` (720 boquetes en 19 semillas, 461 en el fondo).
+Barrido `WG3_SWEEP_SEEDS=3`: 27/27 válidas, **islas 6,4 → 6,0**, mancha 99,7 %, nav 100 %, pisable
+183 756 → 183 221 (−0,3 %: menos tarimas y más masa abajo). Coste de `fill` 13 → 19 ms por región,
+todo en el barrido de pares de tramos de los boquetes. Sonda: `probe_decay_spots` — en (0,0),
+**2 boquetes en B1, 17 en B2, 18 en B3**.

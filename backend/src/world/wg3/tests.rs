@@ -9574,11 +9574,16 @@ fn probe_decay_spots() {
                         && p.y_cm < floor + 500
                 })
                 .collect();
-            if plates + tiles + hung.len() == 0 {
+            let breaches = f
+                .carves
+                .iter()
+                .filter(|c| fill::is_breach(c) && c.bottom_y_cm - 30 == floor)
+                .count();
+            if plates + tiles + hung.len() + breaches == 0 {
                 continue;
             }
             println!(
-                "[deterioro] ({rx},{rz}) planta {n} (suelo {:.2} m, calle en la {}) — {plates} placas caídas, {tiles} baldosas, {} colgando",
+                "[deterioro] ({rx},{rz}) planta {n} (suelo {:.2} m, calle en la {}) — {plates} placas caídas, {tiles} baldosas, {} colgando, {breaches} boquetes",
                 floor as f32 / 100.0,
                 b.ground,
                 hung.len()
