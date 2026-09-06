@@ -68,8 +68,11 @@ namespace BackroomsSurvival.WorldGen3
                     AddCasingBox(verts, normals, uvs, tris[SubMeshFor(v.kind)],
                         v.center - origin, v.size, v.yawDegrees);
                 else if (v.shape == Wg3Shape.Box)
+                    // `v.center` YA es la posición de mundo: lo que se resta es el origen del
+                    // GameObject, y sólo para los vértices. La UV se ancla al mundo, así que dos
+                    // cajas de mallas distintas —o de chunks distintos— siguen cosiendo el dibujo.
                     AddBox(verts, normals, uvs, tris[SubMeshFor(v.kind)],
-                        v.center - origin, v.size, v.yawDegrees);
+                        v.center - origin, v.size, v.yawDegrees, v.center);
                 else if (v.shape == Wg3Shape.Arch && v.kind == Wg3VolumeKind.Casing)
                     AddArchCasing(verts, normals, uvs, tris[SubMeshFor(v.kind)],
                         v.center - origin, v.size);
@@ -140,19 +143,24 @@ namespace BackroomsSurvival.WorldGen3
         /// <summary>Una caja con 24 vértices: cuatro por cara, para que cada cara tenga su normal
         /// dura. Con 8 compartidos las normales se promedian y una esquina de pared se ve como un
         /// bisel redondeado bajo cualquier luz rasante — que es toda la luz de este juego.</summary>
+        /// <param name="worldCentre">Dónde está esta caja en el MUNDO, para anclar ahí la fase de la
+        /// textura (<see cref="WorldAnchor"/>). Nulo = UV local, que es lo que quiere el cubo
+        /// unitario de <see cref="BuildUnitCube"/>: se escala con el transform y no tiene un sitio
+        /// propio en el mundo del que colgar nada.</param>
         private static void AddBox(List<Vector3> verts, List<Vector3> normals, List<Vector2> uvs,
-            List<int> tris, Vector3 centre, Vector3 size, float yawDegrees)
+            List<int> tris, Vector3 centre, Vector3 size, float yawDegrees,
+            Vector3? worldCentre = null)
         {
             Quaternion rot = Quaternion.Euler(0f, yawDegrees, 0f);
             Vector3 h = size * 0.5f;
 
             // (normal local, tangente U local, tangente V local) por cara.
-            AddFace(verts, normals, uvs, tris, centre, rot, h, Vector3.right, Vector3.forward, Vector3.up, size.z, size.y);
-            AddFace(verts, normals, uvs, tris, centre, rot, h, Vector3.left, Vector3.back, Vector3.up, size.z, size.y);
-            AddFace(verts, normals, uvs, tris, centre, rot, h, Vector3.forward, Vector3.left, Vector3.up, size.x, size.y);
-            AddFace(verts, normals, uvs, tris, centre, rot, h, Vector3.back, Vector3.right, Vector3.up, size.x, size.y);
-            AddFace(verts, normals, uvs, tris, centre, rot, h, Vector3.up, Vector3.right, Vector3.forward, size.x, size.z);
-            AddFace(verts, normals, uvs, tris, centre, rot, h, Vector3.down, Vector3.right, Vector3.back, size.x, size.z);
+            AddFace(verts, normals, uvs, tris, centre, rot, h, Vector3.right, Vector3.forward, Vector3.up, size.z, size.y, worldCentre);
+            AddFace(verts, normals, uvs, tris, centre, rot, h, Vector3.left, Vector3.back, Vector3.up, size.z, size.y, worldCentre);
+            AddFace(verts, normals, uvs, tris, centre, rot, h, Vector3.forward, Vector3.left, Vector3.up, size.x, size.y, worldCentre);
+            AddFace(verts, normals, uvs, tris, centre, rot, h, Vector3.back, Vector3.right, Vector3.up, size.x, size.y, worldCentre);
+            AddFace(verts, normals, uvs, tris, centre, rot, h, Vector3.up, Vector3.right, Vector3.forward, size.x, size.z, worldCentre);
+            AddFace(verts, normals, uvs, tris, centre, rot, h, Vector3.down, Vector3.right, Vector3.back, size.x, size.z, worldCentre);
         }
 
         /// <summary>Ancho de las dos bandas de borde del perfil del marco, a cada lado de la banda
@@ -572,7 +580,8 @@ namespace BackroomsSurvival.WorldGen3
 
         private static void AddFace(List<Vector3> verts, List<Vector3> normals, List<Vector2> uvs,
             List<int> tris, Vector3 centre, Quaternion rot, Vector3 half,
-            Vector3 n, Vector3 u, Vector3 v, float uLen, float vLen)
+            Vector3 n, Vector3 u, Vector3 v, float uLen, float vLen,
+            Vector3? worldCentre = null)
         {
             Vector3 faceCentre = Vector3.Scale(n, half);
             Vector3 du = Vector3.Scale(u, half);
@@ -592,13 +601,56 @@ namespace BackroomsSurvival.WorldGen3
             // UV en METROS: la textura repite cada metro sin importar el tamaño de la cara, así que
             // una pared de 26 m y una de 2 m tienen el mismo grano. Escalarla al 0..1 de la cara
             // haría que el gotelé de un pasillo largo se viera estirado junto al de una sala.
-            uvs.Add(new Vector2(0f, 0f));
-            uvs.Add(new Vector2(uLen, 0f));
-            uvs.Add(new Vector2(uLen, vLen));
-            uvs.Add(new Vector2(0f, vLen));
+            //
+            // Y desde 2026-09-06, ANCLADAS AL MUNDO cuando el llamante dice dónde está la caja.
+            Vector2 a = worldCentre.HasValue
+                ? WorldAnchor(worldCentre.Value + rot * (faceCentre - du - dv), rot * u, rot * v)
+                : Vector2.zero;
+            uvs.Add(new Vector2(a.x, a.y));
+            uvs.Add(new Vector2(a.x + uLen, a.y));
+            uvs.Add(new Vector2(a.x + uLen, a.y + vLen));
+            uvs.Add(new Vector2(a.x, a.y + vLen));
 
             tris.Add(b); tris.Add(b + 2); tris.Add(b + 1);
             tris.Add(b); tris.Add(b + 3); tris.Add(b + 2);
+        }
+
+        /// <summary>Metros de mundo que abarca UNA repetición de la textura. Es el inverso de
+        /// <see cref="UvPerMetre"/> por definición, y no un número aparte: si allí se cambia el
+        /// grano, el periodo al que se alinean las caras tiene que cambiar con él.</summary>
+        public static float RepeatPeriodM => 1f / UvPerMetre;
+
+        /// <summary>
+        /// El origen de la UV de una cara, en metros, tomado de su sitio en el MUNDO.
+        ///
+        /// # Qué estaba mal
+        ///
+        /// Cada cara arrancaba su UV en (0,0). El TAMAÑO era correcto —las UV van en metros, así que
+        /// el grano es el mismo en una pared de 26 m y en una de 2— pero la FASE se reiniciaba en
+        /// cada caja. Dos tramos de pared alineados uno detrás de otro cortaban el dibujo del gotelé
+        /// justo en la junta, y lo mismo el suelo de dos espacios contiguos. Es la costura que se ve
+        /// en cuanto la textura tiene un patrón reconocible, y no la arregla fundir las mallas: los
+        /// vértices cambian de sitio, las UV no.
+        ///
+        /// # De dónde sale ahora
+        ///
+        /// De proyectar la esquina de la cara —la que lleva la UV (0,0)— sobre sus propios ejes `u`
+        /// y `v` YA GIRADOS. Dos caras coplanares del mismo muro comparten ejes, así que sus
+        /// proyecciones difieren exactamente en la distancia que las separa y el dibujo continúa.
+        ///
+        /// **Y reducido al periodo de repetición, que es lo que lo hace seguro lejos del origen.**
+        /// Sin el módulo, una pared a 5 km daría una UV de 2 500 y el `float` dejaría de distinguir
+        /// el milímetro de textura — el mismo motivo por el que los VÉRTICES se emiten relativos al
+        /// origen del chunk (ver <see cref="Build"/>). Con él, el número se queda en [0, 2) y la
+        /// continuidad se conserva igual, porque dos caras separadas por un múltiplo del periodo son
+        /// congruentes: la textura no distingue una repetición de la siguiente.
+        /// </summary>
+        private static Vector2 WorldAnchor(Vector3 worldCorner, Vector3 axisU, Vector3 axisV)
+        {
+            float p = RepeatPeriodM;
+            return new Vector2(
+                Mathf.Repeat(Vector3.Dot(worldCorner, axisU), p),
+                Mathf.Repeat(Vector3.Dot(worldCorner, axisV), p));
         }
     }
 }
