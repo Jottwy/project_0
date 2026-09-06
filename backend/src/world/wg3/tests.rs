@@ -9721,6 +9721,114 @@ fn probe_how_many_solids() {
     }
 }
 
+/// EL NÚMERO «ANTES» DEL DÍA 3 — cuántos GameObjects pide hoy un chunk.
+///
+/// Hoy el cliente monta **un GameObject con su renderer por cada macizo y por cada tramo** del chunk,
+/// así que el coste de dibujado no se mide en metros de mundo sino en esta cuenta. Se pregunta por lo
+/// que VIAJA, que no es lo mismo que lo que toca el chunk: los macizos por `solids_owned_by_chunk`
+/// (centro, ADR-105 D3) y los tramos por `segments_for_chunk` (centro también). Contar por «tocar»
+/// inflaría el número con los que el chunk sólo usa para colisionar.
+///
+/// Se separan dos grupos porque **son los que NO se pueden fundir** en una malla común:
+/// - INVISIBLES: `STYLE_HIDDEN_BIT` de ADR-129 D2 — sólo collider, nadie los dibuja.
+/// - NO-CAJA: `shape != SHAPE_BOX` de ADR-125 — cilindro, media luna, octógono o arco.
+///
+/// El barrido va un chunk más allá del borde de la región a cada lado: un macizo cuyo centro cae
+/// fuera de `bounds()` por unos centímetros lo dibuja el chunk vecino, y contar sólo los 3×3 de la
+/// región lo perdería sin decir nada.
+#[test]
+#[ignore]
+fn probe_solids_per_chunk() {
+    let m = real_manifest();
+    let region = Wg3RegionCoord { x: 0, z: 0 };
+    let served = Wg3ServedWorld::plan_region(&m, SERVED_SEED, region);
+
+    let mut chunks = 0usize;
+    let mut total_solids = 0usize;
+    let mut total_hidden = 0usize;
+    let mut total_shaped = 0usize;
+    // Ni invisible ni no-caja. Se cuenta aparte y no se resta: un macizo puede ser las dos cosas a
+    // la vez, y restar los dos grupos del total lo descontaría dos veces.
+    let mut total_mergeable = 0usize;
+    let mut total_segments = 0usize;
+    let mut max_solids = 0usize;
+    let mut max_segments = 0usize;
+    let mut max_objects = 0usize;
+    let mut max_at = (0i32, 0i32);
+
+    // Recorrido ordenado por construcción (dos bucles sobre enteros): nada de iterar un HashMap.
+    for cz in -1..=REGION_CHUNKS {
+        for cx in -1..=REGION_CHUNKS {
+            let coord = chunk::Wg3ChunkCoord { x: cx, z: cz };
+            let solids = served.solids_owned_by_chunk(coord);
+            let segments = served.segments_for_chunk(coord);
+            if solids.is_empty() && segments.is_empty() {
+                continue;
+            }
+            let hidden = solids
+                .iter()
+                .filter(|s| s.style & segment::STYLE_HIDDEN_BIT != 0)
+                .count();
+            let shaped = solids
+                .iter()
+                .filter(|s| s.shape != segment::SHAPE_BOX)
+                .count();
+            println!(
+                "[chunk] ({cx},{cz}): {} macizos ({hidden} invisibles, {shaped} no-caja), {} tramos \
+                 → {} objetos",
+                solids.len(),
+                segments.len(),
+                solids.len() + segments.len()
+            );
+
+            chunks += 1;
+            total_solids += solids.len();
+            total_hidden += hidden;
+            total_shaped += shaped;
+            total_mergeable += solids
+                .iter()
+                .filter(|s| {
+                    s.style & segment::STYLE_HIDDEN_BIT == 0 && s.shape == segment::SHAPE_BOX
+                })
+                .count();
+            total_segments += segments.len();
+            max_solids = max_solids.max(solids.len());
+            max_segments = max_segments.max(segments.len());
+            if solids.len() + segments.len() > max_objects {
+                max_objects = solids.len() + segments.len();
+                max_at = (cx, cz);
+            }
+        }
+    }
+
+    let total_objects = total_solids + total_segments;
+    let denom = chunks.max(1) as f32;
+    println!(
+        "[total] región (0,0), semilla {SERVED_SEED:#x}: {chunks} chunks con contenido — \
+         {total_solids} macizos ({total_hidden} invisibles, {total_shaped} no-caja) y \
+         {total_segments} tramos = {total_objects} objetos"
+    );
+    println!(
+        "[máximo] {max_objects} objetos en el chunk ({},{}) — tope por separado: {max_solids} \
+         macizos y {max_segments} tramos",
+        max_at.0, max_at.1
+    );
+    println!(
+        "[media] por chunk con contenido: {:.1} macizos ({:.1} invisibles, {:.1} no-caja), {:.1} \
+         tramos = {:.1} objetos",
+        total_solids as f32 / denom,
+        total_hidden as f32 / denom,
+        total_shaped as f32 / denom,
+        total_segments as f32 / denom,
+        total_objects as f32 / denom
+    );
+    println!(
+        "[fundible] {total_mergeable} de {total_solids} macizos son caja visible, o sea candidatos \
+         a fundirse ({:.0} %)",
+        total_mergeable as f32 * 100.0 / total_solids.max(1) as f32
+    );
+}
+
 /// ADR-106 verificaciones (a) y (b) — **en la planta alta ya NO se bloquea, y el suelo que se
 /// encuentra es el suyo.**
 ///
