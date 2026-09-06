@@ -14443,5 +14443,8 @@ fn probe_watcher_camera_spots() {
             break;
         }
     }
-    assert!(shown > 0, "ninguna cámara con línea de visión a un vigilante");
+    assert!(
+        shown > 0,
+        "ninguna cámara con línea de visión a un vigilante"
+    );
 }

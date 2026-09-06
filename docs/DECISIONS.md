@@ -14510,3 +14510,35 @@ Que se levanten, que hablen, que se coordinen o que huyan; matarlos (D7); pose p
 (hoy hay una, y las sillas caídas no llevan nadie); LOD o culling de animación (48 esqueletos
 quietos con un clip de un fotograma no lo piden todavía, y si lo piden se mide antes); vigilantes
 fuera de una silla (de pie en una esquina, tras una mampara) — eso es otra especie y otro ADR.
+
+## ADR-131 — Enmienda 1: la altura del asiento NO es una constante, y el Animator que hay que posar lo dice la MALLA (2026-09-06)
+
+D5 daba por hecho que el cuerpo se coloca en el asiento con una constante del cliente
+(«`SeatDropM`, la altura de la silla y de la cadera de este esqueleto»). La verificación con el arnés
+de captura dijo que no, dos veces, y las dos con la misma foto: **un tío DE PIE dentro de su silla**.
+
+**Uno: el proxy tiene varios Animator humanoides y hay que posar el que pinta.** El prefab del
+faceling es un clon del avatar del vendor con el cuerpo propio colgando de un hijo, así que hay dos
+esqueletos humanoides vivos. Coger el primero posaba al invisible; coger «el primero que cuelgue de
+un hijo» fallaba al revés en el avatar humano, cuyo Animator está en el raíz; y preguntar «¿tiene
+alguna malla encendida debajo?» contesta que sí SIEMPRE en el raíz, porque debajo del raíz está
+todo. La respuesta exacta la da el `SkinnedMeshRenderer` que se ve: sus huesos pertenecen a un
+esqueleto, y su Animator es el primero subiendo desde el hueso.
+
+**Dos: la altura se MIDE cada fotograma, no se escribe.** Un clip Humanoid lleva su propia posición
+de cuerpo, y dónde deja los pies depende del rig: la constante calibrada con el esqueleto del vendor
+(subir 0,67 m) dejó al cuerpo del faceling con las caderas a **2,25 m** del suelo. `PlantFeet` corre
+en LateUpdate —con el cuerpo ya posado—, mira dónde ha quedado el pie más bajo y sube o baja **la
+CADERA** hasta que la planta toca el suelo del proxy (`leftFeetBottomHeight` da el grosor del pie
+desde el propio Avatar). La cadera y no un hijo del raíz: el raíz lo reescribe la red cada
+fotograma, y el cuerpo visible no siempre cuelga de un hijo. Converge en un fotograma, no acumula
+—el Animator reescribe los huesos— y un cuerpo nuevo no necesita recalibrar nada.
+
+Lo que **no** cambia: D5 sigue diciendo que el asiento es geometría del CLIENTE y que el servidor
+manda el suelo. Lo que cambia es que el cliente lo mide en vez de llevarlo escrito.
+
+**Verificación**: `Temp/captures/vig5_frente.png` y `vig5_lado.png` — región (0,0), semilla 42,
+sótano B3, un vigilante sentado en la silla de su puesto con las manos en la mesa. Medido en la
+misma corrida: caderas a 0,49 m del suelo, pies a 0,09, cabeza a 1,14. Sondas
+`probe_watcher_capture_spots` (dónde hay un vigilante) y `probe_watcher_camera_spots` (dónde cabe la
+cámara con línea de visión: a ojo no sale, tres intentos cayeron dentro de una mampara).

@@ -6,21 +6,21 @@
 ## Estado
 - **WorldGen3 es el mundo servido.** Wire **61** en las dos puntas (`ipc/server.rs:38`, `WireSchema.cs:25`) — ADR-129 lo subió el 06-09.
 - **Contrato WG3 v1 = Alpha 1** (`docs/WG3-ALPHA1-ROADMAP.md`): días 1–2 hechos; 3 y 5 APARCADOS detrás de la tanda de oficinas (Joel, 06-09).
-- Suite tras la fusión del 06-09: `cargo test --bin backrooms_server` **1382/1382 (81 ignorados)**, `CompileCheckClient` 0 errores en las 4 asambleas.
+- Suite del 06-09 con ADR-131 dentro: `cargo test --bin backrooms_server` **1400/1400 (86 ignorados)**, `CompileCheckClient` 0 errores en las 4 asambleas.
 - **El commit tiene gate** (`tools/dev/validate-scope.ps1`, hook PreToolUse): rojo = el commit no se ejecuta. Alcance por `git diff --cached`.
 - Alpha 1 itch nov 2026 · Next Fest feb 2027 · EA primavera 2027 (`docs/SCALING-ROADMAP.md:196-198`). E0 de red cerrada y medida.
 
 ## Próximo paso ÚNICO
-- **ADR-131, los VIGILANTES sentados**: escribir el ADR y luego servidor (espécie `Watcher` en `network/faceling.rs`, nace sentado en
-  una silla de puesto, neutral, «sentado» en un bit libre de pose) y cliente (pose sentada horneada por script, cabeza que sigue ±90° en
-  `LateUpdate`, salto de pose al perderte). Después: ADR-130 r2 decay, día 3 (fundido), r3 streaming vertical (wire 62), r4 torre.
+- **ADR-130 rebanada 2, el decaimiento sobre los 3 sótanos** (`decay(depth) = depth²` en las perillas por planta). Después: día 3 del
+  contrato (fundido por chunk), r3 streaming vertical (wire 62) y r4 torre. La rebanada 2 de la tanda de oficinas (ADR-131, vigilantes
+  sentados) está HECHA y verificada con captura.
 
 ## En curso
 - **ADR-128, mundo ×2: tercera pasada, NO commiteado.** 24 tests en rojo; `MAX_SEGMENT_M` no se toca (D3 anulado), `bounds()` en metros
   de MUNDO con `plan_bounds()`. **Sigue sin verificarse que lo servido salga ×2.** Parche verbatim en `docs/SESSION-LOG.md`.
 - **Contrato WG3 v1**, 5 días. Día 1 (`65d267c3`) y día 2 (`c7c9dd01`, `510223b8`, ADR-129) cerrados; el día 4 de gramática lo sustituyó
   ADR-129 (rampa, tabique diagonal y anti-enfilada pasan a v2 salvo decisión). Quedan día 3 (rendimiento) y día 5 (verificación, etiqueta).
-- **Tanda de oficinas (06-09)**: 1 falso techo + cubículos HECHA (`b02df08f`, enm. 18) · 2 ADR-131 vigilantes · 3 ADR-130 r2 · día 3 · r3 wire 62 · r4.
+- **Tanda de oficinas (06-09)**: 1 falso techo + cubículos HECHA (`b02df08f`) · 2 ADR-131 vigilantes HECHA · 3 ADR-130 r2 · día 3 · r3 wire 62 · r4.
 - **Saneamiento: B1–B4 fusionados en `migration/worldgraph-v1`** (06-09). Queda B5 (cabeza: el agujero de autoridad) y la lista de Joel para podar ramas.
 - **Migración STP servidor-autoritativo**: Steps 1–2 y slice 3.1 (plumbing) hechos y verificados. Falta slice 3.2
   (capa L2 de predicción), reescribir los 8 call sites de `Inventory` y retirar `PlayerController.cs` (DEPRECATED por ADR-009).
@@ -93,6 +93,16 @@
 - Menores: `MPTRACE` sin commitear en cuatro ficheros del vendor STP; `TODO(balance)` de loot; doc-comments stale.
 
 ## Últimas tandas
+
+### 2026-09-06 — 28.ª tanda: los VIGILANTES sentados (ADR-131 + enm. 1) — la planta de oficinas, rebanada 2
+- `Watcher` (`species` 3) en `game_loop/watcher.rs`: **sin `step`**, sólo reconcile. Nace en las anclas `PROP_CHAIR` de ADR-129 (sitio,
+  cota y giro los da el mundo: ni ráster ni `resolve_spawn_near`); 0,06 + 0,06 por sótano **por silla** (tope 0,45), cap 48 por
+  cercanía, radios 60/90/8. «Sentado» = **bit 5 de `buttons`** (ADR-044), sin bump de wire. `Wg3ServedWorld::props()` para medir.
+- El despertar mide la cota con `same_level` como la retirada: sin eso una silla del piso de arriba nacía y moría cada segundo (lo
+  cazó `a_watcher_never_moves_and_never_attacks`, uno de los cuatro tests nuevos).
+- Cliente: `FacelingSeated.anim` horneado por script (16 curvas de músculo, un fotograma) y `ProxySeatedHook` (override del idle,
+  cabeza ±90° con salto seco al perderte, respiración). **Enm. 1**: el Animator que se posa lo dice la MALLA (dos esqueletos vivos) y
+  la altura del asiento se MIDE cada fotograma (`PlantFeet` mueve la cadera). Capturas `vig5_*` del B3 de (0,0): sentado en su silla.
 
 ### 2026-09-06 — 27.ª tanda: la planta de oficinas, rebanada 1 — falso techo y cubículos (ADR-105 enm. 18)
 - `b02df08f`: `office_ceiling_cm` (270, 300) sólo en despachos/servicios/almacenes del carácter Office, por sala en pasos de 10; naves
