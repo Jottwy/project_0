@@ -283,6 +283,12 @@ namespace BackroomsSurvival.Net
             Trash = 6, Box = 7, Paper = 8, Monitor = 9, Clock = 10, Phone = 11, Keyboard = 12,
             Tray = 13, ChairFallen = 14;
 
+        /// <summary>ADR-129 enm. 1 — un CARTEL. No tiene prefab: es un quad con una celda del
+        /// atlas de <see cref="BackroomsSurvival.WorldGen3.Wg3SignCatalog"/>, y para él —y sólo
+        /// para él— <see cref="style"/> es el índice de VARIANTE, no el aspecto del espacio. Cabe
+        /// en el `kind` y en el `style` que ya viajaban: no sube el wire.</summary>
+        public const byte Sign = 15;
+
         public static Wg3PropMsg Parse(MsgPackReader r)
         {
             var p = new Wg3PropMsg();

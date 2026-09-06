@@ -645,6 +645,8 @@ namespace BackroomsSurvival.WorldGen3
             int layer, string name)
         {
             if (parent == null) return null;
+            if (prop.kind == BackroomsSurvival.Net.Wg3PropMsg.Sign)
+                return AssembleSign(prop, parent, layer, name);
             GameObject prefab = Wg3PropCatalog.Prefab(prop.kind, prop.xCm, prop.zCm);
             if (prefab == null) return null;
             var go = Object.Instantiate(prefab, parent);
@@ -705,6 +707,31 @@ namespace BackroomsSurvival.WorldGen3
         }
 
         private static bool _warnedNoScreen;
+
+        /// ADR-129 enm. 1 — un CARTEL: el quad de su variante con la celda que le toca del atlas.
+        ///
+        /// El ancla llega ya despegada un centímetro de la superficie (`SIGN_PROUD_CM`, servidor),
+        /// así que aquí no se corrige nada de posición: se instancia donde dicen, mirando hacia
+        /// donde dice `yaw_deg`, y `y_cm` es el CENTRO del cartel, no su pie. Sin collider (es una
+        /// pegatina) y sin luz (es papel: en un sótano sin corriente no se lee).
+        /// </summary>
+        private static GameObject AssembleSign(BackroomsSurvival.Net.Wg3PropMsg prop,
+            Transform parent, int layer, string name)
+        {
+            var material = Wg3SignCatalog.Material();
+            if (material == null) return null;
+            var go = new GameObject(name) { hideFlags = HideFlags.DontSave, layer = layer };
+            go.transform.SetParent(parent, false);
+            go.transform.position =
+                new Vector3(prop.xCm * 0.01f, prop.yCm * 0.01f, prop.zCm * 0.01f);
+            go.transform.rotation = Quaternion.Euler(0f, prop.yawDeg, 0f);
+            go.AddComponent<MeshFilter>().sharedMesh = Wg3SignCatalog.MeshOf(prop.style);
+            var r = go.AddComponent<MeshRenderer>();
+            r.sharedMaterial = material;
+            r.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            r.renderingLayerMask = Wg3StoreyLayers.ForLight(prop.yCm * 0.01f);
+            return go;
+        }
 
         /// <summary>Placa del techo de la oficina: 60 cm. Los paneles se alinean a ella.</summary>
         public const float CeilingTileM = 0.6f;

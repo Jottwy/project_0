@@ -14575,3 +14575,75 @@ radio de 60 m, un jugador rara vez tendrá más de una docena activos a la vez.
 **Lo que esto NO arregla, y queda dicho:** que un puesto de oficina sea escaso es un hecho de
 `office_cubicles` (ADR-105 enm. 18), no de esta especie. Si Joel quiere oficinas llenas de verdad, lo
 que hay que subir son los PUESTOS, y eso es otra rebanada.
+
+## ADR-129 — Enmienda 1: LOS CARTELES, el único texto del mundo, y lo primero que deja de tener sentido al bajar (2026-09-06) — ACEPTADA (Joel: «no hay ningún texto en el mundo… placas de despacho junto a las puertas, carteles en mamparas de cubículo, señales de salida en pasillos, tablón de corcho en salas grandes, calendario parado en una fecha»)
+
+### Contexto
+
+El mundo entero es geometría y muebles: ni una palabra escrita. Una oficina sin texto no se lee
+como una oficina, y —más importante— sin texto el mundo no puede MENTIR. Los carteles son el único
+sitio donde el mundo habla, así que son el sitio donde se nota que abajo ya no hay nadie que sepa
+escribir (ADR-130 D4).
+
+### D1 — `PROP_SIGN`, y por qué NO sube el wire
+
+`kind` es un `u8` con catorce valores gastados: el cartel es el **15**. Y `style`, que ya viajaba en
+`Wg3Prop`, **el cliente no lo leía para el atrezo** (`AssembleProp` sólo mira `kind`): para el
+cartel —y sólo para él— es el índice de VARIANTE, seis bits, 0–63. No hay campo nuevo, no hay
+mensaje nuevo, **el wire se queda en 61**. La condición que puso Joel («si no cabe, PARA y
+pregunta») se comprobó antes de escribir código: cabe.
+
+### D2 — Un cartel no es un prefab: es un quad con una celda de un atlas
+
+`Assets/Art/Signage/Resources/Wg3SignAtlas.png`, 2048 × 2048, **8 × 8 celdas de 256** con margen de
+4 px (sin margen el filtrado trae el verde de la señal de al lado al borde de una placa). Material
+URP Lit compartido, **recorte por alfa** —no transparencia: un plano transparente a 1 cm de la
+pared se ordena mal según el ángulo— y **sin luz propia**: un cartel es papel, y en un sótano sin
+corriente no se lee. Una malla por variante, cacheada; nada de `MaterialPropertyBlock` por cartel,
+que rompería el SRP Batcher igual que se dice de las luminarias.
+
+**Cada celda es cuadrada y ningún cartel lo es.** El dibujo se hornea a la proporción real y se
+estira a la celda (`tools/dev/BakeSignAtlas.py`); el quad, que tiene la proporción real, deshace el
+estirado. Por eso no hay tabla de UV por variante que copiar a mano a los dos lados: la única
+cuenta compartida con el horno es fila = `v / 8`, columna = `v % 8`. Lo que sí es espejo es el
+TAMAÑO (`segment::sign_size_cm` ↔ `Wg3SignCatalog.SizeM`), porque el servidor mide el hueco con él.
+
+### D3 — Las cinco familias y el emisor
+
+Variantes 0–7 placa de despacho (30 × 12), 8–15 rótulo de cubículo (24 × 9), 16–19 señal de salida
+(40 × 15), 20–23 tablón de corcho (120 × 90), 24–27 calendario (30 × 42); 28–31 libres.
+`office_signs` (`fill.rs`), después de todo el resto porque va pegado a superficies que ya existen:
+placa a un lado de cada boca a 1,60; salida en las paredes del fondo de un pasillo a 2,20 (y si el
+sitio bueno está ocupado se prueba a los lados: una salida sin señal es lo que se venía a
+arreglar); tablón en salas ≥ 40 m² con dado de 0,35; calendario descentrado, uno de cada dos
+espacios; rótulo sobre la cara de una mampara de cubículo, una de cada tres.
+
+Pegado quiere decir pegado: el ancla sale ya despegada **1 cm** de la cara (`SIGN_PROUD_CM`) con el
+giro mirando hacia afuera, y el cliente instancia donde le dicen. **Nunca sobre una puerta ni sobre
+una ventana**: se esquiva toda boca con la holgura del atrezo más la jamba, todo recorte que cruce
+la banda del cartel a SU altura, y todo macizo que asome ahí (marcos, pilastras, oclusores).
+
+### D4 — El texto que sale mal, sin código nuevo
+
+`variant + 32` es el mismo cartel con las letras cambiadas y las fechas imposibles (`SLAA ED
+JUNATS`, `32 de MRAZO`, `NO SALIDA`). Sólo bajo tierra, con probabilidad
+`0,35 + 0,65 · decay(depth)` — o sea: los carteles son **lo primero** que deja de tener sentido al
+bajar, ya en el primer sótano, y a −100 m no queda uno bueno. El umbral es de esta enmienda; la
+función `decay` es la de ADR-130 D4.
+
+### Verificaciones
+
+- Rust `signs_hang_flat_on_a_surface_and_never_on_a_door_or_a_window` (4 101 anclas en 39 semillas,
+  por familia [2714 placas, 172 rótulos, 262 salidas, 511 tablones, 442 calendarios]): variante con
+  familia, `style < 64`, giro en {0, 90, 180, 270}, ninguna sobre un recorte a su altura, y sin
+  sótanos ningún texto roto. `only_the_basements_get_the_text_wrong`: todo cartel roto por debajo
+  de la calle, y sobre ella ninguno. Suite: 1398/1398.
+- C#: `CompileCheckClient` 0 errores en las cuatro asambleas.
+- Legibilidad: `Temp/captures/sign_legibility_1m5.png` — el atlas recortado al tamaño EXACTO en
+  píxeles que ocupa a 1,5 m con la cámara del juego (vfov 60 a 1920 × 1080): placa 187 × 75 px,
+  salida 249 × 94, tablón 748 × 561, calendario 187 × 262. Se lee.
+
+> **Pendiente de la enmienda:** la captura DENTRO del juego. El editor de Unity está abierto sobre
+> el clon principal y otra sesión estaba editando `Wg3SceneAssembler.cs` ahí mismo (mtime a tres
+> minutos), que es uno de los ficheros que habría que parchear para capturar; entrar en Play y
+> pisar `Builds/Backend` era chocar con ella. Queda para cuando el editor esté libre.
