@@ -14331,3 +14331,247 @@ mesa, monitor, silla caída, paneles. Commit `b02df08f`.
 
 Mamparas con material propio (tela o melamina: hoy son yeso, como la pared), avisos y carteles en
 las mamparas, y los VIGILANTES sentados en las sillas de los puestos — ADR propio (131).
+
+## ADR-131 — LOS VIGILANTES: una especie de faceling que nace sentada en la silla de un puesto, nunca se levanta y sólo te sigue con la cara (2026-09-06) — ACEPTADA (Joel: «muchos más facelings neutrales que den miedo… sentados en las sillas de oficina, que su cara te siga»)
+
+### Contexto
+
+La planta de oficinas ya tiene sus puestos: ADR-105 enm. 18 puso mamparas, mesas y **sillas**
+(`PROP_CHAIR`, ADR-129) por cubículo, y ADR-130 abrió los sótanos bajo la torre. Lo que falta es
+quién los ocupa. Los facelings que hay hoy (ADR-094) son dos especies con conducta: el adulto
+trabaja, se pasea y hace cumplir (`Working/Commute/Regard/Enforce`), y la manada de niños percibe,
+cerca y golpea. Las dos cuestan ráster, A\*, y una plaza del cap activo cada una.
+
+Lo que Joel pide no es eso. Es **población**: mucha, quieta, que no haga nada y que dé miedo
+justamente por no hacer nada. Una tercera especie con la conducta de las otras dos apagada sale más
+barata que cualquiera de ellas —no anda, así que no pide plan, ni ráster, ni paso— y es la única
+forma de que «muchos más» no signifique multiplicar el coste por criatura.
+
+### D1 — Qué es un Watcher, dicho por lo que NO hace
+
+`species = 3`, tercera etiqueta del byte cosmético que ADR-094 ya relaya (0 humano, 1 adulto,
+2 niño). Un Watcher:
+
+- **no se mueve.** No tiene destino, ni plan de A\*, ni paso; su posición se escribe UNA vez, al
+  nacer, y no la vuelve a tocar nadie. No hay `tick_mover` que llamarle.
+- **no ataca y no es hostil nunca.** No entra en el carril de daño del adulto (`Enforce`), no tiene
+  `strike_recover` ni `enforce_target`, y la profundidad **no** lo cambia: a −100 sigue sentado. El
+  miedo lo pone la cara, no la amenaza.
+- **no es manada.** No se llama, no se coordina, no huye con nadie. Cada uno es su silla.
+- **no vocaliza.** `vocal_seq` se queda en 0, que es lo que ya hace un peer que nadie bumpea.
+
+Esto no es una fase 1 de algo que luego se levantará: es la especie entera. Si algún día hay un
+faceling que se levanta de la silla, será otra especie o un ADR que enmiende éste — y lo dirá.
+
+### D2 — Nace en una silla de puesto, y la silla la decide el mundo, no un sorteo de posición
+
+Las otras dos especies se reparten sorteando **posiciones** de un chunk (`faceling_spawn`) y luego
+buscando suelo donde caen. Un Watcher no: el sitio ya existe y ya viaja. `fill::office_cubicles` y
+`fill::office_props` emiten `PROP_CHAIR` con su posición en centímetros, su cota de suelo y **su
+giro** (la silla mira al pasillo: `cyaw = yaw + 180`), y `Wg3ServedWorld::props_owned_by_chunk` las
+reparte por chunk. El reparto de vigilantes **lee esas anclas** y decide silla a silla.
+
+Sólo `PROP_CHAIR`. `PROP_CHAIR_FALLEN` (el 15 % que el cliente tumba) no: en una silla volcada no
+se sienta nadie, y esa es la variedad que hace que las que sí tienen a alguien signifiquen algo.
+
+De la silla salen las tres cosas que definen al vigilante: **posición** (su x,z), **cota** (el suelo
+del puesto, con la convención de siempre — `floor + PLAYER_BASE_Y`, porque el cliente resta
+`PlayerBaseY` a todo peer y bajar el cuerpo al asiento es cosa de la pose, D5) y **orientación**
+(el giro de la silla; el cuerpo mira a donde mira el asiento y no se gira jamás).
+
+**Consecuencia deliberada:** un Watcher no necesita `standable_near`, ni `resolve_spawn_near`, ni el
+ráster. Una silla la puso el mismo `fill` que dejó su hueco libre, así que ya está en suelo pisable
+por construcción. Es la mitad del ahorro de esta especie.
+
+### D3 — La densidad sube con la profundidad, y es una probabilidad POR SILLA
+
+Cada silla candidata pasa un sorteo determinista por `(semilla ^ sal, chunk, planta, índice de la
+silla en el chunk)`:
+
+```
+p(silla) = min(WATCHER_CHAIR_BASE + WATCHER_CHAIR_PER_STOREY · depth, WATCHER_CHAIR_MAX)
+depth    = max(0, −storey)      // storey_of_floor_cm de la cota de la silla
+```
+
+`WATCHER_CHAIR_BASE` = **0,06**, `WATCHER_CHAIR_PER_STOREY` = **0,06**, `WATCHER_CHAIR_MAX` =
+**0,45**. En la calle una silla de cada dieciséis tiene a alguien; en B1 una de cada ocho; en B3
+—el fondo de hoy (ADR-130 rebanada 1, `REGION_BASEMENTS` = 3)— una de cada cuatro. Con los 30
+sótanos de ADR-130 D3 el tope se alcanza en B7 y de ahí para abajo casi la mitad de los puestos
+están ocupados, que es lo que Joel describe como «cada planta más caótica».
+
+**Por silla y no por chunk**, al contrario que el adulto (ADR-094: la oficina despierta entera). La
+unidad del adulto es el chunk porque su conducta es de grupo —todos paran a la vez—; un vigilante no
+tiene conducta que sincronizar, y hacer que una oficina esté llena o vacía en bloque produciría
+justo la lectura equivocada: que hay «salas con enemigos» en vez de un edificio con gente dentro.
+
+**Sobre las plantas altas**: `depth` es 0 en todas (0, 1, 2, 3), así que arriba la densidad es la
+base. La progresión del sandbox es bajar (memoria de dirección de loop), no subir.
+
+`WATCHER_ACTIVE_CAP` = **48**, aparte del cap del adulto y del de las manadas. Es más alto que los
+32 del adulto por lo mismo que el resto de este ADR: un vigilante cuesta un peer y una entrada en un
+`Vec`, no un ráster ni un A\*. El cap se gasta **por cercanía**, ordenando candidatos antes de
+poblar — la misma disciplina que ADR-110 D3/T5 tuvo que rescatar en el adulto, no otra inventada.
+
+Radios: nace dentro de **60 m** y se retira más allá de **90 m** (histéresis, igual que todos), con
+un mínimo de **8 m** para que nadie aparezca en la cara. Más corto que el del adulto (70/100) porque
+un vigilante no tiene que estar ahí antes de que dobles la esquina: no tiene que llegar a ningún
+sitio.
+
+### D4 — «Sentado» va en un bit libre de `buttons`, y el wire no se toca
+
+`buttons` (u16) es el bitfield que ADR-044 creó con 14 bits libres a propósito. Ocupados: 0 aiming,
+1 reloading, 2 lean izquierda, 3 lean derecha, 4 spray (ADR-068). El vigilante estrena el **bit 5,
+`Seated`**, escrito por el servidor al dar de alta el peer y nunca más.
+
+Es exactamente el caso para el que existen esos bits: un estado **sostenido**, no un evento
+(ADR-049 rechazó por escrito meter un contador ahí). **Sin campo nuevo, sin
+`WIRE_SCHEMA_VERSION`, sin `WireSchema.Expected`, sin re-desplegar el cliente viejo**: un peer que no
+conozca el bit dibuja un faceling de pie, que es la degradación correcta. La asignación vive UNA vez,
+en `Assets/Scripts/Network/RemoteButtons.cs`, y ahí se añade.
+
+**Por qué un bit y no «species 3 ⇒ sentado»:** porque son dos preguntas distintas. La especie dice
+QUÉ es (qué modelo, qué banco de audio); el bit dice EN QUÉ POSTURA está. El día que un jugador se
+siente en una silla —o que un adulto se siente a una mesa— el bit ya sirve y la especie no.
+
+### D5 — La pose sentada se hornea por script, y es un fotograma
+
+Un `AnimationClip` **Humanoid** generado por un menú de editor
+(`Backrooms/Facelings/Build Seated Pose Clip`), con **curvas de músculos** (`Spine`, `Chest`,
+`Left/Right Upper Leg`, `Lower Leg`, `Foot`, `Upper/Lower Arm`) de **un solo fotograma** y `loop`.
+No es un `.fbx` importado ni un clip externo: es un asset de 40 curvas constantes que el repositorio
+puede regenerar y revisar, con la misma disciplina que el resto de los horneados de este proyecto
+(el prefab del avatar remoto, el controller del proxy, las mallas `.asset`).
+
+**Por qué no un clip externo** (Joel: «no creo que deba ser para tanto»): una pose estática no tiene
+nada que animar. Un `.fbx` traería su propio rig, su propio `Avatar`, su propio retargeting y una
+dependencia binaria que nadie puede leer en un diff, a cambio de cero movimiento.
+
+Se aplica con un `AnimatorOverrideController` que sustituye el clip de **idle** del
+`ProxyLocomotionController`. No hay estado nuevo, no hay que rehornear el controller y no hay
+transición que sincronizar: un vigilante nunca sale de idle porque nunca se mueve. El hook
+(`ProxySeatedHook`, en `RemoteAvatar/`, cableado en `RemoteAvatarPrefabBuilder`) enciende el
+override con el bit y lo apaga sin él.
+
+**La cota del asiento la pone el cliente, no el servidor.** La posición del peer es el SUELO
+(D2); el cuerpo baja `SeatDropM` en local sobre el hijo `FacelingBody` para que las nalgas queden en
+el asiento. Va en el cliente porque es una constante del **modelo** —cuánto mide la silla de
+`Resources/Wg3Props/Chair` y dónde tiene la cadera este esqueleto—, y una constante de modelo en el
+servidor es la clase de número que deja de significar lo que dice su comentario en cuanto alguien
+cambia el prefab.
+
+### D6 — La cabeza te sigue, y cuando sales del cono da un salto seco
+
+En `LateUpdate` (después del Animator, o el clip pisa lo que escriba el hook):
+
+- **Sigue** al jugador local: el hueso de la cabeza apunta a la cámara, con el giro **acotado a ±90°
+  en yaw respecto del yaw del CUERPO** y a ±35° en pitch. El cuerpo no se gira nunca (D2): mira a
+  donde mira la silla.
+- **Cuando el jugador sale de ese cono** —se te queda a la espalda—, la cabeza **no gira de vuelta
+  suavemente**: salta en un fotograma a otra pose de cabeza sorteada de un puñado (mirar a la mesa, a
+  la mampara, al techo, al frente), y se queda ahí hasta que vuelvas a entrar. El salto es la
+  decisión: un seguimiento que se pierde suavemente se lee como un muñeco mal orientado, y uno que
+  ya está mirando a otro lado cuando te vuelves se lee como que se movió mientras no mirabas. Es el
+  mismo principio del ángel llorón, y es la mitad del miedo de esta especie.
+- **Respiración procedural leve**: `Spine`/`Chest` oscilan ±0,8° a ~0,22 Hz, con fase por `id` para
+  que dos vigilantes de la misma sala no respiren a la vez. Es lo único que se mueve, y existe para
+  que la pose no se lea como una estatua o como un bug de animación.
+
+Todo esto es **cliente puro**: el servidor no sabe hacia dónde mira una cabeza y no le hace falta.
+Nada de esto viaja.
+
+### D7 — Es invulnerable, y se dice en voz alta
+
+El carril de daño de los facelings (`process_pvp_hit_candidate_host`) busca al golpeado en el roster
+del driver que lo posee. Un vigilante no está en el de adultos ni en el de niños, así que **pegarle
+no hace nada**: ni daño, ni reacción, ni muerte. No es un descuido: darle salud obligaría a decidir
+qué deja al morir, si el cuerpo se queda sentado, y si matarlos es una forma de limpiar una planta —
+tres decisiones de diseño que nadie ha tomado y que este ADR no va a inventar de paso.
+
+Queda **declarado como deuda**: hoy un vigilante es atrezo con cara. Cuando Joel decida qué pasa al
+golpearlo, será una enmienda a este ADR.
+
+### Verificaciones
+
+Servidor: `a_watcher_never_moves_and_never_attacks` (N ticks de bucle con un jugador encima: la
+posición no cambia ni un flotante y `attacks` sigue vacío), `watchers_only_sit_on_standing_chairs`
+(toda posición de vigilante coincide con un ancla `PROP_CHAIR`, ninguna con una `PROP_CHAIR_FALLEN`),
+`watcher_density_rises_with_depth` (barrido de la región (0,0): la tasa por silla de B3 supera a la
+de la calle), `a_watcher_is_seated_on_the_wire` (el peer nace con el bit 5 de `buttons` puesto y
+`species == 3`), y determinismo por semilla como el resto de los sorteos.
+
+Cliente: el clip horneado tiene un fotograma y curvas de músculo (no de transform), el hook enciende
+el override sólo con el bit, y **captura** con el arnés (`Temp/claude_capture.json`) en un sótano con
+cubículos de la región (0,0): se ve a un vigilante sentado en su silla, con la cara vuelta hacia la
+cámara.
+
+### Lo que no entra
+
+Que se levanten, que hablen, que se coordinen o que huyan; matarlos (D7); pose por categoría de silla
+(hoy hay una, y las sillas caídas no llevan nadie); LOD o culling de animación (48 esqueletos
+quietos con un clip de un fotograma no lo piden todavía, y si lo piden se mide antes); vigilantes
+fuera de una silla (de pie en una esquina, tras una mampara) — eso es otra especie y otro ADR.
+
+## ADR-131 — Enmienda 1: la altura del asiento NO es una constante, y el Animator que hay que posar lo dice la MALLA (2026-09-06)
+
+D5 daba por hecho que el cuerpo se coloca en el asiento con una constante del cliente
+(«`SeatDropM`, la altura de la silla y de la cadera de este esqueleto»). La verificación con el arnés
+de captura dijo que no, dos veces, y las dos con la misma foto: **un tío DE PIE dentro de su silla**.
+
+**Uno: el proxy tiene varios Animator humanoides y hay que posar el que pinta.** El prefab del
+faceling es un clon del avatar del vendor con el cuerpo propio colgando de un hijo, así que hay dos
+esqueletos humanoides vivos. Coger el primero posaba al invisible; coger «el primero que cuelgue de
+un hijo» fallaba al revés en el avatar humano, cuyo Animator está en el raíz; y preguntar «¿tiene
+alguna malla encendida debajo?» contesta que sí SIEMPRE en el raíz, porque debajo del raíz está
+todo. La respuesta exacta la da el `SkinnedMeshRenderer` que se ve: sus huesos pertenecen a un
+esqueleto, y su Animator es el primero subiendo desde el hueso.
+
+**Dos: la altura se MIDE cada fotograma, no se escribe.** Un clip Humanoid lleva su propia posición
+de cuerpo, y dónde deja los pies depende del rig: la constante calibrada con el esqueleto del vendor
+(subir 0,67 m) dejó al cuerpo del faceling con las caderas a **2,25 m** del suelo. `PlantFeet` corre
+en LateUpdate —con el cuerpo ya posado—, mira dónde ha quedado el pie más bajo y sube o baja **la
+CADERA** hasta que la planta toca el suelo del proxy (`leftFeetBottomHeight` da el grosor del pie
+desde el propio Avatar). La cadera y no un hijo del raíz: el raíz lo reescribe la red cada
+fotograma, y el cuerpo visible no siempre cuelga de un hijo. Converge en un fotograma, no acumula
+—el Animator reescribe los huesos— y un cuerpo nuevo no necesita recalibrar nada.
+
+Lo que **no** cambia: D5 sigue diciendo que el asiento es geometría del CLIENTE y que el servidor
+manda el suelo. Lo que cambia es que el cliente lo mide en vez de llevarlo escrito.
+
+**Verificación**: `Temp/captures/vig5_frente.png` y `vig5_lado.png` — región (0,0), semilla 42,
+sótano B3, un vigilante sentado en la silla de su puesto con las manos en la mesa. Medido en la
+misma corrida: caderas a 0,49 m del suelo, pies a 0,09, cabeza a 1,14. Sondas
+`probe_watcher_capture_spots` (dónde hay un vigilante) y `probe_watcher_camera_spots` (dónde cabe la
+cámara con línea de visión: a ojo no sale, tres intentos cayeron dentro de una mampara).
+
+## ADR-131 — Enmienda 2: los números de D3 daban TRES vigilantes por región, y un puesto de oficina no es abundante (2026-09-06)
+
+D3 eligió 0,06 por silla en la calle, +0,06 por sótano, tope 0,45, con el argumento de que en la
+calle «una silla de cada dieciséis» ya se nota. **La suposición de fondo era que hay muchas sillas, y
+es falsa.** Medido sobre la región (0,0), semilla 42, con la sonda `probe_watcher_capture_spots`:
+
+| planta | sillas | vigilantes con D3 | con esta enmienda |
+|---|---|---|---|
+| 0 (calle) | 14 | 0 | 5 |
+| −1 | 6 | 0 | 4 |
+| −2 | 23 | 0 | 13 |
+| −3 | 15 | 3 | 13 |
+| **total** | **60** | **3** | **35** |
+
+Sesenta sillas en cinco plantas, catorce en la planta baja: el 6 % dejaba a la calle con MEDIA
+persona sentada y a la región entera con tres, las tres en el sótano más hondo. Joel, jugando:
+«no los veo». Una densidad que sólo existe en la cola de la distribución no es una densidad baja, es
+una ausencia con un número al lado.
+
+**Los números nuevos: 0,25 en la calle, +0,12 por sótano, tope 0,70.** La calle pasa a una silla
+ocupada de cada cuatro —suficiente para que la planta baja se lea como una oficina con gente— y el
+tope se alcanza en B4 en vez de en B7, así que el descenso de ADR-130 llega antes a «casi todos los
+puestos ocupados». La razón de subir el tope de 0,45 a 0,70 es la misma que la de subir la base: con
+sesenta sillas por región, 0,45 en el fondo son siete personas repartidas en treinta plantas.
+
+Lo que **no** cambia: la profundidad sigue mandando (el fondo casi triplica a la calle), el reparto
+sigue siendo por silla y determinista, y el cap de 48 sigue siendo el techo — con 35 por región y un
+radio de 60 m, un jugador rara vez tendrá más de una docena activos a la vez.
+
+**Lo que esto NO arregla, y queda dicho:** que un puesto de oficina sea escaso es un hecho de
+`office_cubicles` (ADR-105 enm. 18), no de esta especie. Si Joel quiere oficinas llenas de verdad, lo
+que hay que subir son los PUESTOS, y eso es otra rebanada.

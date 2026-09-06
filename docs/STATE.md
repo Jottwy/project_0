@@ -6,21 +6,21 @@
 ## Estado
 - **WorldGen3 es el mundo servido.** Wire **61** en las dos puntas (`ipc/server.rs:38`, `WireSchema.cs:25`) — ADR-129 lo subió el 06-09.
 - **Contrato WG3 v1 = Alpha 1** (`docs/WG3-ALPHA1-ROADMAP.md`): días 1–2 hechos; 3 y 5 APARCADOS detrás de la tanda de oficinas (Joel, 06-09).
-- Suite tras la fusión del 06-09: `cargo test --bin backrooms_server` **1382/1382 (81 ignorados)**, `CompileCheckClient` 0 errores en las 4 asambleas.
+- Suite del 06-09 con ADR-131 dentro: `cargo test --bin backrooms_server` **1400/1400 (86 ignorados)**, `CompileCheckClient` 0 errores en las 4 asambleas.
 - **El commit tiene gate** (`tools/dev/validate-scope.ps1`, hook PreToolUse): rojo = el commit no se ejecuta. Alcance por `git diff --cached`.
 - Alpha 1 itch nov 2026 · Next Fest feb 2027 · EA primavera 2027 (`docs/SCALING-ROADMAP.md:196-198`). E0 de red cerrada y medida.
 
 ## Próximo paso ÚNICO
-- **ADR-131, los VIGILANTES sentados**: escribir el ADR y luego servidor (espécie `Watcher` en `network/faceling.rs`, nace sentado en
-  una silla de puesto, neutral, «sentado» en un bit libre de pose) y cliente (pose sentada horneada por script, cabeza que sigue ±90° en
-  `LateUpdate`, salto de pose al perderte). Después: ADR-130 r2 decay, día 3 (fundido), r3 streaming vertical (wire 62), r4 torre.
+- **ADR-130 rebanada 2, el decaimiento sobre los 3 sótanos** (`decay(depth) = depth²` en las perillas por planta). Después: día 3 del
+  contrato (fundido por chunk), r3 streaming vertical (wire 62) y r4 torre. La rebanada 2 de la tanda de oficinas (ADR-131, vigilantes
+  sentados) está HECHA y verificada con captura.
 
 ## En curso
 - **ADR-128, mundo ×2: tercera pasada, NO commiteado.** 24 tests en rojo; `MAX_SEGMENT_M` no se toca (D3 anulado), `bounds()` en metros
   de MUNDO con `plan_bounds()`. **Sigue sin verificarse que lo servido salga ×2.** Parche verbatim en `docs/SESSION-LOG.md`.
 - **Contrato WG3 v1**, 5 días. Día 1 (`65d267c3`) y día 2 (`c7c9dd01`, `510223b8`, ADR-129) cerrados; el día 4 de gramática lo sustituyó
   ADR-129 (rampa, tabique diagonal y anti-enfilada pasan a v2 salvo decisión). Quedan día 3 (rendimiento) y día 5 (verificación, etiqueta).
-- **Tanda de oficinas (06-09)**: 1 falso techo + cubículos HECHA (`b02df08f`, enm. 18) · 2 ADR-131 vigilantes · 3 ADR-130 r2 · día 3 · r3 wire 62 · r4.
+- **Tanda de oficinas (06-09)**: 1 falso techo + cubículos HECHA (`b02df08f`) · 2 ADR-131 vigilantes HECHA · 3 ADR-130 r2 · día 3 · r3 wire 62 · r4.
 - **Saneamiento: B1–B4 fusionados en `migration/worldgraph-v1`** (06-09). Queda B5 (cabeza: el agujero de autoridad) y la lista de Joel para podar ramas.
 - **Migración STP servidor-autoritativo**: Steps 1–2 y slice 3.1 (plumbing) hechos y verificados. Falta slice 3.2
   (capa L2 de predicción), reescribir los 8 call sites de `Inventory` y retirar `PlayerController.cs` (DEPRECATED por ADR-009).
@@ -30,9 +30,8 @@
 ## Riesgos abiertos
 - **Autoridad del servidor: los tres agujeros CERRADOS** (`78e156e6` dueño al demoler; `ebb42911`/`bb3c7e5c` cantidad y posición contra el
   roster; aportar material exige dueño y alcance, 5 tests). Queda UNA línea: `process_stp_demolish` valida dueño pero no distancia.
-- **Espejos C#↔Rust sin oráculo.** Sin `the_identity_mirror_golden_values` (B4-b), `Wg3Identity.cs` queda verde sin
-  nada que lo contraste; igual el hash de `ChunkLootRoll` (dos copias que divergían en negativos) y los goldens de
-  `scale`/`density`. Un oráculo JSON común es una sesión: **B5**.
+- **Espejos C#↔Rust sin oráculo.** Sin `the_identity_mirror_golden_values` (B4-b), `Wg3Identity.cs` queda verde sin nada que lo
+  contraste; igual el hash de `ChunkLootRoll` y los goldens de `scale`/`density`. Un oráculo JSON común es una sesión: **B5**.
 - **Relay sin VPS**: `DefaultRelayAddress` vacío y nadie ha entrado por relay en internet. Dos jugadores en redes
   distintas hoy NO se juntan (medido en el playtest del 02-09). ADR-117 está en código, no en servicio.
 - **Crafteo P1 sin cerrar**: las recetas consumen un enum Rust de 9 variantes abstractas, no items (ADR-064). Sin esto, minar no sirve.
@@ -42,7 +41,8 @@
 - `handle_spawn_world_chest` (`game_loop.rs`) y `World::spawn_corpse` (`world/corpse.rs`) aceptan la posición del cliente sin validar andabilidad.
 - Sin anti-cheat de posesión ni cantidad en `consume_item` (ADR-030): trust-the-client asumido y documentado.
 - `IPCClient.cs`: cuatro `catch { }` mudos en los notificadores de listeners — pueden tragar fallos hoy mismo.
-- La suite EditMode arrastra rojos conocidos; el del lanzamiento del backend sólo pasa con `BACKROOMS_VERBOSE_LOG=1`.
+- La suite EditMode arrastra rojos conocidos (el del backend pide `BACKROOMS_VERBOSE_LOG=1`), y en cargo `phantom_sprints_after_patience_exceeded`
+  **flaquea con la máquina cargada** (06-09): rojo 2 de 5 corridas completas, verde 3/3 aislado. Tiempo real dentro de un test.
 - **Auditoría del 02-09, tres ALTO sin corregir** (`AUDIT-2026-08-28.md`): A28-29 un sobre «Relayed» se cree sin comparar el origen UDP con
   el relay (`classify_inbound`); A28-30 descripción UPnP sin tope (`StackOverflowException`); A28-31 `spawnedOnDeplete` nunca vuelve a `false`.
 - **Ramas sin fusionar con trabajo dentro** (06-09): `angry-jackson` (95), `gallant-einstein` (87), `happy-carson` (79); `layout-validator` (4) ya
@@ -93,6 +93,16 @@
 - Menores: `MPTRACE` sin commitear en cuatro ficheros del vendor STP; `TODO(balance)` de loot; doc-comments stale.
 
 ## Últimas tandas
+
+### 2026-09-06 — 28.ª tanda: los VIGILANTES sentados (ADR-131 + enm. 1) — la planta de oficinas, rebanada 2
+- `Watcher` (`species` 3) en `game_loop/watcher.rs`: **sin `step`**, sólo reconcile. Nace en las anclas `PROP_CHAIR` de ADR-129 (sitio,
+  cota y giro los da el mundo), cap 48 por cercanía, radios 60/90/8. «Sentado» = **bit 5 de `buttons`** (ADR-044), sin bump de wire. El
+  despertar mide la cota con `same_level` como la retirada, o una silla del piso de arriba nace y muere cada segundo (lo cazó un test).
+- **Enm. 2**: 60 sillas por región hacían que 0,06 por silla diera **3 vigilantes** en toda ella, los tres en B3 — «no los veo» (Joel).
+  Ahora 0,25 + 0,12 por sótano, tope 0,70: **35 por región**, 5 en la calle.
+- Cliente: `FacelingSeated.anim` horneado por script (16 curvas de músculo, un fotograma) y `ProxySeatedHook` (override del idle,
+  cabeza ±90° con salto seco al perderte, respiración). **Enm. 1**: el Animator que se posa lo dice la MALLA (dos esqueletos vivos) y
+  la altura del asiento se MIDE cada fotograma (`PlantFeet` mueve la cadera). Capturas `vig5_*` del B3 de (0,0): sentado en su silla.
 
 ### 2026-09-06 — 27.ª tanda: la planta de oficinas, rebanada 1 — falso techo y cubículos (ADR-105 enm. 18)
 - `b02df08f`: `office_ceiling_cm` (270, 300) sólo en despachos/servicios/almacenes del carácter Office, por sala en pasos de 10; naves

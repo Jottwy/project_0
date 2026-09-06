@@ -38,6 +38,12 @@ use phantom::{
 mod faceling;
 use faceling::{AdultDriver, ChildDriver};
 
+/// ADR-131 — los VIGILANTES, la tercera especie de faceling. Módulo propio y no una variante de
+/// `faceling` por lo mismo que separa al adulto del niño: no comparte ni un campo de conducta con
+/// ellos (no anda, no ataca, no es manada), así que sólo tiene reconcile de población y no `step`.
+mod watcher;
+use watcher::WatcherDriver;
+
 const TICK_HZ: u64 = 60;
 const TICK_DURATION: Duration = Duration::from_nanos(1_000_000_000 / TICK_HZ);
 /// WorldState to Unity at 10hz.
@@ -870,6 +876,9 @@ pub async fn run(
     // ADR-094 E2a: host-only driver that walks the office child PACKS. Own grid cache, own
     // population unit (the pack, not the individual) — see `game_loop::faceling`'s module doc.
     let mut child_driver = ChildDriver::new(net.world_seed);
+    // ADR-131: host-only driver de los VIGILANTES. Sin caché de nada: no anda, así que no hay
+    // ráster que precalentar ni plan que buscar — sólo el reconcile de población.
+    let mut watcher_driver = WatcherDriver::new();
     // ADR-032 (snap de sesión restaurada): armed by the hydration branch below. The
     // "session_restored" event CANNOT be emitted at hydration time — Unity's IPC client hasn't
     // connected yet (broadcast to zero receivers = dropped) — so it is deferred until the first
@@ -2182,6 +2191,23 @@ pub async fn run(
                 let child_attacks: Vec<_> = child_driver
                     .step(&mut net, entity_dt, player.position, player.rotation)
                     .to_vec();
+
+                // ADR-131 — los vigilantes. **Sólo reconcile, y aquí se ve la especie entera**: no
+                // hay `step` que llamar porque no andan, no pegan y no hablan. Un vigilante nace en
+                // la silla que el mundo ya puso y se retira cuando nadie la tiene cerca.
+                let spawn_seed = net.world_seed;
+                watcher_driver.sync_population(
+                    &mut net,
+                    player.position,
+                    entity_dt,
+                    wg3.manifest().filter(|_| wg3.is_enabled()).map(|manifest| {
+                        crate::game_loop::faceling::Wg3SpawnCtx {
+                            worlds: &mut wg3_world,
+                            manifest,
+                            world_seed: spawn_seed,
+                        }
+                    }),
+                );
 
                 // ADR-094 punto 4 — the thefts those blows earned. The driver only says WHO robbed
                 // WHOM; what is actually lost is the victim's call, so this either asks over the
