@@ -3045,3 +3045,12 @@ si las sondas de `J:/wg3*` valen algo o se borran. Las ramas viejas (`angry-jack
 - `plan.links` guarda el punto medio de una ruta, no su boca en la pared: `segment_door_points` saca las bocas reales
   y divisiones y pilastras las esquivan.
 - Barrido de 27 regiones sin regresión: mancha 99,5 %, islas 1,4, nav 100 %, cotas −0,07 %.
+
+### 2026-09-04 — 19.ª tanda: zonas con carácter, laberinto de rejilla, y ADR-124 revertido tres veces
+- **Enm. 14** (`8d423f81`): `fill::Character` {abierto, oficina, nave, laberinto, raro} por el campo de densidad, con
+  la tabla `KNOBS` de todas las probabilidades por carácter. Macizos por espacio: laberinto 6,5 → 1,8, raro 9,7 → 3,4.
+- **Enm. 15** (`2d4259c4`): laberinto de rejilla por árbol de expansión sobre celdas de 2,5 m — conectividad por
+  construcción. Divisiones 1 028 → 3 729 en 27 regiones.
+- **ADR-124 «menos pasillos» probado tres veces y revertido** (`c3f5b043`): `CORRIDOR_DEPTH` 2 da lo pedido pero rompe
+  6 de 300 regiones. **El enrutador es el límite, no una constante**: es una sesión de `route.rs`.
+- Lección de medida: la repetición LOCAL sube con la zonificación y la GLOBAL baja. Antes de vender un «50 %», decir cuál.

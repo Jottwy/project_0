@@ -20,7 +20,7 @@
   de MUNDO con `plan_bounds()`. **Sigue sin verificarse que lo servido salga ×2.** Parche verbatim en `docs/SESSION-LOG.md`.
 - **Contrato WG3 v1**, 5 días. Día 1 (`65d267c3`) y día 2 (`c7c9dd01`, `510223b8`, ADR-129) cerrados; el día 4 de gramática lo sustituyó
   ADR-129 (rampa, tabique diagonal y anti-enfilada pasan a v2 salvo decisión). Quedan día 3 (rendimiento) y día 5 (verificación, etiqueta).
-- **Tanda de oficinas (06-09)**: 1 falso techo + cubículos HECHA (`b02df08f`, enm. 18) · 2 ADR-131 vigilantes · 3 ADR-130 r2 · día 3 · r3 wire 62 · r4.
+- **Tanda de oficinas (06-09)**: 1 falso techo y cubículos HECHA (`b02df08f`) · 2 materiales por función HECHA (`ee59c6f5`) · 3 ADR-131 · 4 r2 · r3 · r4.
 - **Saneamiento: B1–B4 fusionados en `migration/worldgraph-v1`** (06-09). Queda B5 (cabeza: el agujero de autoridad) y la lista de Joel para podar ramas.
 - **Migración STP servidor-autoritativo**: Steps 1–2 y slice 3.1 (plumbing) hechos y verificados. Falta slice 3.2
   (capa L2 de predicción), reescribir los 8 call sites de `Inventory` y retirar `PlayerController.cs` (DEPRECATED por ADR-009).
@@ -51,9 +51,8 @@
 
 ## NO tocar
 > Detalle completo, verbatim, en `docs/SESSION-LOG.md` (bloques «NO tocar» y «Última sesión» de 2026-08-03).
-- **Robapieles, seis invariantes (ADR-038):** `revealed` sin latch; el atasco es avance proyectado, NO `MoveResult::blocked` (el caso real
-  es deslizar contra la pared); alcance de ataque ≠ radio de cuerpo con `segment_is_clear`; rangos de `PhantomTraits` centrados en 1,0
-  (test sobre 400 criaturas); `vocal_seq` nunca vuelve a 0 ni va en ráfaga; el asesino del agarre lo resuelve el CLIENTE, sin tocar el wire.
+- **Robapieles, seis invariantes (ADR-038):** `revealed` sin latch; el atasco es avance proyectado, NO `MoveResult::blocked` (es deslizar contra la pared);
+  alcance ≠ radio con `segment_is_clear`; `PhantomTraits` centrados en 1,0; `vocal_seq` ni a 0 ni en ráfaga; el asesino del agarre lo resuelve el CLIENTE.
 - **Cadena de respawn y muerte**: `RespawnRequester` + `AuthoritativePoseApplier` + gate `SnapPending` en
   `PlayerPoseTransmitter`. Dependencias cruzadas; cambiar sin re-test da rubber-banding.
 - **`PHASE1_GOLDENS`** (`grid_gen/tests.rs`): 16 huellas FNV-1a, 4 capas × 4 semillas, jamás regeneradas.
@@ -64,7 +63,8 @@
 - **Gate volumétrico near-spawn**: `volumetric_grid` sólo en el chunk del showcase, y sigue deshabilitado.
 - Celdas Rust de 2,5 m: la conversión celda→tile vive SÓLO en Unity (`tileX = cellX / 2`). La de WG3 mide 0,5: toda constante heredada cambia de significado.
 - `SilentHealthUIBridge` sincroniza `fillAmount` por reflexión: cambios en `HealthUI`/`Health` deben conservar los nombres.
-- **Dado por bueno por Joel (05/06-09)**: luces 2,7/3,2 con alcance 11/9 m y ambiente cálido plano; techos 300/380/1,15; `UvPerMetre` 0,5; feeder 3P 1,5/4,5.
+- **Dado por bueno por Joel (05/06-09)**: luces 2,7/3,2 con alcance 11/9 m y ambiente cálido plano; techos 300/380/1,15;
+  `UvPerMetre` 0,5; feeder 3P 1,5/4,5; tela 0,72/0,79/0,93 y moqueta de oficina 0,35/0,365/0,415 (enm. 19).
 
 ## Deuda declarada
 - **`#![allow(dead_code)]` de crate** (`backend/src/main.rs`): recontado el 2026-09-05, **294 warnings únicos en el
@@ -74,6 +74,7 @@
   campo está en `ChunkView` y lo consume `ChunkVisualLifecycle.cs:91-93` (entra en el hash de revisión). Retirarlo
   es bump de wire con ADR, no un `git rm`. **B5.**
 - **`scale` y `density`**: espejos C#↔Rust con golden values copiados a mano en dos suites, sin oráculo JSON que los ate (`scale.rs:147`, `density.rs:225`).
+- **Espejo de forma cliente↔Rust** (enm. 19): `Wg3Looks` copia 12/140 de `fill`; 8 tests lo fijan, pero un emisor nuevo con esa forma rompe las dos puntas.
 - **WG3, del contrato para adelante**: relieve de techo sin hacer aunque `height_cm` es por tramo; el dintel
   (`Wg3Carve` con banda vertical) sigue sin usarse; salas ≥ 300 m² con una sola entrada, 31,6 %; catálogo apagado
   (0,6 piezas por región: las 19 miden para el mundo viejo). Pozos sin salida de la cámara: loot y cuerdas son ADR-126 D6, lista v2.
@@ -93,6 +94,16 @@
 - Menores: `MPTRACE` sin commitear en cuatro ficheros del vendor STP; `TODO(balance)` de loot; doc-comments stale.
 
 ## Últimas tandas
+
+### 2026-09-06 — 28.ª tanda: el material lo decide la FUNCIÓN (ADR-105 enm. 19) — tela, placa de 60 y moqueta grafito
+- `d39d2932`+`3dfda546`: `Wg3OfficeSurfaces.cs` hornea 6 PNG de 1024 a `Assets/Art/Wg3/Textures` y 3 URP Lit a `Resources/Wg3Materials`; placa de 60
+  (escala 0,8333 = 2,40 m), moqueta grafito con junta de loseta de 50 y tela de mampara. Procedurales y deterministas, ningún YAML escrito a mano.
+- `ee59c6f5`: `Wg3Look` infiere la función EN CLIENTE — mampara 12×140 (espejo de `fill::is_cubicle_wall`), falso techo estilo 0 y ≤ 300, moqueta estilo 0.
+  **Sin bump de wire ni tocar Rust.** `Wg3StyleMaterials.Resolve` SUSTITUYE la ranura antes de teñir: 4 submallas, caché por (estilo, aspecto) compartida.
+- Tintes que pidió Joel sobre captura: tela 0,72/0,79/0,93 (un gris se fabrica CONTRA la luz cálida) y moqueta 0,35/0,365/0,415, las dos a luminancia igual.
+- Verde: `Wg3LookTests` 8/8 en el editor y `CompileCheckClient` 0 × 4. Capturas `look_after3_*` y `look_after4_3_floor` contra `vig5_frente`, mismo punto.
+- **Un `MENU DONE` sobre código sin recompilar MIENTE**: dos ajustes entraron sin efecto en `d39d2932` y una captura los dio por buenos; nota en la enm. 19.
+- El arnés de capturas no aguanta ocho sesiones sobre el mismo editor: 4 corridas murieron con `ABORTADO` y en una el jugador acabó a 9 m del punto pedido.
 
 ### 2026-09-06 — 27.ª tanda: la planta de oficinas, rebanada 1 — falso techo y cubículos (ADR-105 enm. 18)
 - `b02df08f`: `office_ceiling_cm` (270, 300) sólo en despachos/servicios/almacenes del carácter Office, por sala en pasos de 10; naves
@@ -166,11 +177,3 @@
 - **Día 1 del cierre, la misma noche** (`65d267c3`): el atrio no se abre a la nada (ADR-104 enm. 3) — el techo estaba, el
   negro era el muro alto quitado sin sala arriba. Barrido 27 regiones: mancha 99,6 %, 1,3 islas, nav 100 %. Joel: 7/10.
 
-### 2026-09-04 — 19.ª tanda: zonas con carácter, laberinto de rejilla, y ADR-124 revertido tres veces
-- **Enm. 14** (`8d423f81`): `fill::Character` {abierto, oficina, nave, laberinto, raro} por el campo de densidad, con
-  la tabla `KNOBS` de todas las probabilidades por carácter. Macizos por espacio: laberinto 6,5 → 1,8, raro 9,7 → 3,4.
-- **Enm. 15** (`2d4259c4`): laberinto de rejilla por árbol de expansión sobre celdas de 2,5 m — conectividad por
-  construcción. Divisiones 1 028 → 3 729 en 27 regiones.
-- **ADR-124 «menos pasillos» probado tres veces y revertido** (`c3f5b043`): `CORRIDOR_DEPTH` 2 da lo pedido pero rompe
-  6 de 300 regiones. **El enrutador es el límite, no una constante**: es una sesión de `route.rs`.
-- Lección de medida: la repetición LOCAL sube con la zonificación y la GLOBAL baja. Antes de vender un «50 %», decir cuál.
