@@ -280,6 +280,53 @@ namespace BackroomsSurvival.Tests
                 "con Tight el inventario estira el icono");
         }
 
+        /// <summary>
+        /// El hook que hace girar la manivela en la mano del VECINO se engancha en runtime al modelo
+        /// instanciado (ADR-133: no está en el prefab del avatar, para no rehornearlo). Este test
+        /// cierra las dos puertas de ese acuerdo: que el pickup de la linterna tiene el hijo que el
+        /// hook busca, y que un modelo sin manivela no recibe hook — si un día el hijo se renombra
+        /// en el creador del pickup y no en el hook, el vecino deja de girar sin ningún error.
+        ///
+        /// POR REFLEXIÓN, y no por gusto: el hook vive en `Assembly-CSharp` (la carpeta de los
+        /// proxies no tiene asmdef) y un asmdef como `EditModeTests` no puede referenciar el
+        /// assembly por defecto — el gate de compilación lo dijo con tres CS0234. Un test que no
+        /// existe es peor que uno feo.
+        /// </summary>
+        [Test]
+        public void TheProxyCrankHookAttachesToTheFlashlightAndToNothingElse()
+        {
+            var definition = Definition;
+            Assert.IsNotNull(definition);
+            Assert.IsNotNull(definition.Pickup);
+
+            var hookType = System.Type.GetType(
+                "BackroomsSurvival.Migration.STPIntegration.ProxyCrankHook, Assembly-CSharp");
+            Assert.IsNotNull(hookType, "no existe ProxyCrankHook en Assembly-CSharp: el vecino no gira");
+            var attach = hookType.GetMethod("AttachIfCranked",
+                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+            Assert.IsNotNull(attach, "ProxyCrankHook.AttachIfCranked ya no existe o cambió de firma");
+
+            var root = new GameObject("FakeProxyRoot");
+            var model = Object.Instantiate(definition.Pickup.gameObject, root.transform, false);
+            var plain = new GameObject("NoCrank");
+            plain.transform.SetParent(root.transform, false);
+            try
+            {
+                var hook = attach.Invoke(null, new object[] { model, root.transform }) as Component;
+                Assert.IsNotNull(hook, "el modelo de la linterna no recibe ProxyCrankHook: falta el " +
+                    "hijo 'Crank' que el hook busca");
+                Assert.AreSame(model, hook.gameObject, "el hook tiene que vivir en el modelo de mano, " +
+                    "para morir con él");
+
+                Assert.IsNull(attach.Invoke(null, new object[] { plain, root.transform }) as Component,
+                    "un modelo sin manivela no puede recibir el hook");
+            }
+            finally
+            {
+                Object.DestroyImmediate(root);
+            }
+        }
+
         /// <summary>Activo de verdad DENTRO del prefab: `activeSelf` propio y el de todos sus
         /// padres. Ver el comentario de arriba para por qué no vale `activeInHierarchy`.</summary>
         private static bool IsActiveInPrefab(Transform t)

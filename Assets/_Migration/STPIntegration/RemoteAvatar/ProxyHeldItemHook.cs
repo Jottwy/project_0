@@ -148,6 +148,10 @@ namespace BackroomsSurvival.Migration.STPIntegration
             var go = Instantiate(pickup.gameObject, _hand, false);
             ProxyRigUtil.NeutralizeToVisualOnly(go);
             ProxyRigUtil.SetLayerRecursive(go, _hand.gameObject.layer);
+            // ADR-133: AFTER neutralizing (which destroys every MonoBehaviour on the model), and on
+            // the model rather than on this avatar so it needs no re-bake of the prefab. Does
+            // nothing for a model without a "Crank" child. See ProxyCrankHook for why it lives here.
+            ProxyCrankHook.AttachIfCranked(go, transform);
             return go; // placement is applied in LateUpdate (live-calibratable)
         }
 
