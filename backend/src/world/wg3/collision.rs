@@ -270,7 +270,7 @@ const SPAWN_SEARCH_RADIUS_M: f32 = 24.0;
 ///
 /// El cuerpo mide 1,8 y se pide un pelo más: aparecer en un hueco donde cabes exacto es aparecer con
 /// la cabeza dentro del techo en cuanto el suelo tenga un centímetro de irregularidad.
-const SPAWN_MIN_HEADROOM_M: f32 = 2.0;
+pub const SPAWN_MIN_HEADROOM_M: f32 = 2.0;
 
 impl Wg3CollisionCache {
     /// ADR-106 — un sitio de pie en el mundo de WG3, buscando en anillos alrededor de `preferred`.

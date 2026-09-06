@@ -94,6 +94,8 @@ const SALT_SHAPE: u32 = 0x9A17_000C;
 const SALT_CEILING: u32 = 0x9A17_000D;
 /// Sal de la MEGASALA: cuántas plantas de vacío pide una nave por encima de sí misma.
 const SALT_MEGA: u32 = 0x9A17_000E;
+/// Sal de la PLANTA ABIERTA de oficina: qué par de hermanas se funde en la sala grande.
+const SALT_OPEN_PLAN: u32 = 0x9A17_0010;
 
 /// ADR-120 D3 — las perillas de la GRAMÁTICA de composición.
 ///
@@ -294,9 +296,34 @@ pub const STOREY_HEIGHT_CM: i32 = 332;
 /// una Y negativa satura a 0 en Rust y un jugador a −1,52 m se clasificaba en la planta baja.
 ///
 /// Un peldaño a 306 cm pertenece a la planta 0, que es de donde sale su escalera.
+///
+/// # El canto de la losa cuenta como la planta de ARRIBA (2026-09-06)
+///
+/// **Una cota que cae dentro de los 12 cm de losa que hay justo debajo de una planta es esa planta.**
+/// La losa cuelga por DEBAJO de la cota de su planta (ver [`STOREY_HEIGHT_CM`]), asi que un sitio de
+/// pie apoyado en el canto -el suelo desnudo donde no llega el forjado de la sala- sale a
+/// `332 n - 12` y la division lo mandaba una planta ABAJO. Medido con una cama atascada en la planta
+/// 2: el resolutor la corregia medio metro al lado, a un suelo de 6,52 contra los 6,64 de la planta,
+/// y el respawn la daba por planta 1 -o sea, quien renace conserva una planta asignada que ya no es
+/// la suya-. Es la costura de 664 que `docs/STATE.md` llevaba declarada como deuda.
 pub fn storey_of_floor_cm(floor_y_cm: i32) -> i32 {
-    floor_y_cm.div_euclid(STOREY_HEIGHT_CM)
+    let storey = floor_y_cm.div_euclid(STOREY_HEIGHT_CM);
+    let within = floor_y_cm.rem_euclid(STOREY_HEIGHT_CM);
+    // **Y solo de la planta 1 hacia arriba**, que es donde el canto es canto y nada mas.
+    // Por debajo de cero la regla se daria de bruces con la de T0 -- una cota negativa NO es la
+    // planta baja, porque el eje viejo saturaba ahi y poblaba la calle con peldanos que bajan --, y
+    // en la costura de 332 viven las contrahuellas de las escaleras de la planta baja, que
+    // pertenecen a la planta de la que ARRANCAN. Las dos cosas tienen test propio.
+    if storey >= 1 && within >= STOREY_HEIGHT_CM - SLAB_CM {
+        storey + 1
+    } else {
+        storey
+    }
 }
+
+/// El canto de la losa en centimetros enteros. Espejo de `segment::SLAB_THICKNESS_M`, que va en
+/// metros porque lo consume la geometria; aqui todo son centimetros.
+const SLAB_CM: i32 = (SLAB_THICKNESS_M * CM_PER_M) as i32;
 
 /// Contrahuella de una escalera que sube una planta entera (ADR-102 D4).
 ///
@@ -460,6 +487,25 @@ const HALL_AREA_M2: f32 = 300.0;
 
 /// Área por debajo de la cual una hoja es trastero y no oficina.
 const STORAGE_AREA_M2: f32 = 45.0;
+
+/// **LA PLANTA ABIERTA DE OFICINA: el rango de área que se busca, en m².**
+///
+/// La imagen canónica —300-500 m² diáfanos con treinta puestos en filas— no salía del reparto y no
+/// es culpa de un número mal puesto: el tamaño de hoja lo fija `TARGET_AREA_M2[class]` y el objetivo
+/// de la zona `Medium` es 360, así que una hoja media mide 256 m² (0,71 × objetivo) y las que pasan
+/// de 300 se convierten en `Hall`. Subir el objetivo para conseguir una sala grande sube TODAS las
+/// salas de la zona, que es justamente lo que ADR-119 D2 midió y calibró.
+///
+/// Por eso esto **no toca la subdivisión**: se funden DOS hermanas ya repartidas (ver
+/// [`Planner::fuse_open_plan`]). El árbol, las bandas de corredor, los ciegos y los candidatos a
+/// agujero de forjado quedan idénticos, y por tanto el reparto vertical no se mueve.
+const OPEN_PLAN_MIN_M2: f32 = 300.0;
+const OPEN_PLAN_MAX_M2: f32 = 500.0;
+
+/// Proporción máxima de la sala fundida. Dos hermanas estrechas dan una unión de 3:1, y en una nave
+/// de 3:1 las filas de cubículos salen a lo largo de una sola pared: eso no es una planta abierta,
+/// es un pasillo con mesas.
+const OPEN_PLAN_MAX_ASPECT: f32 = 1.9;
 
 /// Anchura de un vano normal, en centímetros. Es la boca `Corridor` del catálogo.
 pub const DOORWAY_CM: i32 = 240;
@@ -778,6 +824,14 @@ pub struct PlannedSpace {
     /// porque las dos eran oficinas, y una planta de oficinas era un techo plano de ciento cincuenta
     /// metros. El tope de [`PlannedSpace::max_clear_cm`] sigue mandando por encima de esto.
     pub ceiling_clear_cm: i32,
+
+    /// **Es LA planta abierta de esta planta del edificio** (ver [`Planner::fuse_open_plan`]).
+    ///
+    /// Una por planta como mucho, y no es lo mismo que «oficina grande»: el relleno la viste SIEMPRE
+    /// de puestos, sin pasar por el sorteo de `Knobs::cubicles`, porque la sala existe precisamente
+    /// para ser eso. Sin la marca habría que adivinarlo por el área, y por área también pasan salas
+    /// que el reparto dio grandes por su cuenta.
+    pub open_plan: bool,
 }
 
 impl PlannedSpace {
@@ -1405,6 +1459,26 @@ struct Node {
     rect: PlanRect,
     depth: u8,
     children: Option<(usize, usize)>,
+    /// **Este nodo ya no existe**: su padre se lo comió al fundir la planta abierta. Se marca en vez
+    /// de borrarse porque los índices de `children` son posiciones en este vector, y compactarlo
+    /// invalidaría los de todos los nodos posteriores.
+    dropped: bool,
+    /// Este nodo es la planta abierta de su planta: sale como hoja aunque tenga el área de una nave,
+    /// y con papel de oficina. Ver [`Planner::fuse_open_plan`].
+    open_plan: bool,
+}
+
+impl Node {
+    /// Un nodo recién nacido: hoja, vivo y sin papel especial. Lo demás se le pone después.
+    fn leaf(rect: PlanRect, depth: u8) -> Node {
+        Node {
+            rect,
+            depth,
+            children: None,
+            dropped: false,
+            open_plan: false,
+        }
+    }
 }
 
 /// **EL PLAN DE UNA REGIÓN.** Función pura: misma semilla, misma caja y mismas puertas ⇒ mismo
@@ -1646,11 +1720,7 @@ pub fn plan_storey_with(
     let mut planner = Planner {
         seed,
         base_y_cm,
-        nodes: vec![Node {
-            rect: root,
-            depth: 0,
-            children: None,
-        }],
+        nodes: vec![Node::leaf(root, 0)],
         spaces: Vec::new(),
         band_of_node: Vec::new(),
         links: Vec::new(),
@@ -1663,6 +1733,9 @@ pub fn plan_storey_with(
     planner.band_of_node.push(None);
 
     planner.subdivide();
+    // Entre el reparto y las hojas: aquí el árbol todavía es lo único que existe, así que quitar un
+    // tabique no obliga a deshacer ni un papel, ni un vacío, ni un enlace. Ver `fuse_open_plan`.
+    planner.fuse_open_plan(atria_below);
     planner.emit_leaves();
     planner.assign_void();
     // ADR-104 D2 — y JUSTO AQUÍ, entre el vacío sorteado y el grafo. Antes no hay papeles que mirar;
@@ -1677,6 +1750,8 @@ pub fn plan_storey_with(
     let gates = planner.attach_gates(gates);
     planner.link_all();
     planner.ensure_connected(&gates.iter().map(|g| g.space).collect::<Vec<_>>());
+    // La sala grande, con el grafo ya conexo: sólo puede añadir vanos, nunca quitarlos.
+    planner.ensure_open_plan_doors();
     // Con el grafo YA cerrado: sólo se mueven vanos por su propia pared, nunca se quita ni se añade
     // un enlace, así que la conectividad que acaba de asegurarse no cambia.
     planner.misalign_doorways(misalign_chance);
@@ -2887,6 +2962,11 @@ fn split_for_stair(
     // `dig_wells` ya comprobó que la huella resultante es legal antes de elegir esta candidata; si
     // aun así no lo fuera, se prefiere la sala entera a una huella incoherente.
     if room.set_parts(&left) {
+        // **Y si la mordida le toca a la planta abierta, deja de serlo.** El hueco de escalera manda:
+        // apartarlo a otra sala cuesta PLANTAS (es la sensibilidad que ya midió `dig_wells`), y una
+        // sala a la que se le ha comido un tiro de escalera ya no es una nave de 400 m² con treinta
+        // puestos — su huella es compuesta, así que `fill::office_cubicles` tampoco la vestiría.
+        room.open_plan = false;
         plan.spaces[i] = room;
     }
 
@@ -2897,6 +2977,9 @@ fn split_for_stair(
         rise_step_cm: STOREY_RISE_CM,
         // Se entra por el mismo lado por el que se entraba a la sala: se viene de ahí.
         rise_from_side: side,
+        // Un hueco de escalera no es la planta abierta aunque se lo coma a ella: la marca dice qué
+        // se rellena con puestos, y en unos peldaños no se sienta nadie.
+        open_plan: false,
         ..PlannedSpace::of_rect(stair, original)
     });
     link_along(plan, i, kept_base, s);
@@ -2906,7 +2989,11 @@ fn split_for_stair(
     // escalera es un vano que se dibuja y no se pasa.
     if let Some(f) = flank {
         let k = plan.spaces.len();
-        plan.spaces.push(PlannedSpace::of_rect(f, original));
+        plan.spaces.push(PlannedSpace {
+            // El costado que sobra tampoco lo es: mide una franja, no una planta.
+            open_plan: false,
+            ..PlannedSpace::of_rect(f, original)
+        });
         // **Los huecos que quedaron en la pared del costado pasan a ser SUYOS** (auditoría
         // 2026-09-02). `dig_wells` ya comprobó que todo hueco de la sala cabe en la sala recortada o
         // en el costado; los del costado siguen apuntando a `i`, y `i` ya no tiene pared ahí. Sin
@@ -3120,21 +3207,94 @@ impl Planner {
             }
 
             let a = self.nodes.len();
-            self.nodes.push(Node {
-                rect: a_rect,
-                depth: depth + 1,
-                children: None,
-            });
+            self.nodes.push(Node::leaf(a_rect, depth + 1));
             self.band_of_node.push(None);
             let b = self.nodes.len();
-            self.nodes.push(Node {
-                rect: b_rect,
-                depth: depth + 1,
-                children: None,
-            });
+            self.nodes.push(Node::leaf(b_rect, depth + 1));
             self.band_of_node.push(None);
             self.nodes[node].children = Some((a, b));
         }
+    }
+
+    /// **LA PLANTA ABIERTA DE OFICINA: dos hermanas se funden en UNA sala de 300-500 m².**
+    ///
+    /// La imagen canónica de oficina —una nave diáfana con treinta puestos en filas— no la daba el
+    /// reparto, y la razón es aritmética y no de gusto: **el número de hojas de una zona es
+    /// `área / objetivo`**, así que el tamaño de sala lo fija `TARGET_AREA_M2[class]` y no hay forma
+    /// de pedir una sala grande sin agrandar TODAS las de esa zona (ADR-119 D2 midió esa calibración
+    /// y no se toca).
+    ///
+    /// **Por eso esto no es un corte que no se hace: es un tabique que se quita.** Se elige el par de
+    /// hojas hermanas cuyo padre ya mide lo que se busca y se deshace su corte. Consecuencias, todas
+    /// por construcción: el árbol de subdivisión que ven las demás zonas es el mismo, las bandas de
+    /// corredor son las mismas (sólo se mira un corte que NO talló banda, o entre las dos hermanas
+    /// habría pasillo y no pared), y los candidatos a agujero de forjado, escalera y ciego siguen
+    /// siendo los mismos menos uno — que es el único sitio donde esto puede costar plantas, y por eso
+    /// se mide con el barrido de 27 regiones antes y después.
+    ///
+    /// UNA por planta y por región: dos naves diáfanas en el mismo forjado ya no son una oficina, son
+    /// un almacén. El sorteo elige por puntuación de posición (R3), no por orden de recorrido: el
+    /// orden de los nodos es «primero el más al noroeste», y quedarse con el primero pondría la sala
+    /// grande siempre en la misma esquina de todas las regiones.
+    fn fuse_open_plan(&mut self, atria_below: &[PlanRect]) {
+        // **El interruptor del ANTES**, como `WG3_NO_SHAPE` en `compose_shapes`: con
+        // `WG3_NO_OPEN_PLAN=1` el reparto sale exactamente como salía sin esta pasada, y eso es
+        // lo que permite poner una medida de antes y una de después de la misma semilla sin
+        // recompilar entre medias.
+        if std::env::var("WG3_NO_OPEN_PLAN").is_ok() {
+            return;
+        }
+        let mut best: Option<(f32, usize)> = None;
+        for n in 0..self.nodes.len() {
+            let Some((a, b)) = self.nodes[n].children else {
+                continue;
+            };
+            // Las dos hijas tienen que ser hojas: fundir un nodo con nietos tiraría un reparto
+            // entero, no un tabique.
+            if self.nodes[a].children.is_some() || self.nodes[b].children.is_some() {
+                continue;
+            }
+            // Y su corte no puede haber tallado banda: entre las dos hermanas hay un corredor, y la
+            // unión de las dos NO es el rectángulo del padre.
+            if self.band_of_node[n].is_some() {
+                continue;
+            }
+            let rect = self.nodes[n].rect;
+            let area = rect.area_m2();
+            if !(OPEN_PLAN_MIN_M2..=OPEN_PLAN_MAX_M2).contains(&area) {
+                continue;
+            }
+            // **Ni encima de una nave de la planta de abajo.** `carve_atria` vacía TODO lo que pisa
+            // una nave —ADR-104 D2, y se toma entera o no se toma—, así que fundir ahí sale gratis y
+            // se pierde: la sala nacía `Void` y el edificio se quedaba sin planta abierta y sin
+            // ninguna señal. Se midió: en el barrido, plantas altas con la sala fundida y vaciada.
+            if atria_below.iter().any(|a| rect.overlaps(a)) {
+                continue;
+            }
+            let slim = rect.width_cm().max(rect.depth_cm()) as f32
+                / rect.width_cm().min(rect.depth_cm()).max(1) as f32;
+            if slim > OPEN_PLAN_MAX_ASPECT {
+                continue;
+            }
+            let (cx, cz) = rect.centre_m();
+            // El carácter por el centro de la envolvente, exactamente el mismo criterio que
+            // `fill::knobs_of`: una sala es de UN carácter entero.
+            if super::fill::character_at(self.seed, cx, cz) != super::fill::Character::Office {
+                continue;
+            }
+            let score = hash::stream_at(self.seed, cx, cz, SALT_OPEN_PLAN).next01();
+            if best.is_none_or(|(bs, _)| score > bs) {
+                best = Some((score, n));
+            }
+        }
+        let Some((_, n)) = best else {
+            return;
+        };
+        let (a, b) = self.nodes[n].children.expect("la candidata tiene hijas");
+        self.nodes[a].dropped = true;
+        self.nodes[b].dropped = true;
+        self.nodes[n].children = None;
+        self.nodes[n].open_plan = true;
     }
 
     /// **ADR-100 enmienda 2 — LOS ESPACIOS HUNDIDOS.**
@@ -3393,7 +3553,7 @@ impl Planner {
     /// Las hojas del árbol pasan a ser espacios, con el papel que les toca por tamaño y sitio.
     fn emit_leaves(&mut self) {
         let leaves: Vec<usize> = (0..self.nodes.len())
-            .filter(|&n| self.nodes[n].children.is_none())
+            .filter(|&n| self.nodes[n].children.is_none() && !self.nodes[n].dropped)
             .collect();
         for n in leaves {
             let rect = self.nodes[n].rect;
@@ -3424,9 +3584,19 @@ impl Planner {
             } else {
                 SpaceRole::Office
             };
+            // **La planta abierta es OFICINA aunque mida lo que una nave.** Por área le tocaría
+            // `Hall`, y una nave no lleva falso techo (`fill::ceiling_cap_cm` mira el papel) ni
+            // puestos (`fill::office_cubicles` sólo entra en `Office`): saldría un galpón vacío de
+            // 400 m², que es lo contrario de lo que se ha fundido.
+            let role = if self.nodes[n].open_plan {
+                SpaceRole::Office
+            } else {
+                role
+            };
             // Toda sala nace PLANA y a cota 0. El desnivel llega después y sólo a las que tienen una
             // sola puerta (`sink_dead_ends`), que es la única forma de que no se le escape a nadie.
-            self.push_space(rect, role, depth, 0, 0);
+            let s = self.push_space(rect, role, depth, 0, 0);
+            self.spaces[s].open_plan = self.nodes[n].open_plan;
         }
     }
 
@@ -3438,7 +3608,10 @@ impl Planner {
     fn assign_void(&mut self) {
         for i in 0..self.spaces.len() {
             let s = &self.spaces[i];
-            if s.role.is_circulation() {
+            // Ni la circulación ni la planta abierta: la sala que se acaba de fundir para que exista
+            // no puede desaparecer en el sorteo siguiente. Sería el único hueco de la región que se
+            // ha decidido dos veces y en direcciones contrarias.
+            if s.role.is_circulation() || s.open_plan {
                 continue;
             }
             let (cx, cz) = s.rect.centre_m();
@@ -3667,6 +3840,68 @@ impl Planner {
         }
     }
 
+    /// **La planta abierta entra por DOS sitios como mínimo.**
+    ///
+    /// No es una preferencia estética: una sala de 400 m² con una sola boca es un fondo de saco de
+    /// veinte metros —se entra, se recorre entera y se vuelve por donde se ha venido—, y además
+    /// `retag_dead_ends` la degradaría a `DeadEnd`, con lo que perdería el papel `Office` del que
+    /// dependen su falso techo y sus puestos. Es la misma regla que ya pide una sala autorada grande.
+    ///
+    /// Va DESPUÉS de `ensure_connected` y sólo AÑADE vanos sobre paredes que ya existen: la
+    /// conectividad recién asegurada no puede empeorar por abrir una puerta de más, que es
+    /// exactamente lo que hace la pasada de anillos.
+    fn ensure_open_plan_doors(&mut self) {
+        let Some(room) = self.spaces.iter().position(|s| s.open_plan) else {
+            return;
+        };
+        if !self.spaces[room].role.is_built() {
+            return;
+        }
+        let degree = self
+            .links
+            .iter()
+            .filter(|l| l.a == room || l.b == room)
+            .count();
+        if degree >= 2 {
+            return;
+        }
+        // La más ancha primero, y el índice del vecino para desempatar: el orden de `adjacencies`
+        // ya es determinista, pero un empate resuelto por recorrido es un empate sin dueño.
+        let mut cand: Vec<(i32, usize, i32, i32)> = self
+            .adjacencies()
+            .into_iter()
+            .filter_map(|(i, j, w, x, z)| {
+                let other = if i == room {
+                    j
+                } else if j == room {
+                    i
+                } else {
+                    return None;
+                };
+                if !self.spaces[other].role.is_built() || self.linked(room, other) {
+                    return None;
+                }
+                Some((w, other, x, z))
+            })
+            .collect();
+        cand.sort_by_key(|&(w, other, _, _)| (std::cmp::Reverse(w), other));
+        for (w, other, x, z) in cand.into_iter().take(2 - degree) {
+            let kind = if self.spaces[other].role.is_circulation() {
+                LinkKind::Access
+            } else {
+                LinkKind::Doorway
+            };
+            self.links.push(PlannedLink {
+                a: room,
+                b: other,
+                width_cm: w.min(DOORWAY_CM),
+                kind,
+                at_x_cm: x,
+                at_z_cm: z,
+            });
+        }
+    }
+
     /// Las salas que acabaron con UNA sola conexión pasan a llamarse lo que son.
     ///
     /// Se hace al final y no al repartir papeles porque un callejón no es una propiedad de la sala:
@@ -3680,6 +3915,11 @@ impl Planner {
         for (space, d) in self.spaces.iter_mut().zip(degree) {
             if d == 1 && matches!(space.role, SpaceRole::Office | SpaceRole::Storage) {
                 space.role = SpaceRole::DeadEnd;
+                // **Y con una sola boca deja de ser la planta abierta.** `ensure_open_plan_doors`
+                // abre la segunda cuando hay pared donde abrirla, pero una sala cuyos vecinos son
+                // todos vacío intencionado no tiene contra quién: entonces la marca miente, y una
+                // marca que miente hace que el relleno vista de puestos un fondo de saco.
+                space.open_plan = false;
             }
         }
     }
@@ -4166,6 +4406,8 @@ impl Planner {
             atrium_storeys: 0,
             // La sortea `assign_ceilings` al cerrar la planta, con la huella ya definitiva.
             ceiling_clear_cm: 0,
+            // Lo pone `emit_leaves` a la ÚNICA hoja fundida, si es que hubo alguna.
+            open_plan: false,
         });
         self.spaces.len() - 1
     }
@@ -4870,6 +5112,10 @@ const KEEP_SOFT_MARGIN_CM: i32 = 400;
 fn may_deform(s: &PlannedSpace, keep_hard: &[PlanRect]) -> bool {
     s.role.is_built()
         && s.role != SpaceRole::Stair
+        // **Ni la planta abierta.** Un mordisco le quita justo lo que se acaba de fundir: medido, la
+        // envolvente caía de 380 a 196 m² y las filas de puestos, que se reparten sobre el rectángulo
+        // interior, quedaban colgando fuera de la huella. Una sala menos deformada no es un precio.
+        && !s.open_plan
         && s.rise_cm == 0
         && !keep_hard.iter().any(|k| s.hits_rect(k))
 }

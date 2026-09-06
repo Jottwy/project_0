@@ -6997,6 +6997,7 @@ fn plan_with_a_gap(blocked: bool) -> plan::RegionPlan {
             void_storeys_above: 0,
             atrium_storeys: 0,
             ceiling_clear_cm: 0,
+            open_plan: false,
         }
     };
 
@@ -11088,6 +11089,44 @@ fn upper_storeys_stay_distinct_instead_of_collapsing() {
         REGION_STOREYS,
         seen.len()
     );
+}
+
+/// **El canto de la losa es la planta de ARRIBA** (2026-09-06). La losa cuelga por debajo de la cota
+/// de su planta, asi que un sitio de pie apoyado en el canto sale a `332 n - 12` y la division lo
+/// mandaba una planta abajo: es la costura de 664 que se llevo por delante el respawn de una cama de
+/// la planta 2. La regla vale de la planta 1 hacia arriba y ni un centimetro mas: por debajo de cero
+/// manda `geometry_below_zero_is_not_the_ground_floor`, y en la costura de 332 viven las
+/// contrahuellas de las escaleras de la planta baja.
+#[test]
+fn the_slab_edge_belongs_to_the_storey_above() {
+    use crate::world::wg3::plan::{storey_of_floor_cm, STOREY_HEIGHT_CM};
+
+    for n in 2..=5 {
+        let line = n * STOREY_HEIGHT_CM;
+        assert_eq!(
+            storey_of_floor_cm(line),
+            n,
+            "la cota {line} es la planta {n}"
+        );
+        assert_eq!(
+            storey_of_floor_cm(line - 12),
+            n,
+            "el canto de losa a {} cm tiene que ser la planta {n}",
+            line - 12
+        );
+        assert_eq!(
+            storey_of_floor_cm(line - 13),
+            n - 1,
+            "trece centimetros ya no son canto: {} cm es la planta {}",
+            line - 13,
+            n - 1
+        );
+    }
+    // La costura de 332 no se toca: ahi estan las contrahuellas de la planta baja.
+    assert_eq!(storey_of_floor_cm(STOREY_HEIGHT_CM - 12), 0);
+    // Y por debajo de cero, tampoco.
+    assert_eq!(storey_of_floor_cm(-12), -1);
+    assert_eq!(storey_of_floor_cm(-1), -1);
 }
 
 /// **Una cota negativa NO es la planta 0.** El fallo que T0 destapó: `(y / 4.0) as u8` satura a 0 con

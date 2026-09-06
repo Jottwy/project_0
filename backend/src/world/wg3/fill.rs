@@ -1440,6 +1440,7 @@ fn wall_blocks(
             if s.role.is_circulation()
                 || s.role == SpaceRole::Stair
                 || s.rise_cm != 0
+                || s.open_plan
                 || s.area_m2() < BLOCK_MIN_AREA_M2
             {
                 continue;
@@ -1632,6 +1633,7 @@ const CUBICLE_MARGIN_CM: i32 = 60;
 const CUBICLE_EMPTY_CHANCE: f32 = 0.15;
 /// Tope de celdas por despacho: por encima es un almacén de mamparas, no una oficina.
 const CUBICLE_MAX_PER_ROOM: usize = 24;
+
 const SALT_CUBICLES: u32 = 0xA9_04_08;
 
 /// Lo que sale de [`office_cubicles`]: mamparas, atrezo, macizos invisibles del atrezo y los
@@ -1673,17 +1675,42 @@ fn office_cubicles(
     let mut hidden: Vec<Wg3Solid> = Vec::new();
     let mut taken: Vec<(usize, usize)> = Vec::new();
     let seed = building.seed;
-    let mouths: Vec<(i32, i32, i32, i32)> = segments
+    // **UNA BOCA ES UNA LINEA EN UNA CARA, no un cuadrado alrededor de su centro.**
+    //
+    // La caja isotropa de siempre (`ancho/2 + holgura` en los DOS ejes) vale mientras la boca sea una
+    // puerta de 240: da tres metros de lado y nadie lo nota. Con la planta abierta deja de valer: una
+    // sala de mas de 19 m de lado no cabe en un tramo (`emit_space` la parte por el presupuesto de
+    // `MAX_SEGMENT_M`) y la junta entre dos tramos hermanas es una boca del ANCHO ENTERO de la cara
+    // -- 15 m --, asi que su cuadrado tapaba la sala de punta a punta y las 75 celdas de la planta
+    // abierta se rechazaban todas por «boca».
+    //
+    // Medida de verdad: a lo LARGO de la cara, el ancho de la boca y su holgura; PERPENDICULAR, solo
+    // la holgura. Con eso la junta reserva la franja de paso que hay que dejar libre y no la sala.
+    let mouths: Vec<(super::plan::PlanRect, i32)> = segments
         .iter()
         .flat_map(|g| {
             let (w, d) = (g.size_x_cm as f32 / 100.0, g.size_z_cm as f32 / 100.0);
             g.openings.iter().map(move |o| {
                 let (lx, lz) =
                     super::placement::local_point(o.side, o.offset_cm as f32 / 100.0, w, d);
-                (
+                let (cx, cz) = (
                     g.x_cm + (lx * 100.0).round() as i32,
                     g.z_cm + (lz * 100.0).round() as i32,
-                    o.width_cm / 2 + PROP_MOUTH_CLEAR_CM,
+                );
+                let along = o.width_cm / 2 + PROP_MOUTH_CLEAR_CM;
+                // `side` par es cara N/S: la boca corre por X y lo fino es Z.
+                let (hx, hz) = if o.side % 2 == 0 {
+                    (along, PROP_MOUTH_CLEAR_CM)
+                } else {
+                    (PROP_MOUTH_CLEAR_CM, along)
+                };
+                (
+                    super::plan::PlanRect {
+                        min_x_cm: cx - hx,
+                        min_z_cm: cz - hz,
+                        max_x_cm: cx + hx,
+                        max_z_cm: cz + hz,
+                    },
                     g.floor_y_cm,
                 )
             })
@@ -1731,7 +1758,11 @@ fn office_cubicles(
             let kn = knobs_of(seed, s);
             let (cx, cz) = s.rect.centre_m();
             let mut st = super::hash::stream_at(seed, cx, cz, SALT_CUBICLES);
-            if st.next01() >= kn.cubicles {
+            // **La planta abierta se llena SIEMPRE**: el sorteo decide si un despacho cualquiera
+            // lleva puestos, y esta sala existe justamente para llevarlos. Se tira igual el dado
+            // para no mover la corriente del flujo de esta sala respecto al resto.
+            let rolled = st.next01();
+            if !s.open_plan && rolled >= kn.cubicles {
                 continue;
             }
             let floor = s.floor_y_cm;
@@ -1752,6 +1783,21 @@ fn office_cubicles(
                 g.size_x_cm - 2 * WALL_T_CM,
                 g.size_z_cm - 2 * WALL_T_CM,
             );
+            // **La planta abierta se reparte sobre la SALA ENTERA, no sobre su tramo mayor.** Una
+            // sala de 400 m2 no cabe en un tramo y la mayor de las suyas puede ser la mitad: los
+            // puestos se quedaban en diez de los treinta que se buscan. Por dentro es un solo suelo
+            // -- las juntas entre tramos hermanas son bocas de cara entera --, asi que la rejilla
+            // puede cruzarlas; `free` sigue exigiendo que cada celda caiga sobre la huella.
+            let inner = if s.open_plan {
+                rect_of(
+                    s.rect.min_x_cm + WALL_T_CM,
+                    s.rect.min_z_cm + WALL_T_CM,
+                    s.rect.width_cm() - 2 * WALL_T_CM,
+                    s.rect.depth_cm() - 2 * WALL_T_CM,
+                )
+            } else {
+                inner
+            };
             // Eje largo `u` (las filas corren por él), eje corto `v` (las filas se apilan por él).
             let along_x = inner.width_cm() >= inner.depth_cm();
             let (u0, u1, v0, v1) = if along_x {
@@ -1775,6 +1821,18 @@ fn office_cubicles(
             }
             let cells = (cells as usize).clamp(2, CUBICLE_MAX_PER_ROOM / 2) as i32;
             let start = u0 + ((u1 - u0) - cells * CUBICLE_CELL_CM) / 2;
+
+            // **El pasillo TRANSVERSAL de la planta abierta.** Los pasillos entre filas corren por
+            // el eje largo y son los de servicio; una planta de treinta puestos necesita además el
+            // que los cruza, porque sin él se entra por una esquina y se sale por la otra andando
+            // entre mamparas veinte metros. Se cede una columna entera de celdas (2,60 m), y las
+            // mamparas laterales de las celdas que quedan a cada lado ya lo enmarcan solas.
+            let cross = if s.open_plan && cells >= 5 {
+                let c0 = start + (cells / 2) * CUBICLE_CELL_CM;
+                Some((c0, c0 + CUBICLE_CELL_CM))
+            } else {
+                None
+            };
 
             // Las filas: abierta hacia +v, pasillo, abierta hacia −v, y espalda con espalda otra
             // abierta hacia +v… Una fila sólo entra si le queda su pasillo delante.
@@ -1806,13 +1864,10 @@ fn office_cubicles(
                 if !inner.contains_rect(r) || !s.covers_rect(r) {
                     return false;
                 }
-                if mouths.iter().any(|&(mx, mz, half, fl)| {
-                    (fl - floor).abs() < 100
-                        && mx + half > r.min_x_cm
-                        && mx - half < r.max_x_cm
-                        && mz + half > r.min_z_cm
-                        && mz - half < r.max_z_cm
-                }) {
+                if mouths
+                    .iter()
+                    .any(|(m, fl)| (fl - floor).abs() < 100 && m.overlaps(r))
+                {
                     return false;
                 }
                 if landings.iter().any(|l| l.overlaps(&grown))
@@ -1880,6 +1935,9 @@ fn office_cubicles(
                 let placed: Vec<bool> = (0..cells)
                     .map(|k| {
                         let ua = start + k * CUBICLE_CELL_CM;
+                        if cross.is_some_and(|(c0, c1)| ua < c1 && ua + CUBICLE_CELL_CM > c0) {
+                            return false;
+                        }
                         free(&world(ua, va, ua + CUBICLE_CELL_CM, vb))
                     })
                     .collect();
@@ -3754,6 +3812,13 @@ fn interior_partitions(
                 continue;
             }
             if arrivals.contains(&i) || gated.contains(&i) {
+                continue;
+            }
+            // **La planta abierta va DIAFANA** (fusion de plan::fuse_open_plan): lo que la llena son
+            // los puestos, y un tabique, un bloque exento o un oclusor dentro dejan a
+            // `office_cubicles` sin sitio donde plantar una celda -medido: 5 de 6 columnas
+            // rechazadas por el metro de holgura a los macizos, y la sala salia vacia.
+            if s.open_plan {
                 continue;
             }
             let r = s.rect;
@@ -5660,7 +5725,7 @@ fn interior_occluders(
             let Some(area_per_one) = occluder_area_per_one_m2(s.role) else {
                 continue;
             };
-            if s.rise_cm != 0 || arrivals.contains(&i) || gated.contains(&i) {
+            if s.rise_cm != 0 || s.open_plan || arrivals.contains(&i) || gated.contains(&i) {
                 continue;
             }
             if s.area_m2() < OCCLUDER_MIN_AREA_M2 {
@@ -8456,7 +8521,12 @@ mod apron_tests {
         for seed in 1..40 {
             let b = building(seed);
             let f = fill_building(&b, &m);
-            let mouths: Vec<(i32, i32, i32, i32)> = f
+            // **Una boca es una LINEA en una cara, no un cuadrado.** Con `ancho/2 + holgura` en
+            // los dos ejes, la junta entre dos tramos hermanas de una misma sala -- que es una boca
+            // del ancho ENTERO de la cara, 15 m -- reservaba un cuadrado de 15 m de lado y daba por
+            // «tapada» media planta abierta. Se mide a lo largo de la cara con el ancho, y
+            // perpendicular solo con la holgura.
+            let mouths: Vec<(super::super::plan::PlanRect, i32)> = f
                 .segments
                 .iter()
                 .flat_map(|g| {
@@ -8468,10 +8538,23 @@ mod apron_tests {
                             w,
                             d,
                         );
-                        (
+                        let (cx, cz) = (
                             g.x_cm + (lx * 100.0).round() as i32,
                             g.z_cm + (lz * 100.0).round() as i32,
-                            o.width_cm / 2 + 60,
+                        );
+                        let along = o.width_cm / 2 + 60;
+                        let (hx, hz) = if o.side % 2 == 0 {
+                            (along, 60)
+                        } else {
+                            (60, along)
+                        };
+                        (
+                            super::super::plan::PlanRect {
+                                min_x_cm: cx - hx,
+                                min_z_cm: cz - hz,
+                                max_x_cm: cx + hx,
+                                max_z_cm: cz + hz,
+                            },
                             g.floor_y_cm,
                         )
                     })
@@ -8497,9 +8580,8 @@ mod apron_tests {
                     assert!(
                         !mouths
                             .iter()
-                            .any(|&(mx, mz, half, fl)| Some(fl) == host_floor
-                                && (mx - p.x_cm).abs() < half
-                                && (mz - p.z_cm).abs() < half),
+                            .any(|(m, fl)| Some(*fl) == host_floor
+                                && m.contains_point(p.x_cm, p.z_cm)),
                         "semilla {seed}: ancla {p:?} en una boca"
                     );
                 }
@@ -8539,7 +8621,12 @@ mod apron_tests {
         for seed in 1..40 {
             let b = building(seed);
             let f = fill_building(&b, &m);
-            let mouths: Vec<(i32, i32, i32, i32)> = f
+            // **Una boca es una LINEA en una cara, no un cuadrado.** Con `ancho/2 + holgura` en
+            // los dos ejes, la junta entre dos tramos hermanas de una misma sala -- que es una boca
+            // del ancho ENTERO de la cara, 15 m -- reservaba un cuadrado de 15 m de lado y daba por
+            // «tapada» media planta abierta. Se mide a lo largo de la cara con el ancho, y
+            // perpendicular solo con la holgura.
+            let mouths: Vec<(super::super::plan::PlanRect, i32)> = f
                 .segments
                 .iter()
                 .flat_map(|g| {
@@ -8551,10 +8638,23 @@ mod apron_tests {
                             w,
                             d,
                         );
-                        (
+                        let (cx, cz) = (
                             g.x_cm + (lx * 100.0).round() as i32,
                             g.z_cm + (lz * 100.0).round() as i32,
-                            o.width_cm / 2 + 30,
+                        );
+                        let along = o.width_cm / 2 + 30;
+                        let (hx, hz) = if o.side % 2 == 0 {
+                            (along, 30)
+                        } else {
+                            (30, along)
+                        };
+                        (
+                            super::super::plan::PlanRect {
+                                min_x_cm: cx - hx,
+                                min_z_cm: cz - hz,
+                                max_x_cm: cx + hx,
+                                max_z_cm: cz + hz,
+                            },
                             g.floor_y_cm,
                         )
                     })
@@ -8577,11 +8677,9 @@ mod apron_tests {
                     "semilla {seed}: mampara {r:?} fuera de todo tramo"
                 );
                 assert!(
-                    !mouths.iter().any(|&(mx, mz, half, fl)| fl == w.bottom_y_cm
-                        && mx + half > r.min_x_cm
-                        && mx - half < r.max_x_cm
-                        && mz + half > r.min_z_cm
-                        && mz - half < r.max_z_cm),
+                    !mouths
+                        .iter()
+                        .any(|(m, fl)| *fl == w.bottom_y_cm && m.overlaps(&r)),
                     "semilla {seed}: mampara {r:?} tapa una boca"
                 );
                 // Y sin pisar ningún macizo de otro emisor a ras de suelo.

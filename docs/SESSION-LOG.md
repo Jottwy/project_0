@@ -347,6 +347,17 @@ AÑADIR A "NO tocar": que `LoadProxyController` debe preferir el objeto cacheado
 
 ## Historico movido desde STATE.md (2026-09-04) — VERBATIM
 
+### 2026-09-05 — 22.ª tanda: el saneamiento entero (B2–B4) y el primer rojo que caza el gate
+- **B2, gate de commit** (`9a5c680e`): `validate-scope.ps1` por alcance de `git diff --cached`, disparado por un
+  PreToolUse; cuatro hooks fusionados en dos y *fail closed*. El parser del índice de ADR perdía en SILENCIO
+  cualquier encabezado que no encajara (`## ADR-121 y ADR-122`): 164 en el fichero, 163 en el índice.
+- **B2 docs** (`5a80d295`): 10 ficheros a `docs/archive/` con cabecera CONGELADO; de `AGENTS.md` sobrevive UNA regla (la 13) y de `LEEME.md` ninguna.
+- **B3** (`b4d3112c`) 50,1 MB fuera; `STP/Demo` NO se toca (dentro vive `STP_Showcase.unity`, la escena real). **B4**:
+  `ChunkRenderer.cs` (3 925 líneas), el campo de identidad de ADR-103, `SpaceRole::Junction`, `BackroomsWithSTP.unity`
+  y tres comentarios que mandaban a clases borradas. El gate cazó su primer rojo: un test llevaba veintitantos
+  commits en rojo, tapado por su guarda de cobertura (la serie, medida commit a commit, en el log).
+
+
 > Segundo traslado, despues del del 2026-08-04. Se movieron las secciones de sesiones
 > anteriores y los bloques `## Estado actual —` cerrados. Ningun caracter reescrito.
 > Para saber COMO esta hoy algo: `docs/STATE.md`. Para saber POR QUE quedo asi: aqui.

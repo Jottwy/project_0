@@ -6,7 +6,7 @@
 ## Estado
 - **WorldGen3 es el mundo servido.** Wire **61** en las dos puntas (`ipc/server.rs:38`, `WireSchema.cs:25`) — ADR-129 lo subió el 06-09.
 - **Contrato WG3 v1 = Alpha 1** (`docs/WG3-ALPHA1-ROADMAP.md`): días 1–2 hechos; 3 y 5 APARCADOS detrás de la tanda de oficinas (Joel, 06-09).
-- Suite tras la fusión del 06-09: `cargo test --bin backrooms_server` **1382/1382 (81 ignorados)**, `CompileCheckClient` 0 errores en las 4 asambleas.
+- Suite tras la 28.ª tanda: `cargo test --bin backrooms_server` **1401/1401 (84 ignorados)**, clippy y fmt limpios; `CompileCheckClient` 0 errores.
 - **El commit tiene gate** (`tools/dev/validate-scope.ps1`, hook PreToolUse): rojo = el commit no se ejecuta. Alcance por `git diff --cached`.
 - Alpha 1 itch nov 2026 · Next Fest feb 2027 · EA primavera 2027 (`docs/SCALING-ROADMAP.md:196-198`). E0 de red cerrada y medida.
 
@@ -20,7 +20,7 @@
   de MUNDO con `plan_bounds()`. **Sigue sin verificarse que lo servido salga ×2.** Parche verbatim en `docs/SESSION-LOG.md`.
 - **Contrato WG3 v1**, 5 días. Día 1 (`65d267c3`) y día 2 (`c7c9dd01`, `510223b8`, ADR-129) cerrados; el día 4 de gramática lo sustituyó
   ADR-129 (rampa, tabique diagonal y anti-enfilada pasan a v2 salvo decisión). Quedan día 3 (rendimiento) y día 5 (verificación, etiqueta).
-- **Tanda de oficinas (06-09)**: 1 falso techo + cubículos HECHA (`b02df08f`, enm. 18) · 2 ADR-131 vigilantes · 3 ADR-130 r2 · día 3 · r3 wire 62 · r4.
+- **Tanda de oficinas (06-09)**: 1 y 2 HECHAS (enm. 18 y 19); quedan ADR-131 vigilantes, ADR-130 r2, día 3, r3 wire 62 y r4.
 - **Saneamiento: B1–B4 fusionados en `migration/worldgraph-v1`** (06-09). Queda B5 (cabeza: el agujero de autoridad) y la lista de Joel para podar ramas.
 - **Migración STP servidor-autoritativo**: Steps 1–2 y slice 3.1 (plumbing) hechos y verificados. Falta slice 3.2
   (capa L2 de predicción), reescribir los 8 call sites de `Inventory` y retirar `PlayerController.cs` (DEPRECATED por ADR-009).
@@ -94,6 +94,16 @@
 
 ## Últimas tandas
 
+### 2026-09-06 — 28.ª tanda: la planta abierta de oficina (ADR-105 enm. 19), y la costura de 664 que destapó
+- La sala grande no salía por ARITMÉTICA: el nº de hojas es `área / objetivo`, y agrandar una agranda TODAS las de la zona (ADR-119 D2).
+  Se funden DOS hermanas sin banda, una por planta, 300–500 m² y carácter Office: árbol, bandas y candidatos a forjado quedan idénticos.
+- Barrido 27 regiones antes → después: **4,2 → 4,2 plantas**, 270 → 268 espacios, mancha 99,7 %, 6,4 islas, nav 100 %, 27/27. Sin wire.
+- Prioridades: atrio > sala (si no nacía `Void`); sala > vacío y > mordisco de ADR-120 (380 → 196 m²); pozo > sala, y ahí pierde la marca.
+- Va DIÁFANA (la holgura de los cubículos rechazaba 5 de 6 columnas) y los puestos cubren la sala entera con pasillo transversal: 91 salas
+  en 209 plantas (44 %), media 418 m², 15–18 puestos. Interruptor del ANTES: `WG3_NO_OPEN_PLAN=1`.
+- **Bug de la enm. 18**: la holgura de boca era un CUADRADO y la junta entre tramos hermanos (15 m) tapaba la sala; ahora es una franja.
+- **Costura de 664 cerrada**: canto de losa = planta de ARRIBA (de la 1 arriba); y una cama ya no ancla en repisa sin altura libre.
+
 ### 2026-09-06 — 27.ª tanda: la planta de oficinas, rebanada 1 — falso techo y cubículos (ADR-105 enm. 18)
 - `b02df08f`: `office_ceiling_cm` (270, 300) sólo en despachos/servicios/almacenes del carácter Office, por sala en pasos de 10; naves
   y circulación no cambian. 669 de 898 despachos bajo 3,00 en 39 semillas. El forjado (332) no se toca.
@@ -135,16 +145,6 @@
   porque a 3 m de altura una puntual de 6 deja 3 de radio útil. `2d66a544`: la luz pide la máscara de SU VOLUMEN (`ForLightIn`), no la del suelo.
 - `a4c2c1f4`: megasala hasta 16,36 m sólo sin planta encima (`void_storeys_above`); `CEILING_CAP_M` 7 → 17. `957d8a18`: la sonda medía
   STOREYS = 2, no el mundo (49 regiones: 27 de 3 plantas). `f250600f`: luces al doble (2,7 / 3,2) a petición de Joel tras el playtest.
-
-### 2026-09-05 — 22.ª tanda: el saneamiento entero (B2–B4) y el primer rojo que caza el gate
-- **B2, gate de commit** (`9a5c680e`): `validate-scope.ps1` por alcance de `git diff --cached`, disparado por un
-  PreToolUse; cuatro hooks fusionados en dos y *fail closed*. El parser del índice de ADR perdía en SILENCIO
-  cualquier encabezado que no encajara (`## ADR-121 y ADR-122`): 164 en el fichero, 163 en el índice.
-- **B2 docs** (`5a80d295`): 10 ficheros a `docs/archive/` con cabecera CONGELADO; de `AGENTS.md` sobrevive UNA regla (la 13) y de `LEEME.md` ninguna.
-- **B3** (`b4d3112c`) 50,1 MB fuera; `STP/Demo` NO se toca (dentro vive `STP_Showcase.unity`, la escena real). **B4**:
-  `ChunkRenderer.cs` (3 925 líneas), el campo de identidad de ADR-103, `SpaceRole::Junction`, `BackroomsWithSTP.unity`
-  y tres comentarios que mandaban a clases borradas. El gate cazó su primer rojo: un test llevaba veintitantos
-  commits en rojo, tapado por su guarda de cobertura (la serie, medida commit a commit, en el log).
 
 ### 2026-09-04 — 21.ª tanda: auditoría del proyecto y B1 del saneamiento (arranque de sesión)
 - **La regla dura #1 era incumplible, no cara.** `Read` rechaza `STATE.md` entero (tope 256 KB) y todo
