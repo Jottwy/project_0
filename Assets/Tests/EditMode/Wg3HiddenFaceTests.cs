@@ -104,10 +104,16 @@ namespace BackroomsSurvival.Tests
             var baja = Box(new Vector3(2f, 0.5f, 0f), new Vector3(2f, 1f, 0.2f));
 
             Assert.AreEqual(11, FaceCount(alta, baja), "se va UNA cara, la de la baja");
-            Assert.AreEqual(1, FacesTowards(Vector3.right, alta, baja),
-                "la alta CONSERVA su cara hacia la baja, que sólo le tapa el metro de abajo");
+
+            // Hacia +x quedan DOS: la de la alta —que la baja sólo tapa por el metro de abajo, así
+            // que se conserva— y el extremo derecho de la baja, que no tiene nada delante.
+            Assert.AreEqual(2, FacesTowards(Vector3.right, alta, baja),
+                "la alta CONSERVA su cara hacia la baja, y la baja su extremo libre");
+
+            // Y hacia −x queda UNA, la de la alta: la de la baja es la que se podó, porque la alta
+            // la cubre entera. Ésta es la aserción que demuestra la asimetría.
             Assert.AreEqual(1, FacesTowards(Vector3.left, alta, baja),
-                "y hacia −x sólo queda la de la alta: la baja perdió la suya");
+                "la baja perdió la suya contra la alta, que sí la cubre entera");
         }
 
         [Test]
