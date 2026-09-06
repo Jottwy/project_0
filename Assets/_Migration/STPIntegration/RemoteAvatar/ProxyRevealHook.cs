@@ -98,6 +98,17 @@ namespace BackroomsSurvival.Migration.STPIntegration
         private Animator _bodyAnimator;
         private int _hashMovementSpeed;
         private int _hashCrouched;
+        private int _hashMoveX;
+        private int _hashMoveY;
+        // Sonda de parámetros, MISMO idioma que ProxyLocomotionFeeder/ProxyCrouchHook: se comprueba
+        // que LOS DOS animators (el del disfraz, de donde se lee, y el del cuerpo real, donde se
+        // escribe) declaren el parámetro antes de tocarlo. El eje de crouch ya arrastraba este hueco
+        // desde antes; se tapa junto con los dos nuevos porque es la misma línea de código y el mismo
+        // fallo. Sin la sonda, un cuerpo real con un controller sin re-hornear escupe un aviso POR
+        // FRAME y POR PEER mientras dure la revelación — el patrón que ya llenó un Editor.log de
+        // 386 MB en este proyecto (AudioMixer.SetFloat).
+        private bool _hasCrouchedParam;
+        private bool _hasDirectionParams;
         private Renderer[] _hidden;
         private AudioSource _screamSource;
 
@@ -113,6 +124,8 @@ namespace BackroomsSurvival.Migration.STPIntegration
             _vendorAnimator = GetComponent<Animator>();
             _hashMovementSpeed = Animator.StringToHash("MovementSpeed");
             _hashCrouched = Animator.StringToHash("Crouched");
+            _hashMoveX = Animator.StringToHash("MoveX");
+            _hashMoveY = Animator.StringToHash("MoveY");
             if (_realFormBody != null)
                 _bodyAnimator = _realFormBody.GetComponentInChildren<Animator>(true);
 
@@ -126,6 +139,28 @@ namespace BackroomsSurvival.Migration.STPIntegration
             {
                 _bodyAnimator.runtimeAnimatorController = _vendorAnimator.runtimeAnimatorController;
             }
+
+            // Después de la red de seguridad, no antes: el cuerpo real acaba de heredar el controller
+            // del disfraz si le faltaba, y sondear antes diría "no tiene parámetros" de uno que sí.
+            _hasCrouchedParam = HasFloatParam(_vendorAnimator, "Crouched")
+                                && HasFloatParam(_bodyAnimator, "Crouched");
+            _hasDirectionParams = HasFloatParam(_vendorAnimator, "MoveX")
+                                  && HasFloatParam(_vendorAnimator, "MoveY")
+                                  && HasFloatParam(_bodyAnimator, "MoveX")
+                                  && HasFloatParam(_bodyAnimator, "MoveY");
+        }
+
+        private static bool HasFloatParam(Animator animator, string param)
+        {
+            if (animator == null || animator.runtimeAnimatorController == null)
+                return false;
+
+            foreach (var p in animator.parameters)
+            {
+                if (p.type == AnimatorControllerParameterType.Float && p.name == param)
+                    return true;
+            }
+            return false;
         }
 
         // Re-arm for pool reuse: a recycled proxy must never start wearing the real form, nor keep a
@@ -177,7 +212,18 @@ namespace BackroomsSurvival.Migration.STPIntegration
                 return;
 
             _bodyAnimator.SetFloat(_hashMovementSpeed, _vendorAnimator.GetFloat(_hashMovementSpeed));
-            _bodyAnimator.SetFloat(_hashCrouched, _vendorAnimator.GetFloat(_hashCrouched));
+
+            if (_hasCrouchedParam)
+                _bodyAnimator.SetFloat(_hashCrouched, _vendorAnimator.GetFloat(_hashCrouched));
+
+            // Fase 1 del sistema 3P: los dos ejes direccionales viajan por el mismo sitio que el
+            // escalar. Sin esto, la criatura revelada —que corre HACIA ti y se aparta— se mezclaría
+            // siempre en el centro del árbol, o sea quieta, mientras el disfraz sí se mueve.
+            if (!_hasDirectionParams)
+                return;
+
+            _bodyAnimator.SetFloat(_hashMoveX, _vendorAnimator.GetFloat(_hashMoveX));
+            _bodyAnimator.SetFloat(_hashMoveY, _vendorAnimator.GetFloat(_hashMoveY));
         }
 
         private void Apply()
