@@ -6,7 +6,7 @@
 ## Estado
 - **WorldGen3 es el mundo servido.** Wire **61** en las dos puntas (`ipc/server.rs:38`, `WireSchema.cs:25`) — ADR-129 lo subió el 06-09.
 - **Contrato WG3 v1 = Alpha 1** (`docs/WG3-ALPHA1-ROADMAP.md`): días 1–2 hechos; 3 y 5 APARCADOS detrás de la tanda de oficinas (Joel, 06-09).
-- Suite del 06-09 con ADR-131 dentro: `cargo test --bin backrooms_server` **1400/1400 (86 ignorados)**, `CompileCheckClient` 0 errores en las 4 asambleas.
+- Suite del 06-09 con ADR-131 y carteles: `cargo test --bin backrooms_server` **1402/1402 (86 ignorados)**, `CompileCheckClient` 0 errores en las 4 asambleas.
 - **El commit tiene gate** (`tools/dev/validate-scope.ps1`, hook PreToolUse): rojo = el commit no se ejecuta. Alcance por `git diff --cached`.
 - Alpha 1 itch nov 2026 · Next Fest feb 2027 · EA primavera 2027 (`docs/SCALING-ROADMAP.md:196-198`). E0 de red cerrada y medida.
 
@@ -20,7 +20,7 @@
   de MUNDO con `plan_bounds()`. **Sigue sin verificarse que lo servido salga ×2.** Parche verbatim en `docs/SESSION-LOG.md`.
 - **Contrato WG3 v1**, 5 días. Día 1 (`65d267c3`) y día 2 (`c7c9dd01`, `510223b8`, ADR-129) cerrados; el día 4 de gramática lo sustituyó
   ADR-129 (rampa, tabique diagonal y anti-enfilada pasan a v2 salvo decisión). Quedan día 3 (rendimiento) y día 5 (verificación, etiqueta).
-- **Tanda de oficinas (06-09)**: 1 falso techo + cubículos HECHA (`b02df08f`) · 2 ADR-131 vigilantes HECHA · 3 ADR-130 r2 · día 3 · r3 wire 62 · r4.
+- **Tanda de oficinas (06-09)**: cubículos, ADR-131, luces, audio y carteles FUSIONADOS · en rama: decay, variantes, materiales, sala grande · luego r2, r3, r4.
 - **Saneamiento: B1–B4 fusionados en `migration/worldgraph-v1`** (06-09). Queda B5 (cabeza: el agujero de autoridad) y la lista de Joel para podar ramas.
 - **Migración STP servidor-autoritativo**: Steps 1–2 y slice 3.1 (plumbing) hechos y verificados. Falta slice 3.2
   (capa L2 de predicción), reescribir los 8 call sites de `Inventory` y retirar `PlayerController.cs` (DEPRECATED por ADR-009).
@@ -90,9 +90,19 @@
   (`CompileCheckClient.sh` daba `MISSING csproj`). Arreglado y documentado (`c99db43a`, `docs/DEV-ENVIRONMENT.md`): copiar `.csproj`, unir `Library`.
 - **`STOREY_HEIGHT_CM` (332) no sube con un número** (380–480: 1/9 regiones válidas); `storey_of_floor_cm` clasifica una planta ABAJO en la costura de 664.
 - **El runner de tests del editor no contesta** (06-09); el arnés .NET corrió `ProxyLocomotionMathTests` 15/15 pero NO `Wg3LightCadenceTests` (ECall nativa).
+- **Sin ver en juego (06-09)**: capturas de monitor y despacho oscuro, carteles montados (z-fighting, giro), pasada en Play del audio; clips sintéticos.
 - Menores: `MPTRACE` sin commitear en cuatro ficheros del vendor STP; `TODO(balance)` de loot; doc-comments stale.
 
 ## Últimas tandas
+
+### 2026-09-06 — 29.ª tanda: ocho sesiones en paralelo; luces, audio y carteles fusionados
+- Joel lanzó a la vez un prompt por punto del «10 de 10» de oficina; el reparto de números (ADR, prop kind, grosor, SALT) llegó tarde.
+- `2148fce3` luces (`e38570d6`): monitor azul 1 de 5 SIN Light (el hash lleva la cota: sin ella se encendía la columna entera), despacho
+  a oscuras por planta y chunk, emergencia verde donde el plafón está muerto. Medido: +16 draw calls, +4 luces, 0 sombras nuevas.
+- `67f7833d` audio (`cab689c3`): `OfficeAmbienceDirector`, 6 AudioSource, papel de sala DERIVADO del atrezo + falso techo, sin wire.
+- `03e84ae3` carteles (ADR-129 enm. 1): `PROP_SIGN = 15`, variante en 6 bits de `style`, wire 61; atlas 8×8 (`BakeSignAtlas.py`).
+- Conflictos: `Wg3SceneAssembler.cs` (unión) y `DECISIONS.md` (ADR-131 y enmiendas antes que la de 129). cargo 1402/1402, CompileCheck 0.
+- Para las cuatro que quedan: carteles se queda el 15; variantes 16–20 (`TABLE_LONG..RACK`), decay 21–22; ADR-129 enm. 2 para variantes.
 
 ### 2026-09-06 — 28.ª tanda: los VIGILANTES sentados (ADR-131 + enm. 1) — la planta de oficinas, rebanada 2
 - `Watcher` (`species` 3) en `game_loop/watcher.rs`: **sin `step`**, sólo reconcile. Nace en las anclas `PROP_CHAIR` de ADR-129 (sitio,
@@ -155,32 +165,3 @@
   `ChunkRenderer.cs` (3 925 líneas), el campo de identidad de ADR-103, `SpaceRole::Junction`, `BackroomsWithSTP.unity`
   y tres comentarios que mandaban a clases borradas. El gate cazó su primer rojo: un test llevaba veintitantos
   commits en rojo, tapado por su guarda de cobertura (la serie, medida commit a commit, en el log).
-
-### 2026-09-04 — 21.ª tanda: auditoría del proyecto y B1 del saneamiento (arranque de sesión)
-- **La regla dura #1 era incumplible, no cara.** `Read` rechaza `STATE.md` entero (tope 256 KB) y todo
-  tramo de más de 25 000 tokens: 500 líneas medían 51 211. `Riesgos abiertos` y `Estado actual` no entraban nunca.
-- `77801e2a` traslado verbatim de 595 370 B a `SESSION-LOG.md` (verificado byte a byte); `36c04939`
-  compresión: **688 532 → 11 587 B, 2 588 → 121 líneas**. El verbatim de lo conservado también está en el log.
-- `68831a61` `tools/dev/CheckStateBudget.py` (topes y presupuesto de 36 KB) + `GenDecisionsIndex.py` →
-  `docs/DECISIONS-INDEX.md` (7 917 B; 105 números, 163 encabezados) + `ARCHITECTURE.md` con contratos reales.
-- `7534b0a2` el hook de Stop baja a solo `fmt`: corría clippy + tests en CADA parada, sin bloquear nunca.
-- Auditoría completa (Alpha 1, código, repo, flujo) en el plan de la sesión; B2–B5 sin empezar.
-
-### 2026-09-04 — 20.ª tanda: ningún macizo se había visto nunca; wire 56→60, pozos del Nivel 0
-- **El hallazgo (`5aa8fc07`): desde wire 50 ningún macizo se dibujaba en su sitio** — `AssembleSolid` daba el centro local
-  y `Wg3MeshBuilder` lo restaba otra vez: todo apilado en (0,0). Una semana de enmiendas juzgada con capturas ciegas.
-- **Wire 56** (`faec7ffe`): `Wg3Solid { yaw_deg, shape }` — caja, cilindro, media luna, octógono (ADR-121 D1, ADR-125);
-  cuadrados girados no dan círculo, de ahí el byte. **57**: arco de puerta. **58**: marco con `STYLE_DECOR_BIT`.
-- **Wire 59–60: POZOS del Nivel 0** (ADR-126 + enm. 1). Rejilla en salas ≥ 7 m de la planta baja, 10–50 m de caída y
-  cámara oscura; el daño lo calcula el vendor. Enm. 1: pozos 2×2 a paso 2,5, pasillo de una celda.
-- **Día 1 del cierre, la misma noche** (`65d267c3`): el atrio no se abre a la nada (ADR-104 enm. 3) — el techo estaba, el
-  negro era el muro alto quitado sin sala arriba. Barrido 27 regiones: mancha 99,6 %, 1,3 islas, nav 100 %. Joel: 7/10.
-
-### 2026-09-04 — 19.ª tanda: zonas con carácter, laberinto de rejilla, y ADR-124 revertido tres veces
-- **Enm. 14** (`8d423f81`): `fill::Character` {abierto, oficina, nave, laberinto, raro} por el campo de densidad, con
-  la tabla `KNOBS` de todas las probabilidades por carácter. Macizos por espacio: laberinto 6,5 → 1,8, raro 9,7 → 3,4.
-- **Enm. 15** (`2d4259c4`): laberinto de rejilla por árbol de expansión sobre celdas de 2,5 m — conectividad por
-  construcción. Divisiones 1 028 → 3 729 en 27 regiones.
-- **ADR-124 «menos pasillos» probado tres veces y revertido** (`c3f5b043`): `CORRIDOR_DEPTH` 2 da lo pedido pero rompe
-  6 de 300 regiones. **El enrutador es el límite, no una constante**: es una sesión de `route.rs`.
-- Lección de medida: la repetición LOCAL sube con la zonificación y la GLOBAL baja. Antes de vender un «50 %», decir cuál.

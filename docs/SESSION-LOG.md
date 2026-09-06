@@ -3045,3 +3045,32 @@ si las sondas de `J:/wg3*` valen algo o se borran. Las ramas viejas (`angry-jack
 - `plan.links` guarda el punto medio de una ruta, no su boca en la pared: `segment_door_points` saca las bocas reales
   y divisiones y pilastras las esquivan.
 - Barrido de 27 regiones sin regresión: mancha 99,5 %, islas 1,4, nav 100 %, cotas −0,07 %.
+
+### 2026-09-04 — 21.ª tanda: auditoría del proyecto y B1 del saneamiento (arranque de sesión)
+- **La regla dura #1 era incumplible, no cara.** `Read` rechaza `STATE.md` entero (tope 256 KB) y todo
+  tramo de más de 25 000 tokens: 500 líneas medían 51 211. `Riesgos abiertos` y `Estado actual` no entraban nunca.
+- `77801e2a` traslado verbatim de 595 370 B a `SESSION-LOG.md` (verificado byte a byte); `36c04939`
+  compresión: **688 532 → 11 587 B, 2 588 → 121 líneas**. El verbatim de lo conservado también está en el log.
+- `68831a61` `tools/dev/CheckStateBudget.py` (topes y presupuesto de 36 KB) + `GenDecisionsIndex.py` →
+  `docs/DECISIONS-INDEX.md` (7 917 B; 105 números, 163 encabezados) + `ARCHITECTURE.md` con contratos reales.
+- `7534b0a2` el hook de Stop baja a solo `fmt`: corría clippy + tests en CADA parada, sin bloquear nunca.
+- Auditoría completa (Alpha 1, código, repo, flujo) en el plan de la sesión; B2–B5 sin empezar.
+
+### 2026-09-04 — 20.ª tanda: ningún macizo se había visto nunca; wire 56→60, pozos del Nivel 0
+- **El hallazgo (`5aa8fc07`): desde wire 50 ningún macizo se dibujaba en su sitio** — `AssembleSolid` daba el centro local
+  y `Wg3MeshBuilder` lo restaba otra vez: todo apilado en (0,0). Una semana de enmiendas juzgada con capturas ciegas.
+- **Wire 56** (`faec7ffe`): `Wg3Solid { yaw_deg, shape }` — caja, cilindro, media luna, octógono (ADR-121 D1, ADR-125);
+  cuadrados girados no dan círculo, de ahí el byte. **57**: arco de puerta. **58**: marco con `STYLE_DECOR_BIT`.
+- **Wire 59–60: POZOS del Nivel 0** (ADR-126 + enm. 1). Rejilla en salas ≥ 7 m de la planta baja, 10–50 m de caída y
+  cámara oscura; el daño lo calcula el vendor. Enm. 1: pozos 2×2 a paso 2,5, pasillo de una celda.
+- **Día 1 del cierre, la misma noche** (`65d267c3`): el atrio no se abre a la nada (ADR-104 enm. 3) — el techo estaba, el
+  negro era el muro alto quitado sin sala arriba. Barrido 27 regiones: mancha 99,6 %, 1,3 islas, nav 100 %. Joel: 7/10.
+
+### 2026-09-04 — 19.ª tanda: zonas con carácter, laberinto de rejilla, y ADR-124 revertido tres veces
+- **Enm. 14** (`8d423f81`): `fill::Character` {abierto, oficina, nave, laberinto, raro} por el campo de densidad, con
+  la tabla `KNOBS` de todas las probabilidades por carácter. Macizos por espacio: laberinto 6,5 → 1,8, raro 9,7 → 3,4.
+- **Enm. 15** (`2d4259c4`): laberinto de rejilla por árbol de expansión sobre celdas de 2,5 m — conectividad por
+  construcción. Divisiones 1 028 → 3 729 en 27 regiones.
+- **ADR-124 «menos pasillos» probado tres veces y revertido** (`c3f5b043`): `CORRIDOR_DEPTH` 2 da lo pedido pero rompe
+  6 de 300 regiones. **El enrutador es el límite, no una constante**: es una sesión de `route.rs`.
+- Lección de medida: la repetición LOCAL sube con la zonificación y la GLOBAL baja. Antes de vender un «50 %», decir cuál.
