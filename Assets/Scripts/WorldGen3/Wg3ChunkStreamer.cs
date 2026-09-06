@@ -260,6 +260,10 @@ namespace BackroomsSurvival.WorldGen3
             var rooms = new List<(Bounds, Audio.ReverbMixerDriver.RoomTone)>();
             _rooms[coord] = rooms;
             var spaces = new List<(Bounds, byte)>();
+            // Detalle de oficina: los tramos de este chunk en las unidades del cable, para que el
+            // director deduzca el papel de cada sala de su atrezo. Se recogen aquí y se clasifican
+            // al final, cuando el atrezo ya está leído — no antes.
+            var officeRooms = new List<Audio.OfficeAmbienceDirector.RoomSpec>();
             _spaces[coord] = spaces;
             _builtChunks++;
 
@@ -346,6 +350,12 @@ namespace BackroomsSurvival.WorldGen3
                         segment.Origin.z + segment.SizeZ * 0.5f),
                     new Vector3(segment.SizeX, segment.Height, segment.SizeZ));
                 spaces.Add((box, segment.style));
+                officeRooms.Add(new Audio.OfficeAmbienceDirector.RoomSpec
+                {
+                    xCm = segment.xCm, zCm = segment.zCm,
+                    sizeXCm = segment.sizeXCm, sizeZCm = segment.sizeZCm,
+                    floorYCm = segment.floorYCm, heightCm = segment.heightCm,
+                });
                 if (ambience != null)
                 {
                     rooms.Add((
@@ -376,6 +386,27 @@ namespace BackroomsSurvival.WorldGen3
             {
                 var prop = chunk.props[i];
                 Wg3SceneAssembler.AssembleProp(prop, root.transform, root.layer, $"prop_{i:D3}_k{prop.kind}");
+            }
+
+            // Detalle de oficina, SOLO CLIENTE: teléfono, impresora, aire y crujido de silla por
+            // sala. El papel de cada sala se deduce del atrezo que se acaba de montar y de la
+            // altura libre (el falso techo), así que va DESPUÉS del bucle de props. El lote muere
+            // con la raíz del chunk, igual que el del zumbido.
+            if (officeRooms.Count > 0 && chunk.props.Count > 0)
+            {
+                var officeProps = new List<Audio.OfficeAmbienceDirector.PropSpec>(chunk.props.Count);
+                for (int i = 0; i < chunk.props.Count; i++)
+                {
+                    var p = chunk.props[i];
+                    officeProps.Add(new Audio.OfficeAmbienceDirector.PropSpec
+                    {
+                        xCm = p.xCm, yCm = p.yCm, zCm = p.zCm, kind = p.kind,
+                    });
+                }
+                var emitters = new List<Audio.OfficeAmbienceDirector.Emitter>();
+                Audio.OfficeAmbienceDirector.BuildEmitters(worldSeed, officeRooms, officeProps, emitters);
+                Audio.OfficeAmbienceDirector.RegisterChunk(root.transform, emitters);
+                _builtOfficeSources += emitters.Count;
             }
 
             // ADR-107 D3 — UN alta por chunk, con el root del chunk como dueño: el lote se retira solo
@@ -456,6 +487,7 @@ namespace BackroomsSurvival.WorldGen3
         private BackroomsSurvival.Gameplay.GridWorld.LayerVisualMaterials _wg2Set;
         private Wg3Materials _fallback;
         private int _builtLamps;
+        private int _builtOfficeSources;
 
         /// <summary>ADR-108 enm. 4 — el PAPEL de cada espacio montado, para poder contestar «qué es
         /// este sitio» desde fuera. Va aparte de <see cref="_rooms"/> y no dentro de su tupla porque
@@ -649,7 +681,8 @@ namespace BackroomsSurvival.WorldGen3
             _reported = true;
 
             Debug.Log($"[WG3] streamer: {_builtChunks} chunks con geometría y {_emptyChunks} vacíos; " +
-                      $"{_builtPieces} piezas, {_builtSegments} tramos, {_builtSolids} macizos y {_builtLamps} lamparas con zumbido montados. materiales " +
+                      $"{_builtPieces} piezas, {_builtSegments} tramos, {_builtSolids} macizos y {_builtLamps} lamparas con zumbido montados; " +
+                      $"{_builtOfficeSources} fuentes de oficina. materiales " +
                       $"{(materials?.floor != null ? "propios" : "de WG2 por respaldo — los propios sin asignar")}; " +
                       $"radio {radius}.", this);
         }
