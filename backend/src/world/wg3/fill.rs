@@ -2547,17 +2547,32 @@ const SIGN_TAG_Y_CM: i32 = 118;
 const SIGN_DOOR_SIDE_CM: i32 = 25;
 /// Superficie mínima de una sala para llevar tablón de corcho. Un tablón de 1,20 en un cuarto de
 /// tres por tres es una pared de corcho.
-const SIGN_CORK_MIN_AREA_M2: f32 = 40.0;
-/// Cuántas de esas salas lo llevan de verdad. Sin dado salían treinta y siete por región: un
-/// tablón en cada sala grande es una cadena de oficinas, no una oficina.
-const SIGN_CORK_CHANCE: f32 = 0.35;
+const SIGN_CORK_MIN_AREA_M2: f32 = 18.0;
+/// Cuántas de esas salas lo llevan de verdad.
+const SIGN_CORK_CHANCE: f32 = 0.85;
 /// Fondo de la banda que un cartel ocupa contra su pared. No es el grosor del cartel (es plano):
 /// es lo que se mira para decidir si algo estorba —un marco, una pilastra, un archivador—.
 const SIGN_BAND_CM: i32 = 25;
-/// Tope de carteles por espacio. Un pasillo empapelado no da miedo, da risa.
-const SIGN_MAX_PER_SPACE: usize = 4;
+/// Tope de carteles por espacio.
+///
+/// **Subido de 4 a 12 el 2026-09-06, y el motivo no es de diseño: es que no se veían.** Con la
+/// primera densidad (unos cien por región, repartidos por treinta y tantas salas) se podía cruzar
+/// media planta sin toparse con un solo cartel, y entonces el sistema no se puede juzgar en juego,
+/// que es donde hay que juzgarlo. Si al andarlo sobra texto, esta constante y las tres de abajo
+/// son el único sitio donde se toca.
+const SIGN_MAX_PER_SPACE: usize = 12;
+/// Tope de una banda de circulación. Ver [`SIGN_MAX_PER_SPACE`].
+const SIGN_MAX_PER_CORRIDOR: usize = 32;
 /// Cuántas mamparas de cubículo llevan rótulo.
-const SIGN_TAG_CHANCE: f32 = 0.35;
+const SIGN_TAG_CHANCE: f32 = 0.85;
+/// Cuántos espacios llevan calendario.
+const SIGN_CALENDAR_CHANCE: f32 = 0.85;
+/// Cuántas placas de despacho lleva una boca: además de la de al lado de la jamba, la de ENFRENTE
+/// (la misma puerta vista desde el otro lado) y una segunda al otro lado del marco.
+const SIGN_PLATE_BOTH_SIDES: f32 = 0.6;
+/// Paso entre señales de salida repetidas a lo largo de un pasillo, en cm. Un pasillo de cuarenta
+/// metros con una señal en cada punta es un pasillo sin señales: no se ven desde el medio.
+const SIGN_EXIT_PITCH_CM: i32 = 600;
 const SALT_SIGNS: u32 = 0xA9_04_09;
 /// ADR-130 D4 — cuánto texto sale mal ya en el primer sótano. El decaimiento (`depth²`) sólo se
 /// nota a partir de −50 m, y los carteles son lo PRIMERO que deja de tener sentido al bajar: de
@@ -2677,231 +2692,285 @@ fn office_signs(
             }
             let floor = s.floor_y_cm;
             let clear = clear_height_cm(s);
-            let host = segments
+            // **TODOS los tramos del espacio, no sólo el mayor.** `MAX_SEGMENT_M` parte un
+            // pasillo largo en varios, y quedarse con el más grande —que es lo que hace el resto
+            // del atrezo, porque a un mueble le basta con caber en uno— dejaba sin rotular todas
+            // las puertas de los demás: justo las que se ven al recorrerlo. De mayor a menor, para
+            // que el tablón y el calendario, que son uno por espacio, caigan en el tramo grande.
+            let mut hosts: Vec<&Wg3Segment> = segments
                 .iter()
                 .filter(|g| {
                     g.floor_y_cm == floor
                         && s.covers_rect(&rect_of(g.x_cm, g.z_cm, g.size_x_cm, g.size_z_cm))
+                        && g.size_x_cm - 2 * WALL_T_CM >= 200
+                        && g.size_z_cm - 2 * WALL_T_CM >= 200
                 })
-                .max_by_key(|g| g.size_x_cm as i64 * g.size_z_cm as i64);
-            let Some(g) = host else {
-                continue;
-            };
-            let inner = rect_of(
-                g.x_cm + WALL_T_CM,
-                g.z_cm + WALL_T_CM,
-                g.size_x_cm - 2 * WALL_T_CM,
-                g.size_z_cm - 2 * WALL_T_CM,
-            );
-            if inner.width_cm() < 200 || inner.depth_cm() < 200 {
+                .collect();
+            if hosts.is_empty() {
                 continue;
             }
+            hosts.sort_by_key(|g| std::cmp::Reverse(g.size_x_cm as i64 * g.size_z_cm as i64));
             let (cx, cz) = s.rect.centre_m();
             let mut st = super::hash::stream_at(seed, cx, cz, SALT_SIGNS);
             let mut placed: Vec<(super::plan::PlanRect, i32, i32)> = Vec::new();
-
-            // El ancla y la banda de un cartel de ancho `w` en el lado `side` de la cáscara:
-            // 0 pared −z (mira a +z), 1 pared +z, 2 pared −x, 3 pared +x. `along` es la coordenada
-            // sobre la pared (x en las de ±z, z en las de ±x).
-            let face = |side: u8, along: i32, w: i32| -> (i32, i32, i16, super::plan::PlanRect) {
-                match side {
-                    0 => (
-                        along,
-                        inner.min_z_cm + SIGN_PROUD_CM,
-                        0,
-                        rect_of(along - w / 2, inner.min_z_cm, w, SIGN_BAND_CM),
-                    ),
-                    1 => (
-                        along,
-                        inner.max_z_cm - SIGN_PROUD_CM,
-                        180,
-                        rect_of(
-                            along - w / 2,
-                            inner.max_z_cm - SIGN_BAND_CM,
-                            w,
-                            SIGN_BAND_CM,
-                        ),
-                    ),
-                    2 => (
-                        inner.min_x_cm + SIGN_PROUD_CM,
-                        along,
-                        90,
-                        rect_of(inner.min_x_cm, along - w / 2, SIGN_BAND_CM, w),
-                    ),
-                    _ => (
-                        inner.max_x_cm - SIGN_PROUD_CM,
-                        along,
-                        270,
-                        rect_of(
-                            inner.max_x_cm - SIGN_BAND_CM,
-                            along - w / 2,
-                            SIGN_BAND_CM,
-                            w,
-                        ),
-                    ),
-                }
-            };
-            // ¿Cabe la variante `v` centrada en `along` de ese lado, a esa cota? Si cabe, se pone.
-            let hang = |signs: &mut Vec<Wg3Prop>,
-                        placed: &mut Vec<(super::plan::PlanRect, i32, i32)>,
-                        side: u8,
-                        along: i32,
-                        y_centre: i32,
-                        variant: u8|
-             -> bool {
-                if placed.len() >= SIGN_MAX_PER_SPACE {
-                    return false;
-                }
-                let (w, h) = super::segment::sign_size_cm(variant);
-                let (y_lo, y_hi) = (floor + y_centre - h / 2, floor + y_centre + h / 2);
-                if y_centre + h / 2 + 10 > clear {
-                    return false;
-                }
-                let (x, z, yaw, band) = face(side, along, w);
-                let along_lo = match side {
-                    0 | 1 => inner.min_x_cm,
-                    _ => inner.min_z_cm,
-                };
-                let along_hi = match side {
-                    0 | 1 => inner.max_x_cm,
-                    _ => inner.max_z_cm,
-                };
-                if along - w / 2 < along_lo + 20 || along + w / 2 > along_hi - 20 {
-                    return false;
-                }
-                if !s.covers_rect(&band) || !band_free(&band, y_lo, y_hi, floor, placed) {
-                    return false;
-                }
-                signs.push(Wg3Prop {
-                    x_cm: x,
-                    z_cm: z,
-                    y_cm: floor + y_centre,
-                    yaw_deg: yaw,
-                    kind: PROP_SIGN,
-                    style: variant,
-                });
-                placed.push((band, y_lo, y_hi));
-                true
+            // Un pasillo tiene MUCHAS más superficies que una sala —dos paredes largas y una
+            // puerta cada pocos metros— y es donde se anda; con el tope de sala se quedaba a
+            // medias, con las señales de salida comiéndose el cupo de las placas.
+            let cap = if s.role.is_circulation() {
+                SIGN_MAX_PER_CORRIDOR
+            } else {
+                SIGN_MAX_PER_SPACE
             };
 
-            if s.role.is_circulation() {
-                // **Señales de salida**: en las paredes del FONDO del pasillo, mirando por donde se
-                // viene. Dos por pasillo como mucho, y sólo si el techo da de sí.
-                let along_x = inner.width_cm() >= inner.depth_cm();
-                let (a, b) = if along_x { (2u8, 3u8) } else { (0u8, 1u8) };
-                let mid = if along_x {
-                    (inner.min_z_cm + inner.max_z_cm) / 2
-                } else {
-                    (inner.min_x_cm + inner.max_x_cm) / 2
+            for (host_index, g) in hosts.iter().enumerate() {
+                let inner = rect_of(
+                    g.x_cm + WALL_T_CM,
+                    g.z_cm + WALL_T_CM,
+                    g.size_x_cm - 2 * WALL_T_CM,
+                    g.size_z_cm - 2 * WALL_T_CM,
+                );
+
+                // El ancla y la banda de un cartel de ancho `w` en el lado `side` de la cáscara:
+                // 0 pared −z (mira a +z), 1 pared +z, 2 pared −x, 3 pared +x. `along` es la coordenada
+                // sobre la pared (x en las de ±z, z en las de ±x).
+                let face =
+                    |side: u8, along: i32, w: i32| -> (i32, i32, i16, super::plan::PlanRect) {
+                        match side {
+                            0 => (
+                                along,
+                                inner.min_z_cm + SIGN_PROUD_CM,
+                                0,
+                                rect_of(along - w / 2, inner.min_z_cm, w, SIGN_BAND_CM),
+                            ),
+                            1 => (
+                                along,
+                                inner.max_z_cm - SIGN_PROUD_CM,
+                                180,
+                                rect_of(
+                                    along - w / 2,
+                                    inner.max_z_cm - SIGN_BAND_CM,
+                                    w,
+                                    SIGN_BAND_CM,
+                                ),
+                            ),
+                            2 => (
+                                inner.min_x_cm + SIGN_PROUD_CM,
+                                along,
+                                90,
+                                rect_of(inner.min_x_cm, along - w / 2, SIGN_BAND_CM, w),
+                            ),
+                            _ => (
+                                inner.max_x_cm - SIGN_PROUD_CM,
+                                along,
+                                270,
+                                rect_of(
+                                    inner.max_x_cm - SIGN_BAND_CM,
+                                    along - w / 2,
+                                    SIGN_BAND_CM,
+                                    w,
+                                ),
+                            ),
+                        }
+                    };
+                // ¿Cabe la variante `v` centrada en `along` de ese lado, a esa cota? Si cabe, se pone.
+                let hang = |signs: &mut Vec<Wg3Prop>,
+                            placed: &mut Vec<(super::plan::PlanRect, i32, i32)>,
+                            side: u8,
+                            along: i32,
+                            y_centre: i32,
+                            variant: u8|
+                 -> bool {
+                    if placed.len() >= cap {
+                        return false;
+                    }
+                    let (w, h) = super::segment::sign_size_cm(variant);
+                    let (y_lo, y_hi) = (floor + y_centre - h / 2, floor + y_centre + h / 2);
+                    if y_centre + h / 2 + 10 > clear {
+                        return false;
+                    }
+                    let (x, z, yaw, band) = face(side, along, w);
+                    let along_lo = match side {
+                        0 | 1 => inner.min_x_cm,
+                        _ => inner.min_z_cm,
+                    };
+                    let along_hi = match side {
+                        0 | 1 => inner.max_x_cm,
+                        _ => inner.max_z_cm,
+                    };
+                    if along - w / 2 < along_lo + 20 || along + w / 2 > along_hi - 20 {
+                        return false;
+                    }
+                    if !s.covers_rect(&band) || !band_free(&band, y_lo, y_hi, floor, placed) {
+                        return false;
+                    }
+                    signs.push(Wg3Prop {
+                        x_cm: x,
+                        z_cm: z,
+                        y_cm: floor + y_centre,
+                        yaw_deg: yaw,
+                        kind: PROP_SIGN,
+                        style: variant,
+                    });
+                    placed.push((band, y_lo, y_hi));
+                    true
                 };
-                let span = if along_x {
-                    inner.depth_cm()
-                } else {
-                    inner.width_cm()
-                };
-                for side in [a, b] {
+
+                if s.role.is_circulation() {
+                    // **Señales de salida**: en las paredes del FONDO del pasillo, mirando por donde se
+                    // viene. Dos por pasillo como mucho, y sólo si el techo da de sí.
+                    let along_x = inner.width_cm() >= inner.depth_cm();
+                    let (a, b) = if along_x { (2u8, 3u8) } else { (0u8, 1u8) };
+                    let mid = if along_x {
+                        (inner.min_z_cm + inner.max_z_cm) / 2
+                    } else {
+                        (inner.min_x_cm + inner.max_x_cm) / 2
+                    };
+                    let span = if along_x {
+                        inner.depth_cm()
+                    } else {
+                        inner.width_cm()
+                    };
+                    for side in [a, b] {
+                        let garbled = sign_garbled(floor, basement, &mut st);
+                        let v = SIGN_EXIT
+                            + (st.next01() * SIGN_EXIT_N as f32) as u8 % SIGN_EXIT_N
+                            + if garbled { SIGN_GARBLED_BASE } else { 0 };
+                        // El centro de la pared del fondo es justo donde suele estar la puerta que
+                        // sigue el pasillo, así que si el sitio bueno está ocupado se prueba a los
+                        // lados antes de renunciar: una salida sin señal es lo que se quería arreglar.
+                        for f in [0.0f32, 0.25, -0.25, 0.4, -0.4] {
+                            if hang(
+                                &mut signs,
+                                &mut placed,
+                                side,
+                                mid + (span as f32 * f) as i32,
+                                SIGN_EXIT_Y_CM,
+                                v,
+                            ) {
+                                break;
+                            }
+                        }
+                    }
+                    // Y a lo LARGO, cada `SIGN_EXIT_PITCH_CM`, en las dos paredes laterales: es lo que
+                    // hace que se vea una desde donde estés parado en el pasillo y no sólo desde la
+                    // punta. Alternando el sentido de la flecha por tramo, que es lo que hace un
+                    // edificio de verdad (cada mitad tira hacia su salida).
+                    let (lo, hi, sides) = if along_x {
+                        (inner.min_x_cm, inner.max_x_cm, [0u8, 1u8])
+                    } else {
+                        (inner.min_z_cm, inner.max_z_cm, [2u8, 3u8])
+                    };
+                    let mut at = lo + SIGN_EXIT_PITCH_CM / 2;
+                    while at < hi {
+                        let garbled = sign_garbled(floor, basement, &mut st);
+                        let toward_lo = at - lo < hi - at;
+                        // Variantes 16 y 17: flecha a la derecha y a la izquierda del atlas.
+                        let v = SIGN_EXIT
+                            + u8::from(toward_lo)
+                            + if garbled { SIGN_GARBLED_BASE } else { 0 };
+                        for side in sides {
+                            hang(&mut signs, &mut placed, side, at, SIGN_EXIT_Y_CM, v);
+                        }
+                        at += SIGN_EXIT_PITCH_CM;
+                    }
+                }
+
+                // **Placas de despacho**: una por boca de ESTE tramo, al lado de la jamba y por dentro.
+                //
+                // **También en los pasillos, y ahí es donde más se ven**: la misma puerta rotulada por
+                // su lado de fuera es lo que se lee al RECORRER una planta de oficinas, que es como se
+                // recorre de verdad. Por eso va antes de la rama de circulación y no dentro de la de
+                // salas.
+                for o in &g.openings {
+                    let (w, d) = (g.size_x_cm as f32 / 100.0, g.size_z_cm as f32 / 100.0);
+                    let (lx, lz) =
+                        super::placement::local_point(o.side, o.offset_cm as f32 / 100.0, w, d);
+                    let (mx, mz) = (
+                        g.x_cm + (lx * 100.0).round() as i32,
+                        g.z_cm + (lz * 100.0).round() as i32,
+                    );
+                    // Lado de la BOCA (0 = +z, 1 = +x, 2 = −z, 3 = −x) al lado de la CÁSCARA.
+                    let side = match o.side % 4 {
+                        0 => 1u8,
+                        1 => 3u8,
+                        2 => 0u8,
+                        _ => 2u8,
+                    };
+                    let (pw, _) = super::segment::sign_size_cm(SIGN_DOOR_PLATE);
+                    let step = o.width_cm / 2 + SIGN_DOOR_SIDE_CM + pw / 2 + PROP_MOUTH_CLEAR_CM;
+                    let centre = match side {
+                        0 | 1 => mx,
+                        _ => mz,
+                    };
                     let garbled = sign_garbled(floor, basement, &mut st);
-                    let v = SIGN_EXIT
-                        + (st.next01() * SIGN_EXIT_N as f32) as u8 % SIGN_EXIT_N
+                    let v = SIGN_DOOR_PLATE
+                        + (st.next01() * SIGN_DOOR_PLATE_N as f32) as u8 % SIGN_DOOR_PLATE_N
                         + if garbled { SIGN_GARBLED_BASE } else { 0 };
-                    // El centro de la pared del fondo es justo donde suele estar la puerta que
-                    // sigue el pasillo, así que si el sitio bueno está ocupado se prueba a los
-                    // lados antes de renunciar: una salida sin señal es lo que se quería arreglar.
-                    for f in [0.0f32, 0.25, -0.25, 0.4, -0.4] {
-                        if hang(
+                    let first = if st.next01() < 0.5 { -step } else { step };
+                    let both = st.next01() < SIGN_PLATE_BOTH_SIDES;
+                    for delta in [first, -first] {
+                        let put = hang(
                             &mut signs,
                             &mut placed,
                             side,
-                            mid + (span as f32 * f) as i32,
-                            SIGN_EXIT_Y_CM,
+                            centre + delta,
+                            SIGN_PLATE_Y_CM,
+                            v,
+                        );
+                        // Con `both`, las dos jambas: una puerta con placa a cada lado es lo que hay en
+                        // un pasillo de despachos, y duplica lo que se ve al andarlo.
+                        if put && !both {
+                            break;
+                        }
+                    }
+                }
+
+                // Lo que sigue es de SALAS —un calendario en un pasillo no lo mira nadie, y un tablón
+                // de 1,20 en una banda de circulación se come el paso— y va UNA vez por espacio, en su
+                // tramo mayor, no una por tramo.
+                if s.role.is_circulation() || host_index != 0 {
+                    continue;
+                }
+
+                // **Tablón de corcho**: sólo en salas grandes, en el centro de una pared.
+                if s.rect.area_m2() >= SIGN_CORK_MIN_AREA_M2 && st.next01() < SIGN_CORK_CHANCE {
+                    let side = (st.next01() * 4.0) as u8 % 4;
+                    let along = match side {
+                        0 | 1 => (inner.min_x_cm + inner.max_x_cm) / 2,
+                        _ => (inner.min_z_cm + inner.max_z_cm) / 2,
+                    };
+                    let garbled = sign_garbled(floor, basement, &mut st);
+                    let v = SIGN_CORKBOARD
+                        + (st.next01() * SIGN_CORKBOARD_N as f32) as u8 % SIGN_CORKBOARD_N
+                        + if garbled { SIGN_GARBLED_BASE } else { 0 };
+                    for k in 0..4u8 {
+                        if hang(
+                            &mut signs,
+                            &mut placed,
+                            (side + k) % 4,
+                            along,
+                            SIGN_CORK_Y_CM,
                             v,
                         ) {
                             break;
                         }
                     }
                 }
-                continue;
-            }
 
-            // **Placas de despacho**: una por boca de ESTE tramo, al lado de la jamba y por dentro.
-            for o in &g.openings {
-                let (w, d) = (g.size_x_cm as f32 / 100.0, g.size_z_cm as f32 / 100.0);
-                let (lx, lz) =
-                    super::placement::local_point(o.side, o.offset_cm as f32 / 100.0, w, d);
-                let (mx, mz) = (
-                    g.x_cm + (lx * 100.0).round() as i32,
-                    g.z_cm + (lz * 100.0).round() as i32,
-                );
-                // Lado de la BOCA (0 = +z, 1 = +x, 2 = −z, 3 = −x) al lado de la CÁSCARA.
-                let side = match o.side % 4 {
-                    0 => 1u8,
-                    1 => 3u8,
-                    2 => 0u8,
-                    _ => 2u8,
-                };
-                let (pw, _) = super::segment::sign_size_cm(SIGN_DOOR_PLATE);
-                let step = o.width_cm / 2 + SIGN_DOOR_SIDE_CM + pw / 2 + PROP_MOUTH_CLEAR_CM;
-                let centre = match side {
-                    0 | 1 => mx,
-                    _ => mz,
-                };
-                let garbled = sign_garbled(floor, basement, &mut st);
-                let v = SIGN_DOOR_PLATE
-                    + (st.next01() * SIGN_DOOR_PLATE_N as f32) as u8 % SIGN_DOOR_PLATE_N
-                    + if garbled { SIGN_GARBLED_BASE } else { 0 };
-                let first = if st.next01() < 0.5 { -step } else { step };
-                for delta in [first, -first] {
-                    if hang(
-                        &mut signs,
-                        &mut placed,
-                        side,
-                        centre + delta,
-                        SIGN_PLATE_Y_CM,
-                        v,
-                    ) {
-                        break;
-                    }
+                // **El calendario parado**: en una pared, descentrado.
+                if st.next01() < SIGN_CALENDAR_CHANCE {
+                    let side = (st.next01() * 4.0) as u8 % 4;
+                    let (lo, hi) = match side {
+                        0 | 1 => (inner.min_x_cm, inner.max_x_cm),
+                        _ => (inner.min_z_cm, inner.max_z_cm),
+                    };
+                    let along = lo + ((hi - lo) as f32 * (0.25 + st.next01() * 0.5)) as i32;
+                    let garbled = sign_garbled(floor, basement, &mut st);
+                    let v = SIGN_CALENDAR
+                        + (st.next01() * SIGN_CALENDAR_N as f32) as u8 % SIGN_CALENDAR_N
+                        + if garbled { SIGN_GARBLED_BASE } else { 0 };
+                    hang(&mut signs, &mut placed, side, along, SIGN_CALENDAR_Y_CM, v);
                 }
-            }
-
-            // **Tablón de corcho**: sólo en salas grandes, en el centro de una pared.
-            if s.rect.area_m2() >= SIGN_CORK_MIN_AREA_M2 && st.next01() < SIGN_CORK_CHANCE {
-                let side = (st.next01() * 4.0) as u8 % 4;
-                let along = match side {
-                    0 | 1 => (inner.min_x_cm + inner.max_x_cm) / 2,
-                    _ => (inner.min_z_cm + inner.max_z_cm) / 2,
-                };
-                let garbled = sign_garbled(floor, basement, &mut st);
-                let v = SIGN_CORKBOARD
-                    + (st.next01() * SIGN_CORKBOARD_N as f32) as u8 % SIGN_CORKBOARD_N
-                    + if garbled { SIGN_GARBLED_BASE } else { 0 };
-                for k in 0..4u8 {
-                    if hang(
-                        &mut signs,
-                        &mut placed,
-                        (side + k) % 4,
-                        along,
-                        SIGN_CORK_Y_CM,
-                        v,
-                    ) {
-                        break;
-                    }
-                }
-            }
-
-            // **El calendario parado**: en una pared, descentrado. Uno de cada dos espacios.
-            if st.next01() < 0.5 {
-                let side = (st.next01() * 4.0) as u8 % 4;
-                let (lo, hi) = match side {
-                    0 | 1 => (inner.min_x_cm, inner.max_x_cm),
-                    _ => (inner.min_z_cm, inner.max_z_cm),
-                };
-                let along = lo + ((hi - lo) as f32 * (0.25 + st.next01() * 0.5)) as i32;
-                let garbled = sign_garbled(floor, basement, &mut st);
-                let v = SIGN_CALENDAR
-                    + (st.next01() * SIGN_CALENDAR_N as f32) as u8 % SIGN_CALENDAR_N
-                    + if garbled { SIGN_GARBLED_BASE } else { 0 };
-                hang(&mut signs, &mut placed, side, along, SIGN_CALENDAR_Y_CM, v);
             }
         }
     }

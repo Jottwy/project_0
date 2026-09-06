@@ -9534,6 +9534,84 @@ fn probe_cubicle_spots() {
     }
 }
 
+/// Carteles (ADR-129 enm. 1): dónde ponerse para VER uno, en el mundo servido. Imprime, por
+/// familia, el punto a 1,5 m delante del cartel y el giro con el que hay que mirarlo — que es lo
+/// que come el arnés de capturas (`Temp/claude_capture.json`), no la posición del cartel.
+#[test]
+#[ignore]
+fn probe_sign_spots() {
+    let m = real_manifest();
+    for (rx, rz) in [(0, 0), (1, 0)] {
+        let b = served_building_of(rx, rz);
+        let f = fill::fill_building(&b, &m);
+        let signs: Vec<&segment::Wg3Prop> = f
+            .props
+            .iter()
+            .filter(|p| p.kind == segment::PROP_SIGN)
+            .collect();
+        println!("[carteles] ({rx},{rz}) — {} anclas", signs.len());
+        for (name, lo, hi) in [
+            ("placa", segment::SIGN_DOOR_PLATE, segment::SIGN_CUBICLE_TAG),
+            ("rótulo", segment::SIGN_CUBICLE_TAG, segment::SIGN_EXIT),
+            ("salida", segment::SIGN_EXIT, segment::SIGN_CORKBOARD),
+            ("tablón", segment::SIGN_CORKBOARD, segment::SIGN_CALENDAR),
+            (
+                "calendario",
+                segment::SIGN_CALENDAR,
+                segment::SIGN_CALENDAR + segment::SIGN_CALENDAR_N,
+            ),
+        ] {
+            // De la planta baja: es la que se anda sin escalera en una captura.
+            let pick = signs.iter().find(|p| {
+                let v = p.style % segment::SIGN_GARBLED_BASE;
+                v >= lo && v < hi && p.y_cm > 100 && p.y_cm < 260
+            });
+            let Some(p) = pick else {
+                println!("  {name}: ninguno");
+                continue;
+            };
+            // La normal del cartel por su giro, y el ojo a 1,5 m delante mirando de vuelta.
+            let (nx, nz) = match p.yaw_deg {
+                0 => (0.0f32, 1.0f32),
+                90 => (1.0, 0.0),
+                180 => (0.0, -1.0),
+                _ => (-1.0, 0.0),
+            };
+            let (ex, ez) = (
+                p.x_cm as f32 / 100.0 + nx * 1.5,
+                p.z_cm as f32 / 100.0 + nz * 1.5,
+            );
+            // El arnés quiere la cota del SUELO; el cartel cuelga a su altura sobre ella.
+            let floor = f
+                .segments
+                .iter()
+                .filter(|g| {
+                    (g.floor_y_cm as f32) < p.y_cm as f32
+                        && p.x_cm > g.x_cm
+                        && p.x_cm < g.x_cm + g.size_x_cm
+                        && p.z_cm > g.z_cm
+                        && p.z_cm < g.z_cm + g.size_z_cm
+                })
+                .map(|g| g.floor_y_cm)
+                .max()
+                .unwrap_or(0);
+            println!(
+                "  {name} v{} en ({:.2}, {:.2}, {:.2}) yaw {} → ojo en ({:.2}, {:.2}, {:.2}) \
+                 mirando yaw {}",
+                p.style,
+                p.x_cm as f32 / 100.0,
+                p.y_cm as f32 / 100.0,
+                p.z_cm as f32 / 100.0,
+                p.yaw_deg,
+                ex,
+                floor as f32 / 100.0,
+                ez,
+                (p.yaw_deg + 180) % 360
+            );
+        }
+    }
+}
+
 #[test]
 #[ignore]
 fn probe_how_many_solids() {

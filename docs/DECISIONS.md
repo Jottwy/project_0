@@ -14647,6 +14647,29 @@ función `decay` es la de ADR-130 D4.
 > el clon principal y otra sesión estaba editando `Wg3SceneAssembler.cs` ahí mismo (mtime a tres
 > minutos), que es uno de los ficheros que habría que parchear para capturar; entrar en Play y
 > pisar `Builds/Backend` era chocar con ella. Queda para cuando el editor esté libre.
+
+> **Iteración 1, mismo día — ×3,2 de densidad, para poder juzgarlo andando (Joel: «mete las
+> señales mucho más veces a ver si lo veo ingame»).** De 105 carteles por región a 337, y el
+> reparto importa más que el número:
+>
+> - **Todos los tramos del espacio, no sólo el mayor.** Ésta es la de verdad: `MAX_SEGMENT_M`
+>   parte un pasillo largo en varios tramos, y el emisor —como el resto del atrezo, que sólo
+>   necesita que un mueble quepa en uno— se quedaba con el más grande y dejaba SIN ROTULAR todas
+>   las puertas de los demás. Justo las que se ven al recorrerlo. El tablón y el calendario siguen
+>   siendo uno por espacio, en su tramo mayor.
+> - **Placas también en los pasillos**: la misma puerta por su lado de fuera, que es como se lee
+>   una planta de oficinas al andarla. Antes la rama de circulación se saltaba las placas enteras.
+> - **Señales de salida repetidas a lo largo**, cada 6 m en las dos paredes laterales y con la
+>   flecha apuntando a la punta más cercana, además de las dos del fondo: con una en cada punta, un
+>   pasillo de cuarenta metros no tiene ninguna visible desde el medio.
+> - Perillas: tablón 0,35 → 0,85 y desde 18 m² (era 40), calendario 0,5 → 0,85, rótulo de mampara
+>   0,35 → 0,85, placa a las DOS jambas seis de cada diez, tope por espacio 4 → 12 y 32 en
+>   circulación. **Si al andarlo sobra texto, ese párrafo es el único sitio donde se toca.**
+>
+> 13 149 anclas en 39 semillas [5886 placas, 401 rótulos, 4846 salidas, 1249 tablones, 767
+> calendarios]. No toca el ráster (un cartel no emite macizo), así que las medias de layout no se
+> mueven. Los dos tests siguen verdes.
+
 ## ADR-131 — Enmienda 3: el salto seco de D6 se sustituye por un CUELLO, con su tope y su desenrosque (2026-09-06)
 
 D6 resolvía el punto ciego con un salto: al salirte del cono, la cabeza saltaba en un fotograma a
