@@ -17,17 +17,24 @@ namespace BackroomsSurvival.EditorTools
         private const string Boxes = "Assets/AK Studio Art/Business Office/Prefabs/Cardboard Boxes/";
         private const string Grocery = "Assets/GroceryStorePropsCollection/Prefabs/URP/";
 
-        private static readonly (string kind, string source)[] Table =
+        // Variantes: la primera se guarda como <Kind>, las demás como <Kind>_2, <Kind>_3…; el
+        // catálogo de runtime las carga hasta la primera que falte y elige por posición.
+        private static readonly (string kind, string[] sources)[] Table =
         {
-            ("Desk", Office + "Desk 1.prefab"),
-            ("Chair", Office + "Chair 1.prefab"),
-            ("Cabinet", Office + "Cupboard.prefab"),
-            ("Shelf", Office + "Shelf 1.prefab"),
-            ("Whiteboard", Office + "Whiteboard.prefab"),
-            ("Trash", Office + "Trash Can.prefab"),
-            ("Box", Boxes + "Carton Box 1.prefab"),
-            ("Paper", Grocery + "SM_Paper1.prefab"),
-            ("Monitor", Office + "Monitor Pc.prefab"),
+            // Desk 3 y 4 son mesas en L de 2,5 x 2,8: no caben en la huella de 2,30 x 1,02 del servidor.
+            ("Desk", new[] { Office + "Desk 1.prefab", Office + "Desk 2.prefab" }),
+            ("Chair", new[] { Office + "Chair 1.prefab", Office + "Chair 2.prefab", Office + "Chair 3.prefab" }),
+            ("Cabinet", new[] { Office + "Cupboard.prefab" }),
+            ("Shelf", new[] { Office + "Shelf 1.prefab", Office + "Shelf 2.prefab" }),
+            ("Whiteboard", new[] { Office + "Whiteboard.prefab" }),
+            ("Trash", new[] { Office + "Trash Can.prefab" }),
+            ("Box", new[] { Boxes + "Carton Box 1.prefab", Boxes + "Carton Box 2.prefab", Boxes + "Carton Box 3.prefab" }),
+            ("Paper", new[] { Grocery + "SM_Paper1.prefab", Grocery + "SM_Paper2.prefab", Grocery + "SM_Paper3.prefab", Grocery + "SM_Papers1.prefab" }),
+            ("Monitor", new[] { Office + "Monitor Pc.prefab" }),
+            ("Clock", new[] { Office + "Wall Clock.prefab" }),
+            ("Phone", new[] { Office + "Office Phone.prefab" }),
+            ("Keyboard", new[] { Office + "Keyboard.prefab" }),
+            ("Tray", new[] { Office + "Paper Tray.prefab" }),
         };
 
         [MenuItem("Backrooms/WG3/Build Prop Catalog")]
@@ -38,29 +45,34 @@ namespace BackroomsSurvival.EditorTools
                 Directory.CreateDirectory(Out);
                 AssetDatabase.Refresh();
             }
-            int ok = 0;
-            foreach (var (kind, source) in Table)
+            int ok = 0, total = 0;
+            foreach (var (kind, sources) in Table)
             {
-                var src = AssetDatabase.LoadAssetAtPath<GameObject>(source);
-                if (src == null)
+                for (int i = 0; i < sources.Length; i++)
                 {
-                    Debug.LogError($"[wg3-props] no existe {source}");
-                    continue;
+                    total++;
+                    string source = sources[i];
+                    var src = AssetDatabase.LoadAssetAtPath<GameObject>(source);
+                    if (src == null)
+                    {
+                        Debug.LogError($"[wg3-props] no existe {source}");
+                        continue;
+                    }
+                    var instance = (GameObject)PrefabUtility.InstantiatePrefab(src);
+                    // Copia independiente: se desconecta del original para que el catalogo no
+                    // dependa de la ruta del pack.
+                    PrefabUtility.UnpackPrefabInstance(instance, PrefabUnpackMode.Completely, InteractionMode.AutomatedAction);
+                    string path = i == 0 ? $"{Out}/{kind}.prefab" : $"{Out}/{kind}_{i + 1}.prefab";
+                    PrefabUtility.SaveAsPrefabAsset(instance, path);
+                    Object.DestroyImmediate(instance);
+                    var b = Bounds(AssetDatabase.LoadAssetAtPath<GameObject>(path));
+                    Debug.Log($"[wg3-props] {Path.GetFileNameWithoutExtension(path)} <- {Path.GetFileName(source)} · bounds centro {b.center} tamaño {b.size}");
+                    ok++;
                 }
-                var instance = (GameObject)PrefabUtility.InstantiatePrefab(src);
-                // Copia independiente: se desconecta del original para que el catalogo no dependa
-                // de la ruta del pack.
-                PrefabUtility.UnpackPrefabInstance(instance, PrefabUnpackMode.Completely, InteractionMode.AutomatedAction);
-                string path = $"{Out}/{kind}.prefab";
-                PrefabUtility.SaveAsPrefabAsset(instance, path);
-                Object.DestroyImmediate(instance);
-                var b = Bounds(AssetDatabase.LoadAssetAtPath<GameObject>(path));
-                Debug.Log($"[wg3-props] {kind} <- {Path.GetFileName(source)} · bounds centro {b.center} tamaño {b.size}");
-                ok++;
             }
             AssetDatabase.SaveAssets();
             AssetDatabase.Refresh();
-            Debug.Log($"[wg3-props] catalogo: {ok}/{Table.Length}");
+            Debug.Log($"[wg3-props] catalogo: {ok}/{total}");
         }
 
         private static Bounds Bounds(GameObject go)

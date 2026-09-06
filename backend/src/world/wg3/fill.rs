@@ -46,9 +46,9 @@ use super::route::{self, Mouth, PlannedRoute, Rect, RouteSettings};
 use super::segment::{
     Wg3Carve, Wg3Opening, Wg3Prop, Wg3Segment, Wg3Solid, CARVE_FLOOR_GUARD_CM, CASING_IN_CM,
     CASING_PROUD_CM, CASING_W_CM, MAX_SEGMENT_M, MIN_GENERATED_WIDTH_CM, PROP_BOX, PROP_CABINET,
-    PROP_CHAIR, PROP_DESK, PROP_MONITOR, PROP_PAPER, PROP_TRASH, PROP_WHITEBOARD, SHAPE_ARCH,
-    SHAPE_BOX, SHAPE_CYLINDER, SHAPE_HALF_CYLINDER, SHAPE_OCTAGON, STYLE_DECOR_BIT,
-    STYLE_HIDDEN_BIT, WALL_THICKNESS_M,
+    PROP_CHAIR, PROP_CHAIR_FALLEN, PROP_CLOCK, PROP_DESK, PROP_KEYBOARD, PROP_MONITOR, PROP_PAPER,
+    PROP_PHONE, PROP_TRASH, PROP_TRAY, PROP_WHITEBOARD, SHAPE_ARCH, SHAPE_BOX, SHAPE_CYLINDER,
+    SHAPE_HALF_CYLINDER, SHAPE_OCTAGON, STYLE_DECOR_BIT, STYLE_HIDDEN_BIT, WALL_THICKNESS_M,
 };
 
 /// ADR-099 D3 — cuánto entra el vano a cada lado de la cara de contacto, en metros. Mismo número que
@@ -1751,15 +1751,36 @@ fn office_props(
                     PROP_DESK,
                     DESK_H_CM,
                 );
-                // El monitor, encima, mirando como la mesa.
-                props.push(Wg3Prop {
-                    x_cm: desk_centre.0,
-                    z_cm: desk_centre.1,
-                    y_cm: floor + DESK_H_CM,
-                    yaw_deg: yaw,
-                    kind: PROP_MONITOR,
-                    style,
-                });
+                // Lo de ENCIMA de la mesa, en el marco de la mesa: `u` a lo largo de la pared,
+                // `v` hacia la sala. Monitor atrás y centrado, teclado delante, teléfono a un lado,
+                // bandeja al otro. Cada uno con su dado: una mesa vacía también es de la foto.
+                let on_desk = |u: i32, v: i32| -> (i32, i32) {
+                    match yaw {
+                        0 => (desk_centre.0 + u, desk_centre.1 + v),
+                        180 => (desk_centre.0 - u, desk_centre.1 - v),
+                        90 => (desk_centre.0 + v, desk_centre.1 + u),
+                        _ => (desk_centre.0 - v, desk_centre.1 - u),
+                    }
+                };
+                let desk_top = floor + DESK_H_CM;
+                for (u, v, kind, chance) in [
+                    (0, -20, PROP_MONITOR, 0.85),
+                    (0, 15, PROP_KEYBOARD, 0.70),
+                    (-75, -10, PROP_PHONE, 0.55),
+                    (75, -10, PROP_TRAY, 0.50),
+                ] {
+                    if st.next01() < chance {
+                        let (x, z) = on_desk(u, v);
+                        props.push(Wg3Prop {
+                            x_cm: x,
+                            z_cm: z,
+                            y_cm: desk_top,
+                            yaw_deg: yaw,
+                            kind,
+                            style,
+                        });
+                    }
+                }
                 // La silla, delante, mirando a la mesa.
                 let out = DESK_D_CM / 2 + 45;
                 let (sx, sz) = match yaw {
@@ -1767,6 +1788,31 @@ fn office_props(
                     180 => (desk_centre.0, desk_centre.1 - out),
                     90 => (desk_centre.0 + out, desk_centre.1),
                     _ => (desk_centre.0 - out, desk_centre.1),
+                };
+                // Una de cada cuatro sillas está CAÍDA, algo más lejos y girada de cualquier
+                // manera: el abandono de la foto.
+                let fallen = st.next01() < 0.25;
+                let (sx, sz) = if fallen {
+                    let extra = 40 + (st.next01() * 80.0) as i32;
+                    let side = (st.next01() * 120.0) as i32 - 60;
+                    match yaw {
+                        0 => (sx + side, sz + extra),
+                        180 => (sx + side, sz - extra),
+                        90 => (sx + extra, sz + side),
+                        _ => (sx - extra, sz + side),
+                    }
+                } else {
+                    (sx, sz)
+                };
+                let cyaw: i16 = if fallen {
+                    ((st.next01() * 360.0) as i32 / 15 * 15) as i16
+                } else {
+                    (yaw + 180) % 360
+                };
+                let ckind = if fallen {
+                    PROP_CHAIR_FALLEN
+                } else {
+                    PROP_CHAIR
                 };
                 let chair = rect_of(sx - CHAIR_CM / 2, sz - CHAIR_CM / 2, CHAIR_CM, CHAIR_CM);
                 // Sin holgura con la mesa: la silla va pegada a ella a propósito.
@@ -1777,8 +1823,8 @@ fn office_props(
                         &mut placed,
                         chair,
                         floor,
-                        (yaw + 180) % 360,
-                        PROP_CHAIR,
+                        cyaw,
+                        ckind,
                         0,
                     );
                 }
@@ -1865,8 +1911,28 @@ fn office_props(
                     0,
                 );
             }
+            // El reloj, en la misma pared, a un lado de la pizarra, a 2,10.
+            if st.next01() < 0.6 {
+                let ck = if along_x {
+                    rect_of(wb.min_x_cm - 120, wb.min_z_cm, 30, 10)
+                } else {
+                    rect_of(wb.min_x_cm, wb.min_z_cm - 120, 10, 30)
+                };
+                if free(&ck, 10, &placed, true) {
+                    put(
+                        &mut props,
+                        &mut hidden,
+                        &mut placed,
+                        ck,
+                        floor + 210,
+                        wyaw,
+                        PROP_CLOCK,
+                        0,
+                    );
+                }
+            }
             // Cajas sueltas.
-            let boxes = (st.next01() * 3.0) as i32;
+            let boxes = (st.next01() * 4.0) as i32;
             for _ in 0..boxes {
                 let bx = inner.min_x_cm
                     + 100
@@ -1887,10 +1953,21 @@ fn office_props(
                         PROP_BOX,
                         BOX_H_CM,
                     );
+                    // Y a veces otra encima, un poco girada.
+                    if st.next01() < 0.4 {
+                        props.push(Wg3Prop {
+                            x_cm: (b.min_x_cm + b.max_x_cm) / 2,
+                            z_cm: (b.min_z_cm + b.max_z_cm) / 2,
+                            y_cm: floor + BOX_H_CM,
+                            yaw_deg: (yaw + 20) % 360,
+                            kind: PROP_BOX,
+                            style,
+                        });
+                    }
                 }
             }
             // Papeles por el suelo: no frenan y no esquivan macizos, sólo pozos y bocas.
-            let papers = 4 + (st.next01() * 10.0) as i32;
+            let papers = 8 + (st.next01() * 14.0) as i32;
             for _ in 0..papers {
                 let px = inner.min_x_cm
                     + 40
@@ -7228,20 +7305,25 @@ mod apron_tests {
                 .collect();
             for p in &f.props {
                 total += 1;
-                let inside = f.segments.iter().any(|g| {
-                    p.x_cm > g.x_cm + WALL_T_CM
-                        && p.x_cm < g.x_cm + g.size_x_cm - WALL_T_CM
-                        && p.z_cm > g.z_cm + WALL_T_CM
-                        && p.z_cm < g.z_cm + g.size_z_cm - WALL_T_CM
-                        && (p.y_cm - g.floor_y_cm) >= 0
-                        && (p.y_cm - g.floor_y_cm) < 200
-                });
+                let host_floor = f
+                    .segments
+                    .iter()
+                    .find(|g| {
+                        p.x_cm > g.x_cm + WALL_T_CM
+                            && p.x_cm < g.x_cm + g.size_x_cm - WALL_T_CM
+                            && p.z_cm > g.z_cm + WALL_T_CM
+                            && p.z_cm < g.z_cm + g.size_z_cm - WALL_T_CM
+                            && (p.y_cm - g.floor_y_cm) >= 0
+                            && (p.y_cm - g.floor_y_cm) < 250
+                    })
+                    .map(|g| g.floor_y_cm);
+                let inside = host_floor.is_some();
                 assert!(inside, "semilla {seed}: ancla {p:?} fuera de todo tramo");
                 if p.kind != PROP_PAPER {
                     assert!(
                         !mouths
                             .iter()
-                            .any(|&(mx, mz, half, fl)| (fl - p.y_cm).abs() < 150
+                            .any(|&(mx, mz, half, fl)| Some(fl) == host_floor
                                 && (mx - p.x_cm).abs() < half
                                 && (mz - p.z_cm).abs() < half),
                         "semilla {seed}: ancla {p:?} en una boca"

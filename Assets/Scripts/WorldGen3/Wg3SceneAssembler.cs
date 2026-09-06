@@ -466,13 +466,20 @@ namespace BackroomsSurvival.WorldGen3
             int layer, string name)
         {
             if (parent == null) return null;
-            GameObject prefab = Wg3PropCatalog.Prefab(prop.kind);
+            GameObject prefab = Wg3PropCatalog.Prefab(prop.kind, prop.xCm, prop.zCm);
             if (prefab == null) return null;
             var go = Object.Instantiate(prefab, parent);
             go.name = name;
             go.hideFlags = HideFlags.DontSave;
-            go.transform.position = new Vector3(prop.xCm * 0.01f, prop.yCm * 0.01f, prop.zCm * 0.01f);
-            go.transform.rotation = Quaternion.Euler(0f, prop.yawDeg, 0f);
+            var pos = new Vector3(prop.xCm * 0.01f, prop.yCm * 0.01f, prop.zCm * 0.01f);
+            // La silla CAÍDA (kind 14): el mismo prefab de silla, tumbado de lado. El pivote está en
+            // la base, así que al tumbarla medio cuerpo cae bajo el suelo: se sube media anchura.
+            bool fallen = prop.kind == BackroomsSurvival.Net.Wg3PropMsg.ChairFallen;
+            if (fallen) pos.y += 0.34f;
+            go.transform.position = pos;
+            go.transform.rotation = fallen
+                ? Quaternion.Euler(0f, prop.yawDeg, 0f) * Quaternion.Euler(0f, 0f, 90f)
+                : Quaternion.Euler(0f, prop.yawDeg, 0f);
             uint mask = Wg3StoreyLayers.ForLight(prop.yCm * 0.01f);
             foreach (Transform t in go.GetComponentsInChildren<Transform>(true)) t.gameObject.layer = layer;
             foreach (Renderer r in go.GetComponentsInChildren<Renderer>(true)) r.renderingLayerMask = mask;

@@ -217,6 +217,13 @@ pub const PROP_TRASH: u8 = 6;
 pub const PROP_BOX: u8 = 7;
 pub const PROP_PAPER: u8 = 8;
 pub const PROP_MONITOR: u8 = 9;
+/// ADR-129 iteración 1 (2026-09-06) — el desorden de la foto: reloj de pared, teléfono, teclado y
+/// bandeja sobre la mesa, y la silla CAÍDA (el cliente la tumba de lado).
+pub const PROP_CLOCK: u8 = 10;
+pub const PROP_PHONE: u8 = 11;
+pub const PROP_KEYBOARD: u8 = 12;
+pub const PROP_TRAY: u8 = 13;
+pub const PROP_CHAIR_FALLEN: u8 = 14;
 
 /// ADR-125 enm. 2 — bit alto de `style`: el macizo es DECORACIÓN. Se dibuja y nada más: ni el
 /// ráster lo estampa ni el cliente le cuelga collider. Existe porque un marco de puerta que

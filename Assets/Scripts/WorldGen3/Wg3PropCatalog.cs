@@ -25,26 +25,56 @@ namespace BackroomsSurvival.WorldGen3
                 case 7: return "Box";
                 case 8: return "Paper";
                 case 9: return "Monitor";
+                case 10: return "Clock";
+                case 11: return "Phone";
+                case 12: return "Keyboard";
+                case 13: return "Tray";
+                case 14: return "Chair";
                 default: return null;
             }
         }
 
-        private static readonly Dictionary<byte, GameObject> Cache = new Dictionary<byte, GameObject>();
+        private static readonly Dictionary<byte, GameObject[]> Cache = new Dictionary<byte, GameObject[]>();
         private static readonly HashSet<byte> Warned = new HashSet<byte>();
 
-        public static GameObject Prefab(byte kind)
+        /// <summary>Todas las variantes de un tipo: <c>Name</c>, <c>Name_2</c>, <c>Name_3</c>… hasta
+        /// la primera que falte. Se cargan una vez por sesión.</summary>
+        private static GameObject[] Variants(byte kind)
         {
-            if (Cache.TryGetValue(kind, out GameObject cached) && cached != null) return cached;
+            if (Cache.TryGetValue(kind, out GameObject[] cached) && cached != null && cached.Length > 0 && cached[0] != null)
+                return cached;
             string name = NameOf(kind);
-            GameObject prefab = name != null ? Resources.Load<GameObject>("Wg3Props/" + name) : null;
-            if (prefab == null)
+            var list = new List<GameObject>();
+            if (name != null)
             {
-                if (Warned.Add(kind))
-                    Debug.LogWarning($"[wg3] sin prefab para el atrezo {kind} ({name}): ejecuta Backrooms/WG3/Build Prop Catalog");
-                return null;
+                var first = Resources.Load<GameObject>("Wg3Props/" + name);
+                if (first != null) list.Add(first);
+                for (int i = 2; i < 16; i++)
+                {
+                    var v = Resources.Load<GameObject>($"Wg3Props/{name}_{i}");
+                    if (v == null) break;
+                    list.Add(v);
+                }
             }
-            Cache[kind] = prefab;
-            return prefab;
+            if (list.Count == 0 && Warned.Add(kind))
+                Debug.LogWarning($"[wg3] sin prefab para el atrezo {kind} ({name}): ejecuta Backrooms/WG3/Build Prop Catalog");
+            var arr = list.ToArray();
+            Cache[kind] = arr;
+            return arr;
+        }
+
+        /// <summary>Una variante elegida por la POSICIÓN del ancla: dos jugadores ven la misma mesa
+        /// y la misma mesa es la misma al volver.</summary>
+        public static GameObject Prefab(byte kind, int xCm, int zCm)
+        {
+            var vs = Variants(kind);
+            if (vs.Length == 0) return null;
+            unchecked
+            {
+                uint h = (uint)xCm * 2654435761u ^ (uint)zCm * 2246822519u ^ kind;
+                h ^= h >> 13; h *= 3266489917u; h ^= h >> 16;
+                return vs[(int)(h % (uint)vs.Length)];
+            }
         }
     }
 }

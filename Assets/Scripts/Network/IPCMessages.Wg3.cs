@@ -280,7 +280,8 @@ namespace BackroomsSurvival.Net
         public byte style;
 
         public const byte Desk = 1, Chair = 2, Cabinet = 3, Shelf = 4, Whiteboard = 5,
-            Trash = 6, Box = 7, Paper = 8, Monitor = 9;
+            Trash = 6, Box = 7, Paper = 8, Monitor = 9, Clock = 10, Phone = 11, Keyboard = 12,
+            Tray = 13, ChairFallen = 14;
 
         public static Wg3PropMsg Parse(MsgPackReader r)
         {
