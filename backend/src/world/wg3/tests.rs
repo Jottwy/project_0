@@ -6997,6 +6997,7 @@ fn plan_with_a_gap(blocked: bool) -> plan::RegionPlan {
             void_storeys_above: 0,
             atrium_storeys: 0,
             ceiling_clear_cm: 0,
+            open_plan: false,
         }
     };
 
@@ -11249,6 +11250,44 @@ fn upper_storeys_stay_distinct_instead_of_collapsing() {
     );
 }
 
+/// **El canto de la losa es la planta de ARRIBA** (2026-09-06). La losa cuelga por debajo de la cota
+/// de su planta, asi que un sitio de pie apoyado en el canto sale a `332 n - 12` y la division lo
+/// mandaba una planta abajo: es la costura de 664 que se llevo por delante el respawn de una cama de
+/// la planta 2. La regla vale de la planta 1 hacia arriba y ni un centimetro mas: por debajo de cero
+/// manda `geometry_below_zero_is_not_the_ground_floor`, y en la costura de 332 viven las
+/// contrahuellas de las escaleras de la planta baja.
+#[test]
+fn the_slab_edge_belongs_to_the_storey_above() {
+    use crate::world::wg3::plan::{storey_of_floor_cm, STOREY_HEIGHT_CM};
+
+    for n in 2..=5 {
+        let line = n * STOREY_HEIGHT_CM;
+        assert_eq!(
+            storey_of_floor_cm(line),
+            n,
+            "la cota {line} es la planta {n}"
+        );
+        assert_eq!(
+            storey_of_floor_cm(line - 12),
+            n,
+            "el canto de losa a {} cm tiene que ser la planta {n}",
+            line - 12
+        );
+        assert_eq!(
+            storey_of_floor_cm(line - 13),
+            n - 1,
+            "trece centimetros ya no son canto: {} cm es la planta {}",
+            line - 13,
+            n - 1
+        );
+    }
+    // La costura de 332 no se toca: ahi estan las contrahuellas de la planta baja.
+    assert_eq!(storey_of_floor_cm(STOREY_HEIGHT_CM - 12), 0);
+    // Y por debajo de cero, tampoco.
+    assert_eq!(storey_of_floor_cm(-12), -1);
+    assert_eq!(storey_of_floor_cm(-1), -1);
+}
+
 /// **Una cota negativa NO es la planta 0.** El fallo que T0 destapó: `(y / 4.0) as u8` satura a 0 con
 /// Y negativa, así que un jugador a −1,52 m se clasificaba en la planta baja y heredaba su población.
 /// Hay 113 tramos por debajo de cero en las cuatro regiones auditadas, así que no es hipotético.
@@ -12511,18 +12550,28 @@ fn props_clear_solids_and_mouths() {
     for (rx, rz) in AUDIT_REGIONS {
         let b = served_building_of(rx, rz);
         let f = fill::fill_building(&b, &m);
-        // Las bocas de todos los tramos, con su media anchura REAL (sin la holgura del emisor).
-        let mouths: Vec<(i32, i32, i32, i32)> = f
+        // Las bocas de todos los tramos, con su media anchura REAL (sin la holgura del emisor) y
+        // medidas como lo que son: una LINEA en una cara (a lo largo, el ancho; perpendicular, nada).
+        // La junta entre dos tramos hermanas de la planta abierta (enm. 21) es una boca de cara
+        // entera, y un cuadrado de 15 m de lado taparia la sala.
+        let mouths: Vec<(i32, i32, i32, i32, i32)> = f
             .segments
             .iter()
             .flat_map(|g| {
                 let (w, d) = (g.size_x_cm as f32 / 100.0, g.size_z_cm as f32 / 100.0);
                 g.openings.iter().map(move |o| {
                     let (lx, lz) = placement::local_point(o.side, o.offset_cm as f32 / 100.0, w, d);
+                    let half = o.width_cm / 2;
+                    let (hx, hz) = if o.side % 2 == 0 {
+                        (half, 0)
+                    } else {
+                        (0, half)
+                    };
                     (
                         g.x_cm + (lx * 100.0).round() as i32,
                         g.z_cm + (lz * 100.0).round() as i32,
-                        o.width_cm / 2,
+                        hx,
+                        hz,
                         g.floor_y_cm,
                     )
                 })
@@ -12562,13 +12611,13 @@ fn props_clear_solids_and_mouths() {
                     ),
                 );
             }
-            for &(mx, mz, half, fl) in &mouths {
+            for &(mx, mz, hx, hz, fl) in &mouths {
                 if (fl - p.y_cm).abs() >= 100 {
                     continue;
                 }
                 assert!(
-                    mx + half <= x0 || mx - half >= x1 || mz + half <= z0 || mz - half >= z1,
-                    "({rx},{rz}) atrezo {} en ({},{}) pisa la boca de ({mx},{mz}) media {half}",
+                    mx + hx <= x0 || mx - hx >= x1 || mz + hz <= z0 || mz - hz >= z1,
+                    "({rx},{rz}) atrezo {} en ({},{}) pisa la boca de ({mx},{mz}) medias {hx}/{hz}",
                     p.kind,
                     p.x_cm,
                     p.z_cm,

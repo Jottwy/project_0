@@ -2198,3 +2198,255 @@ fn probe_pillar_halls() {
         );
     }
 }
+
+// -- LA PLANTA ABIERTA DE OFICINA ----------------------------------------------------------------
+
+/// **Una por planta, con papel de oficina, del tamano pedido y con DOS bocas.**
+///
+/// Las cuatro cosas juntas y no en cuatro tests, porque las cuatro son la misma decision: si la sala
+/// sale `Hall` no lleva falso techo ni puestos, si sale de 800 m2 no es una oficina, y si sale con
+/// una sola boca `retag_dead_ends` la degrada a `DeadEnd` y pierde las dos primeras.
+///
+/// El area se mide sobre la ENVOLVENTE: un hueco de escalera puede morderle la huella despues
+/// (`dig_wells`), y eso no la deja de ser lo que se fundio.
+#[test]
+fn the_open_plan_office_is_one_per_storey_and_reads_as_an_office() {
+    use super::plan::{self, SpaceRole};
+
+    let seeds = validate::sweep_seeds(sweep_seed_count(6));
+    let mut storeys = 0usize;
+    let mut rooms = 0usize;
+    let mut area_sum = 0.0f32;
+    for &seed in &seeds {
+        for &(x, z) in &NEAR_REGIONS {
+            let region = Wg3RegionCoord { x, z };
+            let building = validate::building_of(seed, region, plan::REGION_STOREYS);
+            for (n, storey) in building.storeys.iter().enumerate() {
+                storeys += 1;
+                let here: Vec<usize> = storey
+                    .spaces
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, s)| s.open_plan)
+                    .map(|(i, _)| i)
+                    .collect();
+                assert!(
+                    here.len() <= 1,
+                    "semilla {seed:#x} region ({x},{z}) planta {n}: {} plantas abiertas, y solo puede haber una",
+                    here.len()
+                );
+                for &i in &here {
+                    let s = &storey.spaces[i];
+                    assert_eq!(
+                        s.role,
+                        SpaceRole::Office,
+                        "semilla {seed:#x} region ({x},{z}) planta {n}: la planta abierta salio con papel {}",
+                        s.role.name()
+                    );
+                    let area = s.rect.area_m2();
+                    assert!(
+                        (300.0..=500.0).contains(&area),
+                        "semilla {seed:#x} region ({x},{z}) planta {n}: {area:.0} m2 fuera del rango pedido"
+                    );
+                    let doors = storey.links.iter().filter(|l| l.a == i || l.b == i).count();
+                    assert!(
+                        doors >= 2,
+                        "semilla {seed:#x} region ({x},{z}) planta {n}: la planta abierta tiene {doors} boca(s)"
+                    );
+                    rooms += 1;
+                    area_sum += area;
+                }
+            }
+        }
+    }
+    let media = if rooms > 0 {
+        area_sum / rooms as f32
+    } else {
+        0.0
+    };
+    println!(
+        "[planta-abierta] {rooms} salas en {storeys} plantas ({:.0} %), media {media:.0} m2",
+        100.0 * rooms as f32 / storeys.max(1) as f32
+    );
+    // No se pide una por planta -hace falta que la zona sea de caracter oficina y que haya un par de
+    // hermanas del tamano justo-, pero si esto baja a cero la fusion ha dejado de dispararse.
+    assert!(
+        rooms * 20 >= storeys,
+        "solo {rooms} plantas abiertas en {storeys} plantas: la fusion casi no encuentra pareja"
+    );
+}
+
+/// **Conectividad desde el spawn, en el grafo del plan.** Se llega a la planta abierta andando
+/// desde la espina, que es de donde cuelga todo lo que el jugador puede recorrer.
+#[test]
+fn the_open_plan_office_is_reachable_from_the_spine() {
+    use super::plan::{self, SpaceRole};
+
+    let seeds = validate::sweep_seeds(sweep_seed_count(6));
+    let mut checked = 0usize;
+    for &seed in &seeds {
+        for &(x, z) in &NEAR_REGIONS {
+            let region = Wg3RegionCoord { x, z };
+            let building = validate::building_of(seed, region, plan::REGION_STOREYS);
+            for (n, storey) in building.storeys.iter().enumerate() {
+                let Some(room) = storey.spaces.iter().position(|s| s.open_plan) else {
+                    continue;
+                };
+                let Some(start) = storey
+                    .spaces
+                    .iter()
+                    .position(|s| s.role == SpaceRole::Spine)
+                    .or_else(|| storey.spaces.iter().position(|s| s.role.is_circulation()))
+                else {
+                    continue;
+                };
+                let mut seen = vec![false; storey.spaces.len()];
+                seen[start] = true;
+                let mut queue = vec![start];
+                while let Some(a) = queue.pop() {
+                    for l in &storey.links {
+                        let other = if l.a == a {
+                            l.b
+                        } else if l.b == a {
+                            l.a
+                        } else {
+                            continue;
+                        };
+                        if !seen[other] {
+                            seen[other] = true;
+                            queue.push(other);
+                        }
+                    }
+                }
+                assert!(
+                    seen[room],
+                    "semilla {seed:#x} region ({x},{z}) planta {n}: a la planta abierta no se llega desde la circulacion"
+                );
+                checked += 1;
+            }
+        }
+    }
+    println!("[planta-abierta] {checked} salas alcanzables desde la espina");
+    assert!(checked > 0, "ninguna planta abierta que comprobar");
+}
+
+/// **Y andando de verdad**: el suelo de la sala esta en la MANCHA MAYOR del raster, que es la que
+/// contiene al jugador. El grafo del plan puede decir que hay puerta y el raster tapiarla -es
+/// exactamente el fallo que ya midio ADR-098-, asi que esto se comprueba sobre lo inundado.
+#[test]
+fn the_open_plan_office_floor_is_in_the_main_blob() {
+    use super::plan::REGION_STOREYS;
+
+    let m = real_manifest();
+    let mut checked = 0usize;
+    for &(x, z) in &NEAR_REGIONS {
+        let region = Wg3RegionCoord { x, z };
+        let building = validate::building_of(LIVE_SEED, region, REGION_STOREYS);
+        let ground = &building.storeys[building.ground];
+        let Some(room) = ground.spaces.iter().position(|s| s.open_plan) else {
+            continue;
+        };
+        let s = ground.spaces[room];
+        let inside = validate::region_inside(&m, LIVE_SEED, region);
+        let y = s.floor_y_cm as f32 / 100.0;
+        let (mut on_main, mut sampled) = (0usize, 0usize);
+        // Rejilla de muestreo cada metro y medio, con medio metro de margen a las paredes.
+        let (x0, x1) = (s.rect.min_x_cm + 50, s.rect.max_x_cm - 50);
+        let (z0, z1) = (s.rect.min_z_cm + 50, s.rect.max_z_cm - 50);
+        let mut px = x0;
+        while px <= x1 {
+            let mut pz = z0;
+            while pz <= z1 {
+                let (fx, fz) = (px as f32 / 100.0, pz as f32 / 100.0);
+                if let Some(blob) = inside.grid.blob_at(fx, fz, y) {
+                    sampled += 1;
+                    if blob == inside.grid.main {
+                        on_main += 1;
+                    }
+                }
+                pz += 150;
+            }
+            px += 150;
+        }
+        println!(
+            "[planta-abierta] region ({x},{z}): {on_main}/{sampled} muestras en la mancha mayor"
+        );
+        assert!(
+            sampled > 0,
+            "region ({x},{z}): la planta abierta no tiene ni una cota pisable"
+        );
+        assert!(
+            on_main * 10 >= sampled * 9,
+            "region ({x},{z}): solo {on_main} de {sampled} muestras de la planta abierta caen en la mancha mayor"
+        );
+        checked += 1;
+    }
+    assert!(
+        checked > 0,
+        "ninguna de las nueve regiones cercanas tiene planta abierta en la calle"
+    );
+}
+
+/// **La sala se llena de puestos, en filas y con su pasillo transversal.**
+///
+/// Un despacho normal pasa por el sorteo de `Knobs::cubicles`; esta sala no, porque para eso se ha
+/// fundido. Se cuentan las MESAS dentro de su envolvente y la columna de celdas que se cede al
+/// pasillo que cruza las filas: sin ella se entra por una esquina y se sale por la otra andando
+/// veinte metros entre mamparas.
+#[test]
+fn the_open_plan_office_is_filled_with_desks_in_rows() {
+    use super::fill;
+    use super::plan::REGION_STOREYS;
+
+    let m = real_manifest();
+    let mut checked = 0usize;
+    for &(x, z) in &NEAR_REGIONS {
+        let region = Wg3RegionCoord { x, z };
+        let building = validate::building_of(LIVE_SEED, region, REGION_STOREYS);
+        let ground = &building.storeys[building.ground];
+        let Some(room) = ground.spaces.iter().position(|s| s.open_plan) else {
+            continue;
+        };
+        let s = ground.spaces[room];
+        let filled = fill::fill_building(&building, &m);
+        let floor = s.floor_y_cm;
+        let inside = |px: i32, pz: i32| -> bool {
+            px >= s.rect.min_x_cm
+                && px <= s.rect.max_x_cm
+                && pz >= s.rect.min_z_cm
+                && pz <= s.rect.max_z_cm
+        };
+        let desks = filled
+            .props
+            .iter()
+            .filter(|p| {
+                p.kind == super::segment::PROP_DESK
+                    && (p.y_cm - floor).abs() < 100
+                    && inside(p.x_cm, p.z_cm)
+            })
+            .count();
+        let walls = filled
+            .solids
+            .iter()
+            .filter(|o| {
+                fill::is_cubicle_wall(o)
+                    && (o.bottom_y_cm - floor).abs() < 100
+                    && inside(o.x_cm, o.z_cm)
+            })
+            .count();
+        println!(
+            "[planta-abierta] region ({x},{z}): {desks} mesas y {walls} mamparas en {:.0} m2",
+            s.rect.area_m2()
+        );
+        assert!(
+            desks >= 12,
+            "region ({x},{z}): la planta abierta se quedo en {desks} puestos"
+        );
+        assert!(walls > 0, "region ({x},{z}): puestos sin una sola mampara");
+        checked += 1;
+    }
+    assert!(
+        checked > 0,
+        "ninguna planta abierta en la calle que rellenar"
+    );
+}

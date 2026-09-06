@@ -367,6 +367,17 @@ AÑADIR A "NO tocar": que `LoadProxyController` debe preferir el objeto cacheado
 
 ## Historico movido desde STATE.md (2026-09-04) — VERBATIM
 
+### 2026-09-05 — 22.ª tanda: el saneamiento entero (B2–B4) y el primer rojo que caza el gate
+- **B2, gate de commit** (`9a5c680e`): `validate-scope.ps1` por alcance de `git diff --cached`, disparado por un
+  PreToolUse; cuatro hooks fusionados en dos y *fail closed*. El parser del índice de ADR perdía en SILENCIO
+  cualquier encabezado que no encajara (`## ADR-121 y ADR-122`): 164 en el fichero, 163 en el índice.
+- **B2 docs** (`5a80d295`): 10 ficheros a `docs/archive/` con cabecera CONGELADO; de `AGENTS.md` sobrevive UNA regla (la 13) y de `LEEME.md` ninguna.
+- **B3** (`b4d3112c`) 50,1 MB fuera; `STP/Demo` NO se toca (dentro vive `STP_Showcase.unity`, la escena real). **B4**:
+  `ChunkRenderer.cs` (3 925 líneas), el campo de identidad de ADR-103, `SpaceRole::Junction`, `BackroomsWithSTP.unity`
+  y tres comentarios que mandaban a clases borradas. El gate cazó su primer rojo: un test llevaba veintitantos
+  commits en rojo, tapado por su guarda de cobertura (la serie, medida commit a commit, en el log).
+
+
 > Segundo traslado, despues del del 2026-08-04. Se movieron las secciones de sesiones
 > anteriores y los bloques `## Estado actual —` cerrados. Ningun caracter reescrito.
 > Para saber COMO esta hoy algo: `docs/STATE.md`. Para saber POR QUE quedo asi: aqui.
@@ -3094,3 +3105,11 @@ si las sondas de `J:/wg3*` valen algo o se borran. Las ramas viejas (`angry-jack
 - **ADR-124 «menos pasillos» probado tres veces y revertido** (`c3f5b043`): `CORRIDOR_DEPTH` 2 da lo pedido pero rompe
   6 de 300 regiones. **El enrutador es el límite, no una constante**: es una sesión de `route.rs`.
 - Lección de medida: la repetición LOCAL sube con la zonificación y la GLOBAL baja. Antes de vender un «50 %», decir cuál.
+
+### 2026-09-06 — 24.ª tanda: la foto de la oficina (ADR-129, wire 61) y los sótanos en el plan (ADR-130 rebanada 1)
+- Día 2 del cierre: `c7c9dd01` UV a 0,5/m (un factor); `510223b8` placas de 60 cm y paneles 60×120 en rejilla por tramo (mallas emisivas).
+- **ADR-129, wire 61** (`99c566dd`, `2328a19e`): `Wg3Prop` (posición, giro, `kind`, estilo) que `office_props` emite por sala esquivando bocas,
+  macizos y pozos; lo que frena lleva macizo INVISIBLE (`STYLE_HIDDEN_BIT` 0x40). Cliente: `Resources/Wg3Props/<Kind>`. 15 502 anclas / 39 semillas.
+- **ADR-130 rebanada 1** (`11cc3444`, `897ac86a`): `basements_for` ((rx·3+rz·5) mod 4 == 0), `REGION_BASEMENTS = 3`, `ground`; la calle de
+  una torre no se hunde, bajo tierra ni atrios ni pozos. wg3 162/162. Capturas `d_b3_hall_*` a −9,96 con luz, moqueta y puerta.
+- Queda de la foto: variedad por `kind`, desorden, avisos, tintes (Joel), suciedad. El wire 62 lo disputan la rampa y el streaming vertical.

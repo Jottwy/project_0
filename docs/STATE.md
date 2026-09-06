@@ -95,6 +95,15 @@
 
 ## Últimas tandas
 
+### 2026-09-06 — 32.ª tanda: la planta abierta de oficina (ADR-105 enm. 21), y la costura de 664 que destapó
+- La sala grande no salía por ARITMÉTICA: el nº de hojas es `área / objetivo`, y agrandar una agranda TODAS las de la zona (ADR-119 D2).
+  Se funden DOS hermanas sin banda, una por planta, 300–500 m² y carácter Office: árbol, bandas y candidatos a forjado quedan idénticos.
+- Barrido 27 regiones antes → después: **4,2 → 4,2 plantas**, 270 → 268 espacios, mancha 99,7 %, 6,4 islas, nav 100 %, 27/27. Sin wire.
+- Prioridades: atrio > sala (si no nacía `Void`); sala > vacío y > mordisco de ADR-120 (380 → 196 m²); pozo > sala, y ahí pierde la marca.
+- Va DIÁFANA (la holgura de los cubículos rechazaba 5 de 6 columnas) y los puestos cubren la sala entera con pasillo transversal: 91 salas
+  en 209 plantas (44 %), media 418 m², 15–18 puestos. Interruptor del ANTES: `WG3_NO_OPEN_PLAN=1`.
+- **Bug de la enm. 18**: la holgura de boca era un CUADRADO y la junta entre tramos hermanos (15 m) tapaba la sala; ahora es una franja.
+- **Costura de 664 cerrada**: canto de losa = planta de ARRIBA (de la 1 arriba); y una cama ya no ancla en repisa sin altura libre.
 ### 2026-09-06 — 31.ª tanda: ADR-130 rebanada 2a — el decaimiento del servidor (ADR-130 enm. 1)
 - `decay_of(space)` por la COTA (la calle está en 0) y `d²` contra el fondo SERVIDO; `knobs_of` deja de devolver la fila de `KNOBS` y
   devuelve una COPIA movida por `decayed`: los 22 sitios del relleno decaen sin tocar ni un emisor. Agujeros de forjado 0,26 → 0,80.
@@ -160,11 +169,3 @@
   las tandas 23–25 y el verbatim de 4j–4l en `SESSION-LOG.md`. Índice de ADR regenerado: 129 y 130 faltaban (170 entradas).
 - Sin fusionar y medido: `feat/occluders` choca en `fill.rs`/`plan.rs`; `unity-lighting-cadence` en `Wg3SceneAssembler.cs` (fusionadas en la 26.ª).
 - Cierre de 22 sesiones (28-08 → 06-09) en `SESSION-LOG.md`; tres experimentos a rama: `558afb54` teselado, `cb61b99c` decals, `1c8237ff` sonda.
-
-### 2026-09-06 — 24.ª tanda: la foto de la oficina (ADR-129, wire 61) y los sótanos en el plan (ADR-130 rebanada 1)
-- Día 2 del cierre: `c7c9dd01` UV a 0,5/m (un factor); `510223b8` placas de 60 cm y paneles 60×120 en rejilla por tramo (mallas emisivas).
-- **ADR-129, wire 61** (`99c566dd`, `2328a19e`): `Wg3Prop` (posición, giro, `kind`, estilo) que `office_props` emite por sala esquivando bocas,
-  macizos y pozos; lo que frena lleva macizo INVISIBLE (`STYLE_HIDDEN_BIT` 0x40). Cliente: `Resources/Wg3Props/<Kind>`. 15 502 anclas / 39 semillas.
-- **ADR-130 rebanada 1** (`11cc3444`, `897ac86a`): `basements_for` ((rx·3+rz·5) mod 4 == 0), `REGION_BASEMENTS = 3`, `ground`; la calle de
-  una torre no se hunde, bajo tierra ni atrios ni pozos. wg3 162/162. Capturas `d_b3_hall_*` a −9,96 con luz, moqueta y puerta.
-- Queda de la foto: variedad por `kind`, desorden, avisos, tintes (Joel), suciedad. El wire 62 lo disputan la rampa y el streaming vertical.

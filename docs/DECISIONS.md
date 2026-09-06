@@ -14957,3 +14957,107 @@ Barrido `WG3_SWEEP_SEEDS=3`: 27/27 válidas, **islas 6,4 → 6,0**, mancha 99,7 
 183 756 → 183 221 (−0,3 %: menos tarimas y más masa abajo). Coste de `fill` 13 → 19 ms por región,
 todo en el barrido de pares de tramos de los boquetes. Sonda: `probe_decay_spots` — en (0,0),
 **2 boquetes en B1, 17 en B2, 18 en B3**.
+
+## ADR-105 — Enmienda 21: la planta abierta de oficina (2026-09-06) — ACEPTADA (implementada y medida)
+
+**Aceptada.** Rebanada 2 de la tanda de oficinas. Sin bump de wire: la marca es del servidor y lo
+que sale por el cable son los tramos, macizos y anclas de siempre.
+
+### El problema, que es aritmético y no de gusto
+
+La imagen canónica de oficina —una planta diáfana de 300-500 m² con puestos en filas— no existía, y
+subir un número no la daba: **el número de hojas de una zona es `área / objetivo`**, así que el
+tamaño de sala lo fija `TARGET_AREA_M2[class]` (360 en `Medium`, hoja media 0,71 × objetivo = 256 m²)
+y agrandar la sala grande agrandaba TODAS las de esa zona — la calibración que ADR-119 D2 midió y que
+no se toca. Además, cualquier hoja que pase de 300 m² se convierte en `Hall`, y una nave no lleva ni
+falso techo ni puestos.
+
+### D1 — No es un corte que no se hace: es un tabique que se quita
+
+`Planner::fuse_open_plan`, entre `subdivide` y `emit_leaves`. Deshace el corte de UN par de hojas
+hermanas por planta cuando el padre mide 300-500 m², su proporción no pasa de 1,9, su corte no talló
+banda (si la talló, entre las dos hay corredor y la unión no es el rectángulo del padre) y el
+carácter del centro es `Office`. Se elige por puntuación de posición y no por orden de nodo: el
+recorrido empieza por el noroeste y quedarse con el primero pondría la sala en la misma esquina de
+todas las regiones.
+
+**Lo que esto compra, y es la razón de elegirlo frente a parar la subdivisión:** el árbol, las bandas
+de corredor, los ciegos y los candidatos a agujero de forjado son los MISMOS. El coste medido en el
+barrido de 27 regiones es cero plantas.
+
+### D2 — La sala es `Office` aunque mida lo que una nave
+
+Por área le tocaría `Hall`. Se le fuerza el papel porque de él dependen el falso techo de la
+enmienda 18 (`fill::ceiling_cap_cm` mira el papel) y los puestos (`office_cubicles` sólo entra en
+`Office`): con `Hall` saldría un galpón vacío de 400 m², que es lo contrario de lo que se ha fundido.
+
+### D3 — Dos bocas como mínimo, y la marca se retira si no las hay
+
+`ensure_open_plan_doors` corre después de `ensure_connected` y sólo AÑADE vanos sobre paredes que ya
+existen. Una sala de 400 m² con una sola boca es un fondo de saco de veinte metros, y además
+`retag_dead_ends` la degradaría a `DeadEnd` y perdería el papel del que cuelga todo lo anterior.
+Cuando no hay contra quién abrir la segunda —vecinas todas vacío intencionado—, se le quita la marca:
+una marca que miente hace que el relleno vista de puestos un callejón.
+
+### D4 — Quién manda cuando dos decisiones se pisan
+
+- **Atrio** (ADR-104 D2): gana el atrio. La fusión esquiva las huellas de las naves de la planta de
+  abajo; sin eso la sala nacía `Void` y el edificio se quedaba sin planta abierta y sin señal.
+- **Vacío intencionado** (`assign_void`): gana la sala. El hueco que se acaba de decidir no puede
+  deshacerse en el sorteo siguiente.
+- **Mordisco de composición** (ADR-120): gana la sala. Medido: la envolvente caía de 380 a 196 m².
+- **Hueco de escalera** (`dig_wells`): gana la escalera, y la sala pierde la marca. Apartar un pozo a
+  otra sala cuesta PLANTAS, que es la sensibilidad que `dig_wells` ya tenía medida.
+
+### D5 — La sala va DIÁFANA
+
+Ni divisiones, ni bloques exentos, ni oclusores. No es estética: `office_cubicles` deja un metro de
+holgura a todo macizo, y con la tabla de `Office` (divisiones 0,90) se rechazaban 5 de cada 6
+columnas de celdas y la sala salía vacía. Los puestos se reparten sobre la SALA ENTERA y no sobre su
+tramo mayor —una sala de 400 m² no cabe en un tramo—, y ceden una columna al pasillo TRANSVERSAL: sin
+él se entra por una esquina y se sale por la otra andando veinte metros entre mamparas.
+
+### D6 — Una boca es una LÍNEA en una cara, no un cuadrado
+
+**Es el bug que hacía imposible la sala grande, y llevaba ahí desde la enmienda 18.** La holgura de
+boca se medía como `ancho/2 + holgura` en los DOS ejes. Con una puerta de 240 da un cuadrado de tres
+metros y no se nota; con la junta entre dos tramos hermanas —una boca del ANCHO ENTERO de la cara,
+15 m— reservaba un cuadrado de 15 m de lado y tapaba la sala de punta a punta: las 75 celdas de la
+planta abierta se rechazaban todas «por boca». Ahora se mide a lo largo de la cara con el ancho y
+perpendicular sólo con la holgura, o sea la franja de paso que hay que dejar libre. Los dos tests del
+arnés llevaban la misma geometría y van con la corrección.
+
+### D7 — El canto de la losa es la planta de ARRIBA
+
+La losa cuelga por debajo de la cota de su planta, así que un sitio de pie apoyado en el canto sale a
+`332 n − 12` y `storey_of_floor_cm` lo mandaba una planta abajo: la costura de 664 que `STATE.md`
+llevaba declarada. Se corrige de la planta 1 hacia arriba y ni un centímetro más — por debajo de cero
+manda la regla de T0 (una cota negativa no es la planta baja) y en la costura de 332 viven las
+contrahuellas de las escaleras de la planta baja.
+
+Y con ella, la que la destapó: **una cama no descansa sobre una repisa donde no se cabe de pie**. El
+suelo que encuentra el ráster es la cara de arriba de lo que haya, mamparas de 1,40 incluidas;
+`resolve_respawn_wg3` anclaba ahí (6,24 m), la cota no era la de ninguna planta y la búsqueda por
+planta devolvía al jugador una planta ENTERA más abajo. El ancla exige ahora la misma altura libre
+que `standable_near_bounded` ya exigía a lo que devuelve.
+
+### Verificaciones
+
+Barrido de 27 regiones, antes → después: **4,2 → 4,2 plantas**, 270 → 268 espacios, 316 → 315
+enlaces, mancha mayor 99,7 %, 6,4 islas, nav 100 %, 27/27 válidas. Cobertura de la sala: 91 en 209
+plantas (44 %), media 418 m²; 15-18 puestos por sala en las regiones cercanas. Tests:
+`the_open_plan_office_is_one_per_storey_and_reads_as_an_office`,
+`the_open_plan_office_is_reachable_from_the_spine` (conectividad desde la circulación, 6 semillas ×
+9 regiones), `the_open_plan_office_floor_is_in_the_main_blob`,
+`the_open_plan_office_is_filled_with_desks_in_rows` y `the_slab_edge_belongs_to_the_storey_above`.
+Suite: 1401/1401. Interruptor del ANTES: `WG3_NO_OPEN_PLAN=1`.
+
+### Lo que no entra
+
+Llegar a los treinta puestos: con la celda de 2,60 × 2,40, el pasillo de 1,50 y el 15 % de celdas
+vacías de la enmienda 18 —valores ya dados por buenos—, 400 m² dan 15-18. Subirlos es tocar esos
+números y volver a mirarlo en juego. Tampoco entran una segunda planta abierta por planta, ni que la
+sala elija su sitio (hoy sale donde el reparto ya dejó una pareja del tamaño justo).
+
+> Nota de fusión (2026-09-06): la rama nació como «Enmienda 19»; al fusionar, la 19 era la de los materiales por función y la 20
+> la del falso techo roto, así que ésta es la **Enmienda 21**.

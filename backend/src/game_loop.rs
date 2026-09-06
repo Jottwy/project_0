@@ -4689,7 +4689,18 @@ fn resolve_respawn_wg3(
         let body = Vec3::new(bed.x, bed.y + PLAYER_BODY_M, bed.z);
         wg3_collision.prewarm_for_move(wg3_world, manifest, world_seed, body, body);
         let resting = wg3_collision.floor_y(body);
-        let anchor = if (resting - body.y).abs() <= BED_FLOOR_TOLERANCE_M {
+        // **Y la cama no descansa sobre una repisa donde no se cabe de pie** (2026-09-06). El suelo
+        // que encuentra el raster es la cara de arriba de lo que haya: con las mamparas de cubiculo
+        // (1,40 m) eso incluye el canto de una mampara de doce centimetros. Medido: una cama
+        // atascada en la planta 2 anclaba a 6,24 -el alto de una mampara-, `storey_of_floor_cm` la
+        // daba por planta 1 porque esa cota no es la de ninguna planta, y la busqueda por planta
+        // devolvia al jugador una planta ENTERA mas abajo. La altura libre es la misma que ya exige
+        // `standable_near_bounded` a lo que devuelve.
+        let rests_standing = (resting - body.y).abs() <= BED_FLOOR_TOLERANCE_M
+            && wg3_collision
+                .headroom_m(body.x, body.z, resting - PLAYER_BODY_M)
+                .is_none_or(|h| h >= crate::world::wg3::collision::SPAWN_MIN_HEADROOM_M);
+        let anchor = if rests_standing {
             Vec3::new(body.x, resting, body.z)
         } else {
             body
