@@ -113,6 +113,33 @@ namespace BackroomsSurvival.WorldGen3
         private static int StoreyOf(float y) =>
             Mathf.Clamp(RawStoreyOf(y) + BasementLayers, 0, MaxLayer);
 
+        /// <summary>
+        /// ADR-130 D4.1 — el DECAIMIENTO de una cota. Espejo exacto de
+        /// <c>fill::decay_of_floor</c>: la calle da 0 y el sótano más hondo da 1.
+        /// </summary>
+        /// <remarks>
+        /// **No viaja por el cable, y no hace falta que viaje.** Los dos números de los que sale
+        /// —la altura de planta y cuántos sótanos hay— ya están aquí arriba como espejos de
+        /// <c>plan::STOREY_HEIGHT_CM</c> y <c>plan::REGION_BASEMENTS</c>, y la cota la trae cada
+        /// tramo. Un campo nuevo en el mensaje sería una tercera copia del mismo dato, y una que
+        /// además podría discrepar de las otras dos.
+        ///
+        /// El corolario es que si allí cambia el número de sótanos, aquí también: el servidor
+        /// decaería el relleno de una planta y el cliente le apagaría las luces a otra.
+        ///
+        /// **El cuadrado es de D4 y el denominador es el fondo SERVIDO**, no los cien metros de
+        /// D1: con tres sótanos, <c>depth²</c> sobre cien metros vale 0,01 en B3 y no se ve. Los
+        /// dos extremos son los mismos, así que el día que <see cref="BasementLayers"/> sean
+        /// treinta esta división ya es la curva del ADR sin tocar nada.
+        /// </remarks>
+        public static float DecayOfFloor(float floorY)
+        {
+            if (floorY >= 0f) return 0f;
+            float below = -floorY / StoreyM;
+            float d = Mathf.Clamp01(below / Mathf.Max(1, BasementLayers));
+            return d * d;
+        }
+
         /// <summary>La capa de una LUZ: sólo la planta de su suelo.</summary>
         public static uint ForLight(float floorY) => 1u << StoreyOf(floorY);
 
@@ -379,7 +406,12 @@ namespace BackroomsSurvival.WorldGen3
             // en rejilla sobre las placas del techo, en vez de una luminaria cuadrada por lámpara.
             // Son mallas emisivas, no luces: las luces siguen siendo las de siempre (≤ 2 × 2 por
             // tramo), así que Forward+ no paga nada por esto.
-            if (lampMaterial != null) AddPanels(go.transform, segment, lampMaterial);
+            // ADR-130 D4 (r2b) — el decaimiento de ESTA planta. Se calcula una vez por tramo y se
+            // reparte a todo lo que lo mira: las luminarias del falso techo, los umbrales de la
+            // cadencia y el color de cada lámpara. En la calle vale 0 y nada de lo de abajo cambia.
+            float decay = Wg3StoreyLayers.DecayOfFloor(segment.FloorY);
+
+            if (lampMaterial != null) AddPanels(go.transform, segment, lampMaterial, decay);
 
             // Cadencia de luces (rama unity-lighting-cadence, fusionada el 2026-09-06). La celda de
             // cada fixture es lo que acota el jitter: un plafón se mueve dentro de SU celda y nunca
@@ -422,7 +454,7 @@ namespace BackroomsSurvival.WorldGen3
                     // lámpara rota sin que nada viaje por el cable.
                     Wg3Fixture fixture = Wg3LightCadence.Resolve(worldSeed,
                         segment.MinX + nominalX, segment.MinZ + nominalZ,
-                        ix * nz + iz, cellX, cellZ, cadence);
+                        ix * nz + iz, cellX, cellZ, cadence, decay);
 
                     // Tubo muerto: ninguna Light. Los paneles emisivos de la rejilla (510223b8) no
                     // van uno por lámpara, así que aquí no hay difusor que apagar; queda el hueco
@@ -469,9 +501,11 @@ namespace BackroomsSurvival.WorldGen3
                     // Forward+: el clustering cuenta volumen y luces, y ni el alcance ni el número
                     // cambian aquí.
                     light.intensity = 2.7f;
-                    // El color validado, empujado ±200 K por el tinte. Con desviación cero el
-                    // producto es el mismo color de siempre, bit a bit.
-                    light.color = new Color(1f, 0.96f, 0.78f) * fixture.tint;
+                    // El color validado, empujado ±200 K por el tinte y después llevado hacia el gris
+                    // por la profundidad (ADR-130 D4). El orden importa: el decaimiento va DESPUÉS
+                    // del producto porque lo que hay que desaturar es el cálido, no el cociente.
+                    light.color = Wg3LightCadence.Decayed(
+                        new Color(1f, 0.96f, 0.78f) * fixture.tint, decay);
                     // La PRIMERA ENCENDIDA de un tramo grande proyecta; las demás no. Con 2 × 2 como
                     // tope por eje, eso es una de cuatro en el peor caso.
                     if (wantsShadow && !shadowTaken)
@@ -873,7 +907,8 @@ namespace BackroomsSurvival.WorldGen3
         /// eje largo del tramo. Sin collider: es decoración del techo. Y para un tramo de doble
         /// altura cuelga con su planta de arriba (la del techo), que es la que lo alumbra.
         /// </summary>
-        private static void AddPanels(Transform parent, Wg3Segment segment, Material lampMaterial)
+        private static void AddPanels(Transform parent, Wg3Segment segment, Material lampMaterial,
+            float decay)
         {
             // La retícula vive en Wg3CeilingGrid y no aquí: el detalle sonoro cuelga una rejilla de
             // aire del techo y necesita los mismos números para no meterla dentro de una luminaria.
@@ -892,6 +927,14 @@ namespace BackroomsSurvival.WorldGen3
                     float px = ox + ix * pitch, pz = oz + iz * pitch;
                     if (px < CeilingTileM + size.x * 0.5f || px > segment.SizeX - CeilingTileM - size.x * 0.5f
                         || pz < CeilingTileM + size.z * 0.5f || pz > segment.SizeZ - CeilingTileM - size.z * 0.5f)
+                        continue;
+                    // ADR-130 D4 (r2b) — LA LUMINARIA QUE FALTA. En coordenadas de MUNDO y en
+                    // centímetros enteros: la posición local se repite tramo a tramo, así que
+                    // sembrar con ella arrancaría el mismo hueco de la retícula en todas las salas.
+                    if (Wg3LightCadence.PanelMissing(
+                            Mathf.RoundToInt((segment.MinX + px) * 100f),
+                            Mathf.RoundToInt((segment.FloorY + y) * 100f),
+                            Mathf.RoundToInt((segment.MinZ + pz) * 100f), decay))
                         continue;
                     var go = new GameObject($"panel_{ix}_{iz}");
                     go.hideFlags = HideFlags.DontSave;
@@ -1102,9 +1145,13 @@ namespace BackroomsSurvival.WorldGen3
             // acotado igual por `jitterMaxMeters`, así que en una pieza grande no se va al rincón.
             float nominalX = placement.SizeX * 0.5f;
             float nominalZ = placement.SizeZ * 0.5f;
+            // ADR-130 D4 (r2b) — el mismo decaimiento que un tramo. Aquí importa aunque el catálogo
+            // esté casi apagado (0,6 piezas por región): una pieza en un sótano con su plafón cálido
+            // encendido al lado de un tramo gris se lee como un fallo de montaje, no como una pieza.
+            float decay = Wg3StoreyLayers.DecayOfFloor(placement.originY);
             Wg3Fixture fixture = Wg3LightCadence.Resolve(worldSeed,
                 placement.originX + nominalX, placement.originZ + nominalZ,
-                0, placement.SizeX, placement.SizeZ, cadence);
+                0, placement.SizeX, placement.SizeZ, cadence, decay);
 
             // Un tubo muerto aquí es sólo ausencia de Light: esta ruta no dibuja luminaria (ver el
             // R32 pendiente de arriba). Queda el hueco marcado en la jerarquía.
@@ -1129,7 +1176,8 @@ namespace BackroomsSurvival.WorldGen3
 
             var light = go.AddComponent<Light>();
             light.type = LightType.Point;
-            light.color = new Color(1f, 0.97f, 0.88f) * fixture.tint;
+            light.color = Wg3LightCadence.Decayed(
+                new Color(1f, 0.97f, 0.88f) * fixture.tint, decay);
             // El doble, por lo mismo y a la vez que el plafón de tramo: dos sistemas de luz con
             // intensidades que se separan al doble dejan las piezas del catálogo leyéndose como
             // agujeros oscuros dentro de una sala ya iluminada.
