@@ -153,6 +153,89 @@ namespace BackroomsSurvival.WorldGen3
             return f;
         }
 
+        /// <summary>Sal del DESPACHO A OSCURAS, "DOFF". Cada decisión abre su propio flujo (R3):
+        /// ésta no puede salir del mismo <see cref="Wg3Hash.Stream"/> que <see cref="Resolve"/>
+        /// porque no se decide por fixture, sino por planta y chunk.</summary>
+        private const uint DarkOfficeSalt = 0x444F4646u;
+
+        /// <summary>Sal del MONITOR encendido, "MONI".</summary>
+        private const uint MonitorSalt = 0x4D4F4E49u;
+
+        /// <summary>Papel de un espacio, espejo de <c>fill::style_of</c>. Los dos que necesita este
+        /// fichero: el resto vive en <see cref="Wg3StyleMaterials"/>, que es quien los viste.</summary>
+        public const byte StyleOffice = 0;
+        public const byte StyleCorridor = 2;
+
+        /// <summary>Uno de cada cinco monitores tiene la pantalla encendida.</summary>
+        private const float MonitorLitChance = 0.2f;
+
+        /// <summary>
+        /// EL DESPACHO A OSCURAS: un espacio de oficina por planta y chunk con TODAS las lámparas
+        /// muertas, no el 12 % que le tocaría por la cadencia.
+        ///
+        /// # Por qué por chunk y no por región
+        ///
+        /// «Uno por planta» hace falta resolverlo SIN ver la planta entera: el cliente monta un chunk
+        /// cada vez y nunca tiene delante la lista de despachos de su cota. Así que el sorteo va al
+        /// revés — en vez de elegir un despacho entre los que hay, se elige un PUNTO del chunk y se
+        /// apaga el despacho que lo contenga. Como los espacios de una misma planta no se solapan en
+        /// planta, **a lo sumo uno lo contiene**: sale exactamente un despacho a oscuras por chunk y
+        /// planta, o ninguno si el punto cae en un pasillo, en una nave o en el vacío.
+        ///
+        /// Ninguno es un resultado correcto, no un fallo: un edificio en el que TODAS las plantas
+        /// tienen su despacho apagado sería otro patrón regular, que es justo lo que la cadencia vino
+        /// a romper.
+        ///
+        /// El chunk se toma del CENTRO del espacio —el mismo criterio de propiedad que usa el
+        /// servidor para repartir tramos— para que un despacho a caballo de la frontera no reciba dos
+        /// tiradas ni se lo dispute nadie.
+        /// </summary>
+        /// <param name="storey">Planta CRUDA (<see cref="Wg3StoreyLayers.RawStoreyOf"/>), no la capa
+        /// de render: la capa se acota a ocho y desplaza por los sótanos, así que dos plantas
+        /// distintas pueden compartirla y compartirían el sorteo.</param>
+        public static bool IsDarkOffice(int worldSeed, byte style, int storey,
+            float minX, float minZ, float sizeX, float sizeZ)
+        {
+            if (style != StyleOffice) return false;
+
+            float centreX = minX + sizeX * 0.5f;
+            float centreZ = minZ + sizeZ * 0.5f;
+            Vector2Int chunk = ChunkOf(centreX, centreZ);
+
+            ulong local = Wg3Hash.Mix(chunk.x, chunk.y, storey, unchecked((int)DarkOfficeSalt));
+            ulong seed = Wg3Hash.Mix(worldSeed, chunk.x, chunk.y, unchecked((int)local));
+            var rng = new Wg3Hash.Stream(seed);
+
+            float targetX = (chunk.x + rng.Next01()) * Wg3ChunkStreamer.ChunkSize;
+            float targetZ = (chunk.y + rng.Next01()) * Wg3ChunkStreamer.ChunkSize;
+
+            return targetX >= minX && targetX < minX + sizeX
+                && targetZ >= minZ && targetZ < minZ + sizeZ;
+        }
+
+        /// <summary>
+        /// Si la pantalla de ESTE monitor está encendida. Uno de cada cinco.
+        ///
+        /// Se siembra con la posición del ancla y NADA MÁS —ni semilla de mundo ni índice—, que es la
+        /// misma regla con la que <see cref="Wg3PropCatalog.Prefab"/> elige la variante del mueble:
+        /// el ancla ya la decidió el servidor a partir de la semilla, así que volver a meterla aquí
+        /// no añade una sola tirada independiente. Y en centímetros ENTEROS, que es como viaja por el
+        /// cable: cuantizar el float sería introducir una diferencia entre dos clientes por un
+        /// redondeo.
+        ///
+        /// **LA COTA ENTRA EN EL HASH, y sin ella esto estaba mal.** Los cubículos de una planta se
+        /// reparten igual que los de la de abajo, así que el mismo puesto de trabajo tiene su monitor
+        /// en el mismo (x, z) en las tres o cuatro plantas del edificio: con un hash de dos ejes, una
+        /// columna entera de monitores se enciende o se apaga a la vez. Medido en la primera pasada
+        /// del arnés — 34 encendidos de 92 donde tocaban 18, porque los encendidos venían en pilas de
+        /// tres y de cuatro.
+        /// </summary>
+        public static bool MonitorLit(int xCm, int yCm, int zCm)
+        {
+            ulong h = Wg3Hash.Mix(xCm, yCm, zCm, unchecked((int)MonitorSalt));
+            return Wg3Hash.ToUnit(h) < MonitorLitChance;
+        }
+
         /// <summary>
         /// El multiplicador que lleva de <paramref name="baseKelvin"/> a <paramref name="kelvin"/>.
         ///

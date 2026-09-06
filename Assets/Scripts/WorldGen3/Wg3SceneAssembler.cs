@@ -101,8 +101,17 @@ namespace BackroomsSurvival.WorldGen3
         /// <c>plan::REGION_BASEMENTS</c>: la calle pasa a la capa 3 y B1–B3 a la 2, 1 y 0.</summary>
         public const int BasementLayers = 3;
 
+        /// <summary>
+        /// La planta CRUDA de una cota: sin desplazar por los sótanos y sin acotar a las ocho capas.
+        ///
+        /// Es la que IDENTIFICA un piso, y no vale <see cref="StoreyOf"/> para eso: aquélla satura en
+        /// la séptima, así que la octava planta y la novena comparten número. Cualquier sorteo «uno
+        /// por planta» hecho sobre la capa de render se repetiría solo en los edificios altos.
+        /// </summary>
+        public static int RawStoreyOf(float y) => Mathf.FloorToInt(y / StoreyM + 0.001f);
+
         private static int StoreyOf(float y) =>
-            Mathf.Clamp(Mathf.FloorToInt(y / StoreyM + 0.001f) + BasementLayers, 0, MaxLayer);
+            Mathf.Clamp(RawStoreyOf(y) + BasementLayers, 0, MaxLayer);
 
         /// <summary>La capa de una LUZ: sólo la planta de su suelo.</summary>
         public static uint ForLight(float floorY) => 1u << StoreyOf(floorY);
@@ -384,6 +393,20 @@ namespace BackroomsSurvival.WorldGen3
             // justo las que se apuntalaron con esto.
             bool shadowTaken = false;
 
+            // EL DESPACHO A OSCURAS: uno por planta y chunk con todas las lámparas muertas, no el
+            // 12 % que le tocaría por la cadencia. La regla y el porqué del sorteo por punto están en
+            // `Wg3LightCadence.IsDarkOffice`; aquí sólo se fuerza el resultado, y se fuerza ANTES de
+            // la tirada de cada fixture para no correr ninguna: el mundo alrededor no se mueve.
+            bool blackout = Wg3LightCadence.IsDarkOffice(worldSeed, segment.style,
+                Wg3StoreyLayers.RawStoreyOf(segment.FloorY),
+                segment.MinX, segment.MinZ, segment.SizeX, segment.SizeZ);
+
+            // La EMERGENCIA sólo existe en pasillos y cruces. Es lo que hace que un plafón fundido
+            // pase de «esta parte del mundo no se ve» a «esta parte del mundo se quedó sin luz», que
+            // es la lectura que se busca; en un despacho a oscuras no la hay a propósito — el
+            // despacho tiene que quedarse negro, y una emergencia verde lo iluminaría entero.
+            bool emergency = segment.style == Wg3LightCadence.StyleCorridor;
+
             for (int ix = 0; ix < nx; ix++)
             {
                 for (int iz = 0; iz < nz; iz++)
@@ -402,12 +425,15 @@ namespace BackroomsSurvival.WorldGen3
                     // van uno por lámpara, así que aquí no hay difusor que apagar; queda el hueco
                     // marcado en la jerarquía para que «no tiene plafón» y «está fundido» no sean el
                     // mismo silencio al mirar la escena.
-                    if (!fixture.lit)
+                    if (blackout || !fixture.lit)
                     {
                         var dead = new GameObject($"light_off_{ix}_{iz}");
                         dead.hideFlags = HideFlags.DontSave;
                         dead.transform.SetParent(go.transform, false);
                         dead.transform.localPosition = new Vector3(nominalX, y, nominalZ);
+                        if (emergency)
+                            AddEmergencyLight(dead.transform, lampMaterial,
+                                Wg3StoreyLayers.ForLightIn(segment.FloorY, segment.Height));
                         continue;
                     }
 
@@ -501,6 +527,104 @@ namespace BackroomsSurvival.WorldGen3
         }
 
         /// <summary>
+        /// LA EMERGENCIA VERDE de un pasillo cuyo plafón está fundido.
+        ///
+        /// # El presupuesto, que es lo que decide la forma
+        ///
+        /// **Sin sombra, y con un alcance que es la mitad del de un plafón.** Un plafón fundido no
+        /// tenía ninguna <c>Light</c>, así que esto SÍ añade luces donde no había — por eso paga cada
+        /// una de las tres cosas que le cuestan a Forward+: no proyecta (el atlas de sombras
+        /// adicionales no se toca), alcanza 5 m en vez de 11 (el clustering cuenta volumen, y 5 es un
+        /// octavo del volumen de 11) y sólo aparece en pasillos y cruces, que es un tercio largo de
+        /// los espacios, sobre el 12 % de plafones muertos. Los 11 m / 2,7 de las lámparas que ya
+        /// existían NO se tocan aquí ni en ningún sitio de este cambio.
+        ///
+        /// # Y por qué la placa emisiva no es opcional
+        ///
+        /// Una puntual verde flotando bajo el techo es una mancha sin fuente: se lee como un fallo de
+        /// render. La placa es lo que dice DE DÓNDE sale, y además es lo único que se ve desde fuera
+        /// del alcance de 5 m, que en un pasillo largo es casi siempre.
+        /// </summary>
+        private static void AddEmergencyLight(Transform parent, Material lampMaterial, uint mask)
+        {
+            var go = new GameObject("light_emergency");
+            go.hideFlags = HideFlags.DontSave;
+            go.transform.SetParent(parent, false);
+            // Colgada del hueco del plafón fundido, un palmo por debajo: es un aplique atornillado
+            // al techo, no el propio plafón encendido de otro color.
+            go.transform.localPosition = new Vector3(0f, -0.12f, 0f);
+
+            var light = go.AddComponent<Light>();
+            light.type = LightType.Point;
+            light.color = EmergencyGreen;
+            // Tenue de verdad. Con la intensidad de un plafón (2,7) el pasillo se leería MEJOR
+            // iluminado que uno con la lámpara sana, y el fundido dejaría de ser una avería.
+            light.intensity = 0.55f;
+            light.range = 5f;
+            light.shadows = LightShadows.None;
+            light.renderingLayerMask = (int)mask;
+
+            if (lampMaterial == null) return;
+            var plate = new GameObject("emergency_plate");
+            plate.hideFlags = HideFlags.DontSave;
+            plate.transform.SetParent(go.transform, false);
+            plate.transform.localPosition = new Vector3(0f, 0.10f, 0f);
+            plate.transform.localScale = new Vector3(0.22f, 0.04f, 0.10f);
+            plate.AddComponent<MeshFilter>().sharedMesh = LuminaireMesh();
+            var r = plate.AddComponent<MeshRenderer>();
+            r.sharedMaterial = EmissiveVariant(lampMaterial, EmergencyGreen, 2.2f);
+            r.renderingLayerMask = mask;
+        }
+
+        /// <summary>El verde de emergencia. Verde por encima del rojo Y del azul: es el orden de
+        /// canales que ninguna luz de la escena produce (todas cálidas), el mismo argumento con el
+        /// que <see cref="Wg3StyleMaterials"/> viste el servicio.</summary>
+        private static readonly Color EmergencyGreen = new Color(0.30f, 1f, 0.42f);
+
+        /// <summary>El azul de un monitor encendido. Frío y saturado contra un mundo entero en ámbar:
+        /// a treinta metros de un pasillo, un monitor es un punto azul y no hay nada más azul.</summary>
+        private static readonly Color MonitorBlue = new Color(0.24f, 0.52f, 1f);
+
+        /// <summary>
+        /// Una copia EMISIVA de un material, cacheada por (original, color).
+        ///
+        /// Se clona el material que ya está en la escena en vez de pedir un shader por nombre: es lo
+        /// que garantiza que el shader viaje en el build. Un <c>Shader.Find</c> devuelve null en un
+        /// player donde nadie referencie ese shader, y el síntoma —magenta— se descubre en el
+        /// ejecutable y no en el editor.
+        ///
+        /// Y es un material COMPARTIDO, no un <c>MaterialPropertyBlock</c> por objeto: son dos
+        /// variantes en toda la sesión, así que el SRP Batcher sigue metiendo todos los monitores
+        /// encendidos del mundo en la misma llamada.
+        ///
+        /// FUGAS: igual que las variantes de <see cref="Wg3StyleMaterials"/>, estos materiales NO se
+        /// destruyen al podar un chunk — los comparten todos los que sigan montados y son dos.
+        /// </summary>
+        private static readonly Dictionary<(Material, Color), Material> EmissiveCache =
+            new Dictionary<(Material, Color), Material>();
+
+        private static Material EmissiveVariant(Material source, Color colour, float boost)
+        {
+            if (source == null) return null;
+            var key = (source, colour);
+            if (EmissiveCache.TryGetValue(key, out Material cached) && cached != null) return cached;
+
+            var m = new Material(source) { hideFlags = HideFlags.DontSave };
+            m.name = $"{source.name}_emissive";
+            m.EnableKeyword("_EMISSION");
+            m.globalIlluminationFlags = MaterialGlobalIlluminationFlags.RealtimeEmissive;
+            if (m.HasProperty(BaseColorId)) m.SetColor(BaseColorId, colour * 0.35f);
+            if (m.HasProperty(ColorId)) m.SetColor(ColorId, colour * 0.35f);
+            if (m.HasProperty(EmissionColorId)) m.SetColor(EmissionColorId, colour * boost);
+            EmissiveCache[key] = m;
+            return m;
+        }
+
+        private static readonly int BaseColorId = Shader.PropertyToID("_BaseColor");
+        private static readonly int ColorId = Shader.PropertyToID("_Color");
+        private static readonly int EmissionColorId = Shader.PropertyToID("_EmissionColor");
+
+        /// <summary>
         /// ADR-107 D2 — el panel emisivo que se ve cuando miras al techo.
         ///
         /// Copia la forma de <c>BackroomsLighting.MakeLuminaire</c>: cubo aplanado, **sin collider**
@@ -539,8 +663,48 @@ namespace BackroomsSurvival.WorldGen3
             foreach (Transform t in go.GetComponentsInChildren<Transform>(true)) t.gameObject.layer = layer;
             foreach (Renderer r in go.GetComponentsInChildren<Renderer>(true)) r.renderingLayerMask = mask;
             foreach (Collider c in go.GetComponentsInChildren<Collider>(true)) c.enabled = false;
+            // EL MONITOR ENCENDIDO, uno de cada cinco. Va DESPUÉS del bucle de máscaras a propósito:
+            // ese bucle pisa el `renderingLayerMask` de todos los renderers, y la pantalla necesita
+            // el suyo igual que el resto del mueble — lo que cambia es el material, no la capa.
+            if (prop.kind == BackroomsSurvival.Net.Wg3PropMsg.Monitor
+                && Wg3LightCadence.MonitorLit(prop.xCm, prop.yCm, prop.zCm))
+                LightMonitorScreen(go);
             return go;
         }
+
+        /// <summary>
+        /// La pantalla azul de un monitor encendido.
+        ///
+        /// **SIN <c>Light</c>, y eso es la decisión entera.** Un monitor es atrezo, y hay uno por
+        /// puesto de trabajo: en un chunk de cubículos son decenas. Una puntual por monitor, aunque
+        /// fuera de un metro de alcance, multiplicaría por diez las luces de un chunk de oficinas y
+        /// se comería el tope de 256 visibles de Forward+ con lo que menos aporta de la escena. Lo
+        /// que se busca —que un despacho a oscuras tenga un punto azul al fondo— lo da la emisión
+        /// sola, porque el material emisivo se ve encendido aunque no ilumine nada.
+        ///
+        /// La pantalla se localiza POR NOMBRE porque es lo único estable: el prefab del pack la trae
+        /// como hijo <c>Screen_ON</c> con su propio <c>MeshRenderer</c> y su propio material, y
+        /// tocar el material del monitor entero pintaría de azul también la carcasa.
+        /// </summary>
+        private static void LightMonitorScreen(GameObject monitor)
+        {
+            foreach (Renderer r in monitor.GetComponentsInChildren<Renderer>(true))
+            {
+                if (r.gameObject.name.IndexOf("Screen", System.StringComparison.OrdinalIgnoreCase) < 0)
+                    continue;
+                Material lit = EmissiveVariant(r.sharedMaterial, MonitorBlue, 1.6f);
+                if (lit != null) r.sharedMaterial = lit;
+                return;
+            }
+            // Un prefab sin pantalla nombrada no es un error que deba parar nada: el monitor se queda
+            // apagado, que es lo que hacían los cinco de cada cinco hasta hoy.
+            if (_warnedNoScreen) return;
+            _warnedNoScreen = true;
+            Debug.LogWarning("[wg3] el prefab de monitor no trae un hijo 'Screen': las pantallas " +
+                             "encendidas se quedan apagadas");
+        }
+
+        private static bool _warnedNoScreen;
 
         /// <summary>Placa del techo de la oficina: 60 cm. Los paneles se alinean a ella.</summary>
         public const float CeilingTileM = 0.6f;
