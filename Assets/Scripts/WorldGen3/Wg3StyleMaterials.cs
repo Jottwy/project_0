@@ -42,8 +42,17 @@ namespace BackroomsSurvival.WorldGen3
     /// Consecuencia para quien añada papeles o ejes: **un delta de albedo del 10 % no existe**. Si
     /// hay que distinguir dos cosas, se mueven en tono o en material, nunca en claridad.
     ///
-    /// FUGAS: las variantes se crean en tiempo de ejecución. Se cachean por estilo y son 4 × 7 como
-    /// mucho para toda la sesión — NO se destruyen al podar un chunk, porque las comparten todos los
+    /// # El segundo eje (ADR-105 enm. 20)
+    ///
+    /// El papel no es lo único que decide con qué se viste una superficie: dentro de un despacho, una
+    /// mampara de cubículo es tela y el falso techo es placa de 60. Eso entra por
+    /// <see cref="Wg3Look"/>, que es el argumento que esta función siempre estuvo esperando: el
+    /// aspecto SUSTITUYE la ranura (suelo, techo o estructura) y el papel la tiñe después. Los
+    /// materiales de sustitución son assets de verdad —los primeros de WG3— y viven en
+    /// <c>Resources/Wg3Materials</c>.
+    ///
+    /// FUGAS: las variantes se crean en tiempo de ejecución. Se cachean por (estilo, aspecto) y son
+    /// 4 × 9 × 4 como mucho para toda la sesión — NO se destruyen al podar un chunk, porque las comparten todos los
     /// que sigan montados. <see cref="ClearCache"/> existe para el editor, que regenera el mundo sin
     /// reiniciar el proceso.
     /// </summary>
@@ -114,22 +123,82 @@ namespace BackroomsSurvival.WorldGen3
             };
         }
 
-        private static readonly Dictionary<byte, Material[]> Cache = new Dictionary<byte, Material[]>();
+        /// <summary>
+        /// ADR-105 enm. 20 — los materiales por FUNCIÓN, cargados de <c>Resources/Wg3Materials</c>
+        /// como el atrezo de ADR-129 y por lo mismo: no hay que cablearlos en ninguna escena ni en
+        /// el inspector de un componente que se crea en runtime.
+        ///
+        /// Los genera <c>Backrooms/WG3/Generate Office Surfaces</c>. Si falta alguno se avisa UNA
+        /// vez y se sigue con el material base: una oficina con la moqueta de siempre es peor que
+        /// una oficina, pero es mucho mejor que un mundo en rosa.
+        /// </summary>
+        private static Material Override(string name)
+        {
+            if (Overrides.TryGetValue(name, out Material cached) && cached != null) return cached;
+            var mat = Resources.Load<Material>("Wg3Materials/" + name);
+            if (mat == null)
+            {
+                if (WarnedOverrides.Add(name))
+                    Debug.LogWarning($"[wg3] falta Resources/Wg3Materials/{name}: ejecuta Backrooms/WG3/Generate Office Surfaces");
+                return null;
+            }
+            Overrides[name] = mat;
+            return mat;
+        }
+
+        private static readonly Dictionary<string, Material> Overrides = new Dictionary<string, Material>();
+        private static readonly HashSet<string> WarnedOverrides = new HashSet<string>();
+
+        /// <summary>Sustituye en el juego base las ranuras que este aspecto cambia. Los índices son
+        /// los de <see cref="Wg3MeshBuilder.SubMesh"/>: 0 suelo, 1 estructura, 2 techo, 3
+        /// decoración.</summary>
+        private static void ApplyLook(Material[] mats, Wg3Look look)
+        {
+            switch (look)
+            {
+                case Wg3Look.Office:
+                    Swap(mats, Wg3MeshBuilder.SubMesh.Floor, "Wg3_FloorOffice");
+                    break;
+                case Wg3Look.OfficeDropped:
+                    Swap(mats, Wg3MeshBuilder.SubMesh.Floor, "Wg3_FloorOffice");
+                    Swap(mats, Wg3MeshBuilder.SubMesh.Ceiling, "Wg3_CeilingOffice");
+                    break;
+                case Wg3Look.Partition:
+                    Swap(mats, Wg3MeshBuilder.SubMesh.Structure, "Wg3_Partition");
+                    break;
+            }
+        }
+
+        private static void Swap(Material[] mats, int slot, string name)
+        {
+            if (slot >= mats.Length) return;
+            Material mat = Override(name);
+            if (mat != null) mats[slot] = mat;
+        }
+
+        private static readonly Dictionary<int, Material[]> Cache = new Dictionary<int, Material[]>();
         /// <summary>Con qué juego base se llenó la caché. Si el ensamblador llega con otro —la escena
         /// de pruebas y la de juego no comparten materiales— la caché entera está mintiendo.</summary>
         private static Wg3Materials _cachedFor;
 
-        /// <summary>Los cuatro materiales con los que se dibuja un espacio de este papel. Devuelve
-        /// <c>null</c> si no hay juego base, que es lo mismo que hacía el ensamblador antes.</summary>
-        public static Material[] Resolve(Wg3Materials baseSet, byte style)
+        /// <summary>Los cuatro materiales con los que se dibuja un espacio de este papel y este
+        /// aspecto. Devuelve <c>null</c> si no hay juego base, que es lo mismo que hacía el
+        /// ensamblador antes.
+        ///
+        /// **El juego se comparte, nunca se instancia por objeto.** La caché tiene como mucho nueve
+        /// papeles por cuatro aspectos para toda la sesión, y todos los renderers que coincidan
+        /// apuntan al MISMO array: es lo que deja al SRP Batcher agrupar el mundo entero, que con un
+        /// material por chunk no podría.</summary>
+        public static Material[] Resolve(Wg3Materials baseSet, byte style, Wg3Look look = Wg3Look.Base)
         {
             if (baseSet == null) return null;
             if (!ReferenceEquals(_cachedFor, baseSet)) ClearCache(baseSet);
 
-            if (Cache.TryGetValue(style, out Material[] cached) && Valid(cached)) return cached;
+            int key = style | ((int)look << 8);
+            if (Cache.TryGetValue(key, out Material[] cached) && Valid(cached)) return cached;
 
-            Material[] mats = Build(baseSet, style);
-            Cache[style] = mats;
+            Material[] mats = Build(baseSet, style, look);
+            Cache[key] = mats;
             return mats;
         }
 
@@ -143,9 +212,13 @@ namespace BackroomsSurvival.WorldGen3
             return true;
         }
 
-        private static Material[] Build(Wg3Materials baseSet, byte style)
+        private static Material[] Build(Wg3Materials baseSet, byte style, Wg3Look look)
         {
             Material[] source = baseSet.AsArray();
+            ApplyLook(source, look);
+            // Sin tinte no hay variante que crear: se devuelven los materiales TAL CUAL, base o
+            // sustituidos. Y el aspecto de oficina siempre cae aquí, porque un despacho es el estilo
+            // 0 y el 0 no tiñe.
             if (style == 0) return source;
 
             Tint tint = TintFor(style);
@@ -180,9 +253,12 @@ namespace BackroomsSurvival.WorldGen3
         /// el proceso, y sin esto cada regeneración deja atrás su juego de materiales.</summary>
         public static void ClearCache(Wg3Materials newBaseSet = null)
         {
-            foreach (KeyValuePair<byte, Material[]> entry in Cache)
+            foreach (KeyValuePair<int, Material[]> entry in Cache)
             {
-                if (entry.Key == 0 || entry.Value == null) continue; // el 0 es el juego base: no es nuestro
+                // El byte bajo de la clave es el ESTILO: con el 0 no se creó ninguna variante, así
+                // que ese juego es de assets ajenos —los cuatro base y los de `Resources`— y
+                // destruirlo borraría el material del proyecto.
+                if ((entry.Key & 0xFF) == 0 || entry.Value == null) continue;
                 for (int i = 0; i < entry.Value.Length; i++)
                 {
                     if (entry.Value[i] == null) continue;

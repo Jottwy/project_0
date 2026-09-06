@@ -266,7 +266,10 @@ namespace BackroomsSurvival.WorldGen3
             // FRENTE A — el papel del espacio decide con qué se viste. `segment.style` llevaba
             // viajando por el cable desde el wire 48 sin que lo leyera nadie, y por eso un pasillo,
             // un almacén y una nave se dibujaban idénticos.
-            Material[] mats = Wg3StyleMaterials.Resolve(materials, segment.style);
+            // ADR-105 enm. 20 — y el segundo eje: un despacho lleva moqueta de oficina, y si además
+            // le bajaron el techo (enm. 18) la placa de 60 con su perfil en T.
+            Material[] mats = Wg3StyleMaterials.Resolve(materials, segment.style,
+                Wg3Looks.ForSegment(segment.style, segment.heightCm));
             if (mats != null) renderer.sharedMaterials = mats;
             // Un atrio mide dos plantas, así que pide las dos capas y lo alumbran los plafones de
             // arriba y los de abajo. Una sala normal pide una sola, y ahí muere la fuga.
@@ -975,7 +978,11 @@ namespace BackroomsSurvival.WorldGen3
 
             go.AddComponent<MeshFilter>().sharedMesh = mesh;
             var renderer = go.AddComponent<MeshRenderer>();
-            Material[] mats = Wg3StyleMaterials.Resolve(materials, solid.BaseStyle);
+            // ADR-105 enm. 20 — una mampara de cubículo se reconoce por su forma (12 × 140) y va en
+            // tela gris. Todo lo demás —pilares, pretiles, vigas— es de obra, como en cualquier
+            // otro espacio.
+            Material[] mats = Wg3StyleMaterials.Resolve(materials, solid.BaseStyle,
+                Wg3Looks.ForSolid(solid.sizeXCm, solid.sizeZCm, solid.bottomYCm, solid.topYCm));
             // ADR-105 enm. 19 — una loseta se dibuja con el material del TECHO: una placa caída es
             // la que falta arriba, y la submalla de decoración traería el material del rodapié.
             if (mats != null && solid.IsDecoration && sy <= FlatDecorationMaxM
