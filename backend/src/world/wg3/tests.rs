@@ -8427,17 +8427,58 @@ fn an_atrium_never_opens_onto_nothing() {
                 atria += 1;
                 let eye = (s.floor_y_cm + plan::STOREY_HEIGHT_CM) as f32 / 100.0 + EYE_M;
                 for band in fill::bands_of(&s.rect, grow) {
+                    // Sin las esquinas de la banda, igual que `atrium_carves`: una sala de
+                    // arriba que sólo pisa el sobrante de la banda está al lado, no encima.
+                    let inner = {
+                        let along_x = band.width_cm() >= band.depth_cm();
+                        let mut c = band;
+                        if along_x {
+                            c.min_x_cm += grow;
+                            c.max_x_cm -= grow;
+                        } else {
+                            c.min_z_cm += grow;
+                            c.max_z_cm -= grow;
+                        }
+                        c
+                    };
                     let someone_up = up.is_some_and(|u| {
                         u.spaces
                             .iter()
-                            .any(|t| t.role.is_built() && t.hits_rect(&band))
+                            .any(|t| t.role.is_built() && t.hits_rect(&inner))
                     });
+                    // El vano ya no es la banda entera: es el tramo de banda bajo cada sala de
+                    // arriba (fusión 2026-09-06). Se mira si algún recorte a la cota del forjado
+                    // pisa el CENTRO de la banda, fuera de las esquinas, porque el recorte del
+                    // atrio vecino asoma por la esquina compartida sin que este lado esté abierto.
+                    let core = {
+                        let along_x = band.width_cm() >= band.depth_cm();
+                        let mut c = band;
+                        if along_x {
+                            c.min_x_cm += 2 * grow;
+                            c.max_x_cm -= 2 * grow;
+                        } else {
+                            c.min_z_cm += 2 * grow;
+                            c.max_z_cm -= 2 * grow;
+                        }
+                        c
+                    };
+                    let along_x = band.width_cm() >= band.depth_cm();
                     let carved = carves.iter().any(|k| {
-                        k.x_cm == band.min_x_cm
-                            && k.z_cm == band.min_z_cm
-                            && k.size_x_cm == band.width_cm()
-                            && k.size_z_cm == band.depth_cm()
-                            && k.bottom_y_cm == s.floor_y_cm + plan::STOREY_HEIGHT_CM
+                        k.bottom_y_cm == s.floor_y_cm + plan::STOREY_HEIGHT_CM
+                            // Con la FORMA de la banda: el mismo grosor y en la misma línea de
+                            // muro. Una puerta de la planta de arriba también es un recorte a esa
+                            // cota y no es un vano de atrio.
+                            && if along_x {
+                                k.z_cm == band.min_z_cm
+                                    && k.size_z_cm == band.depth_cm()
+                                    && k.x_cm < core.max_x_cm
+                                    && k.x_cm + k.size_x_cm > core.min_x_cm
+                            } else {
+                                k.x_cm == band.min_x_cm
+                                    && k.size_x_cm == band.width_cm()
+                                    && k.z_cm < core.max_z_cm
+                                    && k.z_cm + k.size_z_cm > core.min_z_cm
+                            }
                     });
                     assert_eq!(
                         carved,

@@ -542,6 +542,18 @@ pub fn fill(plan: &RegionPlan, manifest: &Wg3Manifest) -> FilledRegion {
 /// aquí: nada de este módulo aprende una tercera coordenada, porque la planta ya viene con su cota
 /// puesta en cada espacio.
 pub fn fill_building(building: &RegionBuilding, manifest: &Wg3Manifest) -> FilledRegion {
+    fill_building_with(building, manifest, OCCLUDER_DENSITY)
+}
+
+/// [`fill_building`] con la densidad de oclusores intra-espacio como parámetro.
+///
+/// Existe para lo mismo que `plan_storey_with`: poder medir la pasada contra sí misma APAGADA
+/// (`occluder_density = 0.0`) sin tocar nada más. Lo servido entra siempre por [`fill_building`].
+pub fn fill_building_with(
+    building: &RegionBuilding,
+    manifest: &Wg3Manifest,
+    occluder_density: f32,
+) -> FilledRegion {
     let mut out = FilledRegion::default();
     for (n, plan) in building.storeys.iter().enumerate() {
         // **Donde aterriza un pozo no va una pieza del catálogo** (auditoría 2026-09-02). El
@@ -594,6 +606,20 @@ pub fn fill_building(building: &RegionBuilding, manifest: &Wg3Manifest) -> Fille
         &out.carves,
         &out.segments,
     );
+    // Oclusores intra-espacio (feat/occluders, fusionada el 2026-09-06): después de pilares y
+    // divisiones porque los esquivan, y ANTES de bloques, pilastras, listones y atrezo, que esquivan
+    // `out.solids` y por tanto también a éstos.
+    out.solids.extend(interior_occluders(
+        building,
+        manifest,
+        &placed,
+        &pillars,
+        &partitions,
+        &seg_doors,
+        &out.carves,
+        &out.segments,
+        occluder_density,
+    ));
     out.solids.extend(partitions);
     out.solids.extend(pillars);
     // ADR-105 enm. 17 — los bloques gruesos, después de pilares y divisiones porque los esquivan.
@@ -1427,9 +1453,16 @@ fn wall_blocks(
                     if room < BLOCK_LEN_CM.0 || across < t {
                         continue;
                     }
-                    let len = (BLOCK_LEN_CM.0
+                    let mut len = (BLOCK_LEN_CM.0
                         + (st.next01() * (BLOCK_LEN_CM.1 - BLOCK_LEN_CM.0) as f32) as i32)
                         .min(room);
+                    // Un bloque de 150×300, 150×350 o 200×400 tiene EXACTAMENTE la silueta de una
+                    // cruz de pilar y `is_pillar` lo clasifica como tal (STATE lo daba por ambiguo).
+                    // Sale una vez de cada cincuenta sorteos; se le quitan diez centímetros y deja
+                    // de tener la forma de otro emisor.
+                    if len % PILLAR_SIDE_STEP_CM == 0 {
+                        len -= 10;
+                    }
                     let (w, d) = if along_x { (len, t) } else { (t, len) };
                     let x = inner.min_x_cm
                         + ((st.next01() * (inner.width_cm() - w) as f32) as i32 / 10) * 10;
@@ -2341,72 +2374,53 @@ fn atrium_solids(building: &RegionBuilding) -> Vec<Wg3Solid> {
             let r = s.rect;
             let deck_y = s.floor_y_cm + STOREY_HEIGHT_CM;
 
-            // ---- PRETILES, lado a lado ----
+            // ---- PRETILES, sólo sobre los tramos abiertos ----
+            // La misma cuenta que `atrium_carves`, por [`atrium_open_runs`] (fusión 2026-09-06).
+            // Antes se probaba una franja de 50 cm a lo largo de todo el lado y, con una sala de
+            // arriba en cualquier punto, el pretil corría el lado entero — con el vano ya parcial,
+            // eso dejaba pretil con muro encima («sigue siendo macizo medio metro arriba»).
+            let grow = (CARVE_DEPTH_M * CM_PER_M) as i32;
+            let bands = bands_of(&r, grow);
             for side in 0..4u8 {
-                // La franja de suelo que habría al otro lado del borde. Media celda basta: lo que se
-                // pregunta es si hay planta ahí, no cuánta.
-                let probe = match side {
-                    0 => super::plan::PlanRect {
-                        min_x_cm: r.min_x_cm,
-                        min_z_cm: r.max_z_cm,
-                        max_x_cm: r.max_x_cm,
-                        max_z_cm: r.max_z_cm + 50,
-                    },
-                    1 => super::plan::PlanRect {
-                        min_x_cm: r.max_x_cm,
-                        min_z_cm: r.min_z_cm,
-                        max_x_cm: r.max_x_cm + 50,
-                        max_z_cm: r.max_z_cm,
-                    },
-                    2 => super::plan::PlanRect {
-                        min_x_cm: r.min_x_cm,
-                        min_z_cm: r.min_z_cm - 50,
-                        max_x_cm: r.max_x_cm,
-                        max_z_cm: r.min_z_cm,
-                    },
-                    _ => super::plan::PlanRect {
-                        min_x_cm: r.min_x_cm - 50,
-                        min_z_cm: r.min_z_cm,
-                        max_x_cm: r.min_x_cm,
-                        max_z_cm: r.max_z_cm,
-                    },
+                let band = match side {
+                    0 => bands[0],
+                    1 => bands[2],
+                    2 => bands[1],
+                    _ => bands[3],
                 };
-                if !above
-                    .spaces
-                    .iter()
-                    .any(|t| t.role.is_built() && t.rect.overlaps(&probe))
-                {
-                    continue;
-                }
-
-                // El pretil ocupa el borde entero del lado, partido en tramos manejables.
                 let along_x = side.is_multiple_of(2);
                 let (from, to) = if along_x {
                     (r.min_x_cm, r.max_x_cm)
                 } else {
                     (r.min_z_cm, r.max_z_cm)
                 };
-                let mut at = from;
-                while at < to {
-                    let end = (at + MAX_SOLID_CM).min(to);
-                    let (x, z, sx, sz) = match side {
-                        0 => (at, r.max_z_cm, end - at, PARAPET_T_CM),
-                        1 => (r.max_x_cm, at, PARAPET_T_CM, end - at),
-                        2 => (at, r.min_z_cm - PARAPET_T_CM, end - at, PARAPET_T_CM),
-                        _ => (r.min_x_cm - PARAPET_T_CM, at, PARAPET_T_CM, end - at),
-                    };
-                    out.push(Wg3Solid {
-                        x_cm: x,
-                        z_cm: z,
-                        size_x_cm: sx,
-                        size_z_cm: sz,
-                        bottom_y_cm: deck_y,
-                        top_y_cm: deck_y + PARAPET_H_CM,
-                        style,
-                        yaw_deg: 0,
-                        shape: SHAPE_BOX,
-                    });
-                    at = end;
+                for (ra, rb) in atrium_open_runs(&band, above, grow) {
+                    let (ra, rb) = (ra.max(from), rb.min(to));
+                    if rb <= ra {
+                        continue;
+                    }
+                    let mut at = ra;
+                    while at < rb {
+                        let end = (at + MAX_SOLID_CM).min(rb);
+                        let (x, z, sx, sz) = match side {
+                            0 => (at, r.max_z_cm, end - at, PARAPET_T_CM),
+                            1 => (r.max_x_cm, at, PARAPET_T_CM, end - at),
+                            2 => (at, r.min_z_cm - PARAPET_T_CM, end - at, PARAPET_T_CM),
+                            _ => (r.min_x_cm - PARAPET_T_CM, at, PARAPET_T_CM, end - at),
+                        };
+                        out.push(Wg3Solid {
+                            x_cm: x,
+                            z_cm: z,
+                            size_x_cm: sx,
+                            size_z_cm: sz,
+                            bottom_y_cm: deck_y,
+                            top_y_cm: deck_y + PARAPET_H_CM,
+                            style,
+                            yaw_deg: 0,
+                            shape: SHAPE_BOX,
+                        });
+                        at = end;
+                    }
                 }
             }
         }
@@ -4838,6 +4852,605 @@ fn beam_strip(
     }
 }
 
+// ─────────────────── oclusores intra-espacio (2026-09-04) ───────────────────
+//
+// La medida que abre esta pasada: con la masa interior de ADR-105 enm. 3 ya puesta, la isovista
+// mediana del mundo servido sigue en 249 m² y el clustering de VGA en 0,797 — o sea, salas-caja
+// convexas: desde cualquier punto se ve casi todo lo que hay, y lo que se ve se ve entre sí. La
+// masa existente entra en espacios de 90 m² y sólo con `PARTITION_ROOM_CHANCE` 0,80 y una división
+// por cada 170 m², así que la sala normal se queda con UNA pieza de obra y el resto es aire.
+//
+// Esto no sustituye a aquello: se añade por debajo, en el tramo de 60 a 90 m² que aquélla no toca y
+// dentro de las grandes que ya llevan división, con piezas más pequeñas y más numerosas.
+
+/// Superficie mínima para que un espacio admita oclusores, en m². El encargo pide «> 60 m²».
+const OCCLUDER_MIN_AREA_M2: f32 = 60.0;
+
+/// Grosor de un divisor u oclusor de esta pasada, en centímetros.
+///
+/// **Cuarenta, y NO los treinta de una división de ADR-105 enm. 3.** El grosor es lo que identifica
+/// a cada emisor de macizos en los tests ya validados —el pretil mide 20, el pilar 200 y la división
+/// 30, y `partitions_land_where_the_grammar_says` filtra por el eje fino igual a 30—. Un oclusor de
+/// 30 entraría en ese filtro y se mediría con la gramática de otra pasada. Cuarenta lo deja fuera
+/// sin tocar un solo test.
+/// **Fusión 2026-09-06:** en main el 40 ya lo tienen la viga (`BEAM_T_CM`) y la arcada
+/// (`ARCADE_T_CM`), y `occluder_tests::ours` reconoce esta pasada por el eje fino. Pasa a 45, que
+/// no lo produce ningún otro emisor.
+const OCCLUDER_T_CM: i32 = 45;
+
+/// Lado de un pilar de esta pasada, en centímetros. Ochenta por el mismo motivo que el grosor: el
+/// pilar de nave mide 200 y los tests lo filtran por ese número exacto.
+const OCCLUDER_PILLAR_CM: i32 = 80;
+
+/// Paso libre que se le exige a un divisor en su extremo suelto, en centímetros.
+///
+/// El encargo pide 120 cm a cada lado. **Se usan 400**, que es lo que `PARTITION_GAP_CM` tiene
+/// medido sobre el ráster servido: con 150 cm salían hasta 2 islas y la mancha mayor bajaba al
+/// 98,0 %, con 400 la mancha es del 100 %. 120 es el suelo del encargo, no un objetivo, y quedarse
+/// en el suelo es exactamente cómo se fabrica una región partida en dos.
+const OCCLUDER_CLEAR_CM: i32 = 400;
+
+/// Lo que un oclusor exento deja libre alrededor, en centímetros. Mismo criterio que
+/// `PARTITION_ISLAND_CLEAR_CM`: no es un paso entre dos mitades, es el rodeo alrededor de una pieza
+/// que ya se bordea por los cuatro lados.
+const OCCLUDER_ISLAND_CLEAR_CM: i32 = 250;
+
+/// Longitud mínima y máxima de un divisor, en centímetros. Por debajo del mínimo no oculta nada;
+/// por encima del máximo deja de ser parcial y parte la sala, que es lo que esta pasada NO hace.
+const OCCLUDER_MIN_LEN_CM: i32 = 250;
+const OCCLUDER_MAX_LEN_CM: i32 = 900;
+
+/// Fracción del vano que recorre un divisor anclado a pared, mínimo y máximo.
+///
+/// **Es el corazón del encargo**: «un pilar en el centro apenas oculta nada; un divisor parcial que
+/// nace de una pared y avanza hacia el interior oculta mucho». Un espolón que recorre más de la
+/// mitad del vano corta toda línea de visión que cruce ese eje sin cerrar el paso, porque el otro
+/// extremo sigue abierto.
+const OCCLUDER_SPUR_SPAN: (f32, f32) = (0.40, 0.70);
+
+/// Reparto acumulado de los tres tipos: DIVISOR ANCLADO, MEDIA PARED y PILAR.
+///
+/// Manda el divisor anclado, por lo que dice el encargo. La media pared —exenta, a media altura—
+/// es la que rompe la convexidad en mitad de la sala sin cerrar la lectura del volumen, y el pilar
+/// va el último porque es el que menos oculta.
+const OCCLUDER_SPUR_BELOW: f32 = 0.55;
+const OCCLUDER_HALFWALL_BELOW: f32 = 0.85;
+
+/// Altura de una media pared, en centímetros. Por encima de los ojos (1,60 m), así que corta la
+/// línea de visión entera; por debajo del techo, así que el volumen de la sala se sigue leyendo.
+const OCCLUDER_HALFWALL_H_CM: i32 = 210;
+
+/// Distancia mínima entre un oclusor y el punto de un vano, en centímetros. Mismo criterio y mismo
+/// motivo que `PARTITION_DOOR_CLEAR_CM`: obra delante de una puerta la tapia sin que nada se entere.
+const OCCLUDER_DOOR_CLEAR_CM: i32 = 350;
+
+/// Margen contra la pared paralela, en centímetros: lo que queda de sala al otro lado.
+const OCCLUDER_WALL_MARGIN_CM: i32 = 250;
+
+/// **Separación entre un vano y la pantalla que lo sombrea**, mínimo y máximo, en centímetros.
+///
+/// Es el ancho del canal que queda entre la pared del vano y la pantalla: por ahí se entra y por ahí
+/// se sale hacia el extremo suelto. El encargo pide 120 cm de paso; el suelo aquí es 250 por lo
+/// mismo que `OCCLUDER_CLEAR_CM` — 120 es el mínimo del cuerpo, no el de una entrada por la que
+/// además se cruza a oscuras.
+const OCC_SHADOW_OFFSET_MIN_CM: i32 = 250;
+const OCC_SHADOW_OFFSET_MAX_CM: i32 = 500;
+
+/// Cuánto tiene que pasarse la pantalla del centro del vano para taparlo de verdad, en centímetros.
+///
+/// Medio vano son 120; con 150 la pantalla sobresale por el lado por el que se rodea, así que la
+/// recta que entra por el vano no encuentra sala al otro lado sino canto de pantalla.
+const OCC_SHADOW_OVERHANG_CM: i32 = 150;
+
+/// Lo que tiene que quedar de sala MÁS ALLÁ de la pantalla para que ponerla tenga sentido, en
+/// centímetros. Por debajo de esto la pantalla no sombrea un espacio: lo tapia.
+const OCC_SHADOW_ROOM_BEYOND_CM: i32 = 250;
+
+/// Tope de oclusores por espacio. Un espacio con más obra que esto no es una sala con oclusores:
+/// es un laberinto, y el encargo pide romper la convexidad, no cerrar el sitio.
+const OCCLUDER_MAX_PER_SPACE: i32 = 6;
+
+/// **Metros cuadrados de espacio por oclusor, POR PAPEL** — la densidad que el encargo pide exponer
+/// «por RoomType». Cuanto más bajo, más obra.
+///
+/// El reparto no es de gusto: sale de para qué sirve cada sitio. Un almacén está lleno de estantes
+/// y es donde más se justifica la obra suelta; una oficina lleva mamparas; un callejón sin salida es
+/// el sitio raro y se le deja densidad alta para que lo sea de verdad. Una nave (`Hall`) va más
+/// suelta porque ya lleva retícula de pilares, y la circulación no lleva NINGUNO —un oclusor en la
+/// espina es el fallo de conectividad de siempre con otro nombre—.
+fn occluder_area_per_one_m2(role: SpaceRole) -> Option<f32> {
+    match role {
+        SpaceRole::Office => Some(38.0),
+        SpaceRole::Storage => Some(30.0),
+        SpaceRole::Service => Some(34.0),
+        SpaceRole::DeadEnd => Some(32.0),
+        SpaceRole::Hall => Some(55.0),
+        // Circulación, escaleras y vacío: nunca.
+        SpaceRole::Spine | SpaceRole::Corridor | SpaceRole::Stair | SpaceRole::Void => None,
+    }
+}
+
+/// Multiplicador global de la densidad de oclusores. 1.0 es lo servido; 0.0 apaga la pasada entera.
+pub const OCCLUDER_DENSITY: f32 = 1.0;
+
+/// Sal de la gramática de oclusores de un ESPACIO.
+const SALT_OCCLUDER_SPACE: u32 = 0xB1_11_A0_03;
+/// Sal del sorteo de CADA oclusor.
+const SALT_OCCLUDER_ONE: u32 = 0xB1_11_A0_04;
+
+/// **Oclusores intra-espacio**: divisores anclados a una pared, medias paredes exentas y pilares
+/// pequeños, dentro de los espacios de más de [`OCCLUDER_MIN_AREA_M2`].
+///
+/// # Qué rompe, y por qué no es «más masa»
+///
+/// Lo que se busca no es llenar: es que desde un punto de la sala no se vea la sala entera. Un pilar
+/// en el centro deja cuatro cuadrantes que se ven todos entre sí y el clustering de VGA no se mueve;
+/// un divisor que NACE DE UNA PARED y avanza hacia dentro parte el conjunto visible en dos mitades
+/// que no se ven entre ellas, y ésa es la métrica que el encargo pide bajar. Por eso el reparto de
+/// tipos manda el espolón ([`OCCLUDER_SPUR_BELOW`]) y el pilar es el residuo.
+///
+/// # La conectividad no se confía
+///
+/// Ningún oclusor de esta pasada cruza su vano: el anclado deja [`OCCLUDER_CLEAR_CM`] en su extremo
+/// suelto, y el exento deja [`OCCLUDER_ISLAND_CLEAR_CM`] a los cuatro lados. No hay un solo tipo que
+/// pueda partir un espacio, que es la diferencia con la partición de ADR-105 enm. 3 —aquélla sí
+/// cruza, y por eso hay como mucho una por espacio—.
+///
+/// # Todo sorteo parte de (chunk, espacio, índice)
+///
+/// El encargo lo pide así y la regla R3 del módulo pide que parta de la POSICIÓN: se cumplen las
+/// dos, porque el «espacio» entra como el centro de su huella —que es su posición— y el chunk sale
+/// de ese mismo centro. El índice sólo separa un oclusor del siguiente DENTRO del mismo espacio. No
+/// hay ningún contador global: dos regiones vecinas producen el mismo oclusor en el mismo sitio sin
+/// hablarse.
+/// Por qué borde de `r` cae un punto de su perímetro. Mismos números que `plan::side_of_point_in`:
+/// 0 = z máxima, 1 = x máxima, 2 = z mínima, 3 = x mínima. `None` si no cae en ninguno.
+fn side_of_door_on(r: &super::plan::PlanRect, door: (i32, i32)) -> Option<u8> {
+    const EPS: i32 = 2;
+    let (x, z) = door;
+    if (r.max_z_cm - z).abs() <= EPS {
+        return Some(0);
+    }
+    if (r.max_x_cm - x).abs() <= EPS {
+        return Some(1);
+    }
+    if (r.min_z_cm - z).abs() <= EPS {
+        return Some(2);
+    }
+    if (r.min_x_cm - x).abs() <= EPS {
+        return Some(3);
+    }
+    None
+}
+
+/// **La pantalla que sombrea un vano**: un divisor anclado a una pared lateral, plantado a unos
+/// metros por dentro del vano y paralelo a la pared que lo aloja.
+///
+/// # Por qué ésta y no una repartida por la sala
+///
+/// Lo que llena la isovista de un punto cualquiera no es la sala en la que está: es lo que se ve
+/// POR LOS VANOS de las salas de al lado. La medida de `layout_metrics_occ` lo dice sin discutirlo
+/// —las celdas pisables sólo bajaron un 0,8 %, o sea que la obra repartida apenas tapa suelo, y la
+/// isovista mediana se quedó en 227 m²—. Una pantalla delante del vano corta esa recta en su único
+/// cuello: el hueco por el que la sala de al lado entra en la cuenta.
+///
+/// # Qué devuelve, y cómo no corta el paso
+///
+/// `(across_x, at, desde, hasta)` en las mismas coordenadas que usa el resto de la pasada. La
+/// pantalla nace en la pared lateral MÁS CERCANA al vano y muere en el aire tras pasarse
+/// [`OCC_SHADOW_OVERHANG_CM`] del centro del hueco: se entra, se topa uno con ella y se rodea por su
+/// extremo suelto, que deja [`OCCLUDER_CLEAR_CM`] hasta la pared de enfrente. El canal entre el vano
+/// y la pantalla mide [`OCC_SHADOW_OFFSET_MIN_CM`] como poco.
+///
+/// `None` cuando la sala no da para ello: sin sitio más allá de la pantalla, sin largo mínimo, o
+/// con la pantalla tan larga que ya no dejaría por dónde rodearla.
+fn shadow_baffle(
+    host: &super::plan::PlanRect,
+    side: u8,
+    door: (i32, i32),
+    offset_cm: i32,
+) -> Option<(bool, i32, i32, i32)> {
+    // El eje sobre el que CORRE la pantalla es el de la pared del vano; `across_x` es la convención
+    // del resto de la pasada: cierto = la pantalla corre en Z y su grosor va en X.
+    let across_x = side == 1 || side == 3;
+    let (depth, at) = match side {
+        0 => (host.depth_cm(), host.max_z_cm - offset_cm - OCCLUDER_T_CM),
+        2 => (host.depth_cm(), host.min_z_cm + offset_cm),
+        1 => (host.width_cm(), host.max_x_cm - offset_cm - OCCLUDER_T_CM),
+        _ => (host.width_cm(), host.min_x_cm + offset_cm),
+    };
+    if depth - offset_cm - OCCLUDER_T_CM < OCC_SHADOW_ROOM_BEYOND_CM {
+        return None;
+    }
+    let (lo, hi, dc) = if across_x {
+        (host.min_z_cm, host.max_z_cm, door.1)
+    } else {
+        (host.min_x_cm, host.max_x_cm, door.0)
+    };
+    if dc <= lo || dc >= hi {
+        return None;
+    }
+    let room = hi - lo;
+    // Ancla en la pared lateral más cercana al vano: es la que deja la pantalla más corta, o sea la
+    // que menos paso se come para el mismo sombreado.
+    let from_lo = dc + OCC_SHADOW_OVERHANG_CM - lo;
+    let from_hi = hi - (dc - OCC_SHADOW_OVERHANG_CM);
+    let anchor_lo = from_lo <= from_hi;
+    let want = if anchor_lo { from_lo } else { from_hi };
+    let len = want.min(room - OCCLUDER_CLEAR_CM).min(OCCLUDER_MAX_LEN_CM);
+    if len < OCCLUDER_MIN_LEN_CM {
+        return None;
+    }
+    let (from, to) = if anchor_lo {
+        (lo, lo + len)
+    } else {
+        (hi - len, hi)
+    };
+    // Y tras el recorte tiene que SEGUIR tapando el vano: media hoja de puerta pasada del centro. Si
+    // el recorte se la comió, esta pantalla no sombrea nada y no se pone.
+    let half_leaf = super::plan::DOORWAY_CM / 2;
+    let covers = if anchor_lo {
+        to >= dc + half_leaf
+    } else {
+        from <= dc - half_leaf
+    };
+    if !covers {
+        return None;
+    }
+    Some((across_x, at, from, to))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn interior_occluders(
+    building: &RegionBuilding,
+    manifest: &Wg3Manifest,
+    placements: &[Wg3Placement],
+    pillars: &[Wg3Solid],
+    partitions: &[Wg3Solid],
+    seg_doors: &[(i32, i32, i32)],
+    carves: &[Wg3Carve],
+    segments: &[Wg3Segment],
+    density: f32,
+) -> Vec<Wg3Solid> {
+    let mut out = Vec::new();
+    if density <= 0.0 {
+        return out;
+    }
+    let seed = building.seed;
+
+    let taken: Vec<(f32, f32, f32, f32)> = placements
+        .iter()
+        .filter_map(|p| {
+            manifest
+                .pieces
+                .get(p.piece as usize)
+                .map(|piece| p.bounds(piece))
+        })
+        .collect();
+    // Los macizos que ya existen, como rectángulos de centímetros: un oclusor encima de un pilar o
+    // de una división es una caja rara, no dos elementos.
+    let solid_rect = |s: &Wg3Solid| super::plan::PlanRect {
+        min_x_cm: s.x_cm,
+        min_z_cm: s.z_cm,
+        max_x_cm: s.x_cm + s.size_x_cm,
+        max_z_cm: s.z_cm + s.size_z_cm,
+    };
+    let existing: Vec<super::plan::PlanRect> =
+        pillars.iter().chain(partitions).map(&solid_rect).collect();
+
+    for (n, plan) in building.storeys.iter().enumerate() {
+        let landings: Vec<super::plan::PlanRect> = building
+            .wells
+            .iter()
+            .filter(|w| w.storey_below + 1 == n)
+            .map(|w| w.rect.shrunk(-50))
+            .collect();
+        let wells_here: Vec<super::plan::PlanRect> = building
+            .wells
+            .iter()
+            .filter(|w| w.storey_below == n)
+            .map(|w| w.rect.shrunk(-50))
+            .collect();
+        // Las mismas dos renuncias que `interior_partitions`, por las mismas medidas: el espacio al
+        // que LLEGA una escalera y el que abre una puerta de junta se dejan enteros en paz. Aquí
+        // ningún oclusor cruza, así que en teoría no haría falta; se mantiene porque lo que encierra
+        // la celda de una puerta de junta no es la obra sola, es la obra MÁS el borde de la región.
+        let arrivals: Vec<usize> = building
+            .wells
+            .iter()
+            .filter(|w| w.storey_below + 1 == n)
+            .map(|w| w.space_above)
+            .collect();
+        let gated: Vec<usize> = plan.gates.iter().map(|g| g.space).collect();
+        // ADR-126 D5 — la rejilla de pozos de la planta baja (fusión 2026-09-06): un oclusor
+        // encima de un pozo es un macizo sobre un agujero.
+        let pits_here = if n == building.ground {
+            pit_rects_of(building, segments)
+        } else {
+            Vec::new()
+        };
+
+        for (i, s) in plan.built() {
+            let Some(area_per_one) = occluder_area_per_one_m2(s.role) else {
+                continue;
+            };
+            if s.rise_cm != 0 || arrivals.contains(&i) || gated.contains(&i) {
+                continue;
+            }
+            if s.area_m2() < OCCLUDER_MIN_AREA_M2 {
+                continue;
+            }
+
+            // La cuenta de oclusores del espacio sale de su ÁREA y su papel, no de un dado: la
+            // densidad es el parámetro que el encargo pide exponer, y sortear además cuántos pone
+            // metería una segunda perilla que nadie podría ajustar por separado. Lo que se sortea es
+            // dónde y de qué tipo va cada uno, oclusor a oclusor.
+            let want = ((s.area_m2() * density / area_per_one).round() as i32)
+                .clamp(1, OCCLUDER_MAX_PER_SPACE);
+
+            let doors: Vec<(i32, i32)> = plan
+                .links
+                .iter()
+                .filter(|l| l.a == i || l.b == i)
+                .map(|l| (l.at_x_cm, l.at_z_cm))
+                .chain(
+                    plan.gates
+                        .iter()
+                        .filter(|g| g.space == i)
+                        .map(|g| (g.x_cm, g.z_cm)),
+                )
+                // ADR-105 enm. 9 — y las bocas de los tramos emitidos, que son las únicas que
+                // saben dónde cae de verdad la boca de una ruta o una puerta rescatada.
+                .chain(
+                    seg_doors
+                        .iter()
+                        .filter(|&&(x, z, floor)| floor == s.floor_y_cm && on_space_wall(s, x, z))
+                        .map(|&(x, z, _)| (x, z)),
+                )
+                .collect();
+
+            // **El orden de los vanos es el del MUNDO, no el del plan.** Se ordena por coordenada
+            // para que dos regiones vecinas sombreen los mismos huecos aunque el plan las haya
+            // enumerado distinto: el índice `k` sólo puede significar algo si la lista es estable.
+            let mut shaded = doors.clone();
+            shaded.sort_unstable();
+
+            let clear = clear_height_cm(s);
+            let style = style_of(s.role);
+            // El agujero de forjado del centro, que `hole_carves` estampa siempre centrado: un
+            // macizo es inmune a los vanos, así que obra ahí sale ENCIMA del hueco.
+            let r = s.rect;
+            let hole = super::plan::PlanRect {
+                min_x_cm: r.min_x_cm + (r.width_cm() - HOLE_SIDE_CM) / 2,
+                min_z_cm: r.min_z_cm + (r.depth_cm() - HOLE_SIDE_CM) / 2,
+                max_x_cm: r.min_x_cm + (r.width_cm() + HOLE_SIDE_CM) / 2,
+                max_z_cm: r.min_z_cm + (r.depth_cm() + HOLE_SIDE_CM) / 2,
+            };
+            let mut mine: Vec<super::plan::PlanRect> = Vec::new();
+
+            // Las partes de mayor a menor, una por oclusor y en círculo: mismo reparto que la masa
+            // interior, y por la misma razón medida —sorteando la parte, media tirada cae en el
+            // brazo estrecho de una L y se pierde el oclusor entero—.
+            let mut hosts: Vec<super::plan::PlanRect> = s.parts().to_vec();
+            hosts.sort_unstable_by_key(|p| -(p.area_m2() as i64));
+
+            for k in 0..want as usize {
+                let host = hosts[k % hosts.len()];
+                // El índice entra en el sorteo de CADA oclusor, y sólo ahí: separa el oclusor k del
+                // k+1 dentro del mismo espacio sin que ningún contador global cruce de sala a sala.
+                let mut one = super::hash::stream_at(
+                    seed.wrapping_add(k as i32),
+                    host.centre_m().0,
+                    host.centre_m().1,
+                    SALT_OCCLUDER_ONE,
+                );
+
+                // **LOS VANOS PRIMERO.** Mientras queden vanos de este espacio sin sombrear, el
+                // oclusor va delante de uno; sólo cuando se acaban se reparte por la sala con la
+                // gramática de siempre. Es el cambio de criterio entero: lo que llena una isovista
+                // no es la sala en la que se está, sino lo que se ve por los huecos.
+                let target = shaded.get(k).copied();
+                let offset = OCC_SHADOW_OFFSET_MIN_CM
+                    + (one.next01() * (OCC_SHADOW_OFFSET_MAX_CM - OCC_SHADOW_OFFSET_MIN_CM) as f32)
+                        as i32;
+                // **Y la pantalla se planta en la parte que TIENE el vano, no en la que le tocaba
+                // por turno.** Sobre una huella compuesta, `hosts[k % n]` rota entre los brazos de
+                // la L y el vano casi nunca cae en el que toca: con el turno salían 525 vanos
+                // sombreados de 2598, o sea que cuatro de cada cinco pantallas se caían por buscar
+                // la puerta en el brazo equivocado y acababan de oclusor repartido.
+                let shadow = target.and_then(|d| {
+                    let part = hosts.iter().find(|p| side_of_door_on(p, d).is_some())?;
+                    let side = side_of_door_on(part, d)?;
+                    shadow_baffle(part, side, d, offset)
+                });
+
+                let kind = one.next01();
+                let across_x = one.next01() < 0.5;
+                // `span` es el vano que el oclusor cruzaría de lado a lado; `room_side` el
+                // perpendicular, sobre el que se elige a qué altura de la sala se planta.
+                let (span, room_side) = if across_x {
+                    (host.depth_cm(), host.width_cm())
+                } else {
+                    (host.width_cm(), host.depth_cm())
+                };
+                let free = room_side - 2 * OCCLUDER_WALL_MARGIN_CM - OCCLUDER_T_CM;
+                if free <= 0 || span < OCCLUDER_MIN_LEN_CM + OCCLUDER_CLEAR_CM {
+                    continue;
+                }
+                let at_base = if across_x {
+                    host.min_x_cm
+                } else {
+                    host.min_z_cm
+                };
+                let at = at_base + OCCLUDER_WALL_MARGIN_CM + (one.next01() * free as f32) as i32;
+                let from_base = if across_x {
+                    host.min_z_cm
+                } else {
+                    host.min_x_cm
+                };
+
+                let (run_from, run_to, thickness_along) = if kind < OCCLUDER_SPUR_BELOW {
+                    // DIVISOR ANCLADO: nace en una de las dos paredes del vano y avanza hacia
+                    // dentro. Nunca llega a la de enfrente: `OCCLUDER_CLEAR_CM` es el paso que
+                    // queda, y es lo que hace que no pueda desconectar nada.
+                    let f = OCCLUDER_SPUR_SPAN.0
+                        + one.next01() * (OCCLUDER_SPUR_SPAN.1 - OCCLUDER_SPUR_SPAN.0);
+                    let len = ((span as f32 * f) as i32)
+                        .min(span - OCCLUDER_CLEAR_CM)
+                        .min(OCCLUDER_MAX_LEN_CM);
+                    if len < OCCLUDER_MIN_LEN_CM {
+                        continue;
+                    }
+                    if one.next01() < 0.5 {
+                        (from_base, from_base + len, OCCLUDER_T_CM)
+                    } else {
+                        (from_base + span - len, from_base + span, OCCLUDER_T_CM)
+                    }
+                } else if kind < OCCLUDER_HALFWALL_BELOW {
+                    // MEDIA PARED: exenta, despegada de las dos paredes del vano. Rompe la línea de
+                    // visión en mitad de la sala y se bordea por los dos extremos.
+                    let f = OCCLUDER_SPUR_SPAN.0
+                        + one.next01() * (OCCLUDER_SPUR_SPAN.1 - OCCLUDER_SPUR_SPAN.0);
+                    let len = ((span as f32 * f) as i32)
+                        .min(span - 2 * OCCLUDER_ISLAND_CLEAR_CM)
+                        .min(OCCLUDER_MAX_LEN_CM);
+                    if len < OCCLUDER_MIN_LEN_CM {
+                        continue;
+                    }
+                    let slack = span - len - 2 * OCCLUDER_ISLAND_CLEAR_CM;
+                    let a =
+                        from_base + OCCLUDER_ISLAND_CLEAR_CM + (one.next01() * slack as f32) as i32;
+                    (a, a + len, OCCLUDER_T_CM)
+                } else {
+                    // PILAR: el residuo. Cuadrado, exento, y por eso mismo el que menos oculta.
+                    let slack = span - 2 * OCCLUDER_ISLAND_CLEAR_CM - OCCLUDER_PILLAR_CM;
+                    if slack < 0 {
+                        continue;
+                    }
+                    let a =
+                        from_base + OCCLUDER_ISLAND_CLEAR_CM + (one.next01() * slack as f32) as i32;
+                    (a, a + OCCLUDER_PILLAR_CM, OCCLUDER_PILLAR_CM)
+                };
+
+                // Y si había pantalla, manda ella: la tirada de arriba sólo sirvió para el reparto
+                // de tipos del camino alternativo.
+                let (across_x, at, run_from, run_to, thickness_along, is_spur, screen) =
+                    match shadow {
+                        Some((sx, sat, from, to)) => {
+                            (sx, sat, from, to, OCCLUDER_T_CM, true, false)
+                        }
+                        None => (
+                            across_x,
+                            at,
+                            run_from,
+                            run_to,
+                            thickness_along,
+                            kind < OCCLUDER_SPUR_BELOW,
+                            (OCCLUDER_SPUR_BELOW..OCCLUDER_HALFWALL_BELOW).contains(&kind),
+                        ),
+                    };
+                let foot = if across_x {
+                    super::plan::PlanRect {
+                        min_x_cm: at,
+                        min_z_cm: run_from,
+                        max_x_cm: at + thickness_along,
+                        max_z_cm: run_to,
+                    }
+                } else {
+                    super::plan::PlanRect {
+                        min_x_cm: run_from,
+                        min_z_cm: at,
+                        max_x_cm: run_to,
+                        max_z_cm: at + thickness_along,
+                    }
+                };
+
+                // La media pared y el pilar flotan, así que se les exige suelo propio alrededor. Al
+                // divisor anclado NO: nace pegado a una pared, e inflarlo lo saca del espacio por
+                // definición — es la misma nota que `interior_partitions` dejó escrita tras perder
+                // dos tercios de la gramática sobre huella compuesta.
+                let with_gap = foot.shrunk(-OCCLUDER_ISLAND_CLEAR_CM);
+                let near_door = foot.shrunk(-OCCLUDER_DOOR_CLEAR_CM);
+                let overlaps_taken = |x0: f32, z0: f32, x1: f32, z1: f32| {
+                    let (a0, b0, a1, b1) = (
+                        foot.min_x_cm as f32 / CM_PER_M,
+                        foot.min_z_cm as f32 / CM_PER_M,
+                        foot.max_x_cm as f32 / CM_PER_M,
+                        foot.max_z_cm as f32 / CM_PER_M,
+                    );
+                    a0 < x1 && a1 > x0 && b0 < z1 && b1 > z0
+                };
+                let blocked = !s.covers_rect(&foot)
+                    || (!is_spur && !s.covers_rect(&with_gap))
+                    || landings.iter().any(|l| l.overlaps(&foot))
+                    || wells_here.iter().any(|w| w.overlaps(&foot))
+                    || pits_here.iter().any(|p| p.overlaps(&foot))
+                    // ADR-105 enm. 12 — detrás de una ventana o una rendija no va obra: se vería
+                    // el macizo a la altura de los ojos en vez de la sala de al lado.
+                    || on_wall_carve(&foot, s, carves)
+                    || (n > 0 && hole.shrunk(-50).overlaps(&foot))
+                    || mine
+                        .iter()
+                        .any(|m| m.shrunk(-OCCLUDER_CLEAR_CM).overlaps(&foot))
+                    || existing
+                        .iter()
+                        .any(|e| e.shrunk(-OCCLUDER_CLEAR_CM).overlaps(&foot))
+                    // **La puerta que se sombrea es la excepción, y es el sentido de la pasada.**
+                    // La pantalla se planta justo delante de ella; lo que la mantiene practicable no
+                    // es la distancia, es el canal de `OCC_SHADOW_OFFSET_MIN_CM` que le queda por
+                    // delante y el extremo suelto por el que se rodea. Las DEMÁS puertas se siguen
+                    // esquivando enteras.
+                    || doors
+                        .iter()
+                        .filter(|&&d| shadow.is_none() || Some(d) != target)
+                        .any(|&(dx, dz)| near_door.contains_point(dx, dz))
+                    || taken
+                        .iter()
+                        .any(|&(x0, z0, x1, z1)| overlaps_taken(x0, z0, x1, z1));
+                if blocked {
+                    continue;
+                }
+                mine.push(foot);
+
+                // Una pantalla de vano nunca es media pared: lo que corta es la recta que entra
+                // por el hueco, y por encima de una media pared se sigue viendo la sala entera.
+                let top = if screen {
+                    s.floor_y_cm + OCCLUDER_HALFWALL_H_CM.min(clear)
+                } else {
+                    s.floor_y_cm + clear
+                };
+
+                // A cajas de `MAX_SOLID_CM`, a partes iguales: un macizo se dibuja en el chunk de su
+                // centro, y cortar avaricioso deja muñones (ver la nota de `interior_partitions`).
+                let along = run_to - run_from;
+                let boxes = (along + MAX_SOLID_CM - 1) / MAX_SOLID_CM;
+                let mut cut = run_from;
+                for b in 1..=boxes {
+                    let end = run_from + (along * b) / boxes;
+                    let (x, z, sx, sz) = if across_x {
+                        (at, cut, thickness_along, end - cut)
+                    } else {
+                        (cut, at, end - cut, thickness_along)
+                    };
+                    out.push(Wg3Solid {
+                        x_cm: x,
+                        z_cm: z,
+                        size_x_cm: sx,
+                        size_z_cm: sz,
+                        bottom_y_cm: s.floor_y_cm,
+                        top_y_cm: top,
+                        style,
+                        yaw_deg: 0,
+                        shape: SHAPE_BOX,
+                    });
+                    cut = end;
+                }
+            }
+        }
+    }
+    out
+}
+
 fn atrium_carves(building: &RegionBuilding) -> Vec<Wg3Carve> {
     let mut out = Vec::new();
     let grow = (CARVE_DEPTH_M * CM_PER_M) as i32;
@@ -4866,28 +5479,94 @@ fn atrium_carves(building: &RegionBuilding) -> Vec<Wg3Carve> {
                 let bottom = s.floor_y_cm + k as i32 * STOREY_HEIGHT_CM;
                 let top = bottom + STOREY_HEIGHT_CM - 2 * SLAB_THICKNESS_CM;
                 for side in bands_of(&s.rect, grow) {
-                    let someone_up = plan_up.is_some_and(|plan_up| {
-                        plan_up
-                            .spaces
-                            .iter()
-                            .any(|t| t.role.is_built() && t.hits_rect(&side))
-                    });
-                    if !someone_up {
+                    let Some(plan_up) = plan_up else {
                         continue;
+                    };
+                    // **Y sólo el TRAMO de la banda que tiene sala encima** (2026-09-06). La banda
+                    // se prolonga `grow` más allá de la huella por los dos extremos y por eso pasa
+                    // por el muro que el atrio comparte con su vecino; si ese vecino es OTRO atrio,
+                    // la banda entera cortada le abre a él el muro alto por un lado en el que
+                    // arriba no hay nadie — el mismo agujero a la nada que esta enmienda vino a
+                    // cerrar, visto desde la sala de al lado. Lo destapó la desalineación de vanos
+                    // en la región (−1,2): dos naves de doble altura pared con pared, y encima de
+                    // una sola de ellas sala. Ver [`atrium_open_runs`].
+                    let along_x = side.width_cm() >= side.depth_cm();
+                    let merged = atrium_open_runs(&side, plan_up, grow);
+                    for (a, b) in merged {
+                        let (x, z, sx, sz) = if along_x {
+                            (a, side.min_z_cm, b - a, side.depth_cm())
+                        } else {
+                            (side.min_x_cm, a, side.width_cm(), b - a)
+                        };
+                        out.push(Wg3Carve {
+                            x_cm: x,
+                            z_cm: z,
+                            size_x_cm: sx,
+                            size_z_cm: sz,
+                            bottom_y_cm: bottom,
+                            top_y_cm: top,
+                        });
                     }
-                    out.push(Wg3Carve {
-                        x_cm: side.min_x_cm,
-                        z_cm: side.min_z_cm,
-                        size_x_cm: side.width_cm(),
-                        size_z_cm: side.depth_cm(),
-                        bottom_y_cm: bottom,
-                        top_y_cm: top,
-                    });
                 }
             }
         }
     }
     out
+}
+
+/// ADR-104 enm. 3 (fusión 2026-09-06) — **los tramos de una banda de atrio que tienen sala
+/// construida encima**, en centímetros a lo largo de la banda: bajo cada parte de cada sala de
+/// arriba, con `grow` de holgura a cada lado y fundidos si se tocan. Es lo que abre
+/// [`atrium_carves`] y lo único sobre lo que [`atrium_solids`] pone pretil: si los dos no miden
+/// lo mismo, el pretil queda con muro encima o el vano sin pretil.
+///
+/// **Sin las esquinas.** La banda sobresale `grow` de la huella por los dos extremos, y una sala de
+/// arriba que sólo pisa ese sobrante está AL LADO del atrio, no encima: con la banda entera, un
+/// pasillo que pasaba de largo a 50 cm del atrio abría su lado completo.
+fn atrium_open_runs(
+    side: &super::plan::PlanRect,
+    plan_up: &super::plan::RegionPlan,
+    grow: i32,
+) -> Vec<(i32, i32)> {
+    let along_x = side.width_cm() >= side.depth_cm();
+    let (lo, hi) = if along_x {
+        (side.min_x_cm, side.max_x_cm)
+    } else {
+        (side.min_z_cm, side.max_z_cm)
+    };
+    let mut inner = *side;
+    if along_x {
+        inner.min_x_cm += grow;
+        inner.max_x_cm -= grow;
+    } else {
+        inner.min_z_cm += grow;
+        inner.max_z_cm -= grow;
+    }
+    let mut runs: Vec<(i32, i32)> = plan_up
+        .spaces
+        .iter()
+        .filter(|t| t.role.is_built() && t.hits_rect(&inner))
+        .flat_map(|t| t.parts().to_vec())
+        .filter(|p| p.overlaps(&inner))
+        .map(|p| {
+            let (a, b) = if along_x {
+                (p.min_x_cm, p.max_x_cm)
+            } else {
+                (p.min_z_cm, p.max_z_cm)
+            };
+            ((a - grow).max(lo), (b + grow).min(hi))
+        })
+        .filter(|(a, b)| b > a)
+        .collect();
+    runs.sort_unstable();
+    let mut merged: Vec<(i32, i32)> = Vec::new();
+    for (a, b) in runs {
+        match merged.last_mut() {
+            Some(last) if a <= last.1 => last.1 = last.1.max(b),
+            _ => merged.push((a, b)),
+        }
+    }
+    merged
 }
 
 /// ADR-104 enm. 3 — **el faldón del ATRIO, sólo en los lados que quedan con muro.**
@@ -7655,6 +8334,246 @@ mod ceiling_verification {
                 "[techo] {role:<9} {n:>6} espacios, media {:.1} cm",
                 *sum as f64 / *n as f64
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod occluder_tests {
+    use super::*;
+    use crate::world::wg3::plan::{plan_building, PlanRect};
+
+    const BOUNDS: (f32, f32, f32, f32) = (0.0, 0.0, 150.0, 150.0);
+    const STOREYS: usize = 2;
+
+    fn manifest() -> Wg3Manifest {
+        crate::world::wg3::tests::real_manifest()
+    }
+
+    fn rect_of(s: &Wg3Solid) -> PlanRect {
+        PlanRect {
+            min_x_cm: s.x_cm,
+            min_z_cm: s.z_cm,
+            max_x_cm: s.x_cm + s.size_x_cm,
+            max_z_cm: s.z_cm + s.size_z_cm,
+        }
+    }
+
+    /// Los macizos que emite ESTA pasada: se reconocen por el eje fino, que es 40 (divisor y media
+    /// pared) u 80 (pilar) y no lo produce ningun otro emisor -- pretil 20, division 30, pilar de
+    /// nave 200.
+    fn ours(f: &FilledRegion) -> Vec<&Wg3Solid> {
+        f.solids
+            .iter()
+            .filter(|s| {
+                let thin = s.size_x_cm.min(s.size_z_cm);
+                thin == OCCLUDER_T_CM || (thin == OCCLUDER_PILLAR_CM && s.size_x_cm == s.size_z_cm)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_pass_inserts_occluders_and_the_knob_turns_it_off() {
+        let m = manifest();
+        let mut with = 0usize;
+        for seed in 1..=12 {
+            let b = plan_building(seed, BOUNDS, &[], STOREYS);
+            let on = fill_building_with(&b, &m, OCCLUDER_DENSITY);
+            let off = fill_building_with(&b, &m, 0.0);
+            with += ours(&on).len();
+            assert!(
+                ours(&off).is_empty(),
+                "semilla {seed}: con densidad 0 salieron {} oclusores",
+                ours(&off).len()
+            );
+            assert!(
+                on.solids.len() > off.solids.len(),
+                "semilla {seed}: la pasada no anadio ni un macizo"
+            );
+        }
+        assert!(
+            with > 0,
+            "la pasada no emitio un solo oclusor en 12 semillas"
+        );
+    }
+
+    #[test]
+    fn occluders_change_nothing_but_the_solids() {
+        let m = manifest();
+        for seed in 1..=12 {
+            let b = plan_building(seed, BOUNDS, &[], STOREYS);
+            let on = fill_building_with(&b, &m, OCCLUDER_DENSITY);
+            let off = fill_building_with(&b, &m, 0.0);
+
+            for st in &b.storeys {
+                assert!(
+                    st.problems().is_empty(),
+                    "semilla {seed}: {:?}",
+                    st.problems()
+                );
+            }
+            assert_eq!(
+                on.segments, off.segments,
+                "semilla {seed}: cambiaron los tramos"
+            );
+            assert_eq!(
+                on.carves, off.carves,
+                "semilla {seed}: cambiaron los recortes"
+            );
+            assert_eq!(
+                on.placements, off.placements,
+                "semilla {seed}: cambiaron las piezas"
+            );
+            assert_eq!(
+                on.links_failed, off.links_failed,
+                "semilla {seed}: cambiaron los enlaces fallidos"
+            );
+            assert_eq!(
+                on.gates_built, off.gates_built,
+                "semilla {seed}: cambiaron las puertas de junta"
+            );
+            // Sólo los macizos que la pasada ESQUIVA (pilares y divisiones) tienen que ser los
+            // mismos: los emisores que vienen después (bloques, pilastras, listones, atrezo)
+            // esquivan a su vez `out.solids`, así que con oclusores puestos se reparten distinto.
+            for s in off
+                .solids
+                .iter()
+                .filter(|s| is_pillar(s) || s.size_x_cm.min(s.size_z_cm) == PARTITION_T_CM)
+            {
+                assert!(
+                    on.solids.contains(s),
+                    "semilla {seed}: la pasada se comio un pilar o una division"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn occluders_keep_their_clearances() {
+        let m = manifest();
+        for seed in 1..=12 {
+            let b = plan_building(seed, BOUNDS, &[], STOREYS);
+            let f = fill_building_with(&b, &m, OCCLUDER_DENSITY);
+            let mine = ours(&f);
+            for s in &mine {
+                let r = rect_of(s);
+                let mut host = None;
+                for st in &b.storeys {
+                    for (_, sp) in st.built() {
+                        if sp.floor_y_cm == s.bottom_y_cm && sp.covers_rect(&r) {
+                            host = Some(sp);
+                        }
+                    }
+                }
+                let Some(sp) = host else {
+                    panic!(
+                        "semilla {seed}: oclusor en ({},{}) cota {} fuera de todo espacio",
+                        s.x_cm, s.z_cm, s.bottom_y_cm
+                    )
+                };
+                assert!(
+                    occluder_area_per_one_m2(sp.role).is_some(),
+                    "semilla {seed}: oclusor en un espacio {}, que no lleva",
+                    sp.role.name()
+                );
+                assert!(
+                    sp.area_m2() >= OCCLUDER_MIN_AREA_M2,
+                    "semilla {seed}: oclusor en un espacio de {:.1} m2",
+                    sp.area_m2()
+                );
+                let (w, d) = (sp.rect.width_cm(), sp.rect.depth_cm());
+                let (rw, rd) = (r.width_cm(), r.depth_cm());
+                assert!(
+                    rw <= w - OCCLUDER_CLEAR_CM || rd <= d - OCCLUDER_CLEAR_CM,
+                    "semilla {seed}: oclusor {rw}x{rd} en una sala {w}x{d}: no deja paso"
+                );
+                let h = s.top_y_cm - s.bottom_y_cm;
+                assert!(h > 0, "semilla {seed}: oclusor de altura {h}");
+            }
+            for (i, a) in mine.iter().enumerate() {
+                for b2 in mine.iter().skip(i + 1) {
+                    if a.bottom_y_cm != b2.bottom_y_cm {
+                        continue;
+                    }
+                    assert!(
+                        !rect_of(a).overlaps(&rect_of(b2)),
+                        "semilla {seed}: dos oclusores se pisan"
+                    );
+                }
+            }
+        }
+    }
+
+    /// **La medida del cambio de criterio**: cuántos vanos de los que pueden llevar pantalla la
+    /// llevan. Sin esto, la pasada podría no sombrear un solo hueco y los otros tres tests seguirían
+    /// verdes — miden que lo que se pone está bien puesto, no que se ponga delante de un vano.
+    #[test]
+    fn doors_of_eligible_spaces_get_shaded() {
+        let m = manifest();
+        let mut doors = 0usize;
+        let mut shaded = 0usize;
+        for seed in 1..=12 {
+            let b = plan_building(seed, BOUNDS, &[], STOREYS);
+            let f = fill_building_with(&b, &m, OCCLUDER_DENSITY);
+            let mine = ours(&f);
+            for st in &b.storeys {
+                for (i, sp) in st.built() {
+                    if occluder_area_per_one_m2(sp.role).is_none()
+                        || sp.area_m2() < OCCLUDER_MIN_AREA_M2
+                    {
+                        continue;
+                    }
+                    for l in st.links.iter().filter(|l| l.a == i || l.b == i) {
+                        let (dx, dz) = (l.at_x_cm, l.at_z_cm);
+                        doors += 1;
+                        // Una pantalla del vano: a la distancia del canal, paralela a su pared y
+                        // cubriendo su coordenada lateral.
+                        let hit = mine.iter().any(|o| {
+                            if o.bottom_y_cm != sp.floor_y_cm {
+                                return false;
+                            }
+                            let (x0, z0) = (o.x_cm, o.z_cm);
+                            let (x1, z1) = (o.x_cm + o.size_x_cm, o.z_cm + o.size_z_cm);
+                            let band = OCC_SHADOW_OFFSET_MIN_CM
+                                ..=(OCC_SHADOW_OFFSET_MAX_CM + OCCLUDER_T_CM);
+                            let along_x = o.size_x_cm > o.size_z_cm;
+                            if along_x {
+                                let d = (z0 - dz).abs().min((z1 - dz).abs());
+                                band.contains(&d) && x0 - 120 <= dx && dx <= x1 + 120
+                            } else {
+                                let d = (x0 - dx).abs().min((x1 - dx).abs());
+                                band.contains(&d) && z0 - 120 <= dz && dz <= z1 + 120
+                            }
+                        });
+                        if hit {
+                            shaded += 1;
+                        }
+                    }
+                }
+            }
+        }
+        println!("[occ] vanos {doors}, sombreados {shaded}");
+        assert!(doors > 0, "no hubo vanos que medir");
+        // **El listón es la sexta parte, y el número medido es uno de cada cinco (534 de 2598).**
+        // No llega a todos por dos topes que esta fase no toca: la densidad por papel decide cuántos
+        // oclusores caben en el espacio —una oficina de 100 m² se lleva tres, y puede tener cinco
+        // vanos— y la mitad de los intentos se caen contra la esquiva de las OTRAS puertas y de la
+        // masa que ya hay. Lo que este test guarda es que el criterio siga siendo «los vanos
+        // primero»: antes de esta fase, los vanos sombreados eran cero.
+        assert!(
+            shaded * 6 >= doors,
+            "sólo {shaded} de {doors} vanos llevan pantalla"
+        );
+    }
+
+    #[test]
+    fn occluders_are_deterministic() {
+        let m = manifest();
+        for seed in [3, 77, 1234] {
+            let b = plan_building(seed, BOUNDS, &[], STOREYS);
+            let a = fill_building_with(&b, &m, OCCLUDER_DENSITY);
+            let c = fill_building_with(&b, &m, OCCLUDER_DENSITY);
+            assert_eq!(a.solids, c.solids, "semilla {seed}");
         }
     }
 }
