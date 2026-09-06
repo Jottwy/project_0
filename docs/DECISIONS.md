@@ -14331,3 +14331,76 @@ mesa, monitor, silla caída, paneles. Commit `b02df08f`.
 
 Mamparas con material propio (tela o melamina: hoy son yeso, como la pared), avisos y carteles en
 las mamparas, y los VIGILANTES sentados en las sillas de los puestos — ADR propio (131).
+
+---
+
+## ADR-105 — Enmienda 19: materiales por FUNCIÓN — tela de mampara, placa de 60 y moqueta de oficina (2026-09-06) — ACEPTADA (Joel: «moqueta grafito frío y mampara gris tela»)
+
+**Cliente puro. Sin bump de wire, sin tocar Rust.**
+
+### El problema
+
+La oficina se leía como oficina por su geometría y no por sus superficies: mampara, pared y pilar
+compartían el mismo gotelé (es lo que la enm. 18 dejó escrito en «lo que no entra»), y el falso techo
+que esa misma enmienda bajó se quedaba con la placa crema de Backrooms, o sea un plano bajo sin
+rejilla. El suelo de un despacho era el mismo terrazo oliva que el de un pasillo.
+
+### D1 — La función se INFIERE en el cliente; el cable no se toca
+
+`style` sigue diciendo el PAPEL del espacio y de ahí sale el tinte (Frente A). La FUNCIÓN de la
+superficie es un segundo eje, y los tres casos que hacían falta ya eran distinguibles con lo que
+llega:
+
+| caso | señal | fuente |
+|---|---|---|
+| mampara de cubículo | `min(size_x, size_z) == 12` y altura `== 140` | espejo de `fill::is_cubicle_wall` |
+| falso techo | `style == 0` y altura libre `<= 300` | `fill::ceiling_cap_cm` sortea 270..300 |
+| moqueta de oficina | `style == 0` | `style_of` reparte 1..8; el 0 sólo es `Office` (y `Void`, que no se construye) |
+
+Un bit nuevo habría costado wire 62 y un ADR para decir lo que la geometría ya dice. **El acople es
+real y queda declarado**: `Wg3Looks` copia `CUBICLE_T_CM` y `CUBICLE_H_CM`, y ocho tests de EditMode
+(`Wg3LookTests`) fijan los números y las fronteras para que un cambio en Rust salga en rojo aquí y no
+en una captura tres sesiones después. Es la misma convención con la que el backend se clasifica a sí
+mismo los macizos: **por forma**.
+
+### D2 — Cuatro submallas, no cinco: el aspecto SUSTITUYE la ranura
+
+`Wg3StyleMaterials.Resolve` acepta un `Wg3Look` y cambia el material de una ranura antes de aplicar el
+tinte del papel; la caché pasa a ir por `(estilo, aspecto)`. Una quinta submalla habría multiplicado
+draw calls en cada tramo del mundo, y un material por objeto habría matado el SRP Batcher. Los tres
+materiales nuevos son URP Lit con `_BaseMap` y `_BumpMap` poblados —la misma variante de shader que
+los cuatro base—, se cargan de `Resources/Wg3Materials` como el atrezo de ADR-129 (ninguna escena que
+cablear) y el juego se comparte: como mucho 9 × 4 juegos para toda la sesión.
+
+Y como el aspecto de oficina siempre cae en el estilo 0, que no tiñe, esos materiales se usan tal
+cual: no se crea ni una variante en runtime.
+
+### D3 — Las tres superficies, procedurales
+
+`Backrooms/WG3/Generate Office Surfaces` (`Wg3OfficeSurfaces.cs`) hornea seis PNG de 1024 —albedo y
+normal de cada una— a `Assets/Art/Wg3/Textures`, deterministas y idempotentes como los de
+`TextureGenerator`, y crea los tres `.mat` por `AssetDatabase` (ningún YAML escrito a mano).
+
+- **Placa de 60 × 60** con perfil en T, perforación de fibra mineral y dos placas de gotera; escala
+  0,8333 = 2,40 m = cuatro placas, con `UvPerMetre` 0,5. **El perfil va más oscuro que la placa y es
+  una corrección medida**: con el perfil claro entre dos ranuras oscuras, el mip promedia los tres y
+  la rejilla desaparece a dos metros.
+- **Moqueta grafito FRÍA** con junta de loseta de 50 cm y la trama girada un cuarto en tablero. Se
+  separa de la moqueta Backrooms por TONO —oliva contra azul-gris—, que es la regla medida del Frente
+  A: un delta de albedo no habría existido.
+- **Tela gris de mampara**, trama de 8 mm. Su tinte NO copia el de `Wg3_Structure` (0,86/0,86/0,82):
+  con el ambiente cálido de la escena la tela salía oliva, o sea del color de la pared.
+
+### Verificaciones
+
+`Wg3LookTests` 8/8 en el editor; `CompileCheckClient` 0 errores en las cuatro asambleas (más una
+pasada con `EXTRA_SRC` para el script nuevo, que el `.csproj` no lista todavía). Capturas antes y
+después en el mismo punto —(113,07, −9,96, 55,49) mirando a +Z, sótano de la región (0,0)—:
+`Temp/captures/vig5_frente.png` contra `look_after2_1_room.png` y `look_after2_2_ceiling.png`.
+
+### Lo que no entra
+
+El ambiente cálido tira todo lo neutro hacia el oliva, así que la tela se lee gris-caqui y no gris
+frío; enfriarla más es pelearse con una iluminación validada, y el tinte queda como mando por si Joel
+la quiere más fría. Siguen fuera los avisos y carteles de mampara (ADR-131 y la tanda de señalética),
+y la melamina del canto superior de la mampara.
