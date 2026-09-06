@@ -218,6 +218,14 @@ pub(super) struct Knobs {
     pub arch_door: f32,
     /// ADR-129 D3 — qué proporción de salas se viste con atrezo de oficina.
     pub props: f32,
+    /// **Falso techo de oficina** (2026-09-06): rango de altura libre, en cm, que se impone a los
+    /// despachos, servicios y almacenes de este carácter — sorteado por sala en pasos de 10 —, o
+    /// `(0, 0)` si el carácter no lo pide. Una oficina real va a 2,70–3,00 bajo placas; las naves
+    /// y la circulación no lo llevan, que es lo que deja leer la diferencia.
+    pub office_ceiling_cm: (i32, i32),
+    /// **Cubículos** (2026-09-06): probabilidad de que un despacho grande se reparta en puestos
+    /// con mamparas. Ver [`office_cubicles`].
+    pub cubicles: f32,
 }
 
 const KNOBS: [Knobs; 5] = [
@@ -253,6 +261,8 @@ const KNOBS: [Knobs; 5] = [
         round_pilaster: 0.25,
         arch_door: 0.20,
         props: 0.35,
+        office_ceiling_cm: (0, 0),
+        cubicles: 0.10,
     },
     Knobs {
         character: Character::Office,
@@ -286,6 +296,8 @@ const KNOBS: [Knobs; 5] = [
         round_pilaster: 0.15,
         arch_door: 0.25,
         props: 0.8,
+        office_ceiling_cm: (270, 300),
+        cubicles: 0.60,
     },
     Knobs {
         character: Character::Hall,
@@ -319,6 +331,8 @@ const KNOBS: [Knobs; 5] = [
         round_pilaster: 0.30,
         arch_door: 0.35,
         props: 0.25,
+        office_ceiling_cm: (0, 0),
+        cubicles: 0.00,
     },
     Knobs {
         character: Character::Maze,
@@ -352,6 +366,8 @@ const KNOBS: [Knobs; 5] = [
         round_pilaster: 0.30,
         arch_door: 0.30,
         props: 0.2,
+        office_ceiling_cm: (0, 0),
+        cubicles: 0.00,
     },
     Knobs {
         character: Character::Weird,
@@ -385,6 +401,8 @@ const KNOBS: [Knobs; 5] = [
         round_pilaster: 0.50,
         arch_door: 0.50,
         props: 0.45,
+        office_ceiling_cm: (0, 0),
+        cubicles: 0.05,
     },
 ];
 
@@ -418,8 +436,30 @@ pub(super) fn knobs_of(seed: i32, space: &PlannedSpace) -> &'static Knobs {
 /// El tope de altura libre que el carácter impone a un espacio, 0 si ninguno. Lo aplica
 /// `plan::assign_ceilings`, que es quien sabe la semilla y decide techos.
 pub(super) fn ceiling_cap_cm(seed: i32, space: &PlannedSpace) -> i32 {
-    knobs_of(seed, space).ceiling_cap_cm
+    let kn = knobs_of(seed, space);
+    let (lo, hi) = kn.office_ceiling_cm;
+    let is_room = matches!(
+        space.role,
+        SpaceRole::Office | SpaceRole::Service | SpaceRole::Storage
+    );
+    if hi > 0 && is_room {
+        // Falso techo (2026-09-06): por sala y en pasos de 10 cm, para que dos despachos seguidos
+        // no midan lo mismo. Sorteo por posición, como todo: la misma sala da el mismo techo.
+        let (cx, cz) = space.rect.centre_m();
+        let t = super::hash::stream_at(seed, cx, cz, SALT_OFFICE_CEILING).next01();
+        let steps = (hi - lo) / 10;
+        let cap = lo + ((t * (steps + 1) as f32) as i32).min(steps) * 10;
+        return if kn.ceiling_cap_cm > 0 {
+            cap.min(kn.ceiling_cap_cm)
+        } else {
+            cap
+        };
+    }
+    kn.ceiling_cap_cm
 }
+
+/// Sal del falso techo de oficina.
+const SALT_OFFICE_CEILING: u32 = 0xA9_04_07;
 
 /// Discriminante de `Wg3VolumeKind::Step`: una caja de peldaño en la chuleta de una pieza.
 const KIND_STEP: u8 = 5;
@@ -662,7 +702,14 @@ pub fn fill_building_with(
     ));
     // ADR-129 — el atrezo, el último: esquiva todo lo que está a ras de suelo, y lo que frena deja
     // su macizo invisible.
-    let (props, hidden) = office_props(building, &out.segments, &out.solids, &out.carves);
+    // Los CUBÍCULOS (2026-09-06) van antes: reparten el despacho en puestos con mamparas, y el
+    // atrezo de pared de siempre se queda para los despachos que no los llevan.
+    let (walls, cub_props, cub_hidden, taken) =
+        office_cubicles(building, &out.segments, &out.solids, &out.carves);
+    out.solids.extend(walls);
+    out.props.extend(cub_props);
+    out.solids.extend(cub_hidden);
+    let (props, hidden) = office_props(building, &out.segments, &out.solids, &out.carves, &taken);
     out.props.extend(props);
     out.solids.extend(hidden);
     out
@@ -1556,6 +1603,439 @@ const PROP_GAP_CM: i32 = 40;
 /// Sal del sorteo de atrezo.
 const SALT_PROPS: u32 = 0xA9_04_05;
 
+// ─────────────────── cubículos (2026-09-06) ───────────────────
+//
+// Joel, con la foto de la oficina delante: «más detalles de oficina». Lo que convierte «sala con
+// mesas» en «planta de oficinas» son los PUESTOS: mamparas de metro y medio en rejilla, un pasillo
+// entre cada dos filas, y en cada celda mesa, silla y monitor. Es geometría (las mamparas frenan y
+// se ven) más atrezo (ADR-129), así que el cliente no necesita nada nuevo.
+
+/// Grosor de una mampara de cubículo, en cm. **Doce, y ningún otro emisor lo usa**: los tests
+/// clasifican los macizos por su forma (8 barrote de rejilla, 15 dintel, 20 pretil, 30 división,
+/// 35 parteluz, 40 viga, 45 oclusor) y una mampara tiene que tener la suya. El primer intento fue
+/// ocho, y `is_grille_bar` se la quedaba.
+pub(super) const CUBICLE_T_CM: i32 = 12;
+/// Altura de la mampara: se ve por encima de pie, no sentado. Distinta de los 110 del medio muro
+/// bajo y de los 230 de la mampara de sala (enm. 8), por lo mismo.
+pub(super) const CUBICLE_H_CM: i32 = 140;
+/// Ancho de una celda: la mesa (230) y quince centímetros a cada lado.
+const CUBICLE_CELL_CM: i32 = 260;
+/// Fondo de una celda: mesa, silla y sitio para levantarse.
+const CUBICLE_DEPTH_CM: i32 = 240;
+/// Pasillo entre dos filas de celdas enfrentadas.
+const CUBICLE_AISLE_CM: i32 = 150;
+/// Superficie mínima del despacho para llevar cubículos.
+const CUBICLE_MIN_AREA_M2: f32 = 60.0;
+/// Lo que las filas dejan libre hasta la pared en el eje largo, en cm.
+const CUBICLE_MARGIN_CM: i32 = 60;
+/// Celdas que se quedan sin puesto (mamparas y nada más): una oficina no está llena.
+const CUBICLE_EMPTY_CHANCE: f32 = 0.15;
+/// Tope de celdas por despacho: por encima es un almacén de mamparas, no una oficina.
+const CUBICLE_MAX_PER_ROOM: usize = 24;
+const SALT_CUBICLES: u32 = 0xA9_04_08;
+
+/// Lo que sale de [`office_cubicles`]: mamparas, atrezo, macizos invisibles del atrezo y los
+/// despachos repartidos como (planta, espacio).
+type Cubicles = (
+    Vec<Wg3Solid>,
+    Vec<Wg3Prop>,
+    Vec<Wg3Solid>,
+    Vec<(usize, usize)>,
+);
+
+/// ¿Es una mampara de cubículo? Por su forma, como todo macizo.
+pub(super) fn is_cubicle_wall(s: &Wg3Solid) -> bool {
+    s.size_x_cm.min(s.size_z_cm) == CUBICLE_T_CM && s.top_y_cm - s.bottom_y_cm == CUBICLE_H_CM
+}
+
+/// **Los cubículos**: en los despachos grandes de un carácter que los pida, filas de celdas de
+/// 2,60 × 2,40 con mampara al fondo y a los lados, abiertas a un pasillo de 1,50; cada dos filas
+/// van espalda con espalda. En cada celda, mesa contra la mampara del fondo con su macizo
+/// invisible, silla (a veces caída), y encima monitor, teclado, teléfono o bandeja con las mismas
+/// probabilidades que el atrezo de pared; una de cada siete celdas se queda vacía.
+///
+/// Lo que se esquiva, celda a celda y con medio metro de holgura: las bocas de la sala (una celda
+/// delante de una puerta se salta, y ese hueco es el paso hasta el pasillo), rellanos, huecos de
+/// escalera y de forjado, pozos, los macizos que ya había (pilares, divisiones, oclusores,
+/// bloques) y los recortes de la pared (ventanas). Una mampara de cubículo sólo existe donde
+/// existe su celda, así que no puede tapar una boca que la celda no tapa.
+///
+/// Devuelve las mamparas, el atrezo, los macizos invisibles del atrezo y los despachos repartidos
+/// como (planta, espacio), para que [`office_props`] no les ponga encima el atrezo de pared.
+fn office_cubicles(
+    building: &RegionBuilding,
+    segments: &[Wg3Segment],
+    solids: &[Wg3Solid],
+    carves: &[Wg3Carve],
+) -> Cubicles {
+    let mut walls: Vec<Wg3Solid> = Vec::new();
+    let mut props: Vec<Wg3Prop> = Vec::new();
+    let mut hidden: Vec<Wg3Solid> = Vec::new();
+    let mut taken: Vec<(usize, usize)> = Vec::new();
+    let seed = building.seed;
+    let mouths: Vec<(i32, i32, i32, i32)> = segments
+        .iter()
+        .flat_map(|g| {
+            let (w, d) = (g.size_x_cm as f32 / 100.0, g.size_z_cm as f32 / 100.0);
+            g.openings.iter().map(move |o| {
+                let (lx, lz) =
+                    super::placement::local_point(o.side, o.offset_cm as f32 / 100.0, w, d);
+                (
+                    g.x_cm + (lx * 100.0).round() as i32,
+                    g.z_cm + (lz * 100.0).round() as i32,
+                    o.width_cm / 2 + PROP_MOUTH_CLEAR_CM,
+                    g.floor_y_cm,
+                )
+            })
+        })
+        .collect();
+    let rect_of = |x: i32, z: i32, w: i32, d: i32| super::plan::PlanRect {
+        min_x_cm: x,
+        min_z_cm: z,
+        max_x_cm: x + w,
+        max_z_cm: z + d,
+    };
+    let box_overlaps = |r: &super::plan::PlanRect, o: &Wg3Solid| -> bool {
+        o.x_cm < r.max_x_cm
+            && o.x_cm + o.size_x_cm > r.min_x_cm
+            && o.z_cm < r.max_z_cm
+            && o.z_cm + o.size_z_cm > r.min_z_cm
+    };
+
+    for (n, plan) in building.storeys.iter().enumerate() {
+        let landings: Vec<super::plan::PlanRect> = building
+            .wells
+            .iter()
+            .filter(|w| w.storey_below + 1 == n)
+            .map(|w| w.rect.shrunk(-50))
+            .collect();
+        let wells_here: Vec<super::plan::PlanRect> = building
+            .wells
+            .iter()
+            .filter(|w| w.storey_below == n)
+            .map(|w| w.rect.shrunk(-50))
+            .collect();
+        let holes_above = hole_squares_above(building, n);
+        let pits_here = if n == building.ground {
+            pit_rects_of(building, segments)
+        } else {
+            Vec::new()
+        };
+        for (i, s) in plan.built() {
+            if s.role != SpaceRole::Office || s.rise_cm != 0 || s.is_composite() {
+                continue;
+            }
+            if s.area_m2() < CUBICLE_MIN_AREA_M2 {
+                continue;
+            }
+            let kn = knobs_of(seed, s);
+            let (cx, cz) = s.rect.centre_m();
+            let mut st = super::hash::stream_at(seed, cx, cz, SALT_CUBICLES);
+            if st.next01() >= kn.cubicles {
+                continue;
+            }
+            let floor = s.floor_y_cm;
+            let top = floor + clear_height_cm(s);
+            let host = segments
+                .iter()
+                .filter(|g| {
+                    g.floor_y_cm == floor
+                        && s.covers_rect(&rect_of(g.x_cm, g.z_cm, g.size_x_cm, g.size_z_cm))
+                })
+                .max_by_key(|g| g.size_x_cm as i64 * g.size_z_cm as i64);
+            let Some(g) = host else {
+                continue;
+            };
+            let inner = rect_of(
+                g.x_cm + WALL_T_CM,
+                g.z_cm + WALL_T_CM,
+                g.size_x_cm - 2 * WALL_T_CM,
+                g.size_z_cm - 2 * WALL_T_CM,
+            );
+            // Eje largo `u` (las filas corren por él), eje corto `v` (las filas se apilan por él).
+            let along_x = inner.width_cm() >= inner.depth_cm();
+            let (u0, u1, v0, v1) = if along_x {
+                (
+                    inner.min_x_cm,
+                    inner.max_x_cm,
+                    inner.min_z_cm,
+                    inner.max_z_cm,
+                )
+            } else {
+                (
+                    inner.min_z_cm,
+                    inner.max_z_cm,
+                    inner.min_x_cm,
+                    inner.max_x_cm,
+                )
+            };
+            let cells = ((u1 - u0) - 2 * CUBICLE_MARGIN_CM) / CUBICLE_CELL_CM;
+            if cells < 2 || (v1 - v0) < 2 * CUBICLE_DEPTH_CM + CUBICLE_AISLE_CM + 20 {
+                continue;
+            }
+            let cells = (cells as usize).clamp(2, CUBICLE_MAX_PER_ROOM / 2) as i32;
+            let start = u0 + ((u1 - u0) - cells * CUBICLE_CELL_CM) / 2;
+
+            // Las filas: abierta hacia +v, pasillo, abierta hacia −v, y espalda con espalda otra
+            // abierta hacia +v… Una fila sólo entra si le queda su pasillo delante.
+            let mut rows: Vec<(i32, bool)> = Vec::new();
+            let mut v = v0 + 10;
+            loop {
+                if v + CUBICLE_DEPTH_CM + CUBICLE_AISLE_CM > v1 {
+                    break;
+                }
+                rows.push((v, true));
+                v += CUBICLE_DEPTH_CM + CUBICLE_AISLE_CM;
+                if v + CUBICLE_DEPTH_CM > v1 - 10 {
+                    break;
+                }
+                rows.push((v, false));
+                v += CUBICLE_DEPTH_CM;
+                if rows.len() >= CUBICLE_MAX_PER_ROOM {
+                    break;
+                }
+            }
+            if rows.is_empty() {
+                continue;
+            }
+
+            let own_hole = hole_square(&s.rect).shrunk(-50);
+            let style = style_of(s.role);
+            let free = |r: &super::plan::PlanRect| -> bool {
+                let grown = r.shrunk(-50);
+                if !inner.contains_rect(r) || !s.covers_rect(r) {
+                    return false;
+                }
+                if mouths.iter().any(|&(mx, mz, half, fl)| {
+                    (fl - floor).abs() < 100
+                        && mx + half > r.min_x_cm
+                        && mx - half < r.max_x_cm
+                        && mz + half > r.min_z_cm
+                        && mz - half < r.max_z_cm
+                }) {
+                    return false;
+                }
+                if landings.iter().any(|l| l.overlaps(&grown))
+                    || wells_here.iter().any(|w| w.overlaps(&grown))
+                    || holes_above.iter().any(|h| h.overlaps(&grown))
+                    || pits_here.iter().any(|p| p.overlaps(&grown))
+                    || (n > 0 && own_hole.overlaps(&grown))
+                {
+                    return false;
+                }
+                // Un metro a los macizos que ya había: es lo que un bloque exento (enm. 17) exige
+                // a su alrededor, y una mampara a 40 cm de un pilar es un rincón que no se pasa.
+                // Más el grosor de la mampara, porque la de la frontera se planta justo FUERA de la
+                // celda que la pide (costó un test: 93 cm de un bloque en vez de 99).
+                let wide = r.shrunk(-(BLOCK_GAP_CM + CUBICLE_T_CM));
+                if solids.iter().any(|o| {
+                    !o.is_decoration()
+                        && o.bottom_y_cm < floor + 200
+                        && o.top_y_cm > floor
+                        && box_overlaps(&wide, o)
+                }) {
+                    return false;
+                }
+                if carves.iter().any(|k| {
+                    k.bottom_y_cm < top
+                        && k.top_y_cm > floor
+                        && k.x_cm < grown.max_x_cm
+                        && k.x_cm + k.size_x_cm > grown.min_x_cm
+                        && k.z_cm < grown.max_z_cm
+                        && k.z_cm + k.size_z_cm > grown.min_z_cm
+                }) {
+                    return false;
+                }
+                true
+            };
+            // De (u, v) a mundo: `u` corre por el eje largo.
+            let world = |ua: i32, va: i32, ub: i32, vb: i32| -> super::plan::PlanRect {
+                if along_x {
+                    rect_of(ua, va, ub - ua, vb - va)
+                } else {
+                    rect_of(va, ua, vb - va, ub - ua)
+                }
+            };
+            let wall = |r: super::plan::PlanRect| Wg3Solid {
+                x_cm: r.min_x_cm,
+                z_cm: r.min_z_cm,
+                size_x_cm: r.width_cm(),
+                size_z_cm: r.depth_cm(),
+                bottom_y_cm: floor,
+                top_y_cm: floor + CUBICLE_H_CM,
+                style,
+                yaw_deg: 0,
+                shape: SHAPE_BOX,
+            };
+
+            let mut any = false;
+            for &(rv, open_plus) in &rows {
+                // Fondo y frente de la celda en `v`: la mampara del fondo va en el lado cerrado.
+                let (back, front) = if open_plus {
+                    (rv, rv + CUBICLE_DEPTH_CM)
+                } else {
+                    (rv + CUBICLE_DEPTH_CM, rv)
+                };
+                let (va, vb) = (back.min(front), back.max(front));
+                let placed: Vec<bool> = (0..cells)
+                    .map(|k| {
+                        let ua = start + k * CUBICLE_CELL_CM;
+                        free(&world(ua, va, ua + CUBICLE_CELL_CM, vb))
+                    })
+                    .collect();
+                if !placed.iter().any(|&p| p) {
+                    continue;
+                }
+                any = true;
+                // Mamparas laterales en cada frontera con celda a un lado o al otro.
+                for j in 0..=cells {
+                    let left = j > 0 && placed[(j - 1) as usize];
+                    let right = j < cells && placed[j as usize];
+                    if !left && !right {
+                        continue;
+                    }
+                    let u = start + j * CUBICLE_CELL_CM;
+                    let u = if j == cells { u - CUBICLE_T_CM } else { u };
+                    walls.push(wall(world(u, va, u + CUBICLE_T_CM, vb)));
+                }
+                for k in 0..cells {
+                    if !placed[k as usize] {
+                        continue;
+                    }
+                    let ua = start + k * CUBICLE_CELL_CM;
+                    let ub = ua + CUBICLE_CELL_CM;
+                    // Mampara del fondo.
+                    let bv = if open_plus { back } else { back - CUBICLE_T_CM };
+                    walls.push(wall(world(ua, bv, ub, bv + CUBICLE_T_CM)));
+
+                    if st.next01() < CUBICLE_EMPTY_CHANCE {
+                        continue;
+                    }
+                    // La mesa, contra la mampara del fondo y centrada en la celda.
+                    let du0 = ua + (CUBICLE_CELL_CM - DESK_W_CM) / 2;
+                    let dv0 = if open_plus {
+                        back + CUBICLE_T_CM + 5
+                    } else {
+                        back - CUBICLE_T_CM - 5 - DESK_D_CM
+                    };
+                    let desk = world(du0, dv0, du0 + DESK_W_CM, dv0 + DESK_D_CM);
+                    let yaw: i16 = match (along_x, open_plus) {
+                        (true, true) => 0,
+                        (true, false) => 180,
+                        (false, true) => 90,
+                        (false, false) => 270,
+                    };
+                    let dc = (
+                        (desk.min_x_cm + desk.max_x_cm) / 2,
+                        (desk.min_z_cm + desk.max_z_cm) / 2,
+                    );
+                    props.push(Wg3Prop {
+                        x_cm: dc.0,
+                        z_cm: dc.1,
+                        y_cm: floor,
+                        yaw_deg: yaw,
+                        kind: PROP_DESK,
+                        style,
+                    });
+                    hidden.push(Wg3Solid {
+                        x_cm: desk.min_x_cm,
+                        z_cm: desk.min_z_cm,
+                        size_x_cm: desk.width_cm(),
+                        size_z_cm: desk.depth_cm(),
+                        bottom_y_cm: floor,
+                        top_y_cm: floor + DESK_H_CM,
+                        style: style | STYLE_HIDDEN_BIT,
+                        yaw_deg: 0,
+                        shape: SHAPE_BOX,
+                    });
+                    let on_desk = |u: i32, v: i32| -> (i32, i32) {
+                        match yaw {
+                            0 => (dc.0 + u, dc.1 + v),
+                            180 => (dc.0 - u, dc.1 - v),
+                            90 => (dc.0 + v, dc.1 + u),
+                            _ => (dc.0 - v, dc.1 - u),
+                        }
+                    };
+                    let desk_top = floor + DESK_H_CM;
+                    for (u, v, kind, chance) in [
+                        (0, -20, PROP_MONITOR, 0.85),
+                        (0, 15, PROP_KEYBOARD, 0.70),
+                        (-75, -10, PROP_PHONE, 0.45),
+                        (75, -10, PROP_TRAY, 0.45),
+                    ] {
+                        if st.next01() < chance {
+                            let (x, z) = on_desk(u, v);
+                            props.push(Wg3Prop {
+                                x_cm: x,
+                                z_cm: z,
+                                y_cm: desk_top,
+                                yaw_deg: yaw,
+                                kind,
+                                style,
+                            });
+                        }
+                    }
+                    // La silla, delante de la mesa hacia el pasillo; una de cada siete, caída.
+                    let out = DESK_D_CM / 2 + 45;
+                    let fallen = st.next01() < 0.15;
+                    let (sx, sz) = match yaw {
+                        0 => (dc.0, dc.1 + out),
+                        180 => (dc.0, dc.1 - out),
+                        90 => (dc.0 + out, dc.1),
+                        _ => (dc.0 - out, dc.1),
+                    };
+                    let side = (st.next01() * 60.0) as i32 - 30;
+                    let (sx, sz) = match yaw {
+                        0 | 180 => (sx + side, sz),
+                        _ => (sx, sz + side),
+                    };
+                    let cyaw: i16 = if fallen {
+                        ((st.next01() * 360.0) as i32 / 15 * 15) as i16
+                    } else {
+                        (yaw + 180) % 360
+                    };
+                    props.push(Wg3Prop {
+                        x_cm: sx,
+                        z_cm: sz,
+                        y_cm: floor,
+                        yaw_deg: cyaw,
+                        kind: if fallen {
+                            PROP_CHAIR_FALLEN
+                        } else {
+                            PROP_CHAIR
+                        },
+                        style,
+                    });
+                    // La papelera, en el rincón del fondo.
+                    if st.next01() < 0.40 {
+                        let (tu, tv) = (
+                            ua + 30,
+                            if open_plus {
+                                back + CUBICLE_T_CM + 25
+                            } else {
+                                back - CUBICLE_T_CM - 25
+                            },
+                        );
+                        let t = world(tu - 20, tv - 20, tu + 20, tv + 20);
+                        props.push(Wg3Prop {
+                            x_cm: (t.min_x_cm + t.max_x_cm) / 2,
+                            z_cm: (t.min_z_cm + t.max_z_cm) / 2,
+                            y_cm: floor,
+                            yaw_deg: 0,
+                            kind: PROP_TRASH,
+                            style,
+                        });
+                    }
+                }
+            }
+            if any {
+                taken.push((n, i));
+            }
+        }
+    }
+    (walls, props, hidden, taken)
+}
+
 /// ADR-129 D3 — **vestir la sala**: mesas contra la pared larga con su silla, su monitor y una
 /// papelera; archivador en una esquina; pizarra en la pared de enfrente; cajas sueltas; papeles por
 /// el suelo. Dentro de UN tramo (la lección de los pozos), esquivando bocas de cualquier tramo,
@@ -1567,6 +2047,9 @@ fn office_props(
     segments: &[Wg3Segment],
     solids: &[Wg3Solid],
     carves: &[Wg3Carve],
+    // Los despachos que ya repartió `office_cubicles`, como (planta, espacio): en ésos el atrezo
+    // de pared sobra.
+    skip: &[(usize, usize)],
 ) -> (Vec<Wg3Prop>, Vec<Wg3Solid>) {
     let mut props: Vec<Wg3Prop> = Vec::new();
     let mut hidden: Vec<Wg3Solid> = Vec::new();
@@ -1619,8 +2102,11 @@ fn office_props(
         } else {
             Vec::new()
         };
-        for (_, s) in plan.built() {
+        for (i, s) in plan.built() {
             if s.role.is_circulation() || s.role == SpaceRole::Stair || s.rise_cm != 0 {
+                continue;
+            }
+            if skip.contains(&(n, i)) {
                 continue;
             }
             let kn = knobs_of(seed, s);
@@ -8042,6 +8528,159 @@ mod apron_tests {
             "sólo {desks} mesas y archivadores en 39 semillas"
         );
         println!("[atrezo] {total} anclas, {desks} mesas y archivadores en 39 semillas");
+    }
+
+    #[test]
+    fn cubicles_fill_big_offices_and_stay_off_everything() {
+        let m = no_catalogue();
+        let mut walls = 0usize;
+        let mut desks = 0usize;
+        let mut rooms = 0usize;
+        for seed in 1..40 {
+            let b = building(seed);
+            let f = fill_building(&b, &m);
+            let mouths: Vec<(i32, i32, i32, i32)> = f
+                .segments
+                .iter()
+                .flat_map(|g| {
+                    let (w, d) = (g.size_x_cm as f32 / 100.0, g.size_z_cm as f32 / 100.0);
+                    g.openings.iter().map(move |o| {
+                        let (lx, lz) = super::super::placement::local_point(
+                            o.side,
+                            o.offset_cm as f32 / 100.0,
+                            w,
+                            d,
+                        );
+                        (
+                            g.x_cm + (lx * 100.0).round() as i32,
+                            g.z_cm + (lz * 100.0).round() as i32,
+                            o.width_cm / 2 + 30,
+                            g.floor_y_cm,
+                        )
+                    })
+                })
+                .collect();
+            let mut seen: Vec<(i32, i32)> = Vec::new();
+            for w in f.solids.iter().filter(|s| is_cubicle_wall(s)) {
+                walls += 1;
+                let r = rect_of(w);
+                // Dentro de un tramo de su planta, sin pisar la cáscara.
+                let host = f.segments.iter().find(|g| {
+                    g.floor_y_cm == w.bottom_y_cm
+                        && r.min_x_cm >= g.x_cm + WALL_T_CM
+                        && r.max_x_cm <= g.x_cm + g.size_x_cm - WALL_T_CM
+                        && r.min_z_cm >= g.z_cm + WALL_T_CM
+                        && r.max_z_cm <= g.z_cm + g.size_z_cm - WALL_T_CM
+                });
+                assert!(
+                    host.is_some(),
+                    "semilla {seed}: mampara {r:?} fuera de todo tramo"
+                );
+                assert!(
+                    !mouths.iter().any(|&(mx, mz, half, fl)| fl == w.bottom_y_cm
+                        && mx + half > r.min_x_cm
+                        && mx - half < r.max_x_cm
+                        && mz + half > r.min_z_cm
+                        && mz - half < r.max_z_cm),
+                    "semilla {seed}: mampara {r:?} tapa una boca"
+                );
+                // Y sin pisar ningún macizo de otro emisor a ras de suelo.
+                let hit = f.solids.iter().find(|o| {
+                    !is_cubicle_wall(o)
+                        && !o.is_hidden()
+                        && !o.is_decoration()
+                        && o.bottom_y_cm < w.bottom_y_cm + 200
+                        && o.top_y_cm > w.bottom_y_cm
+                        && rect_of(o).overlaps(&r)
+                });
+                assert!(hit.is_none(), "semilla {seed}: mampara {r:?} sobre {hit:?}");
+                let key = (r.min_x_cm / 5000, r.min_z_cm / 5000);
+                if !seen.contains(&key) {
+                    seen.push(key);
+                }
+            }
+            rooms += seen.len();
+            desks += f
+                .props
+                .iter()
+                .filter(|p| {
+                    p.kind == PROP_DESK
+                        && f.solids.iter().any(|w| {
+                            is_cubicle_wall(w)
+                                && (w.x_cm - p.x_cm).abs() < 300
+                                && (w.z_cm - p.z_cm).abs() < 300
+                        })
+                })
+                .count();
+        }
+        assert!(
+            walls >= 200,
+            "sólo {walls} mamparas en 39 semillas: la muestra no cubre el caso"
+        );
+        assert!(desks >= 40, "sólo {desks} mesas de cubículo en 39 semillas");
+        println!("[cubículos] {walls} mamparas, {desks} puestos, ~{rooms} zonas en 39 semillas");
+    }
+
+    #[test]
+    fn nothing_but_a_cubicle_wall_has_the_shape_of_one() {
+        // La forma es la identidad del emisor: si otro macizo midiera 12 × 140, el clasificador de
+        // los tests lo llamaría mampara y este test dejaría de medir lo que dice.
+        let m = no_catalogue();
+        for seed in [3, 11, 27] {
+            let b = building(seed);
+            let f = fill_building(&b, &m);
+            for s in &f.solids {
+                if s.size_x_cm.min(s.size_z_cm) == CUBICLE_T_CM {
+                    assert_eq!(
+                        s.top_y_cm - s.bottom_y_cm,
+                        CUBICLE_H_CM,
+                        "semilla {seed}: un macizo de 12 cm que no es una mampara: {s:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn office_rooms_get_a_lower_ceiling_than_the_rest() {
+        // Falso techo: los despachos del carácter de oficina piden 2,70–3,00 y ninguno menos.
+        let mut low = 0usize;
+        let mut office_rooms = 0usize;
+        for seed in 1..40 {
+            let b = building(seed);
+            for st in &b.storeys {
+                for (_, s) in st.built() {
+                    let is_room = matches!(
+                        s.role,
+                        SpaceRole::Office | SpaceRole::Service | SpaceRole::Storage
+                    );
+                    if !is_room || s.ceiling_clear_cm == 0 {
+                        continue;
+                    }
+                    if knobs_of(seed, s).office_ceiling_cm.1 > 0 {
+                        office_rooms += 1;
+                        assert!(
+                            (270..=300).contains(&s.ceiling_clear_cm)
+                                || s.ceiling_clear_cm <= ceiling_cap_cm(seed, s),
+                            "semilla {seed}: despacho de oficina con techo {} cm",
+                            s.ceiling_clear_cm
+                        );
+                        if s.ceiling_clear_cm < 300 {
+                            low += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            office_rooms >= 100,
+            "sólo {office_rooms} despachos de oficina en 39 semillas"
+        );
+        assert!(
+            low * 3 >= office_rooms,
+            "el falso techo no baja: {low} de {office_rooms} bajo 3,00"
+        );
+        println!("[falso techo] {low} de {office_rooms} despachos por debajo de 3,00");
     }
 
     fn rect_of(s: &Wg3Solid) -> super::super::plan::PlanRect {

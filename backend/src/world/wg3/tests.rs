@@ -8966,6 +8966,8 @@ fn probe_dump_regions_json() {
                     ("rejilla", true)
                 } else if fill::is_hung_band(s) {
                     ("arcada/bóveda", true)
+                } else if fill::is_cubicle_wall(s) {
+                    ("mampara de cubículo", true)
                 } else if thin == 15 {
                     (
                         if h == fill::ARCH_BAND_CM {
@@ -9491,6 +9493,47 @@ fn round_solids_stamp_as_discs_not_boxes() {
 /// Cuántos macizos emite el plan, por región y por tipo. Sin afirmar nada: es la cifra que dice si
 /// los pretiles cubren los bordes que deberían o si la comprobación de «hay suelo al lado» está
 /// descartando de más.
+/// Cubículos (2026-09-06): dónde están los puestos del mundo SERVIDO, para las capturas. Imprime
+/// hasta ocho mesas de cubículo por región con la cota de su suelo y el giro de la mesa.
+#[test]
+#[ignore]
+fn probe_cubicle_spots() {
+    let m = real_manifest();
+    for (rx, rz) in [(0, 0), (1, 0), (0, 1), (-1, 2)] {
+        let b = served_building_of(rx, rz);
+        let f = fill::fill_building(&b, &m);
+        let walls: Vec<&segment::Wg3Solid> = f
+            .solids
+            .iter()
+            .filter(|s| fill::is_cubicle_wall(s))
+            .collect();
+        let desks: Vec<&segment::Wg3Prop> = f
+            .props
+            .iter()
+            .filter(|p| {
+                p.kind == segment::PROP_DESK
+                    && walls
+                        .iter()
+                        .any(|w| (w.x_cm - p.x_cm).abs() < 300 && (w.z_cm - p.z_cm).abs() < 300)
+            })
+            .collect();
+        println!(
+            "[cubículos] ({rx},{rz}) — {} mamparas, {} puestos",
+            walls.len(),
+            desks.len()
+        );
+        for p in desks.iter().take(8) {
+            println!(
+                "  mesa en ({:.2}, {:.2}, {:.2}) yaw {}",
+                p.x_cm as f32 / 100.0,
+                p.y_cm as f32 / 100.0,
+                p.z_cm as f32 / 100.0,
+                p.yaw_deg
+            );
+        }
+    }
+}
+
 #[test]
 #[ignore]
 fn probe_how_many_solids() {
