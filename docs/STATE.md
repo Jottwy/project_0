@@ -11,9 +11,9 @@
 - Alpha 1 itch nov 2026 · Next Fest feb 2027 · EA primavera 2027 (`docs/SCALING-ROADMAP.md:196-198`). E0 de red cerrada y medida.
 
 ## Próximo paso ÚNICO
-- **Día 3 del contrato, el RENDIMIENTO**: fundido por chunk (una malla por chunk y submalla, colliders combinados); hoy cada macizo es un
-  GameObject con su collider y una región lleva ~3 000 (nota desde F0 en `Wg3MeshBuilder`). Medir draw calls, tiempo de construcción y
-  memoria ANTES y después. Bloquea r3 (vertical, wire 62) y las 34 plantas. La r2b está HECHA (`5bc25920`), sin ver en juego.
+- **Día 3, rebanada 2: los TRAMOS** (1 179 en la ventana medida, uno por objeto). Arrastran luces, zumbido, ambiente y el nombre `seg_` del
+  que dependen el arnés de ADR-098 (`Wg3LiveBootstrap.cs:125`) y el diagnóstico por jerarquía: hay que darles otra vía ANTES de tocarlos.
+  Los macizos YA están fundidos (4 718 → **550 renderers**). Del día 3 faltan los otros dos números del contrato: tiempo de chunk y memoria.
 
 ## En curso
 - **ADR-128, mundo ×2: tercera pasada, NO commiteado.** 24 tests en rojo; `MAX_SEGMENT_M` no se toca (D3 anulado), `bounds()` en metros
@@ -93,6 +93,16 @@
 - Menores: `MPTRACE` sin commitear en cuatro ficheros del vendor STP; `TODO(balance)` de loot; doc-comments stale.
 
 ## Últimas tandas
+
+### 2026-09-07 — 35.ª tanda: el día 3 — UV al mundo, macizos fundidos y caras enterradas
+- **La costura de textura NO la arreglaba el fundido**: la UV arrancaba en (0,0) por cara y la FASE se reiniciaba en cada caja. Ahora
+  proyecta la esquina en MUNDO, módulo el periodo (sin él, a 5 km la UV vale 2 500 y el float pierde el milímetro). `UvPerMetre` 0,5 intacto.
+- **Fundido por (máscara de planta, estilo, aspecto, loseta) y NO por chunk**: el chunk no se parte en Y y mete 7-8 plantas, y un Renderer
+  tiene UNA máscara. Fuera, con test: el invisible de ADR-129 D2 y los prismas de ADR-125. **4 718 macizos → 550 renderers** en Play.
+- **Caras enterradas podadas**: ésa es la causa del z-fighting, no el número de mallas. Sólo si OTRA caja cubre la cara ENTERA — un falso
+  positivo es un agujero por el que se ve dentro de una pared. Tapar NO es mutuo, y hay test.
+- Antes (sonda `probe_solids_per_chunk`): 5 119 macizos y 1 401 tramos en la (0,0), 90 % fundibles. Capturas `perf_*` sin agujeros y con la
+  retícula del suelo continua entre cajas. EditMode 38/39: el rojo de `cor_ramp` es PREEXISTENTE (lee volúmenes, no la malla).
 
 ### 2026-09-06 — 34.ª tanda: el decaimiento del CLIENTE (ADR-130 r2b) y el cierre de las ramas viejas
 - **Los «95/87/79 sin fusionar» eran falsa alarma**: `git cherry` deja 0, 1 y 2 propios. Podadas angry-jackson, gallant-einstein y
