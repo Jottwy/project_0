@@ -1,0 +1,281 @@
+#if UNITY_EDITOR
+using System.IO;
+using UnityEditor;
+using UnityEngine;
+
+namespace BackroomsSurvival.EditorTools
+{
+    /// <summary>
+    /// ADR-133 bloque A — retrata la linterna EN LA MANO sin entrar en Play. Se ejecuta desde
+    /// "Backrooms ▸ Linterna ▸ Capturar en la mano".
+    ///
+    /// POR QUÉ NO VALE EL ARNÉS DE CAPTURAS QUE YA HAY: <c>_ClaudeCaptureRunner</c> retrata el
+    /// MUNDO — entra en Play, espera a que el streamer construya el chunk y coloca al jugador. Lo
+    /// que hay que mirar aquí no es el mundo sino la pose de un prefab, y para eso Play es un
+    /// rodeo de noventa segundos con backends de por medio.
+    ///
+    /// Y POR QUÉ FUNCIONA SIN PLAY, que es lo que lo hace barato: el prefab del wieldable trae
+    /// dentro los brazos, su esqueleto y la malla, y en modo edición Unity NO llama a <c>Awake</c>
+    /// de un MonoBehaviour normal — así que la instancia se queda quieta, activa y en pose de bind,
+    /// que es exactamente el fotograma que hay que juzgar. Se planta una cámara en el origen del
+    /// prefab (donde va la del jugador), se renderiza a una RenderTexture y se tira la instancia.
+    ///
+    /// LO QUE ESTA CAPTURA NO PUEDE DECIR, declarado para que nadie la use de más: la pose de bind
+    /// no es la pose animada de "equipado en la mano". Sirve para ver si la linterna está EN el
+    /// puño y con qué orientación, si la manivela cae en el costado y hacia dónde sale el haz. No
+    /// sirve para juzgar el encuadre final en pantalla, que depende de la animación y del warp de
+    /// FOV del viewmodel (ADR-077).
+    ///
+    /// No toca la escena abierta: crea la instancia, renderiza y la destruye.
+    /// </summary>
+    public static class BackroomsCrankFlashlightShot
+    {
+        private const string OutDir = "Temp/captures";
+        private const int Width = 1280;
+        private const int Height = 720;
+
+        /// <summary>
+        /// Los tres puntos de vista. El primero es el del jugador —cámara en el origen del prefab,
+        /// mirando a +Z— y por eso su encuadre es absoluto. Los otros dos giran ALREDEDOR DE LA
+        /// MANO y no del origen: el modelo cuelga de <c>Hand.R</c>, que está a medio brazo de
+        /// distancia, y apuntar al origen dejaba la linterna como una mota en el centro del
+        /// fotograma. Su posición es un desplazamiento sobre la mano, no un punto del mundo.
+        /// </summary>
+        private static readonly (string name, Vector3 offset, bool aroundHand, float fov)[] Shots =
+        {
+            ("linterna_mano_fps", new Vector3(0f, 0f, -0.05f), false, 60f),
+            ("linterna_mano_lado", new Vector3(0.30f, 0.06f, 0.22f), true, 40f),
+            ("linterna_mano_manivela", new Vector3(0.16f, -0.02f, 0.13f), true, 30f),
+        };
+
+        [MenuItem("Backrooms/Linterna/Capturar en la mano", false, 92)]
+        public static void Capture()
+        {
+            var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(
+                BackroomsCrankFlashlightCreator.PrefabPath);
+            if (prefab == null)
+            {
+                Debug.LogError($"[CrankFlashlightShot] No hay prefab en " +
+                               $"'{BackroomsCrankFlashlightCreator.PrefabPath}'.");
+                return;
+            }
+
+            Directory.CreateDirectory(OutDir);
+
+            var instance = (GameObject)PrefabUtility.InstantiatePrefab(prefab);
+            instance.hideFlags = HideFlags.HideAndDontSave;
+            instance.transform.position = Vector3.zero;
+            instance.transform.rotation = Quaternion.identity;
+            SetActiveDeep(instance);
+
+            var rigGo = new GameObject("[FlashlightShotRig]") { hideFlags = HideFlags.HideAndDontSave };
+            try
+            {
+                // Los uniforms GLOBALES del viewmodel (ADR-077): fuera de Play no los pone nadie, y
+                // `_FOV` a 0 es un valor que el shader de los brazos nunca ve en juego. Se dejan
+                // como los deja `CameraFOVHandler` con el warp APAGADO — lo que se juzga aquí es la
+                // pose, no el encuadre deformado.
+                Shader.SetGlobalFloat("_FOVEnabled", 0f);
+                Shader.SetGlobalFloat("_FOV", 55f);
+
+                // Dos luces y nada de cielo: la escena abierta puede ser cualquiera, y con su
+                // iluminación la captura diría más de la escena que del objeto.
+                var key = new GameObject("Key") { hideFlags = HideFlags.HideAndDontSave };
+                key.transform.SetParent(rigGo.transform, false);
+                var keyLight = key.AddComponent<Light>();
+                keyLight.type = LightType.Directional;
+                keyLight.intensity = 1.4f;
+                key.transform.rotation = Quaternion.Euler(35f, -35f, 0f);
+
+                var fill = new GameObject("Fill") { hideFlags = HideFlags.HideAndDontSave };
+                fill.transform.SetParent(rigGo.transform, false);
+                var fillLight = fill.AddComponent<Light>();
+                fillLight.type = LightType.Directional;
+                fillLight.intensity = 0.5f;
+                fill.transform.rotation = Quaternion.Euler(20f, 150f, 0f);
+
+                var camGo = new GameObject("Cam") { hideFlags = HideFlags.HideAndDontSave };
+                camGo.transform.SetParent(rigGo.transform, false);
+                var cam = camGo.AddComponent<Camera>();
+                cam.clearFlags = CameraClearFlags.SolidColor;
+                cam.backgroundColor = new Color(0.10f, 0.10f, 0.12f);
+                cam.nearClipPlane = 0.01f;
+                cam.farClipPlane = 20f;
+
+                Vector3 hand = FindHandPoint(instance);
+
+                foreach (var shot in Shots)
+                {
+                    Vector3 from = shot.aroundHand ? hand + shot.offset : shot.offset;
+                    Vector3 at = shot.aroundHand ? hand : shot.offset + Vector3.forward;
+
+                    camGo.transform.position = from;
+                    camGo.transform.rotation = Quaternion.LookRotation((at - from).normalized, Vector3.up);
+                    cam.fieldOfView = shot.fov;
+
+                    string path = Path.Combine(OutDir, shot.name + ".png");
+                    RenderTo(cam, path);
+                    Debug.Log($"[CrankFlashlightShot] '{path}' desde {from} mirando a {at}, FOV {shot.fov}.");
+                }
+
+                ShootBareModel(instance, cam, camGo.transform);
+            }
+            finally
+            {
+                Object.DestroyImmediate(rigGo);
+                Object.DestroyImmediate(instance);
+            }
+
+            Debug.Log($"[CrankFlashlightShot] {Shots.Length} capturas en '{OutDir}'.");
+        }
+
+        /// <summary>
+        /// El prefab guarda apagados el tronco de antorcha y los nodos de fuego, y eso está bien en
+        /// juego; pero también podría traer apagado el propio ViewModel. Se encienden sólo los
+        /// nodos del camino hasta el modelo y los brazos, nunca todo: encender el fuego devolvería
+        /// la llama a la foto.
+        /// </summary>
+        private static void SetActiveDeep(GameObject root)
+        {
+            if (!root.activeSelf) root.SetActive(true);
+
+            foreach (var t in root.GetComponentsInChildren<Transform>(true))
+            {
+                if (t.name != "ViewModel" && t.name != "Root") continue;
+                if (!t.gameObject.activeSelf) t.gameObject.SetActive(true);
+            }
+
+            // LOS BRAZOS SE CULABAN, y sin brazos esta captura no contesta nada: la primera pasada
+            // salió con la linterna flotando en negro. Un `SkinnedMeshRenderer` fuera de Play no
+            // recalcula sus bounds —nadie lo anima—, así que la caja con la que se decide si entra
+            // en cámara es la de bind y puede quedar en cualquier parte. `updateWhenOffscreen` la
+            // recalcula cada fotograma y con eso aparecen.
+            foreach (var smr in root.GetComponentsInChildren<SkinnedMeshRenderer>(true))
+                smr.updateWhenOffscreen = true;
+        }
+
+        /// <summary>
+        /// Dos tomas SIN BRAZOS, y alineadas al eje del cuerpo en vez de a los ejes del mundo. Las
+        /// tres de arriba enseñan el agarre pero la mano tapa justo lo que queda por decidir: en
+        /// qué costado cae la manivela y qué extremo del cuerpo es la lente. El perfil mira el
+        /// cuerpo de lado; la otra se pone donde saldría el haz y mira hacia atrás — si ahí está la
+        /// lente, la luz sale por donde debe, y si se ve la tapa del culo, el haz apunta al jugador.
+        /// </summary>
+        private static void ShootBareModel(GameObject instance, Camera cam, Transform camT)
+        {
+            Transform body = null;
+            foreach (var t in instance.GetComponentsInChildren<Transform>(true))
+            {
+                if (t.name != BackroomsCrankFlashlightModelApplier.BodyNodeName) continue;
+                body = t;
+                break;
+            }
+
+            if (body == null)
+            {
+                Debug.LogWarning("[CrankFlashlightShot] Sin nodo 'Body': no hay tomas del modelo desnudo.");
+                return;
+            }
+
+            var arms = instance.GetComponentsInChildren<SkinnedMeshRenderer>(true);
+            foreach (var smr in arms) smr.enabled = false;
+
+            try
+            {
+                Vector3 centre = body.position;
+                // El eje largo del cuerpo es su +Y local, por la malla canónica.
+                Vector3 axis = body.up;
+                Vector3 side = body.right;
+
+                Shoot(cam, camT, centre + side * 0.30f, centre, 32f, "linterna_modelo_perfil");
+                Shoot(cam, camT, centre + axis * 0.32f, centre, 32f, "linterna_modelo_lente");
+                Shoot(cam, camT, centre - axis * 0.32f, centre, 32f, "linterna_modelo_culata");
+
+                // La manivela a MEDIO BARRIDO, que es la única pose que contesta si el brazo pasa
+                // por dentro de la carcasa: en reposo va tumbada contra ella y ahí todo eje parece
+                // bueno. Se gira 90° sobre el eje que usará en juego y se devuelve.
+                var crank = FindChild(instance, BackroomsCrankFlashlightModelApplier.CrankNodeName);
+                if (crank != null)
+                {
+                    var rest = crank.localRotation;
+                    crank.localRotation = rest * Quaternion.AngleAxis(90f, Vector3.right);
+                    Shoot(cam, camT, centre + side * 0.26f + axis * 0.10f, centre, 32f,
+                        "linterna_modelo_manivela90");
+                    crank.localRotation = rest;
+                }
+            }
+            finally
+            {
+                foreach (var smr in arms) smr.enabled = true;
+            }
+        }
+
+        private static Transform FindChild(GameObject root, string name)
+        {
+            foreach (var t in root.GetComponentsInChildren<Transform>(true))
+                if (t.name == name) return t;
+            return null;
+        }
+
+        private static void Shoot(Camera cam, Transform camT, Vector3 from, Vector3 at, float fov, string name)
+        {
+            camT.position = from;
+            camT.rotation = Quaternion.LookRotation((at - from).normalized, Vector3.up);
+            cam.fieldOfView = fov;
+
+            string path = Path.Combine(OutDir, name + ".png");
+            RenderTo(cam, path);
+            Debug.Log($"[CrankFlashlightShot] '{path}' desde {from} mirando a {at}, FOV {fov}.");
+        }
+
+        /// <summary>
+        /// El punto al que miran las cámaras de detalle: el nodo del modelo si está, y si no la
+        /// mano. En espacio de MUNDO, porque el prefab se instancia en el origen.
+        /// </summary>
+        private static Vector3 FindHandPoint(GameObject root)
+        {
+            Transform hand = null;
+            foreach (var t in root.GetComponentsInChildren<Transform>(true))
+            {
+                if (t.name == BackroomsCrankFlashlightModelApplier.NodeName) return t.position;
+                if (hand == null && t.name == BackroomsCrankFlashlightCreator.HandBoneName) hand = t;
+            }
+
+            if (hand != null) return hand.position;
+
+            Debug.LogWarning("[CrankFlashlightShot] Ni nodo del modelo ni hueso de la mano: las cámaras de " +
+                             "detalle apuntarán al origen y la linterna saldrá diminuta.");
+            return Vector3.zero;
+        }
+
+        private static void RenderTo(Camera cam, string path)
+        {
+            var rt = new RenderTexture(Width, Height, 24, RenderTextureFormat.ARGB32)
+            {
+                antiAliasing = 4
+            };
+            var previous = RenderTexture.active;
+            var tex = new Texture2D(Width, Height, TextureFormat.RGB24, false);
+
+            try
+            {
+                cam.targetTexture = rt;
+                cam.Render();
+
+                RenderTexture.active = rt;
+                tex.ReadPixels(new Rect(0, 0, Width, Height), 0, 0);
+                tex.Apply();
+                File.WriteAllBytes(path, tex.EncodeToPNG());
+            }
+            finally
+            {
+                cam.targetTexture = null;
+                RenderTexture.active = previous;
+                Object.DestroyImmediate(tex);
+                rt.Release();
+                Object.DestroyImmediate(rt);
+            }
+        }
+    }
+}
+#endif

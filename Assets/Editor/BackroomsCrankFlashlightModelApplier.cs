@@ -83,10 +83,29 @@ namespace BackroomsSurvival.EditorTools
         private const float CrankLengthMeters = 0.06f;
 
         /// <summary>
-        /// Dónde nace el EJE de la manivela sobre el cuerpo, en fracción del largo del cuerpo (Y) y
-        /// del ancho (X). Provisional y declarado: se afina viendo las dos piezas juntas.
+        /// A lo LARGO del cuerpo, en fracción de su tamaño: dónde nace el eje de la manivela. Va
+        /// por DELANTE del puño, no detrás — en `linterna_mano_lado` se ve que la mano ocupa la
+        /// mitad de atrás, y una manivela bajo los dedos no se puede girar. Con el brazo de 6 cm y
+        /// medio cuerpo de 9, desde aquí el barrido no asoma por la lente.
         /// </summary>
-        private static readonly Vector3 CrankOffset = new(0.5f, -0.1f, 0f);
+        private const float CrankAlongBody = 0.18f;
+
+        /// <summary>
+        /// Aire entre el disco de la manivela y la carcasa. Lo único que se elige a mano de la
+        /// separación: el resto sale de las dos mallas, ver <see cref="CrankPivotX"/>.
+        /// </summary>
+        private const float CrankClearance = 0.002f;
+
+        /// <summary>
+        /// A qué distancia del eje del cuerpo se monta la manivela, DERIVADO de las dos mallas en
+        /// vez de elegido: el brazo barre el plano YZ a X constante, así que para que ninguna parte
+        /// de la manivela entre en la carcasa en ningún ángulo hace falta que su semiancho quepa
+        /// entero fuera del semiancho del cuerpo. Con una fracción a ojo esto era una lotería que
+        /// se volvía a perder cada vez que se rehornease cualquiera de las dos piezas — y va a
+        /// pasar, porque las dos piden un remesh.
+        /// </summary>
+        private static float CrankPivotX(Mesh body, Mesh crank)
+            => body.bounds.extents.x + crank.bounds.extents.x + CrankClearance;
 
         private const int MaxTextureSize = 1024;
         private const int TriangleWarnThreshold = 30000;
@@ -244,6 +263,42 @@ namespace BackroomsSurvival.EditorTools
                 vertices[i] = rotation * vertices[i] * s;
             mesh.vertices = vertices;
             mesh.RecalculateBounds();
+
+            // QUÉ EXTREMO ES EL EJE, por geometría y no por fe: el disco de la manivela es la
+            // pieza GRUESA y el pomo la fina, así que se compara el grosor medio (distancia al eje
+            // Y) del 15 % de arriba contra el de abajo, igual que el destornillador busca su punta.
+            // Sin esto, el pivote cae en el extremo que la caja deje abajo — y si es el pomo, el
+            // brazo gira alrededor del pomo en vez de alrededor del eje.
+            if (pivotAtBase)
+            {
+                float halfY = mesh.bounds.extents.y;
+                float band = halfY * 0.30f;
+                float topGirth = 0f, botGirth = 0f;
+                int topN = 0, botN = 0;
+                foreach (var v in vertices)
+                {
+                    float r = new Vector2(v.x, v.z).magnitude;
+                    if (v.y > mesh.bounds.center.y + halfY - band) { topGirth += r; topN++; }
+                    else if (v.y < mesh.bounds.center.y - halfY + band) { botGirth += r; botN++; }
+                }
+                topGirth = topN > 0 ? topGirth / topN : 0f;
+                botGirth = botN > 0 ? botGirth / botN : 0f;
+
+                bool axleIsDown = botGirth >= topGirth;
+                if (!axleIsDown)
+                {
+                    // Media vuelta sobre Z: el eje pasa a −Y y el brazo sale hacia +Y. Rotación
+                    // pura, así que normales y tangentes se arreglan con el mismo acumulado.
+                    var flip = Quaternion.Euler(0f, 0f, 180f);
+                    for (int i = 0; i < vertices.Length; i++) vertices[i] = flip * vertices[i];
+                    mesh.vertices = vertices;
+                    rotation = flip * rotation;
+                    mesh.RecalculateBounds();
+                }
+
+                Debug.Log($"[CrankFlashlightModel] '{mesh.name}': grosor arriba {topGirth:F4} / abajo " +
+                          $"{botGirth:F4} → eje {(axleIsDown ? "ya estaba" : "volteado")} a −Y.");
+            }
 
             var origin = pivotAtBase
                 ? new Vector3(mesh.bounds.center.x, mesh.bounds.min.y, mesh.bounds.center.z)
@@ -536,13 +591,14 @@ namespace BackroomsSurvival.EditorTools
                 var body = NewMeshChild(node.transform, BodyNodeName, bodyMesh, material, layer);
                 var crank = NewMeshChild(node.transform, CrankNodeName, crankMesh, material, layer);
 
-                // El eje de la manivela sobre el cuerpo. Provisional, ver CrankOffset.
-                var bounds = bodyMesh.bounds;
-                crank.transform.localPosition = new Vector3(
-                    bounds.extents.x * CrankOffset.x * 2f,
-                    bounds.extents.y * CrankOffset.y * 2f,
-                    bounds.extents.z * CrankOffset.z * 2f);
-                // El brazo sale del eje hacia +Y (malla canónica) y barre girando sobre Z local.
+                float pivotX = CrankPivotX(bodyMesh, crankMesh);
+                float pivotY = bodyMesh.bounds.size.y * CrankAlongBody;
+                crank.transform.localPosition = new Vector3(pivotX, pivotY, 0f);
+                Debug.Log($"[CrankFlashlightModel] Eje de la manivela en ({pivotX:F4}, {pivotY:F4}, 0): " +
+                          $"semiancho del cuerpo {bodyMesh.bounds.extents.x:F4} + semiancho de la manivela " +
+                          $"{crankMesh.bounds.extents.x:F4} + {CrankClearance:F3} de aire.");
+                // El brazo sale del eje hacia +Y (malla canónica) y queda tumbado a lo largo del
+                // cuerpo, que es como se guarda una manivela plegable.
                 crank.transform.localRotation = Quaternion.identity;
 
                 MoveBeamUnderBody(root, body.transform, bodyMesh);
@@ -654,9 +710,13 @@ namespace BackroomsSurvival.EditorTools
             var field = so.FindProperty("crank");
             if (field != null) field.objectReferenceValue = crank;
 
-            // El brazo sale hacia +Y desde el eje, así que barre girando sobre Z local.
+            // EL EJE ES X, no Z, y la diferencia es que media vuelta pase por dentro del cuerpo o
+            // no. La manivela va montada en el COSTADO: su eje sale perpendicular a la carcasa, que
+            // es el +X local, y el brazo —que apunta a +Y— barre entonces el plano YZ, siempre por
+            // fuera. Con el eje en Z el brazo giraría en el plano que contiene la carcasa y la
+            // atravesaría en medio giro.
             var axis = so.FindProperty("crankAxis");
-            if (axis != null) axis.vector3Value = Vector3.forward;
+            if (axis != null) axis.vector3Value = Vector3.right;
 
             so.ApplyModifiedPropertiesWithoutUndo();
         }

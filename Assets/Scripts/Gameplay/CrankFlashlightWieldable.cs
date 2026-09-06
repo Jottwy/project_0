@@ -47,9 +47,9 @@ namespace BackroomsSurvival.Gameplay
         [SerializeField] private Transform crank;
 
         [Tooltip("Eje de giro de la manivela, en espacio LOCAL de la propia manivela. Con la malla " +
-                 "canónica que hornea el aplicador —brazo hacia +Y desde el eje— el barrido es " +
-                 "sobre Z.")]
-        [SerializeField] private Vector3 crankAxis = Vector3.forward;
+                 "canónica que hornea el aplicador —brazo hacia +Y desde el eje, montada en el " +
+                 "costado— el eje sale perpendicular a la carcasa: X.")]
+        [SerializeField] private Vector3 crankAxis = Vector3.right;
 
         [Tooltip("El haz. Se busca en los hijos si se deja vacío.")]
         [SerializeField] private Light beam;
