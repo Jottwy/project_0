@@ -3122,3 +3122,13 @@ si las sondas de `J:/wg3*` valen algo o se borran. Las ramas viejas (`angry-jack
   las tandas 23–25 y el verbatim de 4j–4l en `SESSION-LOG.md`. Índice de ADR regenerado: 129 y 130 faltaban (170 entradas).
 - Sin fusionar y medido: `feat/occluders` choca en `fill.rs`/`plan.rs`; `unity-lighting-cadence` en `Wg3SceneAssembler.cs` (fusionadas en la 26.ª).
 - Cierre de 22 sesiones (28-08 → 06-09) en `SESSION-LOG.md`; tres experimentos a rama: `558afb54` teselado, `cb61b99c` decals, `1c8237ff` sonda.
+
+### 2026-09-06 — 26.ª tanda: las dos ramas que quedaban, fusionadas — occluders y cadencia de luces
+- `feat/occluders` (8 commits del 03/04-09): desalineación de vanos (`DOOR_MISALIGN_CHANCE` 0,75), oclusores intra-espacio
+  (`OCCLUDER_DENSITY` 1,0, grosor 45 porque el 40 es la viga) y métricas de layout. Conflictos en `fill.rs`/`plan.rs` re-aplicados.
+- Destapó un bug de HEAD: el vano «lado a lado» del atrio (ADR-104 enm. 3) se cortaba en la banda ENTERA, también sobre el
+  muro compartido con otro atrio sin sala encima y cuando un pasillo sólo rozaba la esquina. Ahora se recorta sólo bajo cada sala.
+- Los oclusores esquivan ahora pozos, ventanas y bocas de tramo (los emisores de HEAD son posteriores a la rama); bloques sin longitud múltiplo de 50.
+- `unity-lighting-cadence` (3): tubos muertos, jitter en celda, tinte ±200 K, parpadeo, sobre 11 m / 2,7 y paneles; tubo muerto = sin Light.
+- Verificación: cargo 1393/1393, clippy y fmt limpios, barrido 27/27 (pisable −0,6 %, mancha 99,7 %, islas 6,4 = 6,4);
+  CompileCheck 0. Los 7 tests de la cadencia NO corrieron: `CorrelatedColorTemperatureToRGB` es nativa; pide el editor.

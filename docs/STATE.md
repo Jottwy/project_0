@@ -6,7 +6,7 @@
 ## Estado
 - **WorldGen3 es el mundo servido.** Wire **61** en las dos puntas (`ipc/server.rs:38`, `WireSchema.cs:25`) — ADR-129 lo subió el 06-09.
 - **Contrato WG3 v1 = Alpha 1** (`docs/WG3-ALPHA1-ROADMAP.md`): días 1–2 hechos; 3 y 5 APARCADOS detrás de la tanda de oficinas (Joel, 06-09).
-- Suite del 06-09 con las OCHO sesiones de oficina fusionadas: `cargo test --bin backrooms_server` **1414/1414 (89 ign.)**, `CompileCheckClient` 0.
+- Suite del 06-09 con las OCHO sesiones de oficina fusionadas: `cargo test --bin backrooms_server` **1414/1414 (89 ign.)**; CompileCheck 0 ×4 (07-09).
 - **El commit tiene gate** (`tools/dev/validate-scope.ps1`, hook PreToolUse): rojo = el commit no se ejecuta. Alcance por `git diff --cached`.
 - Alpha 1 itch nov 2026 · Next Fest feb 2027 · EA primavera 2027 (`docs/SCALING-ROADMAP.md:196-198`). E0 de red cerrada y medida.
 
@@ -20,12 +20,12 @@
   de MUNDO con `plan_bounds()`. **Sigue sin verificarse que lo servido salga ×2.** Parche verbatim en `docs/SESSION-LOG.md`.
 - **Contrato WG3 v1**, 5 días. Día 1 (`65d267c3`) y día 2 (`c7c9dd01`, `510223b8`, ADR-129) cerrados; el día 4 de gramática lo sustituyó
   ADR-129 (rampa, tabique diagonal y anti-enfilada pasan a v2 salvo decisión). Quedan día 3 (rendimiento) y día 5 (verificación, etiqueta).
-- **Tanda de oficinas (06-09)**: las ocho sesiones FUSIONADAS en `migration/worldgraph-v1` (33.ª tanda) · queda ADR-130 r2b cliente, día 3, r3, r4.
-- **Saneamiento: B1–B4 fusionados en `migration/worldgraph-v1`** (06-09). Queda B5 (cabeza: el agujero de autoridad) y la lista de Joel para podar ramas.
+- **Oficinas (33.ª) y B1–B4 FUSIONADOS en `migration/worldgraph-v1`** (06-09). Queda ADR-130 r2b, día 3, r3, r4, B5 (autoridad) y podar ramas (Joel).
+- ADR-123 (agacharse y conductos) PROPUESTO, pendiente de Joel. ADR-127 (rampa de techo, wire 61) propuesto para el día 4.
 - **Migración STP servidor-autoritativo**: Steps 1–2 y slice 3.1 (plumbing) hechos y verificados. Falta slice 3.2
   (capa L2 de predicción), reescribir los 8 call sites de `Inventory` y retirar `PlayerController.cs` (DEPRECATED por ADR-009).
 - ADR-014 fase 2 (borrado diferido 200 ms + reserva host-only anti-duplicado): backend implementado, **pendiente de playtest**.
-- ADR-123 (agacharse y conductos) PROPUESTO, pendiente de Joel. ADR-127 (rampa de techo, wire 61) propuesto para el día 4.
+- **Linterna de manivela (ADR-133)**: `claude/crank-flashlight-model-1d8632`, 6 commits sin fusionar. Falta: sonido, loot (`RestrictCacheCatalog`), remesh.
 
 ## Riesgos abiertos
 - **Autoridad del servidor: los tres agujeros CERRADOS** (`78e156e6` dueño al demoler; `ebb42911`/`bb3c7e5c` cantidad y posición contra el
@@ -89,11 +89,21 @@
 - **El gate de C# no valida nada en un worktree recién creado**: `*.csproj` y `Library/` los genera Unity y viven sólo en el clon principal
   (`CompileCheckClient.sh` daba `MISSING csproj`). Arreglado y documentado (`c99db43a`, `docs/DEV-ENVIRONMENT.md`): copiar `.csproj`, unir `Library`.
 - **`STOREY_HEIGHT_CM` (332) no sube con un número** (380–480: 1/9 regiones válidas); `storey_of_floor_cm` clasifica una planta ABAJO en la costura de 664.
-- **El runner de tests del editor no contesta** (06-09); el arnés .NET corrió `ProxyLocomotionMathTests` 15/15 pero NO `Wg3LightCadenceTests` (ECall nativa).
-- **Sin ver en juego (06-09)**: monitor y despacho oscuro, recepción, techo roto, pasada en Play del audio (clips sintéticos); los carteles SÍ (espejo cazado).
-- Menores: `MPTRACE` sin commitear en cuatro ficheros del vendor STP; `TODO(balance)` de loot; doc-comments stale.
+- **El runner del editor no contesta**; el arnés .NET corrió `ProxyLocomotionMathTests` 15/15 pero NO `Wg3LightCadenceTests` (ECall nativa). Desde 07-09,
+  `BackroomsEditModeFixtureRunner.cs` corre una clase `[Test]` por reflexión desde menú (linterna 13/13). `CrankFlashlight/` 24 MB; rehornear conserva GUID.
+- **Sin ver en juego (06-09)**: monitor, despacho oscuro, recepción, techo roto, audio en Play; carteles OK. Menores: `MPTRACE` en STP, `TODO(balance)`.
 
 ## Últimas tandas
+
+### 2026-09-07 — 34.ª tanda: la linterna de manivela (ADR-133), de cero a en la mano del vecino, en rama aparte
+- Seis commits en `claude/crank-flashlight-model-1d8632` (`5063f09e`…`c5d9b8ad`), SIN fusionar. Carga en `Durability` (como el bote, ADR-068);
+  `BR_Battery Health` nueva, sorteada 0,8–1 y persistida. Hereda de `Wieldable`: `FPSWieldablesInput.cs:137` hace `as IUseInputHandler`; un puente no ve `Hold`.
+- Parpadeo por `intensity`, NUNCA `enabled` (ADR-042 relaya `light_on` a 10 Hz; ADR-080 detecta por él). Joel: 0,40 velocidad, 18–22 s/vuelta, 60 s × salud,
+  ruido 10 m/vuelta (`WorldNoise.CrankLoudness`), bit 6 `RemoteButtons.Cranking`, nace al 10–50 %.
+- DOS mallas padre-hijo. Tres fallos cazados por CAPTURA (`BackroomsCrankFlashlightShot.cs`, sin Play): pivote en el POMO (grosor 0,0132/0,0071),
+  eje Z que barría por dentro (→ X), separación a ojo (→ derivada de las dos mallas, 0,0438). Mallas 93 k + 97 k tris (24 MB): piden remesh.
+- Pickup propio + icono (`tools/dev/MakeItemIcon.py`): el heredado DABA UNA ANTORCHA al recoger. `ProxyCrankHook` en runtime sobre el modelo de mano
+  (`ProxyHeldItemHook.cs`), sin rehornear. `BackroomsEditModeFixtureRunner` (Test Runner muerto): 13/13. Loot: no sale hasta levantar `RestrictCacheCatalog`.
 
 ### 2026-09-06 — 33.ª tanda: las ocho sesiones de oficina, fusionadas en un solo tronco
 - Once merges en `migration/worldgraph-v1` (`0394e426`): variantes, materiales, deterioro, sala grande y los incrementos de audio, carteles,
@@ -113,6 +123,7 @@
   en 209 plantas (44 %), media 418 m², 15–18 puestos. Interruptor del ANTES: `WG3_NO_OPEN_PLAN=1`.
 - **Bug de la enm. 18**: la holgura de boca era un CUADRADO y la junta entre tramos hermanos (15 m) tapaba la sala; ahora es una franja.
 - **Costura de 664 cerrada**: canto de losa = planta de ARRIBA (de la 1 arriba); y una cama ya no ancla en repisa sin altura libre.
+
 ### 2026-09-06 — 31.ª tanda: ADR-130 rebanada 2a — el decaimiento del servidor (ADR-130 enm. 1)
 - `decay_of(space)` por la COTA (la calle está en 0) y `d²` contra el fondo SERVIDO; `knobs_of` deja de devolver la fila de `KNOBS` y
   devuelve una COPIA movida por `decayed`: los 22 sitios del relleno decaen sin tocar ni un emisor. Agujeros de forjado 0,26 → 0,80.
@@ -159,13 +170,3 @@
   mesa + silla (15 % caída) + monitor/teclado/teléfono/bandeja + papelera; una de cada siete vacía. Un metro + grosor a los macizos previos.
 - Capturas `Temp/captures/cub_*.png` (B2/B3 de (0,0)): se lee como oficina. Sonda `probe_cubicle_spots`. Barrido 27/27, islas 6,4 = 6,4.
 - Plan de la tanda acordado con Joel (cinco rebanadas, memoria `wg3-oficinas-tanda-plan`); el cierre v1 queda detrás.
-
-### 2026-09-06 — 26.ª tanda: las dos ramas que quedaban, fusionadas — occluders y cadencia de luces
-- `feat/occluders` (8 commits del 03/04-09): desalineación de vanos (`DOOR_MISALIGN_CHANCE` 0,75), oclusores intra-espacio
-  (`OCCLUDER_DENSITY` 1,0, grosor 45 porque el 40 es la viga) y métricas de layout. Conflictos en `fill.rs`/`plan.rs` re-aplicados.
-- Destapó un bug de HEAD: el vano «lado a lado» del atrio (ADR-104 enm. 3) se cortaba en la banda ENTERA, también sobre el
-  muro compartido con otro atrio sin sala encima y cuando un pasillo sólo rozaba la esquina. Ahora se recorta sólo bajo cada sala.
-- Los oclusores esquivan ahora pozos, ventanas y bocas de tramo (los emisores de HEAD son posteriores a la rama); bloques sin longitud múltiplo de 50.
-- `unity-lighting-cadence` (3): tubos muertos, jitter en celda, tinte ±200 K, parpadeo, sobre 11 m / 2,7 y paneles; tubo muerto = sin Light.
-- Verificación: cargo 1393/1393, clippy y fmt limpios, barrido 27/27 (pisable −0,6 %, mancha 99,7 %, islas 6,4 = 6,4);
-  CompileCheck 0. Los 7 tests de la cadencia NO corrieron: `CorrelatedColorTemperatureToRGB` es nativa; pide el editor.
