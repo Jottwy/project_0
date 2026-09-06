@@ -12321,3 +12321,121 @@ fn probe_tower_wells() {
         );
     }
 }
+
+#[test]
+#[ignore]
+fn probe_tower_floors() {
+    use crate::world::wg3::collision::Wg3CollisionCache;
+    use crate::world::Vec3;
+    let m = real_manifest();
+    let region = Wg3RegionCoord { x: 0, z: 0 };
+    let world = Wg3ServedWorld::plan_region(&m, SERVED_SEED, region);
+    let mut per: std::collections::BTreeMap<i32, usize> = Default::default();
+    for sg in world.segments() {
+        *per.entry(sg.floor_y_cm).or_default() += 1;
+    }
+    eprintln!("segmentos por cota: {per:?}");
+    let mut worlds = Wg3WorldCache::default();
+    let mut cache = Wg3CollisionCache::new();
+    for (x, z, y) in [
+        (105.9, 54.4, -9.96),
+        (64.1, 79.9, -9.96),
+        (128.6, 102.0, -6.64),
+        (90.3, 71.8, -6.64),
+        (42.0, 31.2, -3.32),
+        (42.0, 26.0, 0.0),
+    ] {
+        let pos = Vec3::new(x, y + 1.0, z);
+        cache.prewarm_for_move(&mut worlds, &m, SERVED_SEED, pos, pos);
+        let fy = cache.floor_y(pos);
+        let blocked = cache.blocked_at(pos, 0.35);
+        eprintln!("({x},{z}) pies {y}: suelo {fy} bloqueado {blocked}");
+    }
+    // Las naves de B3 (índice 0) por su centro, y la columna del ráster en cada una.
+    let b = served_building_of(0, 0);
+    let mut shown = 0;
+    for (_, sp) in b.storeys[0].built() {
+        if sp.role != SpaceRole::Hall || shown >= 4 {
+            continue;
+        }
+        shown += 1;
+        let (cx, cz) = sp.rect.centre_m();
+        let pos = Vec3::new(cx, -9.96 + 1.0, cz);
+        cache.prewarm_for_move(&mut worlds, &m, SERVED_SEED, pos, pos);
+        let fy = cache.floor_y(pos);
+        let below = cache.floor_below_m(cx, cz, -9.96);
+        let head = cache.headroom_m(cx, cz, -9.96);
+        let strictly = cache.floor_strictly_below_m(cx, cz, -9.0);
+        eprintln!("nave B3 ({cx:.1},{cz:.1}) cota {} clear {}: floor_y {fy} below {below:?} headroom {head:?} strictly_below(-9) {strictly:?}", sp.floor_y_cm, sp.max_clear_cm);
+    }
+}
+
+/// ADR-130 — SONDA: ¿hay naves del sótano más bajo sin suelo en su centro? Un agujero en la
+/// planta más baja da al vacío.
+#[test]
+#[ignore]
+fn probe_lowest_basement_floorless() {
+    let m = real_manifest();
+    for (rx, rz) in [(0, 0), (-1, -1)] {
+        let b = served_building_of(rx, rz);
+        let region = Wg3RegionCoord { x: rx, z: rz };
+        let world = Wg3ServedWorld::plan_region(&m, SERVED_SEED, region);
+        let mut worlds = Wg3WorldCache::default();
+        let mut cache = crate::world::wg3::collision::Wg3CollisionCache::new();
+        let lowest = &b.storeys[0];
+        let floor_m = lowest
+            .spaces
+            .iter()
+            .find(|s| s.role.is_built())
+            .map(|s| s.floor_y_cm)
+            .unwrap_or(0) as f32
+            / 100.0;
+        let mut bad = 0;
+        let mut total = 0;
+        for (i, sp) in lowest.built() {
+            total += 1;
+            let (cx, cz) = sp.rect.centre_m();
+            let pos = crate::world::Vec3::new(cx, floor_m + 1.0, cz);
+            cache.prewarm_for_move(&mut worlds, &m, SERVED_SEED, pos, pos);
+            // Nueve muestras en 2 m: un centro dentro de un tabique o de un macizo no es «sin suelo».
+            if sp.role == SpaceRole::Stair {
+                // El centro de una escalera es el tramo: macizo hasta media altura. No es un agujero.
+                continue;
+            }
+            let any_floor = (-3..=3).any(|dx| {
+                (-3..=3).any(|dz| {
+                    cache
+                        .floor_below_m(cx + dx as f32, cz + dz as f32, floor_m)
+                        .is_some()
+                })
+            });
+            if !any_floor {
+                bad += 1;
+                let above: Vec<String> = b.storeys[1]
+                    .spaces
+                    .iter()
+                    .filter(|t| {
+                        t.rect
+                            .contains_point((cx * 100.0) as i32, (cz * 100.0) as i32)
+                    })
+                    .map(|t| format!("{:?} cota {} rise {}", t.role, t.floor_y_cm, t.rise_cm))
+                    .collect();
+                let wells: Vec<String> = b
+                    .wells
+                    .iter()
+                    .filter(|w| {
+                        w.rect
+                            .contains_point((cx * 100.0) as i32, (cz * 100.0) as i32)
+                    })
+                    .map(|w| format!("pozo {}->{}", w.storey_below, w.storey_below + 1))
+                    .collect();
+                eprintln!(
+                    "({rx},{rz}) espacio {i} {:?} en ({cx:.1},{cz:.1}) {:?} rise {} sin suelo; encima {above:?} {wells:?}",
+                    sp.role, sp.rect, sp.rise_cm
+                );
+            }
+        }
+        let _ = world;
+        eprintln!("({rx},{rz}) planta más baja: {bad}/{total} sin suelo en el centro");
+    }
+}
