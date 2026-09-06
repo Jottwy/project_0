@@ -44,6 +44,21 @@ namespace BackroomsSurvival.Net
         /// </summary>
         public const int Spraying = 1 << 4;
 
+        /// <summary>
+        /// ADR-131 D4 — este peer está SENTADO. Hoy sólo lo escribe el servidor, al dar de alta un
+        /// vigilante (`species == 3`) en la silla de un puesto de oficina; nada impide que un día lo
+        /// escriba un jugador que se siente.
+        ///
+        /// El bit y no la especie, porque son dos preguntas distintas: la especie dice QUÉ es (qué
+        /// modelo, qué banco de audio) y esto dice EN QUÉ POSTURA está. Y bit y no contador porque
+        /// es un estado SOSTENIDO — estar sentado dura, no ocurre (ADR-049 rechazó por escrito meter
+        /// un conteo en este campo).
+        ///
+        /// Cero coste de wire: el campo ya viaja. Un cliente viejo decodifica el bit, no lo
+        /// interpreta y dibuja al vigilante de pie, que es la degradación correcta.
+        /// </summary>
+        public const int Seated = 1 << 5;
+
         public static bool Has(int buttons, int bit) => (buttons & bit) != 0;
     }
 }
