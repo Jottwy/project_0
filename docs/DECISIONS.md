@@ -14799,3 +14799,98 @@ assets del primer commit (`d39d2932`) llevaban el perfil claro y el tinte cálid
 los juzgó parecía haber cambiado. **Se caza mirando `Library/ScriptAssemblies/<asamblea>.dll`: hasta
 que su fecha no pasa de la del `.cs`, un `MENU DONE` miente.** Es la misma factura que
 `CompileCheckClient` con un `.csproj` viejo, en el otro sentido.
+
+---
+
+## ADR-129 — Enmienda 2: variantes de sala, la oficina deja de ser una sola sala repetida (2026-09-06) — ACEPTADA (Joel: «hoy todos los despachos de oficina son iguales»)
+
+**Estado**: implementado. **Wire**: 61, sin tocar. **Commit**: ver `docs/STATE.md`.
+
+Con el atrezo de ADR-129 y los cubículos de ADR-105 enm. 18, un despacho que no lleva puestos lleva
+SIEMPRE lo mismo: mesas contra la pared larga, archivador en una esquina, pizarra enfrente. Joel:
+«hoy todos los despachos de oficina son iguales». Una VARIANTE se queda la sala entera y la amuebla
+con una intención — aquí se reúne gente, aquí se entra, aquí se guardan papeles, aquí se come, aquí
+zumban las máquinas.
+
+### D1 — Cinco variantes, sorteadas por hash con pesos por carácter
+
+`fill::Variant` {Meeting, Reception, Archive, Canteen, Server} y una fila `variants: [f32; 5]` en la
+tabla `KNOBS` de ADR-105 enm. 14, una por carácter. Son probabilidades **absolutas**: su suma es la
+proporción de despachos del carácter que se viste con variante, y el resto cae en el atrezo de
+pared de siempre. Office suma 0,55; laberinto sólo archivo y servidores (0,08). Un test
+(`variant_weights_are_probabilities`) impide que una fila pase de 1,0, porque por encima las últimas
+variantes de la fila no saldrían nunca y el fallo sería mudo. El sorteo es el de todo el sistema:
+`stream_at(seed, centro de la sala, SALT_VARIANT)`, así que la misma sala es siempre la misma sala.
+
+### D2 — Cinco tipos de atrezo nuevos, y por qué NO suben el wire
+
+`PROP_TABLE_LONG` (16), `PROP_COUNTER` (17), `PROP_MICROWAVE` (18), `PROP_FRIDGE` (19) y
+`PROP_RACK` (20). `kind` es un `u8` dentro de `Wg3Prop`: **añadir valores no cambia la forma del
+mensaje**, y es el mismo camino que la iteración 1 de ADR-129 (reloj, teléfono, teclado, bandeja,
+silla caída) recorrió con el wire quieto. Un cliente viejo no resuelve el prefab, avisa una vez y
+se salta el mueble (`Wg3PropCatalog.NameOf` → `null`).
+
+Los cinco son los únicos que no tenían sustituto entre los catorce de ADR-129: reuniones y comedor
+comparten la mesa larga, el archivo es `PROP_CABINET` en fila y el atrezo de mesa se reutiliza
+entero. Huellas medidas sobre el prefab horneado, en cm: mesa larga 530 × 160 × 75, mostrador
+485 × 70 × 105, microondas 55 × 49 × 34, nevera 80 × 71 × 181, rack 115 × 91 × 260. El rack pide
+270 de altura libre, o sea que no cabe bajo un falso techo por debajo de eso y la variante se salta.
+
+Origen de los prefabs: `Meeting Table Large`, `Reception Counter` (pack de oficina), `Microwave
+Oven` y `Fridge` (cocina del mismo pack) y `SM_WarehouseShelfSingle` (pack de supermercado, ya en
+URP) para el rack — **no hay rack de servidores en ningún pack**, y la estantería metálica es lo que
+lee como fila de armarios técnicos sin modelar nada. `Wg3PropCatalogBuilder` gana un flag
+`recentre` que sólo se aplica a estos cinco: el rack trae el pivote en el BORDE (centro de bounds
+x = 0,57 de 1,15 de ancho) y el ancla de ADR-129 D1 es el centro de la huella; sin recentrar, el
+rack se planta medio metro fuera de su macizo invisible. Los trece de ADR-129 no se tocan.
+
+### D3 — Buscar sitio, no centrar
+
+El primer intento plantaba el mueble grande en el centro de la sala. **Medido: cero salas de
+reuniones y cero comedores en toda la región (0,0)** — el centro de una sala de 400 m² lo ocupa un
+pilar, un bloque exento o una tarima. Ahora hay una rejilla de un metro ordenada por distancia al
+centro, y gana la primera posición libre; lo que va contra una pared (el mostrador) corre por ella.
+Archivo y servidores no la necesitan: cada hueco de la fila se comprueba por separado, y además
+prueban DOS separaciones de la pared (5 y 30 cm), porque a ras choca con la pilastra (25 de fondo) y
+la fila salía de dos o tres en una sala que cabía entera. Un archivo con menos de cuatro
+archivadores, o una sala de servidores con menos de tres racks, no se reclama: la sala vuelve al
+atrezo de pared.
+
+### D4 — El orden de las tres pasadas: variantes, cubículos, atrezo de pared
+
+Las variantes van **las primeras**. Las que piden más sitio sólo caben en los despachos grandes, que
+son justo los que `office_cubicles` se llevaba por delante (0,60 en Office por encima de 60 m²).
+Cada pasada recibe la lista de (planta, espacio) que ya reclamaron las anteriores.
+
+### D5 — Lo que una variante respeta
+
+Lo mismo que un cubículo y por el mismo camino: bocas de cualquier tramo con `PROP_MOUTH_CLEAR_CM`,
+rellanos, tiros y huecos de forjado, pozos (ADR-126), los recortes de la pared y los macizos que ya
+había. Lo que frena emite su macizo invisible (ADR-129 D2). Todo dentro de UN tramo, el mayor de la
+sala a su cota.
+
+### Verificaciones
+
+`props_clear_solids_and_mouths` — huella en planta de todo mueble que se apoya en el suelo
+(`fill::prop_footprint_cm`), contra todo macizo que se ve y contra toda boca, en las cuatro regiones
+de auditoría. **Cazó un fallo preexistente de los cubículos**: la papelera del rincón se comía dos
+centímetros de la mampara lateral (iba a `ua + 30` y ahora a `ua + CUBICLE_T_CM + 30`).
+`variant_weights_are_probabilities`. Sonda `probe_variant_spots` (con detector de la FILA del
+archivo, que no tiene mueble propio). Suite `cargo test --bin backrooms_server` 1398/1398.
+
+Barrido de 27 regiones, antes → después: pisable 183 756 → 183 676 cotas (−0,04 %), mancha mayor
+99,7 % = 99,7 %, islas 6,4 → 6,3, nav 100 % = 100 %, 27/27 válidas. `fill` 75,7 → 78,2 ms de media.
+
+Capturas de la región (0,0), semilla 42: `Temp/captures/var_reuniones.png`, `var_archivo.png`,
+`var_servidores.png`, `var_comedor.png`, `var_recepcion.png`.
+
+### Lo que no entra
+
+Variantes en `Service` y `Storage` (hoy sólo `Office`, decisión de Joel: menos superficie de
+regresión); racks con servidores dentro y luces de estado; sillas de espera y plantas de recepción;
+comida y vajilla en el comedor; y un mostrador puede quedar detrás de un oclusor intra-espacio
+(ADR-105) — la variante no los esquiva porque son geometría legítima de la sala.
+
+> Nota de fusión (2026-09-06): la rama nació como «Enmienda 1» y con los kinds 15–19; al fusionar, la enm. 1 ya era la de
+> los carteles y el 15 era `PROP_SIGN`, así que esta es la **Enmienda 2** y los kinds son **16–20**. `SALT_VARIANT` pasa de
+> `0xA9_04_09` (ya gastado por el deterioro) a `0xA9_04_0B`: el sorteo de variantes de la rama y el fusionado no coinciden.
