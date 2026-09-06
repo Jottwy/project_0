@@ -70,8 +70,13 @@ namespace BackroomsSurvival.EditorTools
             // `Wg3_Ceiling` 0,8/0,8/0,77, `Wg3_Structure` 0,86/0,86/0,82) en LUMINANCIA efectiva,
             // que es lo que la iluminación validada de la 23.ª tanda da por bueno. Lo que cambia es
             // el tono y el motivo, no cuánta luz devuelve la superficie.
+            // Un punto más oscura que el primer valor (0,42/0,44/0,50), a petición de Joel: la
+            // moqueta es lo único que hay bajo el ojo en todo el despacho y a media luz se iba a
+            // gris medio. Se baja un 17 % **manteniendo la proporción entre canales**, o sea el tono
+            // frío: oscurecer no es enfriar, y si se toca el ratio la moqueta deja de contrastar por
+            // tono con la oliva del pasillo, que es de donde sale la distinción.
             Write($"{MaterialFolder}/Wg3_FloorOffice.mat", carpetTex, carpetNm, CarpetScale,
-                  new Color(0.42f, 0.44f, 0.50f, 1f), 0.03f);
+                  new Color(0.35f, 0.365f, 0.415f, 1f), 0.03f);
             Write($"{MaterialFolder}/Wg3_CeilingOffice.mat", ceilingTex, ceilingNm, CeilingScale,
                   new Color(0.80f, 0.80f, 0.77f, 1f), 0.04f);
             // La mampara NO copia el tinte cálido de `Wg3_Structure` (0,86/0,86/0,82), y tampoco vale
