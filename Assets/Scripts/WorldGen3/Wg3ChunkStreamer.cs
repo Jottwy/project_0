@@ -35,6 +35,14 @@ namespace BackroomsSurvival.WorldGen3
 
         public bool spawnLights = true;
 
+        [Tooltip("La semilla del mundo SERVIDO. Sólo alimenta el hash del ritmo de luces, no la " +
+                 "geometría — ésa llega por el cable. Tiene que valer lo mismo que la de la " +
+                 "sesión: con otra semilla dos clientes ven fundidas lámparas distintas.")]
+        public int worldSeed = 42;
+
+        [Tooltip("Ritmo de los fluorescentes: apagados, parpadeo, temperatura y jitter.")]
+        public Wg3LightCadenceSettings lightCadence = new Wg3LightCadenceSettings();
+
         [Tooltip("Sólo las Light a menos de esta distancia del jugador están encendidas; el resto " +
                  "se apaga (la luminaria emisiva sigue viéndose). Con ~400 tramos en radio 1 las " +
                  "puntuales realtime superan el tope de 256 visibles de Forward+ y el clustering " +
@@ -279,7 +287,8 @@ namespace BackroomsSurvival.WorldGen3
                 var single = new Wg3World();
                 single.placements.Add(placement);
                 Wg3SceneAssembler.Assemble(
-                    single, root.transform, EffectiveMaterials(), mine, spawnLights, chunk.carves);
+                    single, root.transform, EffectiveMaterials(), mine, spawnLights, chunk.carves,
+                    worldSeed, lightCadence);
 
                 _builtPieces++;
 
@@ -329,7 +338,7 @@ namespace BackroomsSurvival.WorldGen3
                 // paga en cuanto hay que diagnosticar por qué dos espacios se ven igual.
                 Wg3SceneAssembler.AssembleSegment(
                     segment, root.transform, EffectiveMaterials(), mine, $"seg_{i:D3}_s{segment.style}",
-                    spawnLights, chunk.carves, LampMaterial(), hum);
+                    spawnLights, chunk.carves, LampMaterial(), hum, worldSeed, lightCadence);
                 var box = new Bounds(
                     new Vector3(
                         segment.Origin.x + segment.SizeX * 0.5f,
