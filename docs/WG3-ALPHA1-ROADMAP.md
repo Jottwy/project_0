@@ -73,6 +73,15 @@ jugadores en WG3 con robapieles y facelings encima (cruzar pozos, agacharse NO e
 propuesto); auditoría con `auditor-arquitectura` contra ARCHITECTURE.md; STATE.md y este documento
 actualizados; etiqueta de git `wg3-v1-alpha1`.
 
+## El objetivo siguiente: el edificio y el descenso (ADR-130, Joel 2026-09-06)
+
+Una región de cada cuatro es TORRE: oficinas realistas en las plantas 0–3 y treinta sótanos que se
+degradan hasta −99,6 m (`decay = depth²`). Entra DESPUÉS del cierre de v1 y por rebanadas, cada una
+en verde: (1) sótanos en el plan con tope de 3, (2) decaimiento servidor + cliente, (3) streaming
+vertical por banda de plantas —wire 62, sin él el cliente no aguanta 34 plantas—, (4) la torre. Los
+números y las perillas están en el ADR; el primer día es una sesión de `plan.rs` (apilado espejado,
+`ground`).
+
 ## Lo que NO cabe: lista v2 (decidido, no opinable)
 
 - **Verticalidad.** El servidor sirve 10 plantas y sólo 4 son reales (ADR-102 D3); cómo subir es una

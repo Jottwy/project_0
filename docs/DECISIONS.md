@@ -14061,6 +14061,90 @@ como escala `Wg3Solid`).
 - C#: `Wg3PropMsg` se parsea por clave; un macizo invisible monta collider y ningún renderer.
 - Captura: una oficina con mesa, silla, archivador, pizarra y papeles.
 
+> **Iteración 1, mismo día (`2328a19e`):** variantes por posición (Desk 1–2, Chair 1–3, Box 1–3,
+> Paper 1–4; Desk 3 y 4 son mesas en L de 2,5 × 2,8 y no caben en la huella), lo de encima de la
+> mesa (monitor, teclado, teléfono, bandeja, cada uno con su dado), una de cada cuatro sillas CAÍDA
+> (kind 14: el cliente tumba el prefab), reloj a 2,10, cajas apiladas, 8–22 papeles. Sin wire.
+
+## ADR-130 — EL EDIFICIO Y EL DESCENSO: una región-torre de oficinas y treinta sótanos que se degradan hasta −100 (2026-09-06) — ACEPTADA (Joel: «alguna zona o región que fuera como un edificio de oficinas… varias plantas conectadas con escalera… y en las plantas negativas se va volviendo todo muchísimo más desordenado y caótico… hasta −100, muy caótico, muy miedoso, con detalles pobres pero caóticos»)
+
+### Contexto
+
+Hoy una región tiene de 2 a 4 plantas hacia ARRIBA (ADR-102; el servidor sirve hasta 10 y sólo 4
+son reales) y nada por debajo del 0 salvo las cámaras de los pozos (ADR-126). La progresión del
+sandbox es la profundidad (memoria de dirección de loop): lo que falta es el sitio donde bajar. Joel
+lo describe entero: un edificio de oficinas realista en las plantas 0–3, escaleras «a lo oficina»,
+estética Backrooms, y por debajo un descenso en el que cada planta es más caótica que la anterior
+hasta un fondo a −100 m casi vacío y roto.
+
+### D1 — Los números
+
+`STOREY_HEIGHT_CM` = 332 manda: no se inventa otra altura. Plantas altas **0, 1, 2, 3** (cotas 0,
+3,32, 6,64, 9,96). Sótanos **B1…B30**: cotas −3,32 · k, la última a **−99,6 m**. Son 34 plantas por
+región-torre. La «profundidad» de una planta es `depth = −floor_m / 100` en [0, 1]: 0 en la calle,
+1 en el fondo.
+
+### D2 — La región-torre
+
+No todas las regiones son edificio: una de cada **cuatro**, decidida por la identidad de región
+(`identity`, sal propia), es **torre**: 4 plantas arriba y 30 abajo, carácter `Office` forzado en las
+plantas 0–3 (pasillos, mesas, mamparas: el atrezo de ADR-129 ya lo hace) y el plan de sótanos de D3.
+Las demás siguen como hoy. Cruzar de una región-torre a una normal a nivel de sótano NO existe: los
+sótanos no tienen puertas de junta (ADR-096 sólo negocia la planta 0), así que cada descenso es un
+pozo cerrado bajo su torre, y se sale por donde se entró: la escalera.
+
+### D3 — El plan de sótanos: el mismo apilado, hacia abajo
+
+`plan_building` apila plantas hacia arriba recortando cada una al corte principal de la de abajo y
+perforando el forjado por la escalera (`StairWell { storey_below, space_below, space_above }`).
+Los sótanos se planifican con la MISMA función, espejada: la planta −1 se recorta al corte de la 0,
+la −2 al de la −1, y el pozo de escalera conecta `n` con `n − 1`. `RegionBuilding.storeys` pasa a
+guardar las 34 con un `ground: usize` que dice cuál es la calle; todo lo que hoy pregunta por
+`storeys[0]` o `n == 0` (pozos, bloques, atrezo, agujeros de forjado, capas de luz del cliente)
+pregunta por `ground`. Cada sótano tiene que ser alcanzable desde el de arriba: lo vigila el
+validador por planta (`storey_reach`), que ya existe.
+
+### D4 — El decaimiento: una función, todas las perillas
+
+`decay(depth)` = `depth²` (suave arriba, brutal abajo). Mueve, en el servidor, las perillas por
+planta: agujeros de forjado (0,26 → 0,80), divisiones y bloques (más), pilastras y marcos (menos:
+a −100 no hay carpintería), atrezo (0,80 → 0,10, y lo que queda es caído y cajas), **boquetes**: un
+carve nuevo en paredes al azar (1–2 m, `decay · 0,5` por pared), techo más bajo (`ceiling_cap` −60 cm
+al fondo), pasillos ciegos (`WEIRD_SPREAD` sube). En el cliente, por cota: paneles apagados
+(`decay · 0,8`), parpadeo, tintes hacia gris y más oscuros (`1 − 0,5 · decay`), placas de techo que
+faltan (negras). A `decay > 0,8` el carácter es «pobre y caótico»: salas casi vacías, geometría rota,
+sin listones ni tablas. Todo determinista por posición, como siempre.
+
+### D5 — Streaming VERTICAL, o el cliente no aguanta
+
+Hoy un chunk lleva TODAS sus plantas. Con 34, un chunk de torre son 34 plantas de tramos, macizos y
+atrezo en un solo `GameObject` raíz: unos 25 000 objetos en radio 1. No se puede. El chunk pasa a
+servirse **por banda de plantas**: `RequestWg3Chunk { cx, cz, storey_lo, storey_hi }` y el mensaje
+lleva sólo lo de esa banda; el cliente pide la banda de su planta ±1 y descarta el resto al cambiar
+de planta (ya tiene `probe_storey_change_evicts_by_layer`). El ráster del servidor sigue entero por
+chunk (es barato: son tramos). **Es cambio de wire (62) y el corazón de este ADR**: sin D5, D2 y D3
+no se pueden encender.
+
+### D6 — Lo que no entra
+
+Ascensores; salas autoradas por planta (catálogo apagado); enemigos por profundidad (es del bucle de
+juego, no del mundo); sonido por profundidad; que el fondo tenga algo que hacer (loot de pozos D6 de
+ADR-126, cuerdas). Y el ×2 de ADR-128 se aplica igual a todo esto: el factor está en un sitio.
+
+### Entrega por rebanadas (cada una en verde antes de la siguiente)
+
+1. **Sótanos en el plan** (`ground`, apilado espejado, escaleras hacia abajo) con tope de **3**
+   sótanos y sin streaming vertical, para medir con el validador y andarlo.
+2. **Decaimiento** (D4) sobre esos 3 sótanos, servidor y cliente, con captura por planta.
+3. **Streaming vertical** (D5, wire 62) y los 30 sótanos.
+4. **La torre** (D2): identidad de región, `Office` forzado arriba, puertas de junta sólo en la 0.
+
+### Verificaciones
+
+Validador por planta (alcance ≥ 90 % desde la calle en cada sótano de la torre); barrido de 27
+regiones sin regresión en las regiones normales; galería por profundidad (0, −10, −30, −60, −100);
+playtest: bajar 30 plantas andando y volver.
+
 ---
 
 ## ADR-104 — enmienda 4: la MEGASALA, y el vacío que faltaba estaba encima del edificio
