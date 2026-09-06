@@ -372,13 +372,12 @@ namespace BackroomsSurvival.WorldGen3
 
             // ADR-105 — los MACIZOS, y van sin `chunk.carves` a propósito (D2). Pasarles los vanos
             // haría desaparecer cada pretil, porque el vano de un atrio cubre justo su borde.
-            for (int i = 0; i < chunk.solids.Count; i++)
-            {
-                var solid = chunk.solids[i];
-                Wg3SceneAssembler.AssembleSolid(
-                    solid, root.transform, EffectiveMaterials(), mine, $"solid_{i:D3}_s{solid.style}");
-                _builtSolids++;
-            }
+            // DÍA 3 — se montan TODOS de una vez, no uno a uno: el ensamblador los agrupa por capa
+            // de planta y juego de materiales y saca una malla por grupo. El porqué de esa clave
+            // —y de que no sea «un chunk, una malla»— está en `Wg3SceneAssembler.AssembleSolids`.
+            _builtSolids += chunk.solids.Count;
+            _solidRenderers += Wg3SceneAssembler.AssembleSolids(
+                chunk.solids, root.transform, EffectiveMaterials(), mine, "solid");
 
             // ADR-129 — el ATREZO, por su posición como los macizos. Los prefabs no frenan: frena
             // el macizo invisible que viaja con cada mueble.
@@ -696,6 +695,11 @@ namespace BackroomsSurvival.WorldGen3
         private int _builtPieces;
         private int _builtSegments;
         private int _builtSolids;
+
+        /// <summary>DÍA 3 — cuántos renderers salieron de esos macizos. Es LA medida del fundido, y
+        /// va al lado del número de macizos porque el que importa es el cociente: «3 000 macizos»
+        /// no dice nada solo, y «3 000 macizos en 96 renderers» lo dice todo.</summary>
+        private int _solidRenderers;
         private int _propAnchors;
         private int _builtProps;
         private int _signAnchors;
@@ -718,7 +722,8 @@ namespace BackroomsSurvival.WorldGen3
             _reported = true;
 
             Debug.Log($"[WG3] streamer: {_builtChunks} chunks con geometría y {_emptyChunks} vacíos; " +
-                      $"{_builtPieces} piezas, {_builtSegments} tramos, {_builtSolids} macizos y {_builtLamps} lamparas con zumbido montados; " +
+                      $"{_builtPieces} piezas, {_builtSegments} tramos, {_builtSolids} macizos en " +
+                      $"{_solidRenderers} renderers y {_builtLamps} lamparas con zumbido montados; " +
                       $"atrezo {_builtProps}/{_propAnchors} anclas y carteles {_builtSigns}/{_signAnchors}; " +
                       $"{_builtOfficeSources} fuentes de oficina. materiales " +
                       $"{(materials?.floor != null ? "propios" : "de WG2 por respaldo — los propios sin asignar")}; " +

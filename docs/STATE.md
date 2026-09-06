@@ -11,9 +11,9 @@
 - Alpha 1 itch nov 2026 · Next Fest feb 2027 · EA primavera 2027 (`docs/SCALING-ROADMAP.md:196-198`). E0 de red cerrada y medida.
 
 ## Próximo paso ÚNICO
-- **ADR-130 rebanada 2b, el decaimiento del CLIENTE**: paneles apagados (`decay·0,8`), parpadeo, tintes a gris y `1−0,5·decay`, placas de
-  techo que faltan. Pisa `Wg3SceneAssembler.cs`/`Wg3LightCadence.cs`, así que espera a la rama de materiales por función. La 2a (servidor)
-  está HECHA (ADR-130 enm. 1). Después: día 3 del contrato, r3 streaming vertical (wire 62) y r4 torre.
+- **Día 3, rebanada 2: los TRAMOS** (1 179 en la ventana medida, uno por objeto). Arrastran luces, zumbido, ambiente y el nombre `seg_` del
+  que dependen el arnés de ADR-098 (`Wg3LiveBootstrap.cs:125`) y el diagnóstico por jerarquía: hay que darles otra vía ANTES de tocarlos.
+  Los macizos YA están fundidos (4 718 → **550 renderers**). Del día 3 faltan los otros dos números del contrato: tiempo de chunk y memoria.
 
 ## En curso
 - **ADR-128, mundo ×2: tercera pasada, NO commiteado.** 24 tests en rojo; `MAX_SEGMENT_M` no se toca (D3 anulado), `bounds()` en metros
@@ -25,7 +25,7 @@
 - **Migración STP servidor-autoritativo**: Steps 1–2 y slice 3.1 (plumbing) hechos y verificados. Falta slice 3.2
   (capa L2 de predicción), reescribir los 8 call sites de `Inventory` y retirar `PlayerController.cs` (DEPRECATED por ADR-009).
 - ADR-014 fase 2 (borrado diferido 200 ms + reserva host-only anti-duplicado): backend implementado, **pendiente de playtest**.
-- **Linterna de manivela (ADR-133)**: `claude/crank-flashlight-model-1d8632`, 6 commits sin fusionar. Falta: sonido, loot (`RestrictCacheCatalog`), remesh.
+- **Linterna de manivela (ADR-133)**: fusionada el 07-09 (7 commits de `claude/crank-flashlight-model-1d8632`). Falta: sonido, loot, remesh, Play.
 
 ## Riesgos abiertos
 - **Autoridad del servidor: los tres agujeros CERRADOS** (`78e156e6` dueño al demoler; `ebb42911`/`bb3c7e5c` cantidad y posición contra el
@@ -45,9 +45,8 @@
   **flaquea con la máquina cargada** (06-09): rojo 2 de 5 corridas completas, verde 3/3 aislado. Tiempo real dentro de un test.
 - **Auditoría del 02-09, tres ALTO sin corregir** (`AUDIT-2026-08-28.md`): A28-29 un sobre «Relayed» se cree sin comparar el origen UDP con
   el relay (`classify_inbound`); A28-30 descripción UPnP sin tope (`StackOverflowException`); A28-31 `spawnedOnDeplete` nunca vuelve a `false`.
-- **Ramas sin fusionar con trabajo dentro** (06-09): `angry-jackson` (95), `gallant-einstein` (87), `happy-carson` (79); `layout-validator` (4) ya
-  está dentro de occluders. Tres experimentos del 03-09 en rama `wip`: stochastic tiling (`558afb54`), decals (`cb61b99c`), sonda de cajas
-  (`1c8237ff`). `wf_09042814-13d-4` sucio desde el 27-08. Lista de Joel.
+- **Ramas viejas CERRADO** (06-09, 34.ª tanda). Aparcados a propósito por Joel: tres wip del 03-09 con base vieja y rebase pendiente —
+  teselado estocástico (`558afb54`), decals de suciedad (`cb61b99c`), sonda de cajas (`1c8237ff`).
 
 ## NO tocar
 > Detalle completo, verbatim, en `docs/SESSION-LOG.md` (bloques «NO tocar» y «Última sesión» de 2026-08-03).
@@ -89,13 +88,13 @@
 - **El gate de C# no valida nada en un worktree recién creado**: `*.csproj` y `Library/` los genera Unity y viven sólo en el clon principal
   (`CompileCheckClient.sh` daba `MISSING csproj`). Arreglado y documentado (`c99db43a`, `docs/DEV-ENVIRONMENT.md`): copiar `.csproj`, unir `Library`.
 - **`STOREY_HEIGHT_CM` (332) no sube con un número** (380–480: 1/9 regiones válidas); `storey_of_floor_cm` clasifica una planta ABAJO en la costura de 664.
-- **El runner del editor no contesta**; el arnés .NET corrió `ProxyLocomotionMathTests` 15/15 pero NO `Wg3LightCadenceTests` (ECall nativa). Desde 07-09,
-  `BackroomsEditModeFixtureRunner.cs` corre una clase `[Test]` por reflexión desde menú (linterna 13/13). `CrankFlashlight/` 24 MB; rehornear conserva GUID.
-- **Sin ver en juego (06-09)**: monitor, despacho oscuro, recepción, techo roto, audio en Play; carteles OK. Menores: `MPTRACE` en STP, `TODO(balance)`.
+- **Sin ver en juego (06-09)**: monitor y despacho oscuro, recepción, techo roto, decaimiento del cliente en B3 (r2b), pasada en Play del
+  audio (clips sintéticos); los carteles SÍ (espejo cazado). El runner del editor ya NO es deuda: le faltaba FOCO (34.ª tanda).
+- Menores: `MPTRACE` sin commitear en cuatro ficheros del vendor STP; `TODO(balance)` de loot; doc-comments stale.
 
 ## Últimas tandas
 
-### 2026-09-07 — 34.ª tanda: la linterna de manivela (ADR-133), de cero a en la mano del vecino, en rama aparte
+### 2026-09-07 — 36.ª tanda: la linterna de manivela (ADR-133), de cero a en la mano del vecino, en rama aparte
 - Seis commits en `claude/crank-flashlight-model-1d8632` (`5063f09e`…`c5d9b8ad`), SIN fusionar. Carga en `Durability` (como el bote, ADR-068);
   `BR_Battery Health` nueva, sorteada 0,8–1 y persistida. Hereda de `Wieldable`: `FPSWieldablesInput.cs:137` hace `as IUseInputHandler`; un puente no ve `Hold`.
 - Parpadeo por `intensity`, NUNCA `enabled` (ADR-042 relaya `light_on` a 10 Hz; ADR-080 detecta por él). Joel: 0,40 velocidad, 18–22 s/vuelta, 60 s × salud,
@@ -104,6 +103,26 @@
   eje Z que barría por dentro (→ X), separación a ojo (→ derivada de las dos mallas, 0,0438). Mallas 93 k + 97 k tris (24 MB): piden remesh.
 - Pickup propio + icono (`tools/dev/MakeItemIcon.py`): el heredado DABA UNA ANTORCHA al recoger. `ProxyCrankHook` en runtime sobre el modelo de mano
   (`ProxyHeldItemHook.cs`), sin rehornear. `BackroomsEditModeFixtureRunner` (Test Runner muerto): 13/13. Loot: no sale hasta levantar `RestrictCacheCatalog`.
+
+### 2026-09-07 — 35.ª tanda: el día 3 — UV al mundo, macizos fundidos y caras enterradas
+- **La costura de textura NO la arreglaba el fundido**: la UV arrancaba en (0,0) por cara y la FASE se reiniciaba en cada caja. Ahora
+  proyecta la esquina en MUNDO, módulo el periodo (sin él, a 5 km la UV vale 2 500 y el float pierde el milímetro). `UvPerMetre` 0,5 intacto.
+- **Fundido por (máscara de planta, estilo, aspecto, loseta) y NO por chunk**: el chunk no se parte en Y y mete 7-8 plantas, y un Renderer
+  tiene UNA máscara. Fuera, con test: el invisible de ADR-129 D2 y los prismas de ADR-125. **4 718 macizos → 550 renderers** en Play.
+- **Caras enterradas podadas**: ésa es la causa del z-fighting, no el número de mallas. Sólo si OTRA caja cubre la cara ENTERA — un falso
+  positivo es un agujero por el que se ve dentro de una pared. Tapar NO es mutuo, y hay test.
+- Antes (sonda `probe_solids_per_chunk`): 5 119 macizos y 1 401 tramos en la (0,0), 90 % fundibles. Capturas `perf_*` sin agujeros y con la
+  retícula del suelo continua entre cajas. EditMode 38/39: el rojo de `cor_ramp` es PREEXISTENTE (lee volúmenes, no la malla).
+
+### 2026-09-06 — 34.ª tanda: el decaimiento del CLIENTE (ADR-130 r2b) y el cierre de las ramas viejas
+- **Los «95/87/79 sin fusionar» eran falsa alarma**: `git cherry` deja 0, 1 y 2 propios. Podadas angry-jackson, gallant-einstein y
+  happy-carson (PR #1 cerrado, su fix cae sobre `architecture/` legacy) y awesome-kare, que BORRABA ADR-094 vivo. `nightly-audit-base` dentro.
+- **r2b, `5bc25920`, sin wire y sin campo nuevo**: `DecayOfFloor` espeja `fill::decay_of_floor` y sus constantes (3,32 y 3) ya estaban en
+  `Wg3StoreyLayers`. Plafones `off + (1−off)·decay·0,80`, parpadeo del 40 % de los vivos, color a su luminancia por `1−0,5·decay`, 45 % de
+  luminarias arrancadas (sal `PMIS`, con la COTA en el hash).
+- **Mover UMBRALES, no añadir tiradas** (el orden es contrato), y **el gris va DESPUÉS del producto**: el tinte es un cociente en torno a (1,1,1).
+- `cargo test` **1414/1414**, `CompileCheck` 4/4, EditMode `Wg3LightCadence` **12/12**, y el barrido del tronco YA fusionado (que nadie
+  había medido): 27/27, 4,2 plantas, 268 espacios, mancha 99,7 %, islas 6,0, nav 100 %, pisable 182 857 (−0,2 %). Sin ver en juego.
 
 ### 2026-09-06 — 33.ª tanda: las ocho sesiones de oficina, fusionadas en un solo tronco
 - Once merges en `migration/worldgraph-v1` (`0394e426`): variantes, materiales, deterioro, sala grande y los incrementos de audio, carteles,
@@ -152,21 +171,3 @@
 - `03e84ae3` carteles (ADR-129 enm. 1): `PROP_SIGN = 15`, variante en 6 bits de `style`, wire 61; atlas 8×8 (`BakeSignAtlas.py`).
 - Conflictos: `Wg3SceneAssembler.cs` (unión) y `DECISIONS.md` (ADR-131 y enmiendas antes que la de 129). cargo 1402/1402, CompileCheck 0.
 - Para las cuatro que quedan: carteles se queda el 15; variantes 16–20 (`TABLE_LONG..RACK`), decay 21–22; ADR-129 enm. 2 para variantes.
-
-### 2026-09-06 — 28.ª tanda: los VIGILANTES sentados (ADR-131 + enm. 1) — la planta de oficinas, rebanada 2
-- `Watcher` (`species` 3) en `game_loop/watcher.rs`: **sin `step`**, sólo reconcile. Nace en las anclas `PROP_CHAIR` de ADR-129 (sitio,
-  cota y giro los da el mundo), cap 48 por cercanía, radios 60/90/8. «Sentado» = **bit 5 de `buttons`** (ADR-044), sin bump de wire. El
-  despertar mide la cota con `same_level` como la retirada, o una silla del piso de arriba nace y muere cada segundo (lo cazó un test).
-- **Enm. 2**: 0,06 por silla daba **3 vigilantes** por región (60 sillas en total) — «no los veo» (Joel); ahora 0,25 + 0,12 por sótano,
-  tope 0,70: **35 por región**, 5 en la calle. **Enm. 3**: la cabeza pasa de salto seco a CUELLO con tope y desenrosque por delante
-  (medido: cámara a −116°, cabeza clavada en −89°). Lo que viene encima lo decide ADR-132, con sus decisiones ya en memoria.
-- Cliente: `FacelingSeated.anim` horneado por script y `ProxySeatedHook` (override del idle, cabeza, respiración). **Enm. 1**: el
-  Animator que se posa lo dice la MALLA, y la altura del asiento se MIDE cada fotograma. Capturas `vig5_*` del B3 de (0,0).
-
-### 2026-09-06 — 27.ª tanda: la planta de oficinas, rebanada 1 — falso techo y cubículos (ADR-105 enm. 18)
-- `b02df08f`: `office_ceiling_cm` (270, 300) sólo en despachos/servicios/almacenes del carácter Office, por sala en pasos de 10; naves
-  y circulación no cambian. 669 de 898 despachos bajo 3,00 en 39 semillas. El forjado (332) no se toca.
-- `office_cubicles`: celdas 2,60 × 2,40, mampara 12 × 140 (el 8 era el barrote de rejilla), pasillo 1,50, filas espalda con espalda;
-  mesa + silla (15 % caída) + monitor/teclado/teléfono/bandeja + papelera; una de cada siete vacía. Un metro + grosor a los macizos previos.
-- Capturas `Temp/captures/cub_*.png` (B2/B3 de (0,0)): se lee como oficina. Sonda `probe_cubicle_spots`. Barrido 27/27, islas 6,4 = 6,4.
-- Plan de la tanda acordado con Joel (cinco rebanadas, memoria `wg3-oficinas-tanda-plan`); el cierre v1 queda detrás.

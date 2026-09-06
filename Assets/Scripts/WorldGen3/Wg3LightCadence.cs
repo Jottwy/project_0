@@ -94,6 +94,16 @@ namespace BackroomsSurvival.WorldGen3
         /// mismo punto del mundo (qué pieza, si taponar, qué variante).</summary>
         private const uint Salt = 0x4C434144u;
 
+        /// <summary>ADR-130 D4 (r2b) — cuánto de lo que sigue vivo se lleva la profundidad. Con 0,80
+        /// y el 12 % de base, el fondo servido queda con el 82 % de los plafones muertos.</summary>
+        public const float DecayOffShare = 0.80f;
+
+        /// <summary>ADR-130 D4 (r2b) — cuánto de los SUPERVIVIENTES parpadea en el fondo.</summary>
+        public const float DecayFlickerShare = 0.40f;
+
+        /// <summary>ADR-130 D4 (r2b) — cuánto brillo pierde el color en el fondo servido.</summary>
+        public const float DecayDimShare = 0.50f;
+
         /// <summary>Chunk de una coordenada de mundo. Mismo reparto que
         /// <see cref="Wg3ChunkStreamer.ChunkSize"/>: si allí cambia, aquí también.</summary>
         public static Vector2Int ChunkOf(float x, float z) => new Vector2Int(
@@ -105,8 +115,13 @@ namespace BackroomsSurvival.WorldGen3
         /// posición NOMINAL (el centro de su celda, antes del jitter): si se le pasara la ya
         /// desplazada, el jitter dependería de sí mismo y dejaría de ser reproducible.
         /// </summary>
+        /// <param name="decay">ADR-130 D4 — el decaimiento de la planta
+        /// (<see cref="Wg3StoreyLayers.DecayOfFloor"/>), 0 en la calle y 1 en el sótano más hondo.
+        /// **Por defecto 0, y con 0 esta función devuelve exactamente lo de antes**: es lo que deja
+        /// que el arnés, el rig y la escena de prueba sigan llamándola sin saber de sótanos.</param>
         public static Wg3Fixture Resolve(int worldSeed, float worldX, float worldZ,
-            int fixtureIndex, float cellX, float cellZ, Wg3LightCadenceSettings s)
+            int fixtureIndex, float cellX, float cellZ, Wg3LightCadenceSettings s,
+            float decay = 0f)
         {
             if (s == null) s = Wg3LightCadenceSettings.Default;
 
@@ -127,6 +142,26 @@ namespace BackroomsSurvival.WorldGen3
             float state = rng.Next01();
             float off = Mathf.Clamp01(s.offChance);
             float flick = Mathf.Clamp01(s.flickerChance);
+
+            // ADR-130 D4 (r2b) — LA PROFUNDIDAD MUEVE LOS UMBRALES, NO AÑADE UNA TIRADA.
+            //
+            // Ésta es la única forma de meter el decaimiento aquí sin romper el mundo. El encabezado
+            // de esta clase dice que el orden de las tiradas es contrato: una tirada nueva, aunque
+            // fuera la última, correría el flujo de TODOS los fixtures de los sótanos y cambiaría de
+            // sitio cada lámpara rota que ya se ha visto en una captura. Modulando el umbral, `state`
+            // sigue siendo el mismo número para el mismo plafón — sólo se mueve la frontera que
+            // decide qué le pasa, y una lámpara que se apaga al bajar es una que ya estaba cerca del
+            // borde.
+            //
+            // El apagado come de lo que queda vivo (`1 − off`), así que nunca pasa de 1 y en la calle
+            // vale exactamente `off`. Con 0,80 el fondo servido deja el 82 % de los plafones muertos.
+            float d = Mathf.Clamp01(decay);
+            off = off + (1f - off) * d * DecayOffShare;
+            // El parpadeo se lleva parte de los supervivientes, no de todo el tramo: en el fondo, de
+            // los pocos que siguen encendidos casi todos parpadean, que es la lectura que se busca —
+            // un sótano no está «medio iluminado», está «a punto de quedarse a oscuras».
+            flick = flick + (1f - off) * d * DecayFlickerShare;
+
             f.lit = state >= off;
             f.flickers = f.lit && state < off + flick;
 
@@ -168,6 +203,39 @@ namespace BackroomsSurvival.WorldGen3
 
         /// <summary>Uno de cada cinco monitores tiene la pantalla encendida.</summary>
         private const float MonitorLitChance = 0.2f;
+
+        /// <summary>Sal de la LUMINARIA QUE FALTA, "PMIS". Flujo propio (R3): no se decide por
+        /// fixture de luz sino por hueco de la retícula del falso techo, y los dos repartos son
+        /// distintos.</summary>
+        private const uint PanelMissingSalt = 0x504D4953u;
+
+        /// <summary>ADR-130 D4 (r2b) — fracción de luminarias arrancadas del falso techo en el
+        /// fondo servido. Menos que el 0,80 de los plafones apagados a propósito: un techo sin
+        /// NINGUNA luminaria deja de leerse como oficina y pasa a leerse como túnel.</summary>
+        public const float DecayPanelMissingShare = 0.45f;
+
+        /// <summary>
+        /// Si a esta posición del falso techo le FALTA la luminaria: el marco arrancado que se ve en
+        /// cualquier foto de oficina abandonada.
+        ///
+        /// **Se siembra con la posición en centímetros enteros y la sal propia, no con el índice de
+        /// la retícula.** Un tramo de 25 m y otro de 5 m tienen retículas distintas y su luminaria
+        /// (0,0) cae en sitios diferentes: con el índice, los dos primeros huecos de todos los tramos
+        /// de una planta se arrancarían a la vez. Y en centímetros porque es como viaja la geometría
+        /// por el cable — cuantizar el float sería meter una diferencia entre dos clientes por un
+        /// redondeo, que es el mismo motivo por el que <see cref="MonitorLit"/> lo hace así.
+        ///
+        /// **La cota entra**, por lo mismo que en <see cref="MonitorLit"/>: la retícula de una planta
+        /// se reparte igual que la de la de abajo, y sin la Y se arrancaría la misma columna de
+        /// luminarias en las tres o cuatro plantas del edificio.
+        /// </summary>
+        public static bool PanelMissing(int xCm, int yCm, int zCm, float decay)
+        {
+            float d = Mathf.Clamp01(decay);
+            if (d <= 0f) return false;
+            ulong h = Wg3Hash.Mix(xCm, yCm, zCm, unchecked((int)PanelMissingSalt));
+            return Wg3Hash.ToUnit(h) < d * DecayPanelMissingShare;
+        }
 
         /// <summary>
         /// EL DESPACHO A OSCURAS: un espacio de oficina por planta y chunk con TODAS las lámparas
@@ -234,6 +302,35 @@ namespace BackroomsSurvival.WorldGen3
         {
             ulong h = Wg3Hash.Mix(xCm, yCm, zCm, unchecked((int)MonitorSalt));
             return Wg3Hash.ToUnit(h) < MonitorLitChance;
+        }
+
+        /// <summary>
+        /// ADR-130 D4 (r2b) — el color de una lámpara VISTO DESDE LA PROFUNDIDAD: más gris y más
+        /// apagado cuanto más abajo.
+        /// </summary>
+        /// <remarks>
+        /// **Va sobre el color final y no sobre el tinte del fixture, y con el tinte no funcionaba.**
+        /// <see cref="Wg3Fixture.tint"/> es un COCIENTE alrededor de (1,1,1) —±200 K de desviación—,
+        /// así que desaturarlo no desatura nada: lo que hay que llevar a gris es el cálido validado
+        /// (1 · 0,96 · 0,78) con el que se multiplica. Por eso esto se aplica en el ensamblador,
+        /// después del producto, y no dentro de <see cref="Resolve"/>.
+        ///
+        /// El gris es la LUMINANCIA del propio color y no el 0,5 neutro: así la calle sale idéntica
+        /// bit a bit (decaimiento 0 ⇒ interpolación 0) y el fondo pierde el tono sin ganar ni perder
+        /// brillo por el camino — el brillo lo quita el segundo factor, que es el que se mide.
+        ///
+        /// **Sin tocar `intensity` ni `range`, a propósito.** Los dos números están validados por
+        /// Joel (2,7 / 11 m) y el alcance además es lo que paga el clustering de Forward+: oscurecer
+        /// por color no cambia ni una cosa ni la otra.
+        /// </remarks>
+        public static Color Decayed(Color lit, float decay)
+        {
+            float d = Mathf.Clamp01(decay);
+            if (d <= 0f) return lit;
+            float grey = lit.r * 0.2126f + lit.g * 0.7152f + lit.b * 0.0722f;
+            var flat = Color.Lerp(lit, new Color(grey, grey, grey, lit.a), d);
+            float dim = 1f - DecayDimShare * d;
+            return new Color(flat.r * dim, flat.g * dim, flat.b * dim, lit.a);
         }
 
         /// <summary>

@@ -113,6 +113,33 @@ namespace BackroomsSurvival.WorldGen3
         private static int StoreyOf(float y) =>
             Mathf.Clamp(RawStoreyOf(y) + BasementLayers, 0, MaxLayer);
 
+        /// <summary>
+        /// ADR-130 D4.1 — el DECAIMIENTO de una cota. Espejo exacto de
+        /// <c>fill::decay_of_floor</c>: la calle da 0 y el sótano más hondo da 1.
+        /// </summary>
+        /// <remarks>
+        /// **No viaja por el cable, y no hace falta que viaje.** Los dos números de los que sale
+        /// —la altura de planta y cuántos sótanos hay— ya están aquí arriba como espejos de
+        /// <c>plan::STOREY_HEIGHT_CM</c> y <c>plan::REGION_BASEMENTS</c>, y la cota la trae cada
+        /// tramo. Un campo nuevo en el mensaje sería una tercera copia del mismo dato, y una que
+        /// además podría discrepar de las otras dos.
+        ///
+        /// El corolario es que si allí cambia el número de sótanos, aquí también: el servidor
+        /// decaería el relleno de una planta y el cliente le apagaría las luces a otra.
+        ///
+        /// **El cuadrado es de D4 y el denominador es el fondo SERVIDO**, no los cien metros de
+        /// D1: con tres sótanos, <c>depth²</c> sobre cien metros vale 0,01 en B3 y no se ve. Los
+        /// dos extremos son los mismos, así que el día que <see cref="BasementLayers"/> sean
+        /// treinta esta división ya es la curva del ADR sin tocar nada.
+        /// </remarks>
+        public static float DecayOfFloor(float floorY)
+        {
+            if (floorY >= 0f) return 0f;
+            float below = -floorY / StoreyM;
+            float d = Mathf.Clamp01(below / Mathf.Max(1, BasementLayers));
+            return d * d;
+        }
+
         /// <summary>La capa de una LUZ: sólo la planta de su suelo.</summary>
         public static uint ForLight(float floorY) => 1u << StoreyOf(floorY);
 
@@ -379,7 +406,12 @@ namespace BackroomsSurvival.WorldGen3
             // en rejilla sobre las placas del techo, en vez de una luminaria cuadrada por lámpara.
             // Son mallas emisivas, no luces: las luces siguen siendo las de siempre (≤ 2 × 2 por
             // tramo), así que Forward+ no paga nada por esto.
-            if (lampMaterial != null) AddPanels(go.transform, segment, lampMaterial);
+            // ADR-130 D4 (r2b) — el decaimiento de ESTA planta. Se calcula una vez por tramo y se
+            // reparte a todo lo que lo mira: las luminarias del falso techo, los umbrales de la
+            // cadencia y el color de cada lámpara. En la calle vale 0 y nada de lo de abajo cambia.
+            float decay = Wg3StoreyLayers.DecayOfFloor(segment.FloorY);
+
+            if (lampMaterial != null) AddPanels(go.transform, segment, lampMaterial, decay);
 
             // Cadencia de luces (rama unity-lighting-cadence, fusionada el 2026-09-06). La celda de
             // cada fixture es lo que acota el jitter: un plafón se mueve dentro de SU celda y nunca
@@ -422,7 +454,7 @@ namespace BackroomsSurvival.WorldGen3
                     // lámpara rota sin que nada viaje por el cable.
                     Wg3Fixture fixture = Wg3LightCadence.Resolve(worldSeed,
                         segment.MinX + nominalX, segment.MinZ + nominalZ,
-                        ix * nz + iz, cellX, cellZ, cadence);
+                        ix * nz + iz, cellX, cellZ, cadence, decay);
 
                     // Tubo muerto: ninguna Light. Los paneles emisivos de la rejilla (510223b8) no
                     // van uno por lámpara, así que aquí no hay difusor que apagar; queda el hueco
@@ -469,9 +501,11 @@ namespace BackroomsSurvival.WorldGen3
                     // Forward+: el clustering cuenta volumen y luces, y ni el alcance ni el número
                     // cambian aquí.
                     light.intensity = 2.7f;
-                    // El color validado, empujado ±200 K por el tinte. Con desviación cero el
-                    // producto es el mismo color de siempre, bit a bit.
-                    light.color = new Color(1f, 0.96f, 0.78f) * fixture.tint;
+                    // El color validado, empujado ±200 K por el tinte y después llevado hacia el gris
+                    // por la profundidad (ADR-130 D4). El orden importa: el decaimiento va DESPUÉS
+                    // del producto porque lo que hay que desaturar es el cálido, no el cociente.
+                    light.color = Wg3LightCadence.Decayed(
+                        new Color(1f, 0.96f, 0.78f) * fixture.tint, decay);
                     // La PRIMERA ENCENDIDA de un tramo grande proyecta; las demás no. Con 2 × 2 como
                     // tope por eje, eso es una de cuatro en el peor caso.
                     if (wantsShadow && !shadowTaken)
@@ -873,7 +907,8 @@ namespace BackroomsSurvival.WorldGen3
         /// eje largo del tramo. Sin collider: es decoración del techo. Y para un tramo de doble
         /// altura cuelga con su planta de arriba (la del techo), que es la que lo alumbra.
         /// </summary>
-        private static void AddPanels(Transform parent, Wg3Segment segment, Material lampMaterial)
+        private static void AddPanels(Transform parent, Wg3Segment segment, Material lampMaterial,
+            float decay)
         {
             // La retícula vive en Wg3CeilingGrid y no aquí: el detalle sonoro cuelga una rejilla de
             // aire del techo y necesita los mismos números para no meterla dentro de una luminaria.
@@ -892,6 +927,14 @@ namespace BackroomsSurvival.WorldGen3
                     float px = ox + ix * pitch, pz = oz + iz * pitch;
                     if (px < CeilingTileM + size.x * 0.5f || px > segment.SizeX - CeilingTileM - size.x * 0.5f
                         || pz < CeilingTileM + size.z * 0.5f || pz > segment.SizeZ - CeilingTileM - size.z * 0.5f)
+                        continue;
+                    // ADR-130 D4 (r2b) — LA LUMINARIA QUE FALTA. En coordenadas de MUNDO y en
+                    // centímetros enteros: la posición local se repite tramo a tramo, así que
+                    // sembrar con ella arrancaría el mismo hueco de la retícula en todas las salas.
+                    if (Wg3LightCadence.PanelMissing(
+                            Mathf.RoundToInt((segment.MinX + px) * 100f),
+                            Mathf.RoundToInt((segment.FloorY + y) * 100f),
+                            Mathf.RoundToInt((segment.MinZ + pz) * 100f), decay))
                         continue;
                     var go = new GameObject($"panel_{ix}_{iz}");
                     go.hideFlags = HideFlags.DontSave;
@@ -948,48 +991,11 @@ namespace BackroomsSurvival.WorldGen3
         {
             if (parent == null) return null;
 
-            float sx = solid.sizeXCm / 100f;
-            float sz = solid.sizeZCm / 100f;
-            float sy = (solid.topYCm - solid.bottomYCm) / 100f;
-            if (sx <= 0f || sz <= 0f || sy <= 0f) return null;
-
-            var origin = new Vector3(solid.xCm / 100f, solid.bottomYCm / 100f, solid.zCm / 100f);
-
             // Una sola caja, y por eso este canal existe: un tramo habría traído además su losa de
             // suelo y la de techo, coplanares con las del atrio.
-            //
-            // **El centro es de MUNDO, como en toda lista de volúmenes** (`BuildPlaced` suma el
-            // origen de la colocación; `Wg3GeneratedSegment.Build` el del tramo). `Wg3MeshBuilder`
-            // y `AddColliders` restan `origin` a cada centro para emitir coordenadas locales, así
-            // que un centro local aquí se restaba dos veces: desde wire 50 (2026-08-27) TODOS los
-            // macizos —pilares, pretiles, tabiques, vigas— se dibujaban y colisionaban apilados en
-            // el origen del mundo, y en su sitio quedaba sólo el ráster del servidor: paredes
-            // invisibles. Lo destapó una captura en (3, 0, 14) con un bloque de 4 m plantado en
-            // (0, 0) y ninguna cruz de 3 m donde el plan la ponía (2026-09-04).
-            var volumes = new List<Wg3Volume>(1)
-            {
-                new Wg3Volume
-                {
-                    center = origin + new Vector3(sx * 0.5f, sy * 0.5f, sz * 0.5f),
-                    size = new Vector3(sx, sy, sz),
-                    // ADR-121 D1 — el giro es alrededor del centro de la huella, que es el que
-                    // acabamos de calcular; la caja del cable es la caja SIN girar.
-                    yawDegrees = solid.yawDeg,
-                    // ADR-125 — la forma dentro de la huella.
-                    shape = solid.shape,
-                    // ADR-125 enm. 2 — un marco es decoración: submalla de decoración y sin
-                    // collider (`IsSolid` falso), igual que un rodapié. `Casing` y no `Decoration`
-                    // para que el constructor le talle el perfil y el zócalo.
-                    //
-                    // ADR-105 enm. 20 — salvo una LOSETA: una placa de techo caída (4 cm de canto)
-                    // o una baldosa levantada (9) son cajas lisas, y el perfil de dos escalones y
-                    // el zócalo del marco sobre una pieza de dos centímetros no son un marco, son
-                    // ruido. El corte va por el canto porque un marco es una banda de dos metros.
-                    kind = !solid.IsDecoration
-                        ? Wg3VolumeKind.Pillar
-                        : (sy <= FlatDecorationMaxM ? Wg3VolumeKind.Decoration : Wg3VolumeKind.Casing),
-                }
-            };
+            if (!SolidVolumeOf(solid, out Wg3Volume volume, out Vector3 origin, out float sy))
+                return null;
+            var volumes = new List<Wg3Volume>(1) { volume };
 
             var go = new GameObject(name);
             go.hideFlags = HideFlags.DontSave;
@@ -1011,22 +1017,9 @@ namespace BackroomsSurvival.WorldGen3
 
             go.AddComponent<MeshFilter>().sharedMesh = mesh;
             var renderer = go.AddComponent<MeshRenderer>();
-            // ADR-105 enm. 19 — una mampara de cubículo se reconoce por su forma (12 × 140) y va en
-            // tela gris. Todo lo demás —pilares, pretiles, vigas— es de obra, como en cualquier
-            // otro espacio.
-            Material[] mats = Wg3StyleMaterials.Resolve(materials, solid.BaseStyle,
-                Wg3Looks.ForSolid(solid.sizeXCm, solid.sizeZCm, solid.bottomYCm, solid.topYCm));
-            // ADR-105 enm. 20 — una loseta se dibuja con el material del TECHO: una placa caída es
-            // la que falta arriba, y la submalla de decoración traería el material del rodapié.
-            if (mats != null && solid.IsDecoration && sy <= FlatDecorationMaxM
-                && mats.Length > Wg3MeshBuilder.SubMesh.Decoration)
-            {
-                mats = (Material[])mats.Clone();
-                // Y la baldosa levantada (9 cm) con el del SUELO, que es de donde sale.
-                mats[Wg3MeshBuilder.SubMesh.Decoration] = sy <= 0.05f
-                    ? mats[Wg3MeshBuilder.SubMesh.Ceiling]
-                    : mats[Wg3MeshBuilder.SubMesh.Floor];
-            }
+            Material[] mats = MaterialsForSolid(materials, solid.BaseStyle,
+                Wg3Looks.ForSolid(solid.sizeXCm, solid.sizeZCm, solid.bottomYCm, solid.topYCm),
+                TileMaterialOf(solid, sy));
             if (mats != null) renderer.sharedMaterials = mats;
             // Un megapilar cruza el atrio de suelo a techo, así que lleva las dos plantas y se
             // ilumina desde las dos. Un pretil vive en una sola.
@@ -1053,6 +1046,244 @@ namespace BackroomsSurvival.WorldGen3
                 mc.convex = solid.shape != Wg3Shape.Arch;
             }
             return go;
+        }
+
+        /// <summary>
+        /// El volumen de un macizo, que es UNO. Extraído de <see cref="AssembleSolid"/> para que el
+        /// camino fundido (<see cref="AssembleSolids"/>) lea exactamente el mismo, y no una copia
+        /// que pueda derivar: dos recorridos que producen el volumen por su cuenta son el fallo que
+        /// la fuente única de <c>Wg3Geometry</c> existe para impedir.
+        /// </summary>
+        /// <returns>Falso si el macizo es degenerado y no hay nada que montar.</returns>
+        private static bool SolidVolumeOf(BackroomsSurvival.Net.Wg3SolidMsg solid,
+            out Wg3Volume volume, out Vector3 origin, out float sy)
+        {
+            volume = default;
+            float sx = solid.sizeXCm / 100f;
+            float sz = solid.sizeZCm / 100f;
+            sy = (solid.topYCm - solid.bottomYCm) / 100f;
+            origin = new Vector3(solid.xCm / 100f, solid.bottomYCm / 100f, solid.zCm / 100f);
+            if (sx <= 0f || sz <= 0f || sy <= 0f) return false;
+
+            // **El centro es de MUNDO, como en toda lista de volúmenes** (`BuildPlaced` suma el
+            // origen de la colocación; `Wg3GeneratedSegment.Build` el del tramo). `Wg3MeshBuilder`
+            // y `AddColliders` restan `origin` a cada centro para emitir coordenadas locales, así
+            // que un centro local aquí se restaba dos veces: desde wire 50 (2026-08-27) TODOS los
+            // macizos —pilares, pretiles, tabiques, vigas— se dibujaban y colisionaban apilados en
+            // el origen del mundo, y en su sitio quedaba sólo el ráster del servidor: paredes
+            // invisibles. Lo destapó una captura en (3, 0, 14) con un bloque de 4 m plantado en
+            // (0, 0) y ninguna cruz de 3 m donde el plan la ponía (2026-09-04).
+            volume = new Wg3Volume
+            {
+                center = origin + new Vector3(sx * 0.5f, sy * 0.5f, sz * 0.5f),
+                size = new Vector3(sx, sy, sz),
+                // ADR-121 D1 — el giro es alrededor del centro de la huella, que es el que acabamos
+                // de calcular; la caja del cable es la caja SIN girar.
+                yawDegrees = solid.yawDeg,
+                // ADR-125 — la forma dentro de la huella.
+                shape = solid.shape,
+                // ADR-125 enm. 2 — un marco es decoración: submalla de decoración y sin collider
+                // (`IsSolid` falso), igual que un rodapié. `Casing` y no `Decoration` para que el
+                // constructor le talle el perfil y el zócalo.
+                //
+                // ADR-105 enm. 20 — salvo una LOSETA: una placa de techo caída (4 cm de canto) o
+                // una baldosa levantada (9) son cajas lisas, y el perfil de dos escalones y el
+                // zócalo del marco sobre una pieza de dos centímetros no son un marco, son ruido.
+                // El corte va por el canto porque un marco es una banda de dos metros.
+                kind = !solid.IsDecoration
+                    ? Wg3VolumeKind.Pillar
+                    : (sy <= FlatDecorationMaxM ? Wg3VolumeKind.Decoration : Wg3VolumeKind.Casing),
+            };
+            return true;
+        }
+
+        /// <summary>Qué material se le pone a la submalla de decoración de una LOSETA (ADR-105 enm.
+        /// 20). Va en la clave del fundido porque distingue dos juegos de materiales que por estilo
+        /// y aspecto serían el mismo.</summary>
+        private enum TileMaterial : byte { None = 0, FromCeiling = 1, FromFloor = 2 }
+
+        private static TileMaterial TileMaterialOf(BackroomsSurvival.Net.Wg3SolidMsg solid, float sy)
+        {
+            if (!solid.IsDecoration || sy > FlatDecorationMaxM) return TileMaterial.None;
+            // Una placa caída se dibuja con el material del TECHO: es la que falta arriba, y la
+            // submalla de decoración traería el material del rodapié. La baldosa levantada (9 cm),
+            // con el del SUELO, que es de donde sale.
+            return sy <= 0.05f ? TileMaterial.FromCeiling : TileMaterial.FromFloor;
+        }
+
+        /// <summary>Los materiales de un macizo. ADR-105 enm. 19 — una mampara de cubículo se
+        /// reconoce por su FORMA (12 × 140) y va en tela gris; todo lo demás —pilares, pretiles,
+        /// vigas— es de obra, como en cualquier otro espacio.</summary>
+        private static Material[] MaterialsForSolid(Wg3Materials materials, byte style,
+            Wg3Look look, TileMaterial tile)
+        {
+            Material[] mats = Wg3StyleMaterials.Resolve(materials, style, look);
+            if (mats == null || tile == TileMaterial.None
+                || mats.Length <= Wg3MeshBuilder.SubMesh.Decoration) return mats;
+
+            mats = (Material[])mats.Clone();
+            mats[Wg3MeshBuilder.SubMesh.Decoration] = tile == TileMaterial.FromCeiling
+                ? mats[Wg3MeshBuilder.SubMesh.Ceiling]
+                : mats[Wg3MeshBuilder.SubMesh.Floor];
+            return mats;
+        }
+
+        /// <summary>
+        /// Lo que hace que dos macizos NO puedan compartir malla. Todo lo que varía de un renderer
+        /// a otro y no cabe en una submalla entra aquí; lo que no está en esta clave, se funde.
+        /// </summary>
+        private readonly struct FuseKey : System.IEquatable<FuseKey>
+        {
+            /// <summary>La capa de render por PLANTA, y es la razón de que el fundido no pueda ser
+            /// «un chunk, una malla». Ver <see cref="AssembleSolids"/>.</summary>
+            public readonly uint Mask;
+            public readonly byte Style;
+            public readonly Wg3Look Look;
+            public readonly TileMaterial Tile;
+
+            public FuseKey(uint mask, byte style, Wg3Look look, TileMaterial tile)
+            {
+                Mask = mask; Style = style; Look = look; Tile = tile;
+            }
+
+            public bool Equals(FuseKey o) =>
+                Mask == o.Mask && Style == o.Style && Look == o.Look && Tile == o.Tile;
+
+            public override bool Equals(object o) => o is FuseKey k && Equals(k);
+
+            public override int GetHashCode() =>
+                unchecked((int)(Mask * 397) ^ (Style << 16) ^ ((int)Look << 8) ^ (int)Tile);
+        }
+
+        /// <summary>
+        /// DÍA 3 DEL CONTRATO — los macizos de un chunk, en las MENOS mallas posibles.
+        ///
+        /// # Qué estaba mal
+        ///
+        /// Un `GameObject` con su `MeshFilter`, su `MeshRenderer` y su collider por macizo, y una
+        /// región lleva del orden de tres mil. El coste no es de triángulos —eso es la otra deuda,
+        /// la de las caras enterradas— sino de draw calls y de objetos: la nota F0 de
+        /// <c>Wg3MeshBuilder</c> ya separaba las dos y dejaba ésta para más adelante.
+        ///
+        /// # Por qué NO es «un chunk, una malla», que es lo que uno escribiría
+        ///
+        /// **El chunk mide 50 m en XZ y no se parte en Y** (<see cref="Wg3ChunkStreamer.ChunkSize"/>),
+        /// así que TODAS las plantas de una columna caen dentro del mismo. Con 3,32 m de planta y
+        /// los sótanos de ADR-130, una región-torre mete siete u ocho plantas distintas en un solo
+        /// chunk — y un `Renderer` tiene UNA `renderingLayerMask`. Colapsarlas devuelve exactamente
+        /// la fuga de luz entre pisos que cerró ADR-104 enm. 2, o —si se elige una sola planta— deja
+        /// las demás completamente negras, que es el síntoma que <see cref="Wg3StoreyLayers"/>
+        /// documenta. Por eso la máscara está en <see cref="FuseKey"/> y no se toca.
+        ///
+        /// # Lo que se queda fuera del fundido, y no por pereza
+        ///
+        /// - **El macizo invisible** (ADR-129 D2): no tiene renderer, así que no cuesta un draw call
+        ///   y fundirlo no compra nada. Sigue montando su collider y sólo eso.
+        /// - **Los prismas y el arco** (ADR-125): frenan con SU malla, y el arco además `convex =
+        ///   false`. Un `MeshCollider` no puede apuntar a media malla fundida, y convexo y cóncavo
+        ///   no caben en el mismo collider.
+        ///
+        /// # Lo que sí sobrevive intacto
+        ///
+        /// El reparto por función en cuatro submallas (suelo, estructura, techo, decoración), que ya
+        /// era el eje de continuidad de la regla R31; la colisión, que sigue saliendo de los
+        /// VOLÚMENES filtrados por <c>IsSolid</c> y no de la malla —derivarla de la malla metería
+        /// marcos y rodapiés en la colisión y rompería el contrato de fuente única—; y las UV, que
+        /// desde el 2026-09-06 se anclan al mundo y por tanto no se mueven al cambiar el origen de
+        /// la malla (<c>Wg3WorldUvTests.ElOrigenDeLaMalla_NoMueveLaTextura</c> lo fija).
+        /// </summary>
+        /// <returns>Cuántos renderers salieron. El llamante lo cuenta contra el número de macizos,
+        /// que es la medida del día 3.</returns>
+        public static int AssembleSolids(
+            IReadOnlyList<BackroomsSurvival.Net.Wg3SolidMsg> solids, Transform parent,
+            Wg3Materials materials, List<Mesh> createdMeshes, string namePrefix)
+        {
+            if (parent == null || solids == null) return 0;
+
+            var groups = new Dictionary<FuseKey, List<Wg3Volume>>();
+            int renderers = 0;
+
+            for (int i = 0; i < solids.Count; i++)
+            {
+                var solid = solids[i];
+                if (!SolidVolumeOf(solid, out Wg3Volume vol, out Vector3 origin, out float sy))
+                    continue;
+
+                // Los dos que no se pueden fundir van por el camino de siempre, uno a uno. El
+                // invisible no suma renderer; el prisma sí, y por eso se cuenta.
+                if (solid.IsHidden || solid.shape != Wg3Shape.Box)
+                {
+                    var one = AssembleSolid(solid, parent, materials, createdMeshes,
+                        $"{namePrefix}_{i:D3}_s{solid.style}");
+                    if (one != null && !solid.IsHidden) renderers++;
+                    continue;
+                }
+
+                var key = new FuseKey(
+                    Wg3StoreyLayers.ForSurface(origin.y, sy),
+                    solid.BaseStyle,
+                    Wg3Looks.ForSolid(solid.sizeXCm, solid.sizeZCm, solid.bottomYCm, solid.topYCm),
+                    TileMaterialOf(solid, sy));
+
+                if (!groups.TryGetValue(key, out List<Wg3Volume> bucket))
+                {
+                    bucket = new List<Wg3Volume>();
+                    groups[key] = bucket;
+                }
+                bucket.Add(vol);
+            }
+
+            // ORDEN ESTABLE, y no es cosmético: el recorrido de un Dictionary no está definido, y
+            // emitir la escena en un orden que cambie de una carga a otra haría que dos clientes
+            // —o el mismo cliente al volver a un chunk— montaran las mallas en distinto orden. Las
+            // capturas dejarían de ser comparables y un diagnóstico por jerarquía, imposible.
+            var keys = new List<FuseKey>(groups.Keys);
+            keys.Sort((a, b) =>
+            {
+                int c = a.Mask.CompareTo(b.Mask);
+                if (c != 0) return c;
+                c = a.Style.CompareTo(b.Style);
+                if (c != 0) return c;
+                c = ((int)a.Look).CompareTo((int)b.Look);
+                return c != 0 ? c : ((int)a.Tile).CompareTo((int)b.Tile);
+            });
+
+            for (int k = 0; k < keys.Count; k++)
+            {
+                FuseKey key = keys[k];
+                List<Wg3Volume> volumes = groups[key];
+                if (volumes.Count == 0) continue;
+
+                // El origen del lote es el centro del PRIMER volumen, y basta: todos caben en un
+                // chunk de 50 m, así que las coordenadas relativas se quedan pequeñas y no vuelve la
+                // pérdida de precisión que motivó emitirlas relativas (ver `Wg3MeshBuilder.Build`).
+                Vector3 origin = volumes[0].center;
+
+                var go = new GameObject(
+                    $"{namePrefix}_L{key.Mask:X2}_s{key.Style}_k{(int)key.Look}{(int)key.Tile}_n{volumes.Count}");
+                go.hideFlags = HideFlags.DontSave;
+                go.transform.SetParent(parent, false);
+                go.transform.position = origin;
+
+                Mesh mesh = Wg3MeshBuilder.Build(volumes, origin);
+                mesh.name = $"wg3_{go.name}";
+                mesh.hideFlags = HideFlags.DontSave;
+                createdMeshes?.Add(mesh);
+
+                go.AddComponent<MeshFilter>().sharedMesh = mesh;
+                var renderer = go.AddComponent<MeshRenderer>();
+                Material[] mats = MaterialsForSolid(materials, key.Style, key.Look, key.Tile);
+                if (mats != null) renderer.sharedMaterials = mats;
+                renderer.renderingLayerMask = key.Mask;
+                renderers++;
+
+                // La colisión sale de los VOLÚMENES, no de la malla: `AddColliders` filtra por
+                // `IsSolid`, así que la decoración del lote se dibuja y no frena, exactamente igual
+                // que cuando cada macizo tenía su objeto.
+                AddColliders(go, volumes, origin);
+            }
+
+            return renderers;
         }
 
         private static void AddColliders(GameObject root, List<Wg3Volume> volumes, Vector3 origin)
@@ -1102,9 +1333,13 @@ namespace BackroomsSurvival.WorldGen3
             // acotado igual por `jitterMaxMeters`, así que en una pieza grande no se va al rincón.
             float nominalX = placement.SizeX * 0.5f;
             float nominalZ = placement.SizeZ * 0.5f;
+            // ADR-130 D4 (r2b) — el mismo decaimiento que un tramo. Aquí importa aunque el catálogo
+            // esté casi apagado (0,6 piezas por región): una pieza en un sótano con su plafón cálido
+            // encendido al lado de un tramo gris se lee como un fallo de montaje, no como una pieza.
+            float decay = Wg3StoreyLayers.DecayOfFloor(placement.originY);
             Wg3Fixture fixture = Wg3LightCadence.Resolve(worldSeed,
                 placement.originX + nominalX, placement.originZ + nominalZ,
-                0, placement.SizeX, placement.SizeZ, cadence);
+                0, placement.SizeX, placement.SizeZ, cadence, decay);
 
             // Un tubo muerto aquí es sólo ausencia de Light: esta ruta no dibuja luminaria (ver el
             // R32 pendiente de arriba). Queda el hueco marcado en la jerarquía.
@@ -1129,7 +1364,8 @@ namespace BackroomsSurvival.WorldGen3
 
             var light = go.AddComponent<Light>();
             light.type = LightType.Point;
-            light.color = new Color(1f, 0.97f, 0.88f) * fixture.tint;
+            light.color = Wg3LightCadence.Decayed(
+                new Color(1f, 0.97f, 0.88f) * fixture.tint, decay);
             // El doble, por lo mismo y a la vez que el plafón de tramo: dos sistemas de luz con
             // intensidades que se separan al doble dejan las piezas del catálogo leyéndose como
             // agujeros oscuros dentro de una sala ya iluminada.

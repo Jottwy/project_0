@@ -29,6 +29,8 @@
 // sesión propia y puede poner `clippy -D warnings` en rojo, así que va anotado como deuda con
 // número, no como nota al pie. Ver `docs/STATE.md` → «Deuda declarada».
 #![allow(dead_code)]
+// CONVENTIONS.md: `unsafe` prohibido salvo ADR. Espejo del [lints] de Cargo.toml.
+#![forbid(unsafe_code)]
 
 mod crafting;
 mod game_loop;

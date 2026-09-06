@@ -3114,14 +3114,13 @@ si las sondas de `J:/wg3*` valen algo o se borran. Las ramas viejas (`angry-jack
   una torre no se hunde, bajo tierra ni atrios ni pozos. wg3 162/162. Capturas `d_b3_hall_*` a −9,96 con luz, moqueta y puerta.
 - Queda de la foto: variedad por `kind`, desorden, avisos, tintes (Joel), suciedad. El wire 62 lo disputan la rampa y el streaming vertical.
 
-### 2026-09-06 — 25.ª tanda: la fusión — seis commits sueltos de cuatro sesiones y el saneamiento sobre la rama principal
-- Suelto desde el 02/03-09 y ahora commiteado: `.meta` huérfanos del relay (`c2cd88af`), A28-29…33 al registro (`0a3cede5`), facelings
-  que nacían fuera del radio de retirada (`2440ef25`, 13/13), materiales del Nivel 0 (`5d281833`), escena re-guardada (`674fdba1`).
-- Animación 3P fase 1 (`cf3d8543`): 15/15 en arnés .NET porque el runner del editor no contestó; `m_IsKinematic` del prefab intactos.
-- `chore/saneamiento-arranque` (22 commits, B1–B4) fusionada con `--no-ff`; único conflicto `docs/STATE.md`, resuelto al formato denso con
-  las tandas 23–25 y el verbatim de 4j–4l en `SESSION-LOG.md`. Índice de ADR regenerado: 129 y 130 faltaban (170 entradas).
-- Sin fusionar y medido: `feat/occluders` choca en `fill.rs`/`plan.rs`; `unity-lighting-cadence` en `Wg3SceneAssembler.cs` (fusionadas en la 26.ª).
-- Cierre de 22 sesiones (28-08 → 06-09) en `SESSION-LOG.md`; tres experimentos a rama: `558afb54` teselado, `cb61b99c` decals, `1c8237ff` sonda.
+### 2026-09-06 — 27.ª tanda: la planta de oficinas, rebanada 1 — falso techo y cubículos (ADR-105 enm. 18)
+- `b02df08f`: `office_ceiling_cm` (270, 300) sólo en despachos/servicios/almacenes del carácter Office, por sala en pasos de 10; naves
+  y circulación no cambian. 669 de 898 despachos bajo 3,00 en 39 semillas. El forjado (332) no se toca.
+- `office_cubicles`: celdas 2,60 × 2,40, mampara 12 × 140 (el 8 era el barrote de rejilla), pasillo 1,50, filas espalda con espalda;
+  mesa + silla (15 % caída) + monitor/teclado/teléfono/bandeja + papelera; una de cada siete vacía. Un metro + grosor a los macizos previos.
+- Capturas `Temp/captures/cub_*.png` (B2/B3 de (0,0)): se lee como oficina. Sonda `probe_cubicle_spots`. Barrido 27/27, islas 6,4 = 6,4.
+- Plan de la tanda acordado con Joel (cinco rebanadas, memoria `wg3-oficinas-tanda-plan`); el cierre v1 queda detrás.
 
 ### 2026-09-06 — 26.ª tanda: las dos ramas que quedaban, fusionadas — occluders y cadencia de luces
 - `feat/occluders` (8 commits del 03/04-09): desalineación de vanos (`DOOR_MISALIGN_CHANCE` 0,75), oclusores intra-espacio
@@ -3132,3 +3131,22 @@ si las sondas de `J:/wg3*` valen algo o se borran. Las ramas viejas (`angry-jack
 - `unity-lighting-cadence` (3): tubos muertos, jitter en celda, tinte ±200 K, parpadeo, sobre 11 m / 2,7 y paneles; tubo muerto = sin Light.
 - Verificación: cargo 1393/1393, clippy y fmt limpios, barrido 27/27 (pisable −0,6 %, mancha 99,7 %, islas 6,4 = 6,4);
   CompileCheck 0. Los 7 tests de la cadencia NO corrieron: `CorrelatedColorTemperatureToRGB` es nativa; pide el editor.
+
+### 2026-09-06 — 25.ª tanda: la fusión — seis commits sueltos de cuatro sesiones y el saneamiento sobre la rama principal
+- Suelto desde el 02/03-09 y ahora commiteado: `.meta` huérfanos del relay (`c2cd88af`), A28-29…33 al registro (`0a3cede5`), facelings
+  que nacían fuera del radio de retirada (`2440ef25`, 13/13), materiales del Nivel 0 (`5d281833`), escena re-guardada (`674fdba1`).
+- Animación 3P fase 1 (`cf3d8543`): 15/15 en arnés .NET porque el runner del editor no contestó; `m_IsKinematic` del prefab intactos.
+- `chore/saneamiento-arranque` (22 commits, B1–B4) fusionada con `--no-ff`; único conflicto `docs/STATE.md`, resuelto al formato denso con
+  las tandas 23–25 y el verbatim de 4j–4l en `SESSION-LOG.md`. Índice de ADR regenerado: 129 y 130 faltaban (170 entradas).
+- Sin fusionar y medido: `feat/occluders` choca en `fill.rs`/`plan.rs`; `unity-lighting-cadence` en `Wg3SceneAssembler.cs` (fusionadas en la 26.ª).
+- Cierre de 22 sesiones (28-08 → 06-09) en `SESSION-LOG.md`; tres experimentos a rama: `558afb54` teselado, `cb61b99c` decals, `1c8237ff` sonda.
+
+### 2026-09-06 — 28.ª tanda: los VIGILANTES sentados (ADR-131 + enm. 1) — la planta de oficinas, rebanada 2
+- `Watcher` (`species` 3) en `game_loop/watcher.rs`: **sin `step`**, sólo reconcile. Nace en las anclas `PROP_CHAIR` de ADR-129 (sitio,
+  cota y giro los da el mundo), cap 48 por cercanía, radios 60/90/8. «Sentado» = **bit 5 de `buttons`** (ADR-044), sin bump de wire. El
+  despertar mide la cota con `same_level` como la retirada, o una silla del piso de arriba nace y muere cada segundo (lo cazó un test).
+- **Enm. 2**: 0,06 por silla daba **3 vigilantes** por región (60 sillas en total) — «no los veo» (Joel); ahora 0,25 + 0,12 por sótano,
+  tope 0,70: **35 por región**, 5 en la calle. **Enm. 3**: la cabeza pasa de salto seco a CUELLO con tope y desenrosque por delante
+  (medido: cámara a −116°, cabeza clavada en −89°). Lo que viene encima lo decide ADR-132, con sus decisiones ya en memoria.
+- Cliente: `FacelingSeated.anim` horneado por script y `ProxySeatedHook` (override del idle, cabeza, respiración). **Enm. 1**: el
+  Animator que se posa lo dice la MALLA, y la altura del asiento se MIDE cada fotograma. Capturas `vig5_*` del B3 de (0,0).

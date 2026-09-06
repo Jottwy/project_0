@@ -229,13 +229,25 @@ namespace BackroomsSurvival.Tests
                 try
                 {
                     Assert.AreEqual(Wg3MeshBuilder.SubMesh.Count, mesh.subMeshCount, piece.id);
-                    Assert.AreEqual(vs.Count * 24, mesh.vertexCount,
-                        $"{piece.id}: 24 vértices por caja, caras con normal dura");
+
+                    // **«24 vértices por caja» dejó de ser cierto el 2026-09-06, y a propósito.**
+                    // Desde que se podan las caras enterradas (`Wg3MeshBuilder.HiddenFaces`) una
+                    // pieza emite MENOS: la cara de un tramo contra el de al lado no se ve nunca, y
+                    // emitirla costaba triángulos y z-fighting. Lo que sigue siendo invariante es lo
+                    // que ese número protegía de verdad — que cada cara lleve sus cuatro vértices
+                    // propios para tener normal dura, y no ocho compartidos que redondearían la
+                    // esquina de una pared bajo cualquier luz rasante.
+                    Assert.LessOrEqual(mesh.vertexCount, vs.Count * 24,
+                        $"{piece.id}: nunca más de seis caras por caja");
+                    Assert.Greater(mesh.vertexCount, 0, $"{piece.id}: la poda se lo llevó TODO");
+                    Assert.AreEqual(0, mesh.vertexCount % 4,
+                        $"{piece.id}: cuatro vértices por cara, caras con normal dura");
 
                     int triangles = 0;
                     for (int i = 0; i < mesh.subMeshCount; i++)
                         triangles += (int)mesh.GetIndexCount(i) / 3;
-                    Assert.AreEqual(vs.Count * 12, triangles, $"{piece.id}: 12 triángulos por caja");
+                    Assert.AreEqual(mesh.vertexCount / 2, triangles,
+                        $"{piece.id}: dos triángulos por cara, se emita la cara o no");
 
                     Assert.Greater(mesh.GetIndexCount(Wg3MeshBuilder.SubMesh.Floor), 0u,
                         $"{piece.id}: el suelo no llegó a su submalla");

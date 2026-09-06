@@ -1,0 +1,15 @@
+# Capa determinista de la auditoria nocturna (paso 2 del plan aprobado 2026-08-14).
+# Scope: SOLO codigo C# propio. El vendor (Assets/PolymindGames, Assets/Plugins,
+# Assets/ai.meshy, Assets/TutorialInfo) queda fuera a proposito: nunca se edita ni
+# se formatea (regla stp-no-direct-edits).
+# Los ficheros propios son UTF-8 SIN BOM (verificado byte a byte 2026-08-14).
+# trim/insert en false a proposito: pinan el comportamiento del editor para que no
+# genere diffs de whitespace ajenos al cambio real.
+root = true
+
+[{Assets/Scripts,Assets/_Migration,Assets/Editor,Assets/Tests}/**.cs]
+indent_style = space
+indent_size = 4
+charset = utf-8
+trim_trailing_whitespace = false
+insert_final_newline = false
