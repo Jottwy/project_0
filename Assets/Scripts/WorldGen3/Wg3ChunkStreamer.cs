@@ -392,7 +392,11 @@ namespace BackroomsSurvival.WorldGen3
             // sala. El papel de cada sala se deduce del atrezo que se acaba de montar y de la
             // altura libre (el falso techo), así que va DESPUÉS del bucle de props. El lote muere
             // con la raíz del chunk, igual que el del zumbido.
-            if (officeRooms.Count > 0 && chunk.props.Count > 0)
+            //
+            // Y la guarda es SÓLO por salas, no por atrezo: la rejilla de aire no depende de que
+            // haya un mueble, la decide el falso techo. Pedir `props.Count > 0` dejaba mudo un chunk
+            // entero de despachos vacíos, que en este mundo son la mitad.
+            if (officeRooms.Count > 0)
             {
                 var officeProps = new List<Audio.OfficeAmbienceDirector.PropSpec>(chunk.props.Count);
                 for (int i = 0; i < chunk.props.Count; i++)

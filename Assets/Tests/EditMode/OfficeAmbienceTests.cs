@@ -583,8 +583,14 @@ namespace BackroomsSurvival.Tests
                 return sum / Mathf.Max(1, b - a);
             }
             Assert.Greater(Energy(0.1f, 0.9f), 0.05f, "primera ráfaga muda");
-            Assert.Less(Energy(1.05f, 1.45f), 0.01f, "el silencio entre ráfagas no está");
+            Assert.Less(Energy(1.25f, 1.45f), 0.01f, "el silencio entre ráfagas no está");
             Assert.Greater(Energy(1.6f, 2.4f), 0.05f, "segunda ráfaga muda");
+
+            // Y LA CAMPANA SE APAGA SOLA. El interruptor abre y el metal sigue sonando unas
+            // décimas; cortar la ráfaga en seco es lo que hacía la versión de dos senos, y es
+            // justo lo que delata un timbre sintetizado. La cola vive en [1,00; 1,10].
+            Assert.Greater(Energy(1.0f, 1.1f), 0.002f, "el timbre se corta en vez de apagarse");
+            Assert.Less(Energy(1.0f, 1.1f), Energy(0.1f, 0.9f), "la cola no puede sonar como la ráfaga");
         }
     }
 }

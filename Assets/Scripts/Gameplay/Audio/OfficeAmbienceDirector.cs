@@ -1138,20 +1138,72 @@ namespace BackroomsSurvival.Gameplay.Audio
             int sc = Mathf.Max(256, (int)(sampleRate * 2.5f));
             var buf = new float[sc];
             const double TwoPi = 2.0 * Math.PI;
+            var rng = new System.Random(1997);
+
+            // UN BADAJO GOLPEANDO DOS CAMPANAS, no dos senos multiplicados por un seno. La primera
+            // versión era exactamente eso —1 000 y 1 250 Hz por un trémolo de 20 Hz— y sonaba a
+            // tono de prueba: en un timbre real lo que se reconoce es el GOLPE, un ataque
+            // instantáneo con cola, no una amplitud que sube y baja suave. El interruptor da 20
+            // ciclos por segundo y cada medio ciclo el badajo cambia de campana: 40 golpes.
+            //
+            // Y cada campana SIGUE SONANDO mientras golpean la otra: los golpes van cada 25 ms y la
+            // cola dura 45, así que se solapan sin fundirse en una nota plana. El número está
+            // medido entre dos fallos opuestos: con la cola cortada a la duración del golpe el
+            // factor de cresta se dispara a 8,6 —nueve decibelios de RMS perdidos para el mismo
+            // pico, y el timbre queda flaco—, y con 130 ms el pulso de cada golpe desaparece y
+            // vuelve a sonar a tono continuo. A 45 ms: cresta 3,5 y el golpe se sigue oyendo.
+            const double StrikesPerSecond = 40.0;
+            const float RingTauSeconds = 0.045f;
+
+            // Parciales INARMÓNICOS: es lo que distingue el metal de un tubo. Una campana no tiene
+            // armónicos enteros, y con ellos suena a órgano.
+            float[] partialRatio = { 1f, 2.76f, 5.40f };
+            float[] partialAmp = { 1.00f, 0.26f, 0.11f };
+
+            float decayPerSample = Mathf.Exp(-1f / (RingTauSeconds * sampleRate));
+            float ringA = 0f, ringB = 0f; // la energía viva de cada campana
+            int lastStrike = -1;
 
             for (int i = 0; i < sc; i++)
             {
                 float t = (float)i / sampleRate;
-                // Ráfagas: [0,00–1,00] y [1,50–2,50].
-                float gate = (t < 1.0f) ? 1f : (t >= 1.5f ? 1f : 0f);
-                if (gate <= 0f) continue;
-                // Bordes suavizados: un corte seco en una senoide es un click.
+
+                ringA *= decayPerSample;
+                ringB *= decayPerSample;
+
+                // Ráfagas: [0,00–1,00] y [1,50–2,50]. En el silencio las campanas se apagan solas
+                // en vez de cortarse, que es lo que hace un timbre cuando el interruptor abre.
+                bool ringing = t < 1.0f || t >= 1.5f;
+                double strike = t * StrikesPerSecond;
+                int index = (int)strike;
+                if (ringing && index != lastStrike)
+                {
+                    lastStrike = index;
+                    if ((index & 1) == 0) ringA = 1f; else ringB = 1f;
+                }
+                float inStrike = (float)(strike - index);
+
+                // Bordes suavizados: un corte seco es un click.
                 float local = t < 1.0f ? t : t - 1.5f;
-                float env = Mathf.Clamp01(local / 0.02f) * Mathf.Clamp01((1.0f - local) / 0.04f);
-                float warble = 0.5f + 0.5f * (float)Math.Sin(TwoPi * 20.0 * i / sampleRate);
-                float tone = (float)(Math.Sin(TwoPi * 1000.0 * i / sampleRate) * 0.55
-                                     + Math.Sin(TwoPi * 1250.0 * i / sampleRate) * 0.45);
-                buf[i] = tone * (0.35f + 0.65f * warble) * env;
+                float env = ringing
+                    ? Mathf.Clamp01(local / 0.01f) * Mathf.Clamp01((1.0f - local) / 0.04f)
+                    : 1f;
+
+                double tone = 0.0;
+                for (int p = 0; p < partialRatio.Length; p++)
+                {
+                    double w = TwoPi * partialRatio[p] * i / sampleRate;
+                    tone += partialAmp[p] * (ringA * Math.Sin(w * 1000.0)
+                                             + ringB * Math.Sin(w * 1250.0));
+                }
+
+                // El badajo tocando el metal: unos milisegundos de ruido en el ataque de cada
+                // golpe. Sin él el golpe es limpio y vuelve a sonar sintetizado.
+                float clapper = ringing && inStrike < 0.12f
+                    ? (float)(rng.NextDouble() * 2.0 - 1.0) * (0.12f - inStrike) * 1.6f
+                    : 0f;
+
+                buf[i] = (float)tone * 0.55f * env + clapper * env;
             }
 
             return Normalize(buf, 0.85f);
