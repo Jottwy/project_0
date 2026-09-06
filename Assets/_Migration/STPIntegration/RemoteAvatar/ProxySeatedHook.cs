@@ -22,12 +22,14 @@ namespace BackroomsSurvival.Migration.STPIntegration
     ///    cliente porque es geometría del modelo, y una constante de modelo en el servidor deja de
     ///    significar lo que dice su comentario al primer re-horneado.
     ///
-    /// 2. **La cabeza.** Sigue a la cámara local mientras esté dentro de ±<see cref="_coneDeg"/>
-    ///    respecto del yaw del CUERPO — que no se gira nunca: mira a donde mira la silla. Cuando te
-    ///    sales del cono, la cabeza **no vuelve suavemente**: SALTA en un fotograma a otra pose
-    ///    sorteada y se queda ahí hasta que vuelvas a entrar. Un seguimiento que se pierde despacio
-    ///    se lee como un muñeco mal orientado; una cabeza que ya está mirando a otro lado cuando te
-    ///    vuelves se lee como que se movió mientras no mirabas, que es de lo que va esta especie.
+    /// 2. **La cabeza, con el tope de un cuello.** Sigue a la cámara local, girando a velocidad
+    ///    finita, y el ángulo aplicado vive SIEMPRE dentro de ±<see cref="_coneDeg"/> respecto del
+    ///    yaw del CUERPO — que no se gira nunca: mira a donde mira la silla. Cuando te pasas a su
+    ///    espalda no puede seguirte: se queda forzando en el tope y, en cuanto cruzas al otro lado,
+    ///    **desenrosca por delante** hasta volver a verte. Nunca da la vuelta por detrás y nunca
+    ///    hace 360°, y no porque lo impida un caso especial sino porque no hay ningún ángulo fuera
+    ///    del tope en el camino (ver `AimHead`). Sustituye al salto seco de ADR-131 D6, que jugado
+    ///    se leía como un muñeco cambiando de postura y no como alguien mirándote.
     ///
     /// 3. **La respiración.** ±<see cref="_breathDeg"/> en el pecho, con fase por peer para que dos
     ///    vigilantes de la misma sala no respiren a la vez. Es lo ÚNICO que se mueve, y existe para
@@ -68,17 +70,12 @@ namespace BackroomsSurvival.Migration.STPIntegration
         [Tooltip("Respiraciones por segundo.")]
         [SerializeField, Min(0.01f)] private float _breathHz = 0.22f;
 
-        /// <summary>Poses de cabeza a las que salta cuando te sales del cono: (yaw, pitch) en
-        /// grados respecto del cuerpo. Mirar a la mesa, a la mampara de la derecha, a la de la
-        /// izquierda, al techo y al frente.</summary>
-        private static readonly Vector2[] AwayPoses =
-        {
-            new Vector2(0f, 25f),
-            new Vector2(55f, 5f),
-            new Vector2(-55f, 5f),
-            new Vector2(10f, -30f),
-            new Vector2(0f, 0f),
-        };
+        /// Grados por segundo del SEGUIMIENTO fino, mientras te tiene delante.
+        private const float TrackSpeedDeg = 160f;
+        /// Grados por segundo del DESENROSQUE, cuando tiene que cruzar la cara entera.
+        private const float UnwindSpeedDeg = 300f;
+        /// A partir de cuánto error se considera desenrosque y no seguimiento.
+        private const float UnwindThresholdDeg = 45f;
 
         private RemotePlayerManager _manager;
         private Animator _animator;
@@ -86,8 +83,7 @@ namespace BackroomsSurvival.Migration.STPIntegration
         private RuntimeAnimatorController _originalController;
         private AnimatorOverrideController _override;
         private bool _seated;
-        private bool _hadTarget;
-        private Vector2 _awayPose;
+        private float _yaw, _pitch;
         private float _phase;
 
         private void Awake()
@@ -147,8 +143,8 @@ namespace BackroomsSurvival.Migration.STPIntegration
         private void OnEnable()
         {
             _seated = false;
-            _hadTarget = false;
-            _awayPose = Vector2.zero;
+            _yaw = 0f;
+            _pitch = 0f;
             // Fase por instancia y no por id: el id no está resuelto todavía en OnEnable, y lo único
             // que hace falta es que dos vigilantes no coincidan.
             _phase = Random.value * Mathf.PI * 2f;
@@ -286,52 +282,56 @@ namespace BackroomsSurvival.Migration.STPIntegration
 
         private void AimHead()
         {
-            var cam = Camera.main;
-            if (cam == null)
-                return;
-
+            float dt = Mathf.Max(Time.deltaTime, 1e-4f);
             var head = _head != null ? _head : _neck;
             if (head == null)
                 return;
 
-            Vector3 to = cam.transform.position - head.position;
-            // El yaw se mide contra el frente del CUERPO, que es el de la silla: es lo que define el
-            // cono, y por eso no puede medirse contra la cabeza (que ya está girada del fotograma
-            // anterior y realimentaría su propio giro).
-            Vector3 flat = Vector3.ProjectOnPlane(to, transform.up);
-            float yaw = flat.sqrMagnitude > 1e-6f
-                ? Vector3.SignedAngle(transform.forward, flat, transform.up)
-                : 0f;
-            float pitch = -Mathf.Atan2(to.y, flat.magnitude) * Mathf.Rad2Deg;
-
-            bool inCone = Mathf.Abs(yaw) <= _coneDeg;
-            if (inCone)
+            var cam = Camera.main;
+            float targetYaw = 0f, targetPitch = 0f;
+            if (cam != null)
             {
-                _hadTarget = true;
-            }
-            else
-            {
-                // EL SALTO SECO (ADR-131 D6): al salir del cono se sortea otra pose UNA vez, y se
-                // mantiene. Volver a sortearla cada fotograma sería un tic nervioso, y no sortear
-                // ninguna dejaría la cabeza clavada donde te perdió, que se lee como un fallo.
-                if (_hadTarget)
-                {
-                    _hadTarget = false;
-                    _awayPose = AwayPoses[Random.Range(0, AwayPoses.Length)];
-                }
-                yaw = _awayPose.x;
-                pitch = _awayPose.y;
+                Vector3 to = cam.transform.position - head.position;
+                // El yaw se mide contra el frente del CUERPO, que es el de la silla: es lo que define
+                // el tope, y por eso no puede medirse contra la cabeza (que ya está girada del
+                // fotograma anterior y realimentaría su propio giro).
+                Vector3 flat = Vector3.ProjectOnPlane(to, transform.up);
+                float desiredYaw = flat.sqrMagnitude > 1e-6f
+                    ? Vector3.SignedAngle(transform.forward, flat, transform.up)
+                    : 0f;
+                float desiredPitch = -Mathf.Atan2(to.y, flat.magnitude) * Mathf.Rad2Deg;
+
+                // **EL TOPE ES EL CUELLO, Y EL DESENROSQUE SALE SOLO DE ÉL.**
+                //
+                // ADR-131 D6 resolvía el punto ciego con un SALTO SECO a una pose sorteada. Jugado,
+                // no se lee como una persona: se lee como un muñeco que cambia de postura de golpe.
+                // Lo que pidió Joel es lo que hace un cuello de verdad — «como una persona que no
+                // pueda mirar a su espalda: vuelve a girar al lado contrario hasta que llega a ver».
+                //
+                // Y no hace falta una máquina de estados para eso. Basta con que el ángulo APLICADO
+                // viva siempre dentro de [−tope, +tope] y persiga al deseado ya recortado: cuando te
+                // pasas por detrás, el deseado salta de +170 a −170, su recorte salta de +tope a
+                // −tope, y el camino entre dos números de ese intervalo pasa POR DELANTE por pura
+                // aritmética. La cabeza no puede dar la vuelta por la espalda porque ningún ángulo
+                // de ese camino está fuera del tope. Cero casos especiales, cero 360°.
+                targetYaw = Mathf.Clamp(desiredYaw, -_coneDeg, _coneDeg);
+                targetPitch = Mathf.Clamp(desiredPitch, -_pitchClampDeg, _pitchClampDeg);
             }
 
-            yaw = Mathf.Clamp(yaw, -_coneDeg, _coneDeg);
-            pitch = Mathf.Clamp(pitch, -_pitchClampDeg, _pitchClampDeg);
+            // Dos velocidades, y la diferencia es la mitad del efecto: seguirte de cerca es un ajuste
+            // fino y continuo; el desenrosque es un movimiento entero, y a la velocidad del
+            // seguimiento tardaría casi un segundo en cruzar la cara — lo que se leería como que la
+            // cabeza «flota» de un lado a otro en vez de volverse.
+            float speed = Mathf.Abs(targetYaw - _yaw) > UnwindThresholdDeg ? UnwindSpeedDeg : TrackSpeedDeg;
+            _yaw = Mathf.MoveTowards(_yaw, targetYaw, speed * dt);
+            _pitch = Mathf.MoveTowards(_pitch, targetPitch, TrackSpeedDeg * dt);
 
-            float neckYaw = yaw * _neckShare;
-            float neckPitch = pitch * _neckShare;
+            float neckYaw = _yaw * _neckShare;
+            float neckPitch = _pitch * _neckShare;
             ProxyRigUtil.ApplyBend(_neck, neckYaw, transform.up);
             ProxyRigUtil.ApplyBend(_neck, neckPitch, transform.right);
-            ProxyRigUtil.ApplyBend(_head, yaw - neckYaw, transform.up);
-            ProxyRigUtil.ApplyBend(_head, pitch - neckPitch, transform.right);
+            ProxyRigUtil.ApplyBend(_head, _yaw - neckYaw, transform.up);
+            ProxyRigUtil.ApplyBend(_head, _pitch - neckPitch, transform.right);
         }
 
         private void Breathe()
