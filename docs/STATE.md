@@ -102,7 +102,6 @@
 - Manivela al arco LIBRE de la mano (−88°, izquierda): la órbita del pomo a 9 mm de aire de la derecha. Capa «Crank» en controller copiado del
   `Template_Tool`; el wieldable dibuja la manivela desde la FASE del Animator en `LateUpdate`. Izquierda por IK sobre el pomo, hombro adelantado 64 cm.
 - Ocho tests nuevos (`CrankFlashlightAnimationTests`) + 15/15 de item; CompileCheck 0 ×4. Idle de 26 MB → 4,7 (curvas constantes a dos claves).
-- Trampas: offset del hijo leído bajo `AnimationMode` (26 cm vs 7) → por números; `AngleAxis(+θ,+Z)` lleva arriba a la IZQUIERDA; capa a peso 0 corre igual.
 - Sin ver en Play: `FistFromEye` (0,10, −0,11, 0,36) y lente 8°↓/8°← son diseño; el fundido de la izquierda (0,3 s) y el bamboleo (1,2°) piden ojo.
 
 ### 2026-09-07 — 36.ª tanda: la linterna de manivela (ADR-133), de cero a en la mano del vecino, en rama aparte
