@@ -177,6 +177,30 @@ roto**. No hay escena nueva ni caché sucia. Es esto:
   memoria y puede reescribir por encima lo que acaba de entrar por git. El lockfile dice si está
   abierto: `Temp/UnityLockfile` ocupado = editor vivo.
 
+#### Que dos ramas no compartan ficheros NO significa que no vayan a chocar
+El error del 08-09, y costó un merge roto a medias. Se comprobó que las tres ramas a mezclar no
+compartían ni un fichero entre ellas ni con lo que había sucio en el clon, se declaró «sin choque»
+y el `git merge A B C` reventó en `backend/src/world/wg3/mod.rs`.
+
+La comparación que faltaba no era rama contra rama: era **rama contra el tronco de HOY**. Una rama
+de hace dos días sale de una base vieja; si el tronco tocó esas mismas líneas después, el conflicto
+existe aunque ninguna otra rama del lote roce ese fichero. Aquí la rama añadía `mod skeptic_boxes;`
+al final de `mod.rs` y entretanto el tronco había hecho `pub(crate) mod tests;` y añadido
+`mod validate_tests;` en esas mismas líneas.
+
+Lo que hay que mirar antes de mezclar, por cada rama:
+```bash
+git log --oneline tronco --not rama -- $(git diff --name-only tronco...rama)
+```
+Si eso devuelve algo, el tronco ha tocado ficheros que la rama también toca: hay riesgo de conflicto
+real. Cero líneas es vía libre. Y **`git merge A B C` (octopus) aborta el lote entero al primer
+conflicto**: con más de una rama, mezclar de una en una deja claro cuál falla y no obliga a
+resolverlo todo a la vez.
+
+Un conflicto así se resuelve **conservando las dos partes**, no eligiendo un lado: el tronco tiene
+cambios que la rama no conoce y la rama trae lo suyo. Después, `cargo check --tests` (o el build de
+Unity) ANTES de cerrar el merge, no después.
+
 ### Un `.meta` sin su fichero NO significa fichero borrado
 En un worktree recién creado, git no trae lo que está en `.gitignore`. Como los `.meta` **sí** se
 versionan y los `.unitypackage` y `.pdb` **no** (`.gitignore` líneas 33 y 36), en cualquier worktree
