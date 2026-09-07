@@ -48,3 +48,6 @@ pub mod world;
 pub(crate) mod tests;
 #[cfg(test)]
 mod validate_tests;
+/// Sonda escéptica de interpenetración de cajas: fuerza bruta O(n²) con clasificación propia.
+#[cfg(test)]
+mod skeptic_boxes;

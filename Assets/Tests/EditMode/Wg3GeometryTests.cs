@@ -115,6 +115,14 @@ namespace BackroomsSurvival.Tests
                     // Tres alturas y tres puntos a lo ancho del vano: la esquina superior de una
                     // puerta es donde acabaría el fallo si el corte de la pared se hiciera por el
                     // centro en vez de por los bordes de la boca.
+                    //
+                    // LAS ALTURAS SON RELATIVAS A `socket.floorY`, no al origen de la pieza. Se
+                    // escribieron absolutas cuando F0 dejaba `floorY` a cero en todo el catálogo;
+                    // ADR-097 metió la primera boca a otra cota (`cor_ramp`, salida a 0,72 m) y una
+                    // sonda a y = 0,25 dejó de mirar el vano para mirar el plinto que lo SOSTIENE
+                    // —el suelo de esa boca— y lo denunciaba como tapado. Con una boca elevada
+                    // ningún soporte pasaría: da igual que sea bloque, peldaño o pared. Para toda
+                    // pieza con `floorY = 0` esto no mueve ni un punto.
                     Vector2 along = new Vector2(-inward.y, inward.x);
                     foreach (float t in new[] { -0.35f, 0f, 0.35f })
                     {
@@ -122,7 +130,7 @@ namespace BackroomsSurvival.Tests
                                            + along * (socket.width * t);
                         foreach (float y in new[] { 0.25f, 1.2f, 1.9f })
                         {
-                            var p = new Vector3(xz.x, y, xz.y);
+                            var p = new Vector3(xz.x, socket.floorY + y, xz.y);
                             foreach (Wg3Volume v in vs)
                             {
                                 if (!v.IsSolid) continue;
@@ -178,7 +186,12 @@ namespace BackroomsSurvival.Tests
                         Vector2 p = placement.WorldPoint(s);
                         Vector2 inward = -Wg3Piece.OutwardNormal(placement.WorldSide(s));
                         Vector2 xz = p + inward * (piece.wallThickness * 0.5f);
-                        var probe = new Vector3(xz.x, 1.2f, xz.y);
+                        // Mismo criterio que arriba: la altura del pecho se mide desde el suelo de
+                        // ESA boca. Aquí colaba de casualidad —1,2 m cae dentro del hueco libre de
+                        // `cor_ramp`, que va de 0,72 a 3,92—, y una boca elevada un poco más lo
+                        // habría convertido en el mismo falso rojo.
+                        float probeY = placement.originY + piece.sockets[s].floorY + 1.2f;
+                        var probe = new Vector3(xz.x, probeY, xz.y);
 
                         foreach (Wg3Volume v in vs)
                         {
