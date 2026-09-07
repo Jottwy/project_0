@@ -142,6 +142,48 @@ array **horneado en YAML** (`Resources/LayerVisuals/Layer0_Vestibulo.asset`,
 `Resources/Loot/ZoneLootTable.asset`), y el inicializador nunca vuelve a aplicarse sobre
 un asset ya serializado.
 
+## Worktrees: por qué lo que ves en el editor NO es lo que acaba de arreglarse
+
+La trampa que más tiempo cuesta explicar, con un caso real del 08-09-2026: una sesión arregla la
+iluminación, la verifica con capturas del juego, la commitea, y al abrir Unity **se sigue viendo
+roto**. No hay escena nueva ni caché sucia. Es esto:
+
+- **Unity abre el clon principal `J:\Unity\BackroomsSurvivalMMO`, que está en
+  `migration/worldgraph-v1`.** Cada sesión de Claude trabaja en un worktree bajo
+  `.claude/worktrees/<nombre>` con su propia rama. Mientras esa rama no se mezcle al tronco, el
+  editor no ve **nada** de ese trabajo.
+- El síntoma engaña porque los ficheros existen y tienen el nombre correcto. Lo que cambia es su
+  contenido: el 08-09 el clon tenía `m_RenderingLayers: Default` a secas y la rama tenía las siete
+  capas de planta. Con solo `Default`, URP recorta a cero toda máscara de planta y ninguna lámpara
+  ilumina — exactamente el bug que la rama arreglaba.
+- **Comprobación en dos líneas** antes de sospechar de Unity:
+  ```bash
+  git -C J:/Unity/BackroomsSurvivalMMO rev-parse --abbrev-ref HEAD
+  grep -A3 m_RenderingLayers J:/Unity/BackroomsSurvivalMMO/ProjectSettings/TagManager.asset
+  ```
+  `git branch --contains <sha>` **no** vale para esto: lista todas las ramas del repo, y la del
+  worktree contiene el commit por definición, así que responde «sí» siempre. Mirar el fichero.
+
+### Al mezclar una rama al tronco
+- **Un `.meta` sin trackear en el clon aborta el merge.** Git se niega a sobrescribir ficheros sin
+  trackear. Si el merge trae un `.meta` que en el clon existe suelto, compara el contenido: si es
+  idéntico, borrarlo del clon es inocuo porque el merge lo recrea igual.
+- **Mira antes qué ficheros toca el merge y cuáles están sucios en el clon.** Con
+  `git diff --name-only tronco...rama` contra `git status --porcelain` se ve el choque en un
+  vistazo. El 08-09 el clon tenía la escena `STP_Showcase.unity` con 549 líneas sin commitear de
+  otra sesión, y el merge no la tocaba: comprobarlo es la diferencia entre mezclar tranquilo y
+  pisar el trabajo de alguien.
+- **Con el editor abierto, reinícialo después de mezclar.** Unity mantiene `ProjectSettings` en
+  memoria y puede reescribir por encima lo que acaba de entrar por git. El lockfile dice si está
+  abierto: `Temp/UnityLockfile` ocupado = editor vivo.
+
+### Un `.meta` sin su fichero NO significa fichero borrado
+En un worktree recién creado, git no trae lo que está en `.gitignore`. Como los `.meta` **sí** se
+versionan y los `.unitypackage` y `.pdb` **no** (`.gitignore` líneas 33 y 36), en cualquier worktree
+aparecen trece `.meta` cuyo fichero no existe. En el clon principal esos ficheros están y pesan
+—75 MB el de STP, 39 MB el de FPSCore—. Borrar esos `.meta` «para limpiar» le inventaría un GUID
+nuevo a cada paquete en el clon donde sí están. No se tocan.
+
 ## Método que ha funcionado en este repo
 
 Diagnóstico y medición antes de tocar. Instrumentación temporal que se **borra** tras
