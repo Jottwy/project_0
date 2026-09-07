@@ -223,6 +223,33 @@ que era medir):
 E6 añade una puntual de 18 m por tramo y la oclusión ambiental pasó de 1 muestra a 2. Aceptable,
 anotado por si alguien mide una regresión y no sabe de dónde viene.
 
+## 5 ter. El editor: qué aplica y qué no
+
+Pregunta de Joel el 08-09: en el editor «no se veía igual». Desglose por dónde vive cada cambio.
+
+**Aplica solo con darle a Play, sin hacer nada más:**
+- E2 (grading a HDR) y E4 (oclusión ambiental) viven en `PC_RPAsset` y `PC_Renderer`, que son los
+  assets que usa el editor igual que la build.
+- E1, E3 y E6 corren en `Wg3ChunkStreamer.OnEnable` y en el ensamblador, o sea en cuanto arranca
+  una sesión WG3, dentro o fuera del editor.
+- E7 es `TorchShadowCaster`, que se autoarranca en Play.
+
+Ninguno está tras un `#if !UNITY_EDITOR`. Lo que Joel vio antes era el estado previo al arreglo,
+no una diferencia entre editor y build.
+
+**No aplica, y es a propósito:** la vista de escena SIN darle a Play. Ahí no corre nada de esto, así
+que se sigue viendo con la niebla lineal, el direccional y las sondas del demo. Arreglarlo pediría
+escribir en `STP_Showcase.unity`, que es del vendor y se pierde en cada reimport de su
+`.unitypackage`. La decisión de §5 se mantiene: nada se escribe en la escena del vendor.
+
+**Lo que sí hacía falta para el editor** y se añadió: `LightmapSettings` es estado global del
+proceso, no de la escena. En una build da igual porque el proceso muere al salir; en el editor,
+darle a Stop no garantiza que las sondas y los lightmaps vuelvan a su sitio, y quien lo hiciera se
+encontraría la escena vacía de iluminación horneada — o se pondría a hornear encima. Ahora
+`StripVendorLighting` guarda lo que había y `RestoreVendorLighting` lo devuelve en `OnDisable`,
+reactivando **sólo** las luces y sondas que apagamos nosotros: la lista es la prueba de autoría, y
+encender toda direccional de la escena daría luz a las que ya vinieran apagadas de fábrica.
+
 ## 6. Evidencia de esta sesión
 - Build 3 (capas de render sin definir): mundo negro salvo la geometría del demo. `[crank-diag] lit=True charge=1.00 intensity=4.00 layers=8` y aun así nada iluminado.
 - Build 4 (`TagManager` con `Wg3 Storey 1..7`): `[wg3-diag] ambient=Flat/RGBA(0,0,0,1) probes=117`; captura `capture_build4.png`: charco de luz de la linterna en el suelo, vano del fondo iluminado por una lámpara WG3, paredes a media distancia negras (compatible con E1/E5).

@@ -80,6 +80,13 @@ namespace BackroomsSurvival.WorldGen3
         private bool _digestChecked;
         private GameObject _grade;
         private UnityEngine.Rendering.VolumeProfile _gradeProfile;
+        // Lo que había ANTES de que apagáramos los restos del demo, para devolverlo al salir de
+        // Play en el editor (ver StripVendorLighting).
+        private LightProbes _probesBefore;
+        private LightmapData[] _lightmapsBefore;
+        private float _reflectionBefore;
+        private readonly List<Light> _dimmed = new List<Light>();
+        private readonly List<ReflectionProbe> _dimmedProbes = new List<ReflectionProbe>();
 #if DEVELOPMENT_BUILD || UNITY_EDITOR
         private float _nextLightCensus;
 #endif
@@ -165,14 +172,23 @@ namespace BackroomsSurvival.WorldGen3
         /// Se hace por código y no editando la escena a propósito: `STP_Showcase.unity` es del
         /// vendor y un reimport de su `.unitypackage` la sobrescribe entera —ya pasó, ADR-065—,
         /// así que un cambio hecho aquí sobrevive y uno hecho allí no.
+        ///
+        /// TODO LO QUE TOCA SE DESHACE en <see cref="RestoreVendorLighting"/>, y eso es por el
+        /// EDITOR. `LightmapSettings` es estado global del proceso, no de la escena: en una build
+        /// da igual porque el proceso se muere, pero en el editor salir de Play no garantiza que
+        /// vuelva a su sitio, y quien le diera a Stop se encontraría la escena sin sondas ni
+        /// lightmaps hasta recargarla —o, peor, se pondría a hornear encima de eso—.
         /// </summary>
-        private static void StripVendorLighting()
+        private void StripVendorLighting()
         {
+            _probesBefore = LightmapSettings.lightProbes;
+            _lightmapsBefore = LightmapSettings.lightmaps;
+            _reflectionBefore = RenderSettings.reflectionIntensity;
+
             LightmapSettings.lightProbes = null;
             LightmapSettings.lightmaps = new LightmapData[0];
             RenderSettings.reflectionIntensity = 0f;
 
-            int lights = 0;
             foreach (var light in FindObjectsByType<Light>(
                          FindObjectsInactive.Exclude, FindObjectsSortMode.None))
             {
@@ -180,20 +196,40 @@ namespace BackroomsSurvival.WorldGen3
                 // direccional viva en una sesión WG3 es del demo por definición.
                 if (light.type != LightType.Directional) continue;
                 light.enabled = false;
-                lights++;
+                _dimmed.Add(light);
             }
 
-            int probes = 0;
             foreach (var probe in FindObjectsByType<ReflectionProbe>(
                          FindObjectsInactive.Exclude, FindObjectsSortMode.None))
             {
                 probe.enabled = false;
-                probes++;
+                _dimmedProbes.Add(probe);
             }
 
 #if DEVELOPMENT_BUILD || UNITY_EDITOR
-            Debug.Log($"[wg3-diag] restos del demo apagados: direccionales={lights} reflexiones={probes}");
+            Debug.Log($"[wg3-diag] restos del demo apagados: direccionales={_dimmed.Count} " +
+                      $"reflexiones={_dimmedProbes.Count}");
 #endif
+        }
+
+        /// <summary>Deja la iluminación de la escena como estaba. Ver <see cref="StripVendorLighting"/>.</summary>
+        private void RestoreVendorLighting()
+        {
+            if (_lightmapsBefore != null) LightmapSettings.lightmaps = _lightmapsBefore;
+            LightmapSettings.lightProbes = _probesBefore;
+            RenderSettings.reflectionIntensity = _reflectionBefore;
+            _lightmapsBefore = null;
+            _probesBefore = null;
+
+            // Se reactiva lo que apagamos NOSOTROS y sólo eso: la lista es la prueba de autoría.
+            // Encender toda direccional de la escena daría luz a la que ya viniera apagada.
+            for (int i = 0; i < _dimmed.Count; i++)
+                if (_dimmed[i] != null) _dimmed[i].enabled = true;
+            _dimmed.Clear();
+
+            for (int i = 0; i < _dimmedProbes.Count; i++)
+                if (_dimmedProbes[i] != null) _dimmedProbes[i].enabled = true;
+            _dimmedProbes.Clear();
         }
 
         /// <summary>
@@ -260,6 +296,7 @@ namespace BackroomsSurvival.WorldGen3
             _grade = null;
             if (_gradeProfile != null) Destroy(_gradeProfile);
             _gradeProfile = null;
+            RestoreVendorLighting();
             ClearAll();
         }
 
