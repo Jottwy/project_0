@@ -35,7 +35,20 @@ namespace BackroomsSurvival.EditorTools
         /// </summary>
         [MenuItem("Backrooms/Tests/Correr la clase guardada", false, 400)]
         public static void RunSavedFixture()
-            => Run(EditorPrefs.GetString(LastFixtureKey, "CrankFlashlightItemTests"));
+        {
+            // Un fichero manda sobre la preferencia: es la única forma de elegir la clase desde
+            // fuera del editor (el runner de sesión no puede contestar al selector de fichero).
+            // Se consume al leerlo para que no se quede pegado a la siguiente sesión.
+            const string overridePath = "Temp/claude_fixture.txt";
+            string name = EditorPrefs.GetString(LastFixtureKey, "CrankFlashlightItemTests");
+            if (System.IO.File.Exists(overridePath))
+            {
+                string fromFile = System.IO.File.ReadAllText(overridePath).Trim();
+                if (fromFile.Length > 0) name = fromFile;
+                try { System.IO.File.Delete(overridePath); } catch { /* se releerá la próxima vez */ }
+            }
+            Run(name);
+        }
 
         [MenuItem("Backrooms/Tests/Elegir la clase…", false, 401)]
         public static void ChooseFixture()

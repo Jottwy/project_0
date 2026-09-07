@@ -3150,3 +3150,22 @@ si las sondas de `J:/wg3*` valen algo o se borran. Las ramas viejas (`angry-jack
   (medido: cámara a −116°, cabeza clavada en −89°). Lo que viene encima lo decide ADR-132, con sus decisiones ya en memoria.
 - Cliente: `FacelingSeated.anim` horneado por script y `ProxySeatedHook` (override del idle, cabeza, respiración). **Enm. 1**: el
   Animator que se posa lo dice la MALLA, y la altura del asiento se MIDE cada fotograma. Capturas `vig5_*` del B3 de (0,0).
+
+### 2026-09-06 — 29.ª tanda: ocho sesiones en paralelo; luces, audio y carteles fusionados
+- Joel lanzó a la vez un prompt por punto del «10 de 10» de oficina; el reparto de números (ADR, prop kind, grosor, SALT) llegó tarde.
+- `2148fce3` luces (`e38570d6`): monitor azul 1 de 5 SIN Light (el hash lleva la cota: sin ella se encendía la columna entera), despacho
+  a oscuras por planta y chunk, emergencia verde donde el plafón está muerto. Medido: +16 draw calls, +4 luces, 0 sombras nuevas.
+- `67f7833d` audio (`cab689c3`): `OfficeAmbienceDirector`, 6 AudioSource, papel de sala DERIVADO del atrezo + falso techo, sin wire.
+- `03e84ae3` carteles (ADR-129 enm. 1): `PROP_SIGN = 15`, variante en 6 bits de `style`, wire 61; atlas 8×8 (`BakeSignAtlas.py`).
+- Conflictos: `Wg3SceneAssembler.cs` (unión) y `DECISIONS.md` (ADR-131 y enmiendas antes que la de 129). cargo 1402/1402, CompileCheck 0.
+- Para las cuatro que quedan: carteles se queda el 15; variantes 16–20 (`TABLE_LONG..RACK`), decay 21–22; ADR-129 enm. 2 para variantes.
+
+### 2026-09-06 — 30.ª tanda: el falso techo ROTO (ADR-105 enm. 20), servidor y cliente, sin wire
+- `office_decay`, el último emisor del relleno, en las salas con `office_ceiling_cm`: placas caídas (60×60×**4**, decoración
+  con giro), baldosa de suelo técnico levantada (60×60×**9**), placas colgando (prop 21) y UNA luminaria descolgada por planta (prop 22).
+- Lo que cuelga es prop y no macizo porque `Wg3Solid` sólo gira en Y; y no es prefab porque el pack no trae placa ni luminaria: lo
+  construye `AssembleHungDecay` con el material de techo o de luminaria, bisagra en el borde de arriba, 34°/22°. Kind nuevo ≠ wire nuevo.
+- Densidad por sala con `SALT_DECAY`, y sube con la profundidad (ADR-130 D4, `d²` contra el fondo SERVIDO): calle 0,25 piezas por sala, B3 1,56.
+- Nada frena: decoración y props, así que el barrido sale IDÉNTICO (27/27, pisable 183 756, mancha 99,7 %, 6,4 islas, nav 100 %). Suite 1399/1399.
+- Cliente además: decoración de canto ≤ 15 cm pasa de `Casing` a `Decoration`, pintada con el material de techo o de suelo.
+- **Sin captura** (el editor estaba ocupado). Sonda `probe_decay_spots`: (0,0) B2 a −6,64 m y B3 a −9,96. Al fusionar, los kinds pasan a 21 y 22.

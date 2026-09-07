@@ -142,7 +142,17 @@ namespace BackroomsSurvival.EditorTools
 
                 ShootBareModel(instance, cam, camGo.transform);
 
-                if (posed) UnityEditor.AnimationMode.StopAnimationMode();
+                // Equipar a mitad de recorrido, desde el ojo: la entrada de la mano en plano.
+                if (TrySampleOverride(instance, "equip", 0.5f, out _))
+                {
+                    camGo.transform.SetPositionAndRotation(eye.transform.position, eye.transform.rotation);
+                    cam.fieldOfView = 60f;
+                    RenderTo(cam, Path.Combine(OutDir, "linterna_equipar_mitad.png"));
+                }
+
+                ShootCranking(instance, cam, camGo.transform, eye.transform);
+
+                if (UnityEditor.AnimationMode.InAnimationMode()) UnityEditor.AnimationMode.StopAnimationMode();
             }
             finally
             {
@@ -250,6 +260,16 @@ namespace BackroomsSurvival.EditorTools
         /// Deja `AnimationMode` ABIERTO: quien llama lo cierra al terminar de retratar.
         /// </summary>
         private static bool TrySampleIdle(GameObject instance, out string clipName)
+            => TrySampleOverride(instance, "idle", 0.5f, out clipName);
+
+        /// <summary>
+        /// Muestrea el clip QUE SE VE EN JUEGO: el override del <c>WieldableAnimator</c> cuyo
+        /// original se llama como la pista, en la fracción pedida de su duración. Antes se cogía
+        /// el clip del controller pelado, que es la PLANTILLA del vendor (`Template_Idle`) y no la
+        /// antorcha ni, ahora, los clips horneados: retrataba una pose que nadie juega.
+        /// Deja `AnimationMode` ABIERTO: quien llama lo cierra al terminar de retratar.
+        /// </summary>
+        private static bool TrySampleOverride(GameObject instance, string originalHint, float fraction, out string clipName)
         {
             clipName = null;
             Animator animator = null;
@@ -265,31 +285,79 @@ namespace BackroomsSurvival.EditorTools
                 return false;
             }
 
-            var clips = animator.runtimeAnimatorController.animationClips;
-            AnimationClip idle = null;
-            var names = new System.Text.StringBuilder();
-            foreach (var c in clips)
+            var clip = FindOverrideClip(instance, originalHint, out string listing);
+            if (clip == null)
             {
-                if (c == null) continue;
-                names.Append(c.name).Append(", ");
-                if (idle == null && c.name.ToLowerInvariant().Contains("idle")) idle = c;
-            }
-            if (idle == null)
-            {
-                Debug.LogWarning($"[CrankFlashlightShot] Sin clip 'idle' en '{animator.runtimeAnimatorController.name}'. " +
-                                 $"Clips: {names}");
+                Debug.LogWarning($"[CrankFlashlightShot] Sin override cuyo original contenga '{originalHint}'. " +
+                                 $"Pares: {listing}");
                 return false;
             }
 
-            UnityEditor.AnimationMode.StartAnimationMode();
+            if (!UnityEditor.AnimationMode.InAnimationMode()) UnityEditor.AnimationMode.StartAnimationMode();
             UnityEditor.AnimationMode.BeginSampling();
-            UnityEditor.AnimationMode.SampleAnimationClip(animator.gameObject, idle, idle.length * 0.5f);
+            UnityEditor.AnimationMode.SampleAnimationClip(animator.gameObject, clip, clip.length * Mathf.Clamp01(fraction));
             UnityEditor.AnimationMode.EndSampling();
 
-            clipName = idle.name;
-            Debug.Log($"[CrankFlashlightShot] Pose muestreada: clip '{idle.name}' ({idle.length:F2} s) de " +
-                      $"'{animator.runtimeAnimatorController.name}' sobre '{animator.gameObject.name}'. Clips: {names}");
+            clipName = clip.name;
+            Debug.Log($"[CrankFlashlightShot] Pose muestreada: clip '{clip.name}' ({clip.length:F2} s) al " +
+                      $"{fraction:P0} sobre '{animator.gameObject.name}'. Pares: {listing}");
             return true;
+        }
+
+        private static AnimationClip FindOverrideClip(GameObject instance, string originalHint, out string listing)
+        {
+            var sb = new System.Text.StringBuilder();
+            AnimationClip found = null;
+            var wieldableAnimator = instance.GetComponentInChildren<PolymindGames.WieldableSystem.WieldableAnimator>(true);
+            if (wieldableAnimator != null)
+            {
+                var so = new SerializedObject(wieldableAnimator);
+                var pairs = so.FindProperty("_clips._clips");
+                for (int i = 0; pairs != null && i < pairs.arraySize; i++)
+                {
+                    var e = pairs.GetArrayElementAtIndex(i);
+                    var original = e.FindPropertyRelative("Original").objectReferenceValue as AnimationClip;
+                    var over = e.FindPropertyRelative("Override").objectReferenceValue as AnimationClip;
+                    if (original == null) continue;
+                    sb.Append(original.name).Append("→").Append(over != null ? over.name : "(original)").Append(", ");
+                    if (found == null && original.name.ToLowerInvariant().Contains(originalHint.ToLowerInvariant()))
+                        found = over != null ? over : original;
+                }
+            }
+            listing = sb.ToString();
+            return found;
+        }
+
+        /// <summary>
+        /// La cuerda a cuatro fases, desde el ojo: la izquierda sobre el pomo y la manivela girada
+        /// EXACTAMENTE como la pone el componente a esa fase (reposo · giro sobre su eje). Y una
+        /// toma de lado a un cuarto de vuelta, que es donde se ve si el pomo va dentro de la mano
+        /// o al lado.
+        /// </summary>
+        private static void ShootCranking(GameObject instance, Camera cam, Transform camT, Transform eye)
+        {
+            var crank = FindChild(instance, BackroomsCrankFlashlightModelApplier.CrankNodeName);
+            var rest = crank != null ? crank.localRotation : Quaternion.identity;
+            foreach (float phase in new[] { 0f, 0.25f, 0.5f, 0.75f })
+            {
+                if (!TrySampleOverride(instance, "crank", phase, out _))
+                    return;
+                if (crank != null)
+                    crank.localRotation = BackroomsCrankFlashlightModelApplier.CrankLocalRotation *
+                                          Quaternion.AngleAxis(phase * 360f, BackroomsCrankFlashlightModelApplier.CrankSpinAxis);
+
+                camT.SetPositionAndRotation(eye.position, eye.rotation);
+                cam.fieldOfView = 60f;
+                RenderTo(cam, Path.Combine(OutDir, $"linterna_cuerda_{Mathf.RoundToInt(phase * 360f)}.png"));
+
+                if (Mathf.Approximately(phase, 0.25f))
+                {
+                    Vector3 hand = FindHandPoint(instance);
+                    Shoot(cam, camT, hand + new Vector3(-0.35f, 0.12f, 0.10f), hand, 40f, "linterna_cuerda_lado");
+                    Shoot(cam, camT, hand + new Vector3(0.05f, 0.40f, 0.05f), hand, 40f, "linterna_cuerda_cenital");
+                }
+            }
+            if (crank != null) crank.localRotation = rest;
         }
 
         /// <summary>

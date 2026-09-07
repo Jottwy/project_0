@@ -77,10 +77,10 @@ namespace BackroomsSurvival.EditorTools
         private static readonly string[] DonorMeshNodes = { "Torch", "WoodenTorch" };
 
         /// <summary>Largo real de una linterna de mano. La escala del import sale de aquí.</summary>
-        private const float BodyLengthMeters = 0.18f;
+        internal const float BodyLengthMeters = 0.18f;
 
         /// <summary>Largo del brazo de la manivela, del eje al pomo.</summary>
-        private const float CrankLengthMeters = 0.06f;
+        internal const float CrankLengthMeters = 0.06f;
 
         /// <summary>
         /// A lo LARGO del cuerpo, en METROS desde su centro: dónde nace el eje de la manivela.
@@ -197,6 +197,12 @@ namespace BackroomsSurvival.EditorTools
             material = BuildMaterial();
 
             AttachToPrefab(bodyMesh, crankMesh, material);
+            AssetDatabase.SaveAssets();
+
+            // Y LA MANO, siempre después del modelo: el horneador de poses cierra los dedos sobre
+            // ESTA malla y cuelga el nodo de `Hand.R` con el offset de diseño. Rehacer el modelo
+            // sin rehacer la mano dejaría los dedos de la malla anterior.
+            BackroomsCrankFlashlightPoseBaker.Bake();
 
             AssetDatabase.SaveAssets();
             AssetDatabase.Refresh();
@@ -752,7 +758,36 @@ namespace BackroomsSurvival.EditorTools
         {
             localPos = Vector3.zero;
             localRot = Quaternion.identity;
+
+            if (!TryReadTorchHandle(root, hand, out dominantBone, out var axis, out var lateral))
+                return false;
+
+            // EL PUÑO ES EL ORIGEN DEL HUESO. Medido: la antorcha va de y=−0,13 (culata) a +0,27
+            // (llama) en el espacio de `Torch`, con el puño en el origen — un mango de 13 cm por
+            // debajo de la mano. «Culata con culata» dejaba la linterna 13 cm demasiado baja (la
+            // captura la enseñaba con la lente dentro del puño y el culo colgando). Una linterna se
+            // agarra por el tercio de atrás: el puño (origen) queda a FistFromTail del culo. Lo
+            // lateral (x, z) se toma del centro de la antorcha, que es donde el vendor la centró.
+            localPos = lateral + axis * (BodyLengthMeters * (0.5f - FistFromTail));
+
+            // La orientación de PARTIDA es la del palo de la antorcha; el apuntado al frente se
+            // corrige después, en AimLensForward, contra el root del prefab.
+            localRot = Quaternion.FromToRotation(Vector3.up, axis);
+            return true;
+        }
+
+        /// <summary>
+        /// Lee EL MANGO de la antorcha del vendor en el espacio del hueso que la lleva: el eje del
+        /// palo (unitario, hacia la llama) y el punto del eje que cae en el origen del hueso, que es
+        /// el centro del puño. Es lo que el horneador de poses necesita para saber cómo agarra la
+        /// mano del vendor un palo — y de ahí cómo debe agarrar un tubo.
+        /// </summary>
+        internal static bool TryReadTorchHandle(GameObject root, Transform hand,
+            out Transform dominantBone, out Vector3 axisLocal, out Vector3 fistLocal)
+        {
             dominantBone = null;
+            axisLocal = Vector3.up;
+            fistLocal = Vector3.zero;
 
             SkinnedMeshRenderer skin = null;
             foreach (var smr in root.GetComponentsInChildren<SkinnedMeshRenderer>(true))
@@ -835,22 +870,14 @@ namespace BackroomsSurvival.EditorTools
             else tipHint = dominantBone.parent != null ? -dominantBone.InverseTransformPoint(dominantBone.parent.position) : axis;
             if (Vector3.Dot(axis, tipHint - centre) < 0f) axis = -axis;
 
-            // EL PUÑO ES EL ORIGEN DEL HUESO. Medido: la antorcha va de y=−0,13 (culata) a +0,27
-            // (llama) en el espacio de `Torch`, con el puño en el origen — un mango de 13 cm por
-            // debajo de la mano. «Culata con culata» dejaba la linterna 13 cm demasiado baja (la
-            // captura la enseñaba con la lente dentro del puño y el culo colgando). Una linterna se
-            // agarra por el tercio de atrás: el puño (origen) queda a FistFromTail del culo. Lo
-            // lateral (x, z) se toma del centro de la antorcha, que es donde el vendor la centró.
-            var lateral = centre - axis * Vector3.Dot(centre, axis);
-            localPos = lateral + axis * (BodyLengthMeters * (0.5f - FistFromTail));
-
-            // La orientación de PARTIDA es la del palo de la antorcha; el apuntado al frente se
-            // corrige después, en AimLensForward, contra el root del prefab.
-            localRot = Quaternion.FromToRotation(Vector3.up, axis);
+            // El punto del eje a la altura del origen del hueso: el puño. Lo lateral (x, z) es el
+            // centro de la antorcha, que es donde el vendor la centró en la mano.
+            axisLocal = axis.normalized;
+            fistLocal = centre - axis * Vector3.Dot(centre, axis);
 
             Debug.Log($"[CrankFlashlightModel] Agarre leído de la antorcha en espacio de '{dominantBone.name}': " +
-                      $"{handSpace.Count} vértices, centro {centre}, eje {axis}, " +
-                      $"llama {(fire != null ? fire.localPosition.ToString() : "(sin VFX)")}; nodo en {localPos}.");
+                      $"{handSpace.Count} vértices, centro {centre}, eje {axisLocal}, " +
+                      $"llama {(fire != null ? fire.localPosition.ToString() : "(sin VFX)")}; puño en {fistLocal}.");
             return true;
         }
 

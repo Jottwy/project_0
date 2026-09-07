@@ -55,6 +55,21 @@ namespace BackroomsSurvival.Gameplay
         [Tooltip("El haz. Se busca en los hijos si se deja vacío.")]
         [SerializeField] private Light beam;
 
+        [Header("Animación (ADR-133 enm. 1)")]
+        [Tooltip("Capa del Animator que lleva la mano izquierda al pomo. Su peso lo sube y baja " +
+                 "este componente. Si no existe, la manivela gira sola y la izquierda no se mueve.")]
+        [SerializeField] private string crankLayerName = "Crank";
+
+        [Tooltip("Estado en bucle de esa capa: una vuelta por ciclo. Se reinicia a fase 0 al " +
+                 "empezar a dar cuerda para que la manivela arranque desde su reposo.")]
+        [SerializeField] private string crankStateName = "Crank";
+
+        [Tooltip("Segundos de fundido de la capa de cuerda al entrar y al salir.")]
+        [SerializeField, Range(0.05f, 1f)] private float crankBlendSeconds = 0.3f;
+
+        [Tooltip("A qué velocidad vuelve la manivela a su reposo al soltar, en grados por segundo.")]
+        [SerializeField, Range(60f, 2000f)] private float crankReturnDegreesPerSecond = 540f;
+
         [Header("Cuerda")]
         [Tooltip("Vueltas por segundo mientras se mantiene el botón de uso.")]
         [SerializeField, Range(0.2f, 4f)] private float revolutionsPerSecond = 1f;
@@ -119,9 +134,20 @@ namespace BackroomsSurvival.Gameplay
         private float _batteryHealth = 1f;
 
         private bool _isCranking;
+        private bool _wasCranking;
         private bool _beamOn = true;
         private float _crankAngle;
         private float _driftSeed;
+
+        // La manivela se DIBUJA desde la fase del Animator: el clip de cuerda lleva la mano
+        // izquierda a donde está el pomo en cada fase, y el pomo tiene que estar ahí. Sin capa
+        // de cuerda (prefab sin hornear) se cae al acumulador por tiempo de siempre.
+        private Animator _animator;
+        private int _crankLayer = -1;
+        private float _crankLayerWeight;
+        private float _lastPhase = -1f;
+        private float _visualAngle;
+        private Quaternion _crankRest = Quaternion.identity;
 
         private float _flickerFactor = 1f;
         private float _flickerTimer;
@@ -252,9 +278,42 @@ namespace BackroomsSurvival.Gameplay
             if (beam == null)
                 Debug.LogError("[CrankFlashlight] Sin Light bajo el wieldable: no alumbra y los " +
                                "peers no verán nada (ADR-042 lee luces, no items).", gameObject);
+
+            if (crank != null)
+                _crankRest = crank.localRotation;
+
+            _animator = GetComponentInChildren<Animator>(true);
+            _crankLayer = _animator != null ? _animator.GetLayerIndex(crankLayerName) : -1;
+            if (_crankLayer < 0)
+                Debug.LogWarning($"[CrankFlashlight] Sin capa '{crankLayerName}' en el Animator: la mano " +
+                                 "izquierda no dará cuerda. Ejecuta 'Backrooms/Linterna/Hornear animaciones'.",
+                    gameObject);
         }
 
-        private void OnDisable() => _isCranking = false;
+        private void OnDisable()
+        {
+            _isCranking = false;
+            _wasCranking = false;
+            _crankLayerWeight = 0f;
+            if (_animator != null && _crankLayer >= 0)
+                _animator.SetLayerWeight(_crankLayer, 0f);
+        }
+
+        /// <summary>
+        /// La manivela se coloca DESPUÉS del Animator, que escribe los huesos en la fase de
+        /// animación y pisaría lo puesto en Update. Al soltar vuelve sola a su reposo, tumbada
+        /// contra el cuerpo, por el camino corto.
+        /// </summary>
+        private void LateUpdate()
+        {
+            if (crank == null || crankAxis.sqrMagnitude < 0.0001f)
+                return;
+
+            if (!_isCranking)
+                _visualAngle = Mathf.MoveTowardsAngle(_visualAngle, 0f, crankReturnDegreesPerSecond * Time.deltaTime);
+
+            crank.localRotation = _crankRest * Quaternion.AngleAxis(_visualAngle, crankAxis.normalized);
+        }
 
         /// <summary>
         /// La salud de la batería se sortea UNA vez por linterna y se escribe en el item. Si la
@@ -294,14 +353,57 @@ namespace BackroomsSurvival.Gameplay
         /// </summary>
         private void UpdateCrank(float dt)
         {
+            bool hasLayer = _animator != null && _crankLayer >= 0;
+
+            if (hasLayer)
+            {
+                // Al EMPEZAR: el estado de cuerda a fase 0. La capa corre siempre aunque pese 0,
+                // así que sin esto la izquierda entraría a mitad de vuelta y la manivela saltaría
+                // desde su reposo hasta esa fase.
+                if (_isCranking && !_wasCranking)
+                {
+                    _animator.Play(crankStateName, _crankLayer, 0f);
+                    _lastPhase = -1f;
+                }
+
+                float target = _isCranking ? 1f : 0f;
+                _crankLayerWeight = Mathf.MoveTowards(_crankLayerWeight, target, dt / Mathf.Max(0.01f, crankBlendSeconds));
+                _animator.SetLayerWeight(_crankLayer, _crankLayerWeight);
+            }
+            _wasCranking = _isCranking;
+
             if (!_isCranking)
                 return;
 
-            float delta = revolutionsPerSecond * 360f * dt;
-            _crankAngle += delta;
+            float delta;
+            if (hasLayer)
+            {
+                // La fase del clip de cuerda ES el ángulo de la manivela: el clip se horneó con la
+                // izquierda sobre el pomo a cada fase, y dura exactamente una vuelta.
+                float normalized = _animator.GetCurrentAnimatorStateInfo(_crankLayer).normalizedTime;
+                float phase = normalized - Mathf.Floor(normalized);
+                if (_lastPhase < 0f)
+                {
+                    // El `Play` de este mismo fotograma aún no ha corrido: sin delta que contar.
+                    _lastPhase = phase;
+                    delta = 0f;
+                }
+                else
+                {
+                    delta = phase - _lastPhase;
+                    if (delta < 0f) delta += 1f;
+                    delta *= 360f;
+                    _lastPhase = phase;
+                }
+                _visualAngle = phase * 360f;
+            }
+            else
+            {
+                delta = revolutionsPerSecond * 360f * dt;
+                _visualAngle = Mathf.Repeat(_visualAngle + delta, 360f);
+            }
 
-            if (crank != null && crankAxis.sqrMagnitude > 0.0001f)
-                crank.localRotation *= Quaternion.AngleAxis(delta, crankAxis.normalized);
+            _crankAngle += delta;
 
             while (_crankAngle >= 360f)
             {

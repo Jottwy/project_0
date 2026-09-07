@@ -15153,3 +15153,76 @@ tirada al suelo se ve como una antorcha, al recogerla entrega una antorcha, y un
 una en la mano enseña una antorcha — el proxy muestra el prefab del PICKUP (ADR-023). Y el loot: el
 nombre está en `MaterialPool` pero `RestrictCacheCatalog` sigue en true, así que todavía no sale;
 meterla en la pool restringida es una decisión de balance, no de este ADR.
+
+### ADR-133 enm. 1 — Animaciones propias de la linterna: la mano al milímetro y la cuerda con la izquierda (2026-09-07)
+
+**Contexto.** Con los clips de la antorcha del vendor la linterna «funcionaba» (ac496e98), pero Joel la
+vio a la altura del ojo, torcida y «nada orgánica», y pidió tres cosas que ningún offset da: el idle
+propio, la mano derecha ajustada «al milímetro» a ESTE cuerpo (foto de referencia: puño tras el
+bisel, pulgar encima, culata detrás de la muñeca) y la mano izquierda dando vueltas a la manivela.
+
+**Decisiones.**
+
+1. **Los clips se HORNEAN por código, no se animan a mano** (`BackroomsCrankFlashlightPoseBaker`,
+   menú «Backrooms ▸ Linterna ▸ Hornear animaciones», y lo llama el aplicador del modelo al terminar).
+   Cuatro clips en `Assets/Art/Items/CrankFlashlight/Anim/`: idle, equipar y enfundar salen de
+   MUESTREAR los clips de la antorcha del FBX del vendor (nunca de los overrides del prefab, que tras
+   el primer horneado son los nuestros) y recolocar el brazo derecho; la cuerda es propia. Si el modelo
+   cambia (remesh pendiente) se rehornea y los dedos vuelven a caer sobre la piel nueva.
+2. **Puño y tubo son una pieza rígida y el modelo cuelga de `Hand.R`**, no del hueso `Torch` (deroga
+   la decisión 6 de ac496e98 en ese punto). La mano derecha es la del vendor desplazada en bloque:
+   la rotación mínima que lleva el mango de la antorcha a la lente de diseño (8° abajo, 8° a la
+   izquierda) más un ALABEO sobre el eje del tubo que se BARRE de −180 a 180 y se elige por la torsión
+   de la muñeca más parecida a la que el vendor animó (63°) con el pulgar arriba; salió −65°. El brazo
+   se recalcula por IK analítico de dos huesos desde el hombro del vendor (bisagra del codo sobre la Z
+   local: −Z derecho, +Z izquierdo, medido en bind), y la torsión se reparte en los tres huesos de
+   torsión a 0,9 de su posición relativa, como hace el vendor (medido: 15/29/40° para 62°).
+3. **El centro del puño es el de la PILA DE DEDOS, no el origen del hueso.** Medido: los cuatro dedos
+   se apilan de +2 a +10 cm por delante del origen de `Torch` a lo largo del eje. El tubo se corre esa
+   pila a `FistFromTail` 0,48 y se aparta de la palma lo que le falte al nudillo más cercano para
+   quedar a un radio de dedo de la piel (salía a 0,9 mm; se apartó 7,6).
+4. **Los dedos se cierran por CONTACTO, falange a falange, de la base a la punta y en dos pasadas:**
+   el barrido va del cierre máximo al máximo abierto y gana el PRIMER ángulo que no penetra —el
+   contacto si la superficie está ahí, un puño flojo si no la alcanza (el pomo)—, con el centro de
+   la falange a lo sumo un tercio de piel dentro (una falange recta sobre un tubo curvo). Eligiendo
+   por menor |hueco| el índice salía tendido a lo largo del tubo (contacto tangente); exigiendo que el
+   resto del dedo no penetrase, la base se abría hasta despegar la punta y el dedo salía «en tienda».
+   El pulgar se tiende a lo largo del tubo hacia la lente (base paralela al eje) y cierra las otras
+   dos. Resultado: todas las falanges a 7 mm del eje-a-piel (piel de dedo 8,5, pulgar 10,5). El
+   agarre se resuelve UNA vez y se repite en todos los fotogramas: ajustarlo por fotograma con paso de
+   1° era tembleque, y así las curvas de los dedos son constantes y se guardan con dos claves (el idle
+   pasó de 26 a 4,7 MB).
+5. **La manivela va al ARCO LIBRE de la mano.** El pomo barre 6 cm en un plano a 4,4 del eje y cruza
+   el puño si el costado cae donde hay pulgar o dedos. Se mide el mayor hueco angular sin falange sobre
+   la mano cerrada y se rota el tubo sobre su eje (el tubo es simétrico, la mano no) para ponerlo ahí,
+   prefiriendo la mitad IZQUIERDA (es de donde viene la mano que da cuerda): salió a las −88°. La
+   holgura mínima del pomo a cualquier falange derecha se imprime y se testea (9 mm de aire).
+6. **La cuerda es una CAPA del Animator** («Crank», override, peso 0) en un controller propio copiado
+   del `Template_Tool` del vendor (misma máquina de estados: equipar/enfundar/usar siguen), con un
+   único estado en bucle de exactamente 1/`revolutionsPerSecond` s. `CrankFlashlightWieldable` sube y
+   baja el peso (0,3 s), pone el estado a fase 0 al empezar (la capa corre siempre, aunque pese 0) y
+   DIBUJA LA MANIVELA DESDE LA FASE del Animator en `LateUpdate` (después del Animator, que pisa lo de
+   `Update`): la fase ES el ángulo, y así el pomo está donde el clip puso la mano. Sin capa (prefab sin
+   hornear) cae al acumulador por tiempo de siempre. Al soltar, la manivela vuelve al reposo a 540°/s.
+7. **La izquierda se coloca por IK sobre el pomo** en cada una de las 30 fases (palma contra el disco,
+   metacarpos hacia delante-abajo), con el punto de agarre MEDIDO —el centro de los dedos cerrados
+   sobre el pomo, por iteración— y no declarado (con la constante a secas cerraba 2 cm bajo el pomo).
+   Su hombro se adelanta 64 cm mientras da cuerda: desde donde lo deja el vendor (42 cm tras el ojo)
+   el pomo no se alcanza, y un rig de brazos no tiene torso que lo delate. La derecha bambolea 1,2°/0,8°
+   por vuelta sobre el puño: el esfuerzo de una mano se nota en la otra.
+8. **Lo que se prueba** (`CrankFlashlightAnimationTests`, 8): clips y bucles; capa y controller; el
+   prefab apunta a ellos; el modelo cuelga de `Hand.R`; en idle la lente a <12° del frente y el puño en
+   su caja bajo el ojo; cada dedo derecho toca sin hundirse (hueso a 3–16 mm de la piel); el pomo
+   dentro de la izquierda cerrada a cuatro fases (<20 mm del centro de los dedos); la órbita del pomo
+   a >17 mm de toda falange derecha en 36 ángulos.
+
+**Trampas pagadas, para el siguiente rig.** Leer el offset del nodo de la jerarquía tras mover
+transforms bajo `AnimationMode` dio 26 cm (la segunda pasada, 7): el offset se calcula con las poses
+en números, no se lee. `Vector3.Cross(up, forward)` es la derecha y `AngleAxis(+θ, +Z)` lleva arriba
+hacia la IZQUIERDA: el reloj alrededor del tubo se define una vez (0 arriba, + derecha) y se imprime
+para cada falange, que es lo que sustituyó a adivinar por la captura. Los huesos apuntan por +Y a su
+hijo; los dedos cierran girando sobre −X, el pulgar derecho sobre +Z y el izquierdo sobre −Z.
+
+**Lo que queda fuera, declarado.** La altura final del puño (`FistFromEye` (0,10, −0,11, 0,36)) y el
+cabeceo/guiñada de la lente son números de diseño que se afinan en Play, no medidas. El proxy remoto no
+mueve la izquierda (ADR-023: enseña el pickup y `ProxyCrankHook` gira la manivela). Sigue sin sonido.

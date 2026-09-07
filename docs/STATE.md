@@ -25,7 +25,7 @@
 - **Migración STP servidor-autoritativo**: Steps 1–2 y slice 3.1 (plumbing) hechos y verificados. Falta slice 3.2
   (capa L2 de predicción), reescribir los 8 call sites de `Inventory` y retirar `PlayerController.cs` (DEPRECATED por ADR-009).
 - ADR-014 fase 2 (borrado diferido 200 ms + reserva host-only anti-duplicado): backend implementado, **pendiente de playtest**.
-- **Linterna de manivela (ADR-133)**: fusionada el 07-09 (7 commits de `claude/crank-flashlight-model-1d8632`). Falta: sonido, loot, remesh, Play.
+- **Linterna de manivela (ADR-133 + enm. 1)**: en tronco el 07-09 con animaciones propias horneadas. Falta: verla en PLAY (Joel), sonido, loot, remesh.
 
 ## Riesgos abiertos
 - **Autoridad del servidor: los tres agujeros CERRADOS** (`78e156e6` dueño al demoler; `ebb42911`/`bb3c7e5c` cantidad y posición contra el
@@ -94,6 +94,17 @@
 
 ## Últimas tandas
 
+### 2026-09-07 — 37.ª tanda: la mano al milímetro y la cuerda con la izquierda (ADR-133 enm. 1)
+- Joel: «muy arriba, no orgánico», mano «al milímetro» con foto de referencia, y la otra mano girando la manivela. Cuatro clips HORNEADOS por código
+  (`BackroomsCrankFlashlightPoseBaker.cs`): idle/equipar/enfundar muestrean la antorcha del FBX del vendor y recolocan el brazo; la cuerda es propia.
+- Puño+tubo rígidos bajo `Hand.R`; alabeo BARRIDO por torsión de muñeca ≈ vendor (63° → −65°); IK de dos huesos; los dedos se cierran por CONTACTO
+  (primer ángulo que no penetra, dos pasadas, una sola vez): todas las falanges a 7 mm eje-piel. La pila de dedos va 5,4 cm delante del origen de `Torch`.
+- Manivela al arco LIBRE de la mano (−88°, izquierda): la órbita del pomo a 9 mm de aire de la derecha. Capa «Crank» en controller copiado del
+  `Template_Tool`; el wieldable dibuja la manivela desde la FASE del Animator en `LateUpdate`. Izquierda por IK sobre el pomo, hombro adelantado 64 cm.
+- Ocho tests nuevos (`CrankFlashlightAnimationTests`) + 15/15 de item; CompileCheck 0 ×4. Idle de 26 MB → 4,7 (curvas constantes a dos claves).
+- Trampas: offset del hijo leído bajo `AnimationMode` (26 cm vs 7) → por números; `AngleAxis(+θ,+Z)` lleva arriba a la IZQUIERDA; capa a peso 0 corre igual.
+- Sin ver en Play: `FistFromEye` (0,10, −0,11, 0,36) y lente 8°↓/8°← son diseño; el fundido de la izquierda (0,3 s) y el bamboleo (1,2°) piden ojo.
+
 ### 2026-09-07 — 36.ª tanda: la linterna de manivela (ADR-133), de cero a en la mano del vecino, en rama aparte
 - Seis commits en `claude/crank-flashlight-model-1d8632` (`5063f09e`…`c5d9b8ad`), SIN fusionar. Carga en `Durability` (como el bote, ADR-068);
   `BR_Battery Health` nueva, sorteada 0,8–1 y persistida. Hereda de `Wieldable`: `FPSWieldablesInput.cs:137` hace `as IUseInputHandler`; un puente no ve `Hold`.
@@ -152,22 +163,3 @@
   bocas y de lo ya recortado — un boquete sobre una ventana le quita el antepecho y la vuelve puerta; lo cazó su test.
 - Barrido 27/27 con **islas 6,4 → 6,0** y nav 100 %; pisable −0,3 %. `fill` 13 → 19 ms (los pares de tramos). Suite **1407/1407**.
 - Fuera, declarado: `WEIRD_SPREAD` por profundidad (vive en la subdivisión del plan) y TODO el cliente (r2b), que pisa la rama de materiales.
-
-### 2026-09-06 — 30.ª tanda: el falso techo ROTO (ADR-105 enm. 20), servidor y cliente, sin wire
-- `office_decay`, el último emisor del relleno, en las salas con `office_ceiling_cm`: placas caídas (60×60×**4**, decoración
-  con giro), baldosa de suelo técnico levantada (60×60×**9**), placas colgando (prop 21) y UNA luminaria descolgada por planta (prop 22).
-- Lo que cuelga es prop y no macizo porque `Wg3Solid` sólo gira en Y; y no es prefab porque el pack no trae placa ni luminaria: lo
-  construye `AssembleHungDecay` con el material de techo o de luminaria, bisagra en el borde de arriba, 34°/22°. Kind nuevo ≠ wire nuevo.
-- Densidad por sala con `SALT_DECAY`, y sube con la profundidad (ADR-130 D4, `d²` contra el fondo SERVIDO): calle 0,25 piezas por sala, B3 1,56.
-- Nada frena: decoración y props, así que el barrido sale IDÉNTICO (27/27, pisable 183 756, mancha 99,7 %, 6,4 islas, nav 100 %). Suite 1399/1399.
-- Cliente además: decoración de canto ≤ 15 cm pasa de `Casing` a `Decoration`, pintada con el material de techo o de suelo.
-- **Sin captura** (el editor estaba ocupado). Sonda `probe_decay_spots`: (0,0) B2 a −6,64 m y B3 a −9,96. Al fusionar, los kinds pasan a 21 y 22.
-
-### 2026-09-06 — 29.ª tanda: ocho sesiones en paralelo; luces, audio y carteles fusionados
-- Joel lanzó a la vez un prompt por punto del «10 de 10» de oficina; el reparto de números (ADR, prop kind, grosor, SALT) llegó tarde.
-- `2148fce3` luces (`e38570d6`): monitor azul 1 de 5 SIN Light (el hash lleva la cota: sin ella se encendía la columna entera), despacho
-  a oscuras por planta y chunk, emergencia verde donde el plafón está muerto. Medido: +16 draw calls, +4 luces, 0 sombras nuevas.
-- `67f7833d` audio (`cab689c3`): `OfficeAmbienceDirector`, 6 AudioSource, papel de sala DERIVADO del atrezo + falso techo, sin wire.
-- `03e84ae3` carteles (ADR-129 enm. 1): `PROP_SIGN = 15`, variante en 6 bits de `style`, wire 61; atlas 8×8 (`BakeSignAtlas.py`).
-- Conflictos: `Wg3SceneAssembler.cs` (unión) y `DECISIONS.md` (ADR-131 y enmiendas antes que la de 129). cargo 1402/1402, CompileCheck 0.
-- Para las cuatro que quedan: carteles se queda el 15; variantes 16–20 (`TABLE_LONG..RACK`), decay 21–22; ADR-129 enm. 2 para variantes.

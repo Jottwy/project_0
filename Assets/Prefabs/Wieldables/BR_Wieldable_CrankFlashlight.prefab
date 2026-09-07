@@ -5821,7 +5821,7 @@ Animator:
   m_GameObject: {fileID: 2953577087758588883}
   m_Enabled: 1
   m_Avatar: {fileID: 9000000, guid: 6f5c6a5da9eb876489c7a1a1d01dd56b, type: 3}
-  m_Controller: {fileID: 9100000, guid: 1b8ede2face8f0940a98dd3919f60242, type: 2}
+  m_Controller: {fileID: 9100000, guid: 2e0d4ab83a01e6848bbc8590515e8cb9, type: 2}
   m_CullingMode: 0
   m_UpdateMode: 0
   m_ApplyRootMotion: 0
@@ -5847,16 +5847,18 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   _animator: {fileID: 322037765668963131}
   _clips:
-    _controller: {fileID: 9100000, guid: 1b8ede2face8f0940a98dd3919f60242, type: 2}
+    _controller: {fileID: 9100000, guid: 2e0d4ab83a01e6848bbc8590515e8cb9, type: 2}
     _clips:
     - Original: {fileID: 7400000, guid: 6fcd4ef4b0dd5df49a09e341d846c3d2, type: 2}
-      Override: {fileID: -8682877343405008599, guid: 6f5c6a5da9eb876489c7a1a1d01dd56b, type: 3}
+      Override: {fileID: 7400000, guid: b6c8daf7fbd8f234cafa35c3f5b9dcda, type: 2}
     - Original: {fileID: 7400000, guid: 4966c1d6c082a3d46a96afb0b9716e91, type: 2}
-      Override: {fileID: -2721950190165387461, guid: 6f5c6a5da9eb876489c7a1a1d01dd56b, type: 3}
+      Override: {fileID: 7400000, guid: 129a78d39c7636b4284ae50c270c504c, type: 2}
     - Original: {fileID: 7400000, guid: 1cee0a70c42f89f44ba4b62f9490d37d, type: 2}
-      Override: {fileID: -2492834248533729781, guid: 6f5c6a5da9eb876489c7a1a1d01dd56b, type: 3}
+      Override: {fileID: 7400000, guid: 236340b2bbfce8446a1bbcaad4db14eb, type: 2}
     - Original: {fileID: 7400000, guid: 1b4173ff09a484446a82d630af8dcf86, type: 2}
-      Override: {fileID: -2492834248533729781, guid: 6f5c6a5da9eb876489c7a1a1d01dd56b, type: 3}
+      Override: {fileID: 7400000, guid: 236340b2bbfce8446a1bbcaad4db14eb, type: 2}
+    - Original: {fileID: 7400000, guid: a3f994a59bd252746a98af341f379324, type: 2}
+      Override: {fileID: 7400000, guid: a3f994a59bd252746a98af341f379324, type: 2}
     _defaultParameters:
     - Type: 1
       Name: Holster Speed
@@ -11228,7 +11230,6 @@ Transform:
   m_ConstrainProportionsScale: 0
   m_Children:
   - {fileID: 6462485439357440083}
-  - {fileID: 7747201394417180462}
   m_Father: {fileID: 1819485687725696282}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &3829055020091845347
@@ -11699,6 +11700,10 @@ MonoBehaviour:
   crank: {fileID: 8032275790863350396}
   crankAxis: {x: 0, y: 0, z: 1}
   beam: {fileID: 510614230685107600}
+  crankLayerName: Crank
+  crankStateName: Crank
+  crankBlendSeconds: 0.3
+  crankReturnDegreesPerSecond: 540
   revolutionsPerSecond: 1
   secondsPerRevolutionMin: 18
   secondsPerRevolutionMax: 22
@@ -12044,14 +12049,14 @@ Transform:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 6676563094627482913}
   serializedVersion: 2
-  m_LocalRotation: {x: 0.0032683234, y: -0.0015506444, z: 0.772283, w: 0.6352684}
-  m_LocalPosition: {x: -0.025520448, y: -0.005195854, z: 0.0003800001}
-  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_LocalRotation: {x: 0.26151764, y: 0.20765063, z: -0.49407113, w: 0.802735}
+  m_LocalPosition: {x: 0.011007104, y: 0.048290767, z: -0.027707038}
+  m_LocalScale: {x: 0.99999917, y: 0.99999917, z: 0.99999917}
   m_ConstrainProportionsScale: 0
   m_Children:
   - {fileID: 679483428595544184}
   - {fileID: 8032275790863350396}
-  m_Father: {fileID: 4995291354941119160}
+  m_Father: {fileID: 3631009609868428625}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &6988351889002725540
 GameObject:
@@ -12150,6 +12155,7 @@ Transform:
   - {fileID: 8607622602576268589}
   - {fileID: 1642446645060344173}
   - {fileID: 6546530212811457759}
+  - {fileID: 7747201394417180462}
   m_Father: {fileID: 6190669241369190621}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &7274361337388609883
