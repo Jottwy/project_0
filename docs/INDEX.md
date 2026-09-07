@@ -38,6 +38,7 @@
 - [ROOMS-ROADMAP.md](ROOMS-ROADMAP.md) — salas autoradas.
 - [LEVEL4-ROADMAP.md](LEVEL4-ROADMAP.md) — incursiones (ADR-093).
 - [STRUCTURES.md](STRUCTURES.md) — estructuras del mundo.
+- [LIGHTING-STUDY.md](LIGHTING-STUDY.md) — iluminación: estado real, causas de la oscuridad y salto a Unity 6.7.
 
 ## Juego y contenido
 - [GAME-LOOP-GDD.md](GAME-LOOP-GDD.md) — el loop y sus bloqueantes.

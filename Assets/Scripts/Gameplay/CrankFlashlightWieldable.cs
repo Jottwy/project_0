@@ -1,8 +1,10 @@
 using BackroomsSurvival.Net;
+using BackroomsSurvival.WorldGen3;
 using PolymindGames;
 using PolymindGames.InventorySystem;
 using PolymindGames.WieldableSystem;
 using UnityEngine;
+using UnityEngine.Rendering.Universal;
 
 namespace BackroomsSurvival.Gameplay
 {
@@ -132,6 +134,7 @@ namespace BackroomsSurvival.Gameplay
         private ItemProperty _charge;
         private float _fallbackCharge = 1f;
         private float _batteryHealth = 1f;
+        private UniversalAdditionalLightData _beamLayers;
 
         private bool _isCranking;
         private bool _wasCranking;
@@ -278,6 +281,8 @@ namespace BackroomsSurvival.Gameplay
             if (beam == null)
                 Debug.LogError("[CrankFlashlight] Sin Light bajo el wieldable: no alumbra y los " +
                                "peers no verán nada (ADR-042 lee luces, no items).", gameObject);
+            else
+                _beamLayers = beam.GetUniversalAdditionalLightData();
 
             if (crank != null)
                 _crankRest = crank.localRotation;
@@ -502,6 +507,15 @@ namespace BackroomsSurvival.Gameplay
         {
             if (beam == null)
                 return;
+
+            // El mundo separa la luz por planta con Wg3StoreyLayers (ADR-130): un techo o pared
+            // sólo lo ilumina una luz que comparta su capa. El haz nace en la capa 1 del prefab,
+            // que con el desplazamiento de los sótanos es B3 y ninguna otra planta. Se sigue la
+            // misma cota que usa el mundo para sus lámparas, y se escribe donde URP la lee —el
+            // `UniversalAdditionalLightData`, no el `Light`— (ver `Wg3StoreyLayers.Apply`). El
+            // setter no hace nada si la capa no cambia, así que por frame sale gratis.
+            if (_beamLayers != null)
+                _beamLayers.renderingLayers = Wg3StoreyLayers.ForLight(beam.transform.position.y);
 
             float charge = Charge;
             bool lit = _beamOn && charge > 0f;

@@ -78,23 +78,42 @@ namespace BackroomsSurvival.WorldGen3
         private List<Wg3Piece> _catalog;
         private float _nextRefresh;
         private bool _digestChecked;
+        private GameObject _grade;
+        private UnityEngine.Rendering.VolumeProfile _gradeProfile;
+#if DEVELOPMENT_BUILD || UNITY_EDITOR
+        private float _nextLightCensus;
+#endif
 
         /// <summary>
         /// El AMBIENTE de una sesión WG3, y existe porque hasta hoy no lo ponía nadie.
         ///
         /// `ProceduralWorldGenerator.ApplyAmbienceForZone` es quien escribe `RenderSettings` en el
         /// mundo de WG2, por capa y por tipo de zona. En una sesión de WG3 ese componente no
-        /// interviene, así que el ambiente se quedaba en lo que trajera la escena — gris 0,104 en
-        /// `SampleScene` — y con eso un pasillo a más de tres metros de una lámpara es NEGRO PURO.
-        /// Medido en el playtest: a nueve metros del spawn la pantalla no tiene un solo píxel que no
-        /// sea el HUD.
+        /// interviene, así que el ambiente se quedaba en lo que trajera la escena.
         ///
-        /// Y no es que falten lámparas: una puntual de radio 6 colgada a 3 m de altura llega al
-        /// suelo con 3 m de radio útil, y el tope es de dos por eje. El resto del sitio lo tiene que
-        /// llenar el ambiente, que además es lo canónico — la luz de Backrooms es plana, sin fuente
-        /// y sin sombra propia; las lámparas sólo ponen el charco.
+        /// NEGRO A PROPÓSITO desde el 07-09 (Joel: sin luz, oscuridad al 100%). Antes había un
+        /// ambiente plano (0,30/0,28/0,21) puesto precisamente para que un pasillo a más de tres
+        /// metros de una lámpara no fuera negro puro — a nueve metros del spawn la pantalla no
+        /// tenía un solo píxel que no fuera el HUD, medido en un playtest anterior. Es el mismo
+        /// resultado que se pide ahora, así que se vuelve a él sabiendo lo que implica: fuera del
+        /// charco de una lámpara (radio útil ~3 m) no hay NADA que ver salvo el propio HUD.
         /// </summary>
-        private static readonly Color Wg3Ambient = new Color(0.30f, 0.28f, 0.21f);
+        private static readonly Color Wg3Ambient = Color.black;
+
+        /// <summary>
+        /// La NIEBLA de una sesión WG3, y existe por el mismo motivo que el ambiente: nadie la
+        /// ponía, así que quedaba la que trae `STP_Showcase` del demo del vendor —lineal, negra,
+        /// de −50 a +50 m—. Una niebla lineal cuyo INICIO es negativo ya está mezclando en la
+        /// propia cámara: el factor es (fin − d)/(fin − inicio), o sea 0,5 a cero metros y 0,4 a
+        /// diez. La mitad de cada píxel del mundo era niebla negra antes de que la iluminación
+        /// tuviera ocasión de fallar, y eso es lo que se leía como «materiales ultra oscuros».
+        ///
+        /// Se cambia a exponencial cuadrada, que es la que no tiene un punto de partida que
+        /// puedas poner detrás de la cámara: a 20 m mezcla el 15 % y a 40 m el 47 %. Sigue
+        /// cerrando el fondo de un pasillo —que es lo que se quiere en Backrooms— sin cobrar
+        /// peaje a un metro de la cara.
+        /// </summary>
+        private const float Wg3FogDensity = 0.02f;
 
         private void OnEnable()
         {
@@ -103,6 +122,22 @@ namespace BackroomsSurvival.WorldGen3
             // es justo la operación que ya se ha comido zonas enteras en este proyecto.
             RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Flat;
             RenderSettings.ambientLight = Wg3Ambient;
+            RenderSettings.fog = true;
+            RenderSettings.fogMode = FogMode.ExponentialSquared;
+            RenderSettings.fogDensity = Wg3FogDensity;
+            RenderSettings.fogColor = Wg3Ambient;
+            StripVendorLighting();
+            ApplyInteriorGrade();
+#if DEVELOPMENT_BUILD || UNITY_EDITOR
+            // Una línea al arrancar con lo que ilumina el mundo DE VERDAD, y se queda.
+            // El 07-09 se perdieron dos builds enteras buscando por qué no se veía nada teniendo
+            // las lámparas bien puestas: iluminaban 117 sondas horneadas al aire libre por el demo
+            // del vendor. Ese número en el log lo habría dicho en cinco segundos.
+            var probes = LightmapSettings.lightProbes;
+            Debug.Log($"[wg3-diag] ambient={RenderSettings.ambientMode}/{RenderSettings.ambientLight} " +
+                      $"probes={(probes != null ? probes.count : 0)} " +
+                      $"fog={RenderSettings.fogMode}/{RenderSettings.fogDensity}");
+#endif
 
             // Por Wg3ActiveCatalog y no por Wg3Catalog directamente: el exportador del manifiesto
             // hace esta misma pregunta, y si cada uno la respondiera por su cuenta el servidor
@@ -115,11 +150,116 @@ namespace BackroomsSurvival.WorldGen3
             if (client != null) client.AddWg3ChunkListener(OnWg3Chunk);
         }
 
+        /// <summary>
+        /// Apaga lo que la escena del demo del vendor trae horneado AL AIRE LIBRE y que en una
+        /// sesión WG3 no ilumina nada que exista: un direccional a 0,3 sin sombras, un
+        /// `LightingDataAsset` de 20 MB con 117 sondas repartidas por el patio de la demo, y una
+        /// sonda de reflexión en tiempo real cuyo `RefreshMode` es «por script» —o sea, que nunca
+        /// se refresca y devuelve lo que tuviera dentro el día del horneado—.
+        ///
+        /// Importa más de lo que parece: los renderers de WG3 ya no muestrean esas sondas
+        /// (<c>Wg3StoreyLayers.Apply</c> les pone <c>lightProbeUsage = Off</c>), pero TODO lo
+        /// demás sí —avatares remotos, ítems del suelo, el robapieles—, y por eso un muñeco se
+        /// veía iluminado por un sol que no existe dentro de un mundo negro.
+        ///
+        /// Se hace por código y no editando la escena a propósito: `STP_Showcase.unity` es del
+        /// vendor y un reimport de su `.unitypackage` la sobrescribe entera —ya pasó, ADR-065—,
+        /// así que un cambio hecho aquí sobrevive y uno hecho allí no.
+        /// </summary>
+        private static void StripVendorLighting()
+        {
+            LightmapSettings.lightProbes = null;
+            LightmapSettings.lightmaps = new LightmapData[0];
+            RenderSettings.reflectionIntensity = 0f;
+
+            int lights = 0;
+            foreach (var light in FindObjectsByType<Light>(
+                         FindObjectsInactive.Exclude, FindObjectsSortMode.None))
+            {
+                // WG3 no crea ni una direccional: las suyas son Point y Spot. Cualquier
+                // direccional viva en una sesión WG3 es del demo por definición.
+                if (light.type != LightType.Directional) continue;
+                light.enabled = false;
+                lights++;
+            }
+
+            int probes = 0;
+            foreach (var probe in FindObjectsByType<ReflectionProbe>(
+                         FindObjectsInactive.Exclude, FindObjectsSortMode.None))
+            {
+                probe.enabled = false;
+                probes++;
+            }
+
+#if DEVELOPMENT_BUILD || UNITY_EDITOR
+            Debug.Log($"[wg3-diag] restos del demo apagados: direccionales={lights} reflexiones={probes}");
+#endif
+        }
+
+        /// <summary>
+        /// El GRADO de una sesión WG3, encima del perfil del demo y sin tocarlo.
+        ///
+        /// La cámara del jugador sólo mira la capa 11 (`PostProcessing`), y ahí dentro manda el
+        /// `Volume` global de `STP_WorldManager` con `STP_DemoProfile_URP`: tonemapper ACES,
+        /// contraste 8 y saturación 0. ACES está construido para material con rango alto y
+        /// aplasta los tonos bajos por diseño; con un contraste de 8 encima, una escena que vive
+        /// ENTERA en los tonos bajos pierde en el post lo poco que la iluminación le da.
+        ///
+        /// En vez de editar el perfil del vendor —que un reimport devuelve a su sitio— se añade
+        /// un Volume propio con prioridad mayor. El framework mezcla por prioridad, así que
+        /// estos dos overrides ganan y el resto del perfil del demo (bloom, viñeta, aberración)
+        /// sigue intacto.
+        /// </summary>
+        private void ApplyInteriorGrade()
+        {
+            if (_grade != null) return;
+
+            var profile = ScriptableObject.CreateInstance<UnityEngine.Rendering.VolumeProfile>();
+            profile.hideFlags = HideFlags.DontSave;
+
+            var tonemapping = profile.Add<UnityEngine.Rendering.Universal.Tonemapping>();
+            tonemapping.mode.overrideState = true;
+            tonemapping.mode.value = UnityEngine.Rendering.Universal.TonemappingMode.Neutral;
+
+            var colour = profile.Add<UnityEngine.Rendering.Universal.ColorAdjustments>();
+            colour.contrast.overrideState = true;
+            colour.contrast.value = 0f;
+            colour.postExposure.overrideState = true;
+            colour.postExposure.value = 1.1f;
+
+            // La capa importa: `FPS_PlayerCamera` trae `m_VolumeLayerMask: 2048`, que es
+            // exactamente y sólo la capa 11. Un Volume en cualquier otra capa no lo ve nadie, y
+            // `NameToLayer` de una capa que no existe devuelve −1, que al asignarlo revienta.
+            int layer = LayerMask.NameToLayer("PostProcessing");
+            if (layer < 0)
+            {
+                Debug.LogWarning("[WG3] sin capa 'PostProcessing': el grado de interior no se aplica.");
+                Destroy(profile);
+                return;
+            }
+
+            _grade = new GameObject("wg3_interior_grade")
+            {
+                hideFlags = HideFlags.DontSave,
+                layer = layer
+            };
+            var volume = _grade.AddComponent<UnityEngine.Rendering.Volume>();
+            volume.isGlobal = true;
+            volume.priority = 100f;
+            volume.weight = 1f;
+            volume.sharedProfile = profile;
+            _gradeProfile = profile;
+        }
+
         private void OnDisable()
         {
             if (ReferenceEquals(Active, this)) Active = null;
             var client = IPCClient.Instance;
             if (client != null) client.RemoveWg3ChunkListener(OnWg3Chunk);
+            if (_grade != null) Destroy(_grade);
+            _grade = null;
+            if (_gradeProfile != null) Destroy(_gradeProfile);
+            _gradeProfile = null;
             ClearAll();
         }
 
@@ -137,6 +277,50 @@ namespace BackroomsSurvival.WorldGen3
             // ADR-107 D4 — el reverb se mira CADA frame y no cada refresco: cruzar de un pasillo a un
             // atrio es instantáneo, y medio segundo de cola equivocada se oye.
             UpdateReverb();
+
+#if DEVELOPMENT_BUILD || UNITY_EDITOR
+            // EL CENSO, y se queda porque es el único sitio del proyecto que mide contra el tope.
+            // Forward+ no limita las luces por objeto, pero sí las visibles por cámara: 256 en
+            // escritorio (`ShaderOptions.k_MaxVisibleLightCountDesktop`), y las que sobran
+            // desaparecen sin log ni warning. Medido el 08-09: pico de 249 en frustum, o sea que
+            // NO cabe una lámpara más sin embeber el paquete de configuración de URP.
+            //
+            // En FRUSTUM y no en un radio: el tope se aplica a lo que el culling entrega para
+            // esta cámara. Medirlo en una esfera de 50 m alrededor del jugador cuenta además lo
+            // que tiene detrás y al otro lado de las paredes, y da 309 — un número que asusta y
+            // no decide nada. Ese error ya se cometió una vez el mismo día.
+            if (Time.time >= _nextLightCensus)
+            {
+                _nextLightCensus = Time.time + 5f;
+                int total = 0;
+                int visible = 0;
+                var censusEye = Camera.main;
+                // EN FRUSTUM, no en un radio. El tope de URP se aplica a las luces que el culling
+                // de Unity entrega para ESTA cámara, y una esfera de 50 m alrededor del jugador
+                // cuenta además todo lo que tiene detrás y al otro lado de las paredes: da un
+                // número alarmante que no es el que decide nada. Una puntual entra si su esfera
+                // de alcance toca el frustum, que es justo lo que prueba TestPlanesAABB.
+                Plane[] frustum = censusEye != null
+                    ? GeometryUtility.CalculateFrustumPlanes(censusEye)
+                    : null;
+                foreach (var chunkLights in _lights.Values)
+                {
+                    for (int i = 0; i < chunkLights.Count; i++)
+                    {
+                        var light = chunkLights[i];
+                        if (light == null || !light.enabled || !light.gameObject.activeInHierarchy)
+                            continue;
+                        total++;
+                        if (frustum == null) continue;
+                        float reach = light.range;
+                        var box = new Bounds(light.transform.position,
+                            new Vector3(reach * 2f, reach * 2f, reach * 2f));
+                        if (GeometryUtility.TestPlanesAABB(frustum, box)) visible++;
+                    }
+                }
+                Debug.Log($"[wg3-diag] censo de luces: vivas={total} en_frustum={visible} (tope URP 256)");
+            }
+#endif
 
             if (Time.time < _nextRefresh) return;
             _nextRefresh = Time.time + Mathf.Max(0.1f, refreshSeconds);

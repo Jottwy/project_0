@@ -94,15 +94,18 @@ namespace BackroomsSurvival.WorldGen3
         /// mismo punto del mundo (qué pieza, si taponar, qué variante).</summary>
         private const uint Salt = 0x4C434144u;
 
-        /// <summary>ADR-130 D4 (r2b) — cuánto de lo que sigue vivo se lleva la profundidad. Con 0,80
-        /// y el 12 % de base, el fondo servido queda con el 82 % de los plafones muertos.</summary>
-        public const float DecayOffShare = 0.80f;
+        /// <summary>ADR-130 D4 (r2b) — cuánto de lo que sigue vivo se lleva la profundidad. Suavizado
+        /// el 07-09 (Joel: más Level 0, el fondo no debe leerse casi apagado): con 0,60 y el 12 % de
+        /// base, el fondo servido queda con el 65 % de los plafones muertos, no el 82 % de antes.</summary>
+        public const float DecayOffShare = 0.60f;
 
-        /// <summary>ADR-130 D4 (r2b) — cuánto de los SUPERVIVIENTES parpadea en el fondo.</summary>
-        public const float DecayFlickerShare = 0.40f;
+        /// <summary>ADR-130 D4 (r2b) — cuánto de los SUPERVIVIENTES parpadea en el fondo. Suavizado
+        /// junto a <see cref="DecayOffShare"/> el 07-09.</summary>
+        public const float DecayFlickerShare = 0.30f;
 
-        /// <summary>ADR-130 D4 (r2b) — cuánto brillo pierde el color en el fondo servido.</summary>
-        public const float DecayDimShare = 0.50f;
+        /// <summary>ADR-130 D4 (r2b) — cuánto brillo pierde el color en el fondo servido. Suavizado
+        /// junto a <see cref="DecayOffShare"/> el 07-09.</summary>
+        public const float DecayDimShare = 0.35f;
 
         /// <summary>Chunk de una coordenada de mundo. Mismo reparto que
         /// <see cref="Wg3ChunkStreamer.ChunkSize"/>: si allí cambia, aquí también.</summary>
@@ -210,9 +213,10 @@ namespace BackroomsSurvival.WorldGen3
         private const uint PanelMissingSalt = 0x504D4953u;
 
         /// <summary>ADR-130 D4 (r2b) — fracción de luminarias arrancadas del falso techo en el
-        /// fondo servido. Menos que el 0,80 de los plafones apagados a propósito: un techo sin
-        /// NINGUNA luminaria deja de leerse como oficina y pasa a leerse como túnel.</summary>
-        public const float DecayPanelMissingShare = 0.45f;
+        /// fondo servido. Menos que <see cref="DecayOffShare"/> a propósito: un techo sin NINGUNA
+        /// luminaria deja de leerse como oficina y pasa a leerse como túnel. Suavizado junto a los
+        /// otros tres el 07-09 (Joel: más Level 0).</summary>
+        public const float DecayPanelMissingShare = 0.30f;
 
         /// <summary>
         /// Si a esta posición del falso techo le FALTA la luminaria: el marco arrancado que se ve en

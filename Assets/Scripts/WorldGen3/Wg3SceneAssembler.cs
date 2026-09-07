@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.Rendering.Universal;
 
 namespace BackroomsSurvival.WorldGen3
 {
@@ -140,6 +141,26 @@ namespace BackroomsSurvival.WorldGen3
             return d * d;
         }
 
+        /// <summary>Plantas reales por encima de la calle (ADR-102 D3): 4, planta 0 a 3.</summary>
+        private const int UpperBoostCapStorey = 3;
+
+        /// <summary>Cuánto sube la intensidad de una luz por cada planta sobre la calle.</summary>
+        private const float UpperBoostPerStorey = 0.15f;
+
+        /// <summary>
+        /// Multiplicador de intensidad por subir de planta (Joel, 07-09: plantas más altas, luz más
+        /// potente). Sólo cuenta hacia ARRIBA: un sótano ya tiene su propio recorte con
+        /// <see cref="DecayOfFloor"/>, y sumar los dos a la vez dejaría la calle —planta 0, sin
+        /// recorte y sin refuerzo— como el punto más oscuro del mundo servido, justo al revés de
+        /// lo que pide esto.
+        /// </summary>
+        public static float UpperFloorBoost(float floorY)
+        {
+            if (floorY <= 0f) return 1f;
+            int storey = Mathf.Clamp(RawStoreyOf(floorY), 0, UpperBoostCapStorey);
+            return 1f + UpperBoostPerStorey * storey;
+        }
+
         /// <summary>La capa de una LUZ: sólo la planta de su suelo.</summary>
         public static uint ForLight(float floorY) => 1u << StoreyOf(floorY);
 
@@ -171,6 +192,41 @@ namespace BackroomsSurvival.WorldGen3
             uint mask = 0u;
             for (int i = lo; i <= hi; i++) mask |= 1u << i;
             return mask == 0u ? 1u : mask;
+        }
+
+        /// <summary>
+        /// La capa de una LUZ, puesta donde URP la lee.
+        /// </summary>
+        /// <remarks>
+        /// **URP no mira <c>Light.renderingLayerMask</c>.** `ForwardLights.cs:540` toma la máscara
+        /// de <c>UniversalAdditionalLightData.renderingLayers</c>, un campo serializado aparte que
+        /// nace en 1 y que el setter sincroniza hacia el <c>Light</c>, nunca al revés. Desde que el
+        /// reparto por plantas existe, todo este fichero escribía en el <c>Light</c>: URP lo
+        /// ignoraba, cada lámpara se quedaba en la capa 1 y ninguna superficie WG3 (capas ≥ 2)
+        /// recibía luz de NINGUNA fuente en tiempo real. Lo que se veía eran el ambiente plano y los
+        /// light probes de la escena. Cazado el 07-09 con la linterna encendida a dos metros de una
+        /// pared y sin cono.
+        /// </remarks>
+        public static void Apply(Light light, uint mask)
+        {
+            light.GetUniversalAdditionalLightData().renderingLayers = mask;
+        }
+
+        /// <summary>
+        /// La capa de una SUPERFICIE, y sin light probes.
+        /// </summary>
+        /// <remarks>
+        /// Un renderer creado en runtime muestrea por defecto los light probes horneados de la
+        /// escena, y cuando los hay Unity usa ESOS en lugar del ambiente de <c>RenderSettings</c>.
+        /// `STP_Showcase` arrastra el <c>LightingDataAsset</c> del demo del vendor, horneado al
+        /// aire libre: el mundo WG3 se leía con un cielo que no existe — paredes tenues, suelo y
+        /// techo negros — y el ambiente que este proyecto fija ni se consultaba. Sin probes, lo que
+        /// ilumina es lo que este código decide: las lámparas y el ambiente.
+        /// </remarks>
+        public static void Apply(Renderer renderer, uint mask)
+        {
+            renderer.renderingLayerMask = mask;
+            renderer.lightProbeUsage = UnityEngine.Rendering.LightProbeUsage.Off;
         }
     }
 
@@ -251,7 +307,7 @@ namespace BackroomsSurvival.WorldGen3
                 uint pieceMask = Wg3StoreyLayers.ForSurface(
                     placement.originY, placement.piece.heightMeters);
                 foreach (Renderer pr in go.GetComponentsInChildren<Renderer>(true))
-                    pr.renderingLayerMask = pieceMask;
+                    Wg3StoreyLayers.Apply(pr, pieceMask);
             }
         }
 
@@ -300,8 +356,8 @@ namespace BackroomsSurvival.WorldGen3
             if (mats != null) renderer.sharedMaterials = mats;
             // Un atrio mide dos plantas, así que pide las dos capas y lo alumbran los plafones de
             // arriba y los de abajo. Una sala normal pide una sola, y ahí muere la fuga.
-            renderer.renderingLayerMask =
-                Wg3StoreyLayers.ForSurface(segment.FloorY, segment.Height);
+            Wg3StoreyLayers.Apply(renderer,
+                Wg3StoreyLayers.ForSurface(segment.FloorY, segment.Height));
 
             AddColliders(go, volumes, origin);
 
@@ -380,6 +436,10 @@ namespace BackroomsSurvival.WorldGen3
             const float Spacing = 9f;
             // Tope por eje: con tramos de 25 m como mucho (MAX_SEGMENT_M) son 2 × 2. El 4 × 4
             // anterior ponía 16 luces en una nave — más que un chunk entero de WG2.
+            // El 07-09 se probó 3 × 3 (Joel: más luces) y se DESHIZO el mismo día: hasta ese día
+            // ninguna lámpara tocaba el mundo (ver `Wg3StoreyLayers.Apply`), así que «pocas luces»
+            // se estaba juzgando sobre un mundo sin luces. Primero verlas funcionar a 2 × 2; subir
+            // la densidad es cosa de una constante, y con el tope de 256 de Forward+ a la vista.
             const int MaxPerAxis = 2;
             // A partir de aquí el techo es alto y el plafón pasa a colgar.
             const float HangHeight = 3f;
@@ -427,6 +487,8 @@ namespace BackroomsSurvival.WorldGen3
             // muertos, atar la sombra al índice deja una nave de cada ocho sin ninguna sombra —
             // justo las que se apuntalaron con esto.
             bool shadowTaken = false;
+            // Por el mismo motivo que la sombra: el relleno va a la primera ENCENDIDA del tramo.
+            bool fillTaken = false;
 
             // EL DESPACHO A OSCURAS: uno por planta y chunk con todas las lámparas muertas, no el
             // 12 % que le tocaría por la cadencia. La regla y el porqué del sorteo por punto están en
@@ -500,7 +562,11 @@ namespace BackroomsSurvival.WorldGen3
                     // que acercarse a una pared para ver de qué color era. No sube el coste de
                     // Forward+: el clustering cuenta volumen y luces, y ni el alcance ni el número
                     // cambian aquí.
-                    light.intensity = 2.7f;
+                    // 3,1 desde el 07-09 (Joel: más Level 0), reforzado por planta con
+                    // UpperFloorBoost (Joel, mismo día: plantas más altas, luz más potente). Sigue
+                    // sin tocar el rango: el clustering de Forward+ cuenta luces y volumen, no
+                    // intensidad.
+                    light.intensity = 3.1f * Wg3StoreyLayers.UpperFloorBoost(segment.FloorY);
                     // El color validado, empujado ±200 K por el tinte y después llevado hacia el gris
                     // por la profundidad (ADR-130 D4). El orden importa: el decaimiento va DESPUÉS
                     // del producto porque lo que hay que desaturar es el cálido, no el cociente.
@@ -524,10 +590,44 @@ namespace BackroomsSurvival.WorldGen3
                     }
                     // SOLO su planta. Es la mitad de la regla que cierra la fuga, y la que no se
                     // puede deducir mirando el objeto: un plafón parece inofensivo.
-                    // `Light.renderingLayerMask` es int y el del Renderer es uint: la conversión
-                    // es explícita a propósito en la API de Unity, no un descuido de aquí.
-                    light.renderingLayerMask =
-                        (int)Wg3StoreyLayers.ForLightIn(segment.FloorY, segment.Height);
+                    uint mask = Wg3StoreyLayers.ForLightIn(segment.FloorY, segment.Height);
+                    Wg3StoreyLayers.Apply(light, mask);
+
+                    // EL RELLENO, y es un sucedáneo de rebote, no una lámpara.
+                    //
+                    // URP 17.0.4 no tiene iluminación indirecta que sirva aquí: los lightmaps y
+                    // las sondas adaptativas exigen hornear la escena, y un mundo servido por
+                    // chunks no se hornea. Sin rebote, una puntual con el ambiente en negro deja
+                    // el suelo iluminado y la pared de enfrente a cero, que es lo contrario de
+                    // Level 0 —donde el techo entero de fluorescentes lava la sala hasta que las
+                    // esquinas casi no tienen sombra—.
+                    //
+                    // Una segunda puntual de alcance largo e intensidad baja imita ese lavado a
+                    // cambio de UNA luz más. Va sólo en la primera encendida del tramo, no en las
+                    // cuatro: el tope de Forward+ cuenta luces, y cuadruplicar el censo para
+                    // simular un rebote que es plano por definición no compra nada.
+                    // Sin sombras y sin parpadeo a propósito: un rebote que parpadea se lee como
+                    // una segunda lámpara estropeada, no como luz indirecta.
+                    if (!fillTaken)
+                    {
+                        fillTaken = true;
+                        // GameObject propio y no un segundo Light sobre el plafón: `GetComponent
+                        // <Light>` devuelve UNO, y el relay de ADR-042 y el zumbido de ADR-107
+                        // resuelven la lámpara por ahí. Dos luces en el mismo objeto convierten
+                        // «cuál de las dos» en una tirada de orden de componentes.
+                        var fillGo = new GameObject("light_fill");
+                        fillGo.hideFlags = HideFlags.DontSave;
+                        fillGo.transform.SetParent(lamp.transform, false);
+                        var fill = fillGo.AddComponent<Light>();
+                        fill.type = LightType.Point;
+                        fill.range = 18f;
+                        fill.intensity = light.intensity * 0.22f;
+                        // Hacia el gris: el rebote de una pared beige no devuelve el cálido de la
+                        // lámpara, lo lava. Sin esto el relleno tiñe la sala de amarillo.
+                        fill.color = Color.Lerp(light.color, Color.white, 0.5f);
+                        fill.shadows = LightShadows.None;
+                        Wg3StoreyLayers.Apply(fill, mask);
+                    }
 
                     if (fixture.flickers)
                     {
@@ -599,7 +699,7 @@ namespace BackroomsSurvival.WorldGen3
             light.intensity = 0.55f;
             light.range = 5f;
             light.shadows = LightShadows.None;
-            light.renderingLayerMask = (int)mask;
+            Wg3StoreyLayers.Apply(light, mask);
 
             if (lampMaterial == null) return;
             var plate = new GameObject("emergency_plate");
@@ -610,7 +710,7 @@ namespace BackroomsSurvival.WorldGen3
             plate.AddComponent<MeshFilter>().sharedMesh = LuminaireMesh();
             var r = plate.AddComponent<MeshRenderer>();
             r.sharedMaterial = EmissiveVariant(lampMaterial, EmergencyGreen, 2.2f);
-            r.renderingLayerMask = mask;
+            Wg3StoreyLayers.Apply(r, mask);
         }
 
         /// <summary>El verde de emergencia. Verde por encima del rojo Y del azul: es el orden de
@@ -704,7 +804,7 @@ namespace BackroomsSurvival.WorldGen3
                 : Quaternion.Euler(0f, prop.yawDeg, 0f);
             uint mask = Wg3StoreyLayers.ForLight(prop.yCm * 0.01f);
             foreach (Transform t in go.GetComponentsInChildren<Transform>(true)) t.gameObject.layer = layer;
-            foreach (Renderer r in go.GetComponentsInChildren<Renderer>(true)) r.renderingLayerMask = mask;
+            foreach (Renderer r in go.GetComponentsInChildren<Renderer>(true)) Wg3StoreyLayers.Apply(r, mask);
             foreach (Collider c in go.GetComponentsInChildren<Collider>(true)) c.enabled = false;
             // EL MONITOR ENCENDIDO, uno de cada cinco. Va DESPUÉS del bucle de máscaras a propósito:
             // ese bucle pisa el `renderingLayerMask` de todos los renderers, y la pantalla necesita
@@ -770,7 +870,7 @@ namespace BackroomsSurvival.WorldGen3
             var r = go.AddComponent<MeshRenderer>();
             r.sharedMaterial = material;
             r.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-            r.renderingLayerMask = Wg3StoreyLayers.ForLight(prop.yCm * 0.01f);
+            Wg3StoreyLayers.Apply(r, Wg3StoreyLayers.ForLight(prop.yCm * 0.01f));
             return go;
         }
 
@@ -830,7 +930,7 @@ namespace BackroomsSurvival.WorldGen3
             go.AddComponent<MeshFilter>().sharedMesh = LuminaireMesh();
             var r = go.AddComponent<MeshRenderer>();
             r.sharedMaterial = mat;
-            r.renderingLayerMask = Wg3StoreyLayers.ForLight(prop.yCm * 0.01f);
+            Wg3StoreyLayers.Apply(r, Wg3StoreyLayers.ForLight(prop.yCm * 0.01f));
             foreach (Transform t in root.GetComponentsInChildren<Transform>(true))
                 t.gameObject.layer = layer;
             return root;
@@ -880,7 +980,7 @@ namespace BackroomsSurvival.WorldGen3
             if (s != 1f) go.transform.localScale = new Vector3(s, s, s);
             uint mask = Wg3StoreyLayers.ForLight(e.position.y);
             foreach (Transform t in go.GetComponentsInChildren<Transform>(true)) t.gameObject.layer = layer;
-            foreach (Renderer r in go.GetComponentsInChildren<Renderer>(true)) r.renderingLayerMask = mask;
+            foreach (Renderer r in go.GetComponentsInChildren<Renderer>(true)) Wg3StoreyLayers.Apply(r, mask);
             foreach (Collider c in go.GetComponentsInChildren<Collider>(true)) c.enabled = false;
             return go;
         }
@@ -944,7 +1044,7 @@ namespace BackroomsSurvival.WorldGen3
                     go.AddComponent<MeshFilter>().sharedMesh = LuminaireMesh();
                     var r = go.AddComponent<MeshRenderer>();
                     r.sharedMaterial = lampMaterial;
-                    r.renderingLayerMask = mask;
+                    Wg3StoreyLayers.Apply(r, mask);
                 }
             }
         }
@@ -1023,7 +1123,7 @@ namespace BackroomsSurvival.WorldGen3
             if (mats != null) renderer.sharedMaterials = mats;
             // Un megapilar cruza el atrio de suelo a techo, así que lleva las dos plantas y se
             // ilumina desde las dos. Un pretil vive en una sola.
-            renderer.renderingLayerMask = Wg3StoreyLayers.ForSurface(origin.y, sy);
+            Wg3StoreyLayers.Apply(renderer, Wg3StoreyLayers.ForSurface(origin.y, sy));
 
             if (solid.IsDecoration)
             {
@@ -1274,7 +1374,7 @@ namespace BackroomsSurvival.WorldGen3
                 var renderer = go.AddComponent<MeshRenderer>();
                 Material[] mats = MaterialsForSolid(materials, key.Style, key.Look, key.Tile);
                 if (mats != null) renderer.sharedMaterials = mats;
-                renderer.renderingLayerMask = key.Mask;
+                Wg3StoreyLayers.Apply(renderer, key.Mask);
                 renderers++;
 
                 // La colisión sale de los VOLÚMENES, no de la malla: `AddColliders` filtra por
@@ -1369,7 +1469,10 @@ namespace BackroomsSurvival.WorldGen3
             // El doble, por lo mismo y a la vez que el plafón de tramo: dos sistemas de luz con
             // intensidades que se separan al doble dejan las piezas del catálogo leyéndose como
             // agujeros oscuros dentro de una sala ya iluminada.
-            light.intensity = 3.2f;
+            // 3,6 desde el 07-09 (Joel: más Level 0), el mismo +15% que el plafón de tramo para
+            // que los dos sistemas sigan separados al doble entre sí, y el mismo refuerzo por
+            // planta que el plafón (UpperFloorBoost).
+            light.intensity = 3.6f * Wg3StoreyLayers.UpperFloorBoost(placement.originY);
             // Acotado a 9 m: la fórmula abierta llegaba a 21,75 m en la pieza más grande, y una
             // puntual así cruza decenas de clusters de Forward+ ella sola. Una pieza grande queda
             // con penumbra en los bordes hasta que declare sus propias luces (R32), que es el plan.
@@ -1377,7 +1480,7 @@ namespace BackroomsSurvival.WorldGen3
             light.shadows = LightShadows.None;
             // Sólo su planta, igual que el plafón de un tramo. Éste es el que más alcance tiene
             // —hasta 21,75 m— así que es el que peor filtraba.
-            light.renderingLayerMask = (int)Wg3StoreyLayers.ForLight(root.transform.position.y);
+            Wg3StoreyLayers.Apply(light, Wg3StoreyLayers.ForLight(root.transform.position.y));
 
             if (fixture.flickers)
             {
