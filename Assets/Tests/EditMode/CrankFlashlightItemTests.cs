@@ -327,6 +327,69 @@ namespace BackroomsSurvival.Tests
             }
         }
 
+        /// <summary>
+        /// LA MANO Y EL SUELO SON EL MISMO OBJETO. Joel corrigió a mano la manivela del pickup (giro
+        /// de 90° en Y, y = −0,0206) y pidió que «los otros modelos se corrijan también»; la
+        /// respuesta correcta no es copiar números a dos prefabs sino que los dos salgan del mismo
+        /// sitio (`CrankLocalPosition`/`CrankLocalRotation` del aplicador). Este test es lo que
+        /// impide que vuelvan a separarse: compara el nodo `Crank` del wieldable con el del pickup.
+        /// </summary>
+        [Test]
+        public void TheCrankSitsIdenticallyInHandAndOnTheGround()
+        {
+            var definition = Definition;
+            Assert.IsNotNull(definition);
+            Assert.IsNotNull(definition.Pickup);
+            var prefab = Prefab;
+            Assert.IsNotNull(prefab);
+
+            var ground = definition.Pickup.transform.Find("Crank");
+            Assert.IsNotNull(ground, "el pickup no tiene 'Crank'");
+
+            Transform hand = null;
+            foreach (var t in prefab.GetComponentsInChildren<Transform>(true))
+                if (t.name == "Crank") { hand = t; break; }
+            Assert.IsNotNull(hand, "el wieldable no tiene 'Crank'");
+
+            Assert.Less(Vector3.Distance(hand.localPosition, ground.localPosition), 1e-4f,
+                $"la manivela está en {hand.localPosition} en la mano y en {ground.localPosition} en el suelo");
+            Assert.Less(Quaternion.Angle(hand.localRotation, ground.localRotation), 0.01f,
+                "la manivela no gira igual en la mano que en el suelo");
+
+            // Y los dos con la corrección de Joel: 90° en Y, que es lo que pone el disco plano
+            // contra el costado. Si alguien vuelve a Quaternion.identity en el aplicador, salta aquí.
+            Assert.Less(Quaternion.Angle(ground.localRotation, Quaternion.Euler(0f, 90f, 0f)), 0.01f,
+                "la manivela del suelo ya no lleva el giro de 90° en Y que Joel dio por bueno");
+        }
+
+        /// <summary>
+        /// El eje sobre el que gira la manivela tiene que ser EL MISMO para el jugador
+        /// (`CrankFlashlightWieldable.crankAxis`, serializado en el prefab) y para el vecino
+        /// (`ProxyCrankHook.Axis`). Viven en assemblies distintos y no pueden compartir la constante,
+        /// así que esto es lo único que los ata — con ejes distintos, la manivela del vecino orbita.
+        /// </summary>
+        [Test]
+        public void TheCrankSpinsOnTheSameAxisInHandAndOnTheProxy()
+        {
+            var prefab = Prefab;
+            Assert.IsNotNull(prefab);
+            var flashlight = prefab.GetComponent<CrankFlashlightWieldable>();
+            Assert.IsNotNull(flashlight);
+
+            var handAxis = new UnityEditor.SerializedObject(flashlight).FindProperty("crankAxis").vector3Value;
+
+            var hookType = System.Type.GetType(
+                "BackroomsSurvival.Migration.STPIntegration.ProxyCrankHook, Assembly-CSharp");
+            Assert.IsNotNull(hookType, "no existe ProxyCrankHook en Assembly-CSharp");
+            var field = hookType.GetField("Axis",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+            Assert.IsNotNull(field, "ProxyCrankHook.Axis ya no existe o cambió de nombre");
+            var proxyAxis = (Vector3)field.GetValue(null);
+
+            Assert.Less(Vector3.Distance(handAxis.normalized, proxyAxis.normalized), 1e-4f,
+                $"el jugador gira la manivela sobre {handAxis} y el vecino sobre {proxyAxis}");
+        }
+
         /// <summary>Activo de verdad DENTRO del prefab: `activeSelf` propio y el de todos sus
         /// padres. Ver el comentario de arriba para por qué no vale `activeInHierarchy`.</summary>
         private static bool IsActiveInPrefab(Transform t)

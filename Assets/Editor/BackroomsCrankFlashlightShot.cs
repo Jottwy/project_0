@@ -198,7 +198,8 @@ namespace BackroomsSurvival.EditorTools
                 if (crank != null)
                 {
                     var rest = crank.localRotation;
-                    crank.localRotation = rest * Quaternion.AngleAxis(90f, Vector3.right);
+                    crank.localRotation = rest * Quaternion.AngleAxis(90f,
+                        BackroomsCrankFlashlightModelApplier.CrankSpinAxis);
                     Shoot(cam, camT, centre + side * 0.26f + axis * 0.10f, centre, 32f,
                         "linterna_modelo_manivela90");
                     crank.localRotation = rest;

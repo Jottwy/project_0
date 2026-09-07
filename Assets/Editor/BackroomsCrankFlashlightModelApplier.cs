@@ -83,12 +83,27 @@ namespace BackroomsSurvival.EditorTools
         private const float CrankLengthMeters = 0.06f;
 
         /// <summary>
-        /// A lo LARGO del cuerpo, en fracción de su tamaño: dónde nace el eje de la manivela. Va
-        /// por DELANTE del puño, no detrás — en `linterna_mano_lado` se ve que la mano ocupa la
-        /// mitad de atrás, y una manivela bajo los dedos no se puede girar. Con el brazo de 6 cm y
-        /// medio cuerpo de 9, desde aquí el barrido no asoma por la lente.
+        /// A lo LARGO del cuerpo, en METROS desde su centro: dónde nace el eje de la manivela.
+        /// MEDIDO POR JOEL en el pickup (07-09): −0,0206, un poco por detrás del centro. Sustituye
+        /// al «+0,18 del largo, por delante del puño» que puse a ojo desde una captura en pose de
+        /// bind. En metros y no en fracción a propósito: es una medida suya sobre ESTE cuerpo, y
+        /// una fracción la reproducía como −0,020592 — lo que él dio por bueno se reproduce exacto.
         /// </summary>
-        private const float CrankAlongBody = 0.18f;
+        private const float CrankAlongBodyMetres = -0.0206f;
+
+        /// <summary>
+        /// Giro de la manivela sobre el cuerpo, EL MISMO en la mano y en el suelo. También medido
+        /// por Joel: 90° en Y. Y dice algo más que una pose: con la manivela sin girar el DISCO
+        /// quedaba de canto contra la carcasa, así que su normal —el eje de giro— no es la X local
+        /// que asumí sino la Z. Con este giro la Z local cae sobre la X del cuerpo, perpendicular al
+        /// costado, que es donde tiene que estar un eje de manivela. Ver <see cref="CrankSpinAxis"/>.
+        /// </summary>
+        internal static Quaternion CrankLocalRotation => Quaternion.Euler(0f, 90f, 0f);
+
+        /// <summary>El eje de giro EN LOCAL de la manivela: la normal del disco, Z. Lo consumen el
+        /// wieldable (`crankAxis`) y `ProxyCrankHook`; un cambio aquí sin tocar allí deja la
+        /// manivela orbitando en la mano del vecino.</summary>
+        internal static readonly Vector3 CrankSpinAxis = Vector3.forward;
 
         /// <summary>
         /// Aire entre el disco de la manivela y la carcasa. Lo único que se elige a mano de la
@@ -113,7 +128,7 @@ namespace BackroomsSurvival.EditorTools
         /// tirada con la manivela en otro sitio es otro objeto.
         /// </summary>
         internal static Vector3 CrankLocalPosition(Mesh body, Mesh crank)
-            => new(CrankPivotX(body, crank), body.bounds.size.y * CrankAlongBody, 0f);
+            => new(CrankPivotX(body, crank), CrankAlongBodyMetres, 0f);
 
         private const int MaxTextureSize = 1024;
         private const int TriangleWarnThreshold = 30000;
@@ -606,8 +621,8 @@ namespace BackroomsSurvival.EditorTools
                           $"semiancho del cuerpo {bodyMesh.bounds.extents.x:F4} + semiancho de la manivela " +
                           $"{crankMesh.bounds.extents.x:F4} + {CrankClearance:F3} de aire.");
                 // El brazo sale del eje hacia +Y (malla canónica) y queda tumbado a lo largo del
-                // cuerpo, que es como se guarda una manivela plegable.
-                crank.transform.localRotation = Quaternion.identity;
+                // cuerpo; el giro en Y pone el disco plano contra el costado (ver CrankLocalRotation).
+                crank.transform.localRotation = CrankLocalRotation;
 
                 MoveBeamUnderBody(root, body.transform, bodyMesh);
                 PointComponentAtModel(root, crank.transform);
@@ -718,13 +733,11 @@ namespace BackroomsSurvival.EditorTools
             var field = so.FindProperty("crank");
             if (field != null) field.objectReferenceValue = crank;
 
-            // EL EJE ES X, no Z, y la diferencia es que media vuelta pase por dentro del cuerpo o
-            // no. La manivela va montada en el COSTADO: su eje sale perpendicular a la carcasa, que
-            // es el +X local, y el brazo —que apunta a +Y— barre entonces el plano YZ, siempre por
-            // fuera. Con el eje en Z el brazo giraría en el plano que contiene la carcasa y la
-            // atravesaría en medio giro.
+            // El eje de giro en LOCAL de la manivela es la normal de su disco, Z; con el giro de
+            // 90° en Y del nodo, esa Z cae sobre la X del cuerpo — perpendicular al costado — y el
+            // brazo barre siempre por fuera. Un solo sitio decide el eje: CrankSpinAxis.
             var axis = so.FindProperty("crankAxis");
-            if (axis != null) axis.vector3Value = Vector3.right;
+            if (axis != null) axis.vector3Value = CrankSpinAxis;
 
             so.ApplyModifiedPropertiesWithoutUndo();
         }

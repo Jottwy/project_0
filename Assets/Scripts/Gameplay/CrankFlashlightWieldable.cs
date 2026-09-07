@@ -47,10 +47,10 @@ namespace BackroomsSurvival.Gameplay
                  "en el centro de la pieza, o la manivela orbitará en vez de girar.")]
         [SerializeField] private Transform crank;
 
-        [Tooltip("Eje de giro de la manivela, en espacio LOCAL de la propia manivela. Con la malla " +
-                 "canónica que hornea el aplicador —brazo hacia +Y desde el eje, montada en el " +
-                 "costado— el eje sale perpendicular a la carcasa: X.")]
-        [SerializeField] private Vector3 crankAxis = Vector3.right;
+        [Tooltip("Eje de giro de la manivela, en espacio LOCAL de la propia manivela: la normal " +
+                 "de su disco, Z. El aplicador monta el nodo girado 90° en Y, así que esa Z cae " +
+                 "perpendicular al costado del cuerpo. Lo escribe el aplicador (CrankSpinAxis).")]
+        [SerializeField] private Vector3 crankAxis = Vector3.forward;
 
         [Tooltip("El haz. Se busca en los hijos si se deja vacío.")]
         [SerializeField] private Light beam;

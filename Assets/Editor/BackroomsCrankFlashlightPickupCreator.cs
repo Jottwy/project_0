@@ -189,7 +189,7 @@ namespace BackroomsSurvival.EditorTools
 
             node.layer = root.layer;
             node.transform.localPosition = BackroomsCrankFlashlightModelApplier.CrankLocalPosition(body, crank);
-            node.transform.localRotation = Quaternion.identity;
+            node.transform.localRotation = BackroomsCrankFlashlightModelApplier.CrankLocalRotation;
             node.transform.localScale = Vector3.one;
 
             // Con `==` y no con `??`: `GetComponent` devuelve un objeto que Unity considera nulo

@@ -36,9 +36,12 @@ namespace BackroomsSurvival.Migration.STPIntegration
         /// <summary>Una vuelta por segundo, como la del propio jugador.</summary>
         private const float DegreesPerSecond = 360f;
 
-        /// <summary>Eje de giro en local de la manivela: perpendicular a la chapa donde va
-        /// montada, +X en la malla canónica. El mismo que usa el wieldable.</summary>
-        private static readonly Vector3 Axis = Vector3.right;
+        /// <summary>Eje de giro en local de la manivela: la normal de su disco, +Z en la malla
+        /// canónica (el nodo va montado girado 90° en Y, así que cae perpendicular al costado).
+        /// El mismo que escribe el aplicador en el wieldable (`CrankSpinAxis`); no hay forma de
+        /// compartir la constante porque este assembly no ve el de Editor — el test
+        /// `TheCrankSpinsOnTheSameAxisInHandAndOnTheProxy` es lo que los ata.</summary>
+        private static readonly Vector3 Axis = Vector3.forward;
 
         private Transform _proxyRoot;
         private Transform _crank;
