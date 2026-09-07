@@ -576,34 +576,57 @@ namespace BackroomsSurvival.EditorTools
                 // El tronco de antorcha, fuera de la vista. Se DESACTIVA, no se borra: reversible.
                 if (donor != null && donor.gameObject.activeSelf) donor.gameObject.SetActive(false);
 
-                var previous = hand.Find(NodeName);
-                if (previous != null) Object.DestroyImmediate(previous.gameObject);
+                // Por todo el prefab y no sólo bajo la mano: el nodo puede haber quedado bajo el
+                // hueso de la antorcha en una pasada anterior, o bajo la mano en una más vieja.
+                foreach (var t in root.GetComponentsInChildren<Transform>(true))
+                {
+                    if (t == null || t.name != NodeName) continue;
+                    Object.DestroyImmediate(t.gameObject);
+                    break;
+                }
 
                 var node = new GameObject(NodeName);
                 node.transform.SetParent(hand, false);
 
-                // EL AGARRE SE CALCULA DESDE LOS NUDILLOS, y no se copia del nodo de la antorcha
-                // aunque fuera lo obvio: ese nodo NO cuelga de `Hand.R`, cuelga de `Root`, porque
-                // la malla de la antorcha es SKINNED al esqueleto de los brazos. Copiar su
-                // `localPosition` a un hijo de la mano mete la linterna 1,59 m por encima del puño
-                // —medido—, y colgarla de `Root` la dejaría en la pose de bind sin seguir a la mano.
-                // El cálculo es el mismo del destornillador: un puño cerrado sobre un mango lo cruza
-                // por la palma, el eje entra por el meñique y sale por el índice, y la lente (el +Y
-                // de la malla canónica) sale por el lado del índice.
-                if (TryGripFromKnuckles(hand, index, pinky, middle, out var gripPos, out var gripRot))
+                // EL AGARRE SE LEE DE LA ANTORCHA, no se calcula. La malla de la antorcha es SKINNED
+                // al esqueleto de los brazos y sus `bindposes` dicen exactamente dónde está su mango
+                // respecto a `Hand.R` — el agarre que el vendor ya animó y da por bueno. Los dos
+                // intentos anteriores fallaron cada uno por su lado: copiar el `localPosition` del
+                // nodo `Torch` (cuelga de `Root`, no de la mano: 1,59 m por encima del puño) y el
+                // agarre por nudillos del destornillador (correcto en pose de bind, pero la
+                // animación de equipar cierra el puño de otra forma: en juego la linterna salía a
+                // la izquierda, alta y apuntando fuera — captura de Joel, 07-09).
+                if (TryGripFromTorchSkin(root, hand, out var gripPos, out var gripRot, out var torchBone))
                 {
+                    // Del HUESO DE LA ANTORCHA, no de la mano: es el que la animación de equipar
+                    // lleva al puño, y el offset leído de la malla está en SU espacio. El creador
+                    // lo había apagado por llamarse "Torch": se enciende el hueso (es un Transform
+                    // pelado) y se deja apagada su llama, que es lo que había que apagar.
+                    torchBone.gameObject.SetActive(true);
+                    foreach (var t in torchBone.GetComponentsInChildren<Transform>(true))
+                        if (t != torchBone && t.name == FireChildHint) t.gameObject.SetActive(false);
+
+                    node.transform.SetParent(torchBone, false);
+                    node.transform.localPosition = gripPos;
+                    node.transform.localRotation = gripRot;
+                    AimLensForward(root.transform, node.transform);
+                }
+                else if (TryGripFromKnuckles(hand, index, pinky, middle, out gripPos, out gripRot))
+                {
+                    Debug.LogWarning("[CrankFlashlightModel] Sin malla de antorcha de la que leer el agarre: " +
+                                     "pose por nudillos, que en juego sale desplazada. VERIFICAR en Play.");
                     node.transform.localPosition = gripPos;
                     node.transform.localRotation = gripRot;
                 }
                 else
                 {
-                    Debug.LogWarning("[CrankFlashlightModel] Faltan huesos de dedos para el agarre: pose de " +
-                                     "reserva, VERIFICAR con captura.");
+                    Debug.LogWarning("[CrankFlashlightModel] Faltan huesos para el agarre: pose de reserva.");
                     node.transform.localPosition = new Vector3(0.02f, 0.03f, 0.01f);
                     node.transform.localEulerAngles = new Vector3(0f, 0f, 90f);
                 }
 
-                var boneScale = hand.lossyScale;
+                // Del padre REAL del nodo (el hueso de la antorcha, o la mano en la reserva).
+                var boneScale = node.transform.parent.lossyScale;
                 float boneFactor = Mathf.Max(1e-5f, Mathf.Max(boneScale.x, Mathf.Max(boneScale.y, boneScale.z)));
                 node.transform.localScale = Vector3.one / boneFactor;
 
@@ -643,6 +666,215 @@ namespace BackroomsSurvival.EditorTools
         /// agarra por el mango, que es el tercio de atrás: el centro queda hacia la lente.
         /// </summary>
         private const float GripRiseFraction = 0.20f;
+
+        /// <summary>
+        /// Nodo de la antorcha skinned cuyo mango se lee. Es el `WoodenTorch` que el creador dejó
+        /// apagado: apagado sigue teniendo malla, huesos y bindposes.
+        /// </summary>
+        private const string TorchSkinNode = "WoodenTorch";
+
+        /// <summary>El hijo del hueso de la antorcha que marca su PUNTA: el prefab de fuego. Sirve
+        /// para orientar el eje sin depender de ninguna pose.</summary>
+        private const string FireChildHint = "FPS_VFX_SmallFire";
+
+        /// <summary>A qué fracción del largo, desde la culata, cierra el puño. 0,35: el tercio de
+        /// atrás, como se sostiene una linterna de mano.</summary>
+        private const float FistFromTail = 0.35f;
+
+        /// <summary>
+        /// Hacia dónde apunta la lente, en grados sobre el frente del jugador: 0 = exactamente al
+        /// frente, positivo = un poco hacia abajo. Una linterna se lleva apuntando al suelo unos
+        /// metros por delante, no al horizonte; 8° es un punto de partida, no una medida.
+        /// </summary>
+        private const float LensPitchDownDegrees = 8f;
+
+        /// <summary>
+        /// APUNTA LA LENTE AL FRENTE, y lo hace midiendo en vez de con un número a ojo. El root del
+        /// wieldable cuelga de la cámara del jugador y su +Z es el frente (la primera captura FPS,
+        /// cámara en el root mirando +Z, lo encuadraba de frente). La antorcha del vendor va con la
+        /// llama hacia arriba y hacia dentro; seguir su hueso deja la linterna apuntando a donde
+        /// apuntaba la llama. Aquí se lee hacia dónde queda la lente en espacio del root y se
+        /// gira el nodo lo justo para llevarla a +Z (menos el cabeceo de diseño). En bind, no en la
+        /// animación: para este rig el idle es la pose de bind —medido muestreando `Template_Idle`
+        /// en el arnés— y la corrección viaja con el hueso igual que el resto.
+        /// </summary>
+        private static void AimLensForward(Transform root, Transform node)
+        {
+            Vector3 lens = root.InverseTransformDirection(node.up);
+            Vector3 target = Quaternion.Euler(LensPitchDownDegrees, 0f, 0f) * Vector3.forward;
+            var fix = Quaternion.FromToRotation(lens, target);
+
+            // Se gira ALREDEDOR DEL PUÑO, no del centro del cuerpo: el puño cierra a FistFromTail
+            // del culo, y girar sobre el centro lo sacaría del mango unos centímetros. El punto de
+            // agarre es el origen del hueso, que está a (0,5 − FistFromTail)·L por detrás del
+            // centro a lo largo del eje.
+            Vector3 fist = node.position - node.up * (BodyLengthMeters * (0.5f - FistFromTail));
+            var worldFix = root.rotation * fix * Quaternion.Inverse(root.rotation);
+            node.position = fist + worldFix * (node.position - fist);
+            node.rotation = worldFix * node.rotation;
+
+            Vector3 after = root.InverseTransformDirection(node.up);
+            Debug.Log($"[CrankFlashlightModel] Lente: antes ({lens.x:F2}, {lens.y:F2}, {lens.z:F2}) en espacio del " +
+                      $"root → después ({after.x:F2}, {after.y:F2}, {after.z:F2}); {Vector3.Angle(after, Vector3.forward):F1}° " +
+                      $"del frente ({LensPitchDownDegrees}° de cabeceo pedido).");
+        }
+
+        private static Transform FindChild(Transform parent, string name)
+        {
+            foreach (var t in parent.GetComponentsInChildren<Transform>(true))
+                if (t != parent && t.name == name) return t;
+            return null;
+        }
+
+        /// <summary>
+        /// El agarre EXACTO de la antorcha, en espacio local de <paramref name="hand"/>: se toman
+        /// los vértices de su malla skinned que pesan sobre `Hand.R`, se llevan al espacio del
+        /// hueso con su bindpose, y de ahí salen el centro del mango y el eje del palo (la
+        /// dirección de mayor extensión de esos vértices). Nada de esto depende de la pose: las
+        /// bindposes son constantes de la malla, así que el resultado es válido en cualquier
+        /// fotograma de la animación de equipar — que es justo lo que el agarre por nudillos no
+        /// podía garantizar.
+        /// </summary>
+        private static bool TryGripFromTorchSkin(GameObject root, Transform hand,
+            out Vector3 localPos, out Quaternion localRot)
+            => TryGripFromTorchSkin(root, hand, out localPos, out localRot, out _);
+
+        /// <summary>
+        /// Igual, pero devuelve además EL HUESO QUE MANDA sobre la antorcha. No se da por hecho que
+        /// sea `Hand.R`: la primera pasada no encontró ni un vértice pesando sobre la mano, y el
+        /// motivo es que el vendor pega la antorcha a su PROPIO hueso (`Torch`, hijo de `Root`) y
+        /// es la animación la que lleva ese hueso al puño. Colgar la linterna de ese hueso, con el
+        /// mismo offset que la malla de la antorcha, es seguir exactamente el camino que el vendor
+        /// animó: equipar, balanceo, todo.
+        /// </summary>
+        private static bool TryGripFromTorchSkin(GameObject root, Transform hand,
+            out Vector3 localPos, out Quaternion localRot, out Transform dominantBone)
+        {
+            localPos = Vector3.zero;
+            localRot = Quaternion.identity;
+            dominantBone = null;
+
+            SkinnedMeshRenderer skin = null;
+            foreach (var smr in root.GetComponentsInChildren<SkinnedMeshRenderer>(true))
+            {
+                if (smr.name != TorchSkinNode) continue;
+                skin = smr;
+                break;
+            }
+            if (skin == null || skin.sharedMesh == null)
+            {
+                Debug.LogWarning("[CrankFlashlightModel] Sin SkinnedMeshRenderer '" + TorchSkinNode + "' en el prefab.");
+                return false;
+            }
+
+            var bones = skin.bones;
+            var mesh = skin.sharedMesh;
+            var vertices = mesh.vertices;
+            var weights = mesh.boneWeights;
+            var bindposes = mesh.bindposes;
+            if (weights == null || weights.Length != vertices.Length || bindposes.Length != bones.Length)
+            {
+                Debug.LogWarning($"[CrankFlashlightModel] La malla de la antorcha no da pesos legibles: " +
+                                 $"{vertices.Length} vértices, {weights?.Length ?? 0} pesos, {bindposes.Length} " +
+                                 $"bindposes, {bones.Length} huesos. ¿Read/Write apagado en el FBX?");
+                return false;
+            }
+
+            // El hueso que más peso acumula sobre toda la malla es el que la lleva.
+            var total = new float[bones.Length];
+            for (int i = 0; i < weights.Length; i++)
+            {
+                var w = weights[i];
+                if (w.boneIndex0 >= 0 && w.boneIndex0 < total.Length) total[w.boneIndex0] += w.weight0;
+                if (w.boneIndex1 >= 0 && w.boneIndex1 < total.Length) total[w.boneIndex1] += w.weight1;
+                if (w.boneIndex2 >= 0 && w.boneIndex2 < total.Length) total[w.boneIndex2] += w.weight2;
+                if (w.boneIndex3 >= 0 && w.boneIndex3 < total.Length) total[w.boneIndex3] += w.weight3;
+            }
+            int boneIndex = 0;
+            for (int i = 1; i < total.Length; i++) if (total[i] > total[boneIndex]) boneIndex = i;
+            dominantBone = bones[boneIndex];
+            if (dominantBone == null) return false;
+
+            Debug.Log($"[CrankFlashlightModel] La antorcha pesa sobre '{dominantBone.name}' " +
+                      $"({total[boneIndex]:F0} de {weights.Length} vértices); Hand.R acumula " +
+                      $"{(System.Array.IndexOf(bones, hand) is var hi && hi >= 0 ? total[hi] : 0f):F0}.");
+
+            // Vértices que ese hueso MANDA: son la antorcha entera si es un hueso propio, o el
+            // mango si fuera la mano. En su espacio, vía bindpose: constante, independiente de la pose.
+            var handSpace = new System.Collections.Generic.List<Vector3>(vertices.Length / 2);
+            var toBone = bindposes[boneIndex];
+            for (int i = 0; i < vertices.Length; i++)
+            {
+                var w = weights[i];
+                float bw = 0f;
+                if (w.boneIndex0 == boneIndex) bw += w.weight0;
+                if (w.boneIndex1 == boneIndex) bw += w.weight1;
+                if (w.boneIndex2 == boneIndex) bw += w.weight2;
+                if (w.boneIndex3 == boneIndex) bw += w.weight3;
+                if (bw < 0.5f) continue;
+                handSpace.Add(toBone.MultiplyPoint3x4(vertices[i]));
+            }
+            if (handSpace.Count < 16) return false;
+            hand = dominantBone;
+
+            Vector3 centre = Vector3.zero;
+            foreach (var v in handSpace) centre += v;
+            centre /= handSpace.Count;
+
+            // El eje del palo: la dirección en la que el mango se extiende más. Iteración de
+            // potencia sobre la covarianza — tres ejes y unos cientos de puntos, no hace falta más.
+            var axis = PrincipalAxis(handSpace, centre);
+            if (axis.sqrMagnitude < 1e-8f) return false;
+
+            // Hacia la LLAMA: el hijo de VFX de fuego del hueso está en la punta de la antorcha, y
+            // es la única referencia que no depende de una pose. Sin él, se toma el extremo que se
+            // aleja del padre del hueso.
+            Vector3 tipHint;
+            var fire = FindChild(dominantBone, FireChildHint);
+            if (fire != null) tipHint = fire.localPosition;
+            else tipHint = dominantBone.parent != null ? -dominantBone.InverseTransformPoint(dominantBone.parent.position) : axis;
+            if (Vector3.Dot(axis, tipHint - centre) < 0f) axis = -axis;
+
+            // EL PUÑO ES EL ORIGEN DEL HUESO. Medido: la antorcha va de y=−0,13 (culata) a +0,27
+            // (llama) en el espacio de `Torch`, con el puño en el origen — un mango de 13 cm por
+            // debajo de la mano. «Culata con culata» dejaba la linterna 13 cm demasiado baja (la
+            // captura la enseñaba con la lente dentro del puño y el culo colgando). Una linterna se
+            // agarra por el tercio de atrás: el puño (origen) queda a FistFromTail del culo. Lo
+            // lateral (x, z) se toma del centro de la antorcha, que es donde el vendor la centró.
+            var lateral = centre - axis * Vector3.Dot(centre, axis);
+            localPos = lateral + axis * (BodyLengthMeters * (0.5f - FistFromTail));
+
+            // La orientación de PARTIDA es la del palo de la antorcha; el apuntado al frente se
+            // corrige después, en AimLensForward, contra el root del prefab.
+            localRot = Quaternion.FromToRotation(Vector3.up, axis);
+
+            Debug.Log($"[CrankFlashlightModel] Agarre leído de la antorcha en espacio de '{dominantBone.name}': " +
+                      $"{handSpace.Count} vértices, centro {centre}, eje {axis}, " +
+                      $"llama {(fire != null ? fire.localPosition.ToString() : "(sin VFX)")}; nodo en {localPos}.");
+            return true;
+        }
+
+        private static Vector3 PrincipalAxis(System.Collections.Generic.List<Vector3> points, Vector3 centre)
+        {
+            float xx = 0, xy = 0, xz = 0, yy = 0, yz = 0, zz = 0;
+            foreach (var p in points)
+            {
+                var d = p - centre;
+                xx += d.x * d.x; xy += d.x * d.y; xz += d.x * d.z;
+                yy += d.y * d.y; yz += d.y * d.z; zz += d.z * d.z;
+            }
+            var v = new Vector3(1f, 1f, 1f).normalized;
+            for (int i = 0; i < 32; i++)
+            {
+                var next = new Vector3(
+                    xx * v.x + xy * v.y + xz * v.z,
+                    xy * v.x + yy * v.y + yz * v.z,
+                    xz * v.x + yz * v.y + zz * v.z);
+                if (next.sqrMagnitude < 1e-12f) return Vector3.zero;
+                v = next.normalized;
+            }
+            return v;
+        }
 
         private static bool TryGripFromKnuckles(Transform hand, Transform index, Transform pinky,
             Transform middle, out Vector3 localPos, out Quaternion localRot)

@@ -102,6 +102,28 @@ namespace BackroomsSurvival.EditorTools
                 cam.nearClipPlane = 0.01f;
                 cam.farClipPlane = 20f;
 
+                // LA POSE DE JUEGO, NO LA DE BIND. Se muestrea el clip de idle del propio wieldable
+                // sobre la instancia: es la pose en la que el jugador ve la linterna el 99 % del
+                // tiempo, y la de bind no se le parece (el agarre por nudillos salió perfecto en
+                // bind y torcido en juego). Con la pose puesta, la cámara del jugador es el hueso
+                // `Camera` del rig, y el ángulo lente/frente se mide, no se adivina.
+                // La vista del jugador: la POSICIÓN del hueso «Camera» del rig (el root está a 1,6 m
+                // por debajo de las manos: es espacio de esqueleto, medido) con la ORIENTACIÓN del
+                // root, cuyo +Z es el frente (con la rotación del hueso no se veían ni las manos).
+                bool posed = TrySampleIdle(instance, out string clipName);
+                if (!posed)
+                    Debug.LogWarning("[CrankFlashlightShot] Sin clip de idle muestreable: capturas en pose de BIND.");
+                Transform rigCamera = FindChild(instance, "Camera");
+                var eye = new GameObject("[Eye]") { hideFlags = HideFlags.HideAndDontSave };
+                eye.transform.SetParent(rigGo.transform, false);
+                eye.transform.SetPositionAndRotation(
+                    rigCamera != null ? rigCamera.position : instance.transform.position,
+                    instance.transform.rotation);
+                camGo.transform.SetPositionAndRotation(eye.transform.position, eye.transform.rotation);
+                cam.fieldOfView = 60f;
+                RenderTo(cam, Path.Combine(OutDir, "linterna_juego_fps.png"));
+                ReportLensAgainstCamera(instance, eye.transform, posed ? clipName : "bind");
+
                 Vector3 hand = FindHandPoint(instance);
 
                 foreach (var shot in Shots)
@@ -119,6 +141,8 @@ namespace BackroomsSurvival.EditorTools
                 }
 
                 ShootBareModel(instance, cam, camGo.transform);
+
+                if (posed) UnityEditor.AnimationMode.StopAnimationMode();
             }
             finally
             {
@@ -216,6 +240,82 @@ namespace BackroomsSurvival.EditorTools
             foreach (var t in root.GetComponentsInChildren<Transform>(true))
                 if (t.name == name) return t;
             return null;
+        }
+
+        /// <summary>
+        /// Pone la instancia en la pose de IDLE del wieldable muestreando su clip en modo edición.
+        /// Se elige el clip del controller cuyo nombre contenga "idle"; si hay varios, el primero,
+        /// y se imprimen todos para que se vea cuál fue. El tiempo de muestreo es medio clip: en un
+        /// idle en bucle cualquier instante vale, y el medio esquiva el fotograma de entrada.
+        /// Deja `AnimationMode` ABIERTO: quien llama lo cierra al terminar de retratar.
+        /// </summary>
+        private static bool TrySampleIdle(GameObject instance, out string clipName)
+        {
+            clipName = null;
+            Animator animator = null;
+            foreach (var a in instance.GetComponentsInChildren<Animator>(true))
+            {
+                if (a.runtimeAnimatorController == null) continue;
+                animator = a;
+                break;
+            }
+            if (animator == null)
+            {
+                Debug.LogWarning("[CrankFlashlightShot] La instancia no trae ningún Animator con controller.");
+                return false;
+            }
+
+            var clips = animator.runtimeAnimatorController.animationClips;
+            AnimationClip idle = null;
+            var names = new System.Text.StringBuilder();
+            foreach (var c in clips)
+            {
+                if (c == null) continue;
+                names.Append(c.name).Append(", ");
+                if (idle == null && c.name.ToLowerInvariant().Contains("idle")) idle = c;
+            }
+            if (idle == null)
+            {
+                Debug.LogWarning($"[CrankFlashlightShot] Sin clip 'idle' en '{animator.runtimeAnimatorController.name}'. " +
+                                 $"Clips: {names}");
+                return false;
+            }
+
+            UnityEditor.AnimationMode.StartAnimationMode();
+            UnityEditor.AnimationMode.BeginSampling();
+            UnityEditor.AnimationMode.SampleAnimationClip(animator.gameObject, idle, idle.length * 0.5f);
+            UnityEditor.AnimationMode.EndSampling();
+
+            clipName = idle.name;
+            Debug.Log($"[CrankFlashlightShot] Pose muestreada: clip '{idle.name}' ({idle.length:F2} s) de " +
+                      $"'{animator.runtimeAnimatorController.name}' sobre '{animator.gameObject.name}'. Clips: {names}");
+            return true;
+        }
+
+        /// <summary>
+        /// El número que el aplicador necesita: cuánto se desvía la lente del frente de la cámara
+        /// en la pose de juego, y hacia dónde. Se imprime en el espacio de la cámara del rig
+        /// (x = derecha, y = arriba, z = delante), junto con dónde cae el modelo respecto a ella.
+        /// </summary>
+        private static void ReportLensAgainstCamera(GameObject instance, Transform rigCamera, string clipName)
+        {
+            var model = FindChild(instance, BackroomsCrankFlashlightModelApplier.NodeName);
+            if (model == null)
+            {
+                Debug.LogWarning("[CrankFlashlightShot] No hay nodo del modelo que medir.");
+                return;
+            }
+
+            Vector3 lens = rigCamera.InverseTransformDirection(model.up);
+            Vector3 pos = rigCamera.InverseTransformPoint(model.position);
+            float pitch = Mathf.Atan2(lens.y, lens.z) * Mathf.Rad2Deg;
+            float yaw = Mathf.Atan2(lens.x, lens.z) * Mathf.Rad2Deg;
+
+            Debug.Log($"[CrankFlashlightShot] En la pose '{clipName}': la lente apunta a ({lens.x:F2}, {lens.y:F2}, " +
+                      $"{lens.z:F2}) en espacio de cámara → cabeceo {pitch:F1}° (positivo = hacia arriba), " +
+                      $"guiñada {yaw:F1}° (positivo = hacia la derecha); ángulo total con el frente " +
+                      $"{Vector3.Angle(lens, Vector3.forward):F1}°. Centro del modelo a ({pos.x:F3}, {pos.y:F3}, " +
+                      $"{pos.z:F3}) de la vista (x=derecha, y=arriba, z=delante).");
         }
 
         private static void Shoot(Camera cam, Transform camT, Vector3 from, Vector3 at, float fov, string name)
