@@ -64,6 +64,17 @@ namespace BackroomsSurvival.Gameplay
         private static void ApplyToPipeline(in GraphicsPresetValues values)
         {
             var pipeline = CurrentPipeline();
+            if (pipeline != null)
+                ApplyToPipeline(pipeline, values);
+        }
+
+        /// <summary>
+        /// Separado del asset EN USO a propósito: así un test puede darle un asset de usar y tirar
+        /// y comprobar que cada número acaba en el campo que le toca, sin cambiarle el render al
+        /// editor donde corre la suite.
+        /// </summary>
+        public static void ApplyToPipeline(UniversalRenderPipelineAsset pipeline, in GraphicsPresetValues values)
+        {
             if (pipeline == null)
                 return;
 

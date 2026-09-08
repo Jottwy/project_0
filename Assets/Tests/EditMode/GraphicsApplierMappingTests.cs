@@ -147,6 +147,81 @@ namespace BackroomsSurvival.Tests
                 "El atlas de luces adicionales de High ya no es el del asset.");
         }
 
+        /// <summary>
+        /// Que las conversiones sean correctas no basta: hay que ver que CADA número acaba en su
+        /// campo. Se escribe sobre un asset de usar y tirar, nunca sobre el que usa el editor.
+        /// </summary>
+        [Test]
+        public void ApplyingUltraWritesEveryBudgetOntoTheAsset()
+        {
+            var pipeline = ScriptableObject.CreateInstance<UniversalRenderPipelineAsset>();
+            try
+            {
+                var ultra = GraphicsQualityPresets.Get(GraphicsPreset.Ultra);
+                BackroomsGraphicsApplier.ApplyToPipeline(pipeline, ultra);
+
+                Assert.AreEqual(ultra.RenderScale, pipeline.renderScale, 0.001f);
+                Assert.AreEqual(BackroomsGraphicsApplier.SampleCountOf(ultra.Msaa), pipeline.msaaSampleCount);
+                Assert.AreEqual(BackroomsGraphicsApplier.FilterOf(ultra.Upscaling), pipeline.upscalingFilter);
+                Assert.AreEqual(ultra.Hdr, pipeline.supportsHDR);
+                Assert.AreEqual(ultra.ShadowDistance, pipeline.shadowDistance, 0.5f);
+                Assert.AreEqual(ultra.ShadowCascades, pipeline.shadowCascadeCount);
+                Assert.AreEqual(BackroomsGraphicsApplier.MainShadowResolutionOf(ultra.ShadowQuality),
+                    pipeline.mainLightShadowmapResolution);
+                Assert.AreEqual(BackroomsGraphicsApplier.AdditionalShadowResolutionOf(ultra.ShadowQuality),
+                    pipeline.additionalLightsShadowmapResolution);
+            }
+            finally
+            {
+                Object.DestroyImmediate(pipeline);
+            }
+        }
+
+        /// <summary>Apagar las sombras tiene que llegar al asset como distancia CERO.</summary>
+        [Test]
+        public void ApplyingWithShadowsOffZeroesTheAssetDistance()
+        {
+            var pipeline = ScriptableObject.CreateInstance<UniversalRenderPipelineAsset>();
+            try
+            {
+                BackroomsGraphicsApplier.ApplyToPipeline(pipeline,
+                    WithShadows(GraphicsQualityPresets.Get(GraphicsPreset.High), false));
+
+                Assert.AreEqual(0f, pipeline.shadowDistance, 0.001f);
+            }
+            finally
+            {
+                Object.DestroyImmediate(pipeline);
+            }
+        }
+
+        /// <summary>
+        /// La escala de render se recorta al rango del deslizador: un valor fuera de él no puede
+        /// llegar al asset, porque URP lo aceptaría y el juego se dibujaría a otra resolución.
+        /// </summary>
+        [Test]
+        public void RenderScaleIsClampedToTheSliderRange()
+        {
+            var pipeline = ScriptableObject.CreateInstance<UniversalRenderPipelineAsset>();
+            try
+            {
+                var absurd = WithRenderScale(GraphicsQualityPresets.Get(GraphicsPreset.High), 12f);
+                BackroomsGraphicsApplier.ApplyToPipeline(pipeline, absurd);
+
+                Assert.LessOrEqual(pipeline.renderScale, BackroomsGraphicsOptions.MaxRenderScale + 0.001f);
+            }
+            finally
+            {
+                Object.DestroyImmediate(pipeline);
+            }
+        }
+
+        private static GraphicsPresetValues WithRenderScale(in GraphicsPresetValues values, float renderScale) =>
+            new GraphicsPresetValues(renderScale, values.Upscaling, values.Hdr, values.AntiAliasing,
+                values.Msaa, values.Shadows, values.ShadowQuality, values.ShadowDistance, values.ShadowCascades,
+                values.AdditionalLightShadows, values.Bloom, values.MotionBlur, values.DepthOfField,
+                values.ChromaticAberration, values.TextureQuality, values.Anisotropic, values.LodBias);
+
         private static int ReadInt(string yaml, string field)
         {
             var match = Regex.Match(yaml, $@"^\s*{Regex.Escape(field)}:\s*(-?[\d.]+)\s*$", RegexOptions.Multiline);
