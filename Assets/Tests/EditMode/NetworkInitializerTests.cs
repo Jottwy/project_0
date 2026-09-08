@@ -35,9 +35,34 @@ namespace BackroomsSurvival.Tests
                 "[NetworkInitializer] Backend executable not found. Build or copy backrooms_server.exe.");
         }
 
+        /// <summary>
+        /// LA MÁQUINA DE SESIÓN ES DEL PROCESO, no de este componente, y ésa es toda la historia
+        /// de por qué siete tests de esta fixture caían en cascada.
+        ///
+        /// `StartAsHost` pasa por un embudo (`SessionState.Current.RequestStart`) que RECHAZA
+        /// arrancar si ya hay una sesión viva — correcto, evita un segundo backend contra el
+        /// primero. Pero `NetworkInitializer.Shutdown()` **no** cierra la sesión: eso lo hace
+        /// `SessionEndHandler` por otra vía (`RequestLeave` → `NotifyLeaveComplete`). Así que en
+        /// cuanto `HostLaunchesBackendWithValidPath` levantaba un backend DE VERDAD, la fase se
+        /// quedaba fuera de reposo y todos los tests alfabéticamente posteriores que llaman a
+        /// `StartAsHost`/`StartAsJoiner` se iban rechazados: `role=None` en vez de `Host`, y los
+        /// `LogAssert.Expect` sin recibir sus errores porque el código ni llegaba a ejecutarse.
+        ///
+        /// Se ve como siete rojos con causa escrita en el log —«Host ignorado: ya hay sesion en
+        /// fase Connecting»— y NO es una regresión de producción: la salida real de una sesión
+        /// existe y funciona. Es una fixture que no se limpiaba lo que ensucia.
+        ///
+        /// Por eso `SessionState` expone `ResetForTests()` («la suite EditMode corre muchas
+        /// fixtures en el mismo dominio y no pasa por `RuntimeInitializeOnLoadMethod` entre una y
+        /// otra»): estaba escrito para justo esto y esta fixture no lo llamaba.
+        ///
+        /// ANTES y DESPUÉS a propósito: antes para no heredar lo que dejara otra fixture, después
+        /// para no dejárselo a la siguiente.
+        /// </summary>
         [SetUp]
         public void SetUp()
         {
+            SessionState.ResetForTests();
             _go = new GameObject("TestNetInit");
             _init = _go.AddComponent<NetworkInitializer>();
         }
@@ -45,8 +70,11 @@ namespace BackroomsSurvival.Tests
         [TearDown]
         public void TearDown()
         {
+            // `Shutdown` sí es quien mata el backend que algún test haya levantado de verdad
+            // (`KillBackend`), y eso hay que hacerlo antes de soltar el componente.
             _init.Shutdown();
             Object.DestroyImmediate(_go);
+            SessionState.ResetForTests();
         }
 
         [Test]
