@@ -355,7 +355,14 @@ namespace BackroomsSurvival.WorldGen3
                         if (GeometryUtility.TestPlanesAABB(frustum, box)) visible++;
                     }
                 }
-                Debug.Log($"[wg3-diag] censo de luces: vivas={total} en_frustum={visible} (tope URP 256)");
+                // 512 A MANO, y no leído de `ShaderOptions.k_MaxVisibleLightCountDesktop`, que
+                // sería lo suyo: esa constante vive en el assembly
+                // `Unity.RenderPipelines.Universal.Config.Runtime`, que Assembly-CSharp no
+                // referencia, y el build cae con CS0234. Referenciarlo sólo para un log no vale
+                // el acoplamiento. Si alguien cambia el tope en
+                // `Packages/com.unity.render-pipelines.universal-config`, hay que cambiarlo aquí:
+                // son los TRES sitios que tienen que decir lo mismo, con el `.hlsl` de al lado.
+                Debug.Log($"[wg3-diag] censo de luces: vivas={total} en_frustum={visible} (tope URP 512)");
             }
 #endif
 

@@ -440,9 +440,21 @@ namespace BackroomsSurvival.WorldGen3
             // ninguna lámpara tocaba el mundo (ver `Wg3StoreyLayers.Apply`), así que «pocas luces»
             // se estaba juzgando sobre un mundo sin luces. Primero verlas funcionar a 2 × 2; subir
             // la densidad es cosa de una constante, y con el tope de 256 de Forward+ a la vista.
-            const int MaxPerAxis = 2;
+            //
+            // 08-09: las dos condiciones que pedía el párrafo de arriba ya se cumplen. Las
+            // lámparas funcionan —verificado en juego con capturas— y el tope ya no es 256: el
+            // paquete `com.unity.render-pipelines.universal-config` está embebido en `Packages/`
+            // con `k_MaxVisibleLightCountDesktop` a 512, precisamente porque el censo medía entre
+            // 264 y 332 luces en frustum en una planta de oficinas y URP tiraba las sobrantes sin
+            // decir nada. Con 3 × 3 el techo se lee como una rejilla de fluorescentes y no como
+            // cuatro charcos sueltos, que es el aspecto Level 0 que se busca.
+            const int MaxPerAxis = 3;
             // A partir de aquí el techo es alto y el plafón pasa a colgar.
             const float HangHeight = 3f;
+            // Altura del relleno, en metros sobre el suelo del tramo. A la altura del pecho, que
+            // es de donde viene el rebote real (ver el bloque que lo crea). No se toca sin leer
+            // eso: subirlo devuelve el techo negro con un halo, que es el fallo que corrigió.
+            const float FillHeight = 1.2f;
             // Lado mínimo, en metros, para que un tramo se lleve UNA lámpara con sombra.
             //
             // **Y es una por tramo grande, no una por lámpara.** Hasta hoy los dos únicos creadores de
@@ -618,10 +630,29 @@ namespace BackroomsSurvival.WorldGen3
                         var fillGo = new GameObject("light_fill");
                         fillGo.hideFlags = HideFlags.DontSave;
                         fillGo.transform.SetParent(lamp.transform, false);
+                        // **EL RELLENO VA ABAJO, Y ES LA RAZÓN DE QUE EL TECHO SE VEA.**
+                        //
+                        // Nació colgado del plafón, o sea a 30 cm del techo, y ahí no ilumina el
+                        // techo: lo alumbra de refilón. La cantidad de luz que recibe una
+                        // superficie va con el coseno del ángulo entre su normal y el rayo; la
+                        // normal del techo mira hacia abajo, así que una luz pegada a él le llega
+                        // casi paralela y el coseno se va a cero a un metro de distancia. De ahí
+                        // el resultado que se veía: un halo pequeño y quemado alrededor de cada
+                        // panel, y el resto del techo negro.
+                        //
+                        // A la altura del pecho el rayo sube casi vertical, el coseno vale casi
+                        // uno en todo el paño, y de paso es de donde viene el rebote de verdad:
+                        // la luz que ilumina un techo real ha botado antes en el SUELO. Es el
+                        // mismo truco de siempre —una luz falsa puesta donde estaría el rebote—,
+                        // sólo que hasta ahora estaba puesta en el sitio contrario.
+                        fillGo.transform.localPosition = new Vector3(0f, FillHeight - y, 0f);
                         var fill = fillGo.AddComponent<Light>();
                         fill.type = LightType.Point;
                         fill.range = 18f;
-                        fill.intensity = light.intensity * 0.22f;
+                        // 0,30 y no 0,22: al bajarlo dos metros, el techo queda a más del doble de
+                        // distancia y la caída va con el cuadrado. Es la misma luz en el techo que
+                        // antes, repartida por todo el paño en vez de amontonada en un círculo.
+                        fill.intensity = light.intensity * 0.3f;
                         // Hacia el gris: el rebote de una pared beige no devuelve el cálido de la
                         // lámpara, lo lava. Sin esto el relleno tiñe la sala de amarillo.
                         fill.color = Color.Lerp(light.color, Color.white, 0.5f);
