@@ -66,8 +66,10 @@ namespace BackroomsSurvival.UI
 
         /// <summary>
         /// Mientras esto vale true, escribir en un control NO cuenta como que el jugador lo tocó.
-        /// Sin él, volcar un preset sobre las filas dispararía el listener de cada una y el
-        /// desplegable global se pondría en "Custom" justo al elegir un escalón.
+        ///
+        /// SEGUNDA LÍNEA DE DEFENSA, no la primera: la primera es que todo se escribe con
+        /// <c>SetValueWithoutNotify</c>. Esta bandera sola NO bastaba — en Play se cazó un aviso
+        /// de desplegable con la bandera ya bajada, y de ahí salía el vuelco a Ultra.
         /// </summary>
         private bool _writingWidgets;
 
@@ -122,12 +124,7 @@ namespace BackroomsSurvival.UI
         {
             WriteWidgets(UserOptions.ToValues());
 
-            if (_presetDropdown != null)
-            {
-                _writingWidgets = true;
-                _presetDropdown.value = Mathf.Clamp(UserOptions.Preset.Value, 0, GraphicsQualityPresets.Labels.Length - 1);
-                _writingWidgets = false;
-            }
+            SetDropdown(_presetDropdown, UserOptions.Preset.Value);
         }
 
         /// <inheritdoc/>
@@ -154,14 +151,7 @@ namespace BackroomsSurvival.UI
             if (_writingWidgets)
                 return;
 
-            var values = ReadWidgets();
-            if (_presetDropdown != null)
-            {
-                _writingWidgets = true;
-                _presetDropdown.value = (int)GraphicsQualityPresets.Match(values);
-                _writingWidgets = false;
-            }
-
+            SetDropdown(_presetDropdown, (int)GraphicsQualityPresets.Match(ReadWidgets()));
             MarkDirty();
         }
 
@@ -262,22 +252,31 @@ namespace BackroomsSurvival.UI
                 slider.onValueChanged.AddListener(_ => OnDetailChanged());
         }
 
+        // TODO ESTO ESCRIBE *WithoutNotify*, y no es cosmetico: es lo unico que corta el bucle
+        // que se cazo en Play. Un desplegable puede avisar de un cambio DESPUES de que la bandera
+        // `_writingWidgets` se haya bajado -- se vio con `writing=False` sin que nadie tocara nada.
+        // Ese aviso recalculaba el preset a Custom, el desplegable global rebotaba al ultimo
+        // escalon (Ultra) y ese rebote volcaba Ultra sobre las diecisiete filas; un Apply despues,
+        // quedaba guardado. Escribiendo sin avisar, el bucle no puede empezar.
         private static void SetDropdown(TMP_Dropdown dropdown, int value)
         {
-            if (dropdown != null)
-                dropdown.value = Mathf.Clamp(value, 0, Mathf.Max(0, dropdown.options.Count - 1));
+            if (dropdown == null)
+                return;
+
+            dropdown.SetValueWithoutNotify(Mathf.Clamp(value, 0, Mathf.Max(0, dropdown.options.Count - 1)));
+            dropdown.RefreshShownValue();
         }
 
         private static void SetToggle(Toggle toggle, bool value)
         {
             if (toggle != null)
-                toggle.isOn = value;
+                toggle.SetIsOnWithoutNotify(value);
         }
 
         private static void SetSlider(Slider slider, float value)
         {
             if (slider != null)
-                slider.value = Mathf.Clamp(value, slider.minValue, slider.maxValue);
+                slider.SetValueWithoutNotify(Mathf.Clamp(value, slider.minValue, slider.maxValue));
         }
 
         private static int Read(TMP_Dropdown dropdown, int fallback) => dropdown != null ? dropdown.value : fallback;
