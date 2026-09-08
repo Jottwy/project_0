@@ -15288,7 +15288,7 @@ luces que sí son barribles: en el Nivel 0 servido, la mayoría no lo son. Queda
 nombre — o lo consulta el propio creador de luces de WG3, o el ajuste miente. Tampoco entra aquí
 ningún escalón por encima del asset (D2), ni el reparto de calidad por plataforma.
 
-## ADR-134 enmienda 1 — verificado en Play, y el peaje del editor es MAYOR de lo que decía D6 (2026-09-08)
+## ADR-134 — Enmienda 1: verificado en Play, y el peaje del editor es MAYOR de lo que decía D6 (2026-09-08)
 
 **Verificado en Play** (`isPlaying=True`, escena `STP_Showcase`), aplicando tres escalones y
 LEYENDO de vuelta el pipeline EN USO, no un asset de test:
