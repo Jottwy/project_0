@@ -38,9 +38,26 @@ namespace BackroomsSurvival.Gameplay.Medical
         /// <summary>Nada de brillo: es tela.</summary>
         public const float ClothSmoothness = 0.08f;
 
-        /// <summary>Radio de la banda, en metros. Un pelo por encima del antebrazo para no coserse
-        /// dentro de la piel — un z-fighting en un objeto que llevas en la cara se ve fatal.</summary>
+        /// <summary>
+        /// Radio de la banda en los brazos de PRIMERA persona, en metros. Un pelo por encima del
+        /// antebrazo para no coserse dentro de la piel — un z-fighting en un objeto que llevas en
+        /// la cara se ve fatal.
+        /// </summary>
         public const float DefaultRadius = 0.058f;
+
+        /// <summary>
+        /// El mismo radio para el avatar remoto, y es MENOR porque los dos brazos no miden lo mismo:
+        /// los de primera persona son el viewmodel, deliberadamente gruesos para que se vean bien en
+        /// pantalla, y el cuerpo en tercera persona es un humano a escala. Con el radio de 1P la
+        /// venda sobresalía del antebrazo y parecía una escayola.
+        ///
+        /// MEDIDO SOBRE LA MALLA, y las dos veces que se estimó a ojo salió mal en direcciones
+        /// opuestas: 0,058 dejaba una escayola y 0,030 se hundía dentro del brazo. Los vértices que
+        /// mandan `LowerArm.*` en la franja donde la venda se pone dan mediana 0,0300 m y percentil
+        /// 90 0,0431 m — por eso 0,030 desaparecía: era exactamente la mediana, o sea la mitad de
+        /// la piel por fuera. 0,045 cubre el p90 con un margen de holgura.
+        /// </summary>
+        public const float ProxyRadius = 0.045f;
 
         /// <summary>Alto de la banda a lo largo del hueso, en metros: unas cuantas vueltas.</summary>
         public const float DefaultLength = 0.11f;

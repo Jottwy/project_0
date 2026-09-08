@@ -757,7 +757,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   _leftForearmBone: LowerArm.L
   _rightForearmBone: LowerArm.R
-  _radius: 0.058
+  _radius: 0.045
   _length: 0.11
   _alongBone: 0.55
 --- !u!95 &1662395652399180242 stripped

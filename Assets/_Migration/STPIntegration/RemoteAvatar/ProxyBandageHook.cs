@@ -33,7 +33,9 @@ namespace BackroomsSurvival.Migration.STPIntegration
         [SerializeField] private string _rightForearmBone = "LowerArm.R";
 
         [Header("Banda")]
-        [SerializeField, Min(0f)] private float _radius = BandageVisual.DefaultRadius;
+        [Tooltip("Radio de la banda. Es el del PROXY, casi la mitad que el de primera " +
+                 "persona: aquellos brazos son el viewmodel y estos un humano a escala.")]
+        [SerializeField, Min(0f)] private float _radius = BandageVisual.ProxyRadius;
         [SerializeField, Min(0f)] private float _length = BandageVisual.DefaultLength;
         [SerializeField, Range(0f, 1f)] private float _alongBone = BandageVisual.DefaultAlongBone;
 

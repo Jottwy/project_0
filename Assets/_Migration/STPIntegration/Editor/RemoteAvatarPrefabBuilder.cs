@@ -948,7 +948,7 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
                 hook = root.AddComponent<ProxyBandageHook>();
 
             var so = new SerializedObject(hook);
-            SetFeederFloat(so, "_radius", BandageVisual.DefaultRadius);
+            SetFeederFloat(so, "_radius", BandageVisual.ProxyRadius);
             SetFeederFloat(so, "_length", BandageVisual.DefaultLength);
             SetFeederFloat(so, "_alongBone", BandageVisual.DefaultAlongBone);
             so.ApplyModifiedPropertiesWithoutUndo();
