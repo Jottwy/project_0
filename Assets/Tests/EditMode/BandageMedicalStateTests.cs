@@ -50,6 +50,23 @@ namespace BackroomsSurvival.Tests
         /// Un rasguño no abre una herida. Sin este corte, rozar una pared dejaría los dos brazos
         /// vendables y la venda perdería todo su significado.
         /// </summary>
+        /// <summary>
+        /// LA REGLA DE ALPHA 1 (Joel, 08-09): venga el golpe de donde venga, la herida sale en el
+        /// brazo IZQUIERDO. Es el que queda libre, porque el rollo de gasa se empuña con la derecha.
+        /// </summary>
+        [Test]
+        public void EveryWoundGoesToTheLeftArmForNow()
+        {
+            var fromTheRight = _state.ReportDamage(20f, _player.position + _player.right * 0.4f, Vector3.zero, _player);
+            var blind = _state.ReportDamage(20f, Vector3.zero, Vector3.zero, null);
+
+            Assert.AreEqual(BodyPartSide.Left, fromTheRight, "un golpe por la derecha sigue hiriendo la izquierda");
+            Assert.AreEqual(BodyPartSide.Left, blind);
+            Assert.IsFalse(_state.IsWounded(BodyPartSide.Right), "el brazo derecho no se usa todavía");
+            Assert.IsTrue(_state.TryGetWoundedSide(out var toTreat));
+            Assert.AreEqual(BodyPartSide.Left, toTreat, "y la venda trata ese mismo brazo");
+        }
+
         [Test]
         public void ScratchesDoNotWound()
         {
@@ -60,9 +77,16 @@ namespace BackroomsSurvival.Tests
             Assert.IsFalse(_state.HasTreatableWound);
         }
 
+        /// <summary>
+        /// Con la restricción de Alpha 1 APAGADA vuelve a mandar el golpe. Se prueba igualmente
+        /// porque el reparto por dirección sigue vivo debajo y es lo que se encenderá el día que
+        /// haya más zonas: sin esto, ese código se quedaría sin una sola prueba.
+        /// </summary>
         [Test]
-        public void AHitOnTheRightWoundsTheRightArm()
+        public void WithoutTheAlpha1RestrictionAHitOnTheRightWoundsTheRightArm()
         {
+            _state.RestrictToLeftArm = false;
+
             var side = _state.ReportDamage(20f, _player.position + _player.right * 0.4f, Vector3.zero, _player);
 
             Assert.AreEqual(BodyPartSide.Right, side);
@@ -78,6 +102,7 @@ namespace BackroomsSurvival.Tests
         [Test]
         public void TheSideIsReadInThePlayersOwnAxes()
         {
+            _state.RestrictToLeftArm = false;
             _player.rotation = Quaternion.Euler(0f, 180f, 0f);
 
             var side = _state.ReportDamage(20f, _player.position + Vector3.right * 0.4f, Vector3.zero, _player);
@@ -92,6 +117,7 @@ namespace BackroomsSurvival.Tests
         [Test]
         public void ThePushComesFromTheOppositeSide()
         {
+            _state.RestrictToLeftArm = false;
             var side = _state.ReportDamage(20f, Vector3.zero, _player.right * 5f, _player);
 
             Assert.AreEqual(BodyPartSide.Left, side);
@@ -104,6 +130,7 @@ namespace BackroomsSurvival.Tests
         [Test]
         public void DamageWithoutADirectionSpreadsAcrossBothArms()
         {
+            _state.RestrictToLeftArm = false;
             var first = _state.ReportDamage(20f, Vector3.zero, Vector3.zero, null);
             var second = _state.ReportDamage(20f, Vector3.zero, Vector3.zero, null);
 
@@ -117,10 +144,10 @@ namespace BackroomsSurvival.Tests
         [Test]
         public void BandagingClosesTheWound()
         {
-            _state.ReportDamage(20f, _player.position + _player.right * 0.4f, Vector3.zero, _player);
+            _state.ReportDamage(20f, Vector3.zero, Vector3.zero, _player);
 
-            Assert.IsTrue(_state.ApplyBandage(BodyPartSide.Right));
-            Assert.AreEqual(BodyPartCondition.Bandaged, _state.ConditionOf(BodyPartSide.Right));
+            Assert.IsTrue(_state.ApplyBandage(BodyPartSide.Left));
+            Assert.AreEqual(BodyPartCondition.Bandaged, _state.ConditionOf(BodyPartSide.Left));
             Assert.IsFalse(_state.HasTreatableWound);
         }
 
@@ -133,7 +160,7 @@ namespace BackroomsSurvival.Tests
         {
             Assert.IsFalse(_state.ApplyBandage(BodyPartSide.Left), "un brazo sano no gasta venda");
 
-            _state.ReportDamage(20f, _player.position - _player.right * 0.4f, Vector3.zero, _player);
+            _state.ReportDamage(20f, Vector3.zero, Vector3.zero, _player);
             Assert.IsTrue(_state.ApplyBandage(BodyPartSide.Left));
             Assert.IsFalse(_state.ApplyBandage(BodyPartSide.Left), "una venda no se pone dos veces");
         }
@@ -145,18 +172,19 @@ namespace BackroomsSurvival.Tests
         [Test]
         public void ANewHitTearsTheBandageOff()
         {
-            _state.ReportDamage(20f, _player.position + _player.right * 0.4f, Vector3.zero, _player);
-            _state.ApplyBandage(BodyPartSide.Right);
+            _state.ReportDamage(20f, Vector3.zero, Vector3.zero, _player);
+            _state.ApplyBandage(BodyPartSide.Left);
 
-            _state.ReportDamage(20f, _player.position + _player.right * 0.4f, Vector3.zero, _player);
+            _state.ReportDamage(20f, Vector3.zero, Vector3.zero, _player);
 
-            Assert.AreEqual(BodyPartCondition.Wounded, _state.ConditionOf(BodyPartSide.Right));
+            Assert.AreEqual(BodyPartCondition.Wounded, _state.ConditionOf(BodyPartSide.Left));
         }
 
         /// <summary>La herida que ofrece es la ÚLTIMA: vendarse trata lo que acaba de doler.</summary>
         [Test]
         public void TheOfferedWoundIsTheMostRecentOne()
         {
+            _state.RestrictToLeftArm = false;
             _state.ReportDamage(20f, _player.position - _player.right * 0.4f, Vector3.zero, _player);
             _state.ReportDamage(20f, _player.position + _player.right * 0.4f, Vector3.zero, _player);
 
@@ -177,16 +205,16 @@ namespace BackroomsSurvival.Tests
         [Test]
         public void DeathClearsTheBodyAndAnnouncesIt()
         {
-            _state.ReportDamage(20f, _player.position + _player.right * 0.4f, Vector3.zero, _player);
-            _state.ApplyBandage(BodyPartSide.Right);
+            _state.ReportDamage(20f, Vector3.zero, Vector3.zero, _player);
+            _state.ApplyBandage(BodyPartSide.Left);
 
             var announced = new List<(BodyPartSide, BodyPartCondition)>();
             _state.Changed += (side, condition) => announced.Add((side, condition));
 
             _state.ResetAll();
 
-            Assert.AreEqual(BodyPartCondition.Healthy, _state.ConditionOf(BodyPartSide.Right));
-            CollectionAssert.Contains(announced, (BodyPartSide.Right, BodyPartCondition.Healthy));
+            Assert.AreEqual(BodyPartCondition.Healthy, _state.ConditionOf(BodyPartSide.Left));
+            CollectionAssert.Contains(announced, (BodyPartSide.Left, BodyPartCondition.Healthy));
         }
 
         /// <summary>Una zona que ya estaba sana no anuncia nada: repintar por nada es la forma de

@@ -62,15 +62,30 @@ namespace BackroomsSurvival.Gameplay.Medical
         /// </summary>
         private const float SideDeadZoneMetres = 0.02f;
 
+        /// <summary>
+        /// ALPHA 1: todo va al brazo IZQUIERDO (decisión de Joel, 08-09). Con esto en <c>true</c>
+        /// las heridas nacen siempre a la izquierda, la venda trata la izquierda y es ahí donde se
+        /// ve — el lado deja de decidirlo el golpe.
+        ///
+        /// Y ES COHERENTE CON LO QUE SE VE EN LAS MANOS: el rollo de gasa se empuña con la DERECHA
+        /// (`Hand.R`), así que el brazo que queda libre para vendarse es el izquierdo. Un vendaje
+        /// del brazo derecho pediría cambiar de mano, que es animación y está fuera de Alpha 1.
+        ///
+        /// Es una propiedad de INSTANCIA y no una constante para que los tests puedan apagarla y
+        /// seguir cubriendo el reparto por dirección — que sigue vivo debajo, listo para el día que
+        /// haya más zonas. El único sitio que la deja en su valor por defecto es el juego.
+        /// </summary>
+        public bool RestrictToLeftArm { get; set; } = true;
+
         private readonly BodyPartCondition[] _conditions = new BodyPartCondition[2];
 
         // Última zona herida: es la que ofrece TryGetWoundedSide, para que vendarse trate lo que
         // acaba de doler y no lo que lleva medio mundo abierto.
-        private BodyPartSide _lastWounded = BodyPartSide.Right;
+        private BodyPartSide _lastWounded = BodyPartSide.Left;
 
         // Reparto de los impactos que no dicen lado (daño sin punto ni fuerza: caídas, veneno).
         // Alterna en vez de sortear: un test no puede afirmar nada sobre un Random.
-        private BodyPartSide _nextFallback = BodyPartSide.Right;
+        private BodyPartSide _nextFallback = BodyPartSide.Left;
 
         /// <summary>Zona y estado nuevo. Se dispara SÓLO cuando el estado cambia de verdad.</summary>
         public event Action<BodyPartSide, BodyPartCondition> Changed;
@@ -171,6 +186,11 @@ namespace BackroomsSurvival.Gameplay.Medical
         /// </summary>
         private BodyPartSide ResolveSide(Vector3 hitPoint, Vector3 hitForce, Transform reference)
         {
+            // Alpha 1: el lado no se decide, ES el izquierdo. Va lo PRIMERO para que quede claro que
+            // todo lo de abajo está apagado, no roto.
+            if (RestrictToLeftArm)
+                return BodyPartSide.Left;
+
             if (reference != null)
             {
                 if (hitPoint != Vector3.zero)

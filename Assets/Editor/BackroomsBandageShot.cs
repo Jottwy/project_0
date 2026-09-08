@@ -22,7 +22,15 @@ namespace BackroomsSurvival.EditorTools
     /// </summary>
     public static class BackroomsBandageShot
     {
-        private const string OutDir = "Temp/captures";
+        /// <summary>
+        /// Las capturas NO van a <c>Temp/</c>, aunque el molde de la linterna las deje ahí: Unity en
+        /// modo batch **borra `Temp/` al cerrar**, así que un `-executeMethod` escribía las PNG y se
+        /// las llevaba por delante al salir — exit 0, log diciendo que las había escrito, y ni un
+        /// fichero en el disco. Con el editor abierto no se nota, y por eso el molde no lo sufre.
+        ///
+        /// `Builds/` también está en `.gitignore` (línea 7), así que esto no ensucia el repo.
+        /// </summary>
+        private const string OutDir = "Builds/Captures";
         private const int Width = 1280;
         private const int Height = 720;
 
@@ -237,10 +245,10 @@ namespace BackroomsSurvival.EditorTools
             {
                 SetActiveDeep(instance);
 
+                // SOLO EL IZQUIERDO: es la regla de Alpha 1 (`PlayerMedicalState.RestrictToLeftArm`),
+                // y vendar los dos aquí daría una foto de algo que en juego no pasa nunca.
                 var left = Find(instance, "Forearm.L");
-                var right = Find(instance, "Forearm.R");
                 var leftBand = AttachAndReport(left, "1P Forearm.L", BandageVisual.DefaultRadius);
-                var rightBand = AttachAndReport(right, "1P Forearm.R", BandageVisual.DefaultRadius);
 
                 var eye = Find(instance, "Camera");
                 Vector3 eyePos = eye != null ? eye.position : instance.transform.position;
@@ -254,9 +262,6 @@ namespace BackroomsSurvival.EditorTools
                 if (leftBand != null)
                     Shoot(cam, camT, leftBand.transform.position + new Vector3(-0.10f, 0.12f, -0.22f),
                           leftBand.transform.position, 32f, "venda_1p_detalle_izq");
-                if (rightBand != null)
-                    Shoot(cam, camT, rightBand.transform.position + new Vector3(0.10f, 0.12f, -0.22f),
-                          rightBand.transform.position, 32f, "venda_1p_detalle_der");
             }
             finally
             {
@@ -288,10 +293,9 @@ namespace BackroomsSurvival.EditorTools
                 // hay que fotografiar es el avatar tal y como sale del pool.
                 instance.SetActive(true);
 
+                // Sólo el izquierdo, por lo mismo que en primera persona.
                 var left = Find(instance, "LowerArm.L");
-                var right = Find(instance, "LowerArm.R");
                 var leftBand = AttachAndReport(left, "3P LowerArm.L", BandageVisual.ProxyRadius);
-                AttachAndReport(right, "3P LowerArm.R", BandageVisual.ProxyRadius);
 
                 // De frente, a la altura del pecho: el encuadre en el que un jugador ve a otro.
                 var head = Find(instance, "Head");
