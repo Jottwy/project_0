@@ -1,3 +1,4 @@
+using BackroomsSurvival.Gameplay;
 using BackroomsSurvival.Net;
 using UnityEngine;
 
@@ -30,8 +31,10 @@ namespace BackroomsSurvival.Migration.STPIntegration
     ///
     /// No sentinel is needed (unlike ProxyHitReactionHook): the light starts disabled and
     /// <c>_applied = false</c> describes that truthfully, so a freshly pooled proxy is already in the
-    /// state the field claims. Only an EDGE touches the Light; a peer with no torch costs one bool
-    /// comparison per frame.
+    /// state the field claims. Only an EDGE touches the Light's enabled state; a peer with no torch
+    /// costs one bool comparison per frame. The one per-frame write is the ADR-130 storey layer
+    /// (<c>TorchShadowCaster.ApplyStoreyLayer</c>), and only while lit, and only when the peer
+    /// crosses a storey — without it the light illuminates B3 alone, wherever the peer stands.
     ///
     /// Removable: delete the file and peers stop casting light; nothing else changes.
     /// </summary>
@@ -72,6 +75,13 @@ namespace BackroomsSurvival.Migration.STPIntegration
             if (_hand == null)
                 return;
 
+            // ADR-130: la luz nace con la capa de render por defecto (bit 0), que con los tres
+            // sótanos es B3 y ninguna otra planta — el peer alumbraría en el aire en la calle y en
+            // B1/B2. Sigue a la cota del peer cada frame mientras está encendida; es un entero
+            // comparado antes de escribirse (mismo criterio que TorchShadowCaster para el local).
+            if (_applied && _light != null)
+                TorchShadowCaster.ApplyStoreyLayer(_light);
+
             if (!TryResolveLightOn(out bool on) || on == _applied)
                 return;
 
@@ -81,7 +91,12 @@ namespace BackroomsSurvival.Migration.STPIntegration
                 _light = CreateLight();
 
             if (_light != null)
+            {
                 _light.enabled = on;
+                // El primer frame encendida también tiene que salir en su planta, no en B3.
+                if (on)
+                    TorchShadowCaster.ApplyStoreyLayer(_light);
+            }
         }
 
         /// <summary>Creates the single Light instance, lazily — a peer that never lights anything

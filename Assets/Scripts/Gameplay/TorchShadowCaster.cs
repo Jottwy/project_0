@@ -1,4 +1,5 @@
 using BackroomsSurvival.Net;
+using BackroomsSurvival.WorldGen3;
 using PolymindGames;
 using PolymindGames.MovementSystem;
 using PolymindGames.WieldableSystem;
@@ -36,7 +37,18 @@ namespace BackroomsSurvival.Gameplay
     /// NOT A PER-FRAME COST. <c>LightEffect</c> writes intensity/range/color every frame but never
     /// touches <c>shadows</c>, so the promotion survives untouched; and it drives
     /// <c>Light.enabled</c>, so an unlit torch renders no shadow map without this hook doing anything.
-    /// Only an EDGE (wieldable swap, equip, rig rebuild) writes to a Light.
+    /// Only an EDGE (wieldable swap, equip, rig rebuild) writes shadow state to a Light.
+    ///
+    /// LA CAPA DE PLANTA (ADR-130). El mundo WG3 reparte la luz por planta con
+    /// <c>Wg3StoreyLayers</c>: una pared sólo la ilumina una luz que comparta su capa de render. Toda
+    /// luz que el jugador lleva encima nace con la capa por defecto de Unity (bit 0) puesta en el
+    /// prefab — la <c>FireLight</c> de la antorcha del vendor, el fogonazo del Marlin, el haz de la
+    /// linterna — y con el desplazamiento de los tres sótanos el bit 0 es B3 y ninguna otra planta:
+    /// la antorcha alumbraba en el aire en toda la calle y en B1/B2. Este hook, que ya conoce todas
+    /// las luces del wieldable activo, les escribe cada frame la capa de la cota a la que están
+    /// (<see cref="ApplyStoreyLayer"/>); es un entero comparado antes de escribirse, y sólo cambia
+    /// al cruzar de planta. Es el mismo criterio item-agnóstico de arriba: la lámpara que exista
+    /// mañana queda cubierta sin tocar su prefab, que en el vendor no podemos tocar.
     ///
     /// Self-bootstraps on its own DontDestroyOnLoad object (mirrors <c>PlayerPoseTransmitter</c> /
     /// <c>PhantomAttackHandler</c>): no scene wiring, and immune to the STP rig rebuild. Fully
@@ -116,6 +128,13 @@ namespace BackroomsSurvival.Gameplay
 
         private void Update()
         {
+            // Cada frame y ANTES del gate de cadencia: la capa sigue a la cota del jugador, y el
+            // cuarto de segundo del resolve sería un cuarto de segundo alumbrando la planta de
+            // abajo al subir una escalera. Es un entero comparado por luz; no hay recorrido de
+            // jerarquía aquí (el array lo llena el resolve).
+            for (int i = 0; i < _wieldableLights.Length; i++)
+                ApplyStoreyLayer(_wieldableLights[i]);
+
             _accum += Time.unscaledDeltaTime;
             if (_accum < ResolveInterval)
                 return;
@@ -221,6 +240,26 @@ namespace BackroomsSurvival.Gameplay
             }
 
             return best;
+        }
+
+        /// <summary>
+        /// ADR-130 — deja a <paramref name="light"/> en la capa de render de la planta en la que está
+        /// AHORA, la misma que el mundo da a sus paredes (<c>Wg3StoreyLayers.ForLight</c>). Devuelve
+        /// si hubo que escribir. Vale para cualquier luz que se mueva con alguien: el wieldable del
+        /// jugador local y la luz de mano de un peer (<c>ProxyLightHook</c>). Tolera la luz
+        /// destruida (Unity == null) y no toca nada si ya está en su capa.
+        /// </summary>
+        public static bool ApplyStoreyLayer(Light light)
+        {
+            if (light == null)
+                return false;
+
+            int mask = (int)Wg3StoreyLayers.ForLight(light.transform.position.y);
+            if (light.renderingLayerMask == mask)
+                return false;
+
+            light.renderingLayerMask = mask;
+            return true;
         }
 
         private void Promote(Light light)
