@@ -54,43 +54,42 @@
 - **Robapieles, seis invariantes (ADR-038):** `revealed` sin latch; el atasco es avance proyectado, NO `MoveResult::blocked` (el caso real
   es deslizar contra la pared); alcance de ataque ≠ radio de cuerpo con `segment_is_clear`; rangos de `PhantomTraits` centrados en 1,0
   (test sobre 400 criaturas); `vocal_seq` nunca vuelve a 0 ni va en ráfaga; el asesino del agarre lo resuelve el CLIENTE, sin tocar el wire.
-- **Cadena de respawn y muerte**: `RespawnRequester` + `AuthoritativePoseApplier` + gate `SnapPending` en
-  `PlayerPoseTransmitter`. Dependencias cruzadas; cambiar sin re-test da rubber-banding.
+- **Cadena de respawn y muerte**: `RespawnRequester` + `AuthoritativePoseApplier` + gate `SnapPending` en `PlayerPoseTransmitter`; sin re-test, rubber-banding.
 - **`PHASE1_GOLDENS`** (`grid_gen/tests.rs`): 16 huellas FNV-1a, 4 capas × 4 semillas, jamás regeneradas.
 - **Medias paredes**: `MinKneeWallHeight` 1,2 m y `MinLintelClearance` 1,9 m salen del salto real de `FPS_Player.prefab`; bajarlos exige enmienda a ADR-033.
-- **`straight_bias` / `branch_persistence`** en `LAYER_PROFILES`: activarlos cambia la topología de todo mundo ya
-  generado — breaking change de semilla, exige ADR.
+- **`straight_bias` / `branch_persistence`** en `LAYER_PROFILES`: activarlos cambia la topología de todo mundo ya generado — breaking de semilla, exige ADR.
 - **Clases nativas de STP/PolymindGames**: nunca editarlas — `PolymindGames.asmdef` no puede referenciar `Assembly-CSharp`; hook externo o corregir después.
 - **Gate volumétrico near-spawn**: `volumetric_grid` sólo en el chunk del showcase, y sigue deshabilitado.
 - Celdas Rust de 2,5 m: la conversión celda→tile vive SÓLO en Unity (`tileX = cellX / 2`). La de WG3 mide 0,5: toda constante heredada cambia de significado.
 - `SilentHealthUIBridge` sincroniza `fillAmount` por reflexión: cambios en `HealthUI`/`Health` deben conservar los nombres.
 - **Dado por bueno por Joel (05/06-09)**: luces 2,7/3,2 con alcance 11/9 m y ambiente cálido plano; techos 300/380/1,15; `UvPerMetre` 0,5; feeder 3P 1,5/4,5.
+- **Aplicar gráficos EN EL EDITOR ensucia** `PC_RPAsset.asset` y `QualitySettings.asset`: al acabar, dejar `High` y revertir. En build no pasa.
 
 ## Deuda declarada
-- **`#![allow(dead_code)]` de crate** (`backend/src/main.rs`): recontado el 2026-09-05, **294 warnings únicos en el
-  binario y 308 con `--all-targets`** — eran 112/121 el 10-08, o sea ×2,6 en un mes. El argumento que lo sostenía
-  («~120 sitios en movimiento») ya no describe lo que hay. Bajarlo por módulo es sesión propia y puede poner clippy en rojo.
+- **`#![allow(dead_code)]` de crate** (`backend/src/main.rs`): 2026-09-05, **294 warnings únicos y 308 con `--all-targets`** (112/121 el 10-08: ×2,6 en un mes).
+  El argumento que lo sostenía («~120 sitios en movimiento») ya no describe lo que hay; bajarlo por módulo es sesión propia y puede poner clippy en rojo.
 - **`world/volumetric_grid.rs`** (3 702 líneas) sólo vive tras `seed == SHOWCASE_SEED`, pero **NO es borrable**: su
   campo está en `ChunkView` y lo consume `ChunkVisualLifecycle.cs:91-93` (entra en el hash de revisión). Retirarlo
   es bump de wire con ADR, no un `git rm`. **B5.**
 - **`scale` y `density`**: espejos C#↔Rust con golden values copiados a mano en dos suites, sin oráculo JSON que los ate (`scale.rs:147`, `density.rs:225`).
-- **WG3, del contrato para adelante**: relieve de techo sin hacer aunque `height_cm` es por tramo; el dintel
-  (`Wg3Carve` con banda vertical) sigue sin usarse; salas ≥ 300 m² con una sola entrada, 31,6 %; catálogo apagado
-  (0,6 piezas por región: las 19 miden para el mundo viejo). Pozos sin salida de la cámara: loot y cuerdas son ADR-126 D6, lista v2.
+- **WG3, del contrato para adelante**: relieve de techo sin hacer aunque `height_cm` es por tramo; el dintel (`Wg3Carve`, banda vertical) sin usar;
+  salas ≥ 300 m² con una entrada, 31,6 %; catálogo apagado (0,6 piezas/región: las 19 miden el mundo viejo); pozos sin salida — ADR-126 D6, lista v2.
 - **Level 0, no bloqueante**: un solo aire (ADR-103 sin consumidor), props decorativos sin colocar, sin señal de planta
   en HUD, fuga de luz entre plantas, claims sin guarda de aislamiento (ADR-110 D4), contenedores host-local, planta −1.
-- **Verticalidad jugable** (cruzar de capa por escalera o hueco): diferida a post-Alpha 1 con ADR propio; nota de
-  backlog anclada en `DECISIONS.md`. `require_walkable_above`/`_below` se generan y ningún llamador los consume.
-- **Farmeo y almacenaje**: E4 pendiente y Bloque A sin empezar (dos decisiones de Joel); el sync de contenedores
-  construidos está diferido y pide ADR nuevo con bump de wire, 2-3 días (`docs/FARMING-ROADMAP.md:451`).
+- **Verticalidad jugable** (cruzar de capa por escalera o hueco): diferida a post-Alpha 1 con ADR propio, nota anclada en `DECISIONS.md`;
+  `require_walkable_above`/`_below` se generan y ningún llamador los consume.
+- **Farmeo y almacenaje**: E4 y Bloque A sin empezar (dos decisiones de Joel); el sync de contenedores construidos pide ADR y bump de wire, 2-3 días.
 - **Atribución de teleports**: `TP_WATCH`/`RESOLVE_DIAG` activos en `game_loop.rs` («REMOVE after diagnosis»); falta playtest y LEER los logs (ADR-026).
 - **Entidades PvE (Lurker/Crawler/Shadow) con daño DESACTIVADO** desde 2026-07-07: eran la causa de las muertes silenciosas. Apagadas a propósito.
 - **`docs/DECISIONS.md`** (1,38 MB) ilegible entero; se lee por `DECISIONS-INDEX.md` + `grep`. Alternativa sin decidir: un fichero por ADR.
 - **`STOREY_HEIGHT_CM` (332) no sube con un número** (380–480: 1/9 regiones válidas); `storey_of_floor_cm` clasifica una planta ABAJO en la costura de 664.
-- **Sin ver en juego (06-09)**: monitor y despacho oscuro, recepción, techo roto, decaimiento del cliente en B3 (r2b), pasada en Play del
-  audio (clips sintéticos); los carteles SÍ (espejo cazado). El runner del editor ya NO es deuda: le faltaba FOCO (34.ª tanda).
+- **Sin ver en juego (06-09)**: monitor y despacho oscuro, recepción, techo roto, decaimiento del cliente en B3 (r2b), audio en Play; carteles SÍ.
 - **Venda**: sólo el daño LOCAL abre heridas — el de entidades y robapieles es autoritativo y llega por `SetHealthSilent` sin evento (ADR-025), así
   que hoy no deja herida que vendar; cerrarlo es wire con ADR. Y el estado es VOLÁTIL por alcance (Joel): persistirlo toca el schema de guardado.
+- **«Additional Light Shadows» promete más de lo que hace**: las luces de WG3 nacen `DontSave` y `FindObjectsByType` no las ve (ADR-134, «lo que queda fuera»).
+- **Audio + gráficos MEZCLADOS de idioma**: gráficos en inglés (ADR-134, decisión Joel), voz en español (ADR-046).
+- **El gate de C# miente en un worktree**: `csproj` y `Library` son del clon principal (receta en `docs/DEV-ENVIRONMENT.md`), y el `.csproj`
+  es una FOTO: tras tocar un `.asmdef` da falso rojo o falso verde hasta que Unity refresque.
 - Menores: `MPTRACE` sin commitear en cuatro ficheros del vendor STP; `TODO(balance)` de loot; doc-comments stale.
 
 ## Últimas tandas
@@ -104,6 +103,16 @@
 - **El primer horneado del avatar BORRÓ el `RealForm`** del robapieles (falta `MeshyImports`, gitignored), con exit 0 y sólo un aviso: se vio como
   −81 líneas de diff. Re-horneado y verificado. Radio de 3P **medido sobre la malla** tras dos estimaciones a ojo fallidas en sentidos opuestos.
   15 tests nuevos verdes, CompileCheck 0 ×4, capturas en los dos rigs; los hooks siguen sin verse en Play.
+
+### 2026-09-08 — 39.ª tanda: menú de calidad gráfica (ADR-134 enmienda 1)
+- Seis escalones + Custom + 17 ajustes en la pestaña Graphics; ni DLSS ni raytracing: son HDRP-only, así que la fila es Off/FSR 1.0/STP.
+  (`GraphicsQualityPresets.cs`, `BackroomsGraphicsOptionsUI.cs`, `GraphicsOptionsRowsBuilder.cs`): patrón ADR-046.
+- BUG: `onValueChanged` con `_writingWidgets` bajada rebota al Ultra. Arreglo:
+  `SetValueWithoutNotify`/`SetIsOnWithoutNotify` (`BackroomsGraphicsOptionsUI.cs`), test sin él rojo (1/6).
+- ADR-134+1: UN solo pipeline en caliente. CAPACIDADES (soportes) vs PRESUPUESTOS (escala/muestras/dist/atlas).
+  Antialiasing por cámara; «sin sombras» = dist 0 (`BackroomsGraphicsApplier.cs`).
+- Verificado EN PLAY (STP_Showcase): Very Low (0,6x/1/0 m), Ultra (1,25x/8/120 m), High (1x/2/50 m).
+  EditMode headless 26/26 en tres fixtures. CompileCheck 0 ×4.
 
 ### 2026-09-07 — 37.ª tanda: la mano al milímetro y la cuerda con la izquierda (ADR-133 enm. 1)
 - Joel: «muy arriba, no orgánico», mano «al milímetro» con foto de referencia, y la otra mano girando la manivela. Cuatro clips HORNEADOS por código
@@ -154,22 +163,3 @@
 - Dos rojos al juntar sala grande con variantes: `office_variants` se quedaba la planta abierta; el test de bocas medía cuadrados, no franjas.
 - Los 6 `.meta` de las fusiones commiteados (`fb72c0aa`). Sin barrido de 27 regiones sobre el tronco fusionado: cada rama midió el suyo.
 
-### 2026-09-06 — 32.ª tanda: la planta abierta de oficina (ADR-105 enm. 21), y la costura de 664 que destapó
-- La sala grande no salía por ARITMÉTICA: el nº de hojas es `área / objetivo`, y agrandar una agranda TODAS las de la zona (ADR-119 D2).
-  Se funden DOS hermanas sin banda, una por planta, 300–500 m² y carácter Office: árbol, bandas y candidatos a forjado quedan idénticos.
-- Barrido 27 regiones antes → después: **4,2 → 4,2 plantas**, 270 → 268 espacios, mancha 99,7 %, 6,4 islas, nav 100 %, 27/27. Sin wire.
-- Prioridades: atrio > sala (si no nacía `Void`); sala > vacío y > mordisco de ADR-120 (380 → 196 m²); pozo > sala, y ahí pierde la marca.
-- Va DIÁFANA (la holgura de los cubículos rechazaba 5 de 6 columnas) y los puestos cubren la sala entera con pasillo transversal: 91 salas
-  en 209 plantas (44 %), media 418 m², 15–18 puestos. Interruptor del ANTES: `WG3_NO_OPEN_PLAN=1`.
-- **Bug de la enm. 18**: la holgura de boca era un CUADRADO y la junta entre tramos hermanos (15 m) tapaba la sala; ahora es una franja.
-- **Costura de 664 cerrada**: canto de losa = planta de ARRIBA (de la 1 arriba); y una cama ya no ancla en repisa sin altura libre.
-
-### 2026-09-06 — 31.ª tanda: ADR-130 rebanada 2a — el decaimiento del servidor (ADR-130 enm. 1)
-- `decay_of(space)` por la COTA (la calle está en 0) y `d²` contra el fondo SERVIDO; `knobs_of` deja de devolver la fila de `KNOBS` y
-  devuelve una COPIA movida por `decayed`: los 22 sitios del relleno decaen sin tocar ni un emisor. Agujeros de forjado 0,26 → 0,80.
-- **El atrezo NO decae, y es corrección a D4**: con `props` al 0,55 la (0,0) bajaba de 60 sillas a 43 y los VIGILANTES de ADR-131 se
-  quedaban sin sitio donde sentarse. Con 30 sótanos la curva reparte; con 3 manda ADR-131. Los cubículos, igual.
-- **Boquetes** (`decay_breaches`): carve de 1–2 m, +30 a +215, `decay·0,5` por pared, sólo entre DOS tramos (fuera hay tierra) y lejos de
-  bocas y de lo ya recortado — un boquete sobre una ventana le quita el antepecho y la vuelve puerta; lo cazó su test.
-- Barrido 27/27 con **islas 6,4 → 6,0** y nav 100 %; pisable −0,3 %. `fill` 13 → 19 ms (los pares de tramos). Suite **1407/1407**.
-- Fuera, declarado: `WEIRD_SPREAD` por profundidad (vive en la subdivisión del plan) y TODO el cliente (r2b), que pisa la rama de materiales.
