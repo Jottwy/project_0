@@ -39,7 +39,7 @@ namespace BackroomsSurvival.EditorTools
     /// </summary>
     public static class BackroomsSprayModelSwapper
     {
-        private const string PrefabPath = "Assets/Prefabs/Wieldables/BR_Wieldable_SprayCan.prefab";
+        public const string PrefabPath = "Assets/Prefabs/Wieldables/BR_Wieldable_SprayCan.prefab";
 
         private const string ModelFolder = "Assets/MeshyImports/Meshy_Model_20260815_113116";
         private const string FbxPath = ModelFolder + "/Meshy_AI__0815093048_texture.fbx";
@@ -62,10 +62,14 @@ namespace BackroomsSurvival.EditorTools
         private const string BakedNormalPath = BakedFolder + "/BR_SprayCan_Normal.png";
         private const string BakedMetallicPath = BakedFolder + "/BR_SprayCan_Metallic.png";
 
-        private const string MaterialPath = BakedFolder + "/BR_SprayCan_Mat.mat";
+        public const string MaterialPath = BakedFolder + "/BR_SprayCan_Mat.mat";
+        /// <summary>El material de la MANO (ADR-077 enm. 2): mismo arte, shader de warp del viewmodel.
+        /// <see cref="MaterialPath"/> es el del mundo (pickup, icono, proxy).</summary>
+        public const string FirstPersonMaterialPath = BakedFolder + "/BR_SprayCan_FP_Mat.mat";
+        public const string MaskMapPath = BakedFolder + "/BR_SprayCan_MaskMap.png";
 
         /// <summary>Nombre del nodo que crea este script. Es su ancla para poder rehacerse.</summary>
-        private const string NodeName = "BR_SprayCanModel";
+        public const string NodeName = "BR_SprayCanModel";
 
         /// <summary>Hueso del que cuelga la lata.</summary>
         private const string HandBoneName = "Hand.R";
@@ -137,7 +141,13 @@ namespace BackroomsSurvival.EditorTools
             var material = BuildMaterial();
             if (material == null) return;
 
-            AttachToPrefab(mesh, material);
+            // En la mano va el material de PRIMERA PERSONA: el de mundo con URP/Lit se dibujaría con
+            // la proyección de la cámara y no con la del viewmodel (ADR-077 enm. 2).
+            var firstPerson = BackroomsViewmodelMaterials.BuildFirstPerson(
+                MaterialPath, FirstPersonMaterialPath, MaskMapPath, "[SprayModel]");
+            if (firstPerson == null) return;
+
+            AttachToPrefab(mesh, firstPerson);
 
             // Y el mismo arte al objeto del SUELO. Encadenado aquí a propósito: la mano y el
             // suelo comen de la misma malla horneada, y dejarlos en dos botones distintos es

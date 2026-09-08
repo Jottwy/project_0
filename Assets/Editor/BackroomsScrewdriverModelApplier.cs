@@ -51,6 +51,10 @@ namespace BackroomsSurvival.EditorTools
         public const string BakedNormalPath = BakedFolder + "/BR_Screwdriver_Normal.png";
         public const string BakedMetallicPath = BakedFolder + "/BR_Screwdriver_Metallic.png";
         public const string MaterialPath = BakedFolder + "/BR_Screwdriver_Mat.mat";
+        /// <summary>El material de la MANO (ADR-077 enm. 2): mismo arte, shader de warp del viewmodel.
+        /// <see cref="MaterialPath"/> es el del mundo (pickup, icono, proxy).</summary>
+        public const string FirstPersonMaterialPath = BakedFolder + "/BR_Screwdriver_FP_Mat.mat";
+        public const string MaskMapPath = BakedFolder + "/BR_Screwdriver_MaskMap.png";
         public const string MeshName = "BR_Screwdriver_Mesh";
 
         /// <summary>Nombre del nodo que crea este script, bajo <see cref="HandBoneName"/>.</summary>
@@ -116,7 +120,13 @@ namespace BackroomsSurvival.EditorTools
             var material = BuildMaterial();
             if (material == null) return;
 
-            AttachToPrefab(mesh, material);
+            // En la mano va el material de PRIMERA PERSONA: el de mundo con URP/Lit se dibujaría con
+            // la proyección de la cámara y no con la del viewmodel (ADR-077 enm. 2).
+            var firstPerson = BackroomsViewmodelMaterials.BuildFirstPerson(
+                MaterialPath, FirstPersonMaterialPath, MaskMapPath, "[ScrewdriverModel]");
+            if (firstPerson == null) return;
+
+            AttachToPrefab(mesh, firstPerson);
 
             // El mismo arte al objeto del SUELO, encadenado a propósito (ver el bote).
             BackroomsScrewdriverPickupCreator.Apply();

@@ -14,6 +14,12 @@
     obligaba a un alias defensivo en `GridTestWorld.cs`.
 - Nada de singletons nuevos sin justificación en el plan. Lógica de generación: pura y testeable, separada de MonoBehaviours.
 - Trabajo pesado de worldgen: Jobs + Burst; cero allocs en hot path.
+- **Viewmodel (ADR-077 enm. 2).** Todo renderer activo dentro de un wieldable (`Assets/Prefabs/Wieldables`,
+  `Assets/Resources/Wieldables`) usa un shader de warp: `LitFieldOfView` (objetos), `LitFieldOfView_SSS`
+  (piel) o `BR_UIWarp` (Canvas). Cada objeto de mano tiene DOS materiales, como el vendor
+  (`X.mat` / `FP_X.mat`): `BR_X_Mat` en URP/Lit para pickup, icono y proxy; `BR_X_FP_Mat` para la mano,
+  derivado del primero por `BackroomsViewmodelMaterials.BuildFirstPerson` (mismas texturas + `_MaskMap`
+  reempaquetado). `_FOV`/`_FOVEnabled` nunca van en `Properties` de un material. Puerta: `ViewmodelWarpTests`.
 
 ## Rust
 - tokio para async. `unsafe` prohibido salvo ADR que lo justifique.

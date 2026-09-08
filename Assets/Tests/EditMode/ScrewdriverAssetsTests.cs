@@ -23,6 +23,8 @@ namespace BackroomsSurvival.Tests
         private const string IconPath = "Assets/Art/Items/BR_Screwdriver_Icon.png";
         private const string MeshPath = "Assets/Art/Items/Screwdriver/BR_Screwdriver_Mesh.asset";
         private const string MaterialPath = "Assets/Art/Items/Screwdriver/BR_Screwdriver_Mat.mat";
+        /// <summary>El de la mano (ADR-077 enm. 2); <see cref="MaterialPath"/> es el del mundo.</summary>
+        private const string FirstPersonMaterialPath = "Assets/Art/Items/Screwdriver/BR_Screwdriver_FP_Mat.mat";
         private const string AxeDefinitionPath = "Assets/PolymindGames/STP/Data/Resources/Definitions/Item/STP_Hunting Axe.asset";
         private const string AxePickupPath = "Assets/PolymindGames/STP/Prefabs/Items/STP_Pickup_HuntingAxe.prefab";
         private const string PlayerPrefabPath = "Assets/PolymindGames/FPSCore/Prefabs/Core/FPS_Player.prefab";
@@ -104,7 +106,8 @@ namespace BackroomsSurvival.Tests
             var filter = node.GetComponent<MeshFilter>();
             Assert.IsNotNull(filter);
             Assert.AreEqual("BR_Screwdriver_Mesh", filter.sharedMesh != null ? filter.sharedMesh.name : null);
-            Assert.AreEqual(MaterialPath, AssetDatabase.GetAssetPath(node.GetComponent<MeshRenderer>().sharedMaterial));
+            Assert.AreEqual(FirstPersonMaterialPath, AssetDatabase.GetAssetPath(node.GetComponent<MeshRenderer>().sharedMaterial),
+                "en la mano va el material de primera persona (warp del viewmodel), no el del mundo");
 
             var axeNode = all.FirstOrDefault(t => t.name == "Axe");
             Assert.IsNotNull(axeNode, "el nodo del hacha se apaga, no se borra (reversible)");

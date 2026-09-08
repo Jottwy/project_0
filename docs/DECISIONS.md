@@ -15226,3 +15226,52 @@ hijo; los dedos cierran girando sobre −X, el pulgar derecho sobre +Z y el izqu
 **Lo que queda fuera, declarado.** La altura final del puño (`FistFromEye` (0,10, −0,11, 0,36)) y el
 cabeceo/guiñada de la lente son números de diseño que se afinan en Play, no medidas. El proxy remoto no
 mueve la izquierda (ADR-023: enseña el pickup y `ProxyCrankHook` gira la manivela). Sigue sin sonido.
+
+## ADR-077 — Enmienda 2: el bug del reloj volvió con tres objetos, y pasa a ser REGLA con puerta (2026-09-08) — VALIDADA
+
+**Estado:** VALIDADA (test en verde y capturas antes/después con el warp encendido).
+
+### Contexto
+
+ADR-077 cerró el reloj: todas las superficies del viewmodel warpean porque `_FOV`/`_FOVEnabled` son
+uniforms globales y sólo participa del warp lo que usa `LitFieldOfView*`. Escribió la «regla general»
+como una frase dentro de una decisión, sin puerta. Tres objetos de mano nuevos —destornillador,
+bote de spray y linterna de manivela— nacieron después con `BR_X_Mat.mat` en **URP/Lit** colgado del
+puño, y el síntoma volvió idéntico: el objeto se dibuja con la proyección de la cámara del jugador
+mientras la mano que lo sujeta se dibuja con la del viewmodel, o sea ~1,5× más grande y desplazado,
+sin ningún error en consola. Joel lo describió como «el mismo caso que pasaba con el reloj».
+
+La causa de la recaída no es técnica: los tres builders comparten un `BuildMaterial()` con
+`Shader.Find("Universal Render Pipeline/Lit")` copiado del bote al destornillador y de ahí a la
+linterna, y ninguna prueba miraba el shader del renderer de la mano. `ScrewdriverAssetsTests` incluso
+**exigía** URP/Lit en el material (contra el magenta de Built-in), que es una prueba correcta para el
+material de MUNDO y equivocada para el de la mano.
+
+### Decisión
+
+1. **Dos materiales por objeto de mano, como el vendor** (`HuntingKnife.mat` / `FP_HuntingKnife.mat`):
+   `BR_X_Mat` (URP/Lit) para lo que vive en el mundo —pickup, icono, proxy de terceros (ADR-023)— y
+   `BR_X_FP_Mat` (`Shader Graphs/LitFieldOfView`) para el renderer que cuelga de la mano. El de
+   primera persona se **deriva** del de mundo, no se autora: `BackroomsViewmodelMaterials.BuildFirstPerson`
+   copia albedo y normal y reempaqueta el mapa metálico de Meshy en el `_MaskMap` que pide el shader
+   (R = metallic, G = oclusión a 1, A = smoothness = alfa del metálico, 1 si el PNG es RGB) con
+   `_SmoothnessIntensity = 1`: el aspecto es el mismo que URP/Lit ya daba, sólo cambia la proyección.
+2. **Objetos → `LitFieldOfView`; piel → `LitFieldOfView_SSS`; Canvas → `BR_UIWarp`.** El reloj se
+   queda en `_SSS` (ADR-077); un destornillador no tiene subsuperficie.
+3. **Los tres builders lo hacen al hornear** (`AttachToPrefab` recibe el de primera persona, el pickup
+   y el icono siguen con el de mundo), y un menú `Backrooms/Viewmodel/Rewarp held items` lo aplica a
+   los prefabs existentes sin rehornear mallas ni texturas. Arreglar sólo el asset habría durado hasta
+   el siguiente re-bake.
+4. **Puerta: `ViewmodelWarpTests`.** Todo `MeshRenderer`/`SkinnedMeshRenderer` activo y encendido en
+   cualquier prefab de `Assets/Prefabs/Wieldables` y `Assets/Resources/Wieldables` usa uno de los tres
+   shaders de warp (lista completa de infractores, no sólo el primero); cada objeto de mano tiene sus
+   dos materiales con el `_MaskMap` bajo `Assets/Art/Items/`; el pickup NO warpea; y los tres shaders
+   siguen sin declarar `_FOV`/`_FOVEnabled` en `Properties` (un reimport del vendor que los metiera
+   dejaría que cada material pisara al global). Regla 14 de `CLAUDE.md` y `CONVENTIONS.md` la recogen.
+
+### Consecuencias
+
+- El proxy de terceros y el objeto del suelo no cambian: enseñan el pickup, que sigue en URP/Lit.
+- Un objeto de mano nuevo copia el patrón (dos consts de ruta + una llamada a `BuildFirstPerson`) o
+  sale en rojo en el test antes de llegar a Play. El síntoma deja de depender de que alguien lo vea.
+- Deuda que sigue: `WieldableFOV` sin `OnDisable` y una sola proyección simultánea (ADR-077, limitaciones).

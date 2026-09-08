@@ -64,6 +64,10 @@ namespace BackroomsSurvival.EditorTools
         public const string BodyMeshPath = BakedFolder + "/BR_CrankFlashlight_Body_Mesh.asset";
         public const string CrankMeshPath = BakedFolder + "/BR_CrankFlashlight_Crank_Mesh.asset";
         public const string MaterialPath = BakedFolder + "/BR_CrankFlashlight_Mat.mat";
+        /// <summary>El material de la MANO (ADR-077 enm. 2): mismo arte, shader de warp del viewmodel.
+        /// <see cref="MaterialPath"/> es el del mundo (pickup, icono, proxy).</summary>
+        public const string FirstPersonMaterialPath = BakedFolder + "/BR_CrankFlashlight_FP_Mat.mat";
+        public const string MaskMapPath = BakedFolder + "/BR_CrankFlashlight_MaskMap.png";
         private const string BakedBaseColorPath = BakedFolder + "/BR_CrankFlashlight_BaseColor.png";
         private const string BakedNormalPath = BakedFolder + "/BR_CrankFlashlight_Normal.png";
         private const string BakedMetallicPath = BakedFolder + "/BR_CrankFlashlight_Metallic.png";
@@ -196,7 +200,13 @@ namespace BackroomsSurvival.EditorTools
             BakeTexturesFrom(Path.GetDirectoryName(bodyFbx)?.Replace('\\', '/'));
             material = BuildMaterial();
 
-            AttachToPrefab(bodyMesh, crankMesh, material);
+            // En la mano va el material de PRIMERA PERSONA: el de mundo con URP/Lit se dibujaría con
+            // la proyección de la cámara y no con la del viewmodel (ADR-077 enm. 2).
+            var firstPerson = BackroomsViewmodelMaterials.BuildFirstPerson(
+                MaterialPath, FirstPersonMaterialPath, MaskMapPath, "[CrankFlashlightModel]");
+            if (firstPerson == null) return;
+
+            AttachToPrefab(bodyMesh, crankMesh, firstPerson);
             AssetDatabase.SaveAssets();
 
             // Y LA MANO, siempre después del modelo: el horneador de poses cierra los dedos sobre
