@@ -16,10 +16,9 @@ namespace BackroomsSurvival.Gameplay
     /// fotogramas y campo de visión siguen siendo de <c>GraphicsOptions</c>, y su desplegable de
     /// calidad sigue siendo el de <c>QualitySettings</c>. Este objeto añade lo que faltaba.
     ///
-    /// <b>DE MOMENTO NO APLICA NADA.</b> <see cref="Apply"/> está vacío a propósito: esta tanda es
-    /// el menú (filas, contrato del preset, guardado). El aplicador es la tanda siguiente y trae
-    /// una decisión sin cerrar — un URP Asset por escalón, o uno solo escrito en runtime — más un
-    /// ADR, porque toca valores de <c>PC_RPAsset</c> que Joel ya dio por buenos.
+    /// APLICA desde ADR-134: <see cref="Apply"/> vuelca los valores sobre el URP Asset en uso, la
+    /// cámara, los Volume y QualitySettings a través de <see cref="BackroomsGraphicsApplier"/>. Un
+    /// solo asset escrito en caliente, nunca seis copias de <c>PC_RPAsset</c>.
     /// </summary>
     [CreateAssetMenu(menuName = "Backrooms/Options/Graphics Quality Options",
         fileName = nameof(BackroomsGraphicsOptions))]
@@ -163,11 +162,10 @@ namespace BackroomsSurvival.Gameplay
         }
 
         /// <summary>
-        /// VACÍO A PROPÓSITO, y no es un olvido: el menú se monta antes que el aplicador para
-        /// poder verlo y corregirlo sin arriesgar el aspecto ya validado del juego. Lo que aquí
-        /// falta va contra el URP Asset, la cámara y los Volume, y llega con su propio ADR.
+        /// ADR-134. El vendor llama a esto desde <c>Save()</c> y <c>RestoreDefaults()</c>, así que
+        /// el botón «Apply» del menú aplica de verdad sin que la UI tenga que saber nada del render.
         /// </summary>
-        protected override void Apply() { }
+        protected override void Apply() => BackroomsGraphicsApplier.Apply(this);
 
         /// <inheritdoc/>
         protected override void Reset() => SetValues(GraphicsQualityPresets.Get(GraphicsQualityPresets.Default));
