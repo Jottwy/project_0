@@ -35,7 +35,8 @@ namespace BackroomsSurvival.Tests
             {
                 RemoteButtons.Aiming, RemoteButtons.Reloading,
                 RemoteButtons.LeanLeft, RemoteButtons.LeanRight,
-                RemoteButtons.Spraying,
+                RemoteButtons.Spraying, RemoteButtons.Seated, RemoteButtons.Cranking,
+                RemoteButtons.BandagedArmLeft, RemoteButtons.BandagedArmRight,
             };
 
             int seen = 0;
