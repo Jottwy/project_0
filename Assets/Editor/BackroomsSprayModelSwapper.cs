@@ -57,7 +57,7 @@ namespace BackroomsSurvival.EditorTools
         /// que Meshy incrusta dentro, no la geometría) y las tres texturas ya reducidas a 1024.
         /// </summary>
         private const string BakedFolder = "Assets/Art/Items/SprayCan";
-        private const string BakedMeshPath = BakedFolder + "/BR_SprayCan_Mesh.asset";
+        public const string BakedMeshPath = BakedFolder + "/BR_SprayCan_Mesh.asset";
         private const string BakedBaseColorPath = BakedFolder + "/BR_SprayCan_BaseColor.png";
         private const string BakedNormalPath = BakedFolder + "/BR_SprayCan_Normal.png";
         private const string BakedMetallicPath = BakedFolder + "/BR_SprayCan_Metallic.png";
@@ -73,6 +73,11 @@ namespace BackroomsSurvival.EditorTools
 
         /// <summary>Hueso del que cuelga la lata.</summary>
         private const string HandBoneName = "Hand.R";
+
+        /// <summary>Donante skinned del que se lee el agarre (ADR-077 enm. 3): mismo donante que
+        /// usa la linterna, así que el bindpose y el hijo de llama valen igual.</summary>
+        private const string DonorSkinNode = "WoodenTorch";
+        private const string FireChildHint = "FPS_VFX_SmallFire";
 
         /// <summary>Alto real de una lata de spray. La escala del import sale de aquí.</summary>
         private const float CanHeightMeters = 0.19f;
@@ -108,6 +113,24 @@ namespace BackroomsSurvival.EditorTools
 
         /// <summary>Por encima de esto, la malla es cara de más para un objeto de mano.</summary>
         private const int TriangleWarnThreshold = 30000;
+
+        /// <summary>
+        /// Re-cuelga SOLO el agarre, reusando la malla y el material de primera persona YA
+        /// horneados: no toca el FBX de Meshy. Sirve para iterar el agarre (BackroomsDonorGrip) sin
+        /// repetir el horneado de malla/texturas cada vez.
+        /// </summary>
+        [MenuItem("Backrooms/Spray/Re-colgar agarre (sin rehornear)", false, 99)]
+        public static void ReattachGrip()
+        {
+            var mesh = AssetDatabase.LoadAssetAtPath<Mesh>(BakedMeshPath);
+            if (mesh == null) { Debug.LogError($"[SprayModel] Sin malla horneada en '{BakedMeshPath}'."); return; }
+            var firstPerson = BackroomsViewmodelMaterials.BuildFirstPerson(
+                MaterialPath, FirstPersonMaterialPath, MaskMapPath, "[SprayModel]");
+            if (firstPerson == null) return;
+            AttachToPrefab(mesh, firstPerson);
+            AssetDatabase.SaveAssets();
+            AssetDatabase.Refresh();
+        }
 
         [MenuItem("Backrooms/Spray/Aplicar modelo Meshy al bote", false, 98)]
         public static void Apply()
@@ -534,31 +557,60 @@ namespace BackroomsSurvival.EditorTools
                 // pilló el filtro "torch" de StripFire), pero conviene que quede explícito.
                 if (torch != null && torch.gameObject.activeSelf) torch.gameObject.SetActive(false);
 
-                var previous = hand.Find(NodeName);
-                if (previous != null) Object.DestroyImmediate(previous.gameObject);
+                // Por todo el prefab y no sólo bajo la mano: una pasada vieja pudo parentar el
+                // nodo al hueso de la antorcha en vez de a Hand.R.
+                foreach (var t in root.GetComponentsInChildren<Transform>(true))
+                {
+                    if (t == null || t.name != NodeName) continue;
+                    Object.DestroyImmediate(t.gameObject);
+                    break;
+                }
 
                 var go = new GameObject(NodeName);
-                go.transform.SetParent(hand, false);
+                Transform parentBone = hand;
 
-                // El agarre sale de la GEOMETRÍA de la mano, no de probar números a ojo: son diez
-                // ciclos de render-y-mirar contra uno.
-                if (TryGripFromKnuckles(hand, index, pinky, middle, out var gripPos, out var gripRot))
+                // EL AGARRE SE LEE DE LA ANTORCHA, no se calcula: su malla es skinned y el bindpose
+                // dice exactamente cómo la mano del vendor cierra el puño sobre un palo — el mismo
+                // agarre que la animación de equipar reproduce fotograma a fotograma. El cálculo por
+                // nudillos (abajo) es sólo la reserva: acertaba en pose de bind y salía desplazado en
+                // cuanto entraba la animación real (ADR-077 enm. 3, mismo síntoma que ya documentó
+                // la linterna, que usa este mismo donante).
+                if (BackroomsDonorGrip.TryReadHandle(root, DonorSkinNode, FireChildHint,
+                        out var dominantBone, out var axis, out var lateral, "[SprayModel]"))
                 {
-                    go.transform.localPosition = gripPos + GripNudge;
-                    go.transform.localRotation = gripRot * Quaternion.Euler(EulerNudge);
+                    parentBone = dominantBone;
+                    // El hueso de la antorcha venía APAGADO (lo pilló el mismo filtro "torch" de
+                    // StripFire que apagó la malla): un hijo de un padre inactivo nace invisible sin
+                    // ningún error. Mismo hallazgo que ya documentó la linterna (ADR-133).
+                    if (!parentBone.gameObject.activeSelf) parentBone.gameObject.SetActive(true);
+                    go.transform.SetParent(parentBone, false);
+                    Vector3 nozzleAxis = NozzleTowardsAxis ? CanLongAxis : -CanLongAxis;
+                    go.transform.localPosition = lateral + axis * (CanHeightMeters * GripRiseFraction) + GripNudge;
+                    go.transform.localRotation = Quaternion.FromToRotation(nozzleAxis, axis) * Quaternion.Euler(EulerNudge);
                 }
                 else
                 {
-                    Debug.LogWarning("[SprayModel] Faltan huesos de dedos para calcular el agarre: " +
-                                     "se usa la pose de reserva, que habrá que ajustar a ojo.");
-                    go.transform.localPosition = FallbackPosition + GripNudge;
-                    go.transform.localEulerAngles = FallbackEuler + EulerNudge;
+                    go.transform.SetParent(parentBone, false);
+                    // El agarre sale de la GEOMETRÍA de la mano, no de probar números a ojo: son diez
+                    // ciclos de render-y-mirar contra uno.
+                    if (TryGripFromKnuckles(hand, index, pinky, middle, out var gripPos, out var gripRot))
+                    {
+                        go.transform.localPosition = gripPos + GripNudge;
+                        go.transform.localRotation = gripRot * Quaternion.Euler(EulerNudge);
+                    }
+                    else
+                    {
+                        Debug.LogWarning("[SprayModel] Faltan huesos de dedos para calcular el agarre: " +
+                                         "se usa la pose de reserva, que habrá que ajustar a ojo.");
+                        go.transform.localPosition = FallbackPosition + GripNudge;
+                        go.transform.localEulerAngles = FallbackEuler + EulerNudge;
+                    }
                 }
 
                 // La malla ya viene en metros y de pie desde `MakeCanonical`, así que aquí no hay
                 // nada que redimensionar: solo deshacer la escala acumulada del hueso, que en un
                 // rig de brazos no tiene por qué ser 1.
-                var boneScale = hand.lossyScale;
+                var boneScale = parentBone.lossyScale;
                 float boneFactor = Mathf.Max(1e-5f, Mathf.Max(boneScale.x,
                     Mathf.Max(boneScale.y, boneScale.z)));
                 go.transform.localScale = Vector3.one / boneFactor;
@@ -584,7 +636,7 @@ namespace BackroomsSurvival.EditorTools
                 long indices = 0;
                 for (int s = 0; s < mesh.subMeshCount; s++) indices += (long)mesh.GetIndexCount(s);
                 long tris = indices / 3;
-                Debug.Log($"[SprayModel] Lata colgada de '{HandBoneName}': tris={tris}, " +
+                Debug.Log($"[SprayModel] Lata colgada de '{parentBone.name}': tris={tris}, " +
                           $"caja={mesh.bounds.size.x:F4}/{mesh.bounds.size.y:F4}/{mesh.bounds.size.z:F4}, " +
                           $"escala={go.transform.localScale}, capa={layer}, " +
                           $"pos={go.transform.localPosition}, euler={go.transform.localEulerAngles}.");

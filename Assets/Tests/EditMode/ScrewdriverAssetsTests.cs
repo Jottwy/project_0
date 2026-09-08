@@ -100,9 +100,15 @@ namespace BackroomsSurvival.Tests
             var all = prefab.GetComponentsInChildren<Transform>(true);
             var hand = all.FirstOrDefault(t => t.name == "Hand.R");
             Assert.IsNotNull(hand, "sin hueso Hand.R no hay de dónde colgar");
-            var node = hand.Find("BR_ScrewdriverModel");
-            Assert.IsNotNull(node, "el nodo del modelo real no cuelga de Hand.R");
-            Assert.IsTrue(node.gameObject.activeSelf);
+            // NO necesariamente hijo directo de Hand.R: el agarre se lee del hacha donante
+            // (ADR-077 enm. 3, BackroomsDonorGrip) y cuelga de SU hueso dominante (p. ej.
+            // 'AxeBase'), que es el que la animación de equipar mueve de verdad.
+            var node = all.FirstOrDefault(t => t.name == "BR_ScrewdriverModel");
+            Assert.IsNotNull(node, "el nodo del modelo real no está en el prefab");
+            Assert.IsTrue(node.gameObject.activeSelf, "el nodo está apagado");
+            for (var ancestor = node.parent; ancestor != null; ancestor = ancestor.parent)
+                Assert.IsTrue(ancestor.gameObject.activeSelf,
+                    $"'{ancestor.name}' está apagado: el nodo nace invisible aunque él mismo esté activo");
             var filter = node.GetComponent<MeshFilter>();
             Assert.IsNotNull(filter);
             Assert.AreEqual("BR_Screwdriver_Mesh", filter.sharedMesh != null ? filter.sharedMesh.name : null);
