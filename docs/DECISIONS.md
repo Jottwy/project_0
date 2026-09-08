@@ -15275,3 +15275,49 @@ material de MUNDO y equivocada para el de la mano.
 - Un objeto de mano nuevo copia el patrón (dos consts de ruta + una llamada a `BuildFirstPerson`) o
   sale en rojo en el test antes de llegar a Play. El síntoma deja de depender de que alguien lo vea.
 - Deuda que sigue: `WieldableFOV` sin `OnDisable` y una sola proyección simultánea (ADR-077, limitaciones).
+
+## ADR-077 — Enmienda 3: el agarre por nudillos en bind pose se rompe con la animación real; leerlo del donante skinned (2026-09-08) — VALIDADA
+
+**Estado:** VALIDADA (capturado con la animación de idle real muestreada, no en bind pose).
+
+### Contexto
+
+Arreglado el warp (enm. 2), Joel señaló que el destornillador y el bote de spray seguían «sin
+adaptarse bien» y pidió revisar el agarre de cada uno por separado. Los dos calculaban su posición
+con `TryGripFromKnuckles`: nudillos de la mano en pose de BIND, sin animar. Esa pose de bind ya salía
+bien en captura — el fallo sólo se ve con la animación real puesta, porque ninguno de los dos objetos
+tiene animación propia: heredan `Axe_Idle` y `Torch_Idle` del donante del que se clonó el prefab, y
+esa animación mueve los dedos de otra forma que la pose de bind calculada. El propio código de la
+linterna (ADR-133) ya había documentado y resuelto este mismo síntoma: «el agarre por nudillos del
+destornillador era correcto en pose de bind, pero la animación de equipar cierra el puño de otra
+forma»; el destornillador y el bote nunca recibieron esa misma cura.
+
+### Decisión
+
+**Leer el agarre del donante SKINNED, no calcularlo por geometría de nudillos.** Extraída de la
+linterna (antes `TryReadTorchHandle`, privado) a `BackroomsDonorGrip.TryReadHandle`, genérico por
+nombre de `SkinnedMeshRenderer`: encuentra el hueso que más peso acumula sobre esa malla (el hueso
+DOMINANTE), lleva sus vértices a espacio de ese hueso vía bindpose (constante, independiente de la
+pose) y de ahí saca el eje del mango y el punto lateral del puño. El objeto cuelga de ESE hueso
+dominante, no de `Hand.R` a secas — es el hueso que la animación heredada mueve de verdad.
+
+- Destornillador: donante `Axe`, hueso dominante `AxeBase`. Linterna y bote comparten donante
+  `WoodenTorch`, hueso dominante `Torch`.
+- **Hallazgo aparte: el hueso `Torch` del bote venía APAGADO**, capturado por el mismo filtro
+  `StripFire` que apaga la malla de la antorcha — un hijo de un padre inactivo nace invisible sin
+  ningún error ni warning. La linterna ya lo reactivaba a mano; el bote no, y por eso desapareció
+  de la captura hasta añadir la misma guarda.
+- `TryGripFromKnuckles` se queda como RESERVA (huesos de dedos ausentes), no se borra.
+- Menús `Backrooms/Screwdriver|Spray/Re-colgar agarre (sin rehornear)`: reusan la malla y el
+  material de primera persona ya horneados para iterar el agarre sin el FBX crudo de Meshy.
+
+### Consecuencias
+
+- `ScrewdriverAssetsTests` ya no asume que el nodo cuelga directo de `Hand.R`; comprueba que ningún
+  ancestro está apagado — la comprobación que habría cazado el bug del bote antes de la captura.
+- Un donante nuevo (otro hacha, otra herramienta con mango) reusa `BackroomsDonorGrip` sin escribir
+  de nuevo la lectura por bindpose; sólo cambia el nombre del `SkinnedMeshRenderer` y el offset a lo
+  largo del eje (`GripRiseFraction` × largo propio del objeto).
+- Sigue sin animación PROPIA para destornillador y bote (la linterna sí la tiene, ADR-133): heredan
+  el vaivén de equipar/idle del hacha y la antorcha. Aceptable — el síntoma que preocupaba a Joel era
+  el desplazamiento del agarre, no el estilo del vaivén — y queda declarado como deuda menor.
