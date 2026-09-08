@@ -32,6 +32,11 @@ namespace BackroomsSurvival.Gameplay.Medical
         private const string LeftForearmBone = "Forearm.L";
         private const string RightForearmBone = "Forearm.R";
 
+        // Las mallas de brazo del vendor, por nombre. Son las que apaga `ArmSet.Enable(false)` al
+        // guardar el arma o al cambiar de juego de brazos, y de ellas cuelga que la venda se vea.
+        private const string LeftArmRenderer = "LeftArm";
+        private const string RightArmRenderer = "RightArm";
+
         private static FirstPersonBandageHook _instance;
 
         private ICharacter _character;
@@ -42,6 +47,8 @@ namespace BackroomsSurvival.Gameplay.Medical
         private Object _boundTo;
         private Transform _leftForearm;
         private Transform _rightForearm;
+        private Renderer _leftArm;
+        private Renderer _rightArm;
         private GameObject _leftBandage;
         private GameObject _rightBandage;
 
@@ -81,9 +88,13 @@ namespace BackroomsSurvival.Gameplay.Medical
             if (!ReferenceEquals(wieldable, _boundTo))
                 Bind(wieldable);
 
+            // La venda es un renderer PROPIO: si sólo mirase el estado médico seguiría viéndose
+            // cuando el vendor apaga las mallas de los brazos —guardar el arma, cambiar de juego de
+            // brazos— y se quedaría una banda blanca flotando en el aire delante de la cámara. Va
+            // atada a la malla de SU brazo, que es lo que de verdad decide si ese brazo se dibuja.
             var medical = PlayerMedicalState.Local;
-            Show(ref _leftBandage, _leftForearm, medical.IsBandaged(BodyPartSide.Left));
-            Show(ref _rightBandage, _rightForearm, medical.IsBandaged(BodyPartSide.Right));
+            Show(ref _leftBandage, _leftForearm, _leftArm, medical.IsBandaged(BodyPartSide.Left));
+            Show(ref _rightBandage, _rightForearm, _rightArm, medical.IsBandaged(BodyPartSide.Right));
         }
 
         /// <summary>
@@ -98,22 +109,32 @@ namespace BackroomsSurvival.Gameplay.Medical
             _rightBandage = null;
             _leftForearm = null;
             _rightForearm = null;
+            _leftArm = null;
+            _rightArm = null;
 
             if (wieldable is not Component component)
                 return;
 
             _leftForearm = FindBone(component.transform, LeftForearmBone);
             _rightForearm = FindBone(component.transform, RightForearmBone);
+            _leftArm = FindRenderer(component.transform, LeftArmRenderer);
+            _rightArm = FindRenderer(component.transform, RightArmRenderer);
         }
 
         /// <summary>
         /// Enciende o apaga la venda de una zona, creándola la primera vez que hace falta. El
         /// <c>ref</c> es lo que permite que la creación sea perezosa sin duplicar el bloque.
         /// </summary>
-        private static void Show(ref GameObject bandage, Transform forearm, bool visible)
+        private static void Show(ref GameObject bandage, Transform forearm, Renderer arm, bool visible)
         {
             if (forearm == null)
                 return;
+
+            // Sin malla de brazo resuelta se sigue adelante: un juego de brazos con otros nombres
+            // debe dejar la venda VISIBLE (el fallo de más se ve y se arregla; el de menos es una
+            // venda que nunca aparece y que nadie sabe por qué).
+            if (arm != null && (!arm.enabled || !arm.gameObject.activeInHierarchy))
+                visible = false;
 
             if (bandage == null)
             {
@@ -173,6 +194,22 @@ namespace BackroomsSurvival.Gameplay.Medical
             {
                 if (t.name == boneName)
                     return t;
+            }
+
+            return null;
+        }
+
+        /// <summary>La malla de un brazo, por nombre. Mismo recorrido y mismo motivo que los huesos:
+        /// sólo corre al cambiar de arma.</summary>
+        private static Renderer FindRenderer(Transform root, string rendererName)
+        {
+            if (root == null)
+                return null;
+
+            foreach (var r in root.GetComponentsInChildren<Renderer>(true))
+            {
+                if (r.gameObject.name == rendererName)
+                    return r;
             }
 
             return null;
