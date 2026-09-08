@@ -15226,3 +15226,64 @@ hijo; los dedos cierran girando sobre −X, el pulgar derecho sobre +Z y el izqu
 **Lo que queda fuera, declarado.** La altura final del puño (`FistFromEye` (0,10, −0,11, 0,36)) y el
 cabeceo/guiñada de la lente son números de diseño que se afinan en Play, no medidas. El proxy remoto no
 mueve la izquierda (ADR-023: enseña el pickup y `ProxyCrankHook` gira la manivela). Sigue sin sonido.
+
+## ADR-134 — EL APLICADOR DE LOS AJUSTES GRÁFICOS: un solo URP Asset escrito en runtime, y lo serializado como TECHO (2026-09-08) — ACEPTADA (Joel: «un desplegable con un global que settea todo… y luego el desplegable con las cosas detalladas» → «ahora el aplicador con su ADR»)
+
+**Contexto.** El menú de calidad gráfica entró el 08-09 SIN ADR a propósito: guardaba y no aplicaba,
+así que no podía contradecir nada. Este ADR es el paso que sí toca terreno validado — `PC_RPAsset`
+lleva valores que Joel dio por buenos (ADR-065 fijó que el render es URP Forward+ de verdad, y la
+sesión de iluminación subió a mano el atlas de sombras de luces adicionales a 4096 con sus tiers).
+Un aplicador que escriba ahí sin reglas deshace ese trabajo sin que nadie lo note.
+
+**Decisión 1 — UN solo URP Asset, escrito en runtime; NO seis assets por nivel.** La vía que Unity
+documenta es un `UniversalRenderPipelineAsset` por nivel de `QualitySettings`. Se descarta: los seis
+serían copias de `PC_RPAsset`, y en cuanto alguien afine un valor en el de verdad, los otros cinco
+mienten. Con uno solo hay una única fuente y el preset es una función que baja parámetros. El coste
+aceptado es que lo que URP sólo lee del asset serializado no se puede subir desde código (D2).
+
+**Decisión 2 — lo serializado es el TECHO de las CAPACIDADES; los presupuestos numéricos sí suben.**
+Hay que separar dos cosas que se confunden. Las CAPACIDADES (`supports*`) las usa URP para recortar
+keywords en el build: con `m_AdditionalLightShadowsSupported: 0` la variante no se compila y ningún
+código la enciende después — ésas no se tocan nunca desde el aplicador, y si algún día hace falta
+una, se cambia el asset. Los PRESUPUESTOS (escala de render, muestras de MSAA, distancia de sombra,
+cascadas, resolución de los atlas) son números que URP lee en caliente y sí pueden subir por encima
+de lo serializado; por eso Ultra puede pedir 8x y 4096 aunque el asset venga con 2x. Lo que se paga
+al subirlos es memoria y fotogramas, no una variante que no existe.
+
+**Decisión 3 — lo que no tiene setter público se aplica por su efecto, no por su bandera.** Tienen
+setter público `renderScale`, `msaaSampleCount`, `shadowDistance`, `shadowCascadeCount`,
+`upscalingFilter`, `fsrSharpness` y `supportsHDR`. NO lo tienen (son `internal set`)
+`supportsMainLightShadows`, `supportsAdditionalLightShadows` y `supportsSoftShadows`. Entonces:
+«Shadows: off» se aplica como `shadowDistance = 0`, que es lo que de verdad apaga el pase; y las
+sombras de luces adicionales se apagan **por luz**, no por bandera, en las luces alcanzables. Nada
+de reflexión sobre el setter interno: en el editor eso ensucia un asset trackeado, y ya se midió
+que entrar en Play deja `QualitySettings.asset` modificado por el propio vendor — no hace falta
+añadir una segunda fuente de churn.
+
+**Decisión 4 — el antialiasing es de la CÁMARA, no del asset.** `FXAA/SMAA/TAA` viven en
+`UniversalAdditionalCameraData`; sólo MSAA está en el asset. Como el jugador aparece tarde (el UI
+de pausa no existe hasta que el GameMode lo instancia, ~2 min en Showcase), el aplicador no puede
+suponer que hay cámara: se aplica a la que haya y se REAPLICA al cargar escena.
+
+**Decisión 5 — el post-procesado se toca en `volume.profile`, jamás en `sharedProfile`.** El getter
+`profile` devuelve una COPIA de runtime; `sharedProfile` es el asset del vendor y escribir ahí se
+guarda en disco. Bloom, desenfoque de movimiento, profundidad de campo y aberración cromática se
+activan y desactivan como overrides de esa copia. Nota heredada: el desenfoque del libro tiene un
+parche local del vendor (`DepthOfFieldAnimation`), y esto no lo sustituye.
+
+**Decisión 6 — texturas, anisotropía y LOD por `QualitySettings`, con su peaje declarado.**
+`globalTextureMipmapLimit`, `anisotropicFiltering` y `lodBias` son globales del proyecto y en el
+EDITOR se persisten a `ProjectSettings/QualitySettings.asset`. Es el mismo peaje que ya paga
+`GraphicsOptions` del vendor (medido el 08-09: entrar en Play cambiaba `m_CurrentQuality`,
+`antiAliasing` y `vSyncCount`). Se acepta y se anota: un diff en ese fichero tras jugar en el
+editor es ruido esperable, no un cambio que haya que commitear.
+
+**Decisión 7 — se aplica desde `Apply()` del ScriptableObject, que es el punto que el vendor ya
+llama.** `UserOptions.Save()` y `RestoreDefaults()` invocan `Apply()`; con eso, el botón «Apply»
+del menú aplica de verdad sin tocar la UI. Y una reaplicación al cargar escena, por la cámara.
+
+**Lo que queda fuera, declarado.** Las luces del mundo de WG3 se crean en runtime con `DontSave` y
+`FindObjectsByType` no las ve (es sabido), así que «Additional Light Shadows» sólo alcanza a las
+luces que sí son barribles: en el Nivel 0 servido, la mayoría no lo son. Queda como deuda con
+nombre — o lo consulta el propio creador de luces de WG3, o el ajuste miente. Tampoco entra aquí
+ningún escalón por encima del asset (D2), ni el reparto de calidad por plataforma.

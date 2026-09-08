@@ -17,8 +17,8 @@ namespace BackroomsSurvival.UI
     /// coincide con ninguno, el desplegable pasa a "Custom". Un menú donde el global y los
     /// detalles pueden contradecirse es peor que no tener global.
     ///
-    /// <b>NADA DE ESTO CAMBIA TODAVÍA UN PÍXEL.</b> <see cref="BackroomsGraphicsOptions"/> guarda
-    /// y no aplica: el aplicador (URP Asset, cámara y Volume) es la tanda siguiente, con ADR.
+    /// La UI no sabe nada del render: guarda, y <see cref="BackroomsGraphicsOptions"/> aplica por
+    /// su cuenta al guardar (ADR-134). Aquí no se toca ni el URP Asset ni la cámara.
     ///
     /// ETIQUETAS EN INGLÉS por decisión de Joel. Las filas de voz siguen en español: la pestaña
     /// Audio queda mezclada hasta que se traduzcan.
