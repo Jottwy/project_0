@@ -15287,3 +15287,27 @@ del menú aplica de verdad sin tocar la UI. Y una reaplicación al cargar escena
 luces que sí son barribles: en el Nivel 0 servido, la mayoría no lo son. Queda como deuda con
 nombre — o lo consulta el propio creador de luces de WG3, o el ajuste miente. Tampoco entra aquí
 ningún escalón por encima del asset (D2), ni el reparto de calidad por plataforma.
+
+## ADR-134 — Enmienda 1: verificado en Play, y el peaje del editor es MAYOR de lo que decía D6 (2026-09-08)
+
+**Verificado en Play** (`isPlaying=True`, escena `STP_Showcase`), aplicando tres escalones y
+LEYENDO de vuelta el pipeline EN USO, no un asset de test:
+
+- `VeryLow`: rs 0,6 · msaa 1 · FSR · HDR off · **dist 0** · 1 cascada · atlas 1024/1024 · mip 3 ·
+  aniso Disable · lod 0,5 · cámara **None**.
+- `Ultra`: rs 1,25 · msaa 8 · HDR · dist 120 · 4 cascadas · atlas 4096/4096 · mip 0 ·
+  aniso ForceEnable · lod 2 · cámara **TemporalAntiAliasing**.
+- `High`: rs 1 · msaa 2 · dist 50 · 4 cascadas · atlas **2048/4096** · cámara SMAA — es decir,
+  exactamente lo que `PC_RPAsset` lleva commiteado. El espejo de D2 se sostiene en caliente.
+
+**El peaje: aplicar en el EDITOR ensucia `Assets/Settings/PC_RPAsset.asset`, no sólo
+`QualitySettings.asset`.** D6 sólo nombraba el segundo. Escribir las propiedades del URP Asset en
+uso marca el ScriptableObject como sucio y el cambio se guarda si el editor guarda. Tras cada
+sesión de prueba hay que dejar el pipeline en `High` —que es byte a byte lo commiteado— y revertir
+igualmente el fichero. En un build no existe el problema: nada se persiste.
+
+**Lo que NO se pudo capturar.** El A/B visual entre `Very Low` y `Ultra`: `ScreenCapture` escribe
+al FINAL del fotograma, así que tres presets aplicados en la misma llamada dejan una sola foto, y
+los intentos siguientes de reentrar en Play no arrancaron (el menú responde `MENU DONE` y el
+proceso `backrooms_server` no aparece: sin él, no hay partida). La prueba que sí hay es la lectura
+de vuelta, que es la que dice si el ajuste llegó al render.
