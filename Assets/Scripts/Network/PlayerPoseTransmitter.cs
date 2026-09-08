@@ -1,5 +1,6 @@
 using BackroomsSurvival.Gameplay;
 using BackroomsSurvival.Gameplay.GridWorld;
+using BackroomsSurvival.Gameplay.Medical;
 using PolymindGames;
 using PolymindGames.InventorySystem;
 using PolymindGames.MovementSystem;
@@ -456,6 +457,16 @@ namespace BackroomsSurvival.Net
             if (SprayPainter.IsSprayingNow)
                 bits |= RemoteButtons.Spraying;
 
+            // Vendas puestas. Va con el lean y el spray, ANTES del corte por arma de fuego: una
+            // venda es del CUERPO y sigue ahí lleves lo que lleves en las manos. Lectura pura del
+            // estado médico, que es el mismo objeto del que beben los brazos de primera persona —
+            // por eso el vecino y tú veis siempre lo mismo sin nada que sincronizar entre los dos.
+            var medical = PlayerMedicalState.Local;
+            if (medical.IsBandaged(BodyPartSide.Left))
+                bits |= RemoteButtons.BandagedArmLeft;
+            if (medical.IsBandaged(BodyPartSide.Right))
+                bits |= RemoteButtons.BandagedArmRight;
+
             var wieldable = ActiveWieldable();
 
             // ADR-133: "está dando cuerda". Se pregunta al WIELDABLE ACTIVO y no a un estático
@@ -578,6 +589,15 @@ namespace BackroomsSurvival.Net
             _hitSeq++;
             if (IPCClient.TryGetInstance(out var ipc) && ipc.IsConnected)
                 ipc.SendReportDamage(Mathf.Abs(damage), args.DamageType.ToString());
+
+            // Heridas por zona: el estado médico se alimenta AQUÍ y no desde un suscriptor propio
+            // porque este método ya es el único sitio del cliente que sabe de daño local REAL. Un
+            // segundo suscriptor tendría que repetir el baile de resolver el personaje y volver a
+            // engancharse tras cada reconstrucción del rig, que es justo la parte frágil.
+            // El transform del motor da los ejes del cuerpo, no los de la cámara: la referencia
+            // tiene que girar con el jugador, no con hacia dónde mira.
+            var reference = _motor != null ? _motor.transform : null;
+            PlayerMedicalState.Local.ReportDamage(Mathf.Abs(damage), args.HitPoint, args.HitForce, reference);
         }
 
         // Drop the health subscription (rig rebuild / teardown). Safe to call when not subscribed.

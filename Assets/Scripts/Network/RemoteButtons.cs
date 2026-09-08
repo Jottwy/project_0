@@ -79,6 +79,32 @@ namespace BackroomsSurvival.Net
         /// </summary>
         public const int Cranking = 1 << 6;
 
+        /// <summary>
+        /// Este peer lleva una VENDA puesta en el brazo izquierdo. Octavo bit.
+        ///
+        /// Es el caso más puro de los que ADR-044 dejó sitio: un estado sostenido, cosmético y
+        /// booleano. Lo que hace falta transmitir no es la herida ni el tratamiento, sino el hecho
+        /// de que ahora mismo hay una venda ahí — el observador ve una tela blanca en el antebrazo
+        /// del vecino y con eso sabe que le han dado y que ha tenido con qué curarse.
+        ///
+        /// NIVEL Y NO CONTADOR, y aquí ni siquiera se plantea la duda de `hit_seq`: vendarse no es
+        /// un evento que haya que contar dos veces seguidas. Un datagrama perdido lo corrige el
+        /// siguiente y el peor caso es una décima de segundo sin venda pintada.
+        ///
+        /// El estado vive en <c>PlayerMedicalState.Local</c> y es VOLÁTIL por decisión de alcance
+        /// (Alpha 1): no se guarda. Persistirlo sería campo en el snapshot del jugador, o sea
+        /// cambio del schema de guardado, o sea ADR — nada de lo cual hace falta para que se vea.
+        ///
+        /// Cero coste de wire: el campo ya viaja y el backend relaya `buttons` sin mirarlo. Un
+        /// cliente viejo decodifica el bit, no lo interpreta y dibuja el brazo limpio.
+        /// </summary>
+        public const int BandagedArmLeft = 1 << 7;
+
+        /// <summary>El mismo estado, brazo derecho. Noveno bit. Los dos son independientes: se
+        /// puede llevar venda en los dos brazos a la vez, a diferencia de los bits de inclinación,
+        /// que se excluyen en el origen.</summary>
+        public const int BandagedArmRight = 1 << 8;
+
         public static bool Has(int buttons, int bit) => (buttons & bit) != 0;
     }
 }

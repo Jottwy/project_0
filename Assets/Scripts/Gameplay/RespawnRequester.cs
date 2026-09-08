@@ -163,7 +163,10 @@ namespace BackroomsSurvival.Gameplay
             if (ev.eventType == RespawnedEvent)
                 ForceNativeRespawnChain("player_respawned event");
             else if (ev.eventType == DiedEvent)
+            {
                 ForceNativeDeathEdge("player_died event");
+                ClearMedicalState();
+            }
         }
 
         // Resilient fallback (mirrors AuthoritativePoseApplier.OnWorldState): player_respawned is
@@ -193,9 +196,14 @@ namespace BackroomsSurvival.Gameplay
             _serverSawDead = dead;
 
             if (dead)
+            {
                 ForceNativeDeathEdge("state-derived death edge (server health alive→0)");
+                ClearMedicalState();
+            }
             else
+            {
                 ForceNativeRespawnChain("state-derived respawn edge (server health 0→alive)");
+            }
         }
 
         // Mirror of ForceNativeRespawnChain for the DEATH side: server-side deaths (starvation,
@@ -221,6 +229,20 @@ namespace BackroomsSurvival.Gameplay
             concreteHealth.SetHealthSilent(1f);
             _health.ReceiveDamage(_health.MaxHealth + 1f);
         }
+
+        /// <summary>
+        /// Heridas y vendas fuera al MORIR, no al reaparecer. Las dos vías de detección de muerte
+        /// (el evento y el flanco derivado del estado) llaman aquí, y da igual que llamen las dos:
+        /// <c>ResetAll</c> sólo anuncia lo que de verdad cambia, así que repetirlo no repinta nada.
+        ///
+        /// Al morir y no al reaparecer porque entre las dos cosas hay una pantalla de muerte en la
+        /// que se sigue viendo el cuerpo: limpiar tarde deja al cadáver vendado.
+        ///
+        /// Y DESPUÉS de forzar el flanco de muerte, no antes: el forzado mata con un
+        /// <c>ReceiveDamage</c> de verdad, que dispara <c>DamageReceived</c> — o sea, que abriría
+        /// una herida en el cadáver. Limpiando al final, esa herida sintética se va con las demás.
+        /// </summary>
+        private static void ClearMedicalState() => Medical.PlayerMedicalState.Local.ResetAll();
 
         private void ForceNativeRespawnChain(string trigger)
         {

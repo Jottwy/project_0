@@ -1,6 +1,7 @@
 #if UNITY_EDITOR
 using System.Collections.Generic;
 using System.IO;
+using BackroomsSurvival.Gameplay.Medical;
 using PolymindGames;
 using UnityEditor;
 using UnityEngine;
@@ -113,6 +114,7 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
                 WireLeanHook(instance);
                 WireSprayHook(instance);
                 WireSeatedHook(instance);
+                WireBandageHook(instance);
                 FreezeRagdollBodies(instance);
 
                 PrefabUtility.SaveAsPrefabAsset(instance, OutputPath, out bool ok);
@@ -932,6 +934,23 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
             SetFeederFloat(so, "_lifetime", 0.22f);
             SetFeederFloat(so, "_size", 0.025f);
             SetFeederFloat(so, "_rate", 70f);
+            so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        // La venda del vecino. Misma forma que WireSprayHook y por el mismo motivo no toca wire: el
+        // estado viaja en dos bits libres de `buttons` (ADR-044). Sin defaults que valgan la pena
+        // sembrar aparte de los del propio componente — se cablea aquí para que el hook EXISTA en el
+        // prefab horneado, que es lo único que este builder tiene que garantizar.
+        private static void WireBandageHook(GameObject root)
+        {
+            var hook = root.GetComponent<ProxyBandageHook>();
+            if (hook == null)
+                hook = root.AddComponent<ProxyBandageHook>();
+
+            var so = new SerializedObject(hook);
+            SetFeederFloat(so, "_radius", BandageVisual.ProxyRadius);
+            SetFeederFloat(so, "_length", BandageVisual.DefaultLength);
+            SetFeederFloat(so, "_alongBone", BandageVisual.DefaultAlongBone);
             so.ApplyModifiedPropertiesWithoutUndo();
         }
 
