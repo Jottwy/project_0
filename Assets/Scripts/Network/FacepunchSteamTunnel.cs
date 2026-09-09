@@ -30,6 +30,13 @@ namespace BackroomsSurvival.Net
         private readonly Dictionary<uint, FacepunchTunnelChannel> _channels =
             new Dictionary<uint, FacepunchTunnelChannel>();
 
+        // Fase 0 de la tanda de lag (09-09): medir RTT/jitter REALES por Steam sin tocar el wire.
+        // `Connection.DetailedStatus()` envuelve ISteamNetworkingSockets::GetDetailedConnectionStatus
+        // — texto ya calculado por Valve (ping, jitter, calidad), nada que el backend ni el protocolo
+        // tengan que aprender. Throttled a mano porque `Poll()` gira cada pocos ms, no por frame.
+        private const long DiagLogIntervalMs = 2000;
+        private DateTime _lastDiagLogUtc = DateTime.MinValue;
+
         public Action<ISteamTunnelChannel, byte[], int> OnMessage { get; set; }
 
         public Action<ISteamTunnelChannel> OnClosed { get; set; }
@@ -95,6 +102,7 @@ namespace BackroomsSurvival.Net
             {
                 _socket?.Receive(ReceiveBatch, true);
                 _connection?.Receive(ReceiveBatch, true);
+                LogDiagnosticsIfDue();
                 return true;
             }
             catch (Exception e)
@@ -103,6 +111,42 @@ namespace BackroomsSurvival.Net
                 Debug.LogWarning($"[SteamTunnel] Receive falló ({e.GetType().Name}: {e.Message}); " +
                                  "se abandona el transporte.");
                 return false;
+            }
+        }
+
+        /// <summary>
+        /// Fase 0 (09-09): un log de <c>DetailedStatus()</c> por conexión activa cada
+        /// <see cref="DiagLogIntervalMs"/>. Sólo lectura de lo que Valve ya mide — ni protocolo ni
+        /// wire cambian, así que no hace falta ADR (regla dura #7) para verlo en un playtest real.
+        /// </summary>
+        private void LogDiagnosticsIfDue()
+        {
+            DateTime now = DateTime.UtcNow;
+            if ((now - _lastDiagLogUtc).TotalMilliseconds < DiagLogIntervalMs)
+                return;
+            _lastDiagLogUtc = now;
+
+            // Lado joiner: una única conexión saliente al host.
+            if (_connection != null)
+                LogConnectionStatus(_connection.Connection, _connection.Connection.Id);
+
+            // Lado host: una por peer conectado.
+            foreach (var kv in _channels)
+                LogConnectionStatus(kv.Value.Connection, kv.Key);
+        }
+
+        private static void LogConnectionStatus(Connection connection, uint connectionId)
+        {
+            try
+            {
+                string status = connection.DetailedStatus();
+                Debug.Log($"[SteamTunnel] RTT_DIAG conn={connectionId}\n{status}");
+            }
+            catch (Exception e)
+            {
+                // DetailedStatus puede fallar en el instante entre "conectado" y "cerrado"; no es
+                // motivo para tirar el bombeo (a diferencia del fallo de Receive de arriba).
+                Debug.LogWarning($"[SteamTunnel] RTT_DIAG conn={connectionId} falló: {e.Message}");
             }
         }
 
@@ -215,6 +259,10 @@ namespace BackroomsSurvival.Net
         }
 
         public ulong RemoteSteamId { get; }
+
+        // Fase 0 de la tanda de lag (09-09): sólo para que el transporte pueda pedir
+        // DetailedStatus() por canal — nada de esto viaja al backend ni cambia el wire.
+        internal Connection Connection => _connection;
 
         public bool IsOpen => !_closed && (_isOpen == null || _isOpen());
 
