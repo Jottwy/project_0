@@ -15540,3 +15540,30 @@ va al log del host, porque es el dato con el que se diagnostica.
 - **No se registra nunca el valor del secreto**, ni cuando se rechaza.
 
 ---
+
+## ADR-135 — Enmienda 2: primer playtest real, redes y cuentas Steam distintas — el criterio físico se cumple (2026-09-09) — VERIFICADA (Joel: probado con redes diferentes y cuentas de Steam diferentes, funciona)
+
+**El criterio físico de D9/ADR-117 (dos jugadores en redes distintas se juntan) queda cumplido por
+la vía Steam.** Joel jugó una partida real con un segundo equipo en OTRA red y OTRA cuenta de
+Steam: conexión bidireccional, `transport=steam`, handshake por el puerto efímero del túnel. Es la
+primera vez que este proyecto verifica esa condición con hardware y cuentas distintas — el playtest
+del 02-09 con el relay propio (ADR-117) la había dejado en rojo (línea 15328).
+
+**Dos defectos encontrados y corregidos en el mismo playtest** (`4da8889e`, ambos del bombeo, no
+del camino de conexión ni del wire):
+1. `SteamTunnelPump.Once` era `void` y se tragaba su propia excepción: al invalidar Steam el socket,
+   el bucle seguía girando sin ceder turno — 203 excepciones repetidas tras cerrar sesión. Ahora
+   devuelve `bool` y para en el primer fallo, con un solo log.
+2. Nada cerraba el túnel al salir por Alt+F4 (el hilo es `IsBackground`). Se engancha
+   `Application.quitting`, que cubre las tres puertas de salida junto al `Step` de
+   `SessionEndHandler`.
+
+**Sin cambios de wire ni de las decisiones D1-D11 de este ADR.** Tests: 5 nuevos
+(`SteamTunnelTests` 23/23); arnés completo 368/369 (el único rojo, `IgdProtocol`, es preexistente y
+ajeno a este cambio — no lo tocó). CompileCheck 0×4.
+
+**Lo que esto NO cierra**: la vía relay directa propia (ADR-117, `DefaultRelayAddress` vacío, sin
+VPS) sigue sin una conexión real medida. El criterio físico está cumplido para Alpha 1 por la vía
+Steam; ADR-117 queda como camino alternativo sin desplegar, no como bloqueante.
+
+---
