@@ -15706,3 +15706,21 @@ invitado— que es una **excepción explícita** a ADR-116 D4 apoyada en su D10;
 sobre ADR-045 enm. 1 que hoy dice lo contrario (regla 2: se pregunta, no se «mejora»).
 
 ---
+
+## ADR-136 — Enmienda 1: ACEPTADA con las tres propuestas tal cual (2026-09-09) — ACEPTADA (Joel: «vale acepto puedes aplicar todo ahora? sin build hasta que sepamos que esto está»)
+
+**Q1 — La invitación gana a la posición guardada.** Sí. Se añade `SpawnSource::Invited`, que prende
+sobre `Restored` **en los dos órdenes**: si la restauración del fichero llega después, el punto de la
+invitación se conserva. Es la única excepción a ADR-045 enm. 1, y es explícita.
+
+**Q2 — Suplantación: (a).** Se acepta en Alpha 1 y se hace visible con la línea
+`SPAWN invite=<platform_id> by=<PeerId> resolved=yes|no reason=<motivo>` en el log del anfitrión.
+Disparador escrito: el primer informe de un spawn pegado a alguien que no invitó a nadie convierte
+(c) —confirmación del invitador— en obligatorio, con su ADR corto.
+
+**Q3 — `INVITE_SPAWN_OFFSET_M` = 2,0.** Sin medir en salas pequeñas; el colocador de D6 lo trae de
+vuelta si el desplazamiento cae en pared.
+
+Sin build hasta cerrar R0–R4 (decisión de Joel); la build de playtest sale con todo junto.
+
+---
