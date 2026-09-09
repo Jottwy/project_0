@@ -64,6 +64,10 @@ namespace BackroomsSurvival.EditorTools
         public const string BodyMeshPath = BakedFolder + "/BR_CrankFlashlight_Body_Mesh.asset";
         public const string CrankMeshPath = BakedFolder + "/BR_CrankFlashlight_Crank_Mesh.asset";
         public const string MaterialPath = BakedFolder + "/BR_CrankFlashlight_Mat.mat";
+        /// <summary>El material de la MANO (ADR-077 enm. 2): mismo arte, shader de warp del viewmodel.
+        /// <see cref="MaterialPath"/> es el del mundo (pickup, icono, proxy).</summary>
+        public const string FirstPersonMaterialPath = BakedFolder + "/BR_CrankFlashlight_FP_Mat.mat";
+        public const string MaskMapPath = BakedFolder + "/BR_CrankFlashlight_MaskMap.png";
         private const string BakedBaseColorPath = BakedFolder + "/BR_CrankFlashlight_BaseColor.png";
         private const string BakedNormalPath = BakedFolder + "/BR_CrankFlashlight_Normal.png";
         private const string BakedMetallicPath = BakedFolder + "/BR_CrankFlashlight_Metallic.png";
@@ -196,7 +200,13 @@ namespace BackroomsSurvival.EditorTools
             BakeTexturesFrom(Path.GetDirectoryName(bodyFbx)?.Replace('\\', '/'));
             material = BuildMaterial();
 
-            AttachToPrefab(bodyMesh, crankMesh, material);
+            // En la mano va el material de PRIMERA PERSONA: el de mundo con URP/Lit se dibujaría con
+            // la proyección de la cámara y no con la del viewmodel (ADR-077 enm. 2).
+            var firstPerson = BackroomsViewmodelMaterials.BuildFirstPerson(
+                MaterialPath, FirstPersonMaterialPath, MaskMapPath, "[CrankFlashlightModel]");
+            if (firstPerson == null) return;
+
+            AttachToPrefab(bodyMesh, crankMesh, firstPerson);
             AssetDatabase.SaveAssets();
 
             // Y LA MANO, siempre después del modelo: el horneador de poses cierra los dedos sobre
@@ -725,13 +735,6 @@ namespace BackroomsSurvival.EditorTools
                       $"del frente ({LensPitchDownDegrees}° de cabeceo pedido).");
         }
 
-        private static Transform FindChild(Transform parent, string name)
-        {
-            foreach (var t in parent.GetComponentsInChildren<Transform>(true))
-                if (t != parent && t.name == name) return t;
-            return null;
-        }
-
         /// <summary>
         /// El agarre EXACTO de la antorcha, en espacio local de <paramref name="hand"/>: se toman
         /// los vértices de su malla skinned que pesan sobre `Hand.R`, se llevan al espacio del
@@ -781,127 +784,15 @@ namespace BackroomsSurvival.EditorTools
         /// palo (unitario, hacia la llama) y el punto del eje que cae en el origen del hueso, que es
         /// el centro del puño. Es lo que el horneador de poses necesita para saber cómo agarra la
         /// mano del vendor un palo — y de ahí cómo debe agarrar un tubo.
+        ///
+        /// Delega en <see cref="BackroomsDonorGrip"/> (ADR-077 enm. 3): la misma lectura por
+        /// bindpose sirve para cualquier donante skinned, no solo la antorcha, y el destornillador
+        /// y el bote de spray ya la reusan con su propio donante.
         /// </summary>
         internal static bool TryReadTorchHandle(GameObject root, Transform hand,
             out Transform dominantBone, out Vector3 axisLocal, out Vector3 fistLocal)
-        {
-            dominantBone = null;
-            axisLocal = Vector3.up;
-            fistLocal = Vector3.zero;
-
-            SkinnedMeshRenderer skin = null;
-            foreach (var smr in root.GetComponentsInChildren<SkinnedMeshRenderer>(true))
-            {
-                if (smr.name != TorchSkinNode) continue;
-                skin = smr;
-                break;
-            }
-            if (skin == null || skin.sharedMesh == null)
-            {
-                Debug.LogWarning("[CrankFlashlightModel] Sin SkinnedMeshRenderer '" + TorchSkinNode + "' en el prefab.");
-                return false;
-            }
-
-            var bones = skin.bones;
-            var mesh = skin.sharedMesh;
-            var vertices = mesh.vertices;
-            var weights = mesh.boneWeights;
-            var bindposes = mesh.bindposes;
-            if (weights == null || weights.Length != vertices.Length || bindposes.Length != bones.Length)
-            {
-                Debug.LogWarning($"[CrankFlashlightModel] La malla de la antorcha no da pesos legibles: " +
-                                 $"{vertices.Length} vértices, {weights?.Length ?? 0} pesos, {bindposes.Length} " +
-                                 $"bindposes, {bones.Length} huesos. ¿Read/Write apagado en el FBX?");
-                return false;
-            }
-
-            // El hueso que más peso acumula sobre toda la malla es el que la lleva.
-            var total = new float[bones.Length];
-            for (int i = 0; i < weights.Length; i++)
-            {
-                var w = weights[i];
-                if (w.boneIndex0 >= 0 && w.boneIndex0 < total.Length) total[w.boneIndex0] += w.weight0;
-                if (w.boneIndex1 >= 0 && w.boneIndex1 < total.Length) total[w.boneIndex1] += w.weight1;
-                if (w.boneIndex2 >= 0 && w.boneIndex2 < total.Length) total[w.boneIndex2] += w.weight2;
-                if (w.boneIndex3 >= 0 && w.boneIndex3 < total.Length) total[w.boneIndex3] += w.weight3;
-            }
-            int boneIndex = 0;
-            for (int i = 1; i < total.Length; i++) if (total[i] > total[boneIndex]) boneIndex = i;
-            dominantBone = bones[boneIndex];
-            if (dominantBone == null) return false;
-
-            Debug.Log($"[CrankFlashlightModel] La antorcha pesa sobre '{dominantBone.name}' " +
-                      $"({total[boneIndex]:F0} de {weights.Length} vértices); Hand.R acumula " +
-                      $"{(System.Array.IndexOf(bones, hand) is var hi && hi >= 0 ? total[hi] : 0f):F0}.");
-
-            // Vértices que ese hueso MANDA: son la antorcha entera si es un hueso propio, o el
-            // mango si fuera la mano. En su espacio, vía bindpose: constante, independiente de la pose.
-            var handSpace = new System.Collections.Generic.List<Vector3>(vertices.Length / 2);
-            var toBone = bindposes[boneIndex];
-            for (int i = 0; i < vertices.Length; i++)
-            {
-                var w = weights[i];
-                float bw = 0f;
-                if (w.boneIndex0 == boneIndex) bw += w.weight0;
-                if (w.boneIndex1 == boneIndex) bw += w.weight1;
-                if (w.boneIndex2 == boneIndex) bw += w.weight2;
-                if (w.boneIndex3 == boneIndex) bw += w.weight3;
-                if (bw < 0.5f) continue;
-                handSpace.Add(toBone.MultiplyPoint3x4(vertices[i]));
-            }
-            if (handSpace.Count < 16) return false;
-            hand = dominantBone;
-
-            Vector3 centre = Vector3.zero;
-            foreach (var v in handSpace) centre += v;
-            centre /= handSpace.Count;
-
-            // El eje del palo: la dirección en la que el mango se extiende más. Iteración de
-            // potencia sobre la covarianza — tres ejes y unos cientos de puntos, no hace falta más.
-            var axis = PrincipalAxis(handSpace, centre);
-            if (axis.sqrMagnitude < 1e-8f) return false;
-
-            // Hacia la LLAMA: el hijo de VFX de fuego del hueso está en la punta de la antorcha, y
-            // es la única referencia que no depende de una pose. Sin él, se toma el extremo que se
-            // aleja del padre del hueso.
-            Vector3 tipHint;
-            var fire = FindChild(dominantBone, FireChildHint);
-            if (fire != null) tipHint = fire.localPosition;
-            else tipHint = dominantBone.parent != null ? -dominantBone.InverseTransformPoint(dominantBone.parent.position) : axis;
-            if (Vector3.Dot(axis, tipHint - centre) < 0f) axis = -axis;
-
-            // El punto del eje a la altura del origen del hueso: el puño. Lo lateral (x, z) es el
-            // centro de la antorcha, que es donde el vendor la centró en la mano.
-            axisLocal = axis.normalized;
-            fistLocal = centre - axis * Vector3.Dot(centre, axis);
-
-            Debug.Log($"[CrankFlashlightModel] Agarre leído de la antorcha en espacio de '{dominantBone.name}': " +
-                      $"{handSpace.Count} vértices, centro {centre}, eje {axisLocal}, " +
-                      $"llama {(fire != null ? fire.localPosition.ToString() : "(sin VFX)")}; puño en {fistLocal}.");
-            return true;
-        }
-
-        private static Vector3 PrincipalAxis(System.Collections.Generic.List<Vector3> points, Vector3 centre)
-        {
-            float xx = 0, xy = 0, xz = 0, yy = 0, yz = 0, zz = 0;
-            foreach (var p in points)
-            {
-                var d = p - centre;
-                xx += d.x * d.x; xy += d.x * d.y; xz += d.x * d.z;
-                yy += d.y * d.y; yz += d.y * d.z; zz += d.z * d.z;
-            }
-            var v = new Vector3(1f, 1f, 1f).normalized;
-            for (int i = 0; i < 32; i++)
-            {
-                var next = new Vector3(
-                    xx * v.x + xy * v.y + xz * v.z,
-                    xy * v.x + yy * v.y + yz * v.z,
-                    xz * v.x + yz * v.y + zz * v.z);
-                if (next.sqrMagnitude < 1e-12f) return Vector3.zero;
-                v = next.normalized;
-            }
-            return v;
-        }
+            => BackroomsDonorGrip.TryReadHandle(root, TorchSkinNode, FireChildHint,
+                out dominantBone, out axisLocal, out fistLocal, "[CrankFlashlightModel]");
 
         private static bool TryGripFromKnuckles(Transform hand, Transform index, Transform pinky,
             Transform middle, out Vector3 localPos, out Quaternion localRot)

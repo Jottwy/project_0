@@ -15751,3 +15751,161 @@ vuelta si el desplazamiento cae en pared.
 Sin build hasta cerrar R0–R4 (decisión de Joel); la build de playtest sale con todo junto.
 
 ---
+
+## ADR-077 — Enmienda 2: el bug del reloj volvió con tres objetos, y pasa a ser REGLA con puerta (2026-09-08) — VALIDADA
+
+**Estado:** VALIDADA (test en verde y capturas antes/después con el warp encendido).
+
+### Contexto
+
+ADR-077 cerró el reloj: todas las superficies del viewmodel warpean porque `_FOV`/`_FOVEnabled` son
+uniforms globales y sólo participa del warp lo que usa `LitFieldOfView*`. Escribió la «regla general»
+como una frase dentro de una decisión, sin puerta. Tres objetos de mano nuevos —destornillador,
+bote de spray y linterna de manivela— nacieron después con `BR_X_Mat.mat` en **URP/Lit** colgado del
+puño, y el síntoma volvió idéntico: el objeto se dibuja con la proyección de la cámara del jugador
+mientras la mano que lo sujeta se dibuja con la del viewmodel, o sea ~1,5× más grande y desplazado,
+sin ningún error en consola. Joel lo describió como «el mismo caso que pasaba con el reloj».
+
+La causa de la recaída no es técnica: los tres builders comparten un `BuildMaterial()` con
+`Shader.Find("Universal Render Pipeline/Lit")` copiado del bote al destornillador y de ahí a la
+linterna, y ninguna prueba miraba el shader del renderer de la mano. `ScrewdriverAssetsTests` incluso
+**exigía** URP/Lit en el material (contra el magenta de Built-in), que es una prueba correcta para el
+material de MUNDO y equivocada para el de la mano.
+
+### Decisión
+
+1. **Dos materiales por objeto de mano, como el vendor** (`HuntingKnife.mat` / `FP_HuntingKnife.mat`):
+   `BR_X_Mat` (URP/Lit) para lo que vive en el mundo —pickup, icono, proxy de terceros (ADR-023)— y
+   `BR_X_FP_Mat` (`Shader Graphs/LitFieldOfView`) para el renderer que cuelga de la mano. El de
+   primera persona se **deriva** del de mundo, no se autora: `BackroomsViewmodelMaterials.BuildFirstPerson`
+   copia albedo y normal y reempaqueta el mapa metálico de Meshy en el `_MaskMap` que pide el shader
+   (R = metallic, G = oclusión a 1, A = smoothness = alfa del metálico, 1 si el PNG es RGB) con
+   `_SmoothnessIntensity = 1`: el aspecto es el mismo que URP/Lit ya daba, sólo cambia la proyección.
+2. **Objetos → `LitFieldOfView`; piel → `LitFieldOfView_SSS`; Canvas → `BR_UIWarp`.** El reloj se
+   queda en `_SSS` (ADR-077); un destornillador no tiene subsuperficie.
+3. **Los tres builders lo hacen al hornear** (`AttachToPrefab` recibe el de primera persona, el pickup
+   y el icono siguen con el de mundo), y un menú `Backrooms/Viewmodel/Rewarp held items` lo aplica a
+   los prefabs existentes sin rehornear mallas ni texturas. Arreglar sólo el asset habría durado hasta
+   el siguiente re-bake.
+4. **Puerta: `ViewmodelWarpTests`.** Todo `MeshRenderer`/`SkinnedMeshRenderer` activo y encendido en
+   cualquier prefab de `Assets/Prefabs/Wieldables` y `Assets/Resources/Wieldables` usa uno de los tres
+   shaders de warp (lista completa de infractores, no sólo el primero); cada objeto de mano tiene sus
+   dos materiales con el `_MaskMap` bajo `Assets/Art/Items/`; el pickup NO warpea; y los tres shaders
+   siguen sin declarar `_FOV`/`_FOVEnabled` en `Properties` (un reimport del vendor que los metiera
+   dejaría que cada material pisara al global). Regla 14 de `CLAUDE.md` y `CONVENTIONS.md` la recogen.
+
+### Consecuencias
+
+- El proxy de terceros y el objeto del suelo no cambian: enseñan el pickup, que sigue en URP/Lit.
+- Un objeto de mano nuevo copia el patrón (dos consts de ruta + una llamada a `BuildFirstPerson`) o
+  sale en rojo en el test antes de llegar a Play. El síntoma deja de depender de que alguien lo vea.
+- Deuda que sigue: `WieldableFOV` sin `OnDisable` y una sola proyección simultánea (ADR-077, limitaciones).
+
+## ADR-077 — Enmienda 3: el agarre por nudillos en bind pose se rompe con la animación real; leerlo del donante skinned (2026-09-08) — VALIDADA
+
+**Estado:** VALIDADA (capturado con la animación de idle real muestreada, no en bind pose).
+
+### Contexto
+
+Arreglado el warp (enm. 2), Joel señaló que el destornillador y el bote de spray seguían «sin
+adaptarse bien» y pidió revisar el agarre de cada uno por separado. Los dos calculaban su posición
+con `TryGripFromKnuckles`: nudillos de la mano en pose de BIND, sin animar. Esa pose de bind ya salía
+bien en captura — el fallo sólo se ve con la animación real puesta, porque ninguno de los dos objetos
+tiene animación propia: heredan `Axe_Idle` y `Torch_Idle` del donante del que se clonó el prefab, y
+esa animación mueve los dedos de otra forma que la pose de bind calculada. El propio código de la
+linterna (ADR-133) ya había documentado y resuelto este mismo síntoma: «el agarre por nudillos del
+destornillador era correcto en pose de bind, pero la animación de equipar cierra el puño de otra
+forma»; el destornillador y el bote nunca recibieron esa misma cura.
+
+### Decisión
+
+**Leer el agarre del donante SKINNED, no calcularlo por geometría de nudillos.** Extraída de la
+linterna (antes `TryReadTorchHandle`, privado) a `BackroomsDonorGrip.TryReadHandle`, genérico por
+nombre de `SkinnedMeshRenderer`: encuentra el hueso que más peso acumula sobre esa malla (el hueso
+DOMINANTE), lleva sus vértices a espacio de ese hueso vía bindpose (constante, independiente de la
+pose) y de ahí saca el eje del mango y el punto lateral del puño. El objeto cuelga de ESE hueso
+dominante, no de `Hand.R` a secas — es el hueso que la animación heredada mueve de verdad.
+
+- Destornillador: donante `Axe`, hueso dominante `AxeBase`. Linterna y bote comparten donante
+  `WoodenTorch`, hueso dominante `Torch`.
+- **Hallazgo aparte: el hueso `Torch` del bote venía APAGADO**, capturado por el mismo filtro
+  `StripFire` que apaga la malla de la antorcha — un hijo de un padre inactivo nace invisible sin
+  ningún error ni warning. La linterna ya lo reactivaba a mano; el bote no, y por eso desapareció
+  de la captura hasta añadir la misma guarda.
+- `TryGripFromKnuckles` se queda como RESERVA (huesos de dedos ausentes), no se borra.
+- Menús `Backrooms/Screwdriver|Spray/Re-colgar agarre (sin rehornear)`: reusan la malla y el
+  material de primera persona ya horneados para iterar el agarre sin el FBX crudo de Meshy.
+
+### Consecuencias
+
+- `ScrewdriverAssetsTests` ya no asume que el nodo cuelga directo de `Hand.R`; comprueba que ningún
+  ancestro está apagado — la comprobación que habría cazado el bug del bote antes de la captura.
+- Un donante nuevo (otro hacha, otra herramienta con mango) reusa `BackroomsDonorGrip` sin escribir
+  de nuevo la lectura por bindpose; sólo cambia el nombre del `SkinnedMeshRenderer` y el offset a lo
+  largo del eje (`GripRiseFraction` × largo propio del objeto).
+- Sigue sin animación PROPIA para destornillador y bote (la linterna sí la tiene, ADR-133): heredan
+  el vaivén de equipar/idle del hacha y la antorcha. Aceptable — el síntoma que preocupaba a Joel era
+  el desplazamiento del agarre, no el estilo del vaivén — y queda declarado como deuda menor.
+
+## ADR-077 — Enmienda 4: los DEDOS también se hornean; una herramienta de mano no se coge con las dos (2026-09-09) — VALIDADA
+
+**Estado:** VALIDADA (huecos medidos: 2,2 mm el destornillador, 0,6 mm el bote; suite EditMode 1416/1430, los 12 rojos los conocidos).
+
+### Contexto
+
+Cerrada la enm. 3, Joel señaló lo que quedaba, y era justo lo que la enm. 3 declaraba fuera:
+«¿quién en su sano juicio coge un destornillador a dos manos?» y «la mano sigue sin adaptarse:
+aparte de poner el modelo en buena posición deberías mover los dedos». Ambas cosas son el mismo
+hecho: **los dedos son huesos ANIMADOS**. Colgar la malla del hueso correcto (enm. 3) la lleva al
+sitio, pero la mano sigue haciendo lo que diga el clip del donante — el del hacha, que es de dos
+manos y cierra sobre un mango de otro diámetro. Para cambiar eso hay que hornear clips propios, que
+es exactamente lo que ADR-133 enm. 1 hizo para la linterna.
+
+### Decisión
+
+**Generalizar el horneador de la linterna a cualquier herramienta de UNA mano**
+(`BackroomsToolPoseBaker` + los números por objeto en `BackroomsToolPoseSpecs`). Hornea idle,
+equipar y enfundar tomando los del vendor y cambiando sólo lo que hay que cambiar:
+
+1. **Los dedos se cierran por CONTACTO contra la malla real**, falange a falange, con el perfil de
+   radio por tramos (el mango de un destornillador es el doble de gordo que su vástago).
+2. **La izquierda se recoge fuera del encuadre** cuando el objeto es de una mano (`TuckLeftHand`),
+   con los dedos entreabiertos: una mano que no sujeta nada no se queda en garra.
+3. **El índice del bote va sobre el PULSADOR** (`IndexOnNozzle`), no rodeando el cuerpo — es el dedo
+   que aprieta —, y tiene prohibido atravesar la lata para llegar a él.
+4. `KeepVendorFraming` (por defecto): el puño y el eje se quedan donde el vendor los animó. Este
+   horneado cambia el AGARRE, no el encuadre; así equipar y enfundar conservan su recorrido.
+
+### Los cuatro fallos que costaron cada iteración, todos por medir en vez de mirar
+
+- **El ancla no es lo que la mano «encierra»**, ni el origen del hueso del donante (el del hacha cae
+  en la base del mango, a palmos del puño). El eje va a **(radio + piel) de la línea de nudillos,
+  hacia donde cierran los dedos**: sobre la línea, el objeto queda en el PLANO de la mano y los dedos
+  cierran por el otro lado.
+- **El barrido no puede suponer el signo del cierre.** Se recorría desde el cierre máximo dando por
+  hecho que cerrar era negativo y se aceptaba el primer ángulo sin penetración; con estos objetos el
+  cierre resultó ser POSITIVO (medido: la yema del índice se acerca a 9 mm en +40° y se aleja a
+  24 mm en −80°), así que el primer ángulo del barrido ya valía y los dedos se quedaban ABIERTOS.
+  Ahora se barre −80…+80 y gana el ángulo que deja el extremo TOCANDO. Tres pasadas dieron números
+  idénticos hasta encontrar esto: cuando el resultado no cambia al cambiar el algoritmo, lo que
+  falla es la premisa, no el parámetro.
+- **La tolerancia de penetración del medio de la falange sale de la geometría, no de un número.**
+  Una falange es recta y la superficie redonda: al rodearla el medio se hunde ≈ L²/8R, que en un
+  mango de radio 12 mm son 10 mm, muy por encima del tope fijo anterior.
+- **El pulsador es un botón de 7 mm, no la tapa.** Modelado con el radio del perfil (3 cm), el índice
+  tomaba el atajo por dentro de la lata (yema a 12 mm del eje con la lata de radio 32).
+
+### Consecuencias
+
+- Puerta nueva `ToolGripTests`: las yemas que rodean tocan la piel (−4…+12 mm), el índice del bote
+  llega al pulsador sin clavarse en el eje, y **la izquierda del destornillador está a más de 5 cm**
+  del objeto — la prueba literal de «no se coge con dos manos».
+- Una herramienta de mano nueva es un `Spec` de ocho números y un menú; el algoritmo no se toca.
+- Los clips pesan 4,6 y 6,5 MB por objeto (tres cada uno), en línea con la linterna tras el
+  aplastado de curvas constantes.
+- Fuera, declarado: el encuadre (dónde cae el puño en pantalla) sigue siendo el del donante. Si algún
+  objeto lo necesita, se pone `KeepVendorFraming` a false y manda `FistFromEye`, que ya está escrito
+  y probado en la linterna pero sin usar aquí.
+
+---
+

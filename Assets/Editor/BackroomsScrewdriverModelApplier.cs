@@ -51,6 +51,10 @@ namespace BackroomsSurvival.EditorTools
         public const string BakedNormalPath = BakedFolder + "/BR_Screwdriver_Normal.png";
         public const string BakedMetallicPath = BakedFolder + "/BR_Screwdriver_Metallic.png";
         public const string MaterialPath = BakedFolder + "/BR_Screwdriver_Mat.mat";
+        /// <summary>El material de la MANO (ADR-077 enm. 2): mismo arte, shader de warp del viewmodel.
+        /// <see cref="MaterialPath"/> es el del mundo (pickup, icono, proxy).</summary>
+        public const string FirstPersonMaterialPath = BakedFolder + "/BR_Screwdriver_FP_Mat.mat";
+        public const string MaskMapPath = BakedFolder + "/BR_Screwdriver_MaskMap.png";
         public const string MeshName = "BR_Screwdriver_Mesh";
 
         /// <summary>Nombre del nodo que crea este script, bajo <see cref="HandBoneName"/>.</summary>
@@ -116,7 +120,13 @@ namespace BackroomsSurvival.EditorTools
             var material = BuildMaterial();
             if (material == null) return;
 
-            AttachToPrefab(mesh, material);
+            // En la mano va el material de PRIMERA PERSONA: el de mundo con URP/Lit se dibujaría con
+            // la proyección de la cámara y no con la del viewmodel (ADR-077 enm. 2).
+            var firstPerson = BackroomsViewmodelMaterials.BuildFirstPerson(
+                MaterialPath, FirstPersonMaterialPath, MaskMapPath, "[ScrewdriverModel]");
+            if (firstPerson == null) return;
+
+            AttachToPrefab(mesh, firstPerson);
 
             // El mismo arte al objeto del SUELO, encadenado a propósito (ver el bote).
             BackroomsScrewdriverPickupCreator.Apply();
@@ -438,25 +448,54 @@ namespace BackroomsSurvival.EditorTools
                 // El hacha, fuera de la vista. Se DESACTIVA, no se borra: reversible.
                 if (donor != null && donor.gameObject.activeSelf) donor.gameObject.SetActive(false);
 
-                var previous = hand.Find(NodeName);
-                if (previous != null) Object.DestroyImmediate(previous.gameObject);
+                // Por todo el prefab y no sólo bajo la mano: destruye el nodo dondequiera que haya
+                // quedado colgado (una pasada vieja pudo parentarlo al hueso del hacha en vez de a
+                // Hand.R).
+                foreach (var t in root.GetComponentsInChildren<Transform>(true))
+                {
+                    if (t == null || t.name != NodeName) continue;
+                    Object.DestroyImmediate(t.gameObject);
+                    break;
+                }
 
                 var go = new GameObject(NodeName);
-                go.transform.SetParent(hand, false);
+                Transform parentBone = hand;
 
-                if (TryGripFromKnuckles(hand, index, pinky, middle, out var gripPos, out var gripRot))
+                // EL AGARRE SE LEE DEL HACHA, no se calcula: su malla es skinned y el bindpose dice
+                // exactamente cómo la mano del vendor cierra el puño sobre un mango — el mismo
+                // agarre que la animación de equipar reproduce fotograma a fotograma. El cálculo por
+                // nudillos (abajo) es sólo la reserva: acertaba en pose de bind y salía desplazado en
+                // cuanto entraba la animación real (ADR-077 enm. 3, mismo síntoma que ya documentó
+                // la linterna).
+                if (BackroomsDonorGrip.TryReadHandle(root, DonorMeshNode, null,
+                        out var dominantBone, out var axis, out var lateral, "[ScrewdriverModel]"))
                 {
-                    go.transform.localPosition = gripPos + GripNudge;
-                    go.transform.localRotation = gripRot * Quaternion.Euler(EulerNudge);
+                    parentBone = dominantBone;
+                    // Defensivo: un hueso de donante apagado deja a su hijo invisible sin error
+                    // (mordió con el bote de spray, cuyo hueso 'Torch' venía apagado por un filtro
+                    // viejo — ver ADR-077 enm. 3).
+                    if (!parentBone.gameObject.activeSelf) parentBone.gameObject.SetActive(true);
+                    go.transform.SetParent(parentBone, false);
+                    go.transform.localPosition = lateral + axis * (LengthMeters * GripRiseFraction) + GripNudge;
+                    go.transform.localRotation = Quaternion.FromToRotation(Vector3.up, axis) * Quaternion.Euler(EulerNudge);
                 }
                 else
                 {
-                    Debug.LogWarning("[ScrewdriverModel] Faltan huesos de dedos para el agarre: pose de reserva.");
-                    go.transform.localPosition = FallbackPosition + GripNudge;
-                    go.transform.localEulerAngles = FallbackEuler + EulerNudge;
+                    go.transform.SetParent(parentBone, false);
+                    if (TryGripFromKnuckles(hand, index, pinky, middle, out var gripPos, out var gripRot))
+                    {
+                        go.transform.localPosition = gripPos + GripNudge;
+                        go.transform.localRotation = gripRot * Quaternion.Euler(EulerNudge);
+                    }
+                    else
+                    {
+                        Debug.LogWarning("[ScrewdriverModel] Faltan huesos de dedos para el agarre: pose de reserva.");
+                        go.transform.localPosition = FallbackPosition + GripNudge;
+                        go.transform.localEulerAngles = FallbackEuler + EulerNudge;
+                    }
                 }
 
-                var boneScale = hand.lossyScale;
+                var boneScale = parentBone.lossyScale;
                 float boneFactor = Mathf.Max(1e-5f, Mathf.Max(boneScale.x, Mathf.Max(boneScale.y, boneScale.z)));
                 go.transform.localScale = Vector3.one / boneFactor;
 
@@ -477,7 +516,7 @@ namespace BackroomsSurvival.EditorTools
                 long indices = 0;
                 for (int s = 0; s < mesh.subMeshCount; s++) indices += (long)mesh.GetIndexCount(s);
                 long tris = indices / 3;
-                Debug.Log($"[ScrewdriverModel] Destornillador colgado de '{HandBoneName}': tris={tris}, " +
+                Debug.Log($"[ScrewdriverModel] Destornillador colgado de '{parentBone.name}': tris={tris}, " +
                           $"caja={mesh.bounds.size.x:F4}/{mesh.bounds.size.y:F4}/{mesh.bounds.size.z:F4}, " +
                           $"escala={go.transform.localScale}, capa={layer}, " +
                           $"pos={go.transform.localPosition}, euler={go.transform.localEulerAngles}.");
@@ -559,6 +598,25 @@ namespace BackroomsSurvival.EditorTools
         /// <summary>Asigna el icono propio, importándolo como Sprite FullRect — el hueco del
         /// inventario es cuadrado y sin FullRect Unity recorta el margen transparente y lo estira.
         /// Misma rutina que el bote y el agua de almendras.</summary>
+        /// <summary>
+        /// Re-cuelga SOLO el agarre (destino del nodo bajo su hueso), reusando la malla y el
+        /// material de primera persona YA horneados: no toca el FBX de Meshy (que ni siquiera hace
+        /// falta que exista). Sirve para iterar el agarre (BackroomsDonorGrip) sin repetir el
+        /// horneado de malla/texturas cada vez.
+        /// </summary>
+        [MenuItem("Backrooms/Screwdriver/Re-colgar agarre (sin rehornear)", false, 92)]
+        public static void ReattachGrip()
+        {
+            var mesh = AssetDatabase.LoadAssetAtPath<Mesh>(BakedMeshPath);
+            if (mesh == null) { Debug.LogError($"[ScrewdriverModel] Sin malla horneada en '{BakedMeshPath}'."); return; }
+            var firstPerson = BackroomsViewmodelMaterials.BuildFirstPerson(
+                MaterialPath, FirstPersonMaterialPath, MaskMapPath, "[ScrewdriverModel]");
+            if (firstPerson == null) return;
+            AttachToPrefab(mesh, firstPerson);
+            AssetDatabase.SaveAssets();
+            AssetDatabase.Refresh();
+        }
+
         [MenuItem("Backrooms/Screwdriver/Asignar icono", false, 91)]
         public static void AssignIconMenu()
         {
