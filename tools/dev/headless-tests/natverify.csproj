@@ -56,6 +56,8 @@
     <Compile Include="$(Repo)\Assets\Scripts\Lobbies\LobbyJoinRouter.cs" />
     <Compile Include="$(Repo)\Assets\Scripts\Lobbies\SteamLobbyRecord.cs" />
     <Compile Include="$(Repo)\Assets\Scripts\Lobbies\LobbyList.cs" />
+    <!-- ADR-136 D8: lo que una invitacion lee del lobby, con las mismas claves que el navegador. -->
+    <Compile Include="$(Repo)\Assets\Scripts\Lobbies\LobbyJoinTarget.cs" />
     <!-- ADR-135: el nucleo del tunel de Steam. Puro por diseno -las dos costuras contra Steam y
          contra el socket son interfaces- y por eso se puede correr aqui entero. La implementacion
          Facepunch (FacepunchSteamTunnel.cs) y el runner con su hilo quedan fuera: uno arrastra
@@ -93,6 +95,7 @@
     <Compile Include="$(Repo)\Assets\Tests\EditMode\SteamTunnelTests.cs" />
     <Compile Include="$(Repo)\Assets\Tests\EditMode\SteamHostLobbyTests.cs" />
     <Compile Include="$(Repo)\Assets\Tests\EditMode\PlayerJoinMessagesTests.cs" />
+    <Compile Include="$(Repo)\Assets\Tests\EditMode\LobbyJoinTargetTests.cs" />
   </ItemGroup>
 
 </Project>

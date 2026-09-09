@@ -470,30 +470,34 @@ namespace BackroomsSurvival.Net
                 return;
             }
 
-            string rawIp = lobby.GetData(ConnectIpKey);
-            string rawPort = lobby.GetData(ConnectPortKey);
-
-            if (!TryParseConnectData(rawIp, rawPort, out string ip, out int port))
+            // ADR-136 D8: las MISMAS vías que lee el navegador —directa, LAN, relay, Steam—, no sólo
+            // `connect_ip`/`connect_port`. Hasta el 2026-09-09 una invitación entraba a pelo contra
+            // `ip:puerto` mientras el navegador sí llevaba relay y túnel: la invitación conectaba
+            // peor que el navegador, y un host sin endpoint directo (ADR-117 D7) no se podía
+            // aceptar desde el overlay.
+            var target = Lobbies.LobbyJoinTarget.FromMetadata(lobby.GetData);
+            if (!target.HasSomeWayIn)
             {
                 StatusMessage = "Lobby has no connect data";
-                Debug.LogError($"[SteamLobbyManager] Lobby {lobby.Id.Value} metadata unusable: {ConnectIpKey}='{rawIp}' {ConnectPortKey}='{rawPort}'");
+                Debug.LogError($"[SteamLobbyManager] Lobby {lobby.Id.Value} no anuncia ninguna forma de entrar ({target}).");
                 return;
             }
 
             string playerName = SanitizePlayerName(SteamClient.Name);
-            Debug.Log($"[SteamLobbyManager] Auto-connect from lobby {lobby.Id.Value}: {ip}:{port} as '{playerName}'");
-            StatusMessage = $"Joining {ip}:{port}...";
+            Debug.Log($"[SteamLobbyManager] Auto-connect from lobby {lobby.Id.Value}: {target} as '{playerName}'");
+            StatusMessage = target.HasDirect ? $"Joining {target.Ip}:{target.Port}..." : "Joining through Steam/relay...";
 
             // Camino único: delega en la UI cuando existe (para que el panel refleje el
             // estado y se cancele el auto-solo), y si no, llama al MISMO StartAsJoiner.
-            if (!UI.JoinSessionUI.TryBeginSteamJoin(ip, port, playerName))
+            if (!UI.JoinSessionUI.TryBeginSteamJoin(target.Ip, target.Port, playerName, target.FallbackIp,
+                    target.Relay, target.SteamHost))
             {
                 if (init == null)
                 {
                     Debug.LogError("[SteamLobbyManager] No NetworkInitializer available; cannot auto-connect.");
                     return;
                 }
-                init.StartAsJoiner(ip, port, playerName);
+                init.StartAsJoiner(target.Ip, target.Port, playerName, target.Relay, target.SteamHost);
             }
         }
 
