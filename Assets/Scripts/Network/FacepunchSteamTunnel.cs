@@ -83,17 +83,26 @@ namespace BackroomsSurvival.Net
         /// <summary>
         /// Recoge lo que Valve tenga pendiente. Los `OnMessage` de abajo salen **desde aquí**, o
         /// sea en el hilo del túnel, que es lo que permite no pasar por el `Update` de Unity.
+        ///
+        /// **`false` = este transporte ya no sirve**, y el bombeo tiene que parar. Cuando Steam
+        /// invalida el socket —la sesión se cierra, la aplicación se apaga— `Receive` revienta
+        /// dentro de Facepunch, y volver a intentarlo revienta igual: en el primer playtest real
+        /// esto dejó 203 excepciones repetidas porque el fallo se tragaba aquí y el bucle seguía.
         /// </summary>
-        public void Poll()
+        public bool Poll()
         {
             try
             {
                 _socket?.Receive(ReceiveBatch, true);
                 _connection?.Receive(ReceiveBatch, true);
+                return true;
             }
             catch (Exception e)
             {
-                Debug.LogWarning($"[SteamTunnel] Receive falló: {e.Message}");
+                // Se registra UNA vez, porque después de esto no hay más vueltas.
+                Debug.LogWarning($"[SteamTunnel] Receive falló ({e.GetType().Name}: {e.Message}); " +
+                                 "se abandona el transporte.");
+                return false;
             }
         }
 

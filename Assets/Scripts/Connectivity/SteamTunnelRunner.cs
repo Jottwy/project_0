@@ -6,30 +6,6 @@ using UnityEngine;
 namespace BackroomsSurvival.Connectivity
 {
     /// <summary>
-    /// Lo que abre y cierra el transporte de Steam, sin un tipo de Steamworks a la vista. La
-    /// implementación real es <c>FacepunchSteamTunnelTransport</c>;
-    /// <see cref="SteamTunnelRunner"/> no sabe cuál le han dado.
-    /// </summary>
-    public interface ISteamTunnelTransport : IDisposable
-    {
-        /// <summary>Abre el socket de escucha del host (`CreateRelaySocket`).</summary>
-        bool StartHost(int virtualPort);
-
-        /// <summary>Conecta contra el host por su `SteamId` (`ConnectRelay`).</summary>
-        ISteamTunnelChannel Connect(ulong hostSteamId, int virtualPort);
-
-        /// <summary>
-        /// Bombea lo que Valve tenga pendiente. Los mensajes salen por <see cref="OnMessage"/> **en
-        /// el hilo que llama a esto**, que es el del túnel.
-        /// </summary>
-        void Poll();
-
-        Action<ISteamTunnelChannel, byte[], int> OnMessage { get; set; }
-
-        Action<ISteamTunnelChannel> OnClosed { get; set; }
-    }
-
-    /// <summary>
     /// El único punto desde el que el juego abre y cierra el túnel de Steam — ADR-135 D3.
     ///
     /// **Hilo propio, no `Update`.** El goteo de chunks de un join son ~820 datagramas/s medidos
@@ -63,6 +39,31 @@ namespace BackroomsSurvival.Connectivity
 
         /// <summary>El túnel está abierto y bombeando.</summary>
         public static bool IsRunning => _running;
+
+        /// <summary>
+        /// Cierra el túnel también cuando el jugador **cierra el juego** sin pasar por el teardown
+        /// de sesión (Alt+F4, la X, el `Quit` del menú).
+        ///
+        /// Hacía falta y se vio en el primer playtest real: el `Step` de `SessionEndHandler` cubre
+        /// el fin de SESIÓN, pero al cerrar la aplicación nadie llamaba aquí, y el hilo —que es
+        /// `IsBackground`— seguía vivo bombeando contra un Steam que ya se estaba apagando hasta
+        /// que el proceso moría. `Application.quitting` es el único punto que cubre las tres
+        /// puertas de salida a la vez.
+        /// </summary>
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
+        private static void HookApplicationQuit()
+        {
+            Application.quitting -= OnApplicationQuitting;
+            Application.quitting += OnApplicationQuitting;
+        }
+
+        private static void OnApplicationQuitting()
+        {
+            if (!_running && _transport == null) return;
+
+            Debug.Log("[SteamTunnel] la aplicación se cierra: se cierra el túnel.");
+            Shutdown();
+        }
 
         /// <summary>Papel del túnel abierto, para el log y para la suite.</summary>
         public static string Role { get; private set; }
@@ -207,27 +208,10 @@ namespace BackroomsSurvival.Connectivity
         {
             while (_running)
             {
+                PumpOutcome outcome;
                 try
                 {
-                    ISteamTunnelTransport transport = _transport;
-                    SteamTunnelHost host = _host;
-                    SteamTunnelJoiner joiner = _joiner;
-                    if (transport == null) break;
-
-                    // Steam → backend.
-                    transport.Poll();
-
-                    // La autorización va antes que ningún datagrama de juego, y es idempotente:
-                    // se reintenta hasta que la conexión está lista para admitirla.
-                    joiner?.SendAuth();
-
-                    // backend → Steam.
-                    host?.PumpToSteam(PumpTimeoutMs);
-                    joiner?.PumpToSteam(PumpTimeoutMs);
-
-                    // Sin enlaces vivos no hay nada que esperar en un socket, así que el bucle
-                    // giraría a toda velocidad quemando un núcleo.
-                    if (host != null && host.AuthorizedCount == 0) Thread.Sleep(PumpTimeoutMs);
+                    outcome = SteamTunnelPump.Once(_transport, _host, _joiner, PumpTimeoutMs);
                 }
                 catch (Exception e)
                 {
@@ -236,7 +220,27 @@ namespace BackroomsSurvival.Connectivity
                     Debug.LogWarning($"[SteamTunnel] el bombeo terminó con excepción: {e.Message}");
                     break;
                 }
+
+                if (outcome == PumpOutcome.Stopped)
+                {
+                    // El transporte se acabó — lo normal es que la sesión esté cerrándose y Steam
+                    // ya haya invalidado el socket. **No se reintenta.** Hasta el 2026-09-09 sí se
+                    // reintentaba, porque el fallo se tragaba dentro de `Poll`: en el primer
+                    // playtest real eso dejó 203 excepciones repetidas girando a toda velocidad
+                    // después de que el backend ya hubiera muerto.
+                    Debug.Log("[SteamTunnel] el transporte dejó de responder; se para el bombeo.");
+                    break;
+                }
+
+                // Sin nada que mover, ceder el turno: si no, el bucle quema un núcleo. Antes esto
+                // sólo pasaba con el host sin peers autorizados, así que un joiner en silencio
+                // —o un host con peers y sin tráfico— giraba a tope.
+                if (outcome == PumpOutcome.Idle) Thread.Sleep(PumpTimeoutMs);
             }
+
+            // Que el hilo haya salido tiene que verse desde fuera: `IsRunning` mintiendo deja al
+            // anuncio publicando una vía Steam que ya no escucha (`PublishSteamTunnel`).
+            _running = false;
         }
     }
 }

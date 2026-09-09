@@ -374,6 +374,91 @@ namespace BackroomsSurvival.Tests
             Assert.AreEqual(0, channel.Sent.Count);
         }
 
+        // ─── El bombeo, y cuándo para (playtest del 2026-09-09) ───
+
+        private sealed class FakeTransport : ISteamTunnelTransport
+        {
+            public bool Alive = true;
+            public int Polls;
+
+            public Action<ISteamTunnelChannel, byte[], int> OnMessage { get; set; }
+
+            public Action<ISteamTunnelChannel> OnClosed { get; set; }
+
+            public bool Disposed { get; private set; }
+
+            public bool StartHost(int virtualPort) => true;
+
+            public ISteamTunnelChannel Connect(ulong hostSteamId, int virtualPort) => null;
+
+            public bool Poll()
+            {
+                Polls++;
+                return Alive;
+            }
+
+            public void Dispose() => Disposed = true;
+        }
+
+        [Test]
+        public void Un_transporte_muerto_para_el_bombeo_en_vez_de_reintentar()
+        {
+            // EL FALLO DEL PRIMER PLAYTEST REAL: `Poll` se tragaba su propia excepción, así que el
+            // bucle seguía girando contra un socket que Steam ya había invalidado. Salieron 203
+            // excepciones repetidas después de que el backend hubiera muerto.
+            var transport = new FakeTransport { Alive = false };
+
+            Assert.AreEqual(PumpOutcome.Stopped, SteamTunnelPump.Once(transport, null, null, 0));
+        }
+
+        [Test]
+        public void Sin_transporte_no_se_bombea_nada()
+        {
+            Assert.AreEqual(PumpOutcome.Stopped, SteamTunnelPump.Once(null, null, null, 0));
+        }
+
+        [Test]
+        public void Una_vuelta_sin_trafico_dice_que_estuvo_ociosa()
+        {
+            // El llamante usa esto para ceder el turno: sin ello el hilo quema un núcleo.
+            var transport = new FakeTransport();
+            var sockets = new List<FakeSocket>();
+            SteamTunnelHost host = NewHost(sockets);
+
+            Assert.AreEqual(PumpOutcome.Idle, SteamTunnelPump.Once(transport, host, null, 0));
+            Assert.AreEqual(1, transport.Polls);
+        }
+
+        [Test]
+        public void Una_vuelta_que_mueve_un_datagrama_lo_dice()
+        {
+            var transport = new FakeTransport();
+            var sockets = new List<FakeSocket>();
+            SteamTunnelHost host = NewHost(sockets);
+            var channel = new FakeChannel();
+            byte[] auth = SteamTunnelAuth.Build(Secret);
+            host.OnMessage(channel, auth, auth.Length);
+            sockets[0].QueueFromBackend(new byte[] { 1, 2 }, Backend);
+
+            Assert.AreEqual(PumpOutcome.Moved, SteamTunnelPump.Once(transport, host, null, 0));
+            Assert.AreEqual(1, channel.Sent.Count);
+        }
+
+        [Test]
+        public void El_joiner_manda_su_autorizacion_desde_el_bombeo()
+        {
+            // No hace falta acertar el momento en que Steam abre la conexión: cada vuelta lo
+            // reintenta hasta que entra.
+            var transport = new FakeTransport();
+            var channel = new FakeChannel();
+            var joiner = new SteamTunnelJoiner(channel, new FakeSocket(51010), Secret);
+
+            SteamTunnelPump.Once(transport, null, joiner, 0);
+
+            Assert.IsTrue(joiner.AuthSent);
+            Assert.AreEqual(1, channel.Sent.Count);
+        }
+
         // ─── El payload no se toca (ADR-135 D3) ───
 
         [Test]

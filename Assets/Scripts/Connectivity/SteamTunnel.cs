@@ -51,6 +51,76 @@ namespace BackroomsSurvival.Connectivity
     }
 
     /// <summary>
+    /// Lo que abre y cierra el transporte de Steam, sin un tipo de Steamworks a la vista. La
+    /// implementación real es <c>FacepunchSteamTunnelTransport</c>; ni
+    /// <see cref="SteamTunnelPump"/> ni <c>SteamTunnelRunner</c> saben cuál les han dado.
+    /// </summary>
+    public interface ISteamTunnelTransport : IDisposable
+    {
+        /// <summary>Abre el socket de escucha del host (`CreateRelaySocket`).</summary>
+        bool StartHost(int virtualPort);
+
+        /// <summary>Conecta contra el host por su `SteamId` (`ConnectRelay`).</summary>
+        ISteamTunnelChannel Connect(ulong hostSteamId, int virtualPort);
+
+        /// <summary>
+        /// Recoge lo que Valve tenga pendiente. Los mensajes salen por <see cref="OnMessage"/> **en
+        /// el hilo que llama a esto**, que es el del túnel.
+        ///
+        /// **Devuelve `false` cuando el transporte ya no sirve**, y eso NO es un detalle: hasta el
+        /// 2026-09-09 esto era `void` y se tragaba su propia excepción, así que el bombeo seguía
+        /// girando contra un socket muerto. En el primer playtest real dejó **203 excepciones**
+        /// repetidas tras el cierre de la sesión.
+        /// </summary>
+        bool Poll();
+
+        Action<ISteamTunnelChannel, byte[], int> OnMessage { get; set; }
+
+        Action<ISteamTunnelChannel> OnClosed { get; set; }
+    }
+
+    /// <summary>Qué ha dado una vuelta del bombeo.</summary>
+    public enum PumpOutcome
+    {
+        /// Nada que mover. El llamante debe ceder el turno, o quema un núcleo.
+        Idle = 0,
+
+        /// Cruzó al menos un datagrama.
+        Moved = 1,
+
+        /// El transporte se acabó. **No se reintenta**: el bombeo para aquí.
+        Stopped = 2,
+    }
+
+    /// <summary>
+    /// Una vuelta del bombeo del túnel, sin hilo y sin Unity dentro — por eso se puede probar.
+    ///
+    /// El hilo y el log viven en <c>SteamTunnelRunner</c>; la REGLA vive aquí: qué se bombea, en
+    /// qué orden, y **cuándo hay que parar**.
+    /// </summary>
+    public static class SteamTunnelPump
+    {
+        public static PumpOutcome Once(ISteamTunnelTransport transport, SteamTunnelHost host,
+            SteamTunnelJoiner joiner, int timeoutMs)
+        {
+            if (transport == null) return PumpOutcome.Stopped;
+
+            // Steam → backend. Un transporte que ya no contesta se abandona en el acto.
+            if (!transport.Poll()) return PumpOutcome.Stopped;
+
+            // La autorización va antes que ningún datagrama de juego, y es idempotente: se
+            // reintenta hasta que la conexión está lista para admitirla.
+            joiner?.SendAuth();
+
+            // backend → Steam.
+            int moved = host?.PumpToSteam(timeoutMs) ?? 0;
+            if (joiner != null && joiner.PumpToSteam(timeoutMs)) moved++;
+
+            return moved > 0 ? PumpOutcome.Moved : PumpOutcome.Idle;
+        }
+    }
+
+    /// <summary>
     /// El sobre de autorización de ADR-135 D4'. **Viaja una sola vez**, como primer mensaje de la
     /// conexión, y no vuelve a aparecer: en cuanto el host lo acepta, todo lo demás son datagramas
     /// de juego opacos, uno por mensaje.
