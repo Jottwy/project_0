@@ -6,14 +6,14 @@
 ## Estado
 - **WorldGen3 es el mundo servido.** Wire **61** en las dos puntas (`ipc/server.rs:38`, `WireSchema.cs:25`) — ADR-129 lo subió el 06-09.
 - **Contrato WG3 v1 = Alpha 1** (`docs/WG3-ALPHA1-ROADMAP.md`): días 1–2 hechos; 3 y 5 APARCADOS detrás de la tanda de oficinas (Joel, 06-09).
-- Suite del 09-09 (rama ADR-136): `cargo test --bin backrooms_server` **1438/1438 (91 ign.)**, clippy limpio; arnés headless 381/382; CompileCheck 0 ×4.
+- **Multijugador por Steam, de punta a punta** (09-09, build 25217339): invitación, túnel, spawn junto al invitador y aviso — con **LAG**. Suite 1438/1438.
 - **El commit tiene gate** (`tools/dev/validate-scope.ps1`, hook PreToolUse): rojo = el commit no se ejecuta. Alcance por `git diff --cached`.
 - Alpha 1 itch nov 2026 · Next Fest feb 2027 · EA primavera 2027 (`docs/SCALING-ROADMAP.md:196-198`). E0 de red cerrada y medida.
 
 ## Próximo paso ÚNICO
-- **Día 3, rebanada 2: los TRAMOS** (1 179 en la ventana medida, uno por objeto). Arrastran luces, zumbido, ambiente y el nombre `seg_` del
-  que dependen el arnés de ADR-098 (`Wg3LiveBootstrap.cs:125`) y el diagnóstico por jerarquía: hay que darles otra vía ANTES de tocarlos.
-  Los macizos YA están fundidos (4 718 → **550 renderers**). Del día 3 faltan los otros dos números del contrato: tiempo de chunk y memoria.
+- **Bajar el lag hasta que 50 jugadores sean jugables** (Joel, 09-09). **MEDIR primero, no tocar nada antes**: RTT, tick y jitter en partida real
+  por Steam. Sospechoso 1, ADR-009 L2 (sin predicción de cliente cada paso espera el ida y vuelta); 2, el LOD de poses de ADR-074. WG3 día 3, detrás.
+  Alcance honesto: E0 se midió con 8–12 domésticos y `SessionMaxPlayers` = 50 no se ha probado NUNCA — eso es arquitectura, no pulido.
 
 ## En curso
 - **ADR-128, mundo ×2: tercera pasada, NO commiteado.** 24 tests en rojo; `MAX_SEGMENT_M` no se toca (D3 anulado), `bounds()` en metros
@@ -24,8 +24,8 @@
 - ADR-123 (agacharse y conductos) PROPUESTO, pendiente de Joel. ADR-127 (rampa de techo, wire 61) propuesto para el día 4.
 - **Migración STP servidor-autoritativo**: Steps 1–2 y slice 3.1 (plumbing) hechos y verificados. Falta slice 3.2
   (capa L2 de predicción), reescribir los 8 call sites de `Inventory` y retirar `PlayerController.cs` (DEPRECATED por ADR-009).
-- ADR-014 fase 2 (borrado diferido 200 ms + reserva host-only anti-duplicado): backend implementado, **pendiente de playtest**.
-- **ADR-136 VERIFICADO en Play el 09-09** (build 25217339): invitación, nacer junto al invitador y aviso de entrada, los tres. Sin ver: linterna y venda.
+- ADR-014 fase 2 (borrado diferido 200 ms + reserva host-only anti-duplicado): backend implementado, **pendiente de playtest**. Sin ver en Play:
+  linterna (ADR-133) y venda (`bb9e3cc1`).
 
 ## Riesgos abiertos
 - **Autoridad del servidor: los tres agujeros CERRADOS** (`78e156e6` dueño al demoler; `ebb42911`/`bb3c7e5c` cantidad y posición contra el
@@ -94,6 +94,16 @@
 
 ## Últimas tandas
 
+### 2026-09-09 — 41.ª tanda: la invitación te deja AL LADO de quien te invitó (ADR-136), y el aviso de quién entra
+- **VERIFICADO EN PLAY por Joel** (build 25217339, sin `SetLive`): invitación por overlay, nacer junto al invitador y el cartel de entrada. Y el
+  precio, dicho por él: «extremadamente lag» — pasa a próximo paso y a Riesgos con nombre.
+- **R0, el fallo que habría hundido todo lo demás**: `HandleLobbyEntered` usaba la sobrecarga de TRES argumentos, así que una invitación entraba
+  sin relay ni túnel de Steam mientras el navegador sí los pasaba. `LobbyJoinTarget` lee las mismas claves para las dos rutas.
+- **R1/R3 sin bump de wire** (ADR-116 D3): `platform_id`/`invited_by` con `serde(default)`; mapa identidad→peer con el host DENTRO (por eso «host
+  invita» y «cliente invita» son el mismo código); punto desde el ROSTER (D4); `Invited` gana a `Restored`. El aviso, `PeerDiscovered` por roster.
+- **Convergencia y dos trampas**: tronco + luces por planta + ADR-077 fusionados; `DECISIONS.md` chocó dos veces y se resolvió conservando los dos
+  apéndices. El `.csproj` no listaba 10 `.cs` nuevos (CompileCheck habría dado falso verde) y `rustfmt` reescribió el WIP de `wg3` (revertido).
+
 ### 2026-09-09 — 40.ª tanda: primer playtest real de Steam — redes y cuentas distintas (ADR-135 enm. 2)
 - Joel probó con un segundo equipo en OTRA red y OTRA cuenta de Steam: conexión bidireccional, `transport=steam`. Primera vez que el
   criterio físico de ADR-117 D9 (dos jugadores en redes distintas se juntan) se cumple de verdad — la vía Steam lo cierra, no el relay propio.
@@ -150,23 +160,4 @@
   positivo es un agujero por el que se ve dentro de una pared. Tapar NO es mutuo, y hay test.
 - Antes (sonda `probe_solids_per_chunk`): 5 119 macizos y 1 401 tramos en la (0,0), 90 % fundibles. Capturas `perf_*` sin agujeros y con la
   retícula del suelo continua entre cajas. EditMode 38/39: el rojo de `cor_ramp` es PREEXISTENTE (lee volúmenes, no la malla).
-
-### 2026-09-06 — 34.ª tanda: el decaimiento del CLIENTE (ADR-130 r2b) y el cierre de las ramas viejas
-- **Los «95/87/79 sin fusionar» eran falsa alarma**: `git cherry` deja 0, 1 y 2 propios. Podadas angry-jackson, gallant-einstein y
-  happy-carson (PR #1 cerrado, su fix cae sobre `architecture/` legacy) y awesome-kare, que BORRABA ADR-094 vivo. `nightly-audit-base` dentro.
-- **r2b, `5bc25920`, sin wire y sin campo nuevo**: `DecayOfFloor` espeja `fill::decay_of_floor` y sus constantes (3,32 y 3) ya estaban en
-  `Wg3StoreyLayers`. Plafones `off + (1−off)·decay·0,80`, parpadeo del 40 % de los vivos, color a su luminancia por `1−0,5·decay`, 45 % de
-  luminarias arrancadas (sal `PMIS`, con la COTA en el hash).
-- **Mover UMBRALES, no añadir tiradas** (el orden es contrato), y **el gris va DESPUÉS del producto**: el tinte es un cociente en torno a (1,1,1).
-- `cargo test` **1414/1414**, `CompileCheck` 4/4, EditMode `Wg3LightCadence` **12/12**, y el barrido del tronco YA fusionado (que nadie
-  había medido): 27/27, 4,2 plantas, 268 espacios, mancha 99,7 %, islas 6,0, nav 100 %, pisable 182 857 (−0,2 %). Sin ver en juego.
-
-### 2026-09-06 — 33.ª tanda: las ocho sesiones de oficina, fusionadas en un solo tronco
-- Once merges en `migration/worldgraph-v1` (`0394e426`): variantes, materiales, deterioro, sala grande y los incrementos de audio, carteles,
-  ADR-131 y decaimiento r2a. Tres sesiones hicieron fast-forward del tronco por su cuenta a mitad: dos merges de vuelta (`5ffdf755`, `0394e426`).
-- Reparto final tras los choques: prop kinds carteles 15, variantes 16–20, techo roto 21–22; ADR-105 enm. 19 materiales, 20 techo roto,
-  21 planta abierta; ADR-129 enm. 1 carteles, 2 variantes; sales 09 deterioro, 0A lámpara, 0B boquetes, 0C variantes, 0D carteles.
-- `fill.rs` se entremezcló dos veces (carteles y deterioro en distinto orden a cada lado): reconstruido aplicando las inserciones ancladas por contexto.
-- Dos rojos al juntar sala grande con variantes: `office_variants` se quedaba la planta abierta; el test de bocas medía cuadrados, no franjas.
-- Los 6 `.meta` de las fusiones commiteados (`fb72c0aa`). Sin barrido de 27 regiones sobre el tronco fusionado: cada rama midió el suyo.
 

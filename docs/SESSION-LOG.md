@@ -8,6 +8,28 @@
 > la sesión viva, el próximo paso, lo que está en curso, lo que no se toca, la deuda conocida y
 > los riesgos abiertos. Aquí solo vive lo que ya pasó, de lo más reciente a lo más antiguo.
 
+## Trasladado de STATE.md el 2026-09-09: las tandas 33 y 34
+
+### 2026-09-06 — 34.ª tanda: el decaimiento del CLIENTE (ADR-130 r2b) y el cierre de las ramas viejas
+- **Los «95/87/79 sin fusionar» eran falsa alarma**: `git cherry` deja 0, 1 y 2 propios. Podadas angry-jackson, gallant-einstein y
+  happy-carson (PR #1 cerrado, su fix cae sobre `architecture/` legacy) y awesome-kare, que BORRABA ADR-094 vivo. `nightly-audit-base` dentro.
+- **r2b, `5bc25920`, sin wire y sin campo nuevo**: `DecayOfFloor` espeja `fill::decay_of_floor` y sus constantes (3,32 y 3) ya estaban en
+  `Wg3StoreyLayers`. Plafones `off + (1−off)·decay·0,80`, parpadeo del 40 % de los vivos, color a su luminancia por `1−0,5·decay`, 45 % de
+  luminarias arrancadas (sal `PMIS`, con la COTA en el hash).
+- **Mover UMBRALES, no añadir tiradas** (el orden es contrato), y **el gris va DESPUÉS del producto**: el tinte es un cociente en torno a (1,1,1).
+- `cargo test` **1414/1414**, `CompileCheck` 4/4, EditMode `Wg3LightCadence` **12/12**, y el barrido del tronco YA fusionado (que nadie
+  había medido): 27/27, 4,2 plantas, 268 espacios, mancha 99,7 %, islas 6,0, nav 100 %, pisable 182 857 (−0,2 %). Sin ver en juego.
+
+### 2026-09-06 — 33.ª tanda: las ocho sesiones de oficina, fusionadas en un solo tronco
+- Once merges en `migration/worldgraph-v1` (`0394e426`): variantes, materiales, deterioro, sala grande y los incrementos de audio, carteles,
+  ADR-131 y decaimiento r2a. Tres sesiones hicieron fast-forward del tronco por su cuenta a mitad: dos merges de vuelta (`5ffdf755`, `0394e426`).
+- Reparto final tras los choques: prop kinds carteles 15, variantes 16–20, techo roto 21–22; ADR-105 enm. 19 materiales, 20 techo roto,
+  21 planta abierta; ADR-129 enm. 1 carteles, 2 variantes; sales 09 deterioro, 0A lámpara, 0B boquetes, 0C variantes, 0D carteles.
+- `fill.rs` se entremezcló dos veces (carteles y deterioro en distinto orden a cada lado): reconstruido aplicando las inserciones ancladas por contexto.
+- Dos rojos al juntar sala grande con variantes: `office_variants` se quedaba la planta abierta; el test de bocas medía cuadrados, no franjas.
+- Los 6 `.meta` de las fusiones commiteados (`fb72c0aa`). Sin barrido de 27 regiones sobre el tronco fusionado: cada rama midió el suyo.
+
+
 ## Trasladado de STATE.md el 2026-09-06 (segundo corte del dia): las tandas 22 y 23
 
 ### 2026-09-05 — 23.ª tanda: los techos al canon, la luz sin dueño y la megasala (ADR-104 enm. 4–5)
