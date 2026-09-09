@@ -56,6 +56,12 @@ namespace BackroomsSurvival.Net
 
         public const string RelayTokenKey = "bs_relay_token";
 
+        /// ADR-135: las dos de la vía Steam. Espejo de `SteamLobbyKeys.SteamHost`/`SteamAuth`, y
+        /// `SteamLobbyKeyParity` comprueba que no se separen.
+        public const string SteamHostKey = "bs_steam_host";
+
+        public const string SteamAuthKey = "bs_steam_auth";
+
         /// Tope de resultados de una consulta. Steam no promete devolverlos todos.
         public const int DefaultMaxQueryResults = 50;
 
@@ -184,6 +190,10 @@ namespace BackroomsSurvival.Net
                         RelayAddr = lobby.GetData(RelayAddrKey),
                         RelaySession = lobby.GetData(RelaySessionKey),
                         RelayToken = lobby.GetData(RelayTokenKey),
+                        // ADR-135: por CONSULTA, sin entrar en el lobby. Es lo que permite que el
+                        // navegador abra el túnel sin hacerse miembro (D4'.1).
+                        SteamHost = lobby.GetData(SteamHostKey),
+                        SteamAuth = lobby.GetData(SteamAuthKey),
                         MemberCount = lobby.MemberCount,
                         MemberCapacity = lobby.MaxMembers,
                     });

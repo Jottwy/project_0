@@ -30,9 +30,17 @@ namespace BackroomsSurvival.Lobbies
         /// </summary>
         public readonly bool HasRelay;
 
+        /// <summary>
+        /// ADR-135: esta partida ofrece la vía Steam, así que se puede anunciar aunque
+        /// <see cref="Endpoint"/> no valga. Está aquí por lo mismo que <see cref="HasRelay"/>: para
+        /// que el publicador conserve su defensa contra un lobby sin ninguna vía.
+        /// </summary>
+        public readonly bool HasSteamHost;
+
         public LobbyPublication(string name, string version, int maxPlayers, string map,
             string region, LobbyPrivacy privacy, bool requiresPassword, LobbyEndpoint endpoint,
-            float ttlSeconds = Lobby.DefaultTtlSeconds, bool hasRelay = false)
+            float ttlSeconds = Lobby.DefaultTtlSeconds, bool hasRelay = false,
+            bool hasSteamHost = false)
         {
             Name = name;
             Version = version;
@@ -44,6 +52,7 @@ namespace BackroomsSurvival.Lobbies
             Endpoint = endpoint;
             TtlSeconds = ttlSeconds;
             HasRelay = hasRelay;
+            HasSteamHost = hasSteamHost;
         }
     }
 

@@ -159,11 +159,13 @@ namespace BackroomsSurvival.UI
                     SessionMaxPlayers,
                     string.IsNullOrEmpty(session.WorldScene) ? "Unknown" : session.WorldScene,
                     session.Phase == SessionPhase.InGame ? LobbyStatus.InProgress : LobbyStatus.Waiting,
-                    Connectivity.RelaySessionCredentials.IsConfigured),
+                    Connectivity.RelaySessionCredentials.IsConfigured,
+                    Connectivity.SteamTunnelRunner.IsRunning),
                 Time.unscaledTimeAsDouble);
 
             PublishLanFallback();
             PublishRelaySession();
+            PublishSteamTunnel();
         }
 
         /// Lo último que se escribió en `bs_lan_ip`, para no llamar a `SetData` sesenta veces por
@@ -241,6 +243,47 @@ namespace BackroomsSurvival.UI
             _publishedRelaySession = relay.Session;
             // El token NO: `LobbyRelay.ToString` tampoco lo enseña (ADR-117 D9).
             Debug.Log($"[ServerBrowser] Sesión de relay publicada: {relay}.");
+        }
+
+        /// Lo último que se publicó como `SteamId` de host, para no reescribirlo 60 veces por
+        /// segundo.
+        private static string _publishedSteamHost;
+
+        /// <summary>
+        /// Publica la vía Steam del host: su `SteamId` y el secreto de sesión del túnel
+        /// (ADR-135 D5 y D4'.5).
+        ///
+        /// **Sólo con el túnel ya abierto.** A diferencia del relay —que se publica antes de que
+        /// conteste, porque el coste de equivocarse es asimétrico— aquí el socket es local y ya
+        /// está creado o no: anunciar una vía que no escucha le costaría al joiner los 8 s de esa
+        /// etapa para nada.
+        ///
+        /// El `SteamId` sale de <c>SteamClient.SteamId</c>, que es quien sirve el mundo, **no de
+        /// `Lobby.Owner`**: la propiedad de un lobby migra cuando el dueño se va.
+        /// </summary>
+        private static void PublishSteamTunnel()
+        {
+            if (!SteamLobbyManager.HasHostedLobby || !Connectivity.SteamTunnelRunner.IsRunning ||
+                !SteamLobbyManager.IsAvailable)
+            {
+                _publishedSteamHost = null;
+                return;
+            }
+
+            string steamId = SteamLobbyManager.LocalSteamId.ToString(
+                System.Globalization.CultureInfo.InvariantCulture);
+            if (string.Equals(steamId, _publishedSteamHost, StringComparison.Ordinal)) return;
+            if (steamId == "0") return;
+
+            bool ok = SteamLobbyManager.TrySetHostedData(SteamLobbyKeys.SteamHost, steamId)
+                      && SteamLobbyManager.TrySetHostedData(SteamLobbyKeys.SteamAuth,
+                          Connectivity.SteamTunnelCredentials.Current());
+
+            if (!ok) return;
+
+            _publishedSteamHost = steamId;
+            // El secreto NO: sólo el id, que es público de todas formas (D4'.6).
+            Debug.Log($"[ServerBrowser] Vía Steam publicada: host {steamId}.");
         }
 
         /// <summary>
@@ -321,10 +364,13 @@ namespace BackroomsSurvival.UI
             {
                 // ADR-117: sin dirección defendible ya NO es el final del camino. Si hay relay, la
                 // partida se anuncia igual y se entra por él — es exactamente el host sin UPnP ni
-                // reenvío del playtest del 2026-09-02.
-                AnnouncementBlockReason = Connectivity.RelaySessionCredentials.IsConfigured
-                    ? null
-                    : reason;
+                // reenvío del playtest del 2026-09-02. ADR-135 suma el túnel de Steam, que además
+                // no necesita ninguna máquina pública.
+                AnnouncementBlockReason =
+                    Connectivity.RelaySessionCredentials.IsConfigured ||
+                    Connectivity.SteamTunnelRunner.IsRunning
+                        ? null
+                        : reason;
                 return LobbyEndpoint.None;
             }
 
@@ -336,7 +382,8 @@ namespace BackroomsSurvival.UI
             // Sin relay sí se publica, y eso NO es incoherencia: es la regla de ADR-112 intacta.
             // Una partida en LAN pura no tiene ninguna otra forma de anunciarse, y quitársela para
             // cumplir una regla pensada para internet sería romper lo que ya funcionaba.
-            if (Connectivity.RelaySessionCredentials.IsConfigured &&
+            if ((Connectivity.RelaySessionCredentials.IsConfigured ||
+                 Connectivity.SteamTunnelRunner.IsRunning) &&
                 NatAddressPolicy.IsPrivateLan(host))
             {
                 AnnouncementBlockReason = null;

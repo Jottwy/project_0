@@ -30,11 +30,13 @@ namespace BackroomsSurvival.UI
     /// </summary>
     public sealed class JoinSessionLobbyJoinSink : ILobbyJoinSink
     {
-        public bool TryJoin(LobbyEndpoint endpoint, LobbyRelay relay, string playerName, out string failure)
+        public bool TryJoin(LobbyEndpoint endpoint, LobbyRelay relay, LobbySteamHost steamHost,
+            string playerName, out string failure)
         {
-            // ADR-117 D7: basta con UNA de las dos vías. Un lobby sin `connect_ip` pero con relay
-            // es entrable — es el caso del host sin UPnP ni reenvío, o sea el normal.
-            if (!endpoint.IsValid && !relay.IsValid)
+            // ADR-117 D7 y ADR-135: basta con UNA de las tres vías. Un lobby sin `connect_ip` pero
+            // con Steam o con relay es entrable — es el caso del host sin UPnP ni reenvío, o sea el
+            // normal.
+            if (!endpoint.IsValid && !relay.IsValid && !steamHost.IsValid)
             {
                 failure = "El servidor no anuncia ninguna forma de entrar.";
                 return false;
@@ -48,19 +50,25 @@ namespace BackroomsSurvival.UI
 
             string name = string.IsNullOrWhiteSpace(playerName) ? "Player" : playerName.Trim();
             // `endpoint.Alternate` es la LAN que anunció el host (`bs_lan_ip`). El orden de las
-            // vías —directa, LAN, relay— lo decide la secuencia del BACKEND (ADR-117 D10), no
-            // esto: aquí sólo se le entregan todas las que el lobby anunció.
+            // vías —directa, LAN, Steam, relay— lo decide la secuencia del BACKEND (ADR-117 D10 y
+            // ADR-135 D6), no esto: aquí sólo se le entregan todas las que el lobby anunció.
+            //
+            // **Y NO se entra al lobby de Steam** (ADR-135 D4'.1): la metadata ya se leyó por
+            // consulta, hacerse miembro dispararía el auto-connect de `HandleLobbyEntered` contra
+            // el join que este mismo método está arrancando.
             if (!JoinSessionUI.TryBeginSteamJoin(endpoint.Host, endpoint.Port, name,
-                    endpoint.HasAlternate ? endpoint.Alternate : null, relay))
+                    endpoint.HasAlternate ? endpoint.Alternate : null, relay, steamHost))
             {
                 failure = "No hay panel de conexión vivo.";
                 return false;
             }
 
-            // El token NO se registra (ADR-117 D9); `LobbyRelay.ToString` no lo enseña.
+            // Ni el token del relay (ADR-117 D9) ni el secreto de Steam (ADR-135 D4'.6) se
+            // registran: sus `ToString` no los enseñan.
             Debug.Log(endpoint.IsValid
-                ? $"[ServerBrowser] Join solicitado a {endpoint} como '{name}' (relay {relay})."
-                : $"[ServerBrowser] Join solicitado SOLO por relay {relay} como '{name}'.");
+                ? $"[ServerBrowser] Join solicitado a {endpoint} como '{name}' (relay {relay}, {steamHost})."
+                : $"[ServerBrowser] Join solicitado sin endpoint directo como '{name}' " +
+                  $"(relay {relay}, {steamHost}).");
             failure = null;
             return true;
         }

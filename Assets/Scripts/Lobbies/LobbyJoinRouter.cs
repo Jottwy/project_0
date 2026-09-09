@@ -55,9 +55,10 @@ namespace BackroomsSurvival.Lobbies
         /// ADR-117: `relay` puede ser la vía ÚNICA —un lobby sin `connect_ip`— o el respaldo de
         /// `endpoint`. Quien implemente esto tiene que pasárselo al backend siempre que valga, no
         /// sólo cuando el endpoint falte: el orden de las vías lo decide la secuencia del backend,
-        /// no el navegador.
+        /// no el navegador. ADR-135 añade `steamHost` con la misma regla.
         /// </summary>
-        bool TryJoin(LobbyEndpoint endpoint, LobbyRelay relay, string playerName, out string failure);
+        bool TryJoin(LobbyEndpoint endpoint, LobbyRelay relay, LobbySteamHost steamHost,
+            string playerName, out string failure);
     }
 
     /// <summary>
@@ -107,7 +108,7 @@ namespace BackroomsSurvival.Lobbies
                     "No hay camino de conexión conectado al navegador.");
             }
 
-            if (!_sink.TryJoin(lobby.Endpoint, lobby.Relay, playerName, out string failure))
+            if (!_sink.TryJoin(lobby.Endpoint, lobby.Relay, lobby.SteamHost, playerName, out string failure))
             {
                 return new LobbyJoinRequestResult(LobbyJoinRequestStatus.SinkRefused, verdict,
                     string.IsNullOrEmpty(failure) ? "No se pudo iniciar la conexión." : failure);

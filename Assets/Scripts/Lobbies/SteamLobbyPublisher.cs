@@ -63,10 +63,11 @@ namespace BackroomsSurvival.Lobbies
         public bool Publish(LobbyPublication publication, int players, LobbyStatus status, double nowUnix)
         {
             // ADR-117: la regla pasa de «endpoint válido» a «alguna vía de entrada». Un lobby
-            // relay-only no tiene endpoint y se entra igual; uno sin endpoint NI relay sigue sin
+            // relay-only no tiene endpoint y se entra igual; uno sin NINGUNA vía sigue sin
             // publicarse, que es la defensa de ADR-112 intacta — publicar algo a lo que nadie
             // puede entrar le cuesta al jugador el tiempo de descubrirlo y no le ahorra nada.
-            if (!publication.Endpoint.IsValid && !publication.HasRelay) return false;
+            // ADR-135 suma la tercera vía a la misma regla.
+            if (!publication.Endpoint.IsValid && !publication.HasRelay && !publication.HasSteamHost) return false;
             if (publication.MaxPlayers <= 0) return false;
 
             if (IsPublishing)
@@ -183,6 +184,23 @@ namespace BackroomsSurvival.Lobbies
         /// partida ya tenía. La autenticación por tickets de Steam es R2 y tendrá su ADR.
         /// </summary>
         public const string RelayToken = "bs_relay_token";
+
+        /// <summary>
+        /// ADR-135: el `SteamId` del host, en decimal. **Clave explícita y no `Lobby.Owner`**: la
+        /// propiedad de un lobby de Steam migra cuando el dueño se va, y el túnel tiene que apuntar
+        /// al proceso que sirve el mundo, no al miembro más antiguo.
+        /// </summary>
+        public const string SteamHost = "bs_steam_host";
+
+        /// <summary>
+        /// El secreto de sesión con el que ese host autoriza el túnel (ADR-135 D4', enmienda 1).
+        ///
+        /// Está en la metadata PÚBLICA del lobby, igual que <see cref="RelayToken"/> y por el mismo
+        /// motivo: no defiende de quien ve el lobby —que es quien tiene derecho a entrar— sino de
+        /// que el túnel sea un túnel abierto. Es lo que permite que el navegador entre **sin
+        /// hacerse miembro del lobby**.
+        /// </summary>
+        public const string SteamAuth = "bs_steam_auth";
 
         public const string HostName = "host_name";
         public const string Name = "bs_name";

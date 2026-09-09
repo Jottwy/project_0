@@ -140,6 +140,49 @@ namespace BackroomsSurvival.Lobbies
         public override string ToString() => IsValid ? Address + "#" + Session : "<sin relay>";
     }
 
+    /// <summary>
+    /// La vía Steam que anuncia un lobby (ADR-135), o nada: a qué `SteamId` llamar y el secreto de
+    /// sesión con el que ese host autoriza (D4', enmienda 1).
+    ///
+    /// **Las dos valen como un bloque**, por lo mismo que <see cref="LobbyRelay"/>: sin `SteamId`
+    /// no hay a quién llamar, y sin secreto el host cierra la conexión en el primer mensaje. Media
+    /// vía anunciada como entera es un lobby que promete lo que no puede cumplir.
+    ///
+    /// **El `SteamId` sale de una clave explícita del lobby, NUNCA de `Lobby.Owner`**: la propiedad
+    /// de un lobby de Steam MIGRA cuando el dueño se va, y esto tiene que apuntar al proceso que
+    /// sirve el mundo, no al miembro más antiguo.
+    /// </summary>
+    public readonly struct LobbySteamHost : IEquatable<LobbySteamHost>
+    {
+        public static readonly LobbySteamHost None = default;
+
+        /// 16 bytes en hexadecimal, la misma forma que <see cref="LobbyRelay.TokenLength"/>.
+        public const int SecretLength = 32;
+
+        /// El `SteamId` del host, tal cual lo publicó. 0 = no hay vía Steam.
+        public readonly ulong SteamId;
+
+        /// El secreto de sesión. **No se registra en ningún log** (ADR-135 D4'.6).
+        public readonly string Secret;
+
+        public LobbySteamHost(ulong steamId, string secret)
+        {
+            SteamId = steamId;
+            Secret = string.IsNullOrWhiteSpace(secret) ? null : secret.Trim();
+        }
+
+        public bool IsValid => SteamId != 0UL && Secret != null && Secret.Length == SecretLength;
+
+        public bool Equals(LobbySteamHost other) => SteamId == other.SteamId;
+
+        public override bool Equals(object obj) => obj is LobbySteamHost other && Equals(other);
+
+        public override int GetHashCode() => SteamId.GetHashCode();
+
+        /// **Sin el secreto**: esto se pinta y se registra.
+        public override string ToString() => IsValid ? "steam:" + SteamId : "<sin steam>";
+    }
+
     /// <summary>Visibilidad declarada por quien publica. El navegador NO la deduce.</summary>
     public enum LobbyPrivacy
     {
@@ -229,6 +272,13 @@ namespace BackroomsSurvival.Lobbies
         /// </summary>
         public readonly LobbyRelay Relay;
 
+        /// <summary>
+        /// ADR-135: la vía Steam que anuncia el host, o <see cref="LobbySteamHost.None"/>. Es la
+        /// TERCERA vía de entrada, y como el relay no es un adorno del endpoint: un lobby con sólo
+        /// esto se puede entrar.
+        /// </summary>
+        public readonly LobbySteamHost SteamHost;
+
         public Lobby(
             LobbyId id,
             string name,
@@ -265,8 +315,32 @@ namespace BackroomsSurvival.Lobbies
             float ttlSeconds,
             LobbyStatus status,
             LobbyRelay relay)
+            : this(id, name, version, players, maxPlayers, map, region, pingMs, privacy,
+                requiresPassword, endpoint, updatedAtUnix, ttlSeconds, status, relay,
+                LobbySteamHost.None)
+        {
+        }
+
+        public Lobby(
+            LobbyId id,
+            string name,
+            string version,
+            int players,
+            int maxPlayers,
+            string map,
+            string region,
+            int pingMs,
+            LobbyPrivacy privacy,
+            bool requiresPassword,
+            LobbyEndpoint endpoint,
+            double updatedAtUnix,
+            float ttlSeconds,
+            LobbyStatus status,
+            LobbyRelay relay,
+            LobbySteamHost steamHost)
         {
             Relay = relay;
+            SteamHost = steamHost;
             Id = id;
             Name = name;
             Version = version;
@@ -286,10 +360,11 @@ namespace BackroomsSurvival.Lobbies
         public bool HasPing => PingMs >= 0;
 
         /// <summary>
-        /// Hay por dónde entrar: un endpoint directo, una sesión de relay, o las dos. Es lo que
-        /// sustituye al viejo «¿el endpoint vale?» desde ADR-117 D7.
+        /// Hay por dónde entrar: un endpoint directo, la vía Steam, una sesión de relay, o varias.
+        /// Es lo que sustituye al viejo «¿el endpoint vale?» desde ADR-117 D7, con la vía de
+        /// ADR-135 sumada.
         /// </summary>
-        public bool HasSomeWayIn => Endpoint.IsValid || Relay.IsValid;
+        public bool HasSomeWayIn => Endpoint.IsValid || Relay.IsValid || SteamHost.IsValid;
 
         /// <summary>Sólo se puede entrar por relay: el host no anunció ningún endpoint directo.</summary>
         public bool IsRelayOnly => !Endpoint.IsValid && Relay.IsValid;
@@ -331,12 +406,12 @@ namespace BackroomsSurvival.Lobbies
         /// <summary>Copia con otro ping. Es lo único que se remide sin volver a anunciar.</summary>
         public Lobby WithPing(int pingMs) => new Lobby(
             Id, Name, Version, Players, MaxPlayers, Map, Region, pingMs,
-            Privacy, RequiresPassword, Endpoint, UpdatedAtUnix, TtlSeconds, Status, Relay);
+            Privacy, RequiresPassword, Endpoint, UpdatedAtUnix, TtlSeconds, Status, Relay, SteamHost);
 
         /// <summary>Copia con otro sello de tiempo. Es lo que hace un anuncio repetido.</summary>
         public Lobby WithUpdatedAt(double updatedAtUnix) => new Lobby(
             Id, Name, Version, Players, MaxPlayers, Map, Region, PingMs,
-            Privacy, RequiresPassword, Endpoint, updatedAtUnix, TtlSeconds, Status, Relay);
+            Privacy, RequiresPassword, Endpoint, updatedAtUnix, TtlSeconds, Status, Relay, SteamHost);
 
         /// <summary>
         /// La única puerta por la que deben entrar datos de OTRA máquina. Lo que hoy sanea al
@@ -424,6 +499,35 @@ namespace BackroomsSurvival.Lobbies
             LobbyStatus status,
             string alternateHost,
             LobbyRelay relay,
+            out Lobby lobby) =>
+            TryCreate(id, name, version, players, maxPlayers, map, region, pingMs, privacy,
+                requiresPassword, host, port, updatedAtUnix, ttlSeconds, status, alternateHost,
+                relay, LobbySteamHost.None, out lobby);
+
+        /// <summary>
+        /// Igual, con la vía Steam del host (ADR-135). Cuarta sobrecarga por el mismo motivo que
+        /// las tres anteriores: `out lobby` va al final y C# no admite un opcional delante de un
+        /// obligatorio.
+        /// </summary>
+        public static bool TryCreate(
+            string id,
+            string name,
+            string version,
+            int players,
+            int maxPlayers,
+            string map,
+            string region,
+            int pingMs,
+            LobbyPrivacy privacy,
+            bool requiresPassword,
+            string host,
+            int port,
+            double updatedAtUnix,
+            float ttlSeconds,
+            LobbyStatus status,
+            string alternateHost,
+            LobbyRelay relay,
+            LobbySteamHost steamHost,
             out Lobby lobby)
         {
             lobby = null;
@@ -447,7 +551,7 @@ namespace BackroomsSurvival.Lobbies
             lobby = new Lobby(
                 lobbyId, safeName, safeVersion, safePlayers, safeMax, safeMap, safeRegion,
                 safePing, privacy, requiresPassword, new LobbyEndpoint(host, port, alternateHost),
-                safeUpdated, safeTtl, status, relay);
+                safeUpdated, safeTtl, status, relay, steamHost);
             return true;
         }
 

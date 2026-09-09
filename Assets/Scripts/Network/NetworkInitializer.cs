@@ -242,6 +242,18 @@ namespace BackroomsSurvival.Net
             // Sin relay configurado en la build esto no hace nada.
             AddRelayEnv(env, Connectivity.RelaySessionCredentials.Current(), asHost: true);
 
+            // ADR-135: y el túnel de Steam, por el mismo motivo y con el mismo coste: sin joiners
+            // no mueve un byte, y cuando llega el primero ya está escuchando. El backend NO se
+            // entera de que existe —le llegan datagramas de loopback como los de cualquier otro
+            // peer—, así que aquí no hay ninguna variable de entorno que poner: el túnel del host
+            // habla directamente a su `NET_PORT`.
+            //
+            // Sin Steam disponible esto no hace nada y el Host directo se comporta igual que antes.
+            Connectivity.SteamTunnelRunner.BeginHost(
+                new FacepunchSteamTunnelTransport(),
+                Connectivity.SteamTunnelCredentials.Current(),
+                config.NetPort);
+
             // Fase 6B (Slice 1): debug-spawn the robapieles on the host. The backend reads
             // DEBUG_SPAWN_PHANTOM from its env (inherited from Unity via UseShellExecute=false);
             // injected here so it's a single inspector toggle, OFF by default. Host-only.
@@ -269,7 +281,11 @@ namespace BackroomsSurvival.Net
         }
 
         public void StartAsJoiner(string serverIP, int serverNetPort, string playerName) =>
-            StartAsJoiner(serverIP, serverNetPort, playerName, default);
+            StartAsJoiner(serverIP, serverNetPort, playerName, default, default);
+
+        public void StartAsJoiner(string serverIP, int serverNetPort, string playerName,
+            Lobbies.LobbyRelay relay) =>
+            StartAsJoiner(serverIP, serverNetPort, playerName, relay, default);
 
         /// <summary>
         /// Igual, con la sesión de relay que anunció el lobby (ADR-117).
@@ -278,7 +294,7 @@ namespace BackroomsSurvival.Net
         /// entonces el backend arranca directamente por la etapa de relay.
         /// </summary>
         public void StartAsJoiner(string serverIP, int serverNetPort, string playerName,
-            Lobbies.LobbyRelay relay)
+            Lobbies.LobbyRelay relay, Lobbies.LobbySteamHost steamHost)
         {
             // Mismo embudo que el host: ver el comentario en StartAsHost. Cubre el doble clic en
             // Join, el Join durante un Joining y el auto-join de Steam llegando encima de uno
@@ -299,14 +315,15 @@ namespace BackroomsSurvival.Net
             // El rechazo es ANTES de `TerminateLeftoverBackend` y antes de lanzar nada: matar el
             // backend anterior y arrancar otro condenado para que falle dentro es exactamente el
             // camino largo que costó el diagnóstico.
-            // ADR-117 D7: un lobby relay-only no anuncia `connect_ip`, así que aquí llega vacío —y
-            // eso NO es un campo sin rellenar, es un host que no tenía ningún endpoint defendible.
+            // ADR-117 D7: un lobby sin endpoint directo no anuncia `connect_ip`, así que aquí llega
+            // vacío —y eso NO es un campo sin rellenar, es un host que no tenía ninguno defendible.
             // Sin esta rama, `NormalizeOrDefault` lo convertiría en `127.0.0.1` y el backend
             // gastaría los cinco segundos de la etapa directa disparando contra su propio loopback.
-            bool relayOnly = string.IsNullOrWhiteSpace(serverIP) && relay.IsValid;
+            // ADR-135 añade el lobby Steam-only al mismo caso.
+            bool indirectOnly = string.IsNullOrWhiteSpace(serverIP) && (relay.IsValid || steamHost.IsValid);
 
-            string host = relayOnly ? null : HostAddressInput.NormalizeOrDefault(serverIP);
-            if (!relayOnly && !HostAddressInput.IsUsable(host, out string hostProblem))
+            string host = indirectOnly ? null : HostAddressInput.NormalizeOrDefault(serverIP);
+            if (!indirectOnly && !HostAddressInput.IsUsable(host, out string hostProblem))
             {
                 CurrentRole = Role.None;
                 StatusMessage = $"Dirección inválida: {hostProblem}";
@@ -314,7 +331,7 @@ namespace BackroomsSurvival.Net
                 SessionState.Current.NotifyFailed(hostProblem);
                 return;
             }
-            if (!relayOnly && !string.Equals(host, serverIP, StringComparison.Ordinal))
+            if (!indirectOnly && !string.Equals(host, serverIP, StringComparison.Ordinal))
             {
                 // Que quede dicho: un valor que cambia al limpiarlo es el síntoma de un pegado, y
                 // sin esta línea el log enseña la dirección ya limpia y nadie sabría que venía
@@ -335,7 +352,7 @@ namespace BackroomsSurvival.Net
             var config = SelectLaunchConfig("joiner", ipcPort + joinerNetPortOffset, netPort + joinerNetPortOffset, joinerNetId);
             StoreSelectedConfig(config);
             LastEffectiveRole = "joiner";
-            LastConnectTo = relayOnly ? "<relay>" : $"{serverIP}:{serverNetPort}";
+            LastConnectTo = indirectOnly ? "<indirecta>" : $"{serverIP}:{serverNetPort}";
             ConfigureIpcClient(config.IpcAddress, config.IpcPort);
             ArmSessionEndHandler();
             ResetSessionScopedRegistries();
@@ -351,11 +368,12 @@ namespace BackroomsSurvival.Net
 
             // ADR-117 D7: sin endpoint directo NO se pone `CONNECT_TO`. Ponerlo vacío o en
             // loopback haría que el backend gastara la etapa directa contra sí mismo.
-            if (!relayOnly)
+            if (!indirectOnly)
             {
                 env["CONNECT_TO"] = $"{serverIP}:{serverNetPort}";
             }
 
+            AddSteamTunnelEnv(env, steamHost);
             AddRelayEnv(env, relay, asHost: false);
             AddIpcAddressEnv(env, config.IpcAddress, config.IpcPort);
             AddRoomManifestEnv(env);
@@ -406,6 +424,30 @@ namespace BackroomsSurvival.Net
         /// vía por la que ya viajan `NET_NAME` y las rutas de manifiesto, y no aparece en la línea
         /// de comandos.
         /// </summary>
+        /// <summary>
+        /// Abre el túnel de Steam del JOINER y pone `CONNECT_STEAM` — ADR-135 D3.
+        ///
+        /// El puerto se elige **antes** de lanzar el backend porque tiene que viajar en su entorno.
+        /// Si el túnel no se puede abrir —Steam cerrado, el host no publicó su `SteamId`, la red de
+        /// Valve no contesta— no se pone la variable y la etapa Steam simplemente no existe: las
+        /// otras vías de la secuencia siguen intactas.
+        ///
+        /// **No se entra al lobby de Steam** (D4'.1): la autorización es el secreto que el lobby ya
+        /// publicó y que el túnel manda en su primer mensaje.
+        /// </summary>
+        private static void AddSteamTunnelEnv(Dictionary<string, string> env, Lobbies.LobbySteamHost steamHost)
+        {
+            if (!steamHost.IsValid) return;
+
+            int localPort = Connectivity.SteamTunnelRunner.BeginJoiner(
+                new FacepunchSteamTunnelTransport(), steamHost.SteamId, steamHost.Secret);
+            if (localPort <= 0) return;
+
+            env["CONNECT_STEAM"] = $"127.0.0.1:{localPort}";
+            // El secreto NO se registra (ADR-135 D4'.6).
+            Debug.Log($"[NetworkInitializer] CONNECT_STEAM=127.0.0.1:{localPort} (host {steamHost}).");
+        }
+
         private static void AddRelayEnv(Dictionary<string, string> env, Lobbies.LobbyRelay relay, bool asHost)
         {
             if (!relay.IsValid) return;

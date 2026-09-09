@@ -52,6 +52,14 @@ namespace BackroomsSurvival.Net
         /// Nombre de persona Steam, o null si Steam no está disponible.
         public static string SteamPersonaName => IsAvailable ? SteamClient.Name : null;
 
+        /// <summary>
+        /// El `SteamId` de ESTA máquina, o 0 sin Steam. ADR-135 lo publica como `bs_steam_host`
+        /// para que un joiner sepa a quién llamar por la red de Valve — **y por eso sale de aquí y
+        /// no de `Lobby.Owner`**: la propiedad de un lobby migra cuando el dueño se va, mientras
+        /// que quien sirve el mundo es este proceso.
+        /// </summary>
+        public static ulong LocalSteamId => IsAvailable ? SteamClient.SteamId.Value : 0UL;
+
         public string StatusMessage { get; private set; } = "";
 
         private bool _initialized;

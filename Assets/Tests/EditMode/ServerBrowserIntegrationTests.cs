@@ -27,7 +27,8 @@ namespace BackroomsSurvival.Tests
 
             public LobbyRelay LastRelay;
 
-            public bool TryJoin(LobbyEndpoint endpoint, LobbyRelay relay, string playerName, out string failure)
+            public bool TryJoin(LobbyEndpoint endpoint, LobbyRelay relay, LobbySteamHost steamHost,
+                string playerName, out string failure)
             {
                 Calls++;
                 LastEndpoint = endpoint;

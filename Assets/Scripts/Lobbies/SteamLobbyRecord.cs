@@ -37,6 +37,13 @@ namespace BackroomsSurvival.Lobbies
 
         public string RelayToken;
 
+        /// ADR-135: el `SteamId` del host en decimal y el secreto de sesión del túnel. Vacías
+        /// cuando el host no ofrece la vía Steam. **Salen de claves explícitas, no de `Lobby.Owner`**
+        /// — la propiedad de un lobby migra y esto tiene que apuntar a quien sirve el mundo.
+        public string SteamHost;
+
+        public string SteamAuth;
+
         /// Lo que Steam sabe por sí mismo, sin metadatos. Es el respaldo cuando el host no
         /// publicó contadores.
         public int MemberCount;
@@ -115,6 +122,10 @@ namespace BackroomsSurvival.Lobbies
                 // se encarga de que dos de tres no cuenten — media sesión de relay no sirve para
                 // entrar y anunciarla como si sirviera sería peor que no tenerla.
                 new LobbyRelay(record.RelayAddr, record.RelaySession, record.RelayToken),
+                // ADR-135: la vía Steam, con la misma regla de bloque. Un `SteamId` ilegible cae a
+                // 0 y la vía no existe, que es exactamente lo que hay que hacer con un anuncio que
+                // no se puede usar.
+                new LobbySteamHost(ParseSteamId(record.SteamHost), record.SteamAuth),
                 out lobby);
         }
 
@@ -141,6 +152,19 @@ namespace BackroomsSurvival.Lobbies
                 case "closed": return LobbyStatus.Closed;
                 default: return LobbyStatus.Unknown;
             }
+        }
+
+        /// <summary>
+        /// Un `SteamId` de la metadata. Cero —o sea "no hay vía Steam"— para todo lo que no sea un
+        /// entero sin signo: un anuncio ilegible no puede convertirse en una llamada a nadie.
+        /// </summary>
+        private static ulong ParseSteamId(string raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw)) return 0UL;
+            return ulong.TryParse(raw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture,
+                out ulong value)
+                ? value
+                : 0UL;
         }
 
         private static int ParseInt(string raw, int fallback)

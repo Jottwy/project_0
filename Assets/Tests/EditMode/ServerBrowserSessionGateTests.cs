@@ -28,7 +28,7 @@ namespace BackroomsSurvival.Tests
             Assert.IsTrue(SessionState.Current.RequestStart(NetworkInitializer.Role.Joiner));
             Assert.IsFalse(SessionState.Current.CanStart);
 
-            Assert.IsFalse(sink.TryJoin(Valid, LobbyRelay.None, "Joel", out string failure));
+            Assert.IsFalse(sink.TryJoin(Valid, LobbyRelay.None, LobbySteamHost.None, "Joel", out string failure));
             Assert.IsNotEmpty(failure);
             StringAssert.Contains("sesión", failure);
         }
@@ -37,7 +37,7 @@ namespace BackroomsSurvival.Tests
         public void SinkRefusesAnInvalidEndpointBeforeTouchingTheSession()
         {
             var sink = new JoinSessionLobbyJoinSink();
-            Assert.IsFalse(sink.TryJoin(new LobbyEndpoint("10.0.0.7", 0), LobbyRelay.None, "Joel",
+            Assert.IsFalse(sink.TryJoin(new LobbyEndpoint("10.0.0.7", 0), LobbyRelay.None, LobbySteamHost.None, "Joel",
                 out string failure));
             Assert.IsNotEmpty(failure);
             Assert.AreEqual(SessionPhase.Menu, SessionState.Phase, "no se toca la sesión para decir que no");
@@ -51,7 +51,7 @@ namespace BackroomsSurvival.Tests
             var sink = new JoinSessionLobbyJoinSink();
             Assert.IsTrue(SessionState.Current.CanStart);
 
-            bool started = sink.TryJoin(Valid, LobbyRelay.None, "Joel", out string failure);
+            bool started = sink.TryJoin(Valid, LobbyRelay.None, LobbySteamHost.None, "Joel", out string failure);
 
             if (!started) Assert.IsNotEmpty(failure);
             Assert.AreEqual(SessionPhase.Menu, SessionState.Phase,

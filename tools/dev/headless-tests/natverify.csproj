@@ -88,6 +88,7 @@
     <Compile Include="$(Repo)\Assets\Tests\EditMode\RelayLobbyTests.cs" />
     <Compile Include="$(Repo)\Assets\Tests\EditMode\HostAddressInputTests.cs" />
     <Compile Include="$(Repo)\Assets\Tests\EditMode\SteamTunnelTests.cs" />
+    <Compile Include="$(Repo)\Assets\Tests\EditMode\SteamHostLobbyTests.cs" />
   </ItemGroup>
 
 </Project>

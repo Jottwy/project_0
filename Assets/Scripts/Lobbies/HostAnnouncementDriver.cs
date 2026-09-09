@@ -27,6 +27,12 @@ namespace BackroomsSurvival.Lobbies
         /// </summary>
         public readonly bool HasRelay;
 
+        /// <summary>
+        /// ADR-135: el túnel de Steam está abierto y publicado, así que se puede entrar por él
+        /// aunque no haya endpoint directo.
+        /// </summary>
+        public readonly bool HasSteamHost;
+
         /// <summary>Sin relay. Es la forma que tenía este tipo antes de ADR-117.</summary>
         public HostAnnouncementState(bool isHost, bool isEstablished, LobbyEndpoint endpoint,
             string name, string wireVersion, int players, int maxPlayers, string map, LobbyStatus status)
@@ -38,6 +44,14 @@ namespace BackroomsSurvival.Lobbies
         public HostAnnouncementState(bool isHost, bool isEstablished, LobbyEndpoint endpoint,
             string name, string wireVersion, int players, int maxPlayers, string map,
             LobbyStatus status, bool hasRelay)
+            : this(isHost, isEstablished, endpoint, name, wireVersion, players, maxPlayers, map,
+                status, hasRelay, false)
+        {
+        }
+
+        public HostAnnouncementState(bool isHost, bool isEstablished, LobbyEndpoint endpoint,
+            string name, string wireVersion, int players, int maxPlayers, string map,
+            LobbyStatus status, bool hasRelay, bool hasSteamHost)
         {
             IsHost = isHost;
             IsEstablished = isEstablished;
@@ -49,14 +63,16 @@ namespace BackroomsSurvival.Lobbies
             Map = map;
             Status = status;
             HasRelay = hasRelay;
+            HasSteamHost = hasSteamHost;
         }
 
         /// <summary>
-        /// Se anuncia si hay POR DÓNDE ENTRAR, que desde ADR-117 son dos cosas y no una. Sin
+        /// Se anuncia si hay POR DÓNDE ENTRAR, que desde ADR-117 son varias cosas y no una. Sin
         /// ninguna sigue sin anunciarse: publicar un lobby al que nadie puede entrar le cuesta al
         /// jugador el tiempo de descubrirlo y no le ahorra nada (ADR-112).
         /// </summary>
-        public bool ShouldAnnounce => IsHost && IsEstablished && (Endpoint.IsValid || HasRelay);
+        public bool ShouldAnnounce =>
+            IsHost && IsEstablished && (Endpoint.IsValid || HasRelay || HasSteamHost);
     }
 
     /// <summary>
@@ -131,7 +147,7 @@ namespace BackroomsSurvival.Lobbies
 
                 var publication = new LobbyPublication(state.Name, state.WireVersion, state.MaxPlayers,
                     state.Map, "Unknown", LobbyPrivacy.Public, false, state.Endpoint,
-                    Lobby.DefaultTtlSeconds, state.HasRelay);
+                    Lobby.DefaultTtlSeconds, state.HasRelay, state.HasSteamHost);
 
                 bool ok = _publisher.Publish(publication, state.Players, state.Status, nowUnix);
                 _publishPending = !ok;
