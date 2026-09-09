@@ -15311,3 +15311,161 @@ al FINAL del fotograma, así que tres presets aplicados en la misma llamada deja
 los intentos siguientes de reentrar en Play no arrancaron (el menú responde `MENU DONE` y el
 proceso `backrooms_server` no aparece: sin él, no hay partida). La prueba que sí hay es la lectura
 de vuelta, que es la que dice si el ajuste llegó al render.
+
+---
+
+## ADR-135 — Steam Datagram Relay como CUARTA vía de transporte: un túnel en Unity, y el backend sigue hablando UDP en loopback (2026-09-09) — PROPUESTA (Joel: «vamos? aplicamos lo de steam… manteniendo la posibilidad de usar todos los servicios al mismo tiempo»)
+
+**Contexto.** ADR-112 dejó fuera NAT traversal entero y anotó que «el CGNAT no tiene solución por
+esta vía». ADR-117 levantó esa prohibición **sólo** para un relay UDP propio y dejó escrito en su D1
+que Steam Networking Sockets y Steam Datagram Relay «siguen necesitando su propio ADR». Éste es ese
+ADR.
+
+Lo medido desde entonces no ha cambiado: `DefaultRelayAddress` sigue vacío
+(`RelaySessionCredentials.cs:29`, «vacío a propósito hasta que exista la máquina»), nadie ha entrado
+por relay en internet, y el 2026-09-08 se puso live en la rama `default` del Playtest 5200320 el
+build 25195221 —el primero con oficinas, linterna y venda— con la misma condición de entrada que el
+playtest del 02-09: dos jugadores en redes distintas **no se juntan**. El relay propio es además el
+único componente del proyecto que exige «una máquina pública permanente» (ADR-117, consecuencias),
+y esa máquina no existe ni está decidida.
+
+Lo que SÍ ha cambiado desde ADR-112 y ADR-117 es la premisa: el juego **está en Steam**. El cliente
+ya inicializa Steamworks para el lobby y el navegador (`SteamLobbyManager`, `SteamAppConfig`), el
+App ID lo dice el cliente de Steam al lanzar (ADR de `SteamAppConfig`, 2026-08-31), y el binding que
+ya vive en `Assets/Plugins/Facepunch.Steamworks` expone la red de relay de Valve:
+`SteamNetworkingSockets.CreateRelaySocket<T>(int)` y `ConnectRelay<T>(SteamId, int)`. Es
+infraestructura desplegada, gratuita para una app de Steam y autenticada por `SteamId`, que
+resuelve exactamente el caso que hoy no tiene solución: dos máquinas detrás de NAT o CGNAT sin
+ningún puerto abierto.
+
+**Decisión.** Se añade Steam Datagram Relay como **cuarta vía de transporte**, detrás de un túnel
+que vive entero en Unity. El gameplay no cambia: mismo UDP, misma estrella (ADR-015), mismo backend
+de Rust como autoridad, mismo wire 61. La escalera del joiner queda:
+
+```
+DIRECT  →  LAN  →  STEAM  →  RELAY (propio)        (según disponibilidad, en ese orden)
+```
+
+Las cuatro vías **coexisten**: un lobby puede anunciar directo, Steam y relay a la vez, sólo alguna,
+o ninguna; el orden lo decide la secuencia del backend (ADR-117 D10), no el navegador.
+
+**D1 — Qué prohibición se levanta, y cuál NO.** Se supera la línea «ni Steam Networking Sockets, ni
+Steam Datagram Relay» de ADR-112 y la reserva de ADR-117 D1, **únicamente para SDR a través de un
+túnel externo al backend**. Siguen fuera y siguen necesitando ADR: STUN, TURN de terceros, hole
+punching propio, y sobre todo **sustituir el transporte del backend por SteamNetworkingSockets**
+—que `backrooms_server` enlace GameNetworkingSockets y hable con Valve por su cuenta—. Ése sí
+cambiaría el transporte del juego, su framing y su fiabilidad; el túnel no cambia ninguno de los
+tres.
+
+**D2 — El backend de Rust NO sabe que Steam existe.** Para él, la vía Steam es **un `SocketAddr` en
+loopback más**. No hace falta dirección sintética (a diferencia de ADR-117 D3): la traducción la
+hace el túnel FUERA del proceso, y `is_routable_peer_addr` (`sync.rs:758`) ya acepta
+`127.0.0.1:<puerto>` —sólo rechaza `0.0.0.0` y el puerto 0—. Lo que cambia en Rust cabe en una
+pantalla: `ConnectStage::Steam` con su nombre (`transport=steam`) y su presupuesto, un cuarto
+candidato en `ConnectSequence::new` (cuatro llamadores: dos en `main.rs`, dos en tests), la variable
+`CONNECT_STEAM=127.0.0.1:<puerto>` leída en `main.rs`, y la deducción de rol de D8. **Nada en
+`send_datagram` ni en `receive_loop`**, nada en `handlers.rs`, nada en el relay propio.
+
+**D3 — El túnel es SIMÉTRICO, por conexión, y sin inteligencia.** `SteamP2PTunnel`
+(`Assets/Scripts/Connectivity/`), dos papeles:
+
+- **Host.** Al arrancar como host y ANTES de publicar el lobby, `CreateRelaySocket<T>(VirtualPort)`.
+  Por cada conexión Steam aceptada, un `UdpClient` propio en `127.0.0.1:0` (puerto efímero) que
+  reenvía al `NET_PORT` del backend del host. Cada joiner aparece así ante el backend con **su propio
+  puerto de origen**, y la deduplicación por endpoint de `handlers.rs` —el defecto que ADR-117 D3
+  resolvió con sintéticas— sigue significando lo que decía. El backend contesta a ese puerto efímero
+  y el túnel lo devuelve por la conexión Steam de ese peer.
+- **Joiner.** Un `UdpClient` en `127.0.0.1:<efímero>` elegido ANTES de lanzar el backend —igual que
+  `SelectLaunchConfig` elige los puertos— y publicado como `CONNECT_STEAM`; y
+  `ConnectRelay<T>(hostSteamId, VirtualPort)`. El backend del joiner manda su handshake ahí; el
+  túnel aprende la dirección de origen del primer datagrama y a partir de entonces le devuelve lo
+  que llegue de Steam.
+- **Un datagrama UDP = un mensaje de Steam**, `SendType.Unreliable | NoNagle`. La fiabilidad la pone
+  el backend (`reliability.rs`), como con el relay propio: doblarla es exactamente lo que hay que
+  evitar. El techo de 1200 B de ADR-113 cabe de sobra (SNS admite mensajes mucho mayores); el túnel
+  **no fragmenta ni agrupa**, nunca.
+- **Hilo propio** para recibir y reenviar, no `Update`: el goteo del join son ~820 datagramas/s
+  (ADR-117) y a 60 Hz cada salto de fotograma añadiría hasta 16 ms por sentido y por salto.
+  `SteamClient.RunCallbacks` se queda donde está.
+- **Nada de semántica de juego.** El túnel no lee ni un byte del payload; es tan opaco como el
+  relay de ADR-117 D2, y por la misma razón: lo que no entiende el payload no puede quedarse con
+  autoridad.
+
+**D4 — La estrella la impone el túnel del HOST, y la identidad la pone Steam.** El host acepta
+`OnConnecting` **sólo de `SteamId`s que son miembros de su lobby**; lo demás se rechaza y se cuenta.
+Un joiner sólo llama al host. Es ADR-117 D6 con una identidad que no se puede inventar: el
+`SteamId` que Valve autenticó. Adelanta parte de lo que ADR-117 D9 dejó como R2 («la autenticación
+por tickets de Steam tendrá su ADR»): la vía Steam **no necesita token**, y no lo usa.
+
+**D5 — Qué publica el lobby, y qué NO.** Una clave nueva, `bs_steam_host` = `SteamId` del host en
+decimal. No se usa `Lobby.Owner` porque la propiedad de un lobby de Steam migra cuando el dueño se
+va, y el túnel tiene que apuntar al proceso que sirve el mundo, no al miembro más antiguo. Espejo
+`SteamLobbyKeys` ↔ `SteamLobbyManager.*Key` vigilado por `SteamLobbyKeyParity`, como las tres del
+relay. Se publica **sólo cuando el socket de relay del host está creado** —el mismo criterio que
+ADR-117 para `bs_relay_*` tras `relay_ready`—. `connect_ip`, `bs_lan_ip` y la precedencia de
+ADR-117 D7 **no se tocan**. Un lobby con SOLO `bs_steam_host` es joinable.
+
+**D6 — Orden: Steam DESPUÉS de directo y LAN, y ANTES del relay propio.** Directo y LAN no pagan
+salto, y siguen primero. Entre las dos vías con salto: la de Valve no cuesta dinero, está
+desplegada hoy y autentica; el relay propio queda como **última vía** y como la única para builds
+fuera de Steam —itch, Alpha 1 en noviembre de 2026— o con Steam caído. Presupuesto de la etapa
+Steam: **8 s**, porque `ConnectRelay` negocia ruta con Valve (segundos) y el handshake de juego va
+después; es un número inicial y se corrige con medición, no a ojo (ver consecuencias).
+
+**D7 — Cuándo NO hay etapa Steam.** Sin Steam inicializado en el joiner (`SteamClient.IsValid`
+falso), sin `bs_steam_host` en el lobby (host sin Steam), o join manual por IP (no hay `SteamId`
+que llamar): la etapa **no existe y se salta**, y todo se comporta como antes de este ADR. Es la
+regla de `connect.rs`, «las etapas que no existen se saltan», aplicada a la cuarta.
+
+**D8 — Rol.** `CONNECT_STEAM` presente ⇒ joiner, exactamente como `CONNECT_TO`. `RELAY_ROLE` sigue
+desempatando cuando está, y **no se renombra**: un lobby Steam-only sin relay tampoco lleva
+`CONNECT_TO`, y sin esta regla su joiner arrancaría como host sirviendo un mundo en solitario — el
+fallo mudo de ADR-111 por una tercera puerta.
+
+**D9 — CERO WIRE.** `WIRE_SCHEMA_VERSION` se queda en **61**, y con él `WireSchema.Expected`. El
+estado viaja a Unity por `GameEvent`, como ADR-117 D11: `transport=steam` en el log y en
+`session_joined`, con `fallback_reason=…` cuando toque. `PeerInfo.addr` de un peer entrado por
+Steam lleva `127.0.0.1:<efímero>` del host: ningún cliente envía a esas direcciones (la estrella lo
+impide desde 2026-08-31), y queda anotado igual que D11 anotó las sintéticas.
+
+**D10 — Teardown en un `Step` propio.** `SessionEndHandler` gana «steam p2p tunnel» **después** de
+«steam announcement» y **antes** de «steam lobby»: el lobby es lo que autoriza conexiones (D4), y
+cerrar el túnel con el lobby vivo abriría una ventana de conexiones aceptadas hacia un socket
+muerto. El túnel no tiene secreto que tirar; `RelaySessionCredentials.Reset` sigue siendo del relay.
+
+**D11 — Lo que este ADR HABILITA y NO decide.** Joel: «más adelante… dejar que los clientes
+hosteen sus chunks pero el servidor siempre haga de anticheat y de comprobador». SNS P2P conecta dos
+`SteamId` cualesquiera; nada en el transporte impide joiner↔joiner. Ese futuro **contradice
+ADR-015** (estrella) y el modelo de autoridad de `ARCHITECTURE.md` («servidor Rust — autoridad de
+mundo»), así que exige su propio ADR: qué simula el cliente, qué verifica el servidor, y qué pasa
+cuando discrepan. Aquí sólo se garantiza **no cerrarle la puerta**: la restricción de estrella es
+POLÍTICA de D4 —una lista de a quién se acepta—, no una limitación del túnel. Nada más.
+
+**Consecuencias.**
+
+- **El criterio de aceptación es el de ADR-117, que sigue sin cumplirse, y es físico**: host y
+  joiner en redes distintas, sin UPnP, sin reenvío de puertos y sin teclear ninguna IP, desde el
+  navegador de servidores hasta `session_joined` y jugando. Y esta vez se **MIDE**: RTT del
+  handshake por Steam contra el directo cuando lo haya, y el número va a `STATE.md`. Los 8 s de D6
+  se ajustan con ese dato.
+- **Direct y LAN no se retiran ni se degradan.** El relay propio (ADR-117) **no se retira**: sigue
+  en código y en la secuencia; su VPS sigue sin existir y **deja de bloquear el playtest de Steam**.
+- **Coste: cero dinero.** Dependencia: Steam vivo en las dos máquinas, que ya lo es para el lobby.
+- **Latencia**: un salto más **sólo cuando Valve no consigue P2P directo** (lo intenta primero).
+  Estimación sin medir: 10–30 ms extra en la misma región, más entre regiones. Para un juego a ticks
+  y sin input frame-perfect es aceptable; comparado con «no conecta», no hay comparación.
+- **Riesgos declarados.** SNS entrega los mensajes `Unreliable` con pérdida bajo congestión, igual
+  que UDP: el backend ya lo asume. Un `ConnectRelay` puede tardar más de lo previsto en negociar, y
+  el síntoma sería «salta al relay propio, que no existe, y falla»: por eso el presupuesto se mide.
+  El túnel reenvía a ciegas: un backend caído en el host se ve como silencio y sale por el latido de
+  5 s, el camino de siempre.
+- **Tests.** `connect_tests` gana la cuarta etapa (orden, presupuesto, salto sin candidato, rol por
+  `CONNECT_STEAM`); EditMode para el túnel con dos `UdpClient` reales y una conexión de Steam de
+  mentira (`ISocketManager` falso), y la paridad de `bs_steam_host` en `SteamLobbyKeyParity`. La
+  prueba física de arriba no la sustituye ninguno.
+- **Docs.** Se enmiendan `NETWORK_ARCHITECTURE_CURRENT.md` §«Lo que esta arquitectura NO incluye»
+  (SNS/SDR entra, vía túnel) y `SERVER_BROWSER.md` (clave nueva).
+- **Alcance de R1**: túnel, etapa, clave de lobby, `Step` de teardown, tests. **Fuera de R1**:
+  migración de host, reconexión de sesión, joiner↔joiner (D11), y el transporte nativo en Rust (D1).
+
+---
