@@ -25,15 +25,15 @@
 - **Migración STP servidor-autoritativo**: Steps 1–2 y slice 3.1 (plumbing) hechos y verificados. Falta slice 3.2
   (capa L2 de predicción), reescribir los 8 call sites de `Inventory` y retirar `PlayerController.cs` (DEPRECATED por ADR-009).
 - ADR-014 fase 2 (borrado diferido 200 ms + reserva host-only anti-duplicado): backend implementado, **pendiente de playtest**.
-- **En tronco, SIN VER EN PLAY**: linterna (ADR-133, 07-09; falta sonido, loot, remesh) y venda por brazo (`bb9e3cc1`, 08-09; bits 7/8, sin wire).
+- **SIN VER EN PLAY**: linterna (ADR-133), venda (`bb9e3cc1`) y **ADR-135 R1** (4.ª vía por Steam, túnel en Unity, cero wire, sin red).
 
 ## Riesgos abiertos
 - **Autoridad del servidor: los tres agujeros CERRADOS** (`78e156e6` dueño al demoler; `ebb42911`/`bb3c7e5c` cantidad y posición contra el
   roster; aportar material exige dueño y alcance, 5 tests). Queda UNA línea: `process_stp_demolish` valida dueño pero no distancia.
 - **Espejos C#↔Rust sin oráculo.** Sin `the_identity_mirror_golden_values` (B4-b), `Wg3Identity.cs` queda verde sin nada que lo
   contraste; igual el hash de `ChunkLootRoll` y los goldens de `scale`/`density`. Un oráculo JSON común es una sesión: **B5**.
-- **Relay sin VPS**: `DefaultRelayAddress` vacío y nadie ha entrado por relay en internet. Dos jugadores en redes
-  distintas hoy NO se juntan (medido en el playtest del 02-09). ADR-117 está en código, no en servicio.
+- **Nadie ha entrado por vía indirecta, ni relay ni Steam**: `DefaultRelayAddress` vacío (ADR-117 sin VPS) y ADR-135 R1 en código
+  SIN una conexión real. Dos jugadores en redes distintas siguen sin juntarse; el criterio es físico y no se da por cumplido sin él.
 - **Crafteo P1 sin cerrar**: las recetas consumen un enum Rust de 9 variantes abstractas, no items (ADR-064). Sin esto, minar no sirve.
 - **ADR-009 L2 a medias**: falta la predicción/reconciliación del CLIENTE (`MovementReconciler` se borró y nunca se
   reemplazó; el `delta_update` sí lo consume `AuthoritativePoseApplier`). Causa raíz de la salud al borde de la muerte y del respawn invisible.

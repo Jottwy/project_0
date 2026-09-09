@@ -217,9 +217,17 @@ Preocupaciones futuras reconocidas, no implementaciones actuales:
 - Servidor dedicado (el relay de ADR-117 **no lo es**: transporta datagramas y no simula nada —
   la autoridad sigue entera en el backend del host)
 - Migración de host (que el host se vaya termina la sesión — ADR-056)
-- NAT traversal / hole punching. **UPnP-IGD (ADR-112) no es esto**: no atraviesa nada, le pide
-  permiso al router. Steam Networking Sockets, Steam Datagram Relay, STUN y TURN de terceros siguen
-  fuera. Lo que SÍ entra, y sólo eso, es el **relay UDP propio de ADR-117**: la tercera vía de
-  transporte para quien no tiene ninguna directa, que es el caso que dejaba sin salida a un host
-  tras CGNAT o con un router sin UPnP.
+- NAT traversal / hole punching **propios**. **UPnP-IGD (ADR-112) no es esto**: no atraviesa nada,
+  le pide permiso al router. STUN y TURN de terceros siguen fuera. Lo que SÍ entra son dos vías de
+  respaldo, y sólo esas dos:
+  - el **relay UDP propio de ADR-117**, para quien no tiene ninguna directa — el caso que dejaba
+    sin salida a un host tras CGNAT o con un router sin UPnP. Sigue **sin máquina pública**:
+    `DefaultRelayAddress` está vacío, así que hoy esta vía no se ofrece en ninguna build;
+  - **Steam Datagram Relay (ADR-135)**, a través de un **túnel que vive en Unity**. El backend de
+    Rust no enlaza Steamworks ni conoce ningún `SteamId`: recibe `CONNECT_STEAM=127.0.0.1:<puerto>`
+    y le habla a ese puerto como a cualquier otro peer. El transporte del juego no cambia — sigue
+    siendo el mismo UDP con el mismo framing— y **el wire tampoco**.
+
+  Lo que sigue fuera de las dos: sustituir el transporte del backend por SteamNetworkingSockets
+  (que `backrooms_server` hable con Valve por su cuenta) y las conexiones joiner↔joiner.
 - Cifrado o autenticación (ni en P2P ni en IPC)

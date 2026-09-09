@@ -118,6 +118,17 @@ lobby es compatible — y con el App ID compartido puede ser de otro juego enter
 | `bs_state` | `open` / `ingame` / `closed` |
 | `bs_at` | hora Unix del host en el último latido |
 | `host_name` | el del spike original, intacto |
+| `bs_steam_host` | ADR-135: el `SteamId` del host, en decimal. **Sale de `SteamClient.SteamId`, nunca de `Lobby.Owner`** — la propiedad de un lobby migra cuando el dueño se va, y esto tiene que apuntar a quien sirve el mundo |
+| `bs_steam_auth` | ADR-135 D4': el secreto de sesión con el que ese host autoriza el túnel. Metadata pública, igual que `bs_relay_token` y por el mismo motivo |
+
+Las dos de Steam se publican **sólo cuando el túnel del host ya escucha** (`SteamTunnelRunner.IsRunning`):
+anunciar una vía que no está abierta le costaría al joiner los 8 s de esa etapa para nada. Un lobby
+que sólo tiene estas dos **se publica y se puede entrar**; uno sin ninguna vía sigue sin publicarse.
+
+**El joiner las lee por CONSULTA y no entra al lobby.** Hacerse miembro dispararía el auto-connect
+de `HandleLobbyEntered` contra el join que el navegador acaba de arrancar, y convertiría el aforo
+del lobby de Steam (8) en el aforo real de la partida (50). El camino sigue siendo
+`JoinSessionLobbyJoinSink` → `TryBeginSteamJoin` → `StartAsJoiner`.
 
 Las claves están declaradas **dos veces**: en `SteamLobbyKeys` (sin Steam dentro, para poder
 probar el publicador) y en `SteamLobbyManager` (el lado que habla con Steam). Si divergen, el host
