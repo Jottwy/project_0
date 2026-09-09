@@ -15469,3 +15469,74 @@ POLÍTICA de D4 —una lista de a quién se acepta—, no una limitación del t�
   migración de host, reconexión de sesión, joiner↔joiner (D11), y el transporte nativo en Rust (D1).
 
 ---
+
+## ADR-135 — Enmienda 1: D4 se sustituye — autoriza un SECRETO DE SESIÓN, no la pertenencia al lobby (2026-09-09) — ACEPTADA (Joel: «elegir la opción 3: autorización mediante secreto de sesión/lobby… el flujo principal del navegador debe permanecer»)
+
+**Sustituye a D4 de ADR-135.** El resto del ADR queda intacto.
+
+**Lo que se midió al implementar R1a.** D4 decía que el host acepta `OnConnecting` sólo de
+`SteamId`s **miembros de su lobby**, y eso **rompía el camino principal del playtest**. La única
+llamada a `lobby.Join()` de todo el cliente está en `SteamLobbyManager.cs:426`, dentro de
+`HandleGameLobbyJoinRequested`: o sea que sólo se hace miembro quien acepta una **invitación por el
+overlay**. El navegador de servidores entra por otro sitio —`JoinSessionLobbyJoinSink.cs:53` →
+`TryBeginSteamJoin` → `StartAsJoiner`— y **nunca entra al lobby**: sólo lee su metadata en una
+consulta. Con D4 tal cual, el host habría rechazado a todo el que llegara por el navegador, que es
+justo a quien este ADR viene a arreglarle la conexión.
+
+**Decisión (D4', sustituye a D4).** El host autoriza por un **secreto de sesión** que publica en la
+metadata de su lobby, no por pertenencia. `SteamId` **sigue siendo la identidad** del peer: es lo
+que Valve autentica, lo que el host registra y lo que sale en el log. Lo que cambia es qué
+demuestra el derecho a entrar.
+
+**D4'.1 — La pertenencia al lobby NO es requisito de transporte.** El navegador sigue leyendo
+metadata por consulta y entrando sin hacerse miembro. **No se añade `lobby.Join()`** a su camino, y
+el motivo no es comodidad: `HandleLobbyEntered` (`SteamLobbyManager.cs:441`) dispara un auto-connect
+por `connect_ip` al entrar en un lobby ajeno, así que exigir la pertenencia habría puesto un
+**segundo camino de conexión** a competir con el que el navegador acaba de arrancar —lo que el
+repositorio prohíbe por escrito en tres sitios— y además habría convertido el aforo del lobby de
+Steam (`MaxLobbyMembers = 8`) en el aforo real de la partida, contra los 50 de
+`ServerBrowserBootstrap.SessionMaxPlayers`.
+
+**D4'.2 — Qué defiende el secreto, y qué no.** Exactamente lo mismo que ADR-117 D9 para el relay
+propio: que el túnel **no sea un túnel abierto**. Quien no ha visto el lobby no tiene el secreto y
+no puede abrir sesión contra el host, así que el escaneo ciego no encuentra nada. Lo que **no** es:
+una defensa contra quien sí ve el lobby — que es precisamente quien tiene derecho a entrar. Es el
+mismo nivel de confianza que la partida ya tiene hoy, donde ver el lobby es poder entrar.
+
+**D4'.3 — Es autorización de SESIÓN, no una capa de protocolo.** El secreto viaja **una vez**, en el
+primer mensaje de la conexión de Steam, y **fuera del payload de juego**: hasta que llega, la
+conexión está en `PendingAuth` y no se le reenvía ni un byte al backend; en cuanto se acepta, la
+conexión pasa a `Authorized` y **todo lo demás es 1 datagrama = 1 mensaje**, opaco y sin tocar. El
+backend de Rust no ve el sobre, no lo cuenta y no sabe que existió. **`WIRE_SCHEMA_VERSION` sigue en
+61** y nada de esto entra en el wire del juego, igual que el sobre del relay de ADR-117 D4 tampoco
+entró.
+
+**D4'.4 — Formato: el que el proyecto ya usa, no uno nuevo.** 16 bytes de un generador
+criptográfico, en 32 hexadecimales — la misma forma y la misma longitud que
+`LobbyRelay.TokenLength` de ADR-117. Se declara aparte del token del relay y **no se reutiliza el
+suyo**: son dos vías con vidas distintas, y compartir el secreto ataría la una a la otra sin ganar
+nada. **ADR-117 no se toca.**
+
+**D4'.5 — Clave nueva, y sigue sin `Lobby.Owner`.** El lobby publica `bs_steam_auth` junto a
+`bs_steam_host` de D5. La regla de D5 se mantiene entera: el `SteamId` del host va en su clave
+explícita porque la propiedad de un lobby **migra** cuando el dueño se va, y el túnel tiene que
+apuntar al proceso que sirve el mundo. Las dos claves se publican a la vez y con el mismo criterio
+—sólo con el socket del host ya creado—, y las dos entran en `SteamLobbyKeyParity`.
+
+**D4'.6 — Qué hace el host con quien no acuerda.** Un primer mensaje que no sea la autorización, o
+que traiga un secreto que no cuadra, **cierra la conexión y se cuenta**. No se contesta con un
+motivo: a quien no tiene el secreto no se le explica cuál era el error. El `SteamId` rechazado sí
+va al log del host, porque es el dato con el que se diagnostica.
+
+**Consecuencias.**
+
+- El camino del navegador **no cambia**: `JoinSessionLobbyJoinSink` → `TryBeginSteamJoin` →
+  `StartAsJoiner`, con la metadata leída por consulta. Es la razón de ser de esta enmienda.
+- La invitación por overlay sigue funcionando igual, y quien entra por ahí **sí** es miembro del
+  lobby: lee el secreto de la misma metadata, así que las dos rutas usan un solo mecanismo.
+- El secreto es metadata **pública** del lobby, y eso es deliberado en R1 — mismo razonamiento y
+  mismo alcance que `SteamLobbyKeys.RelayToken`. La autenticación por tickets de Steam sigue siendo
+  trabajo futuro con su propio ADR, como ya decía ADR-117 D9.
+- **No se registra nunca el valor del secreto**, ni cuando se rechaza.
+
+---
