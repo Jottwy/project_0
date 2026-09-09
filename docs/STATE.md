@@ -25,7 +25,7 @@
 - **Migración STP servidor-autoritativo**: Steps 1–2 y slice 3.1 (plumbing) hechos y verificados. Falta slice 3.2
   (capa L2 de predicción), reescribir los 8 call sites de `Inventory` y retirar `PlayerController.cs` (DEPRECATED por ADR-009).
 - ADR-014 fase 2 (borrado diferido 200 ms + reserva host-only anti-duplicado): backend implementado, **pendiente de playtest**.
-- **SIN VER EN PLAY**: linterna (ADR-133), venda (`bb9e3cc1`) y **ADR-136 R0–R4**. ADR-135 (Steam) YA verificado en Play, ver Riesgos abiertos.
+- **SIN VER EN PLAY**: linterna (ADR-133), venda (`bb9e3cc1`) y **ADR-136 R0–R4** — ya en Steam (build **25217339**, sin publicar). ADR-135 sí verificado.
 
 ## Riesgos abiertos
 - **Autoridad del servidor: los tres agujeros CERRADOS** (`78e156e6` dueño al demoler; `ebb42911`/`bb3c7e5c` cantidad y posición contra el
