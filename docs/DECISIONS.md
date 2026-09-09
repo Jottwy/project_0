@@ -15321,3 +15321,63 @@ dominante, no de `Hand.R` a secas — es el hueso que la animación heredada mue
 - Sigue sin animación PROPIA para destornillador y bote (la linterna sí la tiene, ADR-133): heredan
   el vaivén de equipar/idle del hacha y la antorcha. Aceptable — el síntoma que preocupaba a Joel era
   el desplazamiento del agarre, no el estilo del vaivén — y queda declarado como deuda menor.
+
+## ADR-077 — Enmienda 4: los DEDOS también se hornean; una herramienta de mano no se coge con las dos (2026-09-09) — VALIDADA
+
+**Estado:** VALIDADA (huecos medidos: 2,2 mm el destornillador, 0,6 mm el bote; suite EditMode 1416/1430, los 12 rojos los conocidos).
+
+### Contexto
+
+Cerrada la enm. 3, Joel señaló lo que quedaba, y era justo lo que la enm. 3 declaraba fuera:
+«¿quién en su sano juicio coge un destornillador a dos manos?» y «la mano sigue sin adaptarse:
+aparte de poner el modelo en buena posición deberías mover los dedos». Ambas cosas son el mismo
+hecho: **los dedos son huesos ANIMADOS**. Colgar la malla del hueso correcto (enm. 3) la lleva al
+sitio, pero la mano sigue haciendo lo que diga el clip del donante — el del hacha, que es de dos
+manos y cierra sobre un mango de otro diámetro. Para cambiar eso hay que hornear clips propios, que
+es exactamente lo que ADR-133 enm. 1 hizo para la linterna.
+
+### Decisión
+
+**Generalizar el horneador de la linterna a cualquier herramienta de UNA mano**
+(`BackroomsToolPoseBaker` + los números por objeto en `BackroomsToolPoseSpecs`). Hornea idle,
+equipar y enfundar tomando los del vendor y cambiando sólo lo que hay que cambiar:
+
+1. **Los dedos se cierran por CONTACTO contra la malla real**, falange a falange, con el perfil de
+   radio por tramos (el mango de un destornillador es el doble de gordo que su vástago).
+2. **La izquierda se recoge fuera del encuadre** cuando el objeto es de una mano (`TuckLeftHand`),
+   con los dedos entreabiertos: una mano que no sujeta nada no se queda en garra.
+3. **El índice del bote va sobre el PULSADOR** (`IndexOnNozzle`), no rodeando el cuerpo — es el dedo
+   que aprieta —, y tiene prohibido atravesar la lata para llegar a él.
+4. `KeepVendorFraming` (por defecto): el puño y el eje se quedan donde el vendor los animó. Este
+   horneado cambia el AGARRE, no el encuadre; así equipar y enfundar conservan su recorrido.
+
+### Los cuatro fallos que costaron cada iteración, todos por medir en vez de mirar
+
+- **El ancla no es lo que la mano «encierra»**, ni el origen del hueso del donante (el del hacha cae
+  en la base del mango, a palmos del puño). El eje va a **(radio + piel) de la línea de nudillos,
+  hacia donde cierran los dedos**: sobre la línea, el objeto queda en el PLANO de la mano y los dedos
+  cierran por el otro lado.
+- **El barrido no puede suponer el signo del cierre.** Se recorría desde el cierre máximo dando por
+  hecho que cerrar era negativo y se aceptaba el primer ángulo sin penetración; con estos objetos el
+  cierre resultó ser POSITIVO (medido: la yema del índice se acerca a 9 mm en +40° y se aleja a
+  24 mm en −80°), así que el primer ángulo del barrido ya valía y los dedos se quedaban ABIERTOS.
+  Ahora se barre −80…+80 y gana el ángulo que deja el extremo TOCANDO. Tres pasadas dieron números
+  idénticos hasta encontrar esto: cuando el resultado no cambia al cambiar el algoritmo, lo que
+  falla es la premisa, no el parámetro.
+- **La tolerancia de penetración del medio de la falange sale de la geometría, no de un número.**
+  Una falange es recta y la superficie redonda: al rodearla el medio se hunde ≈ L²/8R, que en un
+  mango de radio 12 mm son 10 mm, muy por encima del tope fijo anterior.
+- **El pulsador es un botón de 7 mm, no la tapa.** Modelado con el radio del perfil (3 cm), el índice
+  tomaba el atajo por dentro de la lata (yema a 12 mm del eje con la lata de radio 32).
+
+### Consecuencias
+
+- Puerta nueva `ToolGripTests`: las yemas que rodean tocan la piel (−4…+12 mm), el índice del bote
+  llega al pulsador sin clavarse en el eje, y **la izquierda del destornillador está a más de 5 cm**
+  del objeto — la prueba literal de «no se coge con dos manos».
+- Una herramienta de mano nueva es un `Spec` de ocho números y un menú; el algoritmo no se toca.
+- Los clips pesan 4,6 y 6,5 MB por objeto (tres cada uno), en línea con la linterna tras el
+  aplastado de curvas constantes.
+- Fuera, declarado: el encuadre (dónde cae el puño en pantalla) sigue siendo el del donante. Si algún
+  objeto lo necesita, se pone `KeepVendorFraming` a false y manda `FistFromEye`, que ya está escrito
+  y probado en la linterna pero sin usar aquí.

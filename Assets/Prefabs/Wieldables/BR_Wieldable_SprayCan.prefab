@@ -15525,6 +15525,7 @@ Transform:
   - {fileID: 3534935499847423103}
   - {fileID: 8802008908163711472}
   - {fileID: 7603746865987147115}
+  - {fileID: 1154017497339565714}
   m_Father: {fileID: 7501506440785420833}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &5349858508553659041
@@ -15716,7 +15717,6 @@ Transform:
   m_ConstrainProportionsScale: 0
   m_Children:
   - {fileID: 7460718661764534727}
-  - {fileID: 1154017497339565714}
   m_Father: {fileID: 9098489668928432233}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &6167976608775064115
@@ -21285,12 +21285,12 @@ Transform:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 7647521038214642891}
   serializedVersion: 2
-  m_LocalRotation: {x: 0.0020358174, y: 0, z: 0.006594603, w: 0.9999762}
-  m_LocalPosition: {x: 0.00059672754, y: 0.02850876, z: 0.00044861928}
-  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_LocalRotation: {x: -0.48877805, y: -0.7984511, z: -0.27128178, w: 0.22355767}
+  m_LocalPosition: {x: -0.026279926, y: 0.07120437, z: -0.05134373}
+  m_LocalScale: {x: 0.99999917, y: 0.99999917, z: 0.99999917}
   m_ConstrainProportionsScale: 0
   m_Children: []
-  m_Father: {fileID: 5022516761109497576}
+  m_Father: {fileID: 7205058004421461240}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!33 &5790684522717126720
 MeshFilter:
@@ -26397,13 +26397,13 @@ MonoBehaviour:
     _controller: {fileID: 9100000, guid: 1b8ede2face8f0940a98dd3919f60242, type: 2}
     _clips:
     - Original: {fileID: 7400000, guid: 6fcd4ef4b0dd5df49a09e341d846c3d2, type: 2}
-      Override: {fileID: -8682877343405008599, guid: 6f5c6a5da9eb876489c7a1a1d01dd56b, type: 3}
+      Override: {fileID: 7400000, guid: 554d27888d02f6d4f9f7b5d3c8e8129d, type: 2}
     - Original: {fileID: 7400000, guid: 4966c1d6c082a3d46a96afb0b9716e91, type: 2}
-      Override: {fileID: -2721950190165387461, guid: 6f5c6a5da9eb876489c7a1a1d01dd56b, type: 3}
+      Override: {fileID: 7400000, guid: cadf19ea35f1e194881f3b9ff9437706, type: 2}
     - Original: {fileID: 7400000, guid: 1cee0a70c42f89f44ba4b62f9490d37d, type: 2}
-      Override: {fileID: -2492834248533729781, guid: 6f5c6a5da9eb876489c7a1a1d01dd56b, type: 3}
+      Override: {fileID: 7400000, guid: e33c713a43ee11f4184e666b46751a6e, type: 2}
     - Original: {fileID: 7400000, guid: 1b4173ff09a484446a82d630af8dcf86, type: 2}
-      Override: {fileID: -2492834248533729781, guid: 6f5c6a5da9eb876489c7a1a1d01dd56b, type: 3}
+      Override: {fileID: 7400000, guid: e33c713a43ee11f4184e666b46751a6e, type: 2}
     _defaultParameters:
     - Type: 1
       Name: Holster Speed
