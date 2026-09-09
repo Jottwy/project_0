@@ -35,6 +35,9 @@
     <Compile Include="$(Repo)\Assets\Scripts\Lobbies\LobbyEndpointPolicy.cs" />
     <Compile Include="$(Repo)\Assets\Scripts\Network\HostAddressInput.cs" />
     <!-- El sorteo de loot y el de contenedores: puros por diseno, sin UnityEngine. -->
+    <!-- `ChunkCoordHash` se extrajo a su propio fichero en e564792f (ADR-133) y esta lista no se
+         actualizo, asi que el arnes dejo de compilar con un CS0103 que no era de nadie. -->
+    <Compile Include="$(Repo)\Assets\Scripts\Network\ChunkCoordHash.cs" />
     <Compile Include="$(Repo)\Assets\Scripts\Network\ChunkLootRoll.cs" />
     <Compile Include="$(Repo)\Assets\Scripts\Network\ChunkContainerRoll.cs" />
     <Compile Include="$(Repo)\Assets\Scripts\Network\ChunkDismantleRoll.cs" />
@@ -53,6 +56,11 @@
     <Compile Include="$(Repo)\Assets\Scripts\Lobbies\LobbyJoinRouter.cs" />
     <Compile Include="$(Repo)\Assets\Scripts\Lobbies\SteamLobbyRecord.cs" />
     <Compile Include="$(Repo)\Assets\Scripts\Lobbies\LobbyList.cs" />
+    <!-- ADR-135: el nucleo del tunel de Steam. Puro por diseno -las dos costuras contra Steam y
+         contra el socket son interfaces- y por eso se puede correr aqui entero. La implementacion
+         Facepunch (FacepunchSteamTunnel.cs) y el runner con su hilo quedan fuera: uno arrastra
+         Steamworks y el otro UnityEngine. -->
+    <Compile Include="$(Repo)\Assets\Scripts\Connectivity\SteamTunnel.cs" />
   </ItemGroup>
 
   <!-- Los ficheros de test REALES, sin tocar. LanFallbackMetadataTests queda fuera: depende de
@@ -79,6 +87,7 @@
     <Compile Include="$(Repo)\Assets\Tests\EditMode\LobbyJoinRouterTests.cs" />
     <Compile Include="$(Repo)\Assets\Tests\EditMode\RelayLobbyTests.cs" />
     <Compile Include="$(Repo)\Assets\Tests\EditMode\HostAddressInputTests.cs" />
+    <Compile Include="$(Repo)\Assets\Tests\EditMode\SteamTunnelTests.cs" />
   </ItemGroup>
 
 </Project>
