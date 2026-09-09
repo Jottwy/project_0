@@ -1382,6 +1382,56 @@ mod tests {
         }
     }
 
+    /// Cuánto de una pose en el wire son DATOS y cuánto son los nombres de los campos.
+    ///
+    /// `encode_packet` usa `to_vec_named`, que escribe la clave de cada campo como texto en CADA
+    /// datagrama: "position", "rotation", "animation", "equipment", "held_item"… Los valores no
+    /// cambian de tamaño entre las dos formas, así que la diferencia contra `to_vec` (posicional)
+    /// es exactamente el peso de las claves — repetido 10 veces por segundo, por entidad y por
+    /// destinatario.
+    ///
+    /// No es un invariante que proteger, es una MEDIDA: el `assert` sólo fija que la grasa existe
+    /// y es dominante, para que el número del ADR no dependa de una estimación a ojo.
+    #[test]
+    fn player_update_named_vs_positional_size() {
+        let payload = PacketPayload::PlayerUpdate {
+            position: [10.0, 1.8, 20.0],
+            rotation: 90.0,
+            animation: "walk".into(),
+            crouch: true,
+            pitch: -45,
+            equipment: [101, 202, 303, 404],
+            held_item: 12345,
+            hit_seq: 7,
+            dead: true,
+            revealed: true,
+            light_on: true,
+            fire_seq: 9,
+            buttons: 0b11,
+            melee_seq: 4,
+            vocal_seq: 6,
+            vocal_kind: 2,
+            carry_def: -1208217892,
+            carry_count: 3,
+            species: 2,
+        };
+
+        let named = rmp_serde::to_vec_named(&payload).unwrap().len();
+        let positional = rmp_serde::to_vec(&payload).unwrap().len();
+
+        println!(
+            "PlayerUpdate: named={named} B  positional={positional} B  \
+             claves={} B ({:.0} % del total)",
+            named - positional,
+            100.0 * (named - positional) as f64 / named as f64
+        );
+
+        assert!(
+            positional < named / 2,
+            "las claves deberían ser más de la mitad del datagrama: named={named} posicional={positional}"
+        );
+    }
+
     #[test]
     fn player_update_round_trip() {
         let payload = PacketPayload::PlayerUpdate {
