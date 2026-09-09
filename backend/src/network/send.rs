@@ -16,6 +16,73 @@ use super::{reliability, NetworkManager, PeerId};
 /// pérdida de UNO cualquiera lo pierde entero.
 pub const ETHERNET_SAFE_PAYLOAD: usize = 1472;
 
+/// BWTRACE — reparto del tráfico de salida por tipo de paquete, acumulado desde el arranque.
+///
+/// Existe porque la medición del 10-09 dejó una pregunta sin responder: el anfitrión enviaba
+/// 253,8 KB/s y saturaba el enlace, pero `DetailedStatus()` de Valve dice CUÁNTO, nunca DE QUÉ.
+/// Sin este reparto, decidir qué recortar es adivinar — y una estimación previa ya apuntó al
+/// roster equivocado.
+///
+/// Va aquí y no en el túnel de Steam a propósito: el túnel sólo ve la vía de Steam, y un playtest
+/// local va por vía directa. Este es el punto por el que pasa TODO datagrama, sea cual sea la vía.
+///
+/// Se indexa por la etiqueta `kind` que los llamantes ya traen, en vez de por el opcode: es la
+/// misma información y se lee sin tabla.
+static SENT_BY_KIND: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, (u64, u64)>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+/// Cada cuánto se vuelca el reparto. Cinco segundos: suficientemente espaciado para no ensuciar el
+/// log, suficientemente frecuente para ver la forma del tráfico en una partida corta.
+const BWTRACE_DUMP_EVERY_MS: u64 = 5000;
+
+/// Contabiliza un datagrama que SALE y, cada `BWTRACE_DUMP_EVERY_MS`, vuelca el reparto ordenado
+/// de mayor a menor. El total acumulado, no por intervalo: lo que se busca es qué DOMINA.
+fn note_sent_by_kind(kind: &str, bytes: usize, self_id: PeerId, elapsed_ms: u64) {
+    let Ok(mut map) = SENT_BY_KIND.lock() else {
+        return; // Un mutex envenenado no justifica tumbar el envío: esto es diagnóstico.
+    };
+
+    let entry = map.entry(kind.to_string()).or_insert((0, 0));
+    entry.0 += bytes as u64;
+    entry.1 += 1;
+
+    // El propio mapa lleva la marca del último volcado, para no añadir estado al NetworkManager
+    // por una traza temporal.
+    let last = map.entry("__last_dump_ms".to_string()).or_insert((0, 0));
+    if elapsed_ms.saturating_sub(last.0) < BWTRACE_DUMP_EVERY_MS {
+        return;
+    }
+    last.0 = elapsed_ms;
+
+    let mut rows: Vec<(String, u64, u64)> = map
+        .iter()
+        .filter(|(k, _)| k.as_str() != "__last_dump_ms")
+        .map(|(k, (b, p))| (k.clone(), *b, *p))
+        .collect();
+    rows.sort_by(|a, b| b.1.cmp(&a.1));
+
+    let total: u64 = rows.iter().map(|r| r.1).sum();
+    let secs = (elapsed_ms as f64 / 1000.0).max(0.001);
+    let detail: Vec<String> = rows
+        .iter()
+        .take(12)
+        .map(|(k, b, p)| {
+            format!(
+                "{k}={:.1}KB/s({:.0}%,{p}pkt)",
+                *b as f64 / 1024.0 / secs,
+                100.0 * *b as f64 / total.max(1) as f64
+            )
+        })
+        .collect();
+
+    info!(
+        "BWTRACE event=sent_by_kind self_id={self_id} total={:.1}KB/s secs={secs:.0} {}",
+        total as f64 / 1024.0 / secs,
+        detail.join(" ")
+    );
+}
+
 impl NetworkManager {
     /// MTUPROBE: contabiliza el tamaño de salida y avisa, como mucho una vez por segundo, del
     /// mayor datagrama sobredimensionado visto. No decide nada — solo hace visible una propiedad
@@ -555,6 +622,15 @@ impl NetworkManager {
         // La comprobación va AQUÍ y no en los llamantes porque los llamantes son decenas y los
         // puntos de salida son dos. El techo de ADR-113 ya se ha aplicado arriba, sobre el payload
         // de gameplay: el sobre suma 16 B y el datagrama en el cable llega a 1216 (enmienda 3).
+        // BWTRACE: se contabiliza AQUÍ, antes de las dos vías de salida, para que el reparto sea el
+        // mismo mida por relay o directo. Lo que se rechazó por techo (arriba) ya no llega.
+        note_sent_by_kind(
+            kind,
+            data.len(),
+            self.local_id,
+            self.session_start.elapsed().as_millis() as u64,
+        );
+
         if crate::network::transport::is_synthetic(&addr) {
             return self.send_via_relay(data, addr, kind).await;
         }
