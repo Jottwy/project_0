@@ -292,6 +292,27 @@ namespace BackroomsSurvival.Net
             // de verdad se usa; `LeaveLobby` después sigue haciendo falta, porque además suelta el
             // lobby AJENO en el que se entró por invitación. Las dos son idempotentes.
             Step("steam announcement", UI.ServerBrowserBootstrap.WithdrawAnnouncement);
+
+            // ADR-135 D10. Va ENTRE los dos de arriba, y el orden tiene motivo en las dos
+            // direcciones:
+            //
+            //  - DESPUÉS del anuncio: mientras el lobby siga publicado hay gente leyendo
+            //    `bs_steam_host` y llamando por él. Cerrar el túnel antes de retirar el cartel sólo
+            //    cambia un fallo por otro — es el mismo argumento que ya gobierna el mapeo UPnP.
+            //  - ANTES de `LeaveLobby`: el lobby es lo que AUTORIZA (el secreto vive en su
+            //    metadata, D4'), así que soltarlo primero dejaría una ventana con el túnel abierto
+            //    y su autorización ya sin dueño.
+            //
+            // No bloquea más de medio segundo: el bombeo cede el turno cada pocos milisegundos y
+            // el teardown no puede esperar a nadie. Idempotente y segura sin Steam, como todas.
+            Step("steam p2p tunnel", () =>
+            {
+                Connectivity.SteamTunnelRunner.Shutdown();
+                // El secreto muere con la sesión: reutilizarlo dejaría entrar mañana a quien vio
+                // el lobby de hoy (D4'). Es la misma regla que `RelaySessionCredentials.Reset`.
+                Connectivity.SteamTunnelCredentials.Reset();
+            });
+
             Step("steam lobby", () => SteamLobbyManager.Instance?.LeaveLobby());
 
             // El reenvío de puerto que este host le pidió al router. Va DESPUÉS de retirar el

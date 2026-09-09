@@ -276,6 +276,42 @@ namespace BackroomsSurvival.Tests
             foreach (FakeSocket socket in sockets) Assert.IsTrue(socket.Disposed);
         }
 
+        [Test]
+        public void El_teardown_del_host_cierra_tambien_las_conexiones_de_Steam()
+        {
+            // ADR-135 D10: al cerrar el túnel no puede quedar ni un socket ni una conexión viva. Un
+            // peer que siguiera conectado a un túnel muerto se queda esperando a un backend que ya
+            // no está, y sólo saldría por el latido de 5 s.
+            var sockets = new List<FakeSocket>();
+            SteamTunnelHost host = NewHost(sockets);
+            var uno = new FakeChannel(1UL);
+            var dos = new FakeChannel(2UL);
+            byte[] auth = SteamTunnelAuth.Build(Secret);
+            host.OnMessage(uno, auth, auth.Length);
+            host.OnMessage(dos, auth, auth.Length);
+
+            host.Dispose();
+
+            Assert.IsTrue(uno.Closed);
+            Assert.IsTrue(dos.Closed);
+            // Y después de cerrar no se le entrega nada más a nadie.
+            Assert.AreEqual(0, host.PumpToSteam(0));
+        }
+
+        [Test]
+        public void El_teardown_del_joiner_cierra_su_conexion_y_su_socket()
+        {
+            var channel = new FakeChannel();
+            var socket = new FakeSocket(51004);
+            var joiner = new SteamTunnelJoiner(channel, socket, Secret);
+            joiner.SendAuth();
+
+            joiner.Dispose();
+
+            Assert.IsTrue(channel.Closed);
+            Assert.IsTrue(socket.Disposed);
+        }
+
         // ─── El joiner ───
 
         [Test]
