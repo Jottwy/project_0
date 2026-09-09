@@ -383,6 +383,9 @@ pub(crate) enum SpawnSource {
     Distributed,
     /// El punto fijo de siempre: centro del chunk (0,0).
     Origin,
+    /// ADR-136 enm. 1 Q1 — al lado de quien invitó. Es la ÚNICA fuente que gana a `Restored`, y
+    /// en los dos órdenes: «ven» dicho por dos personas pesa más que «vuelvo» dicho por un fichero.
+    Invited,
 }
 
 /// ADR-045 enm. 1 E1.1 — quién ganó la posición inicial, y quién puede pisarla.
@@ -409,9 +412,16 @@ impl SpawnState {
     ///
     /// Una restauración prende siempre, incluso sobre una posición ya resuelta: llegue antes o
     /// después que el spawn de la sesión, la posición guardada es la que manda. Lo demás sólo
-    /// prende sobre un hueco.
+    /// prende sobre un hueco. **Salvo la invitación** (ADR-136 enm. 1 Q1): prende sobre todo, y
+    /// una restauración que llegue después de ella NO la pisa. Es la única excepción a ADR-045
+    /// enm. 1, y está escrita.
     pub(crate) fn claim(&mut self, source: SpawnSource) -> bool {
         match (self.source, source) {
+            (_, SpawnSource::Invited) => {
+                self.source = Some(SpawnSource::Invited);
+                true
+            }
+            (Some(SpawnSource::Invited), SpawnSource::Restored) => false,
             (_, SpawnSource::Restored) => {
                 self.source = Some(SpawnSource::Restored);
                 true
@@ -1734,6 +1744,11 @@ pub async fn run(
             }
         }
 
+        // ADR-136 D4 — la entrada del anfitrión en su propio roster: un invitado por el anfitrión
+        // nace al lado de ESTA posición, y `handle_handshake` no ve al `Player`. Una copia por
+        // tick; en un joiner nadie la lee.
+        net.local_position = player.position.to_array();
+
         // Process incoming network packets.
         let net_events = net.process_incoming().await;
         for event in net_events {
@@ -1778,6 +1793,7 @@ pub async fn run(
                                 if let Some(file) =
                                     crate::persistence::player_save::load_or_fresh(&path)
                                 {
+                                    let before_restore = player.position;
                                     apply_player_snapshot(&mut player, file.snapshot);
                                     revive_if_dead_on_load(
                                         &mut player,
@@ -1792,7 +1808,18 @@ pub async fn run(
                                     // `!spawn_resolved`) reubicaba al veterano en el origen si el
                                     // world_sync terminaba después de esta restauración. Los dos
                                     // órdenes eran alcanzables y ninguno estaba escrito.
-                                    spawn_state.claim(SpawnSource::Restored);
+                                    //
+                                    // ADR-136 enm. 1 Q1 — salvo que la INVITACIÓN ya haya
+                                    // resuelto el punto: entonces el fichero restaura todo lo
+                                    // demás (stats, inventario) y la posición se queda donde la
+                                    // invitación la puso.
+                                    if !spawn_state.claim(SpawnSource::Restored) {
+                                        info!(
+                                            "ADR-136: la posición del fichero cede ante la invitación ({:.1},{:.1},{:.1})",
+                                            before_restore.x, before_restore.y, before_restore.z
+                                        );
+                                        player.position = before_restore;
+                                    }
                                     // E1.2 — y la posición restaurada se baja al suelo de WG3
                                     // conservando planta. Sin sitio de pie se conserva la guardada,
                                     // que es el criterio de ADR-106: no se inventa un sitio.
@@ -1869,7 +1896,14 @@ pub async fn run(
         // (`resolve_safe_spawn` buscaría celda segura entre los chunks que hubieran llegado).
         // La condición es la completitud del goteo: `WorldSyncEnd` recibido Y todos sus chunks
         // aplicados. El monolito deprecado la marca completa de una vez (`note_monolith`).
-        if !spawn_state.is_resolved()
+        //
+        // ADR-136 enm. 1 Q1 — y una invitación con punto asignado entra aquí AUNQUE el fichero ya
+        // haya resuelto la posición: es la regla del joiner, que es el único que sabe si tiene
+        // fichero. Una sola vez, porque después `source()` ya es `Invited`.
+        let invited_pending = net.invited_by != 0
+            && net.assigned_spawn_from_host.is_some()
+            && spawn_state.source() != Some(SpawnSource::Invited);
+        if (!spawn_state.is_resolved() || invited_pending)
             && net.real_peer_count() > 0
             && net.world_sync_progress.is_complete()
         {
@@ -1922,6 +1956,10 @@ pub async fn run(
                 }
             }
             spawn_state.claim(match net.assigned_spawn_from_host {
+                // ADR-136: el punto llegó porque se pidió nacer al lado de alguien. El joiner no
+                // sabe si el anfitrión lo honró o cayó al reparto (D6) — el ack no lo dice — así
+                // que la precedencia de Q1 se aplica igual; queda anotado en R4.
+                Some(_) if net.invited_by != 0 => SpawnSource::Invited,
                 Some(_) => SpawnSource::Distributed,
                 None => SpawnSource::Origin,
             });

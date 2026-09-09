@@ -1,6 +1,9 @@
 use super::*;
 use std::time::Duration;
 
+// ADR-136: el bloque de identidad del handshake vive en `handlers`, que no lo reexporta.
+use super::handlers::HandshakeIdentity;
+
 // `SessionConfig` ya no lo importa `mod.rs` (lo consume `handlers.rs`), y `use super::*`
 // solo alcanza lo que está en el ámbito de `mod.rs`.
 use super::protocol::SessionConfig;
@@ -1176,6 +1179,7 @@ async fn handshake_is_rejected_when_the_session_is_full() {
         "TooMany".into(),
         crate::ipc::server::WIRE_SCHEMA_VERSION.to_string(),
         String::new(),
+        HandshakeIdentity::default(),
     )
     .await;
 
@@ -1202,6 +1206,7 @@ async fn handshake_is_accepted_when_there_is_room() {
         "Joiner".into(),
         crate::ipc::server::WIRE_SCHEMA_VERSION.to_string(),
         String::new(),
+        HandshakeIdentity::default(),
     )
     .await;
 
@@ -1223,6 +1228,7 @@ async fn handshake_is_rejected_on_wire_schema_mismatch() {
         "OldBuild".into(),
         "0.1.0".into(),
         String::new(),
+        HandshakeIdentity::default(),
     )
     .await;
 
@@ -2308,6 +2314,7 @@ async fn handshake_is_rejected_on_room_manifest_mismatch() {
         "OtroPool".into(),
         crate::ipc::server::WIRE_SCHEMA_VERSION.to_string(),
         "digest-de-otro-build".into(),
+        HandshakeIdentity::default(),
     )
     .await;
 
@@ -5178,6 +5185,8 @@ async fn un_handshake_que_llega_por_el_relay_registra_al_peer_con_su_direccion_s
             player_name: "Alejandro".into(),
             version: crate::ipc::server::WIRE_SCHEMA_VERSION.to_string(),
             room_manifest_digest: String::new(),
+            platform_id: 0,
+            invited_by: 0,
         },
     );
     let envuelto = RelayFrame::to_peer(
@@ -5741,4 +5750,159 @@ async fn the_handshake_ack_records_who_was_already_there() {
         !joiner.present_at_join.contains(&1),
         "el anfitrión no va en su propia lista de peers y no es un compañero"
     );
+}
+
+// ─── ADR-136: la invitación te deja al lado de quien te invitó ───
+
+use crate::world::spawn_distribution::INVITE_SPAWN_OFFSET_M;
+
+fn peer_at(id: PeerId, name: &str, addr: &str, position: [f32; 3]) -> PeerConnection {
+    let mut conn = PeerConnection::new(id, name.into(), addr.parse().unwrap());
+    conn.position = position;
+    conn
+}
+
+/// D4/D5 — un cliente invita: el invitado nace a `INVITE_SPAWN_OFFSET_M` de la posición del
+/// invitador SEGÚN EL ROSTER, sin gastar unidad de reparto, y el punto queda recordado.
+#[tokio::test]
+async fn an_invited_joiner_is_placed_beside_a_client_inviter() {
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    host.platform_ids.insert(111, 5);
+    host.peers.insert(
+        5,
+        peer_at(5, "Invitador", "192.168.1.60:7779", [100.0, 4.7, 200.0]),
+    );
+
+    let p = host
+        .assign_spawn_point_for(7, 111)
+        .expect("un invitador vivo siempre da punto");
+    let anchor = crate::utils::Vec3::new(100.0, 4.7, 200.0);
+    assert!(
+        (p.distance_xz(anchor) - INVITE_SPAWN_OFFSET_M).abs() < 1e-3,
+        "a {:.2} m del invitador",
+        p.distance_xz(anchor)
+    );
+    assert_eq!(p.y, 4.7, "misma planta que el invitador");
+    assert_eq!(
+        host.next_spawn_unit, 0,
+        "entra en la unidad del invitador: no gasta otra"
+    );
+    assert_eq!(
+        host.assign_spawn_point_for(7, 111),
+        Some(p),
+        "idempotente por peer, como el reparto"
+    );
+}
+
+/// D3 — el anfitrión invita: es una entrada más del mapa, resuelta contra `local_position`.
+#[tokio::test]
+async fn an_invited_joiner_is_placed_beside_the_host_by_the_same_path() {
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    host.local_platform_id = 999;
+    host.local_position = [10.0, 1.8, 20.0];
+
+    let p = host
+        .assign_spawn_point_for(7, 999)
+        .expect("el anfitrión está siempre");
+    let anchor = crate::utils::Vec3::new(10.0, 1.8, 20.0);
+    assert!((p.distance_xz(anchor) - INVITE_SPAWN_OFFSET_M).abs() < 1e-3);
+    assert_eq!(host.next_spawn_unit, 0);
+}
+
+/// D6 — invitador desconocido, ya ido, o un fantasma: se reparte como siempre y nunca se bloquea.
+#[tokio::test]
+async fn an_unresolvable_inviter_falls_back_to_distribution() {
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+
+    // Desconocido.
+    let a = host
+        .assign_spawn_point_for(7, 12_345)
+        .expect("reparto normal");
+    assert_eq!(host.next_spawn_unit, 1, "el fallback SÍ gasta unidad");
+    assert_eq!(
+        a,
+        host.assign_spawn_point(7).unwrap(),
+        "y es el punto del reparto"
+    );
+
+    // Conocido pero ya ido.
+    host.platform_ids.insert(111, 5);
+    let b = host.assign_spawn_point_for(8, 111).expect("reparto normal");
+    assert_eq!(host.next_spawn_unit, 2);
+    assert!(
+        b.distance_xz(a) >= crate::world::spawn_distribution::MIN_PLAYER_SEPARATION_M,
+        "es el reparto de ADR-116, con su separación"
+    );
+
+    // Un fantasma inyectado no es un invitador.
+    let mut ghost = PeerConnection::new(6, "Robapieles".into(), INERT_PEER_ADDR);
+    ghost.relay_only = true;
+    host.peers.insert(6, ghost);
+    host.platform_ids.insert(222, 6);
+    let _ = host.assign_spawn_point_for(9, 222).expect("reparto normal");
+    assert_eq!(host.next_spawn_unit, 3);
+}
+
+/// D3 — un `0` nunca entra en el mapa, y la identidad se va con el peer.
+#[tokio::test]
+async fn a_zero_identity_never_enters_the_map_and_the_map_forgets_a_gone_peer() {
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let mut anon = NetworkManager::bind(0, 2, 42, false).await.unwrap();
+    let mut named = NetworkManager::bind(0, 3, 42, false).await.unwrap();
+    named.local_platform_id = 424_242;
+    let host_addr = loopback_addr(&host);
+
+    anon.initiate_connection(host_addr).await;
+    named.initiate_connection(host_addr).await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    host.process_incoming().await;
+
+    assert_eq!(
+        host.platform_ids.len(),
+        1,
+        "sólo la identidad real: {:?}",
+        host.platform_ids
+    );
+    let named_id = *host
+        .platform_ids
+        .get(&424_242)
+        .expect("la identidad del que la tiene");
+    assert!(host.peers.contains_key(&named_id));
+
+    host.peers.remove(&named_id);
+    host.purge_peer_state(named_id);
+    assert!(
+        host.platform_ids.is_empty(),
+        "un id reciclado no puede heredar la identidad de otro"
+    );
+}
+
+/// El caso entero por el cable: el joiner dice quién le invitó, el anfitrión resuelve contra su
+/// propia posición y el punto llega en el ack. Un anfitrión anterior al ADR ignoraría los campos
+/// y repartiría como siempre: los `serde(default)` de arriba son lo que lo garantiza.
+#[tokio::test]
+async fn an_invited_joiner_gets_the_point_through_a_real_handshake() {
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    host.local_platform_id = 999;
+    host.local_position = [10.0, 1.8, 20.0];
+    let mut joiner = NetworkManager::bind(0, 2, 42, false).await.unwrap();
+    joiner.local_platform_id = 424_242;
+    joiner.invited_by = 999;
+
+    joiner.initiate_connection(loopback_addr(&host)).await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    host.process_incoming().await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    joiner.process_incoming().await;
+
+    let p = joiner
+        .assigned_spawn_from_host
+        .expect("el ack trae el punto de la invitación");
+    let anchor = crate::utils::Vec3::new(10.0, 1.8, 20.0);
+    assert!(
+        (p.distance_xz(anchor) - INVITE_SPAWN_OFFSET_M).abs() < 1e-3,
+        "a {:.2} m del anfitrión",
+        p.distance_xz(anchor)
+    );
+    assert_eq!(host.next_spawn_unit, 0);
 }

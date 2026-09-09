@@ -205,10 +205,12 @@ impl NetworkManager {
                 player_name,
                 version,
                 room_manifest_digest,
+                platform_id,
+                invited_by,
             } => {
                 info!(
-                    "Received handshake from addr={} sender_id={} name={}",
-                    pkt.addr, sender_id, player_name
+                    "Received handshake from addr={} sender_id={} name={} platform_id={} invited_by={}",
+                    pkt.addr, sender_id, player_name, platform_id, invited_by
                 );
                 info!(
                     "MPTRACE step=B event=host_receive_handshake self_id={} sender_id={} assigned_id=<pending> peer_id=<pending> endpoint={} peer_count={} remote_players_count=<n/a> remote_players_ids={:?}",
@@ -218,8 +220,18 @@ impl NetworkManager {
                     self.peers.len(),
                     self.peer_ids()
                 );
-                self.handle_handshake(pkt.addr, sender_id, player_name, version, room_manifest_digest)
-                    .await
+                self.handle_handshake(
+                    pkt.addr,
+                    sender_id,
+                    player_name,
+                    version,
+                    room_manifest_digest,
+                    HandshakeIdentity {
+                        platform_id,
+                        invited_by,
+                    },
+                )
+                .await
             }
 
             PacketPayload::HandshakeAck {
@@ -1068,6 +1080,7 @@ impl NetworkManager {
         player_name: String,
         version: String,
         room_manifest_digest: String,
+        identity: HandshakeIdentity,
     ) -> Option<NetworkEvent> {
         if !self.is_host {
             // Only the host accepts handshakes.
@@ -1226,10 +1239,17 @@ impl NetworkManager {
             self.peer_ids()
         );
 
+        // ADR-136 D3 — la identidad de plataforma, si la hay. Un 0 nunca entra en el mapa: es
+        // «sin identidad», no una identidad que valga 0.
+        if identity.platform_id != 0 {
+            self.platform_ids.insert(identity.platform_id, assigned_id);
+        }
+
         // ADR-116 D3 — el reparto se decide AQUÍ, antes de construir el ack, porque construirlo es
         // `&self`. Un `None` no es un error: significa candidatos agotados (D7) y el joiner nacerá
-        // en el origen, que es el comportamiento de siempre.
-        let _ = self.assign_spawn_point(assigned_id);
+        // en el origen, que es el comportamiento de siempre. ADR-136: si viene invitado, el punto
+        // es al lado del invitador y el reparto queda de respaldo.
+        let _ = self.assign_spawn_point_for(assigned_id, identity.invited_by);
 
         // Send HandshakeAck with world info.
         self.send_handshake_ack(from_addr, sender_id, assigned_id)
@@ -1377,6 +1397,9 @@ impl NetworkManager {
         // motivo de que exista.
         self.phantom_ids.remove(&id);
         self.faceling_ids.remove(&id);
+        // ADR-136 D3 — la identidad se va con el peer. Sin esto, el siguiente que heredara el
+        // número (`allocate_peer_id` los recicla) sería «la misma persona» para cualquier invitado.
+        self.platform_ids.retain(|_, peer| *peer != id);
     }
 
     pub fn peer_ids(&self) -> Vec<PeerId> {
@@ -1406,6 +1429,73 @@ impl NetworkManager {
     /// cosas: un jugador restaurado de su fichero está donde nadie lo sorteó (D8), así que no
     /// aparece en la primera lista y tiene que aparecer en la segunda.
     ///
+    /// ADR-136 D4/D5/D6 — el punto de un peer que dice venir invitado: **al lado del invitador**,
+    /// o el reparto de siempre si no se puede.
+    ///
+    /// El invitado entra en la unidad de spawn del invitador (ADR-116 D10): no consume unidad
+    /// (`next_spawn_unit` no avanza) y la separación mínima no se mide entre ellos. El punto sí se
+    /// recuerda en `assigned_spawns`, por lo mismo que los demás: los tres caminos del handshake
+    /// tienen que dar el MISMO punto.
+    ///
+    /// Con `invited_by == 0` es exactamente `assign_spawn_point`.
+    pub fn assign_spawn_point_for(
+        &mut self,
+        peer: PeerId,
+        invited_by: u64,
+    ) -> Option<crate::utils::Vec3> {
+        if let Some(p) = self.assigned_spawns.get(&peer) {
+            return Some(*p);
+        }
+        if invited_by == 0 {
+            return self.assign_spawn_point(peer);
+        }
+
+        match self.inviter_position(invited_by) {
+            Ok((by, anchor)) => {
+                let p = crate::world::spawn_distribution::beside(self.world_seed, peer, anchor);
+                self.assigned_spawns.insert(peer, p);
+                // Enm. 1, Q2 (a): la invitación honrada deja rastro. Es lo único que hace visible
+                // un `invited_by` inventado.
+                info!(
+                    "SPAWN invite={invited_by} by={by} peer={peer} resolved=yes at=({:.1},{:.1},{:.1})",
+                    p.x, p.y, p.z
+                );
+                Some(p)
+            }
+            Err(reason) => {
+                // D6 — nunca bloquea la entrada: se reparte como siempre, con aviso.
+                warn!(
+                    "SPAWN invite={invited_by} peer={peer} resolved=no reason={reason}; se reparte como siempre"
+                );
+                self.assign_spawn_point(peer)
+            }
+        }
+    }
+
+    /// ADR-136 D4 — dónde está el invitador según el ROSTER: el anfitrión mismo, o un peer vivo y
+    /// real. Nunca una posición que haya escrito el invitado.
+    fn inviter_position(
+        &self,
+        invited_by: u64,
+    ) -> Result<(PeerId, crate::utils::Vec3), &'static str> {
+        if self.local_platform_id != 0 && invited_by == self.local_platform_id {
+            return Ok((
+                self.local_id,
+                crate::utils::Vec3::from_array(self.local_position),
+            ));
+        }
+        let Some(&id) = self.platform_ids.get(&invited_by) else {
+            return Err("unknown_identity");
+        };
+        let Some(peer) = self.peers.get(&id) else {
+            return Err("inviter_gone");
+        };
+        if peer.relay_only || self.is_phantom(id) {
+            return Err("inviter_not_a_player");
+        }
+        Ok((id, crate::utils::Vec3::from_array(peer.position)))
+    }
+
     /// `None` = no quedaban candidatos válidos; el joiner aplicará el fallback de D7 por su cuenta.
     pub fn assign_spawn_point(&mut self, peer: PeerId) -> Option<crate::utils::Vec3> {
         if let Some(p) = self.assigned_spawns.get(&peer) {
@@ -1640,6 +1730,15 @@ impl NetworkManager {
         }
         assigned_id
     }
+}
+
+/// ADR-136 D1/D2 — lo que un handshake dice de QUIÉN es el peer, en bloque. Los dos campos viajan
+/// juntos y se leen juntos; un bloque y no dos argumentos sueltos porque son la misma decisión (la
+/// identidad opaca y a quién señala con ella), y así `handle_handshake` no crece de dos en dos.
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct HandshakeIdentity {
+    pub platform_id: u64,
+    pub invited_by: u64,
 }
 
 /// P7.3 — la puerta de autoridad de los rosters. Viven aquí y no en `tests.rs` por el índice

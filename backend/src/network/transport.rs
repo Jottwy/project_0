@@ -279,6 +279,8 @@ mod tests {
                 player_name: "Jottwy".into(),
                 version: "55".into(),
                 room_manifest_digest: String::new(),
+                platform_id: 0,
+                invited_by: 0,
             },
             PacketPayload::Ack {
                 acked_sequence: 0xFFFF_FFFF,

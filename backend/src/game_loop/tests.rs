@@ -5357,6 +5357,30 @@ fn una_posicion_restaurada_tardia_tampoco_se_pisa() {
     assert_eq!(state.source(), Some(SpawnSource::Restored));
 }
 
+/// ADR-136 enm. 1 Q1 — la invitación gana a la restauración EN LOS DOS ÓRDENES. Es la única
+/// excepción a «la posición persistida gana» (ADR-045 enm. 1), y sin los dos órdenes probados
+/// volvería a depender de qué mensaje llega antes, que es exactamente el fallo que `SpawnState`
+/// vino a cerrar.
+#[test]
+fn una_invitacion_gana_a_la_restauracion_en_los_dos_ordenes() {
+    let mut state = SpawnState::default();
+    assert!(state.claim(SpawnSource::Restored));
+    assert!(
+        state.claim(SpawnSource::Invited),
+        "la invitación llega después: prende igual"
+    );
+    assert_eq!(state.source(), Some(SpawnSource::Invited));
+
+    let mut state = SpawnState::default();
+    assert!(state.claim(SpawnSource::Invited));
+    assert!(
+        !state.claim(SpawnSource::Restored),
+        "la restauración llega después: no la pisa"
+    );
+    assert!(!state.claim(SpawnSource::Distributed));
+    assert_eq!(state.source(), Some(SpawnSource::Invited));
+}
+
 /// Y sin restauración de por medio, el reparto gana al origen y nadie lo pisa dos veces.
 #[test]
 fn el_reparto_resuelve_una_sola_vez() {

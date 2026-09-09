@@ -67,6 +67,17 @@ const SPAWN_CELL_SALT: u64 = 0x5A17_0116_CE11_0000;
 /// celdas y la posición dentro de una salieran del mismo flujo, mover una movería la otra.
 const SPAWN_POINT_SALT: u64 = 0x9E37_79B9_7F4A_7C15;
 
+/// ADR-136 Q3 — a qué distancia del invitador nace un invitado, en metros.
+///
+/// Un radio de cuerpo y un paso: lo bastante lejos para no nacer DENTRO del invitador, lo bastante
+/// cerca para que `standable_near_bounded` (anillos de 0,5 m, `same_storey`) lo deje en la misma
+/// sala. **Sin medir** en salas pequeñas; si el desplazamiento cae en pared, el colocador lo trae
+/// de vuelta.
+pub const INVITE_SPAWN_OFFSET_M: f32 = 2.0;
+
+/// Sal de la dirección del desplazamiento de un invitado. Propia, como las dos de arriba.
+const INVITE_DIRECTION_SALT: u64 = 0x1A5E_0136_D4D4_0001;
+
 /// La altura provisional con la que sale un candidato. No es «el suelo»: el suelo lo resuelve
 /// `standable_near_bounded` (D6) en quien consume el punto, que es el único que tiene el ráster.
 /// Misma altura que usa `preferred_spawn`, para que el colocador arranque desde donde siempre.
@@ -181,9 +192,50 @@ pub fn choose_spawn(world_seed: u64, unit: u32, occupied: &[Vec3]) -> Option<Vec
     None
 }
 
+/// ADR-136 D4 — un punto a [`INVITE_SPAWN_OFFSET_M`] del invitador, en una dirección determinista
+/// por `(world_seed, peer)`.
+///
+/// Misma altura que el invitador: la planta la conserva `standable_near_bounded` en quien consume
+/// el punto (ADR-116 D6), igual que con cualquier otro. Puro, como todo lo de este módulo: el
+/// anfitrión lo llama al llegar el handshake, donde no hay ráster a mano.
+pub fn beside(world_seed: u64, peer: u16, anchor: Vec3) -> Vec3 {
+    let u = to_unit(hash4(world_seed, INVITE_DIRECTION_SALT, peer as i64, 0));
+    let angle = u * std::f32::consts::TAU;
+    Vec3::new(
+        anchor.x + angle.cos() * INVITE_SPAWN_OFFSET_M,
+        anchor.y,
+        anchor.z + angle.sin() * INVITE_SPAWN_OFFSET_M,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ADR-136 D4 — el invitado nace a la distancia del ADR, a la altura del invitador, y siempre
+    /// en el mismo sitio para el mismo par (semilla, peer).
+    #[test]
+    fn un_invitado_nace_a_dos_metros_del_invitador_y_siempre_en_el_mismo_sitio() {
+        let anchor = Vec3::new(100.0, 4.7, -250.0);
+        let p = beside(42, 7, anchor);
+        assert!(
+            (p.distance_xz(anchor) - INVITE_SPAWN_OFFSET_M).abs() < 1e-4,
+            "a {:.3} m del invitador",
+            p.distance_xz(anchor)
+        );
+        assert_eq!(
+            p.y, anchor.y,
+            "la planta es la del invitador; el suelo lo pone D6"
+        );
+        assert_eq!(p, beside(42, 7, anchor), "determinista");
+
+        let otro = beside(42, 8, anchor);
+        assert_ne!(
+            (p.x, p.z),
+            (otro.x, otro.z),
+            "dos invitados no nacen en el mismo punto"
+        );
+    }
 
     #[test]
     fn el_reparto_es_determinista_por_semilla() {

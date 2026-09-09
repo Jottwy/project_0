@@ -337,6 +337,20 @@ pub struct NetworkManager {
     /// ADR-116 — la siguiente unidad de spawn a repartir. Hoy unidad = jugador; el día que existan
     /// squads será unidad = squad, y este contador no cambia (D10).
     pub next_spawn_unit: u32,
+    /// ADR-136 D1 — la identidad de plataforma PROPIA (`PEER_IDENTITY`), opaca: un número que dos
+    /// peers pueden comparar y nada más. Viaja en el handshake y, en el anfitrión, es lo que hace
+    /// que «me invitó el anfitrión» resuelva por el mismo camino que «me invitó un cliente»: se
+    /// compara con esto antes de mirar el mapa. `0` = sin identidad.
+    pub local_platform_id: u64,
+    /// ADR-136 D2 — a quién señala este joiner como invitador (`INVITED_BY`). `0` = nadie.
+    pub invited_by: u64,
+    /// ADR-136 D3 — identidad → peer, sólo en el anfitrión. Un `0` nunca entra, y la entrada se
+    /// va con el peer (`purge_peer_state`): un id reciclado no puede heredar la identidad de otro.
+    pub platform_ids: std::collections::HashMap<u64, PeerId>,
+    /// ADR-136 D4 — la posición del jugador LOCAL, que el bucle de juego copia aquí antes de
+    /// procesar la red. El `NetworkManager` no conoce al `Player`, y el punto de un invitado por
+    /// el anfitrión tiene que salir del ROSTER: esto es la entrada del anfitrión en él.
+    pub local_position: [f32; 3],
     /// ADR-116 D3 — el punto que el ANFITRIÓN nos asignó, en un joiner. `None` en el anfitrión
     /// (que se reparte solo, D9) y en un joiner cuyo anfitrión es anterior a ADR-116.
     pub assigned_spawn_from_host: Option<crate::utils::Vec3>,
@@ -619,6 +633,10 @@ impl NetworkManager {
             play_time_base_seconds: 0,
             assigned_spawns: std::collections::HashMap::new(),
             next_spawn_unit: 0,
+            local_platform_id: 0,
+            invited_by: 0,
+            platform_ids: std::collections::HashMap::new(),
+            local_position: [0.0, 1.8, 0.0],
             assigned_spawn_from_host: None,
             sprays: crate::world::spray::SprayStore::new(),
             processed_spray_places: BoundedDedupeSet::with_capacity(DEDUPE_CAP),
@@ -883,6 +901,10 @@ impl NetworkManager {
         );
         let payload = PacketPayload::Handshake {
             player_name: self.local_name.clone(),
+            // ADR-136 D1/D2 — quién soy y quién me invitó, opacos. Ceros si no hay identidad o
+            // nadie invitó, y un anfitrión anterior al ADR los ignora sin enterarse.
+            platform_id: self.local_platform_id,
+            invited_by: self.invited_by,
             // Reuses the IPC wire schema counter — see the doc-comment on
             // `crate::ipc::server::WIRE_SCHEMA_VERSION` for why this is one counter, not two.
             version: crate::ipc::server::WIRE_SCHEMA_VERSION.to_string(),

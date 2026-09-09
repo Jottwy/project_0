@@ -526,6 +526,19 @@ pub enum PacketPayload {
         /// vacío, igual que el precedente de `phantom_density_scale`.
         #[serde(default)]
         room_manifest_digest: String,
+        /// ADR-136 D1 — la identidad de plataforma de este peer, OPACA: para el backend es un
+        /// número que dos peers pueden comparar. Hoy Unity pone el `SteamId`, y el backend no lo
+        /// sabe ni tiene por qué (ADR-135 D2). `0` = sin identidad, que es un estado válido (build
+        /// sin Steam). Al final y con `serde(default)`, como todo lo anterior: sin bump de wire
+        /// (ADR-116 D3, protocolo entre backends).
+        #[serde(default)]
+        platform_id: u64,
+        /// ADR-136 D2 — a quién señala este peer como su invitador, en la misma moneda. `0` =
+        /// nadie (navegador, join manual, auto-solo). Es una AFIRMACIÓN del cliente sin prueba
+        /// (enm. 1, Q2): sólo sirve para señalar a alguien, nunca decide una posición por sí misma —
+        /// la posición sale del roster del anfitrión (D4).
+        #[serde(default)]
+        invited_by: u64,
     },
     HandshakeAck {
         assigned_id: u16,
@@ -1296,6 +1309,10 @@ mod tests {
             player_name: "TestPlayer".into(),
             version: "0.1.0".into(),
             room_manifest_digest: "deadbeef".into(),
+            // ADR-136: no-default y DISTINTOS entre sí — con ceros, un campo mal colocado pasa igual
+            // (`.claude/rules/red-wire-y-autoridad.md` §2).
+            platform_id: 76_561_198_000_000_001,
+            invited_by: 76_561_198_000_000_002,
         };
         let header = PacketHeader::new(payload.type_code(), 1, 1, 100);
         let data = encode_packet(&header, &payload);
@@ -1307,10 +1324,14 @@ mod tests {
                 player_name,
                 version,
                 room_manifest_digest,
+                platform_id,
+                invited_by,
             } => {
                 assert_eq!(player_name, "TestPlayer");
                 assert_eq!(version, "0.1.0");
                 assert_eq!(room_manifest_digest, "deadbeef");
+                assert_eq!(platform_id, 76_561_198_000_000_001);
+                assert_eq!(invited_by, 76_561_198_000_000_002);
             }
             _ => panic!("wrong variant"),
         }
@@ -1771,6 +1792,8 @@ mod tests {
             player_name: "x".into(),
             version: "0.1.0".into(),
             room_manifest_digest: String::new(),
+            platform_id: 0,
+            invited_by: 0,
         };
         assert_eq!(p.type_code(), PacketType::Handshake as u16);
 

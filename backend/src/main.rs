@@ -10,6 +10,8 @@
 //!   NET_NAME    — Player name (default: "Player{NET_ID}")
 //!   CONNECT_TO  — Peer address to join on startup (e.g. "127.0.0.1:7778")
 //!   WORLD_SEED  — World generation seed (default: 42)
+//!   PEER_IDENTITY — ADR-136: identidad de plataforma propia, u64 opaco (default: 0 = ninguna)
+//!   INVITED_BY    — ADR-136: identidad de quien invitó a este joiner (default: 0 = nadie)
 
 // RECUENTO 2026-09-05, medido quitando este `allow` y compilando:
 //   294 warnings `dead_code` únicos en el binario
@@ -98,6 +100,31 @@ fn parse_optional_addr(key: &str) -> Option<std::net::SocketAddr> {
             None
         }
     }
+}
+
+/// ADR-136 — una identidad de plataforma del entorno. Ausente o vacía = 0 («ninguna»), y una que
+/// no parsea **se dice** y vale 0: una invitación que no se puede honrar degrada al reparto de
+/// siempre (D6), nunca impide entrar.
+fn parse_optional_identity(key: &str) -> u64 {
+    let Ok(raw) = std::env::var(key) else {
+        return 0;
+    };
+    match parse_identity_value(&raw) {
+        Some(id) => id,
+        None => {
+            error!("SPAWN event=bad_config key={key} value={:?}", raw.trim());
+            0
+        }
+    }
+}
+
+/// La parte pura de `parse_optional_identity`: vacío es 0 y válido; basura es `None`.
+fn parse_identity_value(raw: &str) -> Option<u64> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Some(0);
+    }
+    raw.parse::<u64>().ok()
 }
 
 /// La configuración del relay, o `None` si esta partida no lo usa (ADR-117).
@@ -278,6 +305,18 @@ async fn main() {
     // Set player name.
     let net_name = std::env::var("NET_NAME").unwrap_or_else(|_| format!("Player{net_id}"));
     net.local_name = net_name;
+
+    // ADR-136 D1/D2 — quién soy y, si vengo invitado, quién me invitó. Aquí no hay Steam: son dos
+    // números que el anfitrión compara. El anfitrión también pone el suyo (D3), y así «me invitó
+    // el anfitrión» es el mismo camino que «me invitó un cliente».
+    net.local_platform_id = parse_optional_identity("PEER_IDENTITY");
+    net.invited_by = parse_optional_identity("INVITED_BY");
+    if net.invited_by != 0 {
+        info!(
+            "SPAWN event=invited invited_by={} self_identity={}",
+            net.invited_by, net.local_platform_id
+        );
+    }
 
     // P0-2: launch-time value for the phantom population draw. A loaded save overrides this
     // (game_loop::run, same precedent as world_seed); the joiner side adopts the host's value
