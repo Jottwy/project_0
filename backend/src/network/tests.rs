@@ -5527,10 +5527,24 @@ async fn arrancar_una_secuencia_empieza_por_la_via_directa() {
     let lan: SocketAddr = "192.168.1.168:7778".parse().unwrap();
 
     joiner
-        .initiate_sequence(ConnectSequence::new(Some(directa), Some(lan), None))
+        .initiate_sequence(ConnectSequence::new(Some(directa), Some(lan), None, None))
         .await;
 
     assert_eq!(joiner.connect_stage(), Some(ConnectStage::Direct));
+}
+
+#[tokio::test]
+async fn un_lobby_steam_only_arranca_por_la_etapa_de_steam() {
+    // ADR-135: el host no publicó endpoint directo y no hay relay propio configurado. La única vía
+    // es el túnel, que para el backend es un puerto de loopback como cualquier otro.
+    let mut joiner = NetworkManager::bind(0, 0, 0, false).await.unwrap();
+    let tunel: SocketAddr = "127.0.0.1:52345".parse().unwrap();
+
+    joiner
+        .initiate_sequence(ConnectSequence::new(None, None, Some(tunel), None))
+        .await;
+
+    assert_eq!(joiner.connect_stage(), Some(ConnectStage::Steam));
 }
 
 #[tokio::test]
@@ -5540,7 +5554,7 @@ async fn una_secuencia_sin_ninguna_via_falla_en_el_acto_en_vez_de_esperar() {
     let mut joiner = NetworkManager::bind(0, 0, 0, false).await.unwrap();
 
     joiner
-        .initiate_sequence(ConnectSequence::new(None, None, None))
+        .initiate_sequence(ConnectSequence::new(None, None, None, None))
         .await;
 
     let events = joiner.process_incoming().await;

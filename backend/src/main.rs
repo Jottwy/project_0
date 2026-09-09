@@ -145,6 +145,29 @@ fn read_relay_config(is_host: bool) -> Option<network::relay_client::RelayConfig
     })
 }
 
+/// Quién es este proceso: host que sirve el mundo, o joiner que entra en el de otro.
+///
+/// **`RELAY_ROLE` manda cuando está**; si no, el rol se deduce de tener o no un destino al que
+/// entrar. La regla original miraba SÓLO `CONNECT_TO`, y ADR-135 D8 añade `CONNECT_STEAM` por el
+/// mismo motivo por el que ADR-117 tuvo que añadir `RELAY_ROLE`: un lobby Steam-only tampoco lleva
+/// `CONNECT_TO` —el host no publicó ningún endpoint directo defendible— y sin esta línea su joiner
+/// arrancaría como host, se pondría a servir un mundo en solitario y no se lo diría a nadie. Es el
+/// fallo mudo de ADR-111 colándose por una tercera puerta.
+///
+/// Pura y aparte de `main` para poder probar las seis combinaciones sin tocar el entorno del
+/// proceso, que es global y no se puede manipular en paralelo desde los tests.
+fn is_host_from_env(
+    relay_role: Option<&str>,
+    has_connect_to: bool,
+    has_connect_steam: bool,
+) -> bool {
+    match relay_role {
+        Some("joiner") => false,
+        Some("host") => true,
+        _ => !has_connect_to && !has_connect_steam,
+    }
+}
+
 #[tokio::main]
 async fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -170,6 +193,9 @@ async fn main() {
 
     log_runtime_identity(world_seed);
     let connect_to = std::env::var("CONNECT_TO").ok();
+    // ADR-135: el loopback del túnel de Steam que Unity abrió en esta misma máquina. Aquí no hay
+    // nada de Steam: es una dirección más, y sin ella la etapa no existe.
+    let connect_steam = parse_optional_addr("CONNECT_STEAM");
     // ADR-117 D7: con un lobby relay-only NO hay `CONNECT_TO` —el host no publicó ningún endpoint
     // directo porque no tenía ninguno defendible— y hasta aquí el rol se deducía SÓLO de esa
     // variable: sin ella, host. O sea que un joiner por relay habría arrancado como host y se
@@ -180,11 +206,11 @@ async fn main() {
     let relay_role = std::env::var("RELAY_ROLE")
         .ok()
         .map(|v| v.trim().to_lowercase());
-    let is_host = match relay_role.as_deref() {
-        Some("joiner") => false,
-        Some("host") => true,
-        _ => connect_to.is_none(),
-    };
+    let is_host = is_host_from_env(
+        relay_role.as_deref(),
+        connect_to.is_some(),
+        connect_steam.is_some(),
+    );
     let ipc_addr_env = std::env::var("IPC_ADDR").ok();
     let ipc_port_env = std::env::var("IPC_PORT").ok();
     let ipc_addr = ipc::resolve_ipc_addr();
@@ -278,14 +304,15 @@ async fn main() {
     if let Some(addr_str) = connect_to {
         match addr_str.parse::<std::net::SocketAddr>() {
             Ok(addr) => {
-                // ADR-117 D10: con relay o con LAN alternativa hay SECUENCIA; sin ninguna de las
-                // dos, un solo destino y el mismo presupuesto de siempre.
+                // ADR-117 D10 y ADR-135 D6: con cualquier vía alternativa hay SECUENCIA; sin
+                // ninguna, un solo destino y el mismo presupuesto de siempre.
                 let lan = parse_optional_addr("CONNECT_LAN");
                 let relay_target = net.relay_host_addr();
-                if lan.is_some() || relay_target.is_some() {
+                if lan.is_some() || connect_steam.is_some() || relay_target.is_some() {
                     net.initiate_sequence(network::connect::ConnectSequence::new(
                         Some(addr),
                         lan,
+                        connect_steam,
                         relay_target,
                     ))
                     .await;
@@ -304,13 +331,16 @@ async fn main() {
             }
         }
     } else if !is_host {
-        // Sin `CONNECT_TO` pero con relay: es el lobby relay-only de ADR-117 D7, donde el host no
-        // publicó ningún endpoint directo porque no tenía ninguno defendible.
-        if let Some(target) = net.relay_host_addr() {
+        // Sin `CONNECT_TO` pero con alguna vía indirecta: es el lobby sin endpoint directo de
+        // ADR-117 D7 —el host no publicó ninguno porque no tenía ninguno defendible— y desde
+        // ADR-135 también el lobby Steam-only.
+        let relay_target = net.relay_host_addr();
+        if connect_steam.is_some() || relay_target.is_some() {
             net.initiate_sequence(network::connect::ConnectSequence::new(
                 None,
                 parse_optional_addr("CONNECT_LAN"),
-                Some(target),
+                connect_steam,
+                relay_target,
             ))
             .await;
         }
@@ -330,5 +360,43 @@ async fn main() {
     tokio::select! {
         _ = ipc_handle => error!("IPC task exited; shutting down"),
         _ = game_handle => error!("Game loop exited; shutting down"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_host_from_env;
+
+    #[test]
+    fn sin_ningun_destino_se_arranca_como_host() {
+        // El caso de siempre: alguien le da a Host y nadie le pasa a dónde ir.
+        assert!(is_host_from_env(None, false, false));
+    }
+
+    #[test]
+    fn con_connect_to_se_arranca_como_joiner() {
+        assert!(!is_host_from_env(None, true, false));
+    }
+
+    #[test]
+    fn con_solo_connect_steam_se_arranca_como_joiner() {
+        // ADR-135 D8. Sin esta regla, el joiner de un lobby Steam-only —que no lleva `CONNECT_TO`
+        // porque el host no tenía endpoint defendible— arrancaría como host y se pondría a servir
+        // un mundo en solitario sin decírselo a nadie.
+        assert!(!is_host_from_env(None, false, true));
+    }
+
+    #[test]
+    fn relay_role_manda_sobre_la_deduccion() {
+        // ADR-117 lo puso para el lobby relay-only y sigue siendo el desempate: un host explícito
+        // lo es aunque tenga destinos puestos, y un joiner explícito lo es aunque no tenga ninguno.
+        assert!(is_host_from_env(Some("host"), true, true));
+        assert!(!is_host_from_env(Some("joiner"), false, false));
+    }
+
+    #[test]
+    fn un_relay_role_ilegible_cae_a_la_deduccion_en_vez_de_inventarse_un_rol() {
+        assert!(is_host_from_env(Some("cualquier-cosa"), false, false));
+        assert!(!is_host_from_env(Some("cualquier-cosa"), false, true));
     }
 }

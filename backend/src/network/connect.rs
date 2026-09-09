@@ -1,4 +1,4 @@
-//! La secuencia de conexión de un joiner: directa, LAN, relay — ADR-117 D10.
+//! La secuencia de conexión de un joiner: directa, LAN, Steam, relay — ADR-117 D10 y ADR-135 D6.
 //!
 //! **Nada de fallback silencioso infinito.** Cada etapa tiene su presupuesto, cada salto dice por
 //! qué, y el final —bueno o malo— tiene nombre. Es la corrección de un modo de fallo real y
@@ -7,14 +7,21 @@
 //! ningún sitio.
 //!
 //! ```text
-//! Direct ──5 s──▶ Lan ──3 s──▶ Relay ──12 s──▶ Failed
-//!    │             │             │
-//!    └─────────────┴─────────────┴──HandshakeAck──▶ Connected
+//! Direct ──5 s──▶ Lan ──3 s──▶ Steam ──8 s──▶ Relay ──12 s──▶ Failed
+//!    │             │             │             │
+//!    └─────────────┴─────────────┴─────────────┴──HandshakeAck──▶ Connected
 //! ```
 //!
-//! **Las etapas que no existen se saltan.** Sin `CONNECT_LAN` no hay etapa LAN; sin relay
-//! configurado no hay etapa de relay. Una partida en LAN de toda la vida tiene una sola etapa y se
-//! comporta exactamente como antes de este ADR.
+//! **Las etapas que no existen se saltan.** Sin `CONNECT_LAN` no hay etapa LAN; sin `CONNECT_STEAM`
+//! no hay etapa de Steam; sin relay configurado no hay etapa de relay. Una partida en LAN de toda
+//! la vida tiene una sola etapa y se comporta exactamente como antes de estos dos ADR.
+//!
+//! ## Aquí no hay nada de Steam, y es la decisión (ADR-135 D2)
+//!
+//! La etapa `Steam` es **una dirección de loopback más**. Quien habla con la red de Valve es un
+//! túnel que vive en Unity: escucha en `127.0.0.1:<efímero>`, y lo que le llega sale por Steam
+//! hacia el host. Este módulo —y el backend entero— no enlaza Steamworks, no conoce ningún
+//! `SteamId` y no cambia de transporte: sigue siendo el mismo UDP con el mismo framing.
 //!
 //! ## Dónde NO está la heurística de «misma red»
 //!
@@ -35,6 +42,10 @@ pub enum ConnectStage {
     /// La dirección LAN del host (`bs_lan_ip`). Sólo llega hasta aquí quien Unity ha decidido que
     /// puede estar en la misma red.
     Lan,
+    /// A través de la red de relay de Valve (ADR-135). La dirección es el **loopback** del túnel
+    /// que Unity tiene abierto en esta misma máquina, no un endpoint de internet: aquí no hay
+    /// Steam, sólo un puerto más al que mandar UDP.
+    Steam,
     /// A través del relay (ADR-117).
     Relay,
 }
@@ -45,22 +56,27 @@ impl ConnectStage {
         match self {
             ConnectStage::Direct => "direct",
             ConnectStage::Lan => "lan",
+            ConnectStage::Steam => "steam",
             ConnectStage::Relay => "relay",
         }
     }
 
     /// Cuánto se insiste antes de pasar a la siguiente.
     ///
-    /// Los tres números tienen motivo. **Directo, 5 s**: si el puerto está abierto, el
+    /// Los cuatro números tienen motivo. **Directo, 5 s**: si el puerto está abierto, el
     /// `HandshakeAck` vuelve en decenas de milisegundos incluso entre continentes; cinco segundos
     /// son cinco reintentos y de sobra para distinguir «lento» de «no está». **LAN, 3 s**: si de
-    /// verdad es la misma red, contesta en milisegundos. **Relay, 12 s**: es el único que tiene
-    /// dos pasos —registrarse (hasta 10 s) y luego el handshake de juego—, así que necesita el
-    /// presupuesto del registro más un margen.
+    /// verdad es la misma red, contesta en milisegundos. **Steam, 8 s** (ADR-135 D6): el túnel
+    /// negocia ruta con Valve —intenta P2P directo y sólo cae al relay si no lo consigue— y el
+    /// handshake de juego va DESPUÉS de eso; es un número inicial y el ADR lo declara pendiente de
+    /// medir con dos testers en redes distintas. **Relay, 12 s**: es el único que tiene dos pasos
+    /// —registrarse (hasta 10 s) y luego el handshake de juego—, así que necesita el presupuesto
+    /// del registro más un margen.
     pub fn budget(self) -> Duration {
         match self {
             ConnectStage::Direct => Duration::from_secs(5),
             ConnectStage::Lan => Duration::from_secs(3),
+            ConnectStage::Steam => Duration::from_secs(8),
             ConnectStage::Relay => Duration::from_secs(12),
         }
     }
@@ -101,12 +117,18 @@ pub struct ConnectSequence {
 
 impl ConnectSequence {
     /// Arma la secuencia. Las vías ausentes simplemente no están.
+    ///
+    /// El ORDEN es el de ADR-135 D6 y no es negociable aquí: directo y LAN no pagan salto y van
+    /// primero; entre las dos vías con salto, Steam va antes que el relay propio porque la red de
+    /// Valve no cuesta dinero, está desplegada y autentica, y el relay propio queda como última
+    /// vía y como la única para builds fuera de Steam.
     pub fn new(
         direct: Option<SocketAddr>,
         lan: Option<SocketAddr>,
+        steam: Option<SocketAddr>,
         relay: Option<SocketAddr>,
     ) -> Self {
-        let mut candidates = Vec::with_capacity(3);
+        let mut candidates = Vec::with_capacity(4);
         if let Some(addr) = direct {
             candidates.push(ConnectCandidate {
                 addr,
@@ -122,6 +144,12 @@ impl ConnectSequence {
                     stage: ConnectStage::Lan,
                 });
             }
+        }
+        if let Some(addr) = steam {
+            candidates.push(ConnectCandidate {
+                addr,
+                stage: ConnectStage::Steam,
+            });
         }
         if let Some(addr) = relay {
             candidates.push(ConnectCandidate {
