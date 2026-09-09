@@ -243,11 +243,22 @@ pub struct NetworkManager {
     /// `sync::aoi_pose_due_this_round`.
     pub pose_relay_round: u64,
     /// F0.3 (E0, ADR-073): eventos producidos FUERA del camino de recepción, que
-    /// `process_incoming` emite junto a los suyos. Hoy solo lo usa `send_verdict` al desbordar la
+    /// `process_incoming` emite junto a los suyos. Lo usa `send_verdict` al desbordar la
     /// cola de un peer: así el desborde termina en la misma `PeerDisconnected` que ya manejan
     /// ADR-056 (fin de sesión en un joiner) y el teardown del host, en vez de estrenar un
-    /// segundo camino de desconexión que habría que mantener en paralelo.
+    /// segundo camino de desconexión que habría que mantener en paralelo. Y desde 2026-09-09
+    /// también el brazo `PeerList`, que descubre VARIOS peers en un solo datagrama y sólo puede
+    /// devolver un evento: los `PeerDiscovered` salen por aquí en la pasada siguiente.
     pending_events: Vec<NetworkEvent>,
+    /// Los peers que YA estaban cuando este joiner entró, según el `HandshakeAck`. El primer
+    /// roster del anfitrión los trae a todos, y sin esta lista cada uno se anunciaría como si
+    /// acabara de entrar. Se consume al descubrirlos (uno por id), así un id reutilizado tras una
+    /// baja (`allocate_peer_id` los recicla) vuelve a anunciarse, que es lo correcto.
+    ///
+    /// Mejor esfuerzo, no garantía: `trim_handshake_ack` recorta la lista para que el datagrama
+    /// quepa, así que con muchos peers alguno de los presentes puede quedar fuera y anunciarse
+    /// tarde. Degrada a un aviso de más, nunca a uno de menos.
+    present_at_join: std::collections::HashSet<PeerId>,
     /// Phase 3: client-generated drop ids already processed by the host, so a
     /// duplicated `stp_drop` (watcher race OR reliable retransmit) spawns one item.
     pub processed_stp_drops: BoundedDedupeSet<u64>,
@@ -590,6 +601,7 @@ impl NetworkManager {
             aoi_pose_pairs: std::collections::HashSet::with_capacity(64),
             pose_relay_round: 0,
             pending_events: Vec::new(),
+            present_at_join: std::collections::HashSet::new(),
             processed_stp_drops: BoundedDedupeSet::with_capacity(DEDUPE_CAP),
             stp_buildings: Vec::new(),
             processed_stp_places: BoundedDedupeSet::with_capacity(DEDUPE_CAP),
@@ -1044,8 +1056,9 @@ impl NetworkManager {
     }
 
     /// F0.3: encola un evento para que `process_incoming` lo emita en su próxima pasada.
-    /// `pub(super)` a propósito: el único productor legítimo es el camino fatal de
-    /// `send_verdict`, no cualquiera que quiera fabricar eventos de red sintéticos.
+    /// `pub(super)` a propósito: los productores legítimos son el camino fatal de
+    /// `send_verdict` y el descubrimiento por roster de `PeerList`, no cualquiera que quiera
+    /// fabricar eventos de red sintéticos.
     pub(super) fn push_pending_event(&mut self, event: NetworkEvent) {
         self.pending_events.push(event);
     }

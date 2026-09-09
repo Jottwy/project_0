@@ -19,6 +19,16 @@ pub enum NetworkEvent {
         id: PeerId,
         reason: String,
     },
+    /// Un peer que este JOINER conoce por el roster del anfitrión (`PeerList`), no por un
+    /// handshake propio. En estrella (ADR-015) los joiners no se dan la mano entre sí, así que
+    /// `PeerConnected` sólo sale en el host —y en el joiner sólo para el host— y nadie más se
+    /// enteraba de que había entrado un compañero. Lleva sólo lo que hace falta para anunciarlo;
+    /// deliberadamente NO reutiliza `PeerConnected`, cuyo brazo arrastra el world sync del host,
+    /// el reset de mundo del joiner y `session_joined`.
+    PeerDiscovered {
+        id: PeerId,
+        name: String,
+    },
     RemotePlayerUpdate {
         id: PeerId,
         position: [f32; 3],

@@ -14448,3 +14448,135 @@ fn probe_watcher_camera_spots() {
         "ninguna cámara con línea de visión a un vigilante"
     );
 }
+
+// ─── `player_joined` para todos, no sólo para el host (2026-09-09) ───
+
+fn drain_game_events(rx: &mut broadcast::Receiver<ServerMessage>) -> Vec<GameEvent> {
+    let mut out = Vec::new();
+    while let Ok(ServerMessage::Event(ev)) = rx.try_recv() {
+        out.push(ev);
+    }
+    out
+}
+
+/// Un compañero conocido por el roster se anuncia igual que uno que dio la mano, y NADA más: ni
+/// `session_joined`, ni sync, ni reset de mundo. Es el brazo que faltaba para que un joiner vea
+/// entrar a los demás.
+#[tokio::test]
+async fn a_discovered_peer_is_announced_as_player_joined_and_nothing_else() {
+    let mut net = NetworkManager::bind(0, 3, 42, false).await.unwrap();
+    net.host_peer_id = Some(1);
+    let mut world = World::new(42);
+    let revision_before = world.revision;
+    let mut player = Player::new(3, "Joiner");
+    let (tx, mut rx) = broadcast::channel(16);
+    let mut processed: BoundedDedupeSet<(u16, u64)> = BoundedDedupeSet::with_capacity(DEDUPE_CAP);
+    let mut adult_driver = AdultDriver::new(net.world_seed);
+    let mut child_driver = ChildDriver::new(net.world_seed);
+
+    handle_network_event(
+        NetworkEvent::PeerDiscovered {
+            id: 4,
+            name: "Compi".into(),
+        },
+        &mut player,
+        &mut world,
+        &mut net,
+        &mut adult_driver,
+        &mut child_driver,
+        &tx,
+        &tx,
+        &mut processed,
+        0,
+        None,
+        &wg3_off(),
+        &mut wg3_cache(),
+    )
+    .await;
+
+    let events = drain_game_events(&mut rx);
+    let types: Vec<&str> = events.iter().map(|e| e.event_type.as_str()).collect();
+    assert_eq!(types, vec!["player_joined"], "sólo el aviso: {types:?}");
+    let data = &events[0].data;
+    assert_eq!(data["player_id"], 4);
+    assert_eq!(data["name"], "Compi");
+    assert_eq!(data["is_host"], false);
+    assert_eq!(
+        world.revision, revision_before,
+        "descubrir a alguien no toca el mundo"
+    );
+}
+
+/// En un joiner el brazo de `PeerConnected` dispara al registrar AL HOST, y el host no «se ha
+/// unido» a nada. La marca es lo que permite a Unity callarse ese caso sin adivinar por el nombre.
+#[tokio::test]
+async fn player_joined_marks_the_host_only_when_the_peer_is_the_host() {
+    let (tx, mut rx) = broadcast::channel(16);
+    let mut processed: BoundedDedupeSet<(u16, u64)> = BoundedDedupeSet::with_capacity(DEDUPE_CAP);
+
+    // Joiner registrando al host.
+    let mut joiner = NetworkManager::bind(0, 3, 42, false).await.unwrap();
+    joiner.host_peer_id = Some(1);
+    let mut world = World::new(42);
+    let mut player = Player::new(3, "Joiner");
+    let mut adult_driver = AdultDriver::new(joiner.world_seed);
+    let mut child_driver = ChildDriver::new(joiner.world_seed);
+    handle_network_event(
+        NetworkEvent::PeerConnected {
+            id: 1,
+            name: "Host".into(),
+        },
+        &mut player,
+        &mut world,
+        &mut joiner,
+        &mut adult_driver,
+        &mut child_driver,
+        &tx,
+        &tx,
+        &mut processed,
+        0,
+        None,
+        &wg3_off(),
+        &mut wg3_cache(),
+    )
+    .await;
+    let joined: Vec<GameEvent> = drain_game_events(&mut rx)
+        .into_iter()
+        .filter(|e| e.event_type == "player_joined")
+        .collect();
+    assert_eq!(joined.len(), 1);
+    assert_eq!(
+        joined[0].data["is_host"], true,
+        "para el joiner, ese peer ES el anfitrión"
+    );
+
+    // Host registrando a un joiner: nadie es el anfitrión de nadie.
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let mut host_player = Player::new(1, "Host");
+    handle_network_event(
+        NetworkEvent::PeerConnected {
+            id: 2,
+            name: "Alguien".into(),
+        },
+        &mut host_player,
+        &mut world,
+        &mut host,
+        &mut adult_driver,
+        &mut child_driver,
+        &tx,
+        &tx,
+        &mut processed,
+        0,
+        None,
+        &wg3_off(),
+        &mut wg3_cache(),
+    )
+    .await;
+    let joined: Vec<GameEvent> = drain_game_events(&mut rx)
+        .into_iter()
+        .filter(|e| e.event_type == "player_joined")
+        .collect();
+    assert_eq!(joined.len(), 1);
+    assert_eq!(joined[0].data["is_host"], false);
+    assert_eq!(joined[0].data["name"], "Alguien");
+}

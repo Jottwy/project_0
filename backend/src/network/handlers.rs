@@ -344,6 +344,17 @@ impl NetworkManager {
                         let mut conn = PeerConnection::new(info.id, info.name.clone(), addr);
                         conn.update_player_state(info.position, 0.0, "idle".into());
                         self.peers.insert(info.id, conn);
+                        // Un compañero nuevo. Sale como evento propio y por la cola, porque este
+                        // brazo puede descubrir varios en un datagrama y sólo devuelve uno; y
+                        // sólo si NO estaba ya cuando entramos (el primer roster los trae a
+                        // todos). Los `relay_only` salieron por el `continue` de arriba: un
+                        // robapieles no «se une a la partida».
+                        if !self.present_at_join.remove(&info.id) {
+                            self.push_pending_event(NetworkEvent::PeerDiscovered {
+                                id: info.id,
+                                name: info.name.clone(),
+                            });
+                        }
                     }
                 }
                 None
@@ -1298,6 +1309,15 @@ impl NetworkManager {
         // `retry_pending_connection` (`!self.peers.is_empty()`) ya cubriría esto, pero dejar el
         // marcador puesto haría que un futuro lector creyera que hay un intento vivo.
         self.pending_connect_started_at = None;
+
+        // Quiénes estaban ya: la lista del ack sirve para eso y para nada más (los peers reales
+        // se registran cuando llega el roster con su dirección verificada, no desde aquí). Los
+        // `relay_only` no cuentan —tampoco se anuncian nunca— y el propio id tampoco.
+        self.present_at_join = peers
+            .iter()
+            .filter(|p| !p.relay_only && p.id != assigned_id)
+            .map(|p| p.id)
+            .collect();
 
         // Add the host as a peer.
         let host_peer = PeerConnection::new(sender_id, "Host".to_string(), from_addr);

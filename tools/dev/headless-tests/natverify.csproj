@@ -61,6 +61,9 @@
          Facepunch (FacepunchSteamTunnel.cs) y el runner con su hilo quedan fuera: uno arrastra
          Steamworks y el otro UnityEngine. -->
     <Compile Include="$(Repo)\Assets\Scripts\Connectivity\SteamTunnel.cs" />
+    <!-- Aviso de entrada (2026-09-09): la regla de a quien se anuncia, sin UnityEngine. El
+         MonoBehaviour que escucha el bus (PlayerJoinNotifier.cs) queda fuera. -->
+    <Compile Include="$(Repo)\Assets\Scripts\Network\PlayerJoinMessages.cs" />
   </ItemGroup>
 
   <!-- Los ficheros de test REALES, sin tocar. LanFallbackMetadataTests queda fuera: depende de
@@ -89,6 +92,7 @@
     <Compile Include="$(Repo)\Assets\Tests\EditMode\HostAddressInputTests.cs" />
     <Compile Include="$(Repo)\Assets\Tests\EditMode\SteamTunnelTests.cs" />
     <Compile Include="$(Repo)\Assets\Tests\EditMode\SteamHostLobbyTests.cs" />
+    <Compile Include="$(Repo)\Assets\Tests\EditMode\PlayerJoinMessagesTests.cs" />
   </ItemGroup>
 
 </Project>

@@ -5610,3 +5610,135 @@ async fn un_relay_configurado_no_cambia_nada_hasta_que_el_relay_contesta() {
         "el joiner directo entra igual, con el registro del relay a medias"
     );
 }
+
+// ─── Aviso de entrada en un joiner (2026-09-09) ───
+//
+// En estrella los joiners no se dan la mano entre sí: a un compañero nuevo se le conoce por el
+// roster del anfitrión. Sin `PeerDiscovered`, sólo el host se enteraba de quién entraba.
+
+fn roster_from_host(peers: Vec<protocol::PeerInfo>) -> IncomingPacket {
+    IncomingPacket {
+        addr: "127.0.0.1:9820".parse().unwrap(),
+        header: PacketHeader::new(protocol::PacketType::PeerList as u16, 1, 0, 0),
+        payload: PacketPayload::PeerList { peers },
+    }
+}
+
+fn real_peer(id: PeerId, name: &str, port: u16) -> protocol::PeerInfo {
+    protocol::PeerInfo {
+        id,
+        name: name.into(),
+        addr: format!("192.168.1.50:{port}"),
+        position: [0.0, 1.8, 0.0],
+        relay_only: false,
+    }
+}
+
+#[tokio::test]
+async fn a_roster_peer_unknown_at_join_is_announced_once_and_a_phantom_never() {
+    let mut joiner = NetworkManager::bind(0, 2, 42, false).await.unwrap();
+
+    let mut phantom = real_peer(9, "Robapieles", 0);
+    phantom.addr = "0.0.0.0:0".into();
+    phantom.relay_only = true;
+
+    joiner
+        .handle_packet(roster_from_host(vec![real_peer(8, "Compi", 7779), phantom]))
+        .await;
+    let events = joiner.process_incoming().await;
+
+    let discovered: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            NetworkEvent::PeerDiscovered { id, name } => Some((*id, name.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        discovered,
+        vec![(8, "Compi".to_string())],
+        "el compañero real se anuncia con su nombre; el robapieles no se une a ninguna partida"
+    );
+
+    // El mismo roster otra vez —el anfitrión lo reemite periódicamente— no vuelve a anunciar.
+    joiner
+        .handle_packet(roster_from_host(vec![real_peer(8, "Compi", 7779)]))
+        .await;
+    let again = joiner.process_incoming().await;
+    assert!(
+        !again
+            .iter()
+            .any(|e| matches!(e, NetworkEvent::PeerDiscovered { .. })),
+        "un peer ya registrado no es un descubrimiento"
+    );
+}
+
+#[tokio::test]
+async fn a_peer_present_at_join_is_silent_but_its_recycled_id_is_announced_again() {
+    let mut joiner = NetworkManager::bind(0, 2, 42, false).await.unwrap();
+    joiner.present_at_join.insert(8);
+
+    joiner
+        .handle_packet(roster_from_host(vec![real_peer(8, "Veterano", 7779)]))
+        .await;
+    let events = joiner.process_incoming().await;
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, NetworkEvent::PeerDiscovered { .. })),
+        "quien ya estaba cuando entramos no «se une»: el primer roster los trae a todos"
+    );
+    assert!(
+        joiner.present_at_join.is_empty(),
+        "la marca se consume al descubrirlo, una sola vez"
+    );
+
+    // Se va, y `allocate_peer_id` le da su número al siguiente que entre: ése SÍ es nuevo.
+    joiner.peers.remove(&8);
+    joiner
+        .handle_packet(roster_from_host(vec![real_peer(8, "Novato", 7781)]))
+        .await;
+    let events = joiner.process_incoming().await;
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            NetworkEvent::PeerDiscovered { id: 8, name } if name == "Novato"
+        )),
+        "un id reciclado es otra persona y se anuncia"
+    );
+}
+
+#[tokio::test]
+async fn the_handshake_ack_records_who_was_already_there() {
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let mut joiner = NetworkManager::bind(0, 2, 42, false).await.unwrap();
+
+    // Un compañero que ya estaba en la partida y un fantasma inyectado por el host.
+    host.peers.insert(
+        5,
+        PeerConnection::new(5, "Veterano".into(), "192.168.1.60:7779".parse().unwrap()),
+    );
+    let mut ghost = PeerConnection::new(6, "Robapieles".into(), INERT_PEER_ADDR);
+    ghost.relay_only = true;
+    host.peers.insert(6, ghost);
+
+    joiner.initiate_connection(loopback_addr(&host)).await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    host.process_incoming().await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    joiner.process_incoming().await;
+
+    assert!(
+        joiner.present_at_join.contains(&5),
+        "el veterano estaba: {:?}",
+        joiner.present_at_join
+    );
+    assert!(
+        !joiner.present_at_join.contains(&6),
+        "un relay_only no cuenta como presente porque nunca se anuncia"
+    );
+    assert!(
+        !joiner.present_at_join.contains(&1),
+        "el anfitrión no va en su propia lista de peers y no es un compañero"
+    );
+}

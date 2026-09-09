@@ -3120,9 +3120,17 @@ async fn handle_network_event(
                 net.peer_count(),
                 net.peer_ids()
             );
+            // `is_host`: en un joiner este brazo también dispara al registrar al anfitrión, y el
+            // anfitrión no «se ha unido» a nada — es la partida a la que se entra. Unity lo usa
+            // para no anunciarlo. Va en el árbol libre del evento, sin tocar el wire, y el nombre
+            // que llega aquí para el host es el literal "Host" del ack (su nombre real no viaja).
             let _ = to_clients.send(ServerMessage::Event(GameEvent {
                 event_type: "player_joined".into(),
-                data: serde_json::json!({ "player_id": id, "name": name }),
+                data: serde_json::json!({
+                    "player_id": id,
+                    "name": name,
+                    "is_host": net.host_peer_id == Some(id),
+                }),
             }));
 
             // El joiner acaba de registrar AL HOST: esto, y no el IPC local, es el instante en
@@ -3165,6 +3173,17 @@ async fn handle_network_event(
             if !net.is_host && player.id != net.local_id {
                 player.id = net.local_id;
             }
+        }
+
+        // Un compañero descubierto por el roster del anfitrión (joiner en estrella, ADR-015). El
+        // MISMO `player_joined` que emite el host al darle la mano: Unity no distingue por qué
+        // vía se enteró, y no tiene por qué. Nada más — ni sync, ni reset, ni realineo de id.
+        NetworkEvent::PeerDiscovered { id, name } => {
+            info!("Peer discovered via roster id={} name={}", id, name);
+            let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                event_type: "player_joined".into(),
+                data: serde_json::json!({ "player_id": id, "name": name, "is_host": false }),
+            }));
         }
 
         NetworkEvent::PeerDisconnected { id, reason } => {
