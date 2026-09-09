@@ -566,6 +566,12 @@ namespace BackroomsSurvival.EditorTools
                     break;
                 }
 
+                // EL HORNEADOR DE POSE MANDA. Si ya hay clips horneados para este objeto, la
+                // posición del nodo la fija BackroomsToolPoseBaker y aquí NO se toca: había tres
+                // sitios escribiendo la misma localPosition y ganaba el último que corriese, con
+                // 60 mm de desvío medido entre lo que el solver resolvía y lo que quedaba guardado.
+                bool posedByBaker = AssetDatabase.LoadAssetAtPath<AnimationClip>(BackroomsToolPoseSpecs.SprayIdleClip) != null;
+
                 var go = new GameObject(NodeName);
                 Transform parentBone = hand;
 
@@ -610,6 +616,13 @@ namespace BackroomsSurvival.EditorTools
                 // La malla ya viene en metros y de pie desde `MakeCanonical`, así que aquí no hay
                 // nada que redimensionar: solo deshacer la escala acumulada del hueso, que en un
                 // rig de brazos no tiene por qué ser 1.
+                // Si el horneador de pose ya mandó, se deshace lo que este método acaba de
+                // escribir y se deja SU pose. Este script sigue creando el nodo, la malla y el
+                // material; la colocación es suya sólo mientras no haya agarre horneado.
+                if (posedByBaker)
+                    Debug.Log("[SprayModel] Hay pose horneada: la colocación del nodo la manda " +
+                              "BackroomsToolPoseBaker y aquí no se toca (escritor único, ADR-077 enm. 5).");
+
                 var boneScale = parentBone.lossyScale;
                 float boneFactor = Mathf.Max(1e-5f, Mathf.Max(boneScale.x,
                     Mathf.Max(boneScale.y, boneScale.z)));

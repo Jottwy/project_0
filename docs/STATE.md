@@ -25,7 +25,7 @@
 - **Migración STP servidor-autoritativo**: Steps 1–2 y slice 3.1 (plumbing) hechos y verificados. Falta slice 3.2
   (capa L2 de predicción), reescribir los 8 call sites de `Inventory` y retirar `PlayerController.cs` (DEPRECATED por ADR-009).
 - ADR-014 fase 2 (borrado diferido 200 ms + reserva host-only anti-duplicado): backend implementado, **pendiente de playtest**.
-- **Linterna de manivela (ADR-133 + enm. 1)**: en tronco el 07-09 con animaciones propias horneadas. Falta: verla en PLAY (Joel), sonido, loot, remesh.
+- **Linterna (ADR-133 + enm. 1)**: en tronco 07-09, clips propios, warp de FOV ya arreglado (enm. 2). Falta PLAY, sonido, loot, remesh.
 
 ## Riesgos abiertos
 - **Autoridad del servidor: los tres agujeros CERRADOS** (`78e156e6` dueño al demoler; `ebb42911`/`bb3c7e5c` cantidad y posición contra el
@@ -50,9 +50,8 @@
 
 ## NO tocar
 > Detalle completo, verbatim, en `docs/SESSION-LOG.md` (bloques «NO tocar» y «Última sesión» de 2026-08-03).
-- **Robapieles, seis invariantes (ADR-038):** `revealed` sin latch; el atasco es avance proyectado, NO `MoveResult::blocked` (el caso real
-  es deslizar contra la pared); alcance de ataque ≠ radio de cuerpo con `segment_is_clear`; rangos de `PhantomTraits` centrados en 1,0
-  (test sobre 400 criaturas); `vocal_seq` nunca vuelve a 0 ni va en ráfaga; el asesino del agarre lo resuelve el CLIENTE, sin tocar el wire.
+- **Robapieles, seis invariantes (ADR-038):** `revealed` sin latch; el atasco es avance proyectado, NO `MoveResult::blocked`; alcance
+  de ataque ≠ radio con `segment_is_clear`; `PhantomTraits` centrados en 1,0; `vocal_seq` ni a 0 ni en ráfaga; el agarre lo mata el CLIENTE.
 - **Cadena de respawn y muerte**: `RespawnRequester` + `AuthoritativePoseApplier` + gate `SnapPending` en
   `PlayerPoseTransmitter`. Dependencias cruzadas; cambiar sin re-test da rubber-banding.
 - **`PHASE1_GOLDENS`** (`grid_gen/tests.rs`): 16 huellas FNV-1a, 4 capas × 4 semillas, jamás regeneradas.
@@ -60,15 +59,15 @@
 - **`straight_bias` / `branch_persistence`** en `LAYER_PROFILES`: activarlos cambia la topología de todo mundo ya
   generado — breaking change de semilla, exige ADR.
 - **Clases nativas de STP/PolymindGames**: nunca editarlas — `PolymindGames.asmdef` no puede referenciar `Assembly-CSharp`; hook externo o corregir después.
-- **Gate volumétrico near-spawn**: `volumetric_grid` sólo en el chunk del showcase, y sigue deshabilitado.
-- Celdas Rust de 2,5 m: la conversión celda→tile vive SÓLO en Unity (`tileX = cellX / 2`). La de WG3 mide 0,5: toda constante heredada cambia de significado.
-- `SilentHealthUIBridge` sincroniza `fillAmount` por reflexión: cambios en `HealthUI`/`Health` deben conservar los nombres.
-- **Dado por bueno por Joel (05/06-09)**: luces 2,7/3,2 con alcance 11/9 m y ambiente cálido plano; techos 300/380/1,15; `UvPerMetre` 0,5; feeder 3P 1,5/4,5.
+- **Gate volumétrico near-spawn**: `volumetric_grid` sólo en el chunk del showcase, y sigue deshabilitado. Celdas Rust de 2,5 m: la
+  conversión celda→tile vive SÓLO en Unity (`tileX = cellX / 2`); la de WG3 mide 0,5 y toda constante heredada cambia de significado.
+- `SilentHealthUIBridge` sincroniza `fillAmount` por reflexión: los nombres de `HealthUI`/`Health` no se tocan.
+- **Dado por bueno (05/06-09)**: luces 2,7/3,2, alcance 11/9 m, techos 300/380/1,15, `UvPerMetre` 0,5, feeder 3P 1,5/4,5;
+  `FistFromTail` del bote a 0,68 (0,55 medido y PEOR).
 
 ## Deuda declarada
-- **`#![allow(dead_code)]` de crate** (`backend/src/main.rs`): recontado el 2026-09-05, **294 warnings únicos en el
-  binario y 308 con `--all-targets`** — eran 112/121 el 10-08, o sea ×2,6 en un mes. El argumento que lo sostenía
-  («~120 sitios en movimiento») ya no describe lo que hay. Bajarlo por módulo es sesión propia y puede poner clippy en rojo.
+- **`#![allow(dead_code)]` de crate** (`backend/src/main.rs`): 2026-09-05, **294 warnings únicos en el binario y 308 con
+  `--all-targets`** (112/121 el 10-08, ×2,6 en un mes). El argumento de «~120 sitios en movimiento» ya no describe lo que hay.
 - **`world/volumetric_grid.rs`** (3 702 líneas) sólo vive tras `seed == SHOWCASE_SEED`, pero **NO es borrable**: su
   campo está en `ChunkView` y lo consume `ChunkVisualLifecycle.cs:91-93` (entra en el hash de revisión). Retirarlo
   es bump de wire con ADR, no un `git rm`. **B5.**
@@ -87,12 +86,23 @@
 - **`docs/DECISIONS.md`** (1,38 MB) ilegible entero; se lee por `DECISIONS-INDEX.md` + `grep`. Alternativa sin decidir: un fichero por ADR.
 - **El gate de C# no valida nada en un worktree recién creado**: `*.csproj` y `Library/` los genera Unity y viven sólo en el clon principal
   (`CompileCheckClient.sh` daba `MISSING csproj`). Arreglado y documentado (`c99db43a`, `docs/DEV-ENVIRONMENT.md`): copiar `.csproj`, unir `Library`.
-- **`STOREY_HEIGHT_CM` (332) no sube con un número** (380–480: 1/9 regiones válidas); `storey_of_floor_cm` clasifica una planta ABAJO en la costura de 664.
-- **Sin ver en juego (06-09)**: monitor y despacho oscuro, recepción, techo roto, decaimiento del cliente en B3 (r2b), pasada en Play del
-  audio (clips sintéticos); los carteles SÍ (espejo cazado). El runner del editor ya NO es deuda: le faltaba FOCO (34.ª tanda).
-- Menores: `MPTRACE` sin commitear en cuatro ficheros del vendor STP; `TODO(balance)` de loot; doc-comments stale.
+- **`STOREY_HEIGHT_CM` (332) no sube con un número** (380–480: 1/9 válidas); `storey_of_floor_cm` clasifica una planta ABAJO en 664.
+- **Sin ver en juego (06-09)**: monitor y despacho oscuro, recepción, techo roto, decaimiento del cliente en B3 (r2b) y la pasada en
+  Play del audio; los carteles SÍ. El runner del editor ya NO es deuda: le faltaba FOCO (34.ª tanda).
+- Menores: el agarre TOCA pero no RODEA (apoyarse en la tapa cuenta como tocar) y el pulgar entra 12,8 mm sin puerta; `MPTRACE`
+  sin commitear en cuatro ficheros del vendor STP; `TODO(balance)` de loot; doc-comments stale.
 
 ## Últimas tandas
+
+### 2026-09-09 — 38.ª tanda: el warp del viewmodel como regla, y las manos desde la pose neutra (ADR-077 enm. 2-5)
+- FOV de los tres objetos nuevos: `_FOV`/`_FOVEnabled` son GLOBALES y sólo alabea `LitFieldOfView*.shadergraph`. DOS materiales por
+  objeto (`X.mat` mundo, `FP_X.mat` mano) vía `BackroomsViewmodelMaterials.cs`, con el metálico de Meshy reempaquetado en `_MaskMap`.
+- Puerta `ViewmodelWarpTests.cs`. Enm. 3: el agarre se lee del donante SKINNED por bindpose. Enm. 4 (`dbfde7e3`): dedos horneados
+  sobre la malla y destornillador a UNA mano. Enm. 5: mano desde la NEUTRA, flexión con topes 90/105/75 (pulgar 50/55/60).
+- Enm. 5 también: eje de cierre ESCRITO (−X; pulgar +Z), muñeca por ángulos y el sitio del objeto BARRIDO milímetro a milímetro por
+  coste. Tres algoritmos dieron el mismo número byte a byte: la búsqueda leía como choque la falange del medio, que se hunde aposta.
+- Medido: yemas del destornillador +11,9 / −2,8 / −1,2 / +1,3 mm; del bote −0,6 / −1,4 / +7,6 y el índice en el pulsador a 9,7 cm.
+  EditMode **1421/1435** (los 12 rojos, los conocidos); CompileCheck 0 ×4. MAL: nada queda ENCERRADO, el bote cuelga de la tapa.
 
 ### 2026-09-07 — 37.ª tanda: la mano al milímetro y la cuerda con la izquierda (ADR-133 enm. 1)
 - Joel: «muy arriba, no orgánico», mano «al milímetro» con foto de referencia, y la otra mano girando la manivela. Cuatro clips HORNEADOS por código
@@ -152,13 +162,3 @@
   en 209 plantas (44 %), media 418 m², 15–18 puestos. Interruptor del ANTES: `WG3_NO_OPEN_PLAN=1`.
 - **Bug de la enm. 18**: la holgura de boca era un CUADRADO y la junta entre tramos hermanos (15 m) tapaba la sala; ahora es una franja.
 - **Costura de 664 cerrada**: canto de losa = planta de ARRIBA (de la 1 arriba); y una cama ya no ancla en repisa sin altura libre.
-
-### 2026-09-06 — 31.ª tanda: ADR-130 rebanada 2a — el decaimiento del servidor (ADR-130 enm. 1)
-- `decay_of(space)` por la COTA (la calle está en 0) y `d²` contra el fondo SERVIDO; `knobs_of` deja de devolver la fila de `KNOBS` y
-  devuelve una COPIA movida por `decayed`: los 22 sitios del relleno decaen sin tocar ni un emisor. Agujeros de forjado 0,26 → 0,80.
-- **El atrezo NO decae, y es corrección a D4**: con `props` al 0,55 la (0,0) bajaba de 60 sillas a 43 y los VIGILANTES de ADR-131 se
-  quedaban sin sitio donde sentarse. Con 30 sótanos la curva reparte; con 3 manda ADR-131. Los cubículos, igual.
-- **Boquetes** (`decay_breaches`): carve de 1–2 m, +30 a +215, `decay·0,5` por pared, sólo entre DOS tramos (fuera hay tierra) y lejos de
-  bocas y de lo ya recortado — un boquete sobre una ventana le quita el antepecho y la vuelve puerta; lo cazó su test.
-- Barrido 27/27 con **islas 6,4 → 6,0** y nav 100 %; pisable −0,3 %. `fill` 13 → 19 ms (los pares de tramos). Suite **1407/1407**.
-- Fuera, declarado: `WEIRD_SPREAD` por profundidad (vive en la subdivisión del plan) y TODO el cliente (r2b), que pisa la rama de materiales.
