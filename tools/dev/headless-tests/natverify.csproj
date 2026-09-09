@@ -32,6 +32,8 @@
     <Compile Include="$(Repo)\Assets\Scripts\Connectivity\PublicIpResolver.cs" />
     <Compile Include="$(Repo)\Assets\Scripts\Connectivity\HostConnectivityService.cs" />
     <Compile Include="$(Repo)\Assets\Scripts\Connectivity\HostEndpointCandidates.cs" />
+    <!-- ADR-136: las dos variables de identidad del backend; un 0 no se pone. -->
+    <Compile Include="$(Repo)\Assets\Scripts\Connectivity\PeerIdentityEnv.cs" />
     <Compile Include="$(Repo)\Assets\Scripts\Lobbies\LobbyEndpointPolicy.cs" />
     <Compile Include="$(Repo)\Assets\Scripts\Network\HostAddressInput.cs" />
     <!-- El sorteo de loot y el de contenedores: puros por diseno, sin UnityEngine. -->
@@ -96,6 +98,7 @@
     <Compile Include="$(Repo)\Assets\Tests\EditMode\SteamHostLobbyTests.cs" />
     <Compile Include="$(Repo)\Assets\Tests\EditMode\PlayerJoinMessagesTests.cs" />
     <Compile Include="$(Repo)\Assets\Tests\EditMode\LobbyJoinTargetTests.cs" />
+    <Compile Include="$(Repo)\Assets\Tests\EditMode\PeerIdentityEnvTests.cs" />
   </ItemGroup>
 
 </Project>

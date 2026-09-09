@@ -76,6 +76,11 @@ namespace BackroomsSurvival.Net
         private bool _creatingLobby;
         private bool _joinRequestInFlight;
 
+        /// ADR-136 D2: quién mandó la invitación que se está aceptando. Lo pone
+        /// <see cref="HandleGameLobbyJoinRequested"/> y lo CONSUME <see cref="HandleLobbyEntered"/>,
+        /// que es donde arranca la conexión; entre medias hay un `lobby.Join()` asíncrono. 0 = nadie.
+        private ulong _pendingInvitedBy;
+
         /// <summary>
         /// Identidad de la tanda de anuncio en curso. Sube en cada <see cref="CloseHostedLobby"/>,
         /// también cuando no había lobby que cerrar.
@@ -429,6 +434,9 @@ namespace BackroomsSurvival.Net
             }
 
             _joinRequestInFlight = true;
+            // ADR-136 D2: quién invitó, para nacer a su lado. Se limpia en los mismos sitios que
+            // el flag: una invitación fallida no puede quedarse esperando al siguiente join.
+            _pendingInvitedBy = invitedBy.Value;
             try
             {
                 var enter = await lobby.Join();
@@ -436,12 +444,14 @@ namespace BackroomsSurvival.Net
                 {
                     Debug.LogError($"[SteamLobbyManager] lobby.Join() failed: {enter}");
                     _joinRequestInFlight = false;
+                    _pendingInvitedBy = 0UL;
                 }
                 // En éxito, OnLobbyEntered dispara y limpia el flag.
             }
             catch (Exception e)
             {
                 _joinRequestInFlight = false;
+                _pendingInvitedBy = 0UL;
                 Debug.LogError($"[SteamLobbyManager] lobby.Join() threw: {e.Message}");
             }
         }
@@ -449,6 +459,10 @@ namespace BackroomsSurvival.Net
         private void HandleLobbyEntered(Lobby lobby)
         {
             _joinRequestInFlight = false;
+            // Se consume AQUÍ, pase lo que pase después: un lobby propio o una sesión ya activa
+            // no dejan una invitación pendiente para el siguiente join.
+            ulong invitedBy = _pendingInvitedBy;
+            _pendingInvitedBy = 0UL;
 
             // El creador entra en su propio lobby: no hay nada a lo que conectarse.
             if (lobby.IsOwnedBy(SteamClient.SteamId))
@@ -484,20 +498,21 @@ namespace BackroomsSurvival.Net
             }
 
             string playerName = SanitizePlayerName(SteamClient.Name);
-            Debug.Log($"[SteamLobbyManager] Auto-connect from lobby {lobby.Id.Value}: {target} as '{playerName}'");
+            Debug.Log($"[SteamLobbyManager] Auto-connect from lobby {lobby.Id.Value}: {target} as '{playerName}'" +
+                      (invitedBy != 0UL ? $" invited_by={invitedBy}" : ""));
             StatusMessage = target.HasDirect ? $"Joining {target.Ip}:{target.Port}..." : "Joining through Steam/relay...";
 
             // Camino único: delega en la UI cuando existe (para que el panel refleje el
             // estado y se cancele el auto-solo), y si no, llama al MISMO StartAsJoiner.
             if (!UI.JoinSessionUI.TryBeginSteamJoin(target.Ip, target.Port, playerName, target.FallbackIp,
-                    target.Relay, target.SteamHost))
+                    target.Relay, target.SteamHost, invitedBy))
             {
                 if (init == null)
                 {
                     Debug.LogError("[SteamLobbyManager] No NetworkInitializer available; cannot auto-connect.");
                     return;
                 }
-                init.StartAsJoiner(target.Ip, target.Port, playerName, target.Relay, target.SteamHost);
+                init.StartAsJoiner(target.Ip, target.Port, playerName, target.Relay, target.SteamHost, invitedBy);
             }
         }
 

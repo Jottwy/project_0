@@ -125,6 +125,14 @@ namespace BackroomsSurvival.UI
             /// [Retry] que la perdiera dejaría al jugador sin la vía que sí podía funcionar.
             /// </summary>
             public Lobbies.LobbySteamHost SteamHost;
+
+            /// <summary>
+            /// ADR-136 D2: quién invitó, sólo desde el overlay de Steam (0 en los demás caminos).
+            /// Viaja con el [Retry] por el mismo motivo que <see cref="Relay"/>: el segundo
+            /// intento es el que suele entrar, y sin esto el amigo nacería lejos justo cuando la
+            /// conexión costó.
+            /// </summary>
+            public ulong InvitedBy;
         }
         private Attempt _lastAttempt;
 
@@ -627,7 +635,7 @@ namespace BackroomsSurvival.UI
                 // Las vías indirectas viajan con el reintento: sin ellas, el segundo intento
                 // perdería justo la que podía funcionar (ADR-117, ADR-135).
                 init.StartAsJoiner(_lastAttempt.Ip, _lastAttempt.Port, _lastAttempt.PlayerName,
-                    _lastAttempt.Relay, _lastAttempt.SteamHost);
+                    _lastAttempt.Relay, _lastAttempt.SteamHost, _lastAttempt.InvitedBy);
                 ApplySelectedLocalConfigToUi(init, updateServerPort: false);
             }
             else
@@ -735,15 +743,24 @@ namespace BackroomsSurvival.UI
         /// aunque `ip` esté vacía y no haya relay.
         /// </summary>
         public static bool TryBeginSteamJoin(string ip, int port, string playerName, string fallbackIp,
-            Lobbies.LobbyRelay relay, Lobbies.LobbySteamHost steamHost)
+            Lobbies.LobbyRelay relay, Lobbies.LobbySteamHost steamHost) =>
+            TryBeginSteamJoin(ip, port, playerName, fallbackIp, relay, steamHost, 0UL);
+
+        /// <summary>
+        /// Igual, diciendo quién invitó (ADR-136 D2). Sólo la invitación del overlay pasa algo
+        /// distinto de 0: el navegador y el join manual no vienen invitados por nadie.
+        /// </summary>
+        public static bool TryBeginSteamJoin(string ip, int port, string playerName, string fallbackIp,
+            Lobbies.LobbyRelay relay, Lobbies.LobbySteamHost steamHost, ulong invitedBy)
         {
             if (_instance == null) return false;
-            _instance.BeginSteamJoin(ip, port, playerName, fallbackIp, relay, steamHost);
+            _instance.BeginSteamJoin(ip, port, playerName, fallbackIp, relay, steamHost, invitedBy);
             return true;
         }
 
         private void BeginSteamJoin(string ip, int port, string playerName, string fallbackIp = null,
-            Lobbies.LobbyRelay relay = default, Lobbies.LobbySteamHost steamHost = default)
+            Lobbies.LobbyRelay relay = default, Lobbies.LobbySteamHost steamHost = default,
+            ulong invitedBy = 0UL)
         {
             CancelAutoHostBecauseUserInteracted();
             var init = EnsureInitializer();
@@ -772,11 +789,12 @@ namespace BackroomsSurvival.UI
                 FallbackIp = string.Equals(fallbackIp, ip, StringComparison.OrdinalIgnoreCase) ? null : fallbackIp,
                 Relay = relay,
                 SteamHost = steamHost,
+                InvitedBy = invitedBy,
             };
             BeginAttemptUi(PanelState.Joining, string.IsNullOrWhiteSpace(ip)
                 ? (steamHost.IsValid ? "Connecting through Steam…" : "Connecting through relay…")
                 : $"Connecting to {ip}:{port} (Steam)…");
-            init.StartAsJoiner(ip, port, playerName, relay, steamHost);
+            init.StartAsJoiner(ip, port, playerName, relay, steamHost, invitedBy);
             ApplySelectedLocalConfigToUi(init, updateServerPort: false);
         }
 

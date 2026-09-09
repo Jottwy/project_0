@@ -242,6 +242,10 @@ namespace BackroomsSurvival.Net
             // Sin relay configurado en la build esto no hace nada.
             AddRelayEnv(env, Connectivity.RelaySessionCredentials.Current(), asHost: true);
 
+            // ADR-136 D3: el anfitrión también declara su identidad, y así «me invitó el anfitrión»
+            // resuelve por el mismo mapa que «me invitó un cliente». Sin Steam es 0 y no se pone.
+            Connectivity.PeerIdentityEnv.Apply(env, SteamLobbyManager.LocalSteamId, 0UL);
+
             // ADR-135: y el túnel de Steam, por el mismo motivo y con el mismo coste: sin joiners
             // no mueve un byte, y cuando llega el primero ya está escuchando. El backend NO se
             // entera de que existe —le llegan datagramas de loopback como los de cualquier otro
@@ -292,9 +296,12 @@ namespace BackroomsSurvival.Net
         ///
         /// Con `relay` válido, `serverIP` puede venir vacío: es el lobby relay-only de D7, y
         /// entonces el backend arranca directamente por la etapa de relay.
+        ///
+        /// `invitedBy` (ADR-136 D2): la identidad de quien invitó, sólo cuando se entra por una
+        /// invitación del overlay de Steam; 0 para el navegador, el join manual y el auto-solo.
         /// </summary>
         public void StartAsJoiner(string serverIP, int serverNetPort, string playerName,
-            Lobbies.LobbyRelay relay, Lobbies.LobbySteamHost steamHost)
+            Lobbies.LobbyRelay relay, Lobbies.LobbySteamHost steamHost, ulong invitedBy = 0UL)
         {
             // Mismo embudo que el host: ver el comentario en StartAsHost. Cubre el doble clic en
             // Join, el Join durante un Joining y el auto-join de Steam llegando encima de uno
@@ -375,6 +382,11 @@ namespace BackroomsSurvival.Net
 
             AddSteamTunnelEnv(env, steamHost);
             AddRelayEnv(env, relay, asHost: false);
+            // ADR-136 D1/D2: quién soy y quién me invitó, para que el anfitrión me ponga a su lado.
+            // Dos números opacos para el backend; sin Steam no se pone ninguno.
+            Connectivity.PeerIdentityEnv.Apply(env, SteamLobbyManager.LocalSteamId, invitedBy);
+            if (invitedBy != 0UL)
+                Debug.Log($"[NetworkInitializer] INVITED_BY={invitedBy}: se pide nacer al lado del invitador (ADR-136).");
             AddIpcAddressEnv(env, config.IpcAddress, config.IpcPort);
             AddRoomManifestEnv(env);
             AddWorldGen3Env(env);
