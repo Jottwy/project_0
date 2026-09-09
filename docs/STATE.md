@@ -6,7 +6,7 @@
 ## Estado
 - **WorldGen3 es el mundo servido.** Wire **61** en las dos puntas (`ipc/server.rs:38`, `WireSchema.cs:25`) — ADR-129 lo subió el 06-09.
 - **Contrato WG3 v1 = Alpha 1** (`docs/WG3-ALPHA1-ROADMAP.md`): días 1–2 hechos; 3 y 5 APARCADOS detrás de la tanda de oficinas (Joel, 06-09).
-- Suite del 06-09 con las OCHO sesiones de oficina fusionadas: `cargo test --bin backrooms_server` **1414/1414 (89 ign.)**; CompileCheck 0 ×4 (07-09).
+- Suite del 09-09 (rama ADR-136): `cargo test --bin backrooms_server` **1438/1438 (91 ign.)**, clippy limpio; arnés headless 381/382; CompileCheck 0 ×4.
 - **El commit tiene gate** (`tools/dev/validate-scope.ps1`, hook PreToolUse): rojo = el commit no se ejecuta. Alcance por `git diff --cached`.
 - Alpha 1 itch nov 2026 · Next Fest feb 2027 · EA primavera 2027 (`docs/SCALING-ROADMAP.md:196-198`). E0 de red cerrada y medida.
 
@@ -25,15 +25,15 @@
 - **Migración STP servidor-autoritativo**: Steps 1–2 y slice 3.1 (plumbing) hechos y verificados. Falta slice 3.2
   (capa L2 de predicción), reescribir los 8 call sites de `Inventory` y retirar `PlayerController.cs` (DEPRECATED por ADR-009).
 - ADR-014 fase 2 (borrado diferido 200 ms + reserva host-only anti-duplicado): backend implementado, **pendiente de playtest**.
-- **SIN VER EN PLAY**: linterna (ADR-133), venda (`bb9e3cc1`) y **ADR-135 R1** (4.ª vía por Steam, túnel en Unity, cero wire, sin red).
+- **SIN VER EN PLAY**: linterna (ADR-133), venda (`bb9e3cc1`) y **ADR-136 R0–R4** (rama `claude/steam-build-update-43843a`, sin fusionar).
 
 ## Riesgos abiertos
 - **Autoridad del servidor: los tres agujeros CERRADOS** (`78e156e6` dueño al demoler; `ebb42911`/`bb3c7e5c` cantidad y posición contra el
   roster; aportar material exige dueño y alcance, 5 tests). Queda UNA línea: `process_stp_demolish` valida dueño pero no distancia.
 - **Espejos C#↔Rust sin oráculo.** Sin `the_identity_mirror_golden_values` (B4-b), `Wg3Identity.cs` queda verde sin nada que lo
   contraste; igual el hash de `ChunkLootRoll` y los goldens de `scale`/`density`. Un oráculo JSON común es una sesión: **B5**.
-- **Nadie ha entrado por vía indirecta, ni relay ni Steam**: `DefaultRelayAddress` vacío (ADR-117 sin VPS) y ADR-135 R1 en código
-  SIN una conexión real. Dos jugadores en redes distintas siguen sin juntarse; el criterio es físico y no se da por cumplido sin él.
+- **Relay propio sin VPS** (`DefaultRelayAddress` vacío, ADR-117). Steam SÍ conectó una vez E2E (09-09, 3 s, dos máquinas); el resto
+  de ADR-136 no. **`invited_by` sin prueba** (ADR-136 enm. 1, (a)): cualquiera nace a 2 m de una identidad presente; rastro `SPAWN invite=`.
 - **Crafteo P1 sin cerrar**: las recetas consumen un enum Rust de 9 variantes abstractas, no items (ADR-064). Sin esto, minar no sirve.
 - **ADR-009 L2 a medias**: falta la predicción/reconciliación del CLIENTE (`MovementReconciler` se borró y nunca se
   reemplazó; el `delta_update` sí lo consume `AuthoritativePoseApplier`). Causa raíz de la salud al borde de la muerte y del respawn invisible.

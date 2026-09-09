@@ -56,15 +56,39 @@ uniéndose es *el puerto del host*.
 ```
  JOINER                                    HOST
  Handshake ──────────────────────────────▶ ¿is_host? ¿version? ¿room_manifest_digest? ¿aforo?
-   player_name, version, digest              cualquiera falla → Disconnect con motivo
-                                            allocate_peer_id (honra el pedido si está libre)
- handle_handshake_ack ◀────────────────── HandshakeAck(assigned_id, world_seed, peers, …)
+   player_name, version, digest,             cualquiera falla → Disconnect con motivo
+   platform_id, invited_by (ADR-136)        allocate_peer_id (honra el pedido si está libre)
+                                            platform_ids[platform_id] = id   (si ≠ 0)
+                                            assigned_spawn: al lado del invitador (roster) o reparto
+ handle_handshake_ack ◀────────────────── HandshakeAck(assigned_id, world_seed, peers, assigned_spawn, …)
    local_id = assigned_id
    world_seed = el del host
+   present_at_join = peers del ack (quién ya estaba: no se anuncian)
    registra al host  ──IPC──▶ GameEvent "session_joined"
 ```
 
 El `assigned_id` del host manda: el `NET_ID` que Unity generó es una **petición**, no un hecho.
+
+**Dónde nace el joiner (ADR-116 + ADR-136).** El anfitrión decide y el punto viaja en el ack. Sin
+invitación, reparto por celda de identidad con separación mínima (ADR-116). Con `invited_by ≠ 0`, el
+anfitrión busca esa identidad en su mapa —él mismo incluido, por `local_position`— y da un punto a
+`INVITE_SPAWN_OFFSET_M` (2 m) de la posición **del roster** del invitador, sin gastar unidad de
+reparto (ADR-116 D10). Si no puede (identidad desconocida, invitador ido, fantasma) cae al reparto
+con `SPAWN invite=… resolved=no reason=…`. Toda invitación honrada deja `resolved=yes` en el log del
+anfitrión: `invited_by` es una afirmación del cliente sin prueba (ADR-136 enm. 1, Q2 (a)).
+
+En el joiner, `SpawnSource::Invited` gana a la posición del fichero en los dos órdenes (enm. 1, Q1).
+Límite conocido: el ack no dice si la invitación se honró o cayó al reparto, así que un invitado cuyo
+invitador ya no estaba nace en el punto repartido en vez de en su posición guardada.
+
+**Identidades y variables de entorno.** `PEER_IDENTITY` (propia, host y joiner) e `INVITED_BY`
+(sólo desde el overlay de Steam), ambas `u64` opacos para el backend; ausentes = 0. Unity pone el
+`SteamId` (`SteamLobbyManager.LocalSteamId`) y el backend no sabe que es de Steam (ADR-135 D2).
+
+**Aviso de entrada.** `player_joined` lo emite el host al dar la mano y, desde 2026-09-09, también
+el joiner al descubrir a un compañero por el roster (`NetworkEvent::PeerDiscovered`); `is_host` marca
+al anfitrión para que un joiner no lo anuncie como si se hubiera unido. Unity lo pinta con el cartel
+del vendor (`PlayerJoinNotifier`).
 
 ## 4. Estado de sesión (Unity)
 
