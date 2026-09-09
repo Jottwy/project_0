@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using System.Threading;
 using BackroomsSurvival.Connectivity;
 using Steamworks;
 using Steamworks.Data;
@@ -21,6 +22,18 @@ namespace BackroomsSurvival.Net
         /// (ADR-117), y el bombeo gira cada pocos milisegundos: 64 es holgado sin reservar de más.
         private const int ReceiveBatch = 64;
 
+        /// Techo de envío, en bytes/s, que la estimación de ancho de banda de Valve puede alcanzar.
+        ///
+        /// MEDIDO el 2026-09-10 en playtest real: el host enviaba 253,8 KB/s sostenidos contra un
+        /// `Est avail bandwidth` de 256,0 KB/s — el default de Valve, clavado — y acumulaba ~483.000
+        /// bytes en la cola de salida. Eso son **1,9 s de retraso** que no tienen nada que ver con la
+        /// red (ping 24 ms, 0 % de pérdida): es cola por saturación.
+        ///
+        /// Subir el techo NO fuerza a usarlo. Steam sigue estimando el ancho real de la línea y no
+        /// pasa de ahí; esto sólo deja de recortar por debajo al que sí tiene subida. Es alivio del
+        /// SÍNTOMA: la causa es el volumen del payload y se ataca aparte.
+        private const int SendRateMaxBytesPerSec = 1024 * 1024;
+
         private SocketManager _socket;
         private ConnectionManager _connection;
 
@@ -37,6 +50,16 @@ namespace BackroomsSurvival.Net
         private const long DiagLogIntervalMs = 2000;
         private DateTime _lastDiagLogUtc = DateTime.MinValue;
 
+        /// Reparto del tráfico de SALIDA por tipo de paquete. El primer campo de la cabecera de 12 B
+        /// es `packet_type` (u16 big-endian, `protocol.rs:56-58`) y viaja EN CLARO: el túnel puede
+        /// contarlo sin descifrar nada, sin conocer el payload y sin tocar el protocolo.
+        ///
+        /// Existe porque `DetailedStatus()` dice CUÁNTO se envía (253,8 KB/s medidos el 10-09) pero
+        /// no DE QUÉ; sin este reparto, cualquier recorte se decide por estimación. Los tipos reales
+        /// van de 0x00 a 0x5F, así que 256 cubre de sobra y el índice no puede desbordar.
+        private static readonly long[] SentBytesByType = new long[256];
+        private static readonly long[] SentPacketsByType = new long[256];
+
         public Action<ISteamTunnelChannel, byte[], int> OnMessage { get; set; }
 
         public Action<ISteamTunnelChannel> OnClosed { get; set; }
@@ -52,6 +75,7 @@ namespace BackroomsSurvival.Net
 
             try
             {
+                ApplySendRateCeiling();
                 _socket = SteamNetworkingSockets.CreateRelaySocket(virtualPort, this);
                 return _socket != null;
             }
@@ -72,6 +96,7 @@ namespace BackroomsSurvival.Net
 
             try
             {
+                ApplySendRateCeiling();
                 _connection = SteamNetworkingSockets.ConnectRelay(hostSteamId, virtualPort, this);
                 if (_connection == null) return null;
 
@@ -115,6 +140,24 @@ namespace BackroomsSurvival.Net
         }
 
         /// <summary>
+        /// Sube el techo de envío por encima del default de Valve. Global al proceso, así que se
+        /// aplica ANTES de abrir socket o conexión: una conexión ya creada nace con el valor que
+        /// hubiera en ese momento.
+        /// </summary>
+        private static void ApplySendRateCeiling()
+        {
+            try
+            {
+                SteamNetworkingUtils.SendRateMax = SendRateMaxBytesPerSec;
+            }
+            catch (Exception e)
+            {
+                // Un techo que no se deja poner no impide jugar: se sigue con el default de Valve.
+                Debug.LogWarning($"[SteamTunnel] No se pudo subir SendRateMax: {e.Message}");
+            }
+        }
+
+        /// <summary>
         /// Fase 0 (09-09): un log de <c>DetailedStatus()</c> por conexión activa cada
         /// <see cref="DiagLogIntervalMs"/>. Sólo lectura de lo que Valve ya mide — ni protocolo ni
         /// wire cambian, así que no hace falta ADR (regla dura #7) para verlo en un playtest real.
@@ -133,6 +176,47 @@ namespace BackroomsSurvival.Net
             // Lado host: una por peer conectado.
             foreach (var kv in _channels)
                 LogConnectionStatus(kv.Value.Connection, kv.Key);
+
+            LogSentByType();
+        }
+
+        /// <summary>
+        /// Vuelca el reparto acumulado del tráfico de salida por tipo de paquete, de mayor a menor.
+        /// Acumulado desde el arranque, no por intervalo: lo que se busca es qué DOMINA, y un total
+        /// no depende de que el volcado caiga en un momento representativo.
+        /// </summary>
+        private static void LogSentByType()
+        {
+            var rows = new List<string>();
+            long total = 0;
+            for (int type = 0; type < SentBytesByType.Length; type++)
+            {
+                long bytes = Interlocked.Read(ref SentBytesByType[type]);
+                if (bytes == 0)
+                    continue;
+                total += bytes;
+                rows.Add($"0x{type:X2}={bytes / 1024}KB/{Interlocked.Read(ref SentPacketsByType[type])}pkt");
+            }
+
+            if (rows.Count == 0)
+                return;
+
+            Debug.Log($"[SteamTunnel] SENT_BY_TYPE total={total / 1024}KB {string.Join(" ", rows)}");
+        }
+
+        /// <summary>Contabiliza un datagrama de salida en el reparto por tipo.</summary>
+        internal static void CountSent(byte[] payload, int length)
+        {
+            // Un datagrama más corto que la cabecera no lleva tipo legible; se ignora en vez de
+            // inventarle uno.
+            if (payload == null || length < 2)
+                return;
+
+            // Big-endian, como lo escribe `PacketHeader::to_bytes`. Sólo el byte bajo indexa: los
+            // tipos reales caben en él y el alto es siempre 0.
+            int type = payload[1];
+            Interlocked.Add(ref SentBytesByType[type], length);
+            Interlocked.Increment(ref SentPacketsByType[type]);
         }
 
         private static void LogConnectionStatus(Connection connection, uint connectionId)
@@ -280,6 +364,8 @@ namespace BackroomsSurvival.Net
             {
                 Result result = _connection.SendMessage(payload, 0, length,
                     SendType.Unreliable | SendType.NoNagle);
+                if (result == Result.OK)
+                    FacepunchSteamTunnelTransport.CountSent(payload, length);
                 return result == Result.OK;
             }
             catch (Exception)
