@@ -15540,3 +15540,169 @@ va al log del host, porque es el dato con el que se diagnostica.
 - **No se registra nunca el valor del secreto**, ni cuando se rechaza.
 
 ---
+
+## ADR-136 — La invitación te deja AL LADO de quien te invitó: identidad de plataforma en el handshake y la unidad de spawn de ADR-116 D10 (2026-09-09) — PROPUESTA (Joel: «si invito a alguien y se une por invitación de Steam se teletransporte a mis coordenadas al cargar… si cliente invita a cliente debería spawnear con este invitado»)
+
+**Estado:** PROPUESTA. Tres preguntas abiertas (Q1–Q3) al final; nada de esto se implementa hasta
+que estén contestadas. El aviso «X se ha unido a la partida» NO forma parte de este ADR: se hizo el
+mismo día sin tocar el wire (`NetworkEvent::PeerDiscovered`, `is_host` en `player_joined`).
+
+### Contexto
+
+Un jugador invita a un amigo desde el overlay de Steam. El amigo acepta, entra… y nace donde le toca
+por ADR-116: en su propia celda de identidad, a 150 m o más de cualquiera. Para quien acaba de decir
+«ven», eso es exactamente lo contrario de lo que pidió. Joel lo quiere en las dos direcciones: el
+anfitrión invita y el invitado nace a su lado; **un cliente invita a otro** y el invitado nace al lado
+de ese cliente, no del anfitrión.
+
+Lo que hoy lo impide no es el reparto, es la **identidad**. El backend conoce a cada peer por
+`PeerId` (un `u16` que el anfitrión asigna y recicla) y por el nombre de `NET_NAME`. El joiner sí sabe
+quién le invitó —`HandleGameLobbyJoinRequested(lobby, invitedBy)` recibe el `SteamId`— pero ese dato
+muere en Unity: no viaja al backend y el anfitrión no podría traducirlo a un peer aunque llegara. Y
+los nombres no sirven como clave: no son únicos, y en un build sin Steam los pone el usuario.
+
+ADR-116 D10 ya dejó la puerta hecha: «D4 no separa jugadores, separa **unidades de spawn**… los
+miembros de una misma unidad compartirán candidato y aparecerán juntos… lo único que cambiará el día
+que existan es quién forma una unidad». Una invitación es la primera forma de «formar una unidad».
+
+### Decisión
+
+**D1 — Cada peer declara una identidad de plataforma, OPACA para Rust.** `Handshake` gana
+`platform_id: u64`, añadido **al final** con `#[serde(default)]`, el patrón exacto de
+`room_manifest_digest` (ADR-083 enm. 1) y de `assigned_spawn` (ADR-116 D3). Unity lo rellena con el
+`SteamId` propio (`SteamLobbyManager.LocalSteamId`, que existe desde ADR-135) por la variable de
+entorno `PEER_IDENTITY`, la misma puerta por la que ya viajan `NET_NAME` y `CONNECT_STEAM`. **`0`
+significa «sin identidad»** (build manual sin Steam) y es un estado válido.
+
+Se llama `platform_id` y no `steam_id` por ADR-135 D2: el backend **no sabe que Steam existe**. Para
+él es un número que dos peers pueden comparar; quién lo emite es asunto de Unity.
+
+**D2 — Quien entra por invitación dice quién le invitó.** `Handshake` gana también `invited_by: u64`,
+mismas reglas. Unity lo rellena desde `HandleGameLobbyJoinRequested` por `INVITED_BY`; el navegador de
+servidores, el join manual y el auto-solo mandan `0`. **El reintento conserva el valor**: va en
+`JoinSessionUI.Attempt` como ya van `Relay` y `SteamHost`, porque el segundo intento es el que suele
+entrar (ADR-112 D6) y sin esto el amigo nacería lejos justo cuando la conexión costó.
+
+**D3 — El anfitrión traduce identidad → peer, y se incluye a sí mismo.** Un mapa
+`platform_id → PeerId` que se llena con cada handshake y con la identidad propia del anfitrión, que
+también le llega por `PEER_IDENTITY` al arrancar como host. Así «el anfitrión invita» y «un cliente
+invita» son **el mismo código**: el invitador es una entrada del mapa, sea quien sea. Un `0` nunca
+entra en el mapa.
+
+**D4 — El punto se toma del ROSTER del anfitrión, jamás del paquete.** Resuelto el invitador, el
+punto asignado es su **posición actual** según el anfitrión —`PeerConnection::position` del roster, o
+`player.position` si el invitador es el propio anfitrión— desplazada `INVITE_SPAWN_OFFSET_M` en una
+dirección determinista por `(world_seed, sal propia, PeerId del invitado)`, el patrón de sorteo de
+ADR-043. Es la regla de `authoritative_requester_pos` aplicada al spawn: **nada de lo que el joiner
+escribe en su handshake decide dónde nace**, sólo a QUIÉN señala.
+
+El punto viaja en `assigned_spawn`, el campo que ya existe, y el joiner lo baja al suelo como baja
+cualquier otro: `standable_near_bounded(punto, same_storey = true)` (ADR-116 D6), que con un desplazamiento
+de dos metros lo deja en la misma sala y en la misma planta. El anfitrión **no** lo baja al suelo, por la
+misma razón que no lo hacía en ADR-116: el ráster de WG3 vive en `run()`.
+
+**D5 — Es la unidad de spawn de ADR-116 D10, y por eso la separación mínima no se aplica.** El
+invitado **entra en la unidad del invitador**: no consume una unidad nueva (`next_spawn_unit` no
+avanza) y `MIN_PLAYER_SEPARATION_M` no se mide entre ellos, exactamente como D10 lo dejó escrito. El
+punto sí se recuerda en `assigned_spawns` por el mismo motivo que los demás: los tres caminos del
+handshake tienen que dar el mismo punto (D3/D4 de ADR-116, idempotencia por peer).
+
+**D6 — Si no se puede, se reparte como siempre, y NUNCA se bloquea la entrada.** Espejo de ADR-116
+D7. El invitador no está en el mapa (build sin Steam, ya se fue, `invited_by` inventado), o no hay
+suelo a su lado: el invitado cae al reparto normal, con un aviso `SPAWN invite=<id> resolved=no
+reason=<motivo>`. Una invitación que no se puede honrar degrada a «entras donde te toca», que es el
+comportamiento de hoy.
+
+**D7 — CERO bump de `WIRE_SCHEMA_VERSION`.** Los dos campos son del protocolo **entre backends**, y
+ADR-116 D3 fijó la regla: «eso versiona el IPC con Unity, y esto es el protocolo entre backends». Un
+anfitrión anterior a este ADR decodifica los campos a `0` y reparte como siempre; un joiner anterior no
+los manda y recibe el reparto de siempre. Degrada, no rompe. El test de ida y vuelta de `Handshake`
+gana los dos campos con valores **no-default y distintos entre sí** (`.claude/rules/red-wire-y-autoridad.md`
+§2).
+
+**D8 — La ruta de invitación tiene que llevar las vías indirectas, y hoy no las lleva (R0).** Se
+descubrió al plantear esto: `HandleLobbyEntered` llama a `TryBeginSteamJoin(ip, port, playerName)`, la
+sobrecarga de tres argumentos, así que una invitación entra **sin relay y sin la vía Steam de
+ADR-135**, a pelo contra `ip:puerto`; el navegador sí las pasa (`JoinSessionLobbyJoinSink`). Es un fallo
+independiente de este ADR, pero sin él la invitación falla antes de llegar al spawn. Se corrige
+primero, como rebanada R0, leyendo del lobby las mismas tres claves que lee el navegador.
+
+**D9 — Qué NO cambia.** DIRECT, LAN, STEAM y RELAY intactos; la estrella de ADR-015 intacta; ni un
+mensaje IPC nuevo ni campo nuevo hacia Unity; el `SteamId` sigue sin ser autoridad de nada (ADR-135
+enm. 1: quien entra lo decide el secreto de sesión, no la identidad). `platform_id` sólo sirve para que
+dos peers se señalen entre sí.
+
+### Parámetros
+
+| Parámetro | Valor | Por qué ése |
+|---|---|---|
+| `INVITE_SPAWN_OFFSET_M` | **2.0** | Un radio de cuerpo y un paso: lo bastante lejos para no nacer DENTRO del invitador, lo bastante cerca para que `standable_near_bounded` (anillos de 0,5 m, `same_storey`) lo deje en la misma sala. **Sin medir** en salas pequeñas de WG3 (mínimo 3×3 tiles): si el desplazamiento cae en pared, el colocador lo trae de vuelta. |
+| `PEER_IDENTITY` / `INVITED_BY` | env, `u64` decimal | Misma puerta que `NET_NAME`, `CONNECT_TO`, `CONNECT_STEAM`. Ausente = `0`. |
+
+### Consecuencias
+
+Un amigo invitado aparece a dos metros de quien le invitó, en su misma sala, sea el invitador
+anfitrión o cliente. El reparto de ADR-116 sigue mandando para todo el que entra por el navegador o a
+mano. El anfitrión gana un mapa de identidades que hoy no tiene y que **también es lo que faltaba**
+para cualquier cosa por-persona futura (amigos, bloqueos, squads de D10): con este ADR el backend
+puede decir «este peer es la misma persona que aquél» sin saber qué es Steam.
+
+Dos precios que hay que decir en voz alta y que son las preguntas de abajo:
+
+- **La posición guardada.** ADR-045 enm. 1 dice que la posición persistida gana al spawn inicial, y
+  ADR-116 D8 que la asignación sólo manda en el PRIMER spawn. Un veterano invitado a un mundo donde ya
+  tiene fichero nacería donde lo dejó, no al lado del amigo. Este ADR **propone** que la invitación
+  gane (Q1): la posición guardada es el default de «vuelvo»; la invitación es «voy a donde tú estás»,
+  dicho explícitamente por dos personas. Es decisión del joiner, que es el único que sabe si tiene
+  fichero: con `INVITED_BY ≠ 0` y un `assigned_spawn` en el ack, usa el punto aunque tenga posición
+  guardada. Se implementa **sólo si Q1 se contesta así**.
+- **`invited_by` es una afirmación del cliente sin prueba.** El anfitrión no habla con Steam y no
+  puede comprobar que esa invitación existió. Consecuencia real: cualquiera que conozca la identidad de
+  un jugador presente puede nacer a dos metros de él. En un survival con PvP eso es acampar el spawn de
+  otro con una variable de entorno. Ver Q2.
+
+### Riesgo abierto: la suplantación de la invitación
+
+Tres respuestas posibles, de menos a más coste:
+
+- **(a) Aceptarlo en Alpha 1 y hacerlo VISIBLE.** Una línea `SPAWN invite=<platform_id> by=<PeerId>
+  resolved=yes` en el log del anfitrión por cada invitación honrada. Cero código de más; el abuso deja
+  rastro. Es lo que este ADR **propone** para Alpha 1, con este disparador escrito: el primer informe
+  de un spawn pegado a alguien que no invitó a nadie convierte (c) en obligatorio.
+- **(b) Que el anfitrión conozca el lobby.** Unity del anfitrión baja por IPC la lista de miembros
+  del lobby de Steam y el backend sólo honra identidades que están en ella. Es un mensaje IPC nuevo
+  con bump de `WIRE_SCHEMA_VERSION`, y sigue siendo suplantable: basta con entrar en el lobby, que es
+  público (ADR-117 D9, ADR-135 enm. 1).
+- **(c) Que el INVITADOR lo confirme.** Quien invita se lo dice a su backend (`INVITED=<platform_id>`
+  en caliente, o un mensaje IPC) y ese backend manda al anfitrión un `Invite { platform_id }` por el
+  carril fiable; el anfitrión sólo honra un `invited_by` que tenga un `Invite` previo del invitador.
+  Paquete nuevo del protocolo entre backends (sin bump, D7) y un mensaje IPC (con bump). Es la única
+  de las tres que cierra el agujero, y cuesta un ADR corto más.
+
+### Preguntas para Joel
+
+- **Q1 — ¿La invitación gana a la posición guardada?** Propuesta: sí. Alternativa: no, y entonces
+  «al lado del amigo» sólo funciona la primera vez que se entra en ese mundo.
+- **Q2 — ¿(a), (b) o (c) para la suplantación?** Propuesta: (a) en Alpha 1 con el disparador escrito.
+- **Q3 — ¿`INVITE_SPAWN_OFFSET_M` = 2,0?** O más lejos (5–8 m, «en la misma sala pero no encima») —
+  cambia sólo el número, no el diseño.
+
+### Rebanadas (una preocupación por commit, en este orden)
+
+- **R0** — La invitación lleva relay y vía Steam como el navegador (D8). Una llamada y un test.
+- **R1** — Rust: los dos campos en `Handshake` con su ida y vuelta; el mapa de D3; el punto de D4/D5
+  con el fallback de D6; la línea de log de (a). Tests: el invitado nace a `INVITE_SPAWN_OFFSET_M` del
+  invitador cliente y del invitador anfitrión; identidad desconocida → reparto normal; `0` nunca entra
+  en el mapa; idempotencia por peer; un anfitrión sin los campos sigue repartiendo.
+- **R2** — Unity: `PEER_IDENTITY` en host y joiner, `INVITED_BY` sólo desde la invitación, y en
+  `Attempt` para el reintento. Test del router de env sin proceso (el patrón de `BuildEnvironment`).
+- **R3** — La precedencia de Q1 en el joiner, sólo cuando Q1 esté contestada.
+- **R4** — Docs: `NETWORKING_AND_SESSION_ARCHITECTURE.md` §spawn, `STATE.md`.
+
+### Por qué es ADR (reglas duras 2, 7, 9)
+
+Añade dos campos al protocolo entre backends (regla 7); fija una regla de juego nueva —dónde nace un
+invitado— que es una **excepción explícita** a ADR-116 D4 apoyada en su D10; y propone una precedencia
+sobre ADR-045 enm. 1 que hoy dice lo contrario (regla 2: se pregunta, no se «mejora»).
+
+---
