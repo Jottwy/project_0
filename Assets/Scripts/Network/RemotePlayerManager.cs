@@ -94,6 +94,67 @@ namespace BackroomsSurvival.Net
             return string.Join(",", remotePlayers.ConvertAll(r => r.id.ToString()));
         }
 
+        /// <summary>
+        /// Cuánto por detrás del presente se dibuja a los demás. Es el mismo principio que el
+        /// «frame pacing» de un juego a 30 fps clavados: **lo que se nota no es la tasa, es la
+        /// irregularidad**. Persiguiendo la última pose recibida, el proxy reproduce fielmente el
+        /// jitter de la red; retrasando el dibujo lo justo para tener siempre DOS muestras que
+        /// rodeen el instante que toca, sale movimiento a ritmo constante aunque los paquetes
+        /// lleguen a trompicones.
+        ///
+        /// 150 ms sale de lo medido el 10-09 en partida real por Steam: poses cada 100 ms y una
+        /// varianza de latencia que llegó a **70 ms** (`Max latency variance` en el diagnóstico de
+        /// Valve). El retardo tiene que cubrir un intervalo de envío más el jitter, o el buffer se
+        /// queda seco justo cuando más falta hace. Es el precio: se ve a los demás 150 ms en el
+        /// pasado — irrelevante aquí, donde nada se resuelve por posición del cliente (el disparo
+        /// lo valida el host contra su roster).
+        /// </summary>
+        public const float InterpolationDelay = 0.15f;
+
+        /// <summary>
+        /// Pose de <paramref name="view"/> en el instante «ahora − <see cref="InterpolationDelay"/>»,
+        /// interpolada entre las dos muestras que lo rodean. Devuelve false mientras no haya dos
+        /// (proxy recién creado, o un hueco largo sin recibir), y entonces el llamante se queda con
+        /// el último valor conocido.
+        ///
+        /// De paso descarta lo ya consumido: se conserva UNA muestra por detrás del instante
+        /// dibujado, que es la que hace de extremo izquierdo de la interpolación.
+        /// </summary>
+        private static bool TrySamplePlaybackPose(RemoteView view, out Vector3 position, out float yaw)
+        {
+            position = default;
+            yaw = default;
+
+            var samples = view.samples;
+            float renderTime = Time.unscaledTime - InterpolationDelay;
+
+            int newestOlder = -1;
+            for (int i = 0; i < samples.Count; i++)
+            {
+                if (samples[i].time <= renderTime)
+                    newestOlder = i;
+                else
+                    break; // llegan en orden, así que la primera posterior corta la búsqueda
+            }
+
+            if (newestOlder < 0 || newestOlder + 1 >= samples.Count)
+                return false; // sin par que rodee el instante: aún no, o nos hemos quedado secos
+
+            if (newestOlder > 0)
+                samples.RemoveRange(0, newestOlder);
+
+            var older = samples[0];
+            var newer = samples[1];
+
+            float span = newer.time - older.time;
+            // Dos muestras con el mismo sello no definen un tramo; se toma la más nueva y ya.
+            float t = span > 1e-5f ? Mathf.Clamp01((renderTime - older.time) / span) : 1f;
+
+            position = Vector3.Lerp(older.position, newer.position, t);
+            yaw = Mathf.LerpAngle(older.yaw, newer.yaw, t);
+            return true;
+        }
+
         /// Cuántas de estas entradas son PERSONAS. El resto son criaturas, que comparten stream y
         /// mensaje con los jugadores (ver <see cref="NetIdentity.CreatureIdBase"/>): contarlas
         /// juntas es lo que hacía que el log dijera 24 conectados habiendo uno.
@@ -221,6 +282,18 @@ namespace BackroomsSurvival.Net
 
                 view.targetPosition = groundedPosition;
                 view.targetRotation = rp.rotation;
+                // Se guarda la pose con su hora de llegada en vez de perseguirla directamente: el
+                // dibujo va por detrás y la reproduce a ritmo constante (ver InterpolationDelay).
+                view.samples.Add(new RemoteView.PoseSample
+                {
+                    time = Time.unscaledTime,
+                    position = groundedPosition,
+                    yaw = rp.rotation,
+                });
+                // Cota dura por si el consumidor no drenara (proxy fuera de pantalla, pausa larga):
+                // el buffer nunca es historia, sólo el tramo que hace falta para interpolar.
+                if (view.samples.Count > 16)
+                    view.samples.RemoveRange(0, view.samples.Count - 16);
                 view.animationState = string.IsNullOrWhiteSpace(rp.animation) ? "idle" : rp.animation;
                 view.crouch = rp.crouch; // ADR-020
                 view.pitch = rp.pitch;   // ADR-021
@@ -298,15 +371,29 @@ namespace BackroomsSurvival.Net
                 // El umbral no puede confundirse con movimiento normal: a sprint (7,29 m/s) y con
                 // poses a 10 Hz un peer avanza ~0,73 m entre muestras, así que cualquier salto de
                 // varios metros es discontinuidad, no carrera.
-                if ((view.root.position - view.targetPosition).sqrMagnitude >
+                // Pose a dibujar ESTE frame, reproducida con retardo (ver InterpolationDelay). Si
+                // todavía no hay dos muestras que rodeen ese instante, se cae al último valor
+                // conocido y el suavizado exponencial de abajo hace de red.
+                bool played = TrySamplePlaybackPose(view, out Vector3 playbackPos, out float playbackYaw);
+                Vector3 aimPosition = played ? playbackPos : view.targetPosition;
+                float aimYaw = played ? playbackYaw : view.targetRotation;
+
+                if ((view.root.position - aimPosition).sqrMagnitude >
                     positionSnapThreshold * positionSnapThreshold)
                 {
-                    view.root.position = view.targetPosition;
+                    view.root.position = aimPosition;
+                }
+                else if (played)
+                {
+                    // Con reproducción diferida el valor YA viene interpolado a ritmo constante:
+                    // volver a suavizarlo por encima sólo añadiría retraso y desharía justo la
+                    // uniformidad que se busca.
+                    view.root.position = aimPosition;
                 }
                 else
                 {
                     float posT = 1f - Mathf.Exp(-Mathf.Max(0f, positionSmoothing) * dt);
-                    view.root.position = Vector3.Lerp(view.root.position, view.targetPosition, posT);
+                    view.root.position = Vector3.Lerp(view.root.position, aimPosition, posT);
                 }
 
                 // [C] Critically-damped yaw (SmoothDampAngle) — less lag in sustained turns than the
@@ -314,14 +401,19 @@ namespace BackroomsSurvival.Net
                 // displacement / instant 180° turns don't sweep the long way around.
                 float currentY = view.root.eulerAngles.y;
                 float newY;
-                if (Mathf.Abs(Mathf.DeltaAngle(currentY, view.targetRotation)) > yawSnapThreshold)
+                if (Mathf.Abs(Mathf.DeltaAngle(currentY, aimYaw)) > yawSnapThreshold)
                 {
-                    newY = view.targetRotation;
+                    newY = aimYaw;
+                    view.yawVelocity = 0f;
+                }
+                else if (played)
+                {
+                    newY = aimYaw; // ya viene a ritmo constante, igual que la posición
                     view.yawVelocity = 0f;
                 }
                 else
                 {
-                    newY = Mathf.SmoothDampAngle(currentY, view.targetRotation,
+                    newY = Mathf.SmoothDampAngle(currentY, aimYaw,
                         ref view.yawVelocity, rotationSmoothTime, Mathf.Infinity, dt);
                 }
                 view.root.rotation = Quaternion.Euler(0f, newY, 0f);
@@ -378,6 +470,7 @@ namespace BackroomsSurvival.Net
 
             view.id = id;
             view.targetPosition = view.root != null ? view.root.position : Vector3.zero;
+            view.samples.Clear(); // un proxy reciclado no arrastra el recorrido del anterior
             view.targetRotation = view.root != null ? view.root.eulerAngles.y : 0f;
             view.yawVelocity = 0f; // [C] no carry-over from a recycled view
             ResetCosmetics(view); // ADR-022..ADR-049: recycled proxy starts clean (root just re-activated above)
@@ -408,6 +501,7 @@ namespace BackroomsSurvival.Net
             view.id = -1;
             ResetCosmetics(view); // ADR-022..ADR-049
             view.targetPosition = Vector3.zero;
+            view.samples.Clear();
             view.targetRotation = 0f;
             view.yawVelocity = 0f; // [C]
 
@@ -676,6 +770,16 @@ namespace BackroomsSurvival.Net
 
     public class RemotePlayerView
     {
+        /// Una pose recibida, con el instante en que llegó. El sello es LOCAL (hora de recepción)
+        /// porque el wire no trae marca de tiempo del emisor; para absorber el jitter da igual, ya
+        /// que lo que importa es la irregularidad entre llegadas, que es justo lo que esto mide.
+        public struct PoseSample
+        {
+            public float time;
+            public Vector3 position;
+            public float yaw;
+        }
+
         public int id = -1;
         public Transform root;
         public TextMeshPro nameTag;
@@ -683,6 +787,12 @@ namespace BackroomsSurvival.Net
         public float targetRotation;
         // [C] SmoothDampAngle state for the yaw smoothing (degrees/sec); reset on spawn/release.
         public float yawVelocity;
+
+        /// Historial de poses recibidas, para reproducir con retardo (ver
+        /// <see cref="RemotePlayerManager.InterpolationDelay"/>). Es una cola pequeña: se descarta
+        /// todo lo que ya quedó por detrás del instante que se está dibujando, así que su tamaño lo
+        /// acota el retardo y no crece con la duración de la partida.
+        public readonly List<PoseSample> samples = new List<PoseSample>(8);
         // ADR-011: scalar transient-action channel, read by ProxyPickupHook, which edge-detects the
         // transition into "pickup" and fires the Pickup trigger. The domain the backend actually
         // emits is exactly "idle" | "walk_slow" | "pickup" (sync.rs::broadcast_player_update).
