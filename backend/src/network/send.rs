@@ -38,12 +38,23 @@ const BWTRACE_DUMP_EVERY_MS: u64 = 5000;
 
 /// Contabiliza un datagrama que SALE y, cada `BWTRACE_DUMP_EVERY_MS`, vuelca el reparto ordenado
 /// de mayor a menor. El total acumulado, no por intervalo: lo que se busca es qué DOMINA.
-fn note_sent_by_kind(kind: &str, bytes: usize, self_id: PeerId, elapsed_ms: u64) {
+fn note_sent_by_kind(kind: &str, data: &[u8], self_id: PeerId, elapsed_ms: u64) {
+    let bytes = data.len();
     let Ok(mut map) = SENT_BY_KIND.lock() else {
         return; // Un mutex envenenado no justifica tumbar el envío: esto es diagnóstico.
     };
 
-    let entry = map.entry(kind.to_string()).or_insert((0, 0));
+    // La etiqueta `kind` sola no basta: la primera medida (10-09) dio un 97 % en
+    // `broadcast_unreliable`, que es la vía de una docena de emisores distintos. El opcode va en la
+    // cabecera (`PacketHeader::to_bytes`, u16 big-endian) y el byte alto es siempre 0, así que el
+    // bajo identifica el payload sin descifrar nada.
+    let label = if data.len() >= 2 {
+        format!("{kind}:0x{:02X}", data[1])
+    } else {
+        kind.to_string()
+    };
+
+    let entry = map.entry(label).or_insert((0, 0));
     entry.0 += bytes as u64;
     entry.1 += 1;
 
@@ -630,7 +641,7 @@ impl NetworkManager {
         // mismo mida por relay o directo. Lo que se rechazó por techo (arriba) ya no llega.
         note_sent_by_kind(
             kind,
-            data.len(),
+            data,
             self.local_id,
             self.session_start.elapsed().as_millis() as u64,
         );
