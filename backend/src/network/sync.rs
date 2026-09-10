@@ -1212,37 +1212,12 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager) {
         .iter()
         .filter_map(|id| net.peers.get(id).map(|p| (*id, p.position)))
         .collect();
-    let poses: Vec<(PeerId, [f32; 3], PacketPayload)> = net
-        .peers
-        .values()
-        .map(|p| {
-            (
-                p.id,
-                p.position,
-                PacketPayload::PlayerUpdate {
-                    position: p.position,
-                    rotation: p.rotation,
-                    animation: p.animation.clone(),
-                    crouch: p.crouch,
-                    pitch: p.pitch,
-                    equipment: p.equipment,
-                    held_item: p.held_item,
-                    hit_seq: p.hit_seq,
-                    dead: p.dead,
-                    revealed: p.revealed,
-                    vocal_seq: p.vocal_seq,
-                    vocal_kind: p.vocal_kind,
-                    light_on: p.light_on,
-                    fire_seq: p.fire_seq,
-                    buttons: p.buttons,
-                    melee_seq: p.melee_seq,
-                    carry_def: p.carry_def,
-                    carry_count: p.carry_count,
-                    species: p.species,
-                },
-            )
-        })
-        .collect();
+    // Sólo id y posición: es lo ÚNICO que decide el AOI, y es todo `Copy`. La pose completa se
+    // construye más abajo y sólo para quien acabe teniendo destinatarios — antes se armaban las P
+    // poses por ronda, con su `animation.clone()` cada una, y las de los orígenes que no interesan
+    // a nadie se tiraban enteras. Con 24 criaturas y una persona dentro (medido el 10-09) eso eran
+    // cientos de `String` por segundo asignadas para nada.
+    let poses: Vec<(PeerId, [f32; 3])> = net.peers.values().map(|p| (p.id, p.position)).collect();
 
     // E1 (ADR-074 fase 1): decidir ANTES de enviar qué pares siguen dentro del AOI, y dejar el
     // estado de histéresis ya actualizado. Se hace en un paso aparte porque el envío toma
@@ -1253,7 +1228,7 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager) {
     let mut relayed: std::collections::HashMap<PeerId, Vec<PeerId>> =
         std::collections::HashMap::with_capacity(poses.len());
     let mut next_pairs = std::collections::HashSet::with_capacity(net.aoi_pose_pairs.len().max(16));
-    for (src_id, src_pos, _) in &poses {
+    for (src_id, src_pos) in &poses {
         for &dest_id in &dest_ids {
             if dest_id == *src_id {
                 continue; // never echo a peer its own pose
@@ -1278,11 +1253,40 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager) {
     }
     let relayed_count: usize = relayed.values().map(|d| d.len()).sum();
 
-    for (src_id, payload) in poses.iter().map(|(id, _, p)| (id, p)) {
-        // E1: si este origen no le interesa a nadie, ni siquiera se serializa.
+    // Se recorre `poses` (Vec, orden estable) y NO las claves de `relayed` (HashMap): el orden de
+    // salida tiene que ser determinista — regla dura 13.
+    for (src_id, _) in &poses {
+        // E1: si este origen no le interesa a nadie, ni se construye su pose ni se serializa.
         let Some(dests) = relayed.get(src_id) else {
             continue;
         };
+        let Some(p) = net.peers.get(src_id) else {
+            continue; // se fue entre el cálculo del AOI y el envío
+        };
+        // La pose completa se arma AQUÍ, ya sabiendo que alguien la va a recibir: es el único
+        // punto donde se paga el `clone()` de la animación.
+        let payload = PacketPayload::PlayerUpdate {
+            position: p.position,
+            rotation: p.rotation,
+            animation: p.animation.clone(),
+            crouch: p.crouch,
+            pitch: p.pitch,
+            equipment: p.equipment,
+            held_item: p.held_item,
+            hit_seq: p.hit_seq,
+            dead: p.dead,
+            revealed: p.revealed,
+            vocal_seq: p.vocal_seq,
+            vocal_kind: p.vocal_kind,
+            light_on: p.light_on,
+            fire_seq: p.fire_seq,
+            buttons: p.buttons,
+            melee_seq: p.melee_seq,
+            carry_def: p.carry_def,
+            carry_count: p.carry_count,
+            species: p.species,
+        };
+        let payload = &payload;
         // F0.2: encodear UNA vez por origen en vez de una vez por par (origen, destino). Los
         // bytes no dependen del destino —el header lleva el id del origen y la secuencia de un
         // no-fiable es 0—, así que esto emite exactamente los mismos datagramas: P
