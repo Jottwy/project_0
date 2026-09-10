@@ -66,10 +66,63 @@ const ENTITY_TICK_EVERY: u64 = 6;
 const ENTITY_DAMAGE_ENABLED: bool = false;
 /// Ownership + teleportation checked at 1hz.
 const SLOW_TICK_EVERY: u64 = 60;
-/// Player position broadcast to peers at 10hz.
-const NET_BROADCAST_EVERY: u64 = 6;
+/// Reparto de poses a los peers, **20 Hz** (60 / 3).
+///
+/// Estuvo a 10 Hz mientras el enlace del anfitrión iba saturado: 253,8 KB/s contra un techo de 256
+/// y 1,9 s de cola (medido el 09-09). Con el wire posicional de ADR-137 la misma partida bajó a
+/// **1,2 KB/s y cola cero** (medido el 10-09), así que doblar la cadencia cabe de sobra — el coste
+/// de red es proporcional y sigue siendo una fracción del presupuesto.
+///
+/// Sube la resolución de TODO lo que cuelga de la pose: posición, giro y, de rebote, la animación,
+/// que se deriva de la velocidad (ADR-013) y no del campo `animation`. No sustituye al buffer de
+/// interpolación del cliente (`RemotePlayerManager.InterpolationDelay`): aquél arregla la
+/// IRREGULARIDAD de las llegadas y éste la resolución; hacen falta los dos.
+const NET_BROADCAST_EVERY: u64 = 3;
 /// Heartbeat to peers every 1s.
 const HEARTBEAT_EVERY: u64 = 60;
+
+/// ENTTRACE — cuánto se va en simular criaturas, acumulado y volcado cada 5 s.
+///
+/// El presupuesto de un tick a 60 Hz es **16,67 ms**, y el porcentaje que sale aquí es lo que
+/// decide si el LOD por distancia merece la pena: tocar la IA de las criaturas significa entrar en
+/// los seis invariantes intocables de ADR-038, y eso no se hace por una corazonada. En esta misma
+/// tanda una estimación a ojo ya señaló al roster equivocado.
+static ENTITY_TICK_ACC: std::sync::Mutex<(u64, u128, u128)> = std::sync::Mutex::new((0, 0, 0));
+
+/// Contabiliza un `tick_entities` y, cada 5 s, vuelca media, máximo y peso sobre el presupuesto.
+fn note_entity_tick(elapsed: std::time::Duration) {
+    use std::time::Instant;
+    static LAST_DUMP: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+
+    let micros = elapsed.as_micros();
+    let (ticks, total, max) = {
+        let Ok(mut acc) = ENTITY_TICK_ACC.lock() else {
+            return; // un mutex envenenado no justifica tumbar el bucle: esto es diagnóstico
+        };
+        acc.0 += 1;
+        acc.1 += micros;
+        acc.2 = acc.2.max(micros);
+        (acc.0, acc.1, acc.2)
+    };
+
+    let Ok(mut last) = LAST_DUMP.lock() else {
+        return;
+    };
+    let now = Instant::now();
+    match *last {
+        Some(t) if now.duration_since(t).as_secs() < 5 => return,
+        _ => *last = Some(now),
+    }
+
+    let avg_ms = total as f64 / ticks as f64 / 1000.0;
+    let max_ms = max as f64 / 1000.0;
+    info!(
+        "ENTTRACE event=entity_tick_cost ticks={ticks} avg_ms={avg_ms:.3} max_ms={max_ms:.3} \
+         budget_ms=16.67 avg_pct={:.1} max_pct={:.1}",
+        100.0 * avg_ms / 16.67,
+        100.0 * max_ms / 16.67
+    );
+}
 /// Chunk state broadcast at 5hz.
 const CHUNK_BROADCAST_EVERY: u64 = 12;
 /// ADR-029 V0 (invulnerability amendment): ticks a respawned player remains immune to PvP
@@ -2114,7 +2167,14 @@ pub async fn run(
             // either flag there changes, re-read this comment before assuming AI still "just
             // works" for a joiner.
             if net.is_host {
+                // ENTTRACE: cuánto cuesta REALMENTE simular las criaturas. Se instrumenta antes de
+                // optimizar nada porque en esta misma tanda una estimación a ojo ya señaló al
+                // culpable equivocado. El presupuesto de un tick es 16,7 ms (60 Hz); lo que diga
+                // esta traza decide si el LOD por distancia merece tocar la IA —con seis
+                // invariantes intocables en ADR-038— o si no hay nada que ganar ahí.
+                let entity_tick_started = std::time::Instant::now();
                 let (damage, events) = world.tick_entities(entity_dt, player.position, player.id);
+                note_entity_tick(entity_tick_started.elapsed());
                 if ENTITY_DAMAGE_ENABLED && !dev_freeze_survival && damage > 0.0 {
                     player.stats.take_damage(damage);
                 }
