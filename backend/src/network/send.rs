@@ -36,6 +36,21 @@ static SENT_BY_KIND: std::sync::LazyLock<
 /// log, suficientemente frecuente para ver la forma del tráfico en una partida corta.
 const BWTRACE_DUMP_EVERY_MS: u64 = 5000;
 
+/// Bytes emitidos desde el arranque, sumando todas las etiquetas.
+///
+/// Lo lee el arnés de carga (ADR-140 D3, `load_tests.rs`) para medir cuánto emitiría el anfitrión
+/// con N jugadores **en el mismo punto** en que `BWTRACE` cuenta en producción, así que las dos
+/// cifras son comparables.
+pub fn sent_bytes_total() -> u64 {
+    let Ok(map) = SENT_BY_KIND.lock() else {
+        return 0;
+    };
+    map.iter()
+        .filter(|(k, _)| k.as_str() != "__last_dump_ms")
+        .map(|(_, (bytes, _))| *bytes)
+        .sum()
+}
+
 /// Contabiliza un datagrama que SALE y, cada `BWTRACE_DUMP_EVERY_MS`, vuelca el reparto ordenado
 /// de mayor a menor. El total acumulado, no por intervalo: lo que se busca es qué DOMINA.
 fn note_sent_by_kind(kind: &str, data: &[u8], self_id: PeerId, elapsed_ms: u64) {

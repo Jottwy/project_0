@@ -1534,3 +1534,8 @@ async fn receive_loop(
 
 #[cfg(test)]
 mod tests;
+
+/// ADR-140 D3 — arnés de carga: cuánto emite el anfitrión con N jugadores. Marcado `#[ignore]`,
+/// se corre a mano; no es una regresión sino una MEDIDA.
+#[cfg(test)]
+mod load_tests;
