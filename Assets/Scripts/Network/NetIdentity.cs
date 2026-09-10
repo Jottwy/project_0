@@ -40,6 +40,21 @@ namespace BackroomsSurvival.Net
         public const int Unknown = 0;
 
         /// <summary>
+        /// Primer id reservado a las CRIATURAS. Espejo de `FACELING_ID_BASE`
+        /// (`backend/src/network/mod.rs:55`), con los robapieles por encima en `PHANTOM_ID_BASE`
+        /// (0xF000 = 61440): todo id a partir de aquí es una entidad, nunca una persona.
+        ///
+        /// Existe porque las criaturas viajan por el MISMO stream que los jugadores —comparten
+        /// `PlayerUpdate`—, así que sin este corte «cuántos hay conectados» cuenta facelings y
+        /// robapieles. Medido el 10-09 en partida real: el contador decía 24 con UNA persona
+        /// dentro.
+        /// </summary>
+        public const int CreatureIdBase = 61000;
+
+        /// <summary>¿Este id es de una persona? Ver <see cref="CreatureIdBase"/>.</summary>
+        public static bool IsHuman(int id) => id > Unknown && id < CreatureIdBase;
+
+        /// <summary>
         /// Escrito por el hilo de red de <see cref="IPCClient"/> (al parsear el snapshot) y leído
         /// desde el hilo principal. Un solo escritor, un <c>int</c>: <c>volatile</c> basta y no
         /// hace falta <c>Interlocked</c> — mismo criterio que <c>IPCClient._connectionEpoch</c>.

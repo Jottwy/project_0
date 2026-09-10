@@ -610,12 +610,13 @@ namespace BackroomsSurvival.Net
                     if (unchecked(Environment.TickCount - _lastRemotePlayersLogTick) >= RemotePlayersLogIntervalMs)
                     {
                         var ids = ws.remotePlayers.ConvertAll(rp => rp.id.ToString());
-                        Debug.Log($"[IPCClient] Parsed remote_players count={ws.remotePlayers.Count} ids=[{string.Join(",", ids)}]");
+                        int humans = RemotePlayerManager.CountHumans(ws.remotePlayers);
+                        Debug.Log($"[IPCClient] Parsed remote_players count={ws.remotePlayers.Count} (personas={humans}) ids=[{string.Join(",", ids)}]");
                         // ADR-111: el id AUTORITATIVO, y leído del propio snapshot — este bloque
                         // corre en el hilo de red, donde tocar `NetworkInitializer.Instance` (un
                         // UnityEngine.Object) no es legal.
                         int selfId = ws.localPlayerId;
-                        Debug.Log($"MPTRACE step=J event=unity_parse_world_state self_id={selfId} sender_id=<none> assigned_id=<none> peer_id=<none> endpoint={serverAddress}:{port} peer_count=<unknown> remote_players_count={ws.remotePlayers.Count} remote_players_ids=[{string.Join(",", ids)}]");
+                        Debug.Log($"MPTRACE step=J event=unity_parse_world_state self_id={selfId} sender_id=<none> assigned_id=<none> peer_id=<none> endpoint={serverAddress}:{port} peer_count=<unknown> players={humans} remote_players_count={ws.remotePlayers.Count} remote_players_ids=[{string.Join(",", ids)}]");
                         Debug.Log($"MPTRACE step=AA event=unity_parse_world_snapshot seed={ws.worldSeed} revision={ws.worldRevision} chunks={ws.visibleChunks.Count} entities={ws.visibleEntities.Count} items={ws.visibleItems.Count}");
                         _lastRemotePlayersLogTick = Environment.TickCount;
                     }
