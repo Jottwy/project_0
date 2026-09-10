@@ -40,14 +40,17 @@ pub mod summarize_metrics;
 /// Auditoría 2026-09-02 — la validación por niveles: plan, edificio, relleno, geometría, ráster,
 /// navegación y determinismo, para cualquier semilla y cualquier región.
 pub mod validate;
+/// ADR-140 — grafo de visibilidad por salas (PVS), construido y probado pero **sin conectar**: ver
+/// el encabezado del módulo para qué falta antes de encenderlo.
+pub mod visibility;
 pub mod world;
 
 // `pub(crate)` para que las pruebas del bucle de juego (ADR-045 enm. 2) monten el mismo mundo servido
 // —manifiesto real y semilla servida— sin duplicar el cargador.
+/// Sonda escéptica de interpenetración de cajas: fuerza bruta O(n²) con clasificación propia.
+#[cfg(test)]
+mod skeptic_boxes;
 #[cfg(test)]
 pub(crate) mod tests;
 #[cfg(test)]
 mod validate_tests;
-/// Sonda escéptica de interpenetración de cajas: fuerza bruta O(n²) con clasificación propia.
-#[cfg(test)]
-mod skeptic_boxes;

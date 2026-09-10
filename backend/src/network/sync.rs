@@ -27,6 +27,52 @@ use super::PeerId;
 
 // â”€â”€â”€ Conversion: game types â†’ sync types â”€â”€â”€
 
+/// Cuántas poses caben en un datagrama. Una pose posicional mide ~76 B (ADR-137), y el techo de
+/// gameplay son 1200 B (ADR-113), así que 12 deja margen de sobra para la cabecera y el sobre.
+///
+/// Se trocea por CUENTA y no midiendo el serializado porque el tamaño de una pose es acotado y
+/// conocido: la única parte variable es `animation`, y es una cadena corta de un catálogo cerrado.
+const MAX_POSES_PER_BATCH: usize = 12;
+
+/// Parte un lote en los datagramas que hagan falta, conservando el emparejamiento entre cada pose
+/// y su emisor.
+///
+/// **No lleva reensamblado, y es correcto**: cada trozo es un mensaje completo —N poses de N
+/// emisores— y el receptor las aplica una a una. Perder un trozo pierde esas poses, que es
+/// exactamente lo que pasaba antes al perder un datagrama suelto; la siguiente ronda las repone.
+fn split_pose_batches(
+    senders: Vec<u16>,
+    updates: Vec<PacketPayload>,
+) -> Vec<(Vec<u16>, Vec<PacketPayload>)> {
+    if senders.len() <= MAX_POSES_PER_BATCH {
+        return vec![(senders, updates)];
+    }
+    senders
+        .chunks(MAX_POSES_PER_BATCH)
+        .zip(updates.chunks(MAX_POSES_PER_BATCH))
+        .map(|(s, u)| (s.to_vec(), u.to_vec()))
+        .collect()
+}
+
+/// ADR-139 D1 — huella de la parte ESTABLE de un chunk, para decidir si toca reenviarlo.
+///
+/// Deja fuera los tres campos que cambian solos y que hacían que el gate no pudiera cortar nunca:
+/// `teleport_timer` (baja cada segundo), `entities` (se mueven) e `items` (caen, se cogen). Todo lo
+/// demás entra, así que un cambio estructural —estabilizar, anclar, un banco de trabajo nuevo— sigue
+/// saliendo en el acto.
+///
+/// Se construye una copia con esos tres campos vaciados en vez de hashear campo a campo: así, un
+/// campo NUEVO en `ChunkSyncData` entra en la huella por omisión. Al revés —listar lo que se
+/// hashea— un campo nuevo se quedaría fuera en silencio y no se propagaría jamás, que es la clase de
+/// fallo que este sistema no puede permitirse (misma razón que `content_hash` da en ADR-071).
+fn stable_chunk_hash(data: &ChunkSyncData) -> u64 {
+    let mut stable = data.clone();
+    stable.teleport_timer = 0.0;
+    stable.entities.clear();
+    stable.items.clear();
+    roster::content_hash(std::slice::from_ref(&stable))
+}
+
 pub fn chunk_to_sync_data(chunk: &Chunk) -> ChunkSyncData {
     let (stabilized, anchored) = match chunk.state {
         ChunkState::Active {
@@ -920,11 +966,36 @@ pub async fn broadcast_player_update(net: &NetworkManager, player: &Player) {
 /// position) to all connected peers, so each joiner learns about ALL other peers and
 /// not just the host. A joiner only connects to the host, so without this it never
 /// sees the other joiners. Sent at the player-update cadence, by the host only.
-pub async fn broadcast_peer_roster(net: &NetworkManager, player: &Player) {
+pub async fn broadcast_peer_roster(net: &mut NetworkManager, player: &Player) {
     if net.peers.is_empty() {
         return;
     }
-    for payload in peer_list_datagrams(build_peer_list(net, player)) {
+
+    let list = build_peer_list(net, player);
+
+    // ADR-140 D1: se hashea QUIÉN está, no DÓNDE está. Las posiciones cambian a cada tick, así que
+    // hashear la lista entera dejaría el gate abierto para siempre — el mismo fallo que ADR-139 D1
+    // encontró en los chunks. Medido el 10-09: 27,5 datagramas/s con UN jugador.
+    //
+    // Que la posición de este roster se refresque sólo con el latido NO deja a nadie congelado
+    // donde importa: la pose fina de quien tienes cerca llega por `relay_as` a 30 Hz. Esto sólo
+    // gobierna a los que están FUERA del AOI — los que no ves.
+    let composition: Vec<(u16, bool)> = list.iter().map(|p| (p.id, p.relay_only)).collect();
+    let open = {
+        let peers_len = net.peers.len();
+        let gate = &mut net.roster_gates.peers;
+        gate.should_send(
+            roster::content_hash(&composition),
+            peers_len,
+            std::time::Instant::now(),
+            roster::ROSTER_HEARTBEAT,
+        )
+    };
+    if !open {
+        return;
+    }
+
+    for payload in peer_list_datagrams(list) {
         net.broadcast_unreliable(&payload).await;
     }
 }
@@ -1255,6 +1326,13 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager) {
 
     // Se recorre `poses` (Vec, orden estable) y NO las claves de `relayed` (HashMap): el orden de
     // salida tiene que ser determinista — regla dura 13.
+    // ADR-140 D4: se agrupa POR DESTINATARIO. Antes cada par (origen, destino) era un `send_to`
+    // propio —2.450 llamadas al sistema por ronda con 50 juntos, medidas en 21,92 de los 25,34 ms
+    // de una ronda, el 86 %—, y ahora cada destinatario recibe UN datagrama con todas las poses que
+    // le tocan. El orden de recorrido sigue siendo el de `poses` (Vec), así que es determinista.
+    let mut per_dest: std::collections::HashMap<PeerId, (Vec<u16>, Vec<PacketPayload>)> =
+        std::collections::HashMap::with_capacity(dest_ids.len());
+
     for (src_id, _) in &poses {
         // E1: si este origen no le interesa a nadie, ni se construye su pose ni se serializa.
         let Some(dests) = relayed.get(src_id) else {
@@ -1286,14 +1364,27 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager) {
             carry_count: p.carry_count,
             species: p.species,
         };
-        let payload = &payload;
-        // F0.2: encodear UNA vez por origen en vez de una vez por par (origen, destino). Los
-        // bytes no dependen del destino —el header lleva el id del origen y la secuencia de un
-        // no-fiable es 0—, así que esto emite exactamente los mismos datagramas: P
-        // serializaciones por ronda en vez de P×D.
-        let data = net.encode_relay_as(*src_id, payload);
+        // La pose se CLONA por destinatario, que es el precio de agrupar: antes se serializaba una
+        // vez y se reenviaban los mismos bytes. Sale a cuenta con creces — un `clone` en memoria
+        // contra una llamada al sistema, que es tres órdenes de magnitud más cara.
         for &dest_id in dests {
-            net.send_prepared_unreliable(dest_id, &data).await;
+            let entry = per_dest
+                .entry(dest_id)
+                .or_insert_with(|| (Vec::new(), Vec::new()));
+            entry.0.push(*src_id);
+            entry.1.push(payload.clone());
+        }
+    }
+
+    // Se recorre `dest_ids` (Vec, orden estable) y no las claves del mapa: el orden de salida tiene
+    // que ser determinista — regla dura 13.
+    for dest_id in &dest_ids {
+        let Some((senders, updates)) = per_dest.remove(dest_id) else {
+            continue;
+        };
+        for (senders, updates) in split_pose_batches(senders, updates) {
+            let payload = PacketPayload::PlayerUpdateBatch { senders, updates };
+            net.send_unreliable_to(*dest_id, &payload).await;
         }
     }
 
@@ -1650,10 +1741,20 @@ pub async fn broadcast_chunk_states(net: &mut NetworkManager, world: &World, pla
         // un estado interno que el wire no transporta, ni dejar pasar un cambio que sí transporta.
         // Cuesta una serialización que el envío repite — la CPU está sobradísima (27 ms/s medidos
         // en el peor caso) y lo que este fix compra son bytes, que es el recurso escaso.
+        //
+        // ADR-139 D1: pero se hashea sólo la parte ESTABLE. `ChunkSyncData` mezcla 754 B de
+        // geometría inmutable con un `teleport_timer` que baja cada segundo y unas entidades que se
+        // mueven sin parar; hasheándolo entero, un tic de reloj o un paso de una criatura reenviaba
+        // el chunk COMPLETO. Medido el 10-09 en partida real: 116,4 KB/s, el **80 % de todo el
+        // tráfico del anfitrión**, con un solo jugador dentro.
+        //
+        // Lo volátil no se queda atrás: las criaturas llevan su propia pose a 30 Hz (`relay_as`,
+        // que en esa misma medida era el 8 %), y el resto se refresca en el siguiente latido de
+        // `ROSTER_HEARTBEAT`. Se envía exactamente el mismo mensaje: cambia CUÁNDO, no el qué.
         let open = {
             let gate = net.chunk_gates.entry(key).or_default();
             gate.should_send(
-                roster::content_hash(std::slice::from_ref(&data)),
+                stable_chunk_hash(&data),
                 peers,
                 std::time::Instant::now(),
                 roster::ROSTER_HEARTBEAT,
@@ -2086,6 +2187,112 @@ mod voice_tests {
         // seria justo el fallo abierto que este filtro existe para impedir.
         let net = host_with_peers(&[(2, [0.0, 1.8, 0.0], false)]).await;
         assert!(voice_destinations(&net, 9999).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod peer_roster_gate_tests {
+    use super::*;
+
+    /// ADR-140 D1: el roster de peers se hashea por QUIÉN está, no por DÓNDE está. Si las
+    /// posiciones entraran en la huella, el gate quedaría abierto para siempre — el mismo fallo
+    /// que ADR-139 D1 encontró en los chunks, y la razón de los 27,5 datagramas/s con un jugador.
+    #[test]
+    fn moving_peers_do_not_reopen_the_roster_gate() {
+        let before: Vec<(u16, bool)> = vec![(1, false), (7, false)];
+        // Los mismos peers, en otro sitio: la composición no ha cambiado.
+        let after: Vec<(u16, bool)> = vec![(1, false), (7, false)];
+        assert_eq!(
+            roster::content_hash(&before),
+            roster::content_hash(&after),
+            "moverse no puede reenviar el roster entero"
+        );
+    }
+
+    /// Y la otra mitad: que ENTRE o SALGA alguien tiene que propagarse en el acto, sin esperar al
+    /// latido. Es lo que impide que este ADR haga desaparecer a un recién llegado.
+    #[test]
+    fn a_peer_joining_or_leaving_changes_the_hash() {
+        let two: Vec<(u16, bool)> = vec![(1, false), (7, false)];
+        let three: Vec<(u16, bool)> = vec![(1, false), (7, false), (9, false)];
+        assert_ne!(
+            roster::content_hash(&two),
+            roster::content_hash(&three),
+            "un peer nuevo tiene que salir ya"
+        );
+
+        let one: Vec<(u16, bool)> = vec![(1, false)];
+        assert_ne!(roster::content_hash(&two), roster::content_hash(&one));
+
+        // `relay_only` es identidad a efectos de direccionamiento (ADR-079), no adorno: cambiarlo
+        // cambia lo que el receptor puede hacer con esa entrada.
+        let relayed: Vec<(u16, bool)> = vec![(1, false), (7, true)];
+        assert_ne!(roster::content_hash(&two), roster::content_hash(&relayed));
+    }
+}
+
+#[cfg(test)]
+mod stable_chunk_hash_tests {
+    use super::*;
+    use crate::world::chunk::ChunkLayoutV1;
+
+    fn sample() -> ChunkSyncData {
+        ChunkSyncData {
+            pos: [3, -7],
+            layer: 1,
+            seed: 42,
+            template_id: 2,
+            rotation: 90,
+            mirrored: true,
+            has_workbench: false,
+            layout: ChunkLayoutV1::default(),
+            stabilized: false,
+            anchored: false,
+            teleport_timer: 12.5,
+            entities: Vec::new(),
+            items: Vec::new(),
+            page: 0,
+            page_count: 1,
+            generation: 0,
+        }
+    }
+
+    /// ADR-139 D1: lo que cambia solo NO abre el gate. Es la mitad del contrato — la que compra los
+    /// bytes.
+    #[test]
+    fn volatile_fields_do_not_change_the_hash() {
+        let base = sample();
+
+        let mut ticked = base.clone();
+        ticked.teleport_timer -= 1.0;
+        assert_eq!(
+            stable_chunk_hash(&base),
+            stable_chunk_hash(&ticked),
+            "un tic del temporizador no puede reenviar el chunk entero"
+        );
+    }
+
+    /// Y la otra mitad, que es la que impide que este ADR rompa la replicación: un cambio
+    /// ESTRUCTURAL sigue saliendo en el acto, sin esperar al latido.
+    #[test]
+    fn structural_changes_still_change_the_hash() {
+        let base = sample();
+
+        let mut stabilized = base.clone();
+        stabilized.stabilized = true;
+        assert_ne!(
+            stable_chunk_hash(&base),
+            stable_chunk_hash(&stabilized),
+            "estabilizar un chunk tiene que propagarse ya"
+        );
+
+        let mut anchored = base.clone();
+        anchored.anchored = true;
+        assert_ne!(stable_chunk_hash(&base), stable_chunk_hash(&anchored));
+
+        let mut other_template = base.clone();
+        other_template.template_id = 9;
+        assert_ne!(stable_chunk_hash(&base), stable_chunk_hash(&other_template));
     }
 }
 

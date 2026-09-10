@@ -16015,3 +16015,319 @@ tubo.
 
 ---
 
+## ADR-137 — Enmienda 1: D1 ACEPTADO y aplicado; D3 demostrado; un riesgo nuevo que la propuesta no veía (2026-09-10) — ACEPTADA (Joel: «aceptar d1 pero me gustaría que hicieras tú el playtest pertinente»)
+
+**D1 aplicado** (`8ea09f61`): `encode_packet` usa `rmp_serde::to_vec`. Wire **61 → 62** en las dos
+puntas. Suite del backend 1440/1440, `CompileCheckClient` 0 ×4.
+
+**Medido en partida real por Steam el 10-09, dos máquinas, dos cuentas, dos redes:**
+
+| | Antes (09-09) | Después |
+|---|---|---|
+| Enviado por el anfitrión | 253,8 KB/s | **1,2 KB/s** |
+| Paquetes | 208/s | 10,4/s |
+| Cola de salida | ~483.000 B (**1,9 s**) | **0** |
+
+La sesión medida tenía **24 entidades**, el doble que la del 09-09: la mejora no viene de un
+escenario más suave. La caída (×211) es mayor que el ×3,2 del formato porque antes salían ~20
+datagramas por tick y ahora sale 1; el resto lo explica lo que ya no se reenvía.
+
+**D3 QUEDA DEMOSTRADO** (`positional_tolerates_short_array_from_older_peer`): con formato
+posicional, un array más corto del esperado **cae a los defaults** en vez de reventar, así que el
+patrón «campo nuevo al final + `#[serde(default)]`» —del que dependen veinte ADR— sobrevive. Era el
+riesgo real de D1 y ya no es una suposición.
+
+**Riesgo NUEVO, que la propuesta no contemplaba:** sin nombres, **el orden de los campos y el de
+las VARIANTES de `PacketPayload` pasan a ser parte del formato de wire**. Insertar una variante en
+medio del enum, o un campo en medio de una struct, renumera todo lo que va detrás y lo decodifica
+mal **sin error**. Queda escrito en `encode_packet`: se añade al final, siempre.
+
+**Q2 respondida a medias.** El `animation: String` resultó ser **peso muerto**: la locomoción se
+deriva de la VELOCIDAD (ADR-013), el campo sólo puede valer `idle`/`walk_slow`/`pickup` y tres de
+esos cuatro no se envían nunca; en el cliente, `animationState` no lo consume nadie. Borrarlo del
+wire sigue pidiendo bump, pero hay un atajo sin ADR ni bump: **dejar de rellenarlo**. Pendiente.
+
+---
+
+## ADR-138 — La fluidez es un problema de RITMO, no de tasa: reproducción diferida con retardo adaptativo (2026-09-10) — PROPUESTA (Joel: «GTA usa una interpolación… a exactamente 33,3 ms… hace que 30 frames parezcan mucho más fluidos que incluso juegos de 60»)
+
+**Estado:** PROPUESTA, y se implementa en la misma tanda. No toca wire ni protocolo: es cadencia de
+envío y reproducción en el cliente, así que no cae bajo la regla dura #7.
+
+### Contexto
+
+Joel trajo la observación de que un juego a 30 fps con fotogramas clavados a 33,3 ms se siente más
+fluido que uno a 60 con fotogramas irregulares. Es cierto y tiene nombre —*frame pacing*—, y el
+principio traslada exacto a la red: **lo que se percibe es la irregularidad, no la tasa**.
+
+Nuestro cliente perseguía la última pose recibida con un suavizado exponencial, así que reproducía
+fielmente el jitter del enlace. Medido el 10-09: ping estable en 26 ms y `Max latency variance`
+saltando entre **2,0 y 70,3 ms**.
+
+Tras aplicar reproducción diferida (150 ms) y subir a 20 Hz, la siguiente partida dio:
+
+```
+Sent: 20,4 pkts/s  2,2 K/sec     Ping: 22 ms   variance: 16,3 ms   Bytes buffered: 0
+```
+
+2,2 KB/s de 256 disponibles: **0,86 % del presupuesto**. Y Joel reportó que **al correr** seguía
+viéndose raro. No es lag: es geometría del buffer.
+
+| Velocidad | Desfase con 150 ms |
+|---|---|
+| Andando (~2 m/s) | 30 cm — imperceptible |
+| Corriendo (7,29 m/s) | **1,09 m — se ve** |
+
+Los 150 ms se eligieron cuando el jitter era de 70 ms. Ahora es de 16,3, y ese margen de más se
+está pagando en desfase. Un retardo sólo necesita cubrir **un intervalo de envío más el jitter**.
+
+### Decisión
+
+**D1 — Poses a 30 Hz** (`NET_BROADCAST_EVERY` 3 → 2). El hueco entre muestras baja de 50 a 33 ms.
+Coste ~3,3 KB/s, el **1,3 %** del techo. Con el enlace a 0,86 % de uso, la resolución es lo barato.
+
+**D2 — El retardo deja de ser una constante y se ajusta al jitter observado.** Se mide el intervalo
+real entre llegadas y su desviación, y el retardo objetivo es `intervalo + k·jitter`, acotado entre
+un suelo y un techo. Con la red de la prueba cae a ~70-80 ms, y el desfase corriendo pasa de 1,09 m
+a **~0,55 m**; con una red peor, sube solo en vez de romperse.
+
+**D3 — El ajuste se mueve despacio.** Cambiar el retardo desplaza el instante que se dibuja, así que
+un salto brusco se vería como un tirón — justo lo que este ADR viene a quitar. Se mueve con un tope
+por segundo, y la medida es GLOBAL de la sesión y no por proxy: la red es la misma para todos, y
+promediar entre peers da una estimación más estable que la de un peer que apenas se mueve.
+
+### Lo que se descarta, y por qué
+
+**Cadencia por estado o por animación** (idea de Joel: enviar más rápido a quien corre). La
+intuición es correcta —a más velocidad, más resolución hace falta— pero hoy sobra ancho de banda por
+dos órdenes de magnitud, así que ahorrar no compra nada y sí cuesta: complejidad, y reintroducir
+irregularidad en lo que este ADR estabiliza. **Se recupera cuando el presupuesto apriete de verdad**
+(decenas de jugadores en la misma sala), que es donde priorizar por velocidad y distancia es la
+técnica correcta. Anotado, no descartado.
+
+**Extrapolación (dead reckoning)** para tapar el desfase restante: sobrepasa en los cambios bruscos
+de dirección, que en pasillos estrechos son constantes. Si con D1+D2 sigue notándose, se evalúa
+entonces y con su medida.
+
+### Consecuencias
+
+- Se sigue viendo a los demás en el pasado; eso es inherente y no se elimina sin extrapolar. No
+  afecta a la autoridad: los impactos los valida el anfitrión contra su roster (ADR-030), nunca
+  contra lo que dibuja un cliente.
+- El suelo del retardo no puede bajar del intervalo de envío, o el buffer se seca entre muestras y
+  se vuelve a caer al camino antiguo (perseguir la última pose), que es justo el tirón de partida.
+
+### Fuera, declarado
+
+`ENTTRACE` (coste de simular criaturas) **sigue sin leerse**: sólo lo emite el anfitrión y las dos
+medidas del 10-09 se tomaron en la máquina que hacía de joiner. El LOD de entidades sigue esperando
+ese número, y con él la decisión de si merece tocar la IA de ADR-038.
+
+---
+
+## ADR-139 — El chunk reenvía su geometría cada vez que un temporizador hace tic: separar lo estable de lo volátil (2026-09-10) — PROPUESTA (Joel: «si se puede cambiar mientras no se rompa nada, más agresivo… si esto mejora y acaba yendo igual pues mejor»)
+
+**Estado:** PROPUESTA. D1 no toca wire y se implementa ya; D2 sí lo toca y espera decisión.
+
+### Contexto: por fin hay un culpable con nombre
+
+Tres tandas seguidas optimizando el relay de poses, y la primera medida por opcode —anfitrión real,
+410 s, ADR-138 dentro— dice que **las poses nunca fueron el problema**:
+
+```
+total=146,1 KB/s
+  broadcast_unreliable:0x11 = 116,4 KB/s  (80 %,  87.214 pkt)   ← ChunkState
+  broadcast_unreliable:0x07 =  13,7 KB/s  ( 9 %,  11.259 pkt)   ← PeerList
+  relay_as:0x10             =  11,3 KB/s  ( 8 %,  61.771 pkt)   ← poses
+  broadcast_unreliable:0x46 =   2,2 KB/s  ( 1 %)                ← CorpseList
+```
+
+**El 80 % es `ChunkState`: 213 datagramas por segundo con UN solo jugador dentro.**
+
+Y el mismo log cierra la otra pregunta abierta: `ENTTRACE avg_ms=0,027 max_ms=0,989` sobre un
+presupuesto de 16,67 ms → **0,2 %**. Simular las criaturas no cuesta nada, así que **el LOD de
+entidades queda descartado** y no hace falta entrar en los invariantes de ADR-038. Dos
+optimizaciones que parecían obvias y que la medición ha desmontado: la de entidades por inútil y la
+de poses por marginal.
+
+### Por qué se reenvía tanto
+
+`ChunkSyncData` (`protocol.rs:416`) mete en el mismo mensaje cosas de naturaleza opuesta:
+
+| Campo | Naturaleza | Peso |
+|---|---|---|
+| `layout` + `seed`/`template_id`/`rotation`/`mirrored` | **inmutable** una vez generado el chunk | **754 B** medidos |
+| `stabilized`, `anchored`, `has_workbench` | cambia con el juego, rara vez | — |
+| `teleport_timer` | **baja cada segundo** (`world/mod.rs:957`) | 4 B |
+| `entities` | **se mueven sin parar** | ~87 B cada una |
+| `items` | cambian al caer o al cogerse | — |
+
+El gate de ADR-071 hashea **el dato entero** (`sync.rs:1651`), así que basta un tic del temporizador
+o un paso de una criatura para que el hash cambie y se reenvíe el chunk **completo, geometría
+incluida**. Con 49 chunks en el radio de 3, eso es reenviar 754 B inmutables una y otra vez.
+
+El gate está bien escrito: lo que falla es **pedirle que distinga lo estable de lo volátil cuando
+viajan en el mismo saco**.
+
+Agravante: las criaturas **ya tienen su propio canal** — son los 61.771 `relay_as:0x10`, su pose a
+30 Hz. Su posición viaja por dos sitios a la vez.
+
+### Decisión
+
+**D1 — El gate hashea sólo la parte ESTABLE.** `teleport_timer`, `entities` e `items` salen del
+hash; todo lo demás sigue dentro. **No cambia un byte del wire**: se envía exactamente el mismo
+mensaje con el mismo contenido, sólo cambia *cuándo*. Un chunk pasa a reenviarse cuando cambia algo
+estructural o cuando vence el latido de 3 s (`ROSTER_HEARTBEAT`), en vez de a cada tic de reloj.
+
+Lo volátil no se queda sin actualizar: las criaturas van por su pose a 30 Hz, y el resto se refresca
+en el siguiente latido.
+
+**Riesgo aceptado y acotado:** un item que cae o que alguien coge puede tardar **hasta 3 s** en
+reflejarse si nada más cambia en ese chunk. Si molesta en juego, la respuesta NO es deshacer D1 sino
+D2 — o bajar el latido, que es un número.
+
+**D2 (propuesto, con wire) — Partir el mensaje en dos.** Un `ChunkStatic` que viaja al entrar en
+rango y cuando cambie de verdad, y un `ChunkVolatile` pequeño con timer, entidades e items a su
+propia cadencia. Es la forma correcta de fondo y hace innecesario el compromiso de D1, pero exige
+bump de wire y tocar el receptor (`apply_chunk_sync` es un reemplazo verbatim). **Sólo si D1 no
+basta**, y con su medición delante.
+
+### Hallazgo secundario, sin decidir
+
+`PeerList` (0x07) va a **27,5 datagramas por segundo con un jugador**: 11.259 paquetes en 410 s.
+Un roster de peers que no cambia no tiene por qué emitir a esa cadencia; huele al mismo patrón que
+D1. Se mide después de D1, porque con el 80 % fuera el reparto cambia y conviene volver a mirarlo
+antes de tocar nada.
+
+### Verificación
+
+La misma de siempre: `BWTRACE` antes y después en partida real. D1 se da por bueno si `0x11` deja de
+dominar el reparto; si no, se va a D2. Y suite del backend en verde, que es la que protege el
+comportamiento del gate (ADR-071 tiene tests propios).
+
+---
+
+## ADR-139 — Enmienda 1: D1 aplicado y MEDIDO, −94 % (2026-09-10) — ACEPTADA
+
+```
+ChunkState:  118,6 → 6,7 KB/s     (215 → 12,7 pkt/s)
+Total:       128,4 → 13,9 KB/s     Cola: 0 B     Calidad: 100 %
+```
+
+Mejor que los ~33 pkt/s estimados: el latido de 3 s hace casi todo el trabajo porque los chunks, de
+verdad, no cambian. **D2 queda archivado** — con el 94 % capturado sin tocar el wire, gastar un bump
+en el 6 % restante no se sostiene.
+
+**Recorrido completo de la tanda:** 253,8 → 13,9 KB/s (**−94,5 %**), cola de 1,9 s a 0, enlace del
+99 % al **5,4 %**.
+
+---
+
+## ADR-140 — El broadcast no sabe a quién le importa lo que manda: interés por destinatario y `PeerList` con gate (2026-09-10) — PROPUESTA (Joel: «¿50 aguantaría si están repartidos por el mapa?»)
+
+**Estado:** PROPUESTA. Ninguna decisión toca el wire.
+
+### Contexto
+
+Con ADR-137/138/139 el lag dejó de ser el techo: **13,9 KB/s, 5,4 % del enlace, cola cero**. La
+pregunta pasa a ser cuántos jugadores caben, y ahí la medida dice algo que la intuición no: **estar
+repartidos por el mapa no salva la partida, y en un aspecto la empeora**.
+
+Extrapolando el reparto medido el 10-09 a 50 jugadores:
+
+| Vía | Hoy (1 jugador) | Con 50 | Cómo crece |
+|---|---|---|---|
+| `ChunkState` (0x11) | 6,7 KB/s | ~335 KB/s | lineal por destinatario |
+| `CorpseList` (0x46) | 1,8 KB/s | ~90 KB/s | lineal |
+| `PeerList` (0x07) | 2,4 KB/s | **peor que lineal** | **N² por sí solo** |
+| poses (`relay_as`) | 0,1 KB/s | ~0 si están repartidos | N×(N−1), pero el AOI ya lo corta |
+
+Sólo el broadcast ya pasa del techo de 256 KB/s. Y **repartirse ayuda justo a lo que ya es pequeño**
+(las poses, 1-8 %) mientras **empeora** lo grande: cincuenta personas repartidas mantienen activos
+muchos más chunks que cincuenta juntas.
+
+La causa es una sola y es de diseño: **`broadcast_unreliable` manda una copia a CADA peer sin filtro
+de ninguna clase**. Un joiner recibe los chunks que rodean al **anfitrión** (`sync.rs`: «Only
+broadcast chunks near the player», donde *the player* es el del host), le sirvan o no.
+
+### Decisión
+
+**D1 — `PeerList` pasa por el gate de ADR-071.** Va a **27,5 datagramas por segundo con UN jugador**
+y su lista contiene N peers enviada a N peers, así que es el único emisor que crece N² por su
+cuenta. Es exactamente el patrón que ADR-139 D1 ya resolvió para los chunks, y con el mismo
+mecanismo: si el roster no cambia, no se emite; el latido lo refresca igual. **Coste: horas. Riesgo:
+bajo.** Primero por relación impacto/coste.
+
+**D2 — El broadcast filtra POR DESTINATARIO.** Que cada peer reciba los chunks de SU entorno y no
+los del anfitrión. No hay que inventar nada: `aoi_pose_should_relay` ya toma esa decisión para las
+poses, con histéresis para que nada parpadee en la frontera; esto es reutilizarla para `ChunkState`.
+**No cambia el wire** — mismo mensaje, distinto destinatario.
+
+**El riesgo es el que manda aquí y define el diseño:** filtrar de más significa que a alguien le
+falte un chunk y vea el mundo incompleto. Se falla **siempre del lado de enviar** —radio generoso,
+histéresis, y un mínimo que se manda pase lo que pase— y va con test de que nadie se queda sin lo
+que pisa.
+
+**D3 — Antes de las dos, una prueba de carga real.** Todo lo de arriba son extrapolaciones desde
+partidas de una y dos personas, y en esta misma tanda la extrapolación falló **tres veces**: el
+`MovementReconciler`, el LOD de entidades y el roster de STP. El arnés
+(`RunMultiInstancePlaytest.ps1`) ya arranca sin clicks desde el 10-09; falta darle movimiento a los
+bots para que el tráfico se parezca al de una partida. Con eso, `SessionMaxPlayers = 50` deja de ser
+un número que nadie ha probado.
+
+### Lo que queda fuera, y por qué
+
+- **ADR-139 D2** (partir `ChunkState`): archivado en su enmienda. D1 capturó el 94 % sin bump.
+- **Quitar el `layout` del envío** (754 B por chunk, y cada cliente YA genera el chunk localmente —
+  `apply_chunk_sync` → `generate_chunk_layer`): tentador por tamaño, pero hay una nota histórica de
+  «dos mundos de colisión» que sugiere que ese envío puede estar tapando divergencias. **Se
+  investiga antes de tocarlo**, no al revés.
+- **`animation` fuera del wire**: peso muerto confirmado, pero las poses son el 1 % del tráfico. Se
+  quita gratis el día que otro cambio pida bump.
+
+### El PVS por salas, que es el paso siguiente
+
+Cuando los 50 estén JUNTOS en una sala, D2 no basta: ahí el N² de poses vuelve entero. La respuesta
+es el PVS (*potentially visible set*, la técnica de Quake): en vez de preguntar por distancia,
+preguntar por **topología** — desde tu sala, ¿qué salas se ven?
+
+**Y aquí la investigación da una noticia buena: el grafo ya existe.** `RegionPlan` (`plan.rs:1219`)
+tiene `spaces`, `links` y `gates`; es decir, salas, conexiones y vanos. Lo que en Quake costaba
+minutos de precálculo offline, WG3 lo produce al planificar la región. El trabajo sería ubicar cada
+peer en su espacio, considerar visibles los que están a uno o dos enlaces, y añadir esa condición
+donde ya se decide el relay — más un radio mínimo que se ve SIEMPRE, ignorando el grafo.
+
+Ese radio mínimo no es un detalle: **si el PVS se equivoca, un jugador se vuelve invisible para
+otro**, y eso es mucho peor que gastar unos KB. Va en ADR propio, con su medición y sus tests.
+
+---
+
+## ADR-137 — Enmienda 2: CORRECCIÓN — `animation` NO es peso muerto (2026-09-10) — ACEPTADA
+
+La enmienda 1 y `STATE.md` afirmaban que el campo `animation` de `PlayerUpdate` era peso muerto y
+que se podía quitar del wire gratis en el próximo bump. **Es falso, y por poco se aplica.**
+
+El error vino de buscar consumidores sólo en `Assets/Scripts/`. `ProxyPickupHook` vive en
+`Assets/_Migration/STPIntegration/RemoteAvatar/`, lee `animationState` y **dispara el trigger
+`Pickup` del Animator** del proxy remoto. O sea que el campo es el canal del gesto de recoger
+(ADR-011) y llega hasta la animación de verdad.
+
+Y quien más lo usa es el **robapieles**: ADR-050 punto 15, el gesto fingido de recoger existe
+precisamente para que **otro jugador lo vea** («the theatre needs an AUDIENCE»). Quitarlo del wire
+habría dejado el teatro sin público — en silencio, sin error, y sin que ningún test lo dijera,
+porque `game_loop/tests.rs:1447` comprueba que el phantom se marca la animación **en el host**, no
+que viaje.
+
+Lo que sigue siendo cierto de la enmienda 1: es un `String` clonado en el camino caliente, y desde
+ADR-140 D4 se clona **por destinatario** (3.000 veces por ronda con 50 juntos, contra 50 antes).
+Eso sí es optimizable, pero **conservando el dato**: serializar cada pose UNA vez por origen y
+concatenar los bytes ya hechos en el lote, sin volver a pasar por `serde` ni clonar la cadena. Ésa
+es la siguiente optimización de verdad, y no es «borrar un campo que no usa nadie».
+
+**La lección, que vale más que el campo:** «no encuentro consumidores» no es «no hay consumidores».
+El proyecto tiene código de gameplay repartido entre `Assets/Scripts/` y `Assets/_Migration/`, y un
+grep a medias en un sistema con hooks fabricados en runtime (`.claude/rules/worldgen3-backend.md` §7
+avisa de lo mismo para WG3) produce exactamente esta clase de conclusión.
+
+---
+

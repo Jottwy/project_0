@@ -102,14 +102,63 @@ namespace BackroomsSurvival.Net
         /// rodeen el instante que toca, sale movimiento a ritmo constante aunque los paquetes
         /// lleguen a trompicones.
         ///
-        /// 150 ms sale de lo medido el 10-09 en partida real por Steam: poses cada 100 ms y una
-        /// varianza de latencia que llegó a **70 ms** (`Max latency variance` en el diagnóstico de
-        /// Valve). El retardo tiene que cubrir un intervalo de envío más el jitter, o el buffer se
-        /// queda seco justo cuando más falta hace. Es el precio: se ve a los demás 150 ms en el
-        /// pasado — irrelevante aquí, donde nada se resuelve por posición del cliente (el disparo
-        /// lo valida el host contra su roster).
+        /// **ADR-138 D2: ya no es una constante.** Estuvo fijo en 150 ms, elegidos cuando el jitter
+        /// medido era de 70 ms; con la red del 10-09 (jitter 16,3 ms) ese margen de más se pagaba
+        /// en desfase, y sólo se notaba **al correr**: a 7,29 m/s, 150 ms son 1,09 m por detrás,
+        /// mientras que andando son 30 cm que nadie ve. Ahora se mide el ritmo real de llegada y el
+        /// retardo se ajusta a él.
         /// </summary>
-        public const float InterpolationDelay = 0.15f;
+        public static float InterpolationDelay { get; private set; } = 0.15f;
+
+        /// Suelo y techo del retardo. El suelo no puede bajar del intervalo de envío o el buffer se
+        /// seca entre muestras y se vuelve al camino antiguo (perseguir la última pose), que es el
+        /// tirón del que se viene huyendo. El techo evita que una racha mala lo dispare a valores
+        /// donde el desfase sí molesta.
+        private const float MinInterpolationDelay = 0.05f;
+        private const float MaxInterpolationDelay = 0.30f;
+
+        /// Cuánto margen sobre el jitter observado. 2,5 desviaciones cubren la inmensa mayoría de
+        /// las llegadas sin inflar el retardo por un pico suelto.
+        private const float JitterSafety = 2.5f;
+
+        /// Tope de variación del retardo, en segundos por segundo. Mover el instante que se dibuja
+        /// ES un salto en la imagen, así que el ajuste va despacio: corregir en un cuarto de
+        /// segundo lo que sobra tarda, pero no se ve.
+        private const float DelayAdjustRate = 0.05f;
+
+        // Ritmo de llegada, medido GLOBAL y no por proxy: la red es la misma para todos, y
+        // promediar entre peers da una estimación más estable que la de uno que apenas se mueve.
+        private float _lastArrivalTime = -1f;
+        private float _arrivalInterval = 0.05f;
+        private float _arrivalJitter = 0.02f;
+
+        /// <summary>
+        /// Reajusta <see cref="InterpolationDelay"/> con el ritmo real de llegada. Se llama una vez
+        /// por actualización de estado, no por peer.
+        /// </summary>
+        private void NoteWorldStateArrival()
+        {
+            float now = Time.unscaledTime;
+            if (_lastArrivalTime >= 0f)
+            {
+                float gap = now - _lastArrivalTime;
+                // Una pausa larga (ventana en segundo plano, carga de chunks) no dice nada del
+                // ritmo de la red y envenenaría la media durante minutos.
+                if (gap < 1f)
+                {
+                    const float smoothing = 0.1f; // media móvil suave: importa la tendencia
+                    float deviation = Mathf.Abs(gap - _arrivalInterval);
+                    _arrivalInterval = Mathf.Lerp(_arrivalInterval, gap, smoothing);
+                    _arrivalJitter = Mathf.Lerp(_arrivalJitter, deviation, smoothing);
+                }
+            }
+            _lastArrivalTime = now;
+
+            float target = Mathf.Clamp(_arrivalInterval + JitterSafety * _arrivalJitter,
+                MinInterpolationDelay, MaxInterpolationDelay);
+            InterpolationDelay = Mathf.MoveTowards(InterpolationDelay, target,
+                DelayAdjustRate * Time.unscaledDeltaTime);
+        }
 
         /// <summary>
         /// Pose de <paramref name="view"/> en el instante «ahora − <see cref="InterpolationDelay"/>»,
@@ -195,6 +244,8 @@ namespace BackroomsSurvival.Net
         {
             if (remotePlayers == null)
                 return;
+
+            NoteWorldStateArrival(); // ADR-138 D2: el retardo se ajusta al ritmo real de la red
 
             int selfId = NetIdentity.Local;
 

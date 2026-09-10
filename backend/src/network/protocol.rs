@@ -171,6 +171,8 @@ pub enum PacketType {
     // robo que no ocurre, y perder el reporte es un item que se esfuma.
     StealCommand = 0x55,
     StealReport = 0x56,
+    /// ADR-140 D4 — varias poses en un datagrama. Ver `PacketPayload::PlayerUpdateBatch`.
+    PlayerUpdateBatch = 0x5A,
     //
     // 0x57 el broadcast periódico de estado de región (self-healing, NO fiable — mismo trato
     // que los demás rosters). 0x58/0x59 son la pareja petición/veredicto de cruzar una puerta;
@@ -1156,6 +1158,27 @@ pub enum PacketPayload {
     Ping {
         send_time: u32,
     },
+    /// ADR-140 D4 — **varias poses en UN datagrama**, agrupadas por destinatario.
+    ///
+    /// Medido el 10-09 con 50 jugadores en la misma sala: el relay de poses se llevaba **21,92 de
+    /// los 25,34 ms** de una ronda (el 86 %), y el presupuesto de un tick a 60 Hz son 16,67. La
+    /// causa no es serializar —eso ya se hace una vez por origen (F0.2)— sino que cada par
+    /// (origen, destino) era **un `send_to` propio**: 2.450 llamadas al sistema por ronda.
+    ///
+    /// Aquí el `sender_id` viaja DENTRO de cada entrada y no en la cabecera, que es lo que obligaba
+    /// a un datagrama por origen. La cabecera pasa a llevar el id del anfitrión, que es quien
+    /// reemite.
+    ///
+    /// Va al FINAL del enum a propósito: desde ADR-137 el formato es posicional y el orden de las
+    /// variantes ES parte del wire.
+    PlayerUpdateBatch {
+        /// De quién es cada pose, en el mismo orden que `updates`.
+        senders: Vec<u16>,
+        /// Cada elemento es un `PlayerUpdate`. Se guarda así, y no como una struct con los 19
+        /// campos repetidos, para que añadir un campo a la pose no haya que hacerlo en dos sitios
+        /// — que es exactamente como se desincronizan dos formatos que deberían ser uno.
+        updates: Vec<PacketPayload>,
+    },
 }
 
 impl PacketPayload {
@@ -1223,6 +1246,7 @@ impl PacketPayload {
             Self::Ack { .. } => PacketType::Ack as u16,
             Self::Nack { .. } => PacketType::Nack as u16,
             Self::Ping { .. } => PacketType::Ping as u16,
+            Self::PlayerUpdateBatch { .. } => PacketType::PlayerUpdateBatch as u16,
         }
     }
 }

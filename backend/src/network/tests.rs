@@ -2212,7 +2212,7 @@ async fn a_relay_only_roster_entry_makes_the_phantom_visible_to_the_joiner() {
 
     // El roster con la entrada relay_only (10 Hz en producción; aquí un envío bastan).
     let host_player = crate::player::session::Player::new(host.local_id, "Host");
-    crate::network::sync::broadcast_peer_roster(&host, &host_player).await;
+    crate::network::sync::broadcast_peer_roster(&mut host, &host_player).await;
     tokio::time::sleep(Duration::from_millis(150)).await;
     joiner.process_incoming().await;
 
@@ -5037,7 +5037,7 @@ async fn a_full_broadcast_round_puts_nothing_oversized_on_the_wire() {
     let player = crate::player::Player::new(1, "Host");
 
     sync::broadcast_player_update(&host, &player).await;
-    sync::broadcast_peer_roster(&host, &player).await;
+    sync::broadcast_peer_roster(&mut host, &player).await;
     sync::broadcast_chunk_states(&mut host, &world, origin).await;
     sync::broadcast_corpses(&mut host, &world).await;
     sync::broadcast_stp_items(&mut host).await;

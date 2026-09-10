@@ -8,6 +8,93 @@
 > la sesión viva, el próximo paso, lo que está en curso, lo que no se toca, la deuda conocida y
 > los riesgos abiertos. Aquí solo vive lo que ya pasó, de lo más reciente a lo más antiguo.
 
+## Trasladado de STATE.md el 2026-09-10: la 42.ª tanda, entera
+
+### 2026-09-10 — 42.ª tanda: de «extremadamente lag» a 13,9 KB/s — medir antes de tocar, cuatro veces seguidas
+
+**Resultado, verificado en partida real por Steam (dos máquinas, dos cuentas, dos redes; builds 25218550 → 25230867):**
+
+| | 09-09 | 10-09 |
+|---|---|---|
+| Enviado por el anfitrión | 253,8 KB/s | **13,9 KB/s** (−94,5 %) |
+| Uso del enlace | 99 % (saturado) | **5,4 %** |
+| Cola de salida | ~483.000 B (**1,9 s**) | **0** |
+| Jitter (`Max latency variance`) | 70,3 ms | 7,0 ms |
+| Ping | 24 ms | 24 ms (nunca fue el problema) |
+
+**El método fue el resultado.** Al empezar no había NADA medido y las dos hipótesis en pie (ADR-009 L2 y el LOD de poses de ADR-074) resultaron
+falsas las dos. Se instrumentó primero y la medida descartó **tres** optimizaciones que parecían obvias:
+
+- `MovementReconciler` — el movimiento ya es client-authoritative y el RTT real eran 24 ms: nada que predecir.
+- **LOD de entidades** — `ENTTRACE avg_ms=0,027` sobre 16,67 de presupuesto: **0,2 %**. Evitó entrar en los seis invariantes de ADR-038.
+- **El relay de poses** — el 8 % del tráfico, después de tres tandas optimizándolo.
+
+El culpable era `ChunkState`, con el **92 %**, y sólo apareció al desglosar el `BWTRACE` **por opcode**: la etiqueta `broadcast_unreliable` sola
+agrupaba una docena de emisores distintos.
+
+**ADR-137 — el wire deja de escribir el nombre de cada campo.** `rmp_serde::to_vec_named` → `to_vec`. Medido con test propio: una pose pasa de
+**246 a 76 B**, o sea que **el 69 % eran las claves** (`"position"`, `"animation"`, `"held_item"`…) viajando 10 veces por segundo por entidad y por
+destinatario. Como todo pasa por `encode_packet`, el recorte alcanza rosters, `PeerList` y `WorldState`. Wire **61 → 62**.
+- **D3 demostrado, no supuesto**: un array más corto del esperado cae a los defaults, así que el patrón «campo nuevo al final + `serde(default)`»
+  —del que dependen veinte ADR— sobrevive al formato posicional. El primer test falló por un fallo MÍO al construir los bytes del enum, no por la
+  propiedad; se reescribió aislando la pregunta.
+- **Riesgo nuevo que la propuesta no veía**, escrito en `encode_packet`: sin nombres, **el orden de los campos y el de las VARIANTES del enum son
+  parte del formato**. Insertar en medio renumera y decodifica mal SIN error.
+
+**ADR-138 — la fluidez es RITMO, no tasa.** De una observación de Joel (el *frame pacing* de GTA: 30 fps clavados se ven mejor que 60 irregulares).
+Se pasó de perseguir la última pose a **reproducción diferida**, y luego el retardo dejó de ser constante: se mide el intervalo real de llegada y su
+desviación, y el objetivo es `intervalo + 2,5·jitter` acotado entre 50 y 300 ms, movido despacio (0,05 s/s) porque mover el instante que se dibuja
+ES un salto. Con 20 Hz y 150 ms fijos, **al correr** el desfase era 1,09 m (andando, 30 cm: por eso sólo se notaba a alta velocidad); con 30 Hz y
+retardo adaptativo baja a ~0,55 m.
+- **Descartada por ahora la cadencia por estado/animación** que proponía Joel: la intuición es correcta pero sobra ancho de banda por dos órdenes de
+  magnitud, y reintroduciría irregularidad. **Se recupera cuando el presupuesto apriete de verdad** — es la técnica correcta para decenas de jugadores.
+
+**ADR-139 D1 — el chunk reenviaba su geometría cada vez que un temporizador hacía tic.** `ChunkSyncData` mezcla 754 B de `layout` inmutable con un
+`teleport_timer` que baja cada segundo y unas entidades que se mueven; el gate de ADR-071 hasheaba el dato entero, así que reenviaba el chunk
+COMPLETO 215 veces por segundo **con un solo jugador dentro**. Ahora el hash deja fuera `teleport_timer`, `entities` e `items`.
+- **Sin tocar un byte del wire**: mismo mensaje, cambia CUÁNDO. Resultado: **215 → 12,7 pkt/s (−94 %)**, mejor que los ~33 que se habían estimado.
+- Se hashea una copia con esos campos vaciados y no campo a campo, para que un campo NUEVO entre en la huella por omisión.
+- Dos tests fijan las dos mitades: un tic no abre el gate, y estabilizar/anclar/cambiar plantilla sigue saliendo en el acto.
+
+**Los dos bugs que trajo Joel, ambos reales:**
+- **El que entra nacía en el origen del mundo.** `spawned id=23612, name=jottwydev, pos=(0.00, 0.00, 0.00)` mientras el que ya estaba dentro nacía
+  en su sitio. Se creaba el proxy con la pose por defecto; ahora se espera a la primera pose real (el emisor nunca manda el origen literal, así que
+  no se confunde con un sitio legítimo). El diagnóstico fácil —la supresión de 0,35 s del gate `SnapPending`— se **descartó con el log**: no había
+  ni un `player_respawned` en toda la sesión.
+- **Los contadores sumaban criaturas como jugadores**: 24 «conectados» con UNA persona. El corte (`NetIdentity.CreatureIdBase`, espejo de
+  `FACELING_ID_BASE`) vive en un solo sitio.
+
+**Y el arnés de playtest nunca arrancó sin clicks, pese a documentarlo.** `RunMultiInstancePlaytest.ps1` promete que `SESSION_MODE`/`CONNECT_TO`
+disparan host/join solos; `JoinSessionUI` lee esas variables en su `Start()`, pero el único camino que lo creaba era el click en «Multiplayer» del
+menú. Con el MainMenu de primera escena, cuatro instancias se quedaban vivas quemando CPU sin backend ni un puerto abierto. Añadido el disparador.
+
+**Tres diagnósticos míos que la evidencia tumbó por el camino** (dejados anotados porque el patrón se repite): «los mató mi sesión» (falso: murieron
+con la sesión viva), «es un crash» (falso: sin dumps y con los procesos vivos — `tasklist` dio cero con diez corriendo) y «es buffer del log»
+(falso: cerré con gracia y creció 223 bytes). La causa real era el `steam_appid.txt` del build local apuntando a producción.
+
+**Trampas de infraestructura que costaron tiempo y conviene no repetir:**
+- `Start-Process` con `-ArgumentList` **parte la ruta con espacios**: un build salió como `Playtest.exe`/`Playtest_Data` y dejó la carpeta con 4,4 GB
+  y dos builds mezclados. Lo cazó el `Preview` del vdf (561 ficheros añadidos donde debían ser 0).
+- Unity en batchmode **crashea con `HandleProjectAlreadyOpenInAnotherInstance`** si el editor está abierto: comprobar `Temp/UnityLockfile` ANTES.
+- Las trazas de diagnóstico deben ir en `warn!`: sin `BACKROOMS_VERBOSE_LOG=1` un build sólo deja pasar WARN, y `BWTRACE`/`ENTTRACE` estuvieron dos
+  builds sin poder hablar.
+
+**Estado final:** suite backend **1442/1442**, `CompileCheckClient` 0 ×4, 16 commits, tres ADR (137, 138, 139) y seis builds subidas a Steam.
+
+
+## Trasladado de STATE.md el 2026-09-10 (tercer corte): la tanda 39
+
+### 2026-09-08 — 39.ª tanda: menú de calidad gráfica (ADR-134 enmienda 1)
+- Seis escalones + Custom + 17 ajustes en la pestaña Graphics; ni DLSS ni raytracing: son HDRP-only, así que la fila es Off/FSR 1.0/STP.
+  (`GraphicsQualityPresets.cs`, `BackroomsGraphicsOptionsUI.cs`, `GraphicsOptionsRowsBuilder.cs`): patrón ADR-046.
+- BUG: `onValueChanged` con `_writingWidgets` bajada rebota al Ultra. Arreglo:
+  `SetValueWithoutNotify`/`SetIsOnWithoutNotify` (`BackroomsGraphicsOptionsUI.cs`), test sin él rojo (1/6).
+- ADR-134+1: UN solo pipeline en caliente. CAPACIDADES (soportes) vs PRESUPUESTOS (escala/muestras/dist/atlas).
+  Antialiasing por cámara; «sin sombras» = dist 0 (`BackroomsGraphicsApplier.cs`).
+- Verificado EN PLAY (STP_Showcase): Very Low (0,6x/1/0 m), Ultra (1,25x/8/120 m), High (1x/2/50 m).
+  EditMode headless 26/26 en tres fixtures. CompileCheck 0 ×4.
+
+
 ## Trasladado de STATE.md el 2026-09-10 (segundo corte): la tanda 37
 
 ### 2026-09-07 — 37.ª tanda: la mano al milímetro y la cuerda con la izquierda (ADR-133 enm. 1)

@@ -247,10 +247,7 @@ fn skeptic_overlap_recount() {
             } else {
                 pz1 + 0.02
             };
-            let probes = [
-                [px, cy, (pz0 + pz1) * 0.5],
-                [(px0 + px1) * 0.5, cy, pz],
-            ];
+            let probes = [[px, cy, (pz0 + pz1) * 0.5], [(px0 + px1) * 0.5, cy, pz]];
             for p in probes {
                 faces_total += 1;
                 let hit = boxes.iter().any(|b| {
@@ -276,7 +273,9 @@ fn skeptic_overlap_recount() {
             served.segments().len(),
             boxes.len()
         );
-        println!("  solape>0,01 m3: {n_solid} pares, {v_solid:.1} m3 | contacto sin solape: {n_touch}");
+        println!(
+            "  solape>0,01 m3: {n_solid} pares, {v_solid:.1} m3 | contacto sin solape: {n_touch}"
+        );
         for ((a, b), (n, v)) in &by_kind {
             println!("      {}/{}: {n} pares, {v:.1} m3", kn(*a), kn(*b));
         }
@@ -285,9 +284,7 @@ fn skeptic_overlap_recount() {
              {ww_same_seg} ({ww_same_seg_v:.1} m3; perpendiculares {ww_same_seg_perp}, paralelas \
              {ww_same_seg_par}) | distinto duenyo: {ww_other} ({ww_other_v:.1} m3)"
         );
-        println!(
-            "  de las del MISMO duenyo, prisma 0,15x0,15: {corner_canon} de {ww_same_seg}"
-        );
+        println!("  de las del MISMO duenyo, prisma 0,15x0,15: {corner_canon} de {ww_same_seg}");
         for l in &corner_odd {
             println!("{l}");
         }

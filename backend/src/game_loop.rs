@@ -66,7 +66,7 @@ const ENTITY_TICK_EVERY: u64 = 6;
 const ENTITY_DAMAGE_ENABLED: bool = false;
 /// Ownership + teleportation checked at 1hz.
 const SLOW_TICK_EVERY: u64 = 60;
-/// Reparto de poses a los peers, **20 Hz** (60 / 3).
+/// Reparto de poses a los peers, **30 Hz** (60 / 2) — ADR-138 D1.
 ///
 /// Estuvo a 10 Hz mientras el enlace del anfitrión iba saturado: 253,8 KB/s contra un techo de 256
 /// y 1,9 s de cola (medido el 09-09). Con el wire posicional de ADR-137 la misma partida bajó a
@@ -75,9 +75,13 @@ const SLOW_TICK_EVERY: u64 = 60;
 ///
 /// Sube la resolución de TODO lo que cuelga de la pose: posición, giro y, de rebote, la animación,
 /// que se deriva de la velocidad (ADR-013) y no del campo `animation`. No sustituye al buffer de
-/// interpolación del cliente (`RemotePlayerManager.InterpolationDelay`): aquél arregla la
-/// IRREGULARIDAD de las llegadas y éste la resolución; hacen falta los dos.
-const NET_BROADCAST_EVERY: u64 = 3;
+/// interpolación del cliente (`RemotePlayerManager`): aquél arregla la IRREGULARIDAD de las
+/// llegadas y éste la resolución; hacen falta los dos.
+///
+/// ADR-138 D1 lo subió de 20 a 30 Hz: con 2,2 KB/s medidos sobre un techo de 256 (0,86 % de uso),
+/// la resolución es lo barato. El hueco entre muestras baja de 50 a 33 ms, que es la mitad del
+/// desfase que se veía al CORRER — a 7,29 m/s, 17 ms de más son 12 cm de retraso extra.
+const NET_BROADCAST_EVERY: u64 = 2;
 /// Heartbeat to peers every 1s.
 const HEARTBEAT_EVERY: u64 = 60;
 
@@ -116,7 +120,9 @@ fn note_entity_tick(elapsed: std::time::Duration) {
 
     let avg_ms = total as f64 / ticks as f64 / 1000.0;
     let max_ms = max as f64 / 1000.0;
-    info!(
+    // `warn!` por la misma razón que BWTRACE: sin `BACKROOMS_VERBOSE_LOG=1` un build sólo deja
+    // pasar WARN, y esta medida sólo sirve tomada en la partida real. Vuelve a `info!` al leerla.
+    warn!(
         "ENTTRACE event=entity_tick_cost ticks={ticks} avg_ms={avg_ms:.3} max_ms={max_ms:.3} \
          budget_ms=16.67 avg_pct={:.1} max_pct={:.1}",
         100.0 * avg_ms / 16.67,
@@ -2755,7 +2761,7 @@ pub async fn run(
             // sees the other joiners. (A joiner's own roster is just {self, host}, so
             // only the host has anything to relay.)
             if net.is_host {
-                sync::broadcast_peer_roster(&net, &player).await;
+                sync::broadcast_peer_roster(&mut net, &player).await;
                 // ADR-015: relay each peer's full pose (rotation+animation, not just the
                 // position the roster carries) so joiners see other joiners gesture/face
                 // correctly. Host-only; no-op below two peers.

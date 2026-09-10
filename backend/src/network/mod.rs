@@ -170,6 +170,10 @@ pub struct RosterGates {
     pub corpses: crate::network::roster::RosterGate,
     /// ADR-093 (E2): gate del broadcast de `Level4State`.
     pub level4: crate::network::roster::RosterGate,
+    /// ADR-140 D1: gate del roster de PEERS. Es el único emisor que crece N² por su cuenta — su
+    /// lista contiene N peers y se manda a N peers—, y medido el 10-09 iba a **27,5 datagramas por
+    /// segundo con UN jugador dentro**.
+    pub peers: crate::network::roster::RosterGate,
 }
 
 /// ADR-070: the host-only simulation state of ONE falling item. Pairs with the `StpItemInfo` of
@@ -1072,6 +1076,51 @@ impl NetworkManager {
         // como cualquier otra `PeerDisconnected` y no haga falta un segundo camino de teardown.
         let mut events: Vec<NetworkEvent> = self.pending_events.drain(..).collect();
         for pkt in incoming {
+            // ADR-140 D4: un lote de poses se ABRE aquí, en paquetes sueltos con el emisor de cada
+            // entrada en la cabecera, y sigue por el camino de siempre. Se hace en este punto y no
+            // en el despacho porque `handle_packet` reparte con una macro donde cada variante ocupa
+            // una posición fija: meter ahí una que se expande en N eventos sería la clase de arreglo
+            // adosado que esa macro existe para evitar.
+            //
+            // El emisor de cada pose sale del PAYLOAD, nunca de la cabecera del lote: la cabecera
+            // lleva a quien reemite (el anfitrión), y confundir los dos daría todas las poses por
+            // suyas.
+            if let crate::network::protocol::PacketPayload::PlayerUpdateBatch { senders, updates } =
+                &pkt.payload
+            {
+                // Un lote descuadrado se descarta entero: aplicar la mitad repartiría poses a
+                // nombre de quien no es.
+                if senders.len() != updates.len() {
+                    log::warn!(
+                        "MPTRACE step=S event=pose_batch_mismatched self_id={} senders={} updates={} from={}",
+                        self.local_id,
+                        senders.len(),
+                        updates.len(),
+                        pkt.addr
+                    );
+                    continue;
+                }
+                let addr = pkt.addr;
+                let mut header = pkt.header;
+                let entries: Vec<(u16, crate::network::protocol::PacketPayload)> = senders
+                    .iter()
+                    .copied()
+                    .zip(updates.iter().cloned())
+                    .collect();
+                for (sender, payload) in entries {
+                    header.sender_id = sender;
+                    events.extend(
+                        self.handle_packet(IncomingPacket {
+                            addr,
+                            header,
+                            payload,
+                        })
+                        .await,
+                    );
+                }
+                continue;
+            }
+
             events.extend(self.handle_packet(pkt).await);
         }
         events
@@ -1530,3 +1579,8 @@ async fn receive_loop(
 
 #[cfg(test)]
 mod tests;
+
+/// ADR-140 D3 — arnés de carga: cuánto emite el anfitrión con N jugadores. Marcado `#[ignore]`,
+/// se corre a mano; no es una regresión sino una MEDIDA.
+#[cfg(test)]
+mod load_tests;
