@@ -654,6 +654,36 @@ J:\SteamBuild\ContentBuilder\builder\steamcmd.exe +login TU_USUARIO +run_app_bui
 Con `"Preview" "0"` esa misma orden sube de verdad. Al terminar, el build aparece en
 Steamworks → *Builds*, **sin rama asignada**. Activarlo es un acto aparte y manual.
 
+### Subida ejecutada — 2026-09-10 21:37 (wire 63: ADR-137→140 + auditoría de perf)
+
+| | |
+|---|---|
+| **BuildID** | **25238618** |
+| Manifest del depot 5200321 | `2137831743194082220` (base: `1915686972210401084`) |
+| Contenido | 600 ficheros, 2 261 MB · **12 cambiados, 74,75 MB, 78 chunks nuevos** |
+| Resultado | `Successfully finished AppID 5200320 build`, exit 0 |
+| Rama | **ninguna** — sin `SetLive`, comprobado: 0 coincidencias de `SetLive`, `Setting build live` y `branch` |
+
+Qué lleva: la fusión de las dos sesiones paralelas del 10-09 (`9ff790df`) — ADR-137/138/139/140 de la
+sesión de lag (wire 62→63, 253,8 → 13,9 KB/s) y la auditoría de rendimiento del cliente con el fix de
+GC de los replicadores STP. Cambian el backend, los dos `.dll` gestionados, `boot.config`,
+`globalgamemanagers`, `level1`/`level2` y los `sharedassets*`.
+
+**El árbol se sincronizó al commit fusionado para construir, y el WIP sin commitear de Joel se
+restauró después** (10 ficheros trackeados + 6 sin trackear, copia plana fuera de git, verificada por
+checksum: cero diferencias). El `git status` del clon principal quedó idéntico a antes de empezar.
+
+Exclusiones verificadas contra el manifiesto del ensayo antes de subir: **0** entradas de
+`steam_appid.txt`, `PlaytestLogs`, `backend_host_`, `backend_joiner_` y `.log`; presentes el exe,
+`UnityPlayer.dll`, `steam_api64.dll`, `backrooms_server.exe`, `BackroomsSurvival.dll`,
+`Facepunch.Steamworks.Win64.dll` y `wg3_manifest.json`. De `*_BurstDebugInformation_DoNotShip`
+sobrevive otra vez sólo la carpeta vacía (0 bytes, flag 40 = directorio).
+
+**Trampa nueva, anotada porque costó un intento:** el `TU_USUARIO` de los ejemplos de aquí abajo es un
+placeholder literal. Pasárselo a steamcmd tal cual da `Cached credentials not found` y un prompt de
+contraseña — **la caché de sesión es POR CUENTA**. Con el usuario real (`jottwydev`) la sesión cacheada
+entra sin pedir nada. El login sigue siendo humano la primera vez; la subida, no.
+
 ### Subida ejecutada — 2026-08-31 02:09
 
 | | |

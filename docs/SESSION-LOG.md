@@ -82,6 +82,19 @@ con la sesión viva), «es un crash» (falso: sin dumps y con los procesos vivos
 **Estado final:** suite backend **1442/1442**, `CompileCheckClient` 0 ×4, 16 commits, tres ADR (137, 138, 139) y seis builds subidas a Steam.
 
 
+## Trasladado de STATE.md el 2026-09-10 (cuarto corte): la tanda 38
+
+### 2026-09-08 — 38.ª tanda: la venda aplicada — un ESTADO por brazo, no un efecto (`bb9e3cc1`, en tronco)
+- No existía nada médico: salud escalar, cero heridas por zona, cero item. `PlayerMedicalState` es objeto plano con singleton estático — un
+  MonoBehaviour se lo lleva el rig de STP al reconstruirse. El lado del golpe sale del impacto y luego de la FUERZA, que va al revés.
+- **Red gratis**: bits 7/8 de `buttons` (ADR-044), sin campo, sin bump, sin ADR y sin una línea de Rust (`.claude/rules/red-wire-y-autoridad.md` §2).
+- **Los brazos de 1P NO son del jugador: cada wieldable trae SU copia del esqueleto** (12 prefabs, `Forearm.*`; el 3P usa `LowerArm.*`), así que el
+  hook vigila el wieldable ACTIVO. Y la venda se apaga con la MALLA del brazo: es su propio renderer y flotaría sola al guardar el arma.
+- **El primer horneado del avatar BORRÓ el `RealForm`** del robapieles (falta `MeshyImports`, gitignored), con exit 0 y sólo un aviso: se vio como
+  −81 líneas de diff. Re-horneado y verificado. Radio de 3P **medido sobre la malla** tras dos estimaciones a ojo fallidas en sentidos opuestos.
+  15 tests nuevos verdes, CompileCheck 0 ×4, capturas en los dos rigs; los hooks siguen sin verse en Play.
+
+
 ## Trasladado de STATE.md el 2026-09-10 (tercer corte): la tanda 39
 
 ### 2026-09-08 — 39.ª tanda: menú de calidad gráfica (ADR-134 enmienda 1)

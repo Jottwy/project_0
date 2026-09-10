@@ -6,7 +6,7 @@
 ## Estado
 - **WorldGen3 es el mundo servido.** Wire **63** en las dos puntas (`ipc/server.rs:38`, `WireSchema.cs:25`) — ADR-140 D4 lo subió el 10-09.
 - **Contrato WG3 v1 = Alpha 1** (`docs/WG3-ALPHA1-ROADMAP.md`): días 1–2 hechos; 3 y 5 APARCADOS detrás de la tanda de oficinas (Joel, 06-09).
-- **Multijugador por Steam, SIN LAG** (10-09, build 25230867): **253,8 → 13,9 KB/s**, cola → **0**. La partida EN VIVO de Joel sigue en wire 62.
+- **Multijugador por Steam, SIN LAG** (10-09): **253,8 → 13,9 KB/s**, cola → **0**. **Build 25238618 SUBIDA con todo (wire 63), SIN rama: Joel la habilita.**
 - **El commit tiene gate** (`tools/dev/validate-scope.ps1`, hook PreToolUse): rojo = el commit no se ejecuta. Alcance por `git diff --cached`.
 - Alpha 1 itch nov 2026 · Next Fest feb 2027 · EA primavera 2027 (`docs/SCALING-ROADMAP.md:196-198`). E0 de red cerrada y medida.
 
@@ -97,6 +97,14 @@
 > **Dos sesiones en paralelo el 10-09** convergen aquí: una atacó el lag de red (42.ª–43.ª abajo, wire acabó en
 > **63** con ADR-140), la otra midió y tocó el cliente (44.ª–47.ª). Renumeradas por orden cronológico real.
 
+### 2026-09-10 — 48.ª tanda: fusión de las dos ramas y build 25238618 subida a Steam
+- **Fusionadas** `claude/unwander-performance-audit-85a655` y `migration/worldgraph-v1` (`9ff790df`). Sin choque de
+  código; sólo `STATE.md`/`SESSION-LOG.md`, resueltos renumerando por orden real. `cargo test` 1453/1453, C# 4/4.
+- **Build de Steam 25238618 SUBIDA, sin rama asignada** (sin `SetLive`, comprobado): 600 ficheros, 12 cambiados,
+  74,75 MB. Ensayo previo con exclusiones verificadas. **Falta que Joel la habilite** en Steamworks → Builds.
+- **El WIP sin commitear de Joel se respetó**: copia plana fuera de git de 16 ficheros, `reset --hard` para construir
+  limpio, y restaurado después — verificado por checksum, `git status` idéntico al de antes. Detalle en `SERVER_BROWSER.md` §16.
+
 ### 2026-09-10 — 47.ª tanda: playtest real — antes/después del fix de GC, red de 4 instancias medida
 - **Fix de replicadores STP (`79bccf28`), antes/después aislado, cámara fija**: dentro del ruido (±2-4 %) porque
   ESTE mundo de prueba tiene CERO piezas STP construidas — el ahorro escala con piezas, no con tiempo. Correcto
@@ -164,13 +172,3 @@
 - Dos bugs del bombeo, cazados en el mismo playtest (`4da8889e`): `Poll()` era `void` y se tragaba su excepción (203 excepciones a máxima
   velocidad tras invalidar Steam el socket); nadie cerraba el túnel con Alt+F4 (`IsBackground`). Arreglo: `Poll()` → `bool`, `Application.quitting`.
 - Sin cambios de wire ni de las decisiones D1-D11. `SteamTunnelTests` 23/23; arnés 368/369 (1 rojo preexistente ajeno, `IgdProtocol`). CompileCheck 0×4.
-
-### 2026-09-08 — 38.ª tanda: la venda aplicada — un ESTADO por brazo, no un efecto (`bb9e3cc1`, en tronco)
-- No existía nada médico: salud escalar, cero heridas por zona, cero item. `PlayerMedicalState` es objeto plano con singleton estático — un
-  MonoBehaviour se lo lleva el rig de STP al reconstruirse. El lado del golpe sale del impacto y luego de la FUERZA, que va al revés.
-- **Red gratis**: bits 7/8 de `buttons` (ADR-044), sin campo, sin bump, sin ADR y sin una línea de Rust (`.claude/rules/red-wire-y-autoridad.md` §2).
-- **Los brazos de 1P NO son del jugador: cada wieldable trae SU copia del esqueleto** (12 prefabs, `Forearm.*`; el 3P usa `LowerArm.*`), así que el
-  hook vigila el wieldable ACTIVO. Y la venda se apaga con la MALLA del brazo: es su propio renderer y flotaría sola al guardar el arma.
-- **El primer horneado del avatar BORRÓ el `RealForm`** del robapieles (falta `MeshyImports`, gitignored), con exit 0 y sólo un aviso: se vio como
-  −81 líneas de diff. Re-horneado y verificado. Radio de 3P **medido sobre la malla** tras dos estimaciones a ojo fallidas en sentidos opuestos.
-  15 tests nuevos verdes, CompileCheck 0 ×4, capturas en los dos rigs; los hooks siguen sin verse en Play.
