@@ -46,6 +46,37 @@ namespace BackroomsSurvival.UI
             // JoinSessionUI.Start() builds the UI and shows "Choose Host or Join".
             Debug.Log("[NetworkMenuBootstrap] Connect panel requested.");
         }
+        /// <summary>
+        /// Abre el panel SIN click cuando la sesión viene dada por el entorno
+        /// (<c>SESSION_MODE</c> / <c>CONNECT_TO</c>), que es como arranca
+        /// <c>tools/dev/RunMultiInstancePlaytest.ps1</c>.
+        ///
+        /// Sin esto el arranque automático no existía pese a estar documentado: `JoinSessionUI`
+        /// LEE esas variables, pero en su `Start()` — y el único camino que lo creaba era el click
+        /// en «Multiplayer» del menú principal. Con el MainMenu de primera escena, un playtest
+        /// automatizado se quedaba renderizando el menú para siempre: cuatro instancias vivas,
+        /// consumiendo CPU, sin backend ni un puerto abierto. Medido el 10-09.
+        ///
+        /// Sólo actúa si alguna de las dos variables está puesta, así que una partida normal
+        /// —donde nadie las define— sigue esperando al click, exactamente como hasta ahora.
+        /// </summary>
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
+        private static void AutoOpenPanelWhenSessionComesFromEnvironment()
+        {
+            if (string.IsNullOrEmpty(System.Environment.GetEnvironmentVariable("SESSION_MODE")) &&
+                string.IsNullOrEmpty(System.Environment.GetEnvironmentVariable("CONNECT_TO")))
+                return;
+
+            // El de la escena trae su `_gameplayScene` serializado; sólo se fabrica uno cuando la
+            // escena de arranque no lo tiene (y entonces vale el valor por defecto del campo).
+            var bootstrap = FindFirstObjectByType<NetworkMenuBootstrap>();
+            if (bootstrap == null)
+                bootstrap = new GameObject("[NetworkMenuBootstrap]").AddComponent<NetworkMenuBootstrap>();
+
+            Debug.Log("[NetworkMenuBootstrap] SESSION_MODE/CONNECT_TO presentes: se abre el panel sin click.");
+            bootstrap.ShowConnectPanel();
+        }
+
         private void Awake()
         {
             PolymindGames.UserInterface.MainMenu.OnMultiplayerClicked += ShowConnectPanel;
