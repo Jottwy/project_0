@@ -16207,3 +16207,98 @@ comportamiento del gate (ADR-071 tiene tests propios).
 
 ---
 
+## ADR-139 — Enmienda 1: D1 aplicado y MEDIDO, −94 % (2026-09-10) — ACEPTADA
+
+```
+ChunkState:  118,6 → 6,7 KB/s     (215 → 12,7 pkt/s)
+Total:       128,4 → 13,9 KB/s     Cola: 0 B     Calidad: 100 %
+```
+
+Mejor que los ~33 pkt/s estimados: el latido de 3 s hace casi todo el trabajo porque los chunks, de
+verdad, no cambian. **D2 queda archivado** — con el 94 % capturado sin tocar el wire, gastar un bump
+en el 6 % restante no se sostiene.
+
+**Recorrido completo de la tanda:** 253,8 → 13,9 KB/s (**−94,5 %**), cola de 1,9 s a 0, enlace del
+99 % al **5,4 %**.
+
+---
+
+## ADR-140 — El broadcast no sabe a quién le importa lo que manda: interés por destinatario y `PeerList` con gate (2026-09-10) — PROPUESTA (Joel: «¿50 aguantaría si están repartidos por el mapa?»)
+
+**Estado:** PROPUESTA. Ninguna decisión toca el wire.
+
+### Contexto
+
+Con ADR-137/138/139 el lag dejó de ser el techo: **13,9 KB/s, 5,4 % del enlace, cola cero**. La
+pregunta pasa a ser cuántos jugadores caben, y ahí la medida dice algo que la intuición no: **estar
+repartidos por el mapa no salva la partida, y en un aspecto la empeora**.
+
+Extrapolando el reparto medido el 10-09 a 50 jugadores:
+
+| Vía | Hoy (1 jugador) | Con 50 | Cómo crece |
+|---|---|---|---|
+| `ChunkState` (0x11) | 6,7 KB/s | ~335 KB/s | lineal por destinatario |
+| `CorpseList` (0x46) | 1,8 KB/s | ~90 KB/s | lineal |
+| `PeerList` (0x07) | 2,4 KB/s | **peor que lineal** | **N² por sí solo** |
+| poses (`relay_as`) | 0,1 KB/s | ~0 si están repartidos | N×(N−1), pero el AOI ya lo corta |
+
+Sólo el broadcast ya pasa del techo de 256 KB/s. Y **repartirse ayuda justo a lo que ya es pequeño**
+(las poses, 1-8 %) mientras **empeora** lo grande: cincuenta personas repartidas mantienen activos
+muchos más chunks que cincuenta juntas.
+
+La causa es una sola y es de diseño: **`broadcast_unreliable` manda una copia a CADA peer sin filtro
+de ninguna clase**. Un joiner recibe los chunks que rodean al **anfitrión** (`sync.rs`: «Only
+broadcast chunks near the player», donde *the player* es el del host), le sirvan o no.
+
+### Decisión
+
+**D1 — `PeerList` pasa por el gate de ADR-071.** Va a **27,5 datagramas por segundo con UN jugador**
+y su lista contiene N peers enviada a N peers, así que es el único emisor que crece N² por su
+cuenta. Es exactamente el patrón que ADR-139 D1 ya resolvió para los chunks, y con el mismo
+mecanismo: si el roster no cambia, no se emite; el latido lo refresca igual. **Coste: horas. Riesgo:
+bajo.** Primero por relación impacto/coste.
+
+**D2 — El broadcast filtra POR DESTINATARIO.** Que cada peer reciba los chunks de SU entorno y no
+los del anfitrión. No hay que inventar nada: `aoi_pose_should_relay` ya toma esa decisión para las
+poses, con histéresis para que nada parpadee en la frontera; esto es reutilizarla para `ChunkState`.
+**No cambia el wire** — mismo mensaje, distinto destinatario.
+
+**El riesgo es el que manda aquí y define el diseño:** filtrar de más significa que a alguien le
+falte un chunk y vea el mundo incompleto. Se falla **siempre del lado de enviar** —radio generoso,
+histéresis, y un mínimo que se manda pase lo que pase— y va con test de que nadie se queda sin lo
+que pisa.
+
+**D3 — Antes de las dos, una prueba de carga real.** Todo lo de arriba son extrapolaciones desde
+partidas de una y dos personas, y en esta misma tanda la extrapolación falló **tres veces**: el
+`MovementReconciler`, el LOD de entidades y el roster de STP. El arnés
+(`RunMultiInstancePlaytest.ps1`) ya arranca sin clicks desde el 10-09; falta darle movimiento a los
+bots para que el tráfico se parezca al de una partida. Con eso, `SessionMaxPlayers = 50` deja de ser
+un número que nadie ha probado.
+
+### Lo que queda fuera, y por qué
+
+- **ADR-139 D2** (partir `ChunkState`): archivado en su enmienda. D1 capturó el 94 % sin bump.
+- **Quitar el `layout` del envío** (754 B por chunk, y cada cliente YA genera el chunk localmente —
+  `apply_chunk_sync` → `generate_chunk_layer`): tentador por tamaño, pero hay una nota histórica de
+  «dos mundos de colisión» que sugiere que ese envío puede estar tapando divergencias. **Se
+  investiga antes de tocarlo**, no al revés.
+- **`animation` fuera del wire**: peso muerto confirmado, pero las poses son el 1 % del tráfico. Se
+  quita gratis el día que otro cambio pida bump.
+
+### El PVS por salas, que es el paso siguiente
+
+Cuando los 50 estén JUNTOS en una sala, D2 no basta: ahí el N² de poses vuelve entero. La respuesta
+es el PVS (*potentially visible set*, la técnica de Quake): en vez de preguntar por distancia,
+preguntar por **topología** — desde tu sala, ¿qué salas se ven?
+
+**Y aquí la investigación da una noticia buena: el grafo ya existe.** `RegionPlan` (`plan.rs:1219`)
+tiene `spaces`, `links` y `gates`; es decir, salas, conexiones y vanos. Lo que en Quake costaba
+minutos de precálculo offline, WG3 lo produce al planificar la región. El trabajo sería ubicar cada
+peer en su espacio, considerar visibles los que están a uno o dos enlaces, y añadir esa condición
+donde ya se decide el relay — más un radio mínimo que se ve SIEMPRE, ignorando el grafo.
+
+Ese radio mínimo no es un detalle: **si el PVS se equivoca, un jugador se vuelve invisible para
+otro**, y eso es mucho peor que gastar unos KB. Va en ADR propio, con su medición y sus tests.
+
+---
+
