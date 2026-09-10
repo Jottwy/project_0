@@ -170,6 +170,10 @@ pub struct RosterGates {
     pub corpses: crate::network::roster::RosterGate,
     /// ADR-093 (E2): gate del broadcast de `Level4State`.
     pub level4: crate::network::roster::RosterGate,
+    /// ADR-140 D1: gate del roster de PEERS. Es el único emisor que crece N² por su cuenta — su
+    /// lista contiene N peers y se manda a N peers—, y medido el 10-09 iba a **27,5 datagramas por
+    /// segundo con UN jugador dentro**.
+    pub peers: crate::network::roster::RosterGate,
 }
 
 /// ADR-070: the host-only simulation state of ONE falling item. Pairs with the `StpItemInfo` of

@@ -939,11 +939,36 @@ pub async fn broadcast_player_update(net: &NetworkManager, player: &Player) {
 /// position) to all connected peers, so each joiner learns about ALL other peers and
 /// not just the host. A joiner only connects to the host, so without this it never
 /// sees the other joiners. Sent at the player-update cadence, by the host only.
-pub async fn broadcast_peer_roster(net: &NetworkManager, player: &Player) {
+pub async fn broadcast_peer_roster(net: &mut NetworkManager, player: &Player) {
     if net.peers.is_empty() {
         return;
     }
-    for payload in peer_list_datagrams(build_peer_list(net, player)) {
+
+    let list = build_peer_list(net, player);
+
+    // ADR-140 D1: se hashea QUIÉN está, no DÓNDE está. Las posiciones cambian a cada tick, así que
+    // hashear la lista entera dejaría el gate abierto para siempre — el mismo fallo que ADR-139 D1
+    // encontró en los chunks. Medido el 10-09: 27,5 datagramas/s con UN jugador.
+    //
+    // Que la posición de este roster se refresque sólo con el latido NO deja a nadie congelado
+    // donde importa: la pose fina de quien tienes cerca llega por `relay_as` a 30 Hz. Esto sólo
+    // gobierna a los que están FUERA del AOI — los que no ves.
+    let composition: Vec<(u16, bool)> = list.iter().map(|p| (p.id, p.relay_only)).collect();
+    let open = {
+        let peers_len = net.peers.len();
+        let gate = &mut net.roster_gates.peers;
+        gate.should_send(
+            roster::content_hash(&composition),
+            peers_len,
+            std::time::Instant::now(),
+            roster::ROSTER_HEARTBEAT,
+        )
+    };
+    if !open {
+        return;
+    }
+
+    for payload in peer_list_datagrams(list) {
         net.broadcast_unreliable(&payload).await;
     }
 }
@@ -2115,6 +2140,47 @@ mod voice_tests {
         // seria justo el fallo abierto que este filtro existe para impedir.
         let net = host_with_peers(&[(2, [0.0, 1.8, 0.0], false)]).await;
         assert!(voice_destinations(&net, 9999).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod peer_roster_gate_tests {
+    use super::*;
+
+    /// ADR-140 D1: el roster de peers se hashea por QUIÉN está, no por DÓNDE está. Si las
+    /// posiciones entraran en la huella, el gate quedaría abierto para siempre — el mismo fallo
+    /// que ADR-139 D1 encontró en los chunks, y la razón de los 27,5 datagramas/s con un jugador.
+    #[test]
+    fn moving_peers_do_not_reopen_the_roster_gate() {
+        let before: Vec<(u16, bool)> = vec![(1, false), (7, false)];
+        // Los mismos peers, en otro sitio: la composición no ha cambiado.
+        let after: Vec<(u16, bool)> = vec![(1, false), (7, false)];
+        assert_eq!(
+            roster::content_hash(&before),
+            roster::content_hash(&after),
+            "moverse no puede reenviar el roster entero"
+        );
+    }
+
+    /// Y la otra mitad: que ENTRE o SALGA alguien tiene que propagarse en el acto, sin esperar al
+    /// latido. Es lo que impide que este ADR haga desaparecer a un recién llegado.
+    #[test]
+    fn a_peer_joining_or_leaving_changes_the_hash() {
+        let two: Vec<(u16, bool)> = vec![(1, false), (7, false)];
+        let three: Vec<(u16, bool)> = vec![(1, false), (7, false), (9, false)];
+        assert_ne!(
+            roster::content_hash(&two),
+            roster::content_hash(&three),
+            "un peer nuevo tiene que salir ya"
+        );
+
+        let one: Vec<(u16, bool)> = vec![(1, false)];
+        assert_ne!(roster::content_hash(&two), roster::content_hash(&one));
+
+        // `relay_only` es identidad a efectos de direccionamiento (ADR-079), no adorno: cambiarlo
+        // cambia lo que el receptor puede hacer con esa entrada.
+        let relayed: Vec<(u16, bool)> = vec![(1, false), (7, true)];
+        assert_ne!(roster::content_hash(&two), roster::content_hash(&relayed));
     }
 }
 

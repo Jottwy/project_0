@@ -2761,7 +2761,7 @@ pub async fn run(
             // sees the other joiners. (A joiner's own roster is just {self, host}, so
             // only the host has anything to relay.)
             if net.is_host {
-                sync::broadcast_peer_roster(&net, &player).await;
+                sync::broadcast_peer_roster(&mut net, &player).await;
                 // ADR-015: relay each peer's full pose (rotation+animation, not just the
                 // position the roster carries) so joiners see other joiners gesture/face
                 // correctly. Host-only; no-op below two peers.
