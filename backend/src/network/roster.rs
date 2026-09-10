@@ -122,6 +122,25 @@ pub const ROSTER_HEARTBEAT: std::time::Duration = std::time::Duration::from_secs
 /// cambio, cuando el roster acaba de crecer— y siguen dejando el ahorro en un orden de magnitud.
 pub const ROSTER_CHANGE_BURST: u8 = 3;
 
+/// 2026-09-10 — techo del latido cuando la puerta lleva rato sin ver un cambio.
+///
+/// El latido de 3 s repara pérdidas, y una pérdida es probable JUSTO DESPUÉS de emitir, no una hora
+/// más tarde: si el receptor tenía el chunk hace un minuto, lo sigue teniendo. Medido en partida
+/// real de 59 min (Steam, wire 63): `ChunkState` era 7,7 KB/s, el **32 % de todo el tráfico del
+/// anfitrión**, y la cuenta lo explica entero — unos 40 chunks cargados repitiéndose cada 3 s dan
+/// 13,3 datagramas/s, y se midieron 13,5. No era estado cambiando: era geometría estática
+/// reenviándose sola.
+///
+/// El retroceso duplica el latido por cada ronda seguida que sale SOLO por latido —3, 6, 12, 24—
+/// hasta este techo, y cualquier cambio de contenido o peer nuevo lo devuelve a la base. Así la
+/// ventana en la que una pérdida es probable conserva la cadencia de 3 s y el régimen estacionario
+/// deja de pagarla.
+///
+/// 30 s es el peor caso de una página perdida en un chunk quieto. Es aceptable porque ese chunk se
+/// reenvía entero en cuanto cambie algo estructural, y porque quien ENTRA no espera: `joined`
+/// rearma la ráfaga (ADR-071 decisión 4).
+pub const CHUNK_HEARTBEAT_CAP: std::time::Duration = std::time::Duration::from_secs(30);
+
 #[derive(Debug, Default)]
 pub struct RosterGate {
     last_hash: Option<u64>,
@@ -129,9 +148,40 @@ pub struct RosterGate {
     last_sent: Option<std::time::Instant>,
     /// Rondas que quedan de la ráfaga post-cambio. Ver `ROSTER_CHANGE_BURST`.
     repeats_left: u8,
+    /// Techo del retroceso. `None` = sin retroceso, el latido es el que pasa el llamante y punto —
+    /// que es exactamente lo que hacían las cinco puertas antes de que esto existiera. Solo los
+    /// chunks lo activan; los rosters de gameplay (cadáveres, objetos, construcciones) son pocos y
+    /// pequeños, y su latido de 3 s no aparecía en la medida.
+    backoff_cap: Option<std::time::Duration>,
+    /// Rondas seguidas emitidas SOLO por latido. Se reinicia con cualquier cambio o peer nuevo.
+    quiet_rounds: u32,
 }
 
 impl RosterGate {
+    /// Puerta con retroceso del latido. Ver `CHUNK_HEARTBEAT_CAP`.
+    pub fn with_backoff(cap: std::time::Duration) -> Self {
+        Self {
+            backoff_cap: Some(cap),
+            ..Self::default()
+        }
+    }
+
+    /// Latido efectivo de esta ronda: la base doblada una vez por ronda silenciosa, con tope.
+    ///
+    /// El desplazamiento se satura a 32 antes de llegar al `checked_mul` porque `2^32` ya desborda
+    /// un `u32` y `quiet_rounds` crece sin límite mientras nadie toque el chunk — una partida larga
+    /// llega ahí sola. Con desbordamiento se usa el techo, que es la respuesta correcta de todos
+    /// modos.
+    fn effective_heartbeat(&self, base: std::time::Duration) -> std::time::Duration {
+        let Some(cap) = self.backoff_cap else {
+            return base;
+        };
+        let factor = 1u32
+            .checked_shl(self.quiet_rounds.min(31))
+            .unwrap_or(u32::MAX);
+        base.checked_mul(factor).unwrap_or(cap).min(cap)
+    }
+
     /// `hash` es del roster serializado (ver `content_hash`). `peers` es el número de peers vivos.
     ///
     /// Actualiza el estado SOLO cuando devuelve true: si corta, el hash anterior sigue siendo el
@@ -148,17 +198,30 @@ impl RosterGate {
         // ADR-071 decisión 4: quien acaba de entrar no tiene nada. Esperar al latido le daría un
         // mundo vacío durante segundos.
         let joined = peers > self.last_peers;
+        // El latido se compara contra el EFECTIVO, no contra la base: sin retroceso configurado son
+        // el mismo valor y esto no cambia nada.
+        let effective = self.effective_heartbeat(heartbeat);
         let stale = self
             .last_sent
-            .is_none_or(|t| now.duration_since(t) >= heartbeat);
+            .is_none_or(|t| now.duration_since(t) >= effective);
 
         // Un cambio (o un peer nuevo) rearma la ráfaga: esta ronda y las siguientes salen a 10 Hz
         // como antes de ADR-071, que es lo que repone una página perdida en 100 ms en vez de en 3 s.
         if changed || joined {
             self.repeats_left = ROSTER_CHANGE_BURST;
+            // Y devuelve el latido a la base: la ventana en la que una pérdida es probable acaba de
+            // reabrirse, así que aquí el retroceso tiene que desaparecer del todo.
+            self.quiet_rounds = 0;
         }
 
         if changed || joined || stale || self.repeats_left > 0 {
+            // Solo cuenta como ronda silenciosa la que sale ÚNICAMENTE porque tocaba latido. Una de
+            // la ráfaga no: la ráfaga es parte de la reparación de un cambio, y contarla haría que
+            // tres rondas seguidas tras cada cambio dispararan el retroceso a 24 s justo después de
+            // que el contenido se moviera, que es lo contrario de lo que se busca.
+            if stale && !changed && !joined && self.repeats_left == 0 {
+                self.quiet_rounds = self.quiet_rounds.saturating_add(1);
+            }
             self.last_hash = Some(hash);
             self.last_peers = peers;
             self.last_sent = Some(now);
@@ -682,6 +745,125 @@ mod tests {
         assert!(
             gate.should_send(hash, 1, now, std::time::Duration::ZERO),
             "vencido el latido, la ronda sale aunque el roster sea idéntico"
+        );
+    }
+
+    // ─── 2026-09-10: retroceso del latido (solo chunks) ───
+
+    /// Cuánto tarda la puerta en volver a dejar pasar una ronda que sale SOLO por latido, contando
+    /// desde `t0`. Devuelve el instante de cada emisión, que es lo que fija la cadencia real.
+    fn quiet_emissions(
+        gate: &mut RosterGate,
+        hash: u64,
+        t0: std::time::Instant,
+        n: usize,
+    ) -> Vec<std::time::Duration> {
+        let mut out = Vec::new();
+        let mut t = t0;
+        for _ in 0..n {
+            // Avanza de segundo en segundo hasta que la puerta se abra: así se mide el intervalo
+            // que la puerta impone, en vez de asumirlo.
+            loop {
+                t += std::time::Duration::from_secs(1);
+                if gate.should_send(hash, 1, t, ROSTER_HEARTBEAT) {
+                    out.push(t.duration_since(t0));
+                    break;
+                }
+            }
+        }
+        out
+    }
+
+    /// La mitad que compra los bytes: sin nada que cambie, el latido se separa solo.
+    #[test]
+    fn the_backoff_stretches_the_heartbeat_up_to_the_cap() {
+        let items = vec![carryable(1)];
+        let hash = content_hash(&items);
+        let t0 = std::time::Instant::now();
+        let mut gate = RosterGate::with_backoff(CHUNK_HEARTBEAT_CAP);
+
+        // Se consume la ráfaga inicial (la primera llamada cuenta como cambio: no había hash).
+        for _ in 0..=ROSTER_CHANGE_BURST {
+            gate.should_send(hash, 1, t0, ROSTER_HEARTBEAT);
+        }
+
+        let marks = quiet_emissions(&mut gate, hash, t0, 6);
+        let gaps: Vec<u64> = marks.windows(2).map(|w| (w[1] - w[0]).as_secs()).collect();
+        assert_eq!(
+            gaps,
+            vec![6, 12, 24, 30, 30],
+            "el latido dobla por ronda silenciosa y se planta en el techo"
+        );
+    }
+
+    /// La otra mitad, la que impide que esto rompa la replicación: en cuanto algo cambia, la
+    /// cadencia de reparación vuelve a ser la de siempre.
+    #[test]
+    fn a_change_resets_the_backoff_to_the_base_heartbeat() {
+        let one = vec![carryable(1)];
+        let two = vec![carryable(1), carryable(2)];
+        let t0 = std::time::Instant::now();
+        let mut gate = RosterGate::with_backoff(CHUNK_HEARTBEAT_CAP);
+
+        for _ in 0..=ROSTER_CHANGE_BURST {
+            gate.should_send(content_hash(&one), 1, t0, ROSTER_HEARTBEAT);
+        }
+        // Se deja el retroceso bien estirado antes de tocar el contenido.
+        let marks = quiet_emissions(&mut gate, content_hash(&one), t0, 4);
+        let stretched = t0 + *marks.last().unwrap();
+
+        assert!(
+            gate.should_send(content_hash(&two), 1, stretched, ROSTER_HEARTBEAT),
+            "un cambio sale en el acto, por muy estirado que estuviera el latido"
+        );
+        // Y tras consumir la ráfaga, el siguiente latido vuelve a ser el de base, no el del techo.
+        for _ in 0..ROSTER_CHANGE_BURST {
+            gate.should_send(content_hash(&two), 1, stretched, ROSTER_HEARTBEAT);
+        }
+        let after = quiet_emissions(&mut gate, content_hash(&two), stretched, 1);
+        assert_eq!(
+            after[0].as_secs(),
+            ROSTER_HEARTBEAT.as_secs(),
+            "tras un cambio, la reparación vuelve a los 3 s"
+        );
+    }
+
+    /// Sin tope configurado NADA cambia: es la garantía de que los otros cuatro rosters (cadáveres,
+    /// objetos, construcciones, cosechables) siguen exactamente como estaban.
+    #[test]
+    fn a_gate_without_backoff_keeps_the_flat_heartbeat() {
+        let items = vec![carryable(1)];
+        let hash = content_hash(&items);
+        let t0 = std::time::Instant::now();
+        let mut gate = RosterGate::default();
+
+        for _ in 0..=ROSTER_CHANGE_BURST {
+            gate.should_send(hash, 1, t0, ROSTER_HEARTBEAT);
+        }
+
+        let marks = quiet_emissions(&mut gate, hash, t0, 5);
+        let gaps: Vec<u64> = marks.windows(2).map(|w| (w[1] - w[0]).as_secs()).collect();
+        assert_eq!(gaps, vec![3, 3, 3, 3], "sin tope, el latido es plano");
+    }
+
+    /// Quien ENTRA no espera al techo. Es ADR-071 decisión 4, y el retroceso no puede erosionarla:
+    /// un joiner con el chunk estirado a 30 s vería el mundo aparecer a trozos durante medio minuto.
+    #[test]
+    fn a_new_peer_defeats_the_backoff() {
+        let items = vec![carryable(1)];
+        let hash = content_hash(&items);
+        let t0 = std::time::Instant::now();
+        let mut gate = RosterGate::with_backoff(CHUNK_HEARTBEAT_CAP);
+
+        for _ in 0..=ROSTER_CHANGE_BURST {
+            gate.should_send(hash, 1, t0, ROSTER_HEARTBEAT);
+        }
+        let marks = quiet_emissions(&mut gate, hash, t0, 4);
+        let stretched = t0 + *marks.last().unwrap();
+
+        assert!(
+            gate.should_send(hash, 2, stretched, ROSTER_HEARTBEAT),
+            "un peer nuevo abre la puerta sin esperar al latido estirado"
         );
     }
 

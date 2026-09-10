@@ -1054,11 +1054,19 @@ pub fn peer_list_datagrams(peers: Vec<PeerInfo>) -> Vec<PacketPayload> {
 /// the alternative (asserting on datagrams) would need a live UDP endpoint per phantom, which is
 /// exactly the thing that does not exist â€” a phantom's `addr` is the inert `127.0.0.1:1` stamped
 /// at injection (`NetworkManager::spawn_phantom`).
+/// 2026-09-10 — se pregunta por el MISMO predicado que decide el envío
+/// (`peer_is_gameplay_destination`) en vez de repetir aquí una de sus cuatro condiciones. El filtro
+/// de fantasmas cubría una sola: medido en partida real, el relay armaba lotes para peers
+/// `relay_only` —criaturas anunciadas con la addr inerte de ADR-079— que la guarda de `send.rs`
+/// rechazaba después (`MPTRACE step=SEND_FAIL event=illegal_gameplay_destination peer_id=61002`).
+/// No se escapaba ningún datagrama, pero se pagaba el AOI, el `clone()` de la pose y el lote entero
+/// para un destino imposible. Y un filtro que enumera un subconjunto de las condiciones del otro es
+/// justo la clase de duplicado que se desincroniza en silencio cuando se añade la quinta.
 pub(crate) fn relay_destinations(net: &NetworkManager) -> Vec<PeerId> {
     net.peers
-        .keys()
-        .copied()
-        .filter(|id| !net.is_phantom(*id))
+        .values()
+        .filter(|p| net.peer_is_gameplay_destination(p))
+        .map(|p| p.id)
         .collect()
 }
 
@@ -1752,7 +1760,14 @@ pub async fn broadcast_chunk_states(net: &mut NetworkManager, world: &World, pla
         // que en esa misma medida era el 8 %), y el resto se refresca en el siguiente latido de
         // `ROSTER_HEARTBEAT`. Se envía exactamente el mismo mensaje: cambia CUÁNDO, no el qué.
         let open = {
-            let gate = net.chunk_gates.entry(key).or_default();
+            // 2026-09-10: la puerta de los chunks —y SOLO ella— retrocede el latido. Ver
+            // `CHUNK_HEARTBEAT_CAP`: el 32 % del tráfico medido era geometría estática repitiéndose
+            // cada 3 s. `or_insert_with` y no `or_default` porque el tope es del gate, no del
+            // llamante: una puerta creada por defecto en otro sitio no debe heredar el retroceso.
+            let gate = net
+                .chunk_gates
+                .entry(key)
+                .or_insert_with(|| roster::RosterGate::with_backoff(roster::CHUNK_HEARTBEAT_CAP));
             gate.should_send(
                 stable_chunk_hash(&data),
                 peers,
