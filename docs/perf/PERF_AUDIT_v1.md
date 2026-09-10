@@ -613,3 +613,68 @@ salen de la base medida en el equipo de desarrollo dividida por los factores de 
 - El clon principal queda como estaba (la copia temporal de `_PerfProbe` se borró; `Builds/PerfDev/` es un build de
   desarrollo reutilizable, ignorado por git). Ningún proceso ajeno se tocó: la partida de Steam de Joel siguió corriendo
   durante toda la medición en sus puertos (7777/7778); la sonda usó 8877+.
+
+## 6. Addendum 2026-09-10 (tarde) — antes/después del fix de allocs, y playtest real de red
+
+### 6.1 GC de los replicadores STP (commit `79bccf28`): antes/después aislado, mismo build salvo esos 3 ficheros
+
+Cámara fija (`PERFPROBE_AUTOPILOT=none`), 60 s, mismo mundo persistente (16 robapieles estables), guardado aislado de
+la partida de Joel. Único cambio entre las dos corridas: los 3 ficheros del commit `79bccf28` con y sin el fix.
+
+| | ANTES (con alloc) | DESPUÉS (fix) | Δ |
+|---|---|---|---|
+| GC alloc/frame (media) | 87,87 KB | 89,63 KB | +2,0 % |
+| GC total | 5,79 MB/s | 5,65 MB/s | −2,5 % |
+| GC.Collect/min | 103,0 | 113,0 | +9,7 % |
+| dt p50 | 14,78 ms | 15,37 ms | +4,0 % |
+
+**Dentro del ruido de medición — no hay señal limpia en ningún sentido.** Confirma exactamente lo previsto: este
+mundo de prueba, aislado y nunca jugado, tiene **cero piezas STP construidas** (`stpBuildings`/`stpItems`/
+`stpCarryables` vacíos), así que el bucle que el fix toca itera listas vacías tanto antes como después — el ahorro
+es proporcional al número de piezas construidas (perf-baseline.md: ≈60 000 asignaciones/s eliminadas con 1000
+piezas), y aquí no hay ninguna. El primer intento (autopiloto `sprint`) dio +28,7 % de "empeora", pero era ruido de
+escena: la ruta aleatoria del sprint llevó a la corrida "después" a una zona con 55 % más draw calls, no relacionado
+con el fix — por eso se repitió con cámara fija.
+
+**El fix es correcto por construcción** (mismo resultado observable, verificado por lectura de código antes de
+commitear) y su beneficio real solo se verá con una base poblada — no hay forma barata de sembrar piezas STP sin
+automatizar el sistema de construcción (fuera de alcance de esta sesión).
+
+### 6.2 Playtest real de 4 instancias — red medida, y un bug encontrado
+
+Arnés `RunMultiInstancePlaytest.ps1`, 4 instancias, guardado aislado, `PERFPROBE` en las 4. **El mismo arnés que
+falló en la auditoría original (S3) esta vez SÍ conecta a nivel de backend** — la aislación del guardado (§ commit
+`6b120f2e`) elimina la contienda de lock con la partida de Joel que probablemente causaba el fallo anterior.
+
+**Red, medida de verdad (BWTRACE del host, no la sonda de `cargo test`):**
+
+| | |
+|---|---|
+| Subida total del host, estable | **54–56 KB/s** |
+| Entidades remotas en el host (peers + robapieles acumulados) | hasta 44 |
+| `broadcast_unreliable` (poses/mundo) | ~28–34 KB/s (51–61 %) |
+| `unreliable_to` (por destinatario) | ~13–19 KB/s (22–35 %) |
+| Heartbeat timeouts / desconexiones / pérdida de paquete | **0** en toda la sesión |
+
+Contra el **253,8 KB/s pre-ADR-137** que causó «extremadamente lag» el 09-09 (mismo orden de magnitud de entidades):
+confirma en una sesión de red real, no solo en la sonda `cargo test` de ADR-137, que la subida del host se mantiene
+muy por debajo del techo de 256 KB/s de Valve incluso con carga.
+
+**RTT/jitter: NO MEDIDO de verdad.** Este arnés corre en loopback (`127.0.0.1`), no por Steam Datagram Relay — el
+RTT ahí es submilisegundo por construcción y no representa una partida real con otro jugador. Lo único con RTT/
+jitter reales de una conexión de verdad sigue siendo el `Player.log` de la partida de Joel (§0.4): ping 11–26 ms,
+calidad 100 %, cola en 0.
+
+**Frametime del host bajo esta carga real** (4 backends conectados, autopiloto sprint, evidencia en
+`docs/perf/raw/netplaytest/`): dt p50 **27,8 ms** (36 fps), cpuMain p50 27,8 ms (sigue CPU-bound), GPU p50 10,7 ms.
+Contra el S2 solo de la auditoría original (dt p50 14,5 ms): **~1,9× más lento con 3 backends más conectados** —
+mismo orden que el salto S2→S3 medido antes (14,5 → 24,1 ms), consistente entre las dos mediciones.
+
+**Bug encontrado, real, fuera de alcance de esta tarea:** los 3 joiners conectaron su backend con éxito
+(`joiner_session_joined`, `Peer connected id=1 name=Host`, sin heartbeat timeout) pero **el cliente de Unity de cada
+joiner se quedó parado en el origen del mundo** (`pos=(0.00, 1.80, 0.00)`), con `remote_players_count=0` y
+`chunks=0` todo el rato — el filtro por distancia (AOI) los excluye de todo porque nunca se movieron cerca de nadie.
+El fix de ADR-136 («el jugador que entra ya no nace en el origen») cubre la vía de invitación por lobby de Steam;
+**la vía `CONNECT_TO` de este arnés de pruebas no recibió el mismo arreglo** y sigue naciendo en el origen. Por eso
+el test de red es de RED (el tráfico backend↔backend es real y se midió), pero no es un test JUGABLE de 4 personas
+— los joiners nunca vieron el mundo. Arreglar esto es tarea propia (toca spawn/red, sistema núcleo, pide plan).

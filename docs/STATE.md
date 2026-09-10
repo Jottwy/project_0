@@ -94,6 +94,15 @@
 
 ## Últimas tandas
 
+### 2026-09-10 — 45.ª tanda: playtest real — antes/después del fix de GC, red de 4 instancias medida
+- **Fix de replicadores STP (`79bccf28`), antes/después aislado, cámara fija**: dentro del ruido (±2-4 %) porque
+  ESTE mundo de prueba tiene CERO piezas STP construidas — el ahorro escala con piezas, no con tiempo. Correcto
+  por construcción, sin evidencia empírica de ganancia todavía (falta sembrar una base poblada).
+- **4 instancias con guardado aislado: los backends SÍ conectan esta vez** (la aislación quitó la contienda con
+  la partida de Joel). BWTRACE real: **54-56 KB/s estables**, hasta 44 remotos, 0 timeouts — muy por debajo de
+  los 253,8 KB/s pre-ADR-137. **Bug encontrado, fuera de alcance**: joiners de `CONNECT_TO` (NO la vía Steam de
+  ADR-136) nacen en el origen y el AOI los deja ciegos — red válida, no jugable a 4. `PERF_AUDIT_v1.md` §6.
+
 ### 2026-09-10 — 44.ª tanda: GRD probado y descartado; y un hallazgo sobre el guardado compartido
 - **GPU Resident Drawer (técnica 4 vía B) verificado con A/B real: DESCARTADO.** `m_GPUResidentDrawerMode: 1`
   fuerza ~1h54 de recompilación sin caché y el `Player.log` trae `wrong cbuffer setup. Missing
@@ -158,13 +167,3 @@
   Antialiasing por cámara; «sin sombras» = dist 0 (`BackroomsGraphicsApplier.cs`).
 - Verificado EN PLAY (STP_Showcase): Very Low (0,6x/1/0 m), Ultra (1,25x/8/120 m), High (1x/2/50 m).
   EditMode headless 26/26 en tres fixtures. CompileCheck 0 ×4.
-
-### 2026-09-07 — 37.ª tanda: la mano al milímetro y la cuerda con la izquierda (ADR-133 enm. 1)
-- Joel: «muy arriba, no orgánico», mano «al milímetro» con foto de referencia, y la otra mano girando la manivela. Cuatro clips HORNEADOS por código
-  (`BackroomsCrankFlashlightPoseBaker.cs`): idle/equipar/enfundar muestrean la antorcha del FBX del vendor y recolocan el brazo; la cuerda es propia.
-- Puño+tubo rígidos bajo `Hand.R`; alabeo BARRIDO por torsión de muñeca ≈ vendor (63° → −65°); IK de dos huesos; los dedos se cierran por CONTACTO
-  (primer ángulo que no penetra, dos pasadas, una sola vez): todas las falanges a 7 mm eje-piel. La pila de dedos va 5,4 cm delante del origen de `Torch`.
-- Manivela al arco LIBRE de la mano (−88°, izquierda): la órbita del pomo a 9 mm de aire de la derecha. Capa «Crank» en controller copiado del
-  `Template_Tool`; el wieldable dibuja la manivela desde la FASE del Animator en `LateUpdate`. Izquierda por IK sobre el pomo, hombro adelantado 64 cm.
-- Ocho tests nuevos (`CrankFlashlightAnimationTests`) + 15/15 de item; CompileCheck 0 ×4. Idle de 26 MB → 4,7 (curvas constantes a dos claves).
-- Sin ver en Play: `FistFromEye` (0,10, −0,11, 0,36) y lente 8°↓/8°← son diseño; el fundido de la izquierda (0,3 s) y el bamboleo (1,2°) piden ojo.
