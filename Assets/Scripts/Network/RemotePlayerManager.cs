@@ -94,6 +94,18 @@ namespace BackroomsSurvival.Net
             return string.Join(",", remotePlayers.ConvertAll(r => r.id.ToString()));
         }
 
+        /// Cuántas de estas entradas son PERSONAS. El resto son criaturas, que comparten stream y
+        /// mensaje con los jugadores (ver <see cref="NetIdentity.CreatureIdBase"/>): contarlas
+        /// juntas es lo que hacía que el log dijera 24 conectados habiendo uno.
+        internal static int CountHumans(List<RemotePlayerMsg> remotePlayers)
+        {
+            int humans = 0;
+            for (int i = 0; i < remotePlayers.Count; i++)
+                if (NetIdentity.IsHuman(remotePlayers[i].id))
+                    humans++;
+            return humans;
+        }
+
         /// <summary>
         /// Si una entrada de `world_state.remote_players` debe tener proxy. **Siempre sí**, y el
         /// parámetro del id local se conserva sólo para que el nombre diga qué NO se hace.
@@ -127,8 +139,8 @@ namespace BackroomsSurvival.Net
 
             if (Time.unscaledTime >= _nextReceiveLogTime)
             {
-                Debug.Log($"[RemotePlayerManager] remote count={remotePlayers.Count}");
-                Debug.Log($"MPTRACE step=K event=remote_player_manager_receive self_id={selfId} sender_id=<none> assigned_id=<none> peer_id=<none> endpoint=<unity> peer_count=<unknown> remote_players_count={remotePlayers.Count} remote_players_ids=[{JoinIds(remotePlayers)}]");
+                Debug.Log($"[RemotePlayerManager] remote count={remotePlayers.Count} (personas={CountHumans(remotePlayers)})");
+                Debug.Log($"MPTRACE step=K event=remote_player_manager_receive self_id={selfId} sender_id=<none> assigned_id=<none> peer_id=<none> endpoint=<unity> peer_count=<unknown> players={CountHumans(remotePlayers)} remote_players_count={remotePlayers.Count} remote_players_ids=[{JoinIds(remotePlayers)}]");
                 _nextReceiveLogTime = Time.unscaledTime + 2f;
             }
 
@@ -178,7 +190,7 @@ namespace BackroomsSurvival.Net
                     Debug.Log(
                         $"[RemotePlayerManager] spawned id={rp.id}, name={rp.name}, " +
                         $"pos={groundedPosition}");
-                    Debug.Log($"MPTRACE step=K event=remote_player_manager_spawn self_id={selfId} sender_id=<none> assigned_id=<none> peer_id={rp.id} endpoint=<unity> peer_count=<unknown> remote_players_count={remotePlayers.Count} remote_players_ids=[{JoinIds(remotePlayers)}]");
+                    Debug.Log($"MPTRACE step=K event=remote_player_manager_spawn self_id={selfId} sender_id=<none> assigned_id=<none> peer_id={rp.id} endpoint=<unity> peer_count=<unknown> players={CountHumans(remotePlayers)} remote_players_count={remotePlayers.Count} remote_players_ids=[{JoinIds(remotePlayers)}]");
                 }
                 else if (logProxy)
                 {
