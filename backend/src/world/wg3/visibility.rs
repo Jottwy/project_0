@@ -165,6 +165,78 @@ impl VisibilityGraph {
     }
 }
 
+/// Margen vertical, en centímetros, dentro del cual NO se decide a qué planta pertenece alguien.
+///
+/// Existe por un fallo conocido y anotado: `storey_of_floor_cm` clasifica una planta ABAJO en la
+/// costura de 664 (`STATE.md`, deuda declarada). Un PVS que se equivoque de planta oculta a alguien
+/// que está en la tuya, así que en vez de depender de esa función —o de arreglarla desde aquí, que
+/// es otra tanda— **cerca de una costura se declara la duda y se ve**.
+///
+/// 40 cm cubre el canto de losa (`SLAB_CM`) con holgura. Cuesta enviar de más a quien está subiendo
+/// una escalera; el error contrario sería un jugador invisible.
+pub const STOREY_SEAM_MARGIN_CM: i32 = 40;
+
+/// El grafo de una región COMPLETA: uno por planta, más lo que hace falta para situar una altura.
+///
+/// Es lo que habría que conservar en `Wg3ServedWorld` para encender el PVS: una caja y unos vecinos
+/// por sala, y nada del plan original.
+#[derive(Debug, Clone, Default)]
+pub struct RegionVisibility {
+    /// De abajo arriba, el mismo orden que `RegionBuilding::storeys`.
+    storeys: Vec<VisibilityGraph>,
+    /// Índice de la CALLE dentro de `storeys` (ADR-130): los sótanos van por debajo.
+    ground: usize,
+}
+
+impl RegionVisibility {
+    pub fn new(storeys: Vec<VisibilityGraph>, ground: usize) -> Self {
+        Self { storeys, ground }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.storeys.is_empty()
+    }
+
+    /// A qué planta pertenece una altura, o `None` si cae **cerca de una costura** y por tanto no se
+    /// puede afirmar sin arriesgarse (ver [`STOREY_SEAM_MARGIN_CM`]).
+    ///
+    /// El índice es relativo a `storeys`, con la calle en `ground`, así que una cota negativa cae en
+    /// los sótanos de forma natural.
+    pub fn storey_at_cm(&self, y_cm: i32) -> Option<usize> {
+        let height = super::plan::STOREY_HEIGHT_CM;
+        let within = y_cm.rem_euclid(height);
+        if within <= STOREY_SEAM_MARGIN_CM || within >= height - STOREY_SEAM_MARGIN_CM {
+            return None; // en la costura: no se decide
+        }
+        let relative = y_cm.div_euclid(height);
+        let index = self.ground as i32 + relative;
+        if index < 0 || index as usize >= self.storeys.len() {
+            return None;
+        }
+        Some(index as usize)
+    }
+
+    /// **La consulta que usaría el relay.** Devuelve `true` ante cualquier duda.
+    ///
+    /// Se ven si: están en plantas distintas (se envía y punto — el PVS no opina de verticalidad),
+    /// si alguna altura cae en una costura, si la región no tiene grafo, o si el grafo de su planta
+    /// dice que sus salas se comunican.
+    pub fn can_see(&self, a_cm: (i32, i32, i32), b_cm: (i32, i32, i32), hops: usize) -> bool {
+        if self.storeys.is_empty() {
+            return true;
+        }
+        let (Some(sa), Some(sb)) = (self.storey_at_cm(a_cm.1), self.storey_at_cm(b_cm.1)) else {
+            return true; // costura: no se decide, se envía
+        };
+        if sa != sb {
+            // Verticalidad fuera de alcance a propósito: un hueco de escalera comunica plantas y
+            // este grafo no lo sabe. Enviar de más es la dirección segura.
+            return true;
+        }
+        self.storeys[sa].can_see((a_cm.0, a_cm.2), (b_cm.0, b_cm.2), hops)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,6 +285,69 @@ mod tests {
             "un punto fuera de todo espacio no puede volver invisible a nadie"
         );
         assert!(g.can_see((500, 500), (4000, 500), 1));
+    }
+
+    /// Dos plantas iguales, la calle en el índice 0.
+    fn two_storeys() -> RegionVisibility {
+        RegionVisibility::new(vec![line_of_rooms(), line_of_rooms()], 0)
+    }
+
+    /// El corazón del blindaje: cerca de una costura NO se decide la planta, porque
+    /// `storey_of_floor_cm` clasifica una abajo justo ahí y equivocarse vuelve a alguien invisible.
+    #[test]
+    fn near_a_storey_seam_nothing_is_decided() {
+        let v = two_storeys();
+        let h = crate::world::wg3::plan::STOREY_HEIGHT_CM;
+
+        assert_eq!(
+            v.storey_at_cm(h / 2),
+            Some(0),
+            "a media planta sí se decide"
+        );
+        assert_eq!(v.storey_at_cm(5), None, "justo sobre el forjado, duda");
+        assert_eq!(v.storey_at_cm(h - 5), None, "justo bajo el techo, duda");
+        assert_eq!(
+            v.storey_at_cm(h + 5),
+            None,
+            "y en la costura de arriba también"
+        );
+    }
+
+    /// Y lo que la duda provoca: se envía. Dos que estarían en salas incomunicadas se ven igual si
+    /// uno de los dos anda por una costura.
+    #[test]
+    fn a_seam_forces_visibility() {
+        let v = two_storeys();
+        let h = crate::world::wg3::plan::STOREY_HEIGHT_CM;
+
+        // Los dos a media planta y en salas incomunicadas (0 y 3): no se ven.
+        assert!(!v.can_see(
+            (500, h / 2, 500),
+            (5500, h / 2, 500),
+            DEFAULT_VISIBILITY_HOPS
+        ));
+        // El mismo par, pero uno en la costura: se ve, porque no se puede afirmar dónde está.
+        assert!(v.can_see((500, 5, 500), (5500, h / 2, 500), DEFAULT_VISIBILITY_HOPS));
+    }
+
+    /// El PVS no opina de verticalidad: un hueco de escalera comunica plantas y este grafo no lo
+    /// sabe, así que plantas distintas se envían siempre.
+    #[test]
+    fn different_storeys_always_see_each_other() {
+        let v = two_storeys();
+        let h = crate::world::wg3::plan::STOREY_HEIGHT_CM;
+        assert!(v.can_see(
+            (500, h / 2, 500),
+            (5500, h + h / 2, 500),
+            DEFAULT_VISIBILITY_HOPS
+        ));
+    }
+
+    /// Una región sin grafo (todavía sin plan conservado) no puede ocultar a nadie.
+    #[test]
+    fn an_empty_region_sees_everything() {
+        let v = RegionVisibility::default();
+        assert!(v.can_see((0, 0, 0), (99_999, 0, 99_999), 0));
     }
 
     #[test]
