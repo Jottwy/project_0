@@ -16015,3 +16015,113 @@ tubo.
 
 ---
 
+## ADR-137 — Enmienda 1: D1 ACEPTADO y aplicado; D3 demostrado; un riesgo nuevo que la propuesta no veía (2026-09-10) — ACEPTADA (Joel: «aceptar d1 pero me gustaría que hicieras tú el playtest pertinente»)
+
+**D1 aplicado** (`8ea09f61`): `encode_packet` usa `rmp_serde::to_vec`. Wire **61 → 62** en las dos
+puntas. Suite del backend 1440/1440, `CompileCheckClient` 0 ×4.
+
+**Medido en partida real por Steam el 10-09, dos máquinas, dos cuentas, dos redes:**
+
+| | Antes (09-09) | Después |
+|---|---|---|
+| Enviado por el anfitrión | 253,8 KB/s | **1,2 KB/s** |
+| Paquetes | 208/s | 10,4/s |
+| Cola de salida | ~483.000 B (**1,9 s**) | **0** |
+
+La sesión medida tenía **24 entidades**, el doble que la del 09-09: la mejora no viene de un
+escenario más suave. La caída (×211) es mayor que el ×3,2 del formato porque antes salían ~20
+datagramas por tick y ahora sale 1; el resto lo explica lo que ya no se reenvía.
+
+**D3 QUEDA DEMOSTRADO** (`positional_tolerates_short_array_from_older_peer`): con formato
+posicional, un array más corto del esperado **cae a los defaults** en vez de reventar, así que el
+patrón «campo nuevo al final + `#[serde(default)]`» —del que dependen veinte ADR— sobrevive. Era el
+riesgo real de D1 y ya no es una suposición.
+
+**Riesgo NUEVO, que la propuesta no contemplaba:** sin nombres, **el orden de los campos y el de
+las VARIANTES de `PacketPayload` pasan a ser parte del formato de wire**. Insertar una variante en
+medio del enum, o un campo en medio de una struct, renumera todo lo que va detrás y lo decodifica
+mal **sin error**. Queda escrito en `encode_packet`: se añade al final, siempre.
+
+**Q2 respondida a medias.** El `animation: String` resultó ser **peso muerto**: la locomoción se
+deriva de la VELOCIDAD (ADR-013), el campo sólo puede valer `idle`/`walk_slow`/`pickup` y tres de
+esos cuatro no se envían nunca; en el cliente, `animationState` no lo consume nadie. Borrarlo del
+wire sigue pidiendo bump, pero hay un atajo sin ADR ni bump: **dejar de rellenarlo**. Pendiente.
+
+---
+
+## ADR-138 — La fluidez es un problema de RITMO, no de tasa: reproducción diferida con retardo adaptativo (2026-09-10) — PROPUESTA (Joel: «GTA usa una interpolación… a exactamente 33,3 ms… hace que 30 frames parezcan mucho más fluidos que incluso juegos de 60»)
+
+**Estado:** PROPUESTA, y se implementa en la misma tanda. No toca wire ni protocolo: es cadencia de
+envío y reproducción en el cliente, así que no cae bajo la regla dura #7.
+
+### Contexto
+
+Joel trajo la observación de que un juego a 30 fps con fotogramas clavados a 33,3 ms se siente más
+fluido que uno a 60 con fotogramas irregulares. Es cierto y tiene nombre —*frame pacing*—, y el
+principio traslada exacto a la red: **lo que se percibe es la irregularidad, no la tasa**.
+
+Nuestro cliente perseguía la última pose recibida con un suavizado exponencial, así que reproducía
+fielmente el jitter del enlace. Medido el 10-09: ping estable en 26 ms y `Max latency variance`
+saltando entre **2,0 y 70,3 ms**.
+
+Tras aplicar reproducción diferida (150 ms) y subir a 20 Hz, la siguiente partida dio:
+
+```
+Sent: 20,4 pkts/s  2,2 K/sec     Ping: 22 ms   variance: 16,3 ms   Bytes buffered: 0
+```
+
+2,2 KB/s de 256 disponibles: **0,86 % del presupuesto**. Y Joel reportó que **al correr** seguía
+viéndose raro. No es lag: es geometría del buffer.
+
+| Velocidad | Desfase con 150 ms |
+|---|---|
+| Andando (~2 m/s) | 30 cm — imperceptible |
+| Corriendo (7,29 m/s) | **1,09 m — se ve** |
+
+Los 150 ms se eligieron cuando el jitter era de 70 ms. Ahora es de 16,3, y ese margen de más se
+está pagando en desfase. Un retardo sólo necesita cubrir **un intervalo de envío más el jitter**.
+
+### Decisión
+
+**D1 — Poses a 30 Hz** (`NET_BROADCAST_EVERY` 3 → 2). El hueco entre muestras baja de 50 a 33 ms.
+Coste ~3,3 KB/s, el **1,3 %** del techo. Con el enlace a 0,86 % de uso, la resolución es lo barato.
+
+**D2 — El retardo deja de ser una constante y se ajusta al jitter observado.** Se mide el intervalo
+real entre llegadas y su desviación, y el retardo objetivo es `intervalo + k·jitter`, acotado entre
+un suelo y un techo. Con la red de la prueba cae a ~70-80 ms, y el desfase corriendo pasa de 1,09 m
+a **~0,55 m**; con una red peor, sube solo en vez de romperse.
+
+**D3 — El ajuste se mueve despacio.** Cambiar el retardo desplaza el instante que se dibuja, así que
+un salto brusco se vería como un tirón — justo lo que este ADR viene a quitar. Se mueve con un tope
+por segundo, y la medida es GLOBAL de la sesión y no por proxy: la red es la misma para todos, y
+promediar entre peers da una estimación más estable que la de un peer que apenas se mueve.
+
+### Lo que se descarta, y por qué
+
+**Cadencia por estado o por animación** (idea de Joel: enviar más rápido a quien corre). La
+intuición es correcta —a más velocidad, más resolución hace falta— pero hoy sobra ancho de banda por
+dos órdenes de magnitud, así que ahorrar no compra nada y sí cuesta: complejidad, y reintroducir
+irregularidad en lo que este ADR estabiliza. **Se recupera cuando el presupuesto apriete de verdad**
+(decenas de jugadores en la misma sala), que es donde priorizar por velocidad y distancia es la
+técnica correcta. Anotado, no descartado.
+
+**Extrapolación (dead reckoning)** para tapar el desfase restante: sobrepasa en los cambios bruscos
+de dirección, que en pasillos estrechos son constantes. Si con D1+D2 sigue notándose, se evalúa
+entonces y con su medida.
+
+### Consecuencias
+
+- Se sigue viendo a los demás en el pasado; eso es inherente y no se elimina sin extrapolar. No
+  afecta a la autoridad: los impactos los valida el anfitrión contra su roster (ADR-030), nunca
+  contra lo que dibuja un cliente.
+- El suelo del retardo no puede bajar del intervalo de envío, o el buffer se seca entre muestras y
+  se vuelve a caer al camino antiguo (perseguir la última pose), que es justo el tirón de partida.
+
+### Fuera, declarado
+
+`ENTTRACE` (coste de simular criaturas) **sigue sin leerse**: sólo lo emite el anfitrión y las dos
+medidas del 10-09 se tomaron en la máquina que hacía de joiner. El LOD de entidades sigue esperando
+ese número, y con él la decisión de si merece tocar la IA de ADR-038.
+
+---
+
