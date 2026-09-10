@@ -201,6 +201,11 @@ impl NetworkManager {
 
         dispatch_payload!(
         {
+            // ADR-140 D4: un lote de poses ya se abrió en `process_incoming`, que lo reparte en
+            // paquetes sueltos con el emisor de cada entrada en la cabecera. Si uno llega hasta
+            // aquí es que se coló por otro camino, y no hay nada que hacer con él.
+            PacketPayload::PlayerUpdateBatch { .. } => None,
+
             PacketPayload::Handshake {
                 player_name,
                 version,
