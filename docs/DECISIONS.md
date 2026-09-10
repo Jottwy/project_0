@@ -16331,3 +16331,67 @@ avisa de lo mismo para WG3) produce exactamente esta clase de conclusión.
 
 ---
 
+## ADR-139 — enmienda 2 (2026-09-10): el latido retrocede, y `joined` cuenta destinatarios
+
+**Contexto: la primera medida en una partida REAL de Steam.** Con wire 63 subido, 59 minutos, el
+anfitrión y una persona más conectada por el túnel de Steam (ping 24 ms, `Quality 100%`,
+`Dropped 0.00%`, `Bytes buffered: 0`). El lag que abrió esta línea de trabajo está cerrado: 29,3 KB/s
+sobre 256 disponibles, frente a los 253,8 KB/s y 1,9 s de cola del principio.
+
+El reparto de los 24,2 KB/s que salen del anfitrión:
+
+| Opcode | Qué es | KB/s | % | Paquetes |
+|---|---|---|---|---|
+| 0x5A | `PlayerUpdateBatch` | 12,2 | 50 | 88.463 |
+| 0x11 | `ChunkState` | 7,7 | 32 | 48.175 |
+| 0x10 | Pose propia | 2,0 | 8 | 88.529 |
+| 0x46 | `CorpseList` | 1,9 | 8 | 21.772 |
+
+**D4 hace lo que prometía**: 503 B por lote contra 83 por pose suelta, o sea ~6 poses por datagrama.
+Esos 88.000 paquetes habrían sido más de medio millón sin agrupar. Y queda confirmado que el LOD de
+entidades era innecesario: `ENTTRACE` da `avg_ms=0,024` sobre 16,67 de presupuesto, el 0,1 %.
+
+**Decisión 1 — el latido de lo estático retrocede.** `ChunkState` no era estado cambiando: era
+geometría repitiéndose. El latido de ADR-071 son 3 s y con ~40 chunks cargados eso da 13,3
+datagramas/s; se midieron 13,5. La aritmética lo explica entero. Igual `CorpseList`: 989 emisiones
+—cadencia de puro latido— pero 22 páginas cada una.
+
+El latido existe para REPARAR una página perdida, y una pérdida es probable justo después de emitir,
+no una hora más tarde: si el receptor tenía el chunk hace un minuto, lo sigue teniendo. Así que
+`RosterGate` gana un techo OPCIONAL (`STATIC_ROSTER_HEARTBEAT_CAP`, 30 s) y dobla el latido por cada
+ronda que sale sólo por latido: 3, 6, 12, 24, 30. Cualquier cambio de contenido o peer nuevo lo
+devuelve a la base.
+
+Lo activan sólo los dos emisores medidos —chunks y cadáveres—. Los otros cuatro rosters emiten 0,28
+datagramas/s y no merecen el riesgo; hay un test que fija que siguen planos. Sin techo, el
+comportamiento es byte a byte el de antes.
+
+**Decisión 2 — `joined` cuenta DESTINATARIOS, no entradas de `peers`.** Encontrado revisando la
+decisión 1, y es lo más grave de las dos. La condición `peers > last_peers` existe porque quien
+acaba de entrar no tiene mundo, pero recibía `net.peers.len()`, que cuenta también a las criaturas y
+al robapieles: entradas con la addr inerte de ADR-079/043 que la guarda de `send.rs` rechaza y que
+no reciben nada jamás.
+
+Cada nacimiento de una criatura se leía como un jugador nuevo y reenviaba el roster entero —los
+cinco— y todos los chunks a todo el mundo. En un mundo poblado eso ocurre continuamente, así que
+ninguna puerta llegaba a cerrarse del todo: **el ahorro de ADR-071 y de la enmienda 1 se evaporaba
+sin error, sin log y sin test rojo, sólo tráfico**. `gameplay_destination_count` pregunta por el
+mismo predicado que decide el envío, igual que ya hacía `relay_destinations` — que a su vez filtraba
+fantasmas pero no `relay_only`, y por eso el relay armaba lotes para destinos que la última puerta
+iba a rechazar (`MPTRACE step=SEND_FAIL event=illegal_gameplay_destination`, una línea por segundo
+durante toda la partida).
+
+**Diagnosticado y descartado:** los 492 errores `os error 10054` del log son la consecuencia
+esperada de una desconexión. El otro jugador dejó de responder y, durante los 5,6 s que tarda el
+latido en declararlo muerto, el anfitrión siguió escribiendo a un socket cerrado. Paran solos al
+desconectarlo.
+
+**Lo que esto NO mide:** eran dos personas. El punto de ruptura por aglomeración sigue estando donde
+lo dejaron los arneses de ADR-140 D3 —entre 8 y 16 juntos— y sólo se comprueba con gente de verdad.
+Y el efecto de estas dos decisiones está probado por tests de cadencia, no medido todavía en
+partida: hace falta una sesión nueva con el backend reconstruido.
+
+Sin cambio de wire: cambia CUÁNDO se emite, no el qué. Suite: 1459 verdes, 0 rojos.
+
+---
+
