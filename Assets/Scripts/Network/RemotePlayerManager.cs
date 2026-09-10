@@ -120,7 +120,7 @@ namespace BackroomsSurvival.Net
         /// De paso descarta lo ya consumido: se conserva UNA muestra por detrás del instante
         /// dibujado, que es la que hace de extremo izquierdo de la interpolación.
         /// </summary>
-        private static bool TrySamplePlaybackPose(RemoteView view, out Vector3 position, out float yaw)
+        private static bool TrySamplePlaybackPose(RemotePlayerView view, out Vector3 position, out float yaw)
         {
             position = default;
             yaw = default;
@@ -284,7 +284,7 @@ namespace BackroomsSurvival.Net
                 view.targetRotation = rp.rotation;
                 // Se guarda la pose con su hora de llegada en vez de perseguirla directamente: el
                 // dibujo va por detrás y la reproduce a ritmo constante (ver InterpolationDelay).
-                view.samples.Add(new RemoteView.PoseSample
+                view.samples.Add(new RemotePlayerView.PoseSample
                 {
                     time = Time.unscaledTime,
                     position = groundedPosition,
