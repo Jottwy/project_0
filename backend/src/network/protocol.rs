@@ -1230,9 +1230,21 @@ impl PacketPayload {
 // ─── Wire encoding / decoding ───
 
 /// Encode a packet: 12-byte header + MessagePack payload.
+///
+/// ADR-137 D1: `to_vec` (POSICIONAL), nunca `to_vec_named`. La variante con nombres escribía la
+/// clave de cada campo como texto en cada datagrama —`"position"`, `"animation"`, `"held_item"`…—
+/// y eso medía **170 de los 246 B de una pose, el 69 %** (`player_update_named_vs_positional_size`).
+/// Repetido a 10 Hz por entidad y por destinatario, era lo que saturaba el enlace del anfitrión:
+/// 253,8 KB/s medidos el 10-09 contra un techo de 256, con 1,9 s de cola de salida.
+///
+/// **El orden de los campos de cada variante, y el orden de las VARIANTES de `PacketPayload`, pasan
+/// a ser parte del formato de wire.** Sin nombres, un campo se identifica por su posición y una
+/// variante por su índice: insertar una variante en medio del enum, o un campo en medio de una
+/// struct, renumera todo lo que va detrás y lo decodifica mal SIN error. Se añade al final, siempre,
+/// y cualquier cambio de orden es bump de wire (`WIRE_SCHEMA_VERSION`) con ADR.
 pub fn encode_packet(header: &PacketHeader, payload: &PacketPayload) -> Vec<u8> {
     let header_bytes = header.to_bytes();
-    let payload_bytes = rmp_serde::to_vec_named(payload).expect("payload serialization");
+    let payload_bytes = rmp_serde::to_vec(payload).expect("payload serialization");
     let mut buf = Vec::with_capacity(HEADER_SIZE + payload_bytes.len());
     buf.extend_from_slice(&header_bytes);
     buf.extend_from_slice(&payload_bytes);
@@ -1380,6 +1392,103 @@ mod tests {
             }
             _ => panic!("wrong variant"),
         }
+    }
+
+    /// Cuánto de una pose en el wire son DATOS y cuánto son los nombres de los campos.
+    ///
+    /// `encode_packet` usa `to_vec_named`, que escribe la clave de cada campo como texto en CADA
+    /// datagrama: "position", "rotation", "animation", "equipment", "held_item"… Los valores no
+    /// cambian de tamaño entre las dos formas, así que la diferencia contra `to_vec` (posicional)
+    /// es exactamente el peso de las claves — repetido 10 veces por segundo, por entidad y por
+    /// destinatario.
+    ///
+    /// No es un invariante que proteger, es una MEDIDA: el `assert` sólo fija que la grasa existe
+    /// y es dominante, para que el número del ADR no dependa de una estimación a ojo.
+    /// ADR-137 D3: con el formato POSICIONAL, ¿sigue en pie el patrón «campo nuevo al final +
+    /// `#[serde(default)]`»?
+    ///
+    /// Con nombres era gratis: la clave que falta se rellena con el default. Sin nombres el payload
+    /// es un array, y que un array MÁS CORTO del esperado se complete con defaults en vez de
+    /// reventar deja de ser evidente — es justo la propiedad de la que dependen veinte ADR de
+    /// campos añadidos al final (ADR-020 a ADR-094), así que se demuestra en vez de suponerse.
+    ///
+    /// Se simula el emisor viejo a mano: una tupla con los N primeros campos, que es exactamente lo
+    /// que `to_vec` habría escrito antes de que existieran los últimos.
+    #[test]
+    fn positional_tolerates_short_array_from_older_peer() {
+        // Se aísla la pregunta en un par de structs de prueba: el emisor VIEJO (sin el campo que
+        // aún no existía) y el receptor NUEVO (con él, al final y con default). Meter aquí el enum
+        // real sólo añadiría el índice de variante, que no es lo que está en duda.
+        #[derive(Serialize)]
+        struct OldPeer {
+            position: [f32; 3],
+            animation: String,
+        }
+
+        #[derive(Deserialize, Debug)]
+        struct NewPeer {
+            position: [f32; 3],
+            animation: String,
+            #[serde(default)]
+            species: u8,
+        }
+
+        let old = OldPeer {
+            position: [10.0, 1.8, 20.0],
+            animation: "walk".into(),
+        };
+        let bytes = rmp_serde::to_vec(&old).unwrap();
+
+        match rmp_serde::from_slice::<NewPeer>(&bytes) {
+            Ok(decoded) => {
+                assert_eq!(decoded.animation, "walk", "lo que SÍ venía llega intacto");
+                assert_eq!(decoded.species, 0, "lo que faltaba cae al default");
+            }
+            Err(e) => panic!(
+                "ADR-137 D3 NO se sostiene: un array corto revienta ({e}). \
+                 Todo campo nuevo pasa a exigir bump de wire."
+            ),
+        }
+    }
+
+    #[test]
+    fn player_update_named_vs_positional_size() {
+        let payload = PacketPayload::PlayerUpdate {
+            position: [10.0, 1.8, 20.0],
+            rotation: 90.0,
+            animation: "walk".into(),
+            crouch: true,
+            pitch: -45,
+            equipment: [101, 202, 303, 404],
+            held_item: 12345,
+            hit_seq: 7,
+            dead: true,
+            revealed: true,
+            light_on: true,
+            fire_seq: 9,
+            buttons: 0b11,
+            melee_seq: 4,
+            vocal_seq: 6,
+            vocal_kind: 2,
+            carry_def: -1208217892,
+            carry_count: 3,
+            species: 2,
+        };
+
+        let named = rmp_serde::to_vec_named(&payload).unwrap().len();
+        let positional = rmp_serde::to_vec(&payload).unwrap().len();
+
+        println!(
+            "PlayerUpdate: named={named} B  positional={positional} B  \
+             claves={} B ({:.0} % del total)",
+            named - positional,
+            100.0 * (named - positional) as f64 / named as f64
+        );
+
+        assert!(
+            positional < named / 2,
+            "las claves deberían ser más de la mitad del datagrama: named={named} posicional={positional}"
+        );
     }
 
     #[test]

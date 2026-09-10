@@ -15909,3 +15909,109 @@ equipar y enfundar tomando los del vendor y cambiando sólo lo que hay que cambi
 
 ---
 
+## ADR-137 — El wire deja de escribir el nombre de cada campo: MsgPack posicional (2026-09-10) — PROPUESTA (Joel: «hay muchísimo lag y hay que pulir… lograr que el juego funcione con muchísimos jugadores sin morir en el intento»)
+
+**Estado:** PROPUESTA. No se toca una línea hasta que Joel acepte. El cambio es de FORMATO DE WIRE,
+así que cae de lleno en la regla dura #7.
+
+### Contexto
+
+El 09-09, primer playtest real por Steam con ADR-136 dentro, Joel lo resumió en dos palabras:
+«extremadamente lag». Hasta ese día no había NADA medido, así que el 10-09 se instrumentó el túnel
+(`FacepunchSteamTunnel.cs`, `RTT_DIAG`) con `Connection.DetailedStatus()` — lectura pura de lo que
+Valve ya calcula, sin tocar el protocolo. Lo que salió desmonta las dos hipótesis que había:
+
+```
+Ping: 24 ms          Quality: 100 %   Dropped: 0,00 %
+Sent: 253,8 K/sec    Est avail bandwidth: 256,0 KB/s
+Bytes buffered: ~483.000
+```
+
+**La red está impecable y el lag es nuestro.** 483.000 B de cola ÷ 253.800 B/s = **1,9 segundos de
+retraso**, estable durante todo el log, por saturación del enlace de salida. El ping de 24 ms no
+tiene nada que ver. Y los 256,0 KB/s son el default exacto de `SendRateMax` de Valve, no el límite
+de la línea de nadie.
+
+Esto invalida el plan que había: sin RTT que esconder, **la capa L2 de ADR-009 (predicción y
+reconciliación del cliente) no arregla este lag** —el movimiento ya es client-authoritative y no
+espera a nadie— y el LOD de poses tampoco, porque las poses no son lo que llena el tubo.
+
+Lo que sí lo llena se ve en `protocol.rs:1235`: `encode_packet` serializa con
+`rmp_serde::to_vec_named`, la variante de MessagePack que escribe **la clave de cada campo como
+texto en cada datagrama**. Medido sobre un `PlayerUpdate` real
+(`player_update_named_vs_positional_size`, en el propio `protocol.rs`):
+
+| | |
+|---|---|
+| `to_vec_named` (hoy) | **246 B** |
+| `to_vec` (posicional) | **76 B** |
+| Nombres de campo | **170 B = 69 % del datagrama** |
+
+Son `"position"`, `"rotation"`, `"animation"`, `"equipment"`, `"held_item"`, `"hit_seq"`,
+`"revealed"`, `"light_on"`, `"fire_seq"`, `"vocal_kind"`… veinte claves viajando **diez veces por
+segundo, por cada entidad y por cada destinatario**, para decir lo que ya sabe el que las lee.
+
+### Decisión
+
+**D1 — `encode_packet` pasa a `rmp_serde::to_vec`.** Un cambio de una línea en `protocol.rs:1235`,
+con su pareja en `decode_packet`. Como TODO el tráfico del juego pasa por ahí, el recorte del 69 %
+no es de las poses: es de los rosters de STP, del `PeerList`, del `WorldState` y de todo lo demás.
+Proyección directa sobre lo medido: **253,8 KB/s → ~79 KB/s**, que por sí solo saca el enlace de la
+saturación y funde la cola de 1,9 s.
+
+**D2 — Bump de wire, 61 → 62, en las dos puntas** (`ipc/server.rs`, `WireSchema.cs`). Un peer viejo
+no puede leer un array donde esperaba un mapa. ADR-061 valida la versión en el `hello`, así que la
+mezcla se corta ahí con un rechazo limpio: nunca hay dos formatos hablándose.
+
+**D3 — El patrón «campo nuevo al final + `#[serde(default)]`» SOBREVIVE, pero hay que probarlo.**
+Con formato posicional el payload es un array, y la tolerancia a un array más corto del que se
+espera deja de ser algo que se lee en el `serde` y pasa a ser algo que se demuestra. Va con test
+propio antes de dar D1 por bueno; si no se sostiene, todo bump futuro de campo pasa a exigir bump de
+wire y eso hay que saberlo ANTES, no el día que muerda.
+
+**D4 — El IPC de Unity↔backend NO se toca.** Tiene su propio codificador (`IPCClient.cs` escribe las
+claves a mano) y es loopback en la misma máquina, donde 170 B no le hacen daño a nadie. Meterlo aquí
+sería ampliar el alcance sin ninguna medida que lo respalde.
+
+### Lo que este ADR NO arregla, dicho a propósito
+
+El 69 % es grasa de formato. Por debajo sigue habiendo un problema de VOLUMEN que este ADR no toca y
+que se ataca con medidas propias:
+
+- **No hay delta compression en ninguna parte.** Se manda estado completo cada tick; el AOI filtra
+  destinatarios, nunca campos.
+- **Los rosters de STP se reenvían enteros cuando cambia una sola cosa** (`roster.rs:158`: cualquier
+  cambio de hash rearma tres rondas a 10 Hz). Un objeto que se mueve reenvía la lista completa de lo
+  que está quieto.
+- **Once robapieles viajaban por el mismo stream que el jugador humano** (`remote_players_count=12`
+  en el log del 10-09). Cuántos deben estar activos a la vez es decisión de Joel, no de red.
+- **`SendRateMax` en el default de Valve.** Se sube en el túnel (sin tocar protocolo): no arregla la
+  causa, pero deja de recortar por debajo al que sí tiene subida.
+
+### Escalado, con las cuentas hechas sobre lo medido
+
+El coste del anfitrión crece como N×(N−1): manda a cada peer el estado de todos los demás. Con los
+21 KB/s por entidad y destinatario que salen del log del 10-09:
+
+| Presupuesto de salida | Jugadores que caben |
+|---|---|
+| 256 KB/s (hoy) | **~4** |
+| 1 MB/s | ~7 |
+| 4 MB/s | ~14 |
+
+Subir el límite **no llega a 50 jamás**, porque el crecimiento es cuadrático. Con el payload sano
+(orden de 400 B/s por entidad y destinatario) los mismos 50 jugadores **en la misma sala** piden
+~1 MB/s de subida en el anfitrión y 20 KB/s de bajada en cada cliente. Ahí el 50 deja de ser una
+pregunta de ancho de banda. Ese es el camino: recortar lo que se mete por el tubo, no ensanchar el
+tubo.
+
+### Preguntas abiertas
+
+- **Q1** — ¿Se acepta D1 con su bump de wire, sabiendo que obliga a que todos actualicen a la vez?
+- **Q2** — `animation` viaja como `String` en cada pose. Pasarlo a un `u8` de catálogo es otro
+  recorte y otro bump; ¿entra en este ADR o va en el suyo?
+- **Q3** — El orden de trabajo propuesto es: D1 (formato) → deltas → rosters. ¿Se confirma, o Joel
+  prefiere los rosters antes por ser un bug con nombre?
+
+---
+
