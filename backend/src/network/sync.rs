@@ -27,6 +27,33 @@ use super::PeerId;
 
 // â”€â”€â”€ Conversion: game types â†’ sync types â”€â”€â”€
 
+/// Cuántas poses caben en un datagrama. Una pose posicional mide ~76 B (ADR-137), y el techo de
+/// gameplay son 1200 B (ADR-113), así que 12 deja margen de sobra para la cabecera y el sobre.
+///
+/// Se trocea por CUENTA y no midiendo el serializado porque el tamaño de una pose es acotado y
+/// conocido: la única parte variable es `animation`, y es una cadena corta de un catálogo cerrado.
+const MAX_POSES_PER_BATCH: usize = 12;
+
+/// Parte un lote en los datagramas que hagan falta, conservando el emparejamiento entre cada pose
+/// y su emisor.
+///
+/// **No lleva reensamblado, y es correcto**: cada trozo es un mensaje completo —N poses de N
+/// emisores— y el receptor las aplica una a una. Perder un trozo pierde esas poses, que es
+/// exactamente lo que pasaba antes al perder un datagrama suelto; la siguiente ronda las repone.
+fn split_pose_batches(
+    senders: Vec<u16>,
+    updates: Vec<PacketPayload>,
+) -> Vec<(Vec<u16>, Vec<PacketPayload>)> {
+    if senders.len() <= MAX_POSES_PER_BATCH {
+        return vec![(senders, updates)];
+    }
+    senders
+        .chunks(MAX_POSES_PER_BATCH)
+        .zip(updates.chunks(MAX_POSES_PER_BATCH))
+        .map(|(s, u)| (s.to_vec(), u.to_vec()))
+        .collect()
+}
+
 /// ADR-139 D1 — huella de la parte ESTABLE de un chunk, para decidir si toca reenviarlo.
 ///
 /// Deja fuera los tres campos que cambian solos y que hacían que el gate no pudiera cortar nunca:
@@ -1299,6 +1326,13 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager) {
 
     // Se recorre `poses` (Vec, orden estable) y NO las claves de `relayed` (HashMap): el orden de
     // salida tiene que ser determinista — regla dura 13.
+    // ADR-140 D4: se agrupa POR DESTINATARIO. Antes cada par (origen, destino) era un `send_to`
+    // propio —2.450 llamadas al sistema por ronda con 50 juntos, medidas en 21,92 de los 25,34 ms
+    // de una ronda, el 86 %—, y ahora cada destinatario recibe UN datagrama con todas las poses que
+    // le tocan. El orden de recorrido sigue siendo el de `poses` (Vec), así que es determinista.
+    let mut per_dest: std::collections::HashMap<PeerId, (Vec<u16>, Vec<PacketPayload>)> =
+        std::collections::HashMap::with_capacity(dest_ids.len());
+
     for (src_id, _) in &poses {
         // E1: si este origen no le interesa a nadie, ni se construye su pose ni se serializa.
         let Some(dests) = relayed.get(src_id) else {
@@ -1330,14 +1364,27 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager) {
             carry_count: p.carry_count,
             species: p.species,
         };
-        let payload = &payload;
-        // F0.2: encodear UNA vez por origen en vez de una vez por par (origen, destino). Los
-        // bytes no dependen del destino —el header lleva el id del origen y la secuencia de un
-        // no-fiable es 0—, así que esto emite exactamente los mismos datagramas: P
-        // serializaciones por ronda en vez de P×D.
-        let data = net.encode_relay_as(*src_id, payload);
+        // La pose se CLONA por destinatario, que es el precio de agrupar: antes se serializaba una
+        // vez y se reenviaban los mismos bytes. Sale a cuenta con creces — un `clone` en memoria
+        // contra una llamada al sistema, que es tres órdenes de magnitud más cara.
         for &dest_id in dests {
-            net.send_prepared_unreliable(dest_id, &data).await;
+            let entry = per_dest
+                .entry(dest_id)
+                .or_insert_with(|| (Vec::new(), Vec::new()));
+            entry.0.push(*src_id);
+            entry.1.push(payload.clone());
+        }
+    }
+
+    // Se recorre `dest_ids` (Vec, orden estable) y no las claves del mapa: el orden de salida tiene
+    // que ser determinista — regla dura 13.
+    for dest_id in &dest_ids {
+        let Some((senders, updates)) = per_dest.remove(dest_id) else {
+            continue;
+        };
+        for (senders, updates) in split_pose_batches(senders, updates) {
+            let payload = PacketPayload::PlayerUpdateBatch { senders, updates };
+            net.send_unreliable_to(*dest_id, &payload).await;
         }
     }
 

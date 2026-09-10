@@ -263,6 +263,62 @@ async fn loot_and_buildings_by_world_age() {
     println!();
 }
 
+/// **Dónde se van los milisegundos**, fase por fase. Sin esto, optimizar es adivinar — y en esta
+/// tanda adivinar ya falló tres veces.
+#[tokio::test]
+#[ignore = "arnés de carga"]
+async fn cpu_breakdown_by_phase() {
+    println!("\n=== Reparto de CPU por fase (20 rondas, 300 objetos + 150 piezas) ===\n");
+
+    for count in [8usize, 32, 50] {
+        let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        register_synthetic_peers(&mut host, count, Spread::SameRoom);
+        fill_stp_rosters(&mut host, 300, 150);
+        let mut world = crate::world::World::new(42);
+        for i in 0..64 {
+            world.ensure_chunk((i % 8, i / 8));
+        }
+        activate_all_chunks(&mut world);
+
+        const ROUNDS: u32 = 20;
+        let mut poses_ms = 0.0;
+        let mut chunks_ms = 0.0;
+        let mut rosters_ms = 0.0;
+
+        for tick in 0..ROUNDS as usize {
+            step_all_peers(&mut host, tick);
+
+            let t = std::time::Instant::now();
+            super::sync::broadcast_peer_poses(&mut host).await;
+            poses_ms += t.elapsed().as_secs_f64() * 1000.0;
+
+            let t = std::time::Instant::now();
+            super::sync::broadcast_chunk_states(
+                &mut host,
+                &world,
+                crate::utils::Vec3::new(0.0, 1.8, 0.0),
+            )
+            .await;
+            chunks_ms += t.elapsed().as_secs_f64() * 1000.0;
+
+            let t = std::time::Instant::now();
+            super::sync::broadcast_stp_items(&mut host).await;
+            super::sync::broadcast_stp_buildings(&mut host).await;
+            rosters_ms += t.elapsed().as_secs_f64() * 1000.0;
+        }
+
+        let r = ROUNDS as f64;
+        let total = (poses_ms + chunks_ms + rosters_ms) / r;
+        println!(
+            "  N={count:>3}  total {total:>6.2} ms  =  poses {:>6.2}  chunks {:>5.2}  rosters {:>5.2}",
+            poses_ms / r,
+            chunks_ms / r,
+            rosters_ms / r
+        );
+    }
+    println!();
+}
+
 /// **El coste en CPU del anfitrión**, no en bytes: cuánto tarda una ronda completa de emisión con
 /// todo cargado a la vez. El presupuesto de un tick a 60 Hz son 16,67 ms.
 #[tokio::test]
