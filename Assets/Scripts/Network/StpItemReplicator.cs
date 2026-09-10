@@ -22,6 +22,11 @@ namespace BackroomsSurvival.Net
         private static StpItemReplicator _instance;
         private readonly Dictionary<uint, Tracked> _spawned = new Dictionary<uint, Tracked>();
 
+        // Perf: reused across LateUpdate calls instead of allocating a fresh HashSet/List every
+        // frame (docs/perf/PERF_AUDIT_v1.md §1.5). Cleared at the top of each use.
+        private readonly HashSet<uint> _aliveScratch = new HashSet<uint>();
+        private readonly List<uint> _staleScratch = new List<uint>();
+
         [Tooltip("ADR-070: render a falling item this far behind real time (s) so interpolation always " +
                  "runs between two received samples instead of extrapolating past the last one.")]
         public float latencyMarginSec = 0.12f;
@@ -87,10 +92,10 @@ namespace BackroomsSurvival.Net
                 return;
 
             float now = Time.time;
-            var alive = new HashSet<uint>();
+            _aliveScratch.Clear();
             foreach (var it in state.stpItems)
             {
-                alive.Add(it.id);
+                _aliveScratch.Add(it.id);
                 // Re-spawn if missing OR destroyed (e.g. after a scene reload).
                 if (!_spawned.TryGetValue(it.id, out var tracked) || tracked.go == null)
                 {
@@ -129,17 +134,17 @@ namespace BackroomsSurvival.Net
 
             AdvanceSettling(now);
 
-            var stale = new List<uint>();
+            _staleScratch.Clear();
             foreach (var kv in _spawned)
             {
-                if (!alive.Contains(kv.Key))
+                if (!_aliveScratch.Contains(kv.Key))
                 {
                     if (kv.Value.go != null)
                         Destroy(kv.Value.go);
-                    stale.Add(kv.Key);
+                    _staleScratch.Add(kv.Key);
                 }
             }
-            foreach (uint k in stale)
+            foreach (uint k in _staleScratch)
                 _spawned.Remove(k);
         }
 

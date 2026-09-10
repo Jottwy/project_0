@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Reflection;
-using System.Text;
 using PolymindGames.BuildingSystem;
 using PolymindGames.SaveSystem;
 using UnityEngine;
@@ -46,7 +45,7 @@ namespace BackroomsSurvival.Net
             public GameObject go;
             public uint groupId;    // B3: the group this piece belongs to (0 = standalone)
             public bool complete;   // sticky: progress only advances, never downgrades
-            public string addedKey; // last-applied progress snapshot (change detection)
+            public long addedKey;   // last-applied progress hash (change detection; not a string, see AddedKeyHash)
             public long demolishId; // ADR-037: non-zero once a demolish was sent for this piece
         }
 
@@ -71,6 +70,12 @@ namespace BackroomsSurvival.Net
         private readonly Dictionary<int, BuildRequirement[]> _authoredByDef = new Dictionary<int, BuildRequirement[]>();
         // ADR-037: monotonic suffix for this client's demolish ids.
         private uint _demolishCounter;
+
+        // Perf: reused across LateUpdate calls instead of allocating a fresh HashSet/List every
+        // frame (measured: ~110 KB/s baseline garbage from this reconcile loop, docs/perf/PERF_AUDIT_v1.md).
+        // Pure bookkeeping scratch space; cleared at the top of each use, never read across frames.
+        private readonly HashSet<uint> _aliveScratch = new HashSet<uint>();
+        private readonly List<uint> _staleScratch = new List<uint>();
 
         // Cached reflection for the protected serialized `_state` field + its boxed values
         // (the enum type is not nameable from outside the vendor assembly).
@@ -99,11 +104,11 @@ namespace BackroomsSurvival.Net
             if (state == null)
                 return;
 
-            var alive = new HashSet<uint>();
+            _aliveScratch.Clear();
             foreach (var b in state.stpBuildings)
             {
-                alive.Add(b.id);
-                string key = AddedKey(b.added);
+                _aliveScratch.Add(b.id);
+                long key = AddedKeyHash(b.added);
 
                 if (!_spawned.TryGetValue(b.id, out var tracked))
                 {
@@ -135,17 +140,17 @@ namespace BackroomsSurvival.Net
                 }
             }
 
-            var stale = new List<uint>();
+            _staleScratch.Clear();
             foreach (var kv in _spawned)
             {
-                if (!alive.Contains(kv.Key))
+                if (!_aliveScratch.Contains(kv.Key))
                 {
                     if (kv.Value.go != null)
                         Destroy(kv.Value.go);
-                    stale.Add(kv.Key);
+                    _staleScratch.Add(kv.Key);
                 }
             }
-            foreach (uint k in stale)
+            foreach (uint k in _staleScratch)
             {
                 _spawned.Remove(k);
                 _bedReported.Remove(k); // ADR-069: the piece is gone, so is its report record
@@ -183,7 +188,7 @@ namespace BackroomsSurvival.Net
         /// (the stale sweep below then clears the tracking). Respawning while the request is in
         /// flight would flash the piece back for a whole RTT, right where the player is looking.
         /// </summary>
-        private void HandleVanishedPiece(StpBuildingMsg b, Tracked tracked, string key, IPCClient ipc)
+        private void HandleVanishedPiece(StpBuildingMsg b, Tracked tracked, long key, IPCClient ipc)
         {
             // Our own completion respawn: re-spawn in Constructed and carry on.
             if (tracked.complete)
@@ -412,15 +417,25 @@ namespace BackroomsSurvival.Net
             return arr;
         }
 
-        private static string AddedKey(List<StpBuildProgressMsg> added)
+        // Perf: same change-detection job as the old string-concatenating AddedKey, but with zero
+        // allocation — this ran for every piece, every frame (docs/perf/PERF_AUDIT_v1.md §1.5). The
+        // hash is never displayed or persisted, only compared for equality, so a combined 64-bit
+        // FNV-1a over (materialId, count) pairs is exactly as safe as the string it replaces.
+        private static long AddedKeyHash(List<StpBuildProgressMsg> added)
         {
-            if (added == null || added.Count == 0)
-                return string.Empty;
+            const long FnvOffset = unchecked((long)0xcbf29ce484222325);
+            const long FnvPrime = 0x100000001b3;
 
-            var sb = new StringBuilder();
+            if (added == null || added.Count == 0)
+                return FnvOffset;
+
+            long hash = FnvOffset;
             foreach (var p in added)
-                sb.Append(p.materialId).Append(':').Append(p.count).Append(';');
-            return sb.ToString();
+            {
+                hash = (hash ^ p.materialId) * FnvPrime;
+                hash = (hash ^ p.count) * FnvPrime;
+            }
+            return hash;
         }
 
         private static void ForceState(GameObject go, bool complete)

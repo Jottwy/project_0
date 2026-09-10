@@ -17,6 +17,11 @@ namespace BackroomsSurvival.Net
         private static StpCarryableReplicator _instance;
         private readonly Dictionary<uint, GameObject> _spawned = new Dictionary<uint, GameObject>();
 
+        // Perf: reused across LateUpdate calls instead of allocating a fresh HashSet/List every
+        // frame (docs/perf/PERF_AUDIT_v1.md §1.5). Cleared at the top of each use.
+        private readonly HashSet<uint> _aliveScratch = new HashSet<uint>();
+        private readonly List<uint> _staleScratch = new List<uint>();
+
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void Bootstrap()
         {
@@ -37,10 +42,10 @@ namespace BackroomsSurvival.Net
             if (state == null)
                 return;
 
-            var alive = new HashSet<uint>();
+            _aliveScratch.Clear();
             foreach (var c in state.stpCarryables)
             {
-                alive.Add(c.id);
+                _aliveScratch.Add(c.id);
                 if (!_spawned.TryGetValue(c.id, out var existing) || existing == null)
                 {
                     var spawned = SpawnCarryable(c);
@@ -49,17 +54,17 @@ namespace BackroomsSurvival.Net
                 }
             }
 
-            var stale = new List<uint>();
+            _staleScratch.Clear();
             foreach (var kv in _spawned)
             {
-                if (!alive.Contains(kv.Key))
+                if (!_aliveScratch.Contains(kv.Key))
                 {
                     if (kv.Value != null)
                         Destroy(kv.Value);
-                    stale.Add(kv.Key);
+                    _staleScratch.Add(kv.Key);
                 }
             }
-            foreach (uint k in stale)
+            foreach (uint k in _staleScratch)
                 _spawned.Remove(k);
         }
 
