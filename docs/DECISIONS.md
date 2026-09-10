@@ -16125,3 +16125,85 @@ ese número, y con él la decisión de si merece tocar la IA de ADR-038.
 
 ---
 
+## ADR-139 — El chunk reenvía su geometría cada vez que un temporizador hace tic: separar lo estable de lo volátil (2026-09-10) — PROPUESTA (Joel: «si se puede cambiar mientras no se rompa nada, más agresivo… si esto mejora y acaba yendo igual pues mejor»)
+
+**Estado:** PROPUESTA. D1 no toca wire y se implementa ya; D2 sí lo toca y espera decisión.
+
+### Contexto: por fin hay un culpable con nombre
+
+Tres tandas seguidas optimizando el relay de poses, y la primera medida por opcode —anfitrión real,
+410 s, ADR-138 dentro— dice que **las poses nunca fueron el problema**:
+
+```
+total=146,1 KB/s
+  broadcast_unreliable:0x11 = 116,4 KB/s  (80 %,  87.214 pkt)   ← ChunkState
+  broadcast_unreliable:0x07 =  13,7 KB/s  ( 9 %,  11.259 pkt)   ← PeerList
+  relay_as:0x10             =  11,3 KB/s  ( 8 %,  61.771 pkt)   ← poses
+  broadcast_unreliable:0x46 =   2,2 KB/s  ( 1 %)                ← CorpseList
+```
+
+**El 80 % es `ChunkState`: 213 datagramas por segundo con UN solo jugador dentro.**
+
+Y el mismo log cierra la otra pregunta abierta: `ENTTRACE avg_ms=0,027 max_ms=0,989` sobre un
+presupuesto de 16,67 ms → **0,2 %**. Simular las criaturas no cuesta nada, así que **el LOD de
+entidades queda descartado** y no hace falta entrar en los invariantes de ADR-038. Dos
+optimizaciones que parecían obvias y que la medición ha desmontado: la de entidades por inútil y la
+de poses por marginal.
+
+### Por qué se reenvía tanto
+
+`ChunkSyncData` (`protocol.rs:416`) mete en el mismo mensaje cosas de naturaleza opuesta:
+
+| Campo | Naturaleza | Peso |
+|---|---|---|
+| `layout` + `seed`/`template_id`/`rotation`/`mirrored` | **inmutable** una vez generado el chunk | **754 B** medidos |
+| `stabilized`, `anchored`, `has_workbench` | cambia con el juego, rara vez | — |
+| `teleport_timer` | **baja cada segundo** (`world/mod.rs:957`) | 4 B |
+| `entities` | **se mueven sin parar** | ~87 B cada una |
+| `items` | cambian al caer o al cogerse | — |
+
+El gate de ADR-071 hashea **el dato entero** (`sync.rs:1651`), así que basta un tic del temporizador
+o un paso de una criatura para que el hash cambie y se reenvíe el chunk **completo, geometría
+incluida**. Con 49 chunks en el radio de 3, eso es reenviar 754 B inmutables una y otra vez.
+
+El gate está bien escrito: lo que falla es **pedirle que distinga lo estable de lo volátil cuando
+viajan en el mismo saco**.
+
+Agravante: las criaturas **ya tienen su propio canal** — son los 61.771 `relay_as:0x10`, su pose a
+30 Hz. Su posición viaja por dos sitios a la vez.
+
+### Decisión
+
+**D1 — El gate hashea sólo la parte ESTABLE.** `teleport_timer`, `entities` e `items` salen del
+hash; todo lo demás sigue dentro. **No cambia un byte del wire**: se envía exactamente el mismo
+mensaje con el mismo contenido, sólo cambia *cuándo*. Un chunk pasa a reenviarse cuando cambia algo
+estructural o cuando vence el latido de 3 s (`ROSTER_HEARTBEAT`), en vez de a cada tic de reloj.
+
+Lo volátil no se queda sin actualizar: las criaturas van por su pose a 30 Hz, y el resto se refresca
+en el siguiente latido.
+
+**Riesgo aceptado y acotado:** un item que cae o que alguien coge puede tardar **hasta 3 s** en
+reflejarse si nada más cambia en ese chunk. Si molesta en juego, la respuesta NO es deshacer D1 sino
+D2 — o bajar el latido, que es un número.
+
+**D2 (propuesto, con wire) — Partir el mensaje en dos.** Un `ChunkStatic` que viaja al entrar en
+rango y cuando cambie de verdad, y un `ChunkVolatile` pequeño con timer, entidades e items a su
+propia cadencia. Es la forma correcta de fondo y hace innecesario el compromiso de D1, pero exige
+bump de wire y tocar el receptor (`apply_chunk_sync` es un reemplazo verbatim). **Sólo si D1 no
+basta**, y con su medición delante.
+
+### Hallazgo secundario, sin decidir
+
+`PeerList` (0x07) va a **27,5 datagramas por segundo con un jugador**: 11.259 paquetes en 410 s.
+Un roster de peers que no cambia no tiene por qué emitir a esa cadencia; huele al mismo patrón que
+D1. Se mide después de D1, porque con el 80 % fuera el reparto cambia y conviene volver a mirarlo
+antes de tocar nada.
+
+### Verificación
+
+La misma de siempre: `BWTRACE` antes y después en partida real. D1 se da por bueno si `0x11` deja de
+dominar el reparto; si no, se va a D2. Y suite del backend en verde, que es la que protege el
+comportamiento del gate (ADR-071 tiene tests propios).
+
+---
+
