@@ -1683,6 +1683,42 @@ async fn pose_relay_addresses_real_peers_only_but_still_relays_phantom_poses() {
     );
 }
 
+/// 2026-09-10 — la condición `joined` de las puertas de roster (ADR-071 decisión 4) cuenta a quien
+/// puede RECIBIR, no a quien está en `peers`.
+///
+/// Contando a las criaturas, cada nacimiento parecía un jugador nuevo y reenviaba los cinco rosters
+/// y todos los chunks a todo el mundo. En un mundo poblado eso pasa continuamente, así que ninguna
+/// puerta llegaba a cerrarse y el ahorro de ADR-071 y ADR-139 se evaporaba — sin error y sin log,
+/// solo tráfico. Un `relay_only` cuenta igual de poco: su addr es tan inerte como la del fantasma.
+#[tokio::test]
+async fn creatures_do_not_count_as_new_peers_for_the_roster_gates() {
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let real_id = 2;
+    let addr: SocketAddr = "127.0.0.1:9999".parse().unwrap();
+    host.peers
+        .insert(real_id, PeerConnection::new(real_id, "Real".into(), addr));
+
+    let before = super::sync::gameplay_destination_count(&host);
+    assert_eq!(before, 1, "preparación: un solo destinatario real");
+
+    host.spawn_phantom("Robapieles", [0.0, 1.8, 0.0], None);
+    let relay_only_id = 61_007;
+    let mut announced = PeerConnection::new(relay_only_id, "Criatura".into(), addr);
+    announced.relay_only = true;
+    host.peers.insert(relay_only_id, announced);
+
+    assert_eq!(
+        super::sync::gameplay_destination_count(&host),
+        before,
+        "ni un fantasma ni un relay_only pueden parecer un jugador que acaba de entrar"
+    );
+    assert_eq!(
+        host.peers.len(),
+        3,
+        "y siguen en `peers`: son emisores, lo que no son es destinatarios"
+    );
+}
+
 /// ADR-046 — la voz de un joiner llega al host y se atribuye al hablante SEGÚN LA CABECERA,
 /// no según nada que venga dentro del payload. Esa distinción es de seguridad: si el id del
 /// hablante viajara en el cuerpo, un cliente modificado podría firmar su audio como si fuera

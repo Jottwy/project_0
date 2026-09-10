@@ -1070,6 +1070,24 @@ pub(crate) fn relay_destinations(net: &NetworkManager) -> Vec<PeerId> {
         .collect()
 }
 
+/// 2026-09-10 — cuántos peers pueden RECIBIR, para la condición `joined` de las puertas de roster.
+///
+/// `net.peers.len()` contaba también a las criaturas y al robapieles, que no reciben nada: su addr
+/// es la inerte de ADR-079/043 y la guarda de `send.rs` las rechaza. Con esa cuenta, `joined`
+/// (`peers > last_peers`) se disparaba en CADA nacimiento y reenviaba el roster entero —los cinco, y
+/// los chunks— a todo el mundo. En un mundo poblado eso ocurre sin parar, así que ninguna puerta
+/// llegaba a cerrarse del todo y el ahorro de ADR-071 y ADR-139 se evaporaba en silencio: sin error,
+/// sin log, solo tráfico.
+///
+/// La condición no cambia de significado, se le da el número que siempre quiso decir: alguien nuevo
+/// a quien hay que darle el mundo.
+pub(crate) fn gameplay_destination_count(net: &NetworkManager) -> usize {
+    net.peers
+        .values()
+        .filter(|p| net.peer_is_gameplay_destination(p))
+        .count()
+}
+
 /// E1 / ADR-074 (fase 1) — radio del área de interés de las poses, en metros.
 ///
 /// **Lo elige el DISEÑO, no la red.** La fase `stalk` del robapieles es acecho a distancia: si su
@@ -1460,7 +1478,10 @@ pub async fn broadcast_stp_items(net: &mut NetworkManager) {
     // ADR-071: skip the whole round if this roster is byte-identical to the last one that went
     // out. The gate still gets asked at 10 Hz, so the first round AFTER a change ships it exactly
     // as before — this costs no propagation latency, it only stops re-sending what everyone has.
-    if !roster_gate_open(&mut net.roster_gates.items, &net.stp_items, net.peers.len()) {
+    // Fuera de la llamada: `gameplay_destination_count` toma prestado `net` entero y el gate ya se
+    // presta mutable en el argumento anterior.
+    let peers = gameplay_destination_count(net);
+    if !roster_gate_open(&mut net.roster_gates.items, &net.stp_items, peers) {
         return;
     }
     let generation = net.timestamp();
@@ -1495,7 +1516,8 @@ pub async fn broadcast_corpses(net: &mut NetworkManager, world: &World) {
     // at it: the roster is assembled from `world.corpses` rather than stored flat. The clone is
     // orders of magnitude cheaper than the send it prevents, so it is not worth restructuring the
     // storage to save it.
-    if !roster_gate_open(&mut net.roster_gates.corpses, &all, net.peers.len()) {
+    let peers = gameplay_destination_count(net);
+    if !roster_gate_open(&mut net.roster_gates.corpses, &all, peers) {
         return;
     }
     let generation = net.timestamp();
@@ -1595,7 +1617,8 @@ pub async fn broadcast_level4_state(net: &mut NetworkManager) {
         net.level4.window_open,
         net.level4.return_dest,
     )];
-    if !roster_gate_open(&mut net.roster_gates.level4, &wire_fields, net.peers.len()) {
+    let peers = gameplay_destination_count(net);
+    if !roster_gate_open(&mut net.roster_gates.level4, &wire_fields, peers) {
         return;
     }
     let payload = PacketPayload::Level4State {
@@ -1614,11 +1637,8 @@ pub async fn broadcast_stp_buildings(net: &mut NetworkManager) {
     }
     // ADR-071. This is the roster the measurement singled out: a built base is static for hours and
     // was being re-sent 10 times a second forever.
-    if !roster_gate_open(
-        &mut net.roster_gates.buildings,
-        &net.stp_buildings,
-        net.peers.len(),
-    ) {
+    let peers = gameplay_destination_count(net);
+    if !roster_gate_open(&mut net.roster_gates.buildings, &net.stp_buildings, peers) {
         return;
     }
     let generation = net.timestamp();
@@ -1647,11 +1667,8 @@ pub async fn broadcast_stp_carryables(net: &mut NetworkManager) {
         return;
     }
     // ADR-071.
-    if !roster_gate_open(
-        &mut net.roster_gates.carryables,
-        &net.stp_carryables,
-        net.peers.len(),
-    ) {
+    let peers = gameplay_destination_count(net);
+    if !roster_gate_open(&mut net.roster_gates.carryables, &net.stp_carryables, peers) {
         return;
     }
     let generation = net.timestamp();
@@ -1680,10 +1697,11 @@ pub async fn broadcast_stp_harvestables(net: &mut NetworkManager) {
         return;
     }
     // ADR-071.
+    let peers = gameplay_destination_count(net);
     if !roster_gate_open(
         &mut net.roster_gates.harvestables,
         &net.stp_harvestables,
-        net.peers.len(),
+        peers,
     ) {
         return;
     }
@@ -1727,7 +1745,13 @@ pub async fn broadcast_chunk_states(net: &mut NetworkManager, world: &World, pla
         return;
     }
     let player_chunk = world_to_chunk(player_pos);
-    let peers = net.peers.len();
+    // 2026-09-10: DESTINATARIOS, no peers. La condición `joined` de ADR-071 existe porque quien
+    // acaba de entrar no tiene mundo; una criatura no recibe chunks jamás —su entrada en `peers`
+    // lleva la addr inerte de ADR-079 y la guarda de `send.rs` la rechaza— así que contarla hacía
+    // que CADA nacimiento reenviara todos los chunks a todo el mundo. Con `net.peers.len()` un
+    // mundo poblado dispara `joined` sin parar y ninguna puerta llega a cerrarse: ni el latido
+    // retrocedido ni el corte por hash de ADR-139 sobreviven a eso.
+    let peers = gameplay_destination_count(net);
     // Las claves visitadas en ESTA ronda. Se recogen para poder tirar después los gates de chunks
     // que ya no se emiten (descargados o alejados): sin la poda el mapa crece con cada chunk que
     // el jugador visita y no vuelve a pisar, durante toda la sesión.
