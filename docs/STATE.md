@@ -94,6 +94,16 @@
 
 ## Últimas tandas
 
+### 2026-09-10 — 44.ª tanda: GRD probado y descartado; y un hallazgo sobre el guardado compartido
+- **GPU Resident Drawer (técnica 4 vía B) verificado con A/B real: DESCARTADO.** `m_GPUResidentDrawerMode: 1`
+  fuerza ~1h54 de recompilación sin caché y el `Player.log` trae `wrong cbuffer setup. Missing
+  DOTS_INSTANCING_ON variant?` — `GridWallOffset.shader` (HLSL a mano) es incompatible, GRD no lo excluye en
+  silencio. Revertido, cero huella. Solo la vía A (fundir paneles) sigue en pie como IMPLEMENTAR.
+- **Hallazgo aparte, ya corregido**: los builds de perf usaban el `ProjectSettings.asset` tal cual (mismo
+  companyName/productName que el build de Steam de Joel) → guardado en la MISMA carpeta que su partida viva.
+  Sin daño verificado (sin demolish/damage/kill), 28 ficheros basura borrados con su OK. Ahora aislado con
+  `companyName` temporal, nunca commiteado.
+
 ### 2026-09-10 — 43.ª tanda: aplicada la única técnica de la auditoría sin riesgo visual (GC de los replicadores STP)
 - **`StpBuildingReplicator`/`StpItemReplicator`/`StpCarryableReplicator`.LateUpdate** dejan de allocar un `HashSet<uint>`+
   `List<uint>` NUEVOS cada frame (`_aliveScratch`/`_staleScratch` reutilizados, `.Clear()` en vez de `new`).

@@ -309,11 +309,24 @@ o dependencia sin cumplir), **DESCARTAR** (el problema no aparece en las medicio
 |---|---|
 | Problema que ataca | **Emisión de 11–30 k draw calls por frame en CPU** (`FinishFrameRendering` 6–14 ms + `Semaphore.WaitForSignal`). Censo: 12 587 paneles de techo idénticos (5 711 visibles) y 3 096 papeles como renderers sueltos; los macizos ya van fundidos (~550 renderers). SetPass 152–227 demuestra que el SRP Batcher hace su parte: lo que falta es reducir el número de emisiones |
 | Ganancia estimada | Los paneles son ≈ el 50–69 % de los renderers visibles; quitarlos de la emisión individual debería recortar la parte proporcional de `FinishFrameRendering`: **ESTIMADO −3 a −5 ms de hilo principal en S1/S2** (método: proporción de renderers visibles atribuible a paneles × tiempo de emisión; la correlación draws↔dt es débil, así que el rango es ancho y hay que confirmarlo con un build de prueba) |
-| Esfuerzo | Vía A, **fundir los paneles por chunk** como ya hace `AssembleSolids` (1–2 días; el parpadeo pasa de `MaterialPropertyBlock` por panel a un canal de vértice/UV2 con identificador leído por el shader). Vía B, **GRD** (`m_GPUResidentDrawerMode: 1`, medio día): instancia mallas idénticas sin tocar código, pero **`LampFlicker` usa `MaterialPropertyBlock`, que expulsa a esos paneles del GRD** (el 40 % de los vivos parpadea) y el GRD no ayuda a los prepasses de sombra más que la fusión |
-| Riesgo | Bajo (visual idéntico); A obliga a rehacer el parpadeo; B depende de compatibilidad de shaders (Lit y los del vendor lo son; `Backrooms/GridWallOffset` por comprobar) |
+| Esfuerzo | Vía A, **fundir los paneles por chunk** como ya hace `AssembleSolids` (1–2 días; el parpadeo pasa de `MaterialPropertyBlock` por panel a un canal de vértice/UV2 con identificador leído por el shader). Vía B, **GRD** (`m_GPUResidentDrawerMode: 1`) — **PROBADA el 10-09, DESCARTADA**: ver abajo |
+| Riesgo | A: bajo (visual idéntico), obliga a rehacer el parpadeo. **B: CONFIRMADO INCOMPATIBLE** (ver verificación) |
 | Dependencias | Ninguna |
-| Compatible con Alpha 1 | Sí |
-| Veredicto | **IMPLEMENTAR (vía A primero; B como toggle de prueba de medio día para medir la diferencia)** |
+| Compatible con Alpha 1 | Sí, solo vía A |
+| Veredicto | **IMPLEMENTAR vía A** (fusión de paneles). **Vía B (GRD) DESCARTADA, verificada empíricamente el 10-09**: |
+
+**Verificación de la vía B (GRD), 2026-09-10.** Build A/B desde el clon principal con guardado aislado
+(`companyName` temporal, nunca commiteado) para no tocar la partida en vivo de Joel — cámara fija
+(`PERFPROBE_AUTOPILOT=none`), captura de pantalla + sonda de 20 s en cada build. Activar
+`m_GPUResidentDrawerMode: 1` obliga a Unity a recompilar SIN CACHÉ las 13.824 variantes de
+`Universal Render Pipeline/Lit` fragment (**~1 h 54 min de build**, frente a segundos con caché en
+todos los demás cambios de esta sesión) — coste no anticipado, ni siquiera para solo probarlo. Y el
+`Player.log` del build con GRD trae, ausente en el build sin GRD: `Trying to render a
+BatchRendererGroup (or Entities Graphics) batch with wrong cbuffer setup. Missing
+DOTS_INSTANCING_ON variant?` — confirma la sospecha: `Assets/Shaders/GridWallOffset.shader` (HLSL
+a mano, sin macros de instanciado DOTS) es incompatible, y GRD NO lo excluye en silencio como se
+esperaba — intenta agruparlo igual y falla el cbuffer. Revertido en el acto (`PC_RPAsset.asset`
+de vuelta a `m_GPUResidentDrawerMode: 0`); cero huella en el clon principal ni en la partida de Joel.
 
 **5. Culling por grafo de salas (WorldGraph) vs occlusion culling estándar**
 
@@ -502,7 +515,7 @@ o dependencia sin cumplir), **DESCARTAR** (el problema no aparece en las medicio
 | Técnica | Impacto medido/estimado | Esfuerzo | Riesgo | Cubo |
 |---|---|---|---|---|
 | 5 Cull de luces/renderers por planta | Alto (−65 % luces/renderers procesados, ESTIMADO) | 1–2 d | Bajo | pre-Alpha |
-| 4 Paneles de techo fundidos (o GRD) | Alto (−3 a −5 ms hilo principal, ESTIMADO) | 1–2 d | Bajo | pre-Alpha |
+| 4 Paneles de techo fundidos (vía A; GRD probado y descartado) | Alto (−3 a −5 ms hilo principal, ESTIMADO) | 1–2 d | Bajo | pre-Alpha |
 | 2+15 Tope de luces con sombra + SSAO downsample | Medio (GPU −2 a −4 ms ESTIMADO; caras de sombra 24 → 12) | 0,5 d | Bajo | pre-Alpha |
 | 9 LOD de lógica de remotos | Alto en S3 (−4 a −7 ms), bajo en solitario | 2 d | Medio (ADR-038) | pre-Alpha |
 | 7 Allocs (snapshot 10 Hz + replicadores) | Medio (GC 2/s → <0,5/s) | 2–3 d | Bajo | pre-Alpha |
