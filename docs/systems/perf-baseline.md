@@ -115,7 +115,9 @@ por encima manda el número de jugadores. Ambas curvas las corta lo mismo — fi
 
 ## Qué NO se ha medido
 
-- Cliente en ejecución: frame time, drawcalls, GC real. Requiere sesión con Profiler.
+- ~~Cliente en ejecución: frame time, drawcalls, GC real. Requiere sesión con Profiler.~~ **MEDIDO el 2026-09-10:**
+  [`../perf/PERF_AUDIT_v1.md`](../perf/PERF_AUDIT_v1.md) — build de desarrollo instrumentado con `FrameTimingManager` y
+  `ProfilerRecorder`, cinco escenarios. Titular: el cliente está limitado por el HILO PRINCIPAL, no por la GPU.
 - Los tres rosters que faltan (carryables, harvestables, corpses): la tabla es un **suelo**, no un
   total.
 - Coste del tick del game loop completo bajo carga de jugadores.

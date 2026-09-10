@@ -24,7 +24,8 @@
 ## Sistemas
 - [systems/ipc-wire-schema.md](systems/ipc-wire-schema.md) — changelog del wire. Autoritativo.
 - [systems/authored-rooms.md](systems/authored-rooms.md) — salas autoradas de punta a punta.
-- [systems/perf-baseline.md](systems/perf-baseline.md) — base de rendimiento medida.
+- [systems/perf-baseline.md](systems/perf-baseline.md) — base de rendimiento medida (backend).
+- [perf/PERF_AUDIT_v1.md](perf/PERF_AUDIT_v1.md) — auditoría del cliente (09-10): frametime/GC/VRAM, 18 técnicas.
 - [systems/vendor-patches.md](systems/vendor-patches.md) — qué perdemos con cada reimport del vendor.
 - [systems/reverb-mixer.md](systems/reverb-mixer.md) — reverb por zona.
 - [systems/damage-sync.md](systems/damage-sync.md) — hit-reaction cosmético (ADR-024).

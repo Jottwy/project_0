@@ -94,6 +94,24 @@
 
 ## Últimas tandas
 
+### 2026-09-10 — 43.ª tanda: aplicada la única técnica de la auditoría sin riesgo visual (GC de los replicadores STP)
+- **`StpBuildingReplicator`/`StpItemReplicator`/`StpCarryableReplicator`.LateUpdate** dejan de allocar un `HashSet<uint>`+
+  `List<uint>` NUEVOS cada frame (`_aliveScratch`/`_staleScratch` reutilizados, `.Clear()` en vez de `new`).
+- **`AddedKey` (string+`StringBuilder` por PIEZA, por FRAME) → `AddedKeyHash` (FNV-1a, `long`, cero alloc)**: solo se
+  comparaba por igualdad, nunca se mostraba ni persistía — mismo resultado observable, cero asignación.
+- El resto de técnicas (culling por planta, fundir paneles, tope de sombras, mip streaming) cambian algo visible y
+  quedan para su propia tarea con verificación en Play, tal como dice la auditoría. CompileCheck 4/4 (sin editor).
+
+### 2026-09-10 — 42.ª tanda: la primera medición del CLIENTE — y el cuello NO es la GPU (`docs/perf/PERF_AUDIT_v1.md`)
+- **Solo análisis, cero código de producción.** Sonda `Assets/_PerfProbe/PerfProbe.cs` (dev build, `PERFPROBE=1`, borrable), 10 corridas de 60 s
+  con autopiloto por inyección del Input System. Crudos en `docs/perf/raw/`; informe y dos borradores de ADR en `docs/perf/`.
+- **CPU-bound, no GPU-bound**: GPU p50 4,9-8,0 ms contra 14-24 ms de hilo principal; 1-7 % de frames GPU-bound a 1080p (84 % solo a 4K).
+  **Subframes híbridos: DESCARTADOS para Alpha 1**, con el número que lo justifica y la condición de reapertura escrita.
+- **Lo que sí sale**: 12 587 paneles de techo sueltos (62 % de 20 147 renderers); 429 luces vivas, 297-359 en frustum de 512 y 24 caras de sombra;
+  2,02 GB de texturas con mip streaming APAGADO; 5 MB/s de basura y 107-169 GC.Collect/min; 356 ms al construir 5 chunks.
+- **Pre-Alpha, 9-13 días, sin wire ni ADR**: cull por planta → fundir paneles → LOD de remotos → allocs → mip streaming + pacing → warmup de
+  shaders, con gate cada paso. Huecos: sin equipo de gama baja (extrapolado) y **arnés de 4 instancias roto** (los joiners no entran; S3 solo host).
+
 ### 2026-09-09 — 41.ª tanda: la invitación te deja AL LADO de quien te invitó (ADR-136), y el aviso de quién entra
 - **VERIFICADO EN PLAY por Joel** (build 25217339, sin `SetLive`): invitación por overlay, nacer junto al invitador y el cartel de entrada. Y el
   precio, dicho por él: «extremadamente lag» — pasa a próximo paso y a Riesgos con nombre.
@@ -140,24 +158,3 @@
   `Template_Tool`; el wieldable dibuja la manivela desde la FASE del Animator en `LateUpdate`. Izquierda por IK sobre el pomo, hombro adelantado 64 cm.
 - Ocho tests nuevos (`CrankFlashlightAnimationTests`) + 15/15 de item; CompileCheck 0 ×4. Idle de 26 MB → 4,7 (curvas constantes a dos claves).
 - Sin ver en Play: `FistFromEye` (0,10, −0,11, 0,36) y lente 8°↓/8°← son diseño; el fundido de la izquierda (0,3 s) y el bamboleo (1,2°) piden ojo.
-
-### 2026-09-07 — 36.ª tanda: la linterna de manivela (ADR-133), de cero a en la mano del vecino, en rama aparte
-- Seis commits en `claude/crank-flashlight-model-1d8632` (`5063f09e`…`c5d9b8ad`), SIN fusionar. Carga en `Durability` (como el bote, ADR-068);
-  `BR_Battery Health` nueva, sorteada 0,8–1 y persistida. Hereda de `Wieldable`: `FPSWieldablesInput.cs:137` hace `as IUseInputHandler`; un puente no ve `Hold`.
-- Parpadeo por `intensity`, NUNCA `enabled` (ADR-042 relaya `light_on` a 10 Hz; ADR-080 detecta por él). Joel: 0,40 velocidad, 18–22 s/vuelta, 60 s × salud,
-  ruido 10 m/vuelta (`WorldNoise.CrankLoudness`), bit 6 `RemoteButtons.Cranking`, nace al 10–50 %.
-- DOS mallas padre-hijo. Tres fallos cazados por CAPTURA (`BackroomsCrankFlashlightShot.cs`, sin Play): pivote en el POMO (grosor 0,0132/0,0071),
-  eje Z que barría por dentro (→ X), separación a ojo (→ derivada de las dos mallas, 0,0438). Mallas 93 k + 97 k tris (24 MB): piden remesh.
-- Pickup propio + icono (`tools/dev/MakeItemIcon.py`): el heredado DABA UNA ANTORCHA al recoger. `ProxyCrankHook` en runtime sobre el modelo de mano
-  (`ProxyHeldItemHook.cs`), sin rehornear. `BackroomsEditModeFixtureRunner` (Test Runner muerto): 13/13. Loot: no sale hasta levantar `RestrictCacheCatalog`.
-
-### 2026-09-07 — 35.ª tanda: el día 3 — UV al mundo, macizos fundidos y caras enterradas
-- **La costura de textura NO la arreglaba el fundido**: la UV arrancaba en (0,0) por cara y la FASE se reiniciaba en cada caja. Ahora
-  proyecta la esquina en MUNDO, módulo el periodo (sin él, a 5 km la UV vale 2 500 y el float pierde el milímetro). `UvPerMetre` 0,5 intacto.
-- **Fundido por (máscara de planta, estilo, aspecto, loseta) y NO por chunk**: el chunk no se parte en Y y mete 7-8 plantas, y un Renderer
-  tiene UNA máscara. Fuera, con test: el invisible de ADR-129 D2 y los prismas de ADR-125. **4 718 macizos → 550 renderers** en Play.
-- **Caras enterradas podadas**: ésa es la causa del z-fighting, no el número de mallas. Sólo si OTRA caja cubre la cara ENTERA — un falso
-  positivo es un agujero por el que se ve dentro de una pared. Tapar NO es mutuo, y hay test.
-- Antes (sonda `probe_solids_per_chunk`): 5 119 macizos y 1 401 tramos en la (0,0), 90 % fundibles. Capturas `perf_*` sin agujeros y con la
-  retícula del suelo continua entre cajas. EditMode 38/39: el rojo de `cor_ramp` es PREEXISTENTE (lee volúmenes, no la malla).
-
