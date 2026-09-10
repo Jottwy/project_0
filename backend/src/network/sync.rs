@@ -1054,12 +1054,29 @@ pub fn peer_list_datagrams(peers: Vec<PeerInfo>) -> Vec<PacketPayload> {
 /// the alternative (asserting on datagrams) would need a live UDP endpoint per phantom, which is
 /// exactly the thing that does not exist â€” a phantom's `addr` is the inert `127.0.0.1:1` stamped
 /// at injection (`NetworkManager::spawn_phantom`).
+/// **`is_phantom` NO basta, y por eso el filtro mira las DOS marcas.** `is_phantom` es sólo
+/// `phantom_ids.contains(id)`, el registro de robapieles inyectados; los facelings y los vigilantes
+/// (ADR-131) se dan de alta por `insert_faceling_peer`, que marca `relay_only` y estampa el mismo
+/// centinela inerte pero NO entra en ese registro. Con medio predicado se colaban como destino, se
+/// les construía el lote y el socket los rechazaba al final — visto en partida real el 10-09:
+/// `SEND_FAIL illegal_gameplay_destination kind=unreliable_to peer_id=61002 phantom=false
+/// relay_only=true endpoint=Some(127.0.0.1:1)`, una vez por segundo (el tope del logger, no el de
+/// los rechazos). Con ADR-140 D4 eso además clona cada pose visible por destinatario para tirarla.
+///
+/// El predicado completo es el que `real_peer_count` ya usaba: ni phantom, ni `relay_only`.
+/// Sale ORDENADO — regla dura 13. `net.peers` es un `HashMap`, así que el orden de iteración es
+/// arbitrario y cambia entre ejecuciones; el bucle de ADR-140 D4 recorre este `Vec` para emitir y
+/// su comentario ya daba por hecho un «orden estable» que no existía. Ordenar por id lo vuelve
+/// cierto y cuesta un `sort` de N ids por ronda.
 pub(crate) fn relay_destinations(net: &NetworkManager) -> Vec<PeerId> {
-    net.peers
-        .keys()
-        .copied()
-        .filter(|id| !net.is_phantom(*id))
-        .collect()
+    let mut out: Vec<PeerId> = net
+        .peers
+        .iter()
+        .filter(|(id, p)| !net.is_phantom(**id) && !p.relay_only)
+        .map(|(id, _)| *id)
+        .collect();
+    out.sort_unstable();
+    out
 }
 
 /// E1 / ADR-074 (fase 1) — radio del área de interés de las poses, en metros.
