@@ -4,16 +4,16 @@
 > `docs/SESSION-LOG.md`, donde vive todo el histórico. Aquí sólo lo vigente.
 
 ## Estado
-- **WorldGen3 es el mundo servido.** Wire **61** en las dos puntas (`ipc/server.rs:38`, `WireSchema.cs:25`) — ADR-129 lo subió el 06-09.
+- **WorldGen3 es el mundo servido.** Wire **62** en las dos puntas (`ipc/server.rs:38`, `WireSchema.cs:25`) — ADR-137 lo subió el 10-09.
 - **Contrato WG3 v1 = Alpha 1** (`docs/WG3-ALPHA1-ROADMAP.md`): días 1–2 hechos; 3 y 5 APARCADOS detrás de la tanda de oficinas (Joel, 06-09).
-- **Multijugador por Steam, de punta a punta** (09-09, build 25217339): invitación, túnel, spawn junto al invitador y aviso — con **LAG**. Suite 1438/1438.
+- **Multijugador por Steam, punta a punta y SIN LAG** (10-09, build 25230867): **253,8 → 13,9 KB/s**, cola 1,9 s → **0**. Suite 1442/1442.
 - **El commit tiene gate** (`tools/dev/validate-scope.ps1`, hook PreToolUse): rojo = el commit no se ejecuta. Alcance por `git diff --cached`.
 - Alpha 1 itch nov 2026 · Next Fest feb 2027 · EA primavera 2027 (`docs/SCALING-ROADMAP.md:196-198`). E0 de red cerrada y medida.
 
 ## Próximo paso ÚNICO
-- **Bajar el lag hasta que 50 jugadores sean jugables** (Joel, 09-09). **MEDIR primero, no tocar nada antes**: RTT, tick y jitter en partida real
-  por Steam. Sospechoso 1, ADR-009 L2 (sin predicción de cliente cada paso espera el ida y vuelta); 2, el LOD de poses de ADR-074. WG3 día 3, detrás.
-  Alcance honesto: E0 se midió con 8–12 domésticos y `SessionMaxPlayers` = 50 no se ha probado NUNCA — eso es arquitectura, no pulido.
+- **PVS por salas: que un jugador sólo reciba a quien PUEDE ver** (ADR pendiente). El lag ya no es el techo (enlace al 5,4 %), pero el relay de
+  poses crece N×(N−1) y el broadcast sale una copia POR PEER: 50 juntos son ~5,6 MB/s + ~690 KB/s, las dos por encima del techo; con ~8 vecinos
+  visibles, ~900 KB/s, que sí cabe. El AOI de 100 m no sabe de muros. **Medir antes con `BWTRACE`.**
 
 ## En curso
 - **ADR-128, mundo ×2: tercera pasada, NO commiteado.** 24 tests en rojo; `MAX_SEGMENT_M` no se toca (D3 anulado), `bounds()` en metros
@@ -35,8 +35,8 @@
 - **Steam (ADR-135 enm. 2) VERIFICADO el 09-09 con redes y cuentas distintas: el criterio físico ya se cumple.** Sin probar el relay propio
   (ADR-117 sin VPS), que ya NO bloquea Alpha 1. **`invited_by` sin prueba** (ADR-136 enm. 1 (a)): cualquiera nace a 2 m de una identidad viva.
 - **Crafteo P1 sin cerrar**: las recetas consumen un enum Rust de 9 variantes abstractas, no items (ADR-064). Sin esto, minar no sirve.
-- **ADR-009 L2 a medias — y el 09-09 se cobró en un playtest real por Steam: «extremadamente lag» (Joel).** Sin predicción/reconciliación
-  del CLIENTE (`MovementReconciler` borrado y nunca repuesto) el movimiento espera el ida y vuelta. También: salud al borde y respawn invisible.
+- **ADR-009 L2 a medias**: `MovementReconciler` sigue borrado, pero **NO era la causa del lag** (RTT real 24 ms, movimiento client-authoritative).
+  Lo vivo de ese hueco: salud al borde de la muerte y respawn invisible. **LOD de entidades DESCARTADO con medida**: 0,2 % del tick (10-09).
 - **Dos mundos de colisión** (histórico): el backend colisiona contra su generador y el cliente contra lo que streamea. Con WG3 hay que remedirlo.
 - `handle_spawn_world_chest` (`game_loop.rs`) y `World::spawn_corpse` (`world/corpse.rs`) aceptan la posición del cliente sin validar andabilidad.
 - Sin anti-cheat de posesión ni cantidad en `consume_item` (ADR-030): trust-the-client asumido y documentado.
@@ -70,29 +70,38 @@
   El argumento que lo sostenía («~120 sitios en movimiento») ya no describe lo que hay; bajarlo por módulo es sesión propia y puede poner clippy en rojo.
 - **`world/volumetric_grid.rs`** (3 702 líneas) sólo vive tras `seed == SHOWCASE_SEED` pero **NO es borrable**: su campo está en `ChunkView` y lo
   consume `ChunkVisualLifecycle.cs:91-93` (entra en el hash de revisión). Retirarlo es bump de wire con ADR, no un `git rm`. **B5.**
-- **`scale` y `density`**: espejos C#↔Rust con golden values copiados a mano en dos suites, sin oráculo JSON que los ate (`scale.rs:147`, `density.rs:225`).
-- **WG3, del contrato para adelante**: relieve de techo sin hacer aunque `height_cm` es por tramo; el dintel (`Wg3Carve`, banda vertical) sin usar;
-  salas ≥ 300 m² con una entrada, 31,6 %; catálogo apagado (0,6 piezas/región: las 19 miden el mundo viejo); pozos sin salida — ADR-126 D6, lista v2.
+- **`scale`/`density`**: espejos C#↔Rust con goldens copiados a mano, sin oráculo que los ate (`scale.rs:147`, `density.rs:225`). **B5.**
+- **WG3 tras el contrato**: relieve de techo y dintel `Wg3Carve` sin usar, salas ≥300 m² con una entrada (31,6 %), catálogo apagado, pozos ciegos.
 - **Level 0, no bloqueante**: un solo aire (ADR-103 sin consumidor), props decorativos sin colocar, sin señal de planta
   en HUD, fuga de luz entre plantas, claims sin guarda de aislamiento (ADR-110 D4), contenedores host-local, planta −1.
 - **Verticalidad jugable** (escalera o hueco entre capas): diferida a post-Alpha 1 con ADR propio; `require_walkable_above`/`_below` sin consumidor.
 - **Farmeo y almacenaje**: E4 y Bloque A sin empezar (dos decisiones de Joel); el sync de contenedores construidos pide ADR y bump de wire, 2-3 días.
-- **PULIDO CLIENTE-SERVIDOR, sin empezar y ahora el techo real de la experiencia** (Joel, 09-09): la partida por Steam funciona entera y va
-  con lag muy alto. **Nada medido**: hacen falta RTT, tick y jitter ANTES de tocar una línea. Primer sospechoso, ADR-009 L2; segundo, el LOD de ADR-074.
+- **Pendiente de la tanda del lag** (10-09): `PeerList` a 27,5 datagramas/s con UN jugador; **D2** de ADR-139 (partir `ChunkState`, con bump) sin
+  decidir; el `layout` viaja aunque cada cliente GENERA el chunk — sospechoso salvo que tape «dos mundos de colisión»; `animation` es peso muerto.
+  Y `BWTRACE`/`ENTTRACE` están en `warn!` a propósito (un build sólo deja pasar WARN): devolver a `info!` al terminar.
 - **Atribución de teleports**: `TP_WATCH`/`RESOLVE_DIAG` activos en `game_loop.rs` («REMOVE after diagnosis»); falta playtest y LEER los logs (ADR-026).
 - **Entidades PvE (Lurker/Crawler/Shadow) con daño DESACTIVADO** desde 2026-07-07: eran la causa de las muertes silenciosas. Apagadas a propósito.
 - **`docs/DECISIONS.md`** (1,38 MB) ilegible entero; se lee por `DECISIONS-INDEX.md` + `grep`. Alternativa sin decidir: un fichero por ADR.
 - **`STOREY_HEIGHT_CM` (332) no sube con un número** (380–480: 1/9 regiones válidas); `storey_of_floor_cm` clasifica una planta ABAJO en la costura de 664.
 - **Sin ver en juego (06-09)**: monitor y despacho oscuro, recepción, techo roto, decaimiento del cliente en B3 (r2b), audio en Play; carteles SÍ.
-- **Venda**: sólo el daño LOCAL abre heridas — el de entidades y robapieles es autoritativo y llega por `SetHealthSilent` sin evento (ADR-025), así
-  que hoy no deja herida que vendar; cerrarlo es wire con ADR. Y el estado es VOLÁTIL por alcance (Joel): persistirlo toca el schema de guardado.
+- **Venda**: sólo el daño LOCAL abre heridas (el autoritativo llega por `SetHealthSilent` sin evento, ADR-025), así que hoy no deja herida que
+  vendar; cerrarlo es wire con ADR. El estado es VOLÁTIL por alcance (Joel): persistirlo toca el schema de guardado.
 - **«Additional Light Shadows» promete más de lo que hace**: las luces de WG3 nacen `DontSave` y `FindObjectsByType` no las ve (ADR-134, «lo que queda fuera»).
 - **Audio + gráficos MEZCLADOS de idioma**: gráficos en inglés (ADR-134, decisión Joel), voz en español (ADR-046).
-- **El gate de C# miente en un worktree**: `csproj` y `Library` son del clon principal (receta en `docs/DEV-ENVIRONMENT.md`), y el `.csproj`
-  es una FOTO: tras tocar un `.asmdef` da falso rojo o falso verde hasta que Unity refresque.
-- Menores: `MPTRACE` sin commitear en cuatro ficheros del vendor STP; `TODO(balance)` de loot; doc-comments stale.
+- **El gate de C# miente en un worktree**: `csproj` y `Library` son del clon principal (`docs/DEV-ENVIRONMENT.md`), y el `.csproj` es una FOTO:
+  tras tocar un `.asmdef` da falso rojo o falso verde hasta que Unity refresque. Menores: `MPTRACE` sin commitear en cuatro ficheros del vendor
+  STP; `TODO(balance)` de loot; doc-comments stale.
 
 ## Últimas tandas
+
+### 2026-09-10 — 42.ª tanda: de «extremadamente lag» a 13,9 KB/s (detalle completo en `SESSION-LOG.md`)
+- **253,8 → 13,9 KB/s (−94,5 %)**, cola **1,9 s → 0**, jitter 70 → 7 ms, enlace del 99 % al **5,4 %**. Partida real por Steam, dos redes.
+- **Medir descartó tres optimizaciones «obvias»**: `MovementReconciler` (RTT real 24 ms), LOD de entidades (0,2 % del tick) y el relay de
+  poses (8 %). El culpable era `ChunkState`, con el **92 %**, y sólo salió al desglosar el `BWTRACE` por opcode.
+- **ADR-137** (wire posicional, pose 246 → 76 B, wire 61→62), **ADR-138** (reproducción diferida con retardo adaptativo + 30 Hz) y
+  **ADR-139 D1** (el gate del chunk hashea sólo lo estable: 215 → 12,7 pkt/s, sin tocar el wire).
+- Dos bugs de Joel: el que entra nacía en **(0,0,0)**, y los contadores sumaban criaturas como jugadores. Y el arnés de playtest **nunca
+  arrancó sin clicks** pese a documentarlo. Suite 1442/1442, CompileCheck 0 ×4, 16 commits, seis builds a Steam.
 
 ### 2026-09-09 — 41.ª tanda: la invitación te deja AL LADO de quien te invitó (ADR-136), y el aviso de quién entra
 - **VERIFICADO EN PLAY por Joel** (build 25217339, sin `SetLive`): invitación por overlay, nacer junto al invitador y el cartel de entrada. Y el
