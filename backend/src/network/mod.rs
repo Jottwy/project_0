@@ -161,12 +161,16 @@ struct IncomingPacket {
 /// ADR-071: the per-roster send gates. Grouped in their own struct so a `broadcast_*` can borrow
 /// ONE gate mutably while the roster it guards is still borrowed from `NetworkManager` — with the
 /// gates inline as five fields the borrow checker would be right to complain.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct RosterGates {
     pub items: crate::network::roster::RosterGate,
     pub buildings: crate::network::roster::RosterGate,
     pub carryables: crate::network::roster::RosterGate,
     pub harvestables: crate::network::roster::RosterGate,
+    /// 2026-09-10: con retroceso del latido. Medido en la partida de 59 min, este roster emitía 989
+    /// veces —cadencia de puro latido, nada cambiaba— pero cada emisión son 22 páginas: 21.772
+    /// datagramas y el 8 % del tráfico, todo cadáveres que llevaban una hora quietos. Un cadáver
+    /// nuevo cambia el hash y sigue saliendo en el acto. Ver `STATIC_ROSTER_HEARTBEAT_CAP`.
     pub corpses: crate::network::roster::RosterGate,
     /// ADR-093 (E2): gate del broadcast de `Level4State`.
     pub level4: crate::network::roster::RosterGate,
@@ -174,6 +178,25 @@ pub struct RosterGates {
     /// lista contiene N peers y se manda a N peers—, y medido el 10-09 iba a **27,5 datagramas por
     /// segundo con UN jugador dentro**.
     pub peers: crate::network::roster::RosterGate,
+}
+
+/// `Default` a mano porque una de las siete puertas no es la de serie: la de cadáveres lleva
+/// retroceso del latido. Derivarlo y ajustarla después, en cada sitio que construya un
+/// `NetworkManager`, es cómo se pierde en un `NetworkManager::bind` nuevo sin que nada avise.
+impl Default for RosterGates {
+    fn default() -> Self {
+        Self {
+            items: Default::default(),
+            buildings: Default::default(),
+            carryables: Default::default(),
+            harvestables: Default::default(),
+            corpses: crate::network::roster::RosterGate::with_backoff(
+                crate::network::roster::STATIC_ROSTER_HEARTBEAT_CAP,
+            ),
+            level4: Default::default(),
+            peers: Default::default(),
+        }
+    }
 }
 
 /// ADR-070: the host-only simulation state of ONE falling item. Pairs with the `StpItemInfo` of

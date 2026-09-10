@@ -1785,13 +1785,12 @@ pub async fn broadcast_chunk_states(net: &mut NetworkManager, world: &World, pla
         // `ROSTER_HEARTBEAT`. Se envía exactamente el mismo mensaje: cambia CUÁNDO, no el qué.
         let open = {
             // 2026-09-10: la puerta de los chunks —y SOLO ella— retrocede el latido. Ver
-            // `CHUNK_HEARTBEAT_CAP`: el 32 % del tráfico medido era geometría estática repitiéndose
+            // `STATIC_ROSTER_HEARTBEAT_CAP`: el 32 % del tráfico medido era geometría estática repitiéndose
             // cada 3 s. `or_insert_with` y no `or_default` porque el tope es del gate, no del
             // llamante: una puerta creada por defecto en otro sitio no debe heredar el retroceso.
-            let gate = net
-                .chunk_gates
-                .entry(key)
-                .or_insert_with(|| roster::RosterGate::with_backoff(roster::CHUNK_HEARTBEAT_CAP));
+            let gate = net.chunk_gates.entry(key).or_insert_with(|| {
+                roster::RosterGate::with_backoff(roster::STATIC_ROSTER_HEARTBEAT_CAP)
+            });
             gate.should_send(
                 stable_chunk_hash(&data),
                 peers,

@@ -1719,6 +1719,62 @@ async fn creatures_do_not_count_as_new_peers_for_the_roster_gates() {
     );
 }
 
+/// 2026-09-10 — de las siete puertas de roster, la de CADÁVERES es la única con retroceso del
+/// latido, y eso vive en el `Default` de `RosterGates`. Se comprueba por COMPORTAMIENTO y no
+/// leyendo el campo: lo que importa no es que exista una bandera, es que la cadencia se separe.
+#[test]
+fn only_the_corpse_gate_backs_its_heartbeat_off() {
+    use crate::network::roster::{content_hash, RosterGate, ROSTER_CHANGE_BURST, ROSTER_HEARTBEAT};
+
+    // Deja la puerta en régimen estacionario y devuelve el hueco, en segundos, hasta la SIGUIENTE
+    // emisión por latido tras `quiet` rondas silenciosas.
+    fn gap_after(gate: &mut RosterGate, quiet: usize) -> u64 {
+        let hash = content_hash(&[7u32]);
+        let t0 = std::time::Instant::now();
+        for _ in 0..=ROSTER_CHANGE_BURST {
+            gate.should_send(hash, 1, t0, ROSTER_HEARTBEAT);
+        }
+        let mut t = t0;
+        let mut last = t0;
+        for _ in 0..=quiet {
+            loop {
+                t += std::time::Duration::from_secs(1);
+                if gate.should_send(hash, 1, t, ROSTER_HEARTBEAT) {
+                    last = t;
+                    break;
+                }
+            }
+        }
+        let prev = last;
+        loop {
+            t += std::time::Duration::from_secs(1);
+            if gate.should_send(hash, 1, t, ROSTER_HEARTBEAT) {
+                return t.duration_since(prev).as_secs();
+            }
+        }
+    }
+
+    let mut gates = RosterGates::default();
+    // Se afirma la SEPARACIÓN, no un número exacto de la escalera: el valor concreto (6, 12, 24…)
+    // ya lo fijan los tests de `roster`, y clavarlo aquí solo añade un sitio más que romper al
+    // ajustar el techo.
+    let corpses = gap_after(&mut gates.corpses, 3);
+    assert!(
+        corpses > ROSTER_HEARTBEAT.as_secs(),
+        "la puerta de cadáveres tiene que haber estirado el latido, y salió a {corpses} s"
+    );
+    assert_eq!(
+        gap_after(&mut gates.items, 3),
+        ROSTER_HEARTBEAT.as_secs(),
+        "y las demás siguen planas a 3 s"
+    );
+    assert_eq!(
+        gap_after(&mut gates.buildings, 3),
+        ROSTER_HEARTBEAT.as_secs()
+    );
+    assert_eq!(gap_after(&mut gates.peers, 3), ROSTER_HEARTBEAT.as_secs());
+}
+
 /// ADR-046 — la voz de un joiner llega al host y se atribuye al hablante SEGÚN LA CABECERA,
 /// no según nada que venga dentro del payload. Esa distinción es de seguridad: si el id del
 /// hablante viajara en el cuerpo, un cliente modificado podría firmar su audio como si fuera

@@ -136,10 +136,15 @@ pub const ROSTER_CHANGE_BURST: u8 = 3;
 /// ventana en la que una pérdida es probable conserva la cadencia de 3 s y el régimen estacionario
 /// deja de pagarla.
 ///
-/// 30 s es el peor caso de una página perdida en un chunk quieto. Es aceptable porque ese chunk se
-/// reenvía entero en cuanto cambie algo estructural, y porque quien ENTRA no espera: `joined`
-/// rearma la ráfaga (ADR-071 decisión 4).
-pub const CHUNK_HEARTBEAT_CAP: std::time::Duration = std::time::Duration::from_secs(30);
+/// 30 s es el peor caso de una página perdida en algo que lleva rato quieto. Es aceptable porque
+/// sale entero en cuanto cambie, y porque quien ENTRA no espera: `joined` rearma la ráfaga
+/// (ADR-071 decisión 4).
+///
+/// Lo activan los emisores cuyo contenido es estático durante minutos y cuyo latido domina la
+/// factura, medidos los dos en la misma partida: los CHUNKS (7,7 KB/s, 32 %) y el roster de
+/// CADÁVERES (1,9 KB/s, 8 % — 989 emisiones, cadencia de puro latido, pero 22 páginas cada una).
+/// Los otros cuatro rosters emiten ~0,28 datagramas/s y no merecen el riesgo.
+pub const STATIC_ROSTER_HEARTBEAT_CAP: std::time::Duration = std::time::Duration::from_secs(30);
 
 #[derive(Debug, Default)]
 pub struct RosterGate {
@@ -158,7 +163,7 @@ pub struct RosterGate {
 }
 
 impl RosterGate {
-    /// Puerta con retroceso del latido. Ver `CHUNK_HEARTBEAT_CAP`.
+    /// Puerta con retroceso del latido. Ver `STATIC_ROSTER_HEARTBEAT_CAP`.
     pub fn with_backoff(cap: std::time::Duration) -> Self {
         Self {
             backoff_cap: Some(cap),
@@ -780,7 +785,7 @@ mod tests {
         let items = vec![carryable(1)];
         let hash = content_hash(&items);
         let t0 = std::time::Instant::now();
-        let mut gate = RosterGate::with_backoff(CHUNK_HEARTBEAT_CAP);
+        let mut gate = RosterGate::with_backoff(STATIC_ROSTER_HEARTBEAT_CAP);
 
         // Se consume la ráfaga inicial (la primera llamada cuenta como cambio: no había hash).
         for _ in 0..=ROSTER_CHANGE_BURST {
@@ -803,7 +808,7 @@ mod tests {
         let one = vec![carryable(1)];
         let two = vec![carryable(1), carryable(2)];
         let t0 = std::time::Instant::now();
-        let mut gate = RosterGate::with_backoff(CHUNK_HEARTBEAT_CAP);
+        let mut gate = RosterGate::with_backoff(STATIC_ROSTER_HEARTBEAT_CAP);
 
         for _ in 0..=ROSTER_CHANGE_BURST {
             gate.should_send(content_hash(&one), 1, t0, ROSTER_HEARTBEAT);
@@ -853,7 +858,7 @@ mod tests {
         let items = vec![carryable(1)];
         let hash = content_hash(&items);
         let t0 = std::time::Instant::now();
-        let mut gate = RosterGate::with_backoff(CHUNK_HEARTBEAT_CAP);
+        let mut gate = RosterGate::with_backoff(STATIC_ROSTER_HEARTBEAT_CAP);
 
         for _ in 0..=ROSTER_CHANGE_BURST {
             gate.should_send(hash, 1, t0, ROSTER_HEARTBEAT);
