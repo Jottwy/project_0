@@ -27,6 +27,25 @@ use super::PeerId;
 
 // â”€â”€â”€ Conversion: game types â†’ sync types â”€â”€â”€
 
+/// ADR-139 D1 — huella de la parte ESTABLE de un chunk, para decidir si toca reenviarlo.
+///
+/// Deja fuera los tres campos que cambian solos y que hacían que el gate no pudiera cortar nunca:
+/// `teleport_timer` (baja cada segundo), `entities` (se mueven) e `items` (caen, se cogen). Todo lo
+/// demás entra, así que un cambio estructural —estabilizar, anclar, un banco de trabajo nuevo— sigue
+/// saliendo en el acto.
+///
+/// Se construye una copia con esos tres campos vaciados en vez de hashear campo a campo: así, un
+/// campo NUEVO en `ChunkSyncData` entra en la huella por omisión. Al revés —listar lo que se
+/// hashea— un campo nuevo se quedaría fuera en silencio y no se propagaría jamás, que es la clase de
+/// fallo que este sistema no puede permitirse (misma razón que `content_hash` da en ADR-071).
+fn stable_chunk_hash(data: &ChunkSyncData) -> u64 {
+    let mut stable = data.clone();
+    stable.teleport_timer = 0.0;
+    stable.entities.clear();
+    stable.items.clear();
+    roster::content_hash(std::slice::from_ref(&stable))
+}
+
 pub fn chunk_to_sync_data(chunk: &Chunk) -> ChunkSyncData {
     let (stabilized, anchored) = match chunk.state {
         ChunkState::Active {
@@ -1650,10 +1669,20 @@ pub async fn broadcast_chunk_states(net: &mut NetworkManager, world: &World, pla
         // un estado interno que el wire no transporta, ni dejar pasar un cambio que sí transporta.
         // Cuesta una serialización que el envío repite — la CPU está sobradísima (27 ms/s medidos
         // en el peor caso) y lo que este fix compra son bytes, que es el recurso escaso.
+        //
+        // ADR-139 D1: pero se hashea sólo la parte ESTABLE. `ChunkSyncData` mezcla 754 B de
+        // geometría inmutable con un `teleport_timer` que baja cada segundo y unas entidades que se
+        // mueven sin parar; hasheándolo entero, un tic de reloj o un paso de una criatura reenviaba
+        // el chunk COMPLETO. Medido el 10-09 en partida real: 116,4 KB/s, el **80 % de todo el
+        // tráfico del anfitrión**, con un solo jugador dentro.
+        //
+        // Lo volátil no se queda atrás: las criaturas llevan su propia pose a 30 Hz (`relay_as`,
+        // que en esa misma medida era el 8 %), y el resto se refresca en el siguiente latido de
+        // `ROSTER_HEARTBEAT`. Se envía exactamente el mismo mensaje: cambia CUÁNDO, no el qué.
         let open = {
             let gate = net.chunk_gates.entry(key).or_default();
             gate.should_send(
-                roster::content_hash(std::slice::from_ref(&data)),
+                stable_chunk_hash(&data),
                 peers,
                 std::time::Instant::now(),
                 roster::ROSTER_HEARTBEAT,
@@ -2086,6 +2115,71 @@ mod voice_tests {
         // seria justo el fallo abierto que este filtro existe para impedir.
         let net = host_with_peers(&[(2, [0.0, 1.8, 0.0], false)]).await;
         assert!(voice_destinations(&net, 9999).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod stable_chunk_hash_tests {
+    use super::*;
+    use crate::world::chunk::ChunkLayoutV1;
+
+    fn sample() -> ChunkSyncData {
+        ChunkSyncData {
+            pos: [3, -7],
+            layer: 1,
+            seed: 42,
+            template_id: 2,
+            rotation: 90,
+            mirrored: true,
+            has_workbench: false,
+            layout: ChunkLayoutV1::default(),
+            stabilized: false,
+            anchored: false,
+            teleport_timer: 12.5,
+            entities: Vec::new(),
+            items: Vec::new(),
+            page: 0,
+            page_count: 1,
+            generation: 0,
+        }
+    }
+
+    /// ADR-139 D1: lo que cambia solo NO abre el gate. Es la mitad del contrato — la que compra los
+    /// bytes.
+    #[test]
+    fn volatile_fields_do_not_change_the_hash() {
+        let base = sample();
+
+        let mut ticked = base.clone();
+        ticked.teleport_timer -= 1.0;
+        assert_eq!(
+            stable_chunk_hash(&base),
+            stable_chunk_hash(&ticked),
+            "un tic del temporizador no puede reenviar el chunk entero"
+        );
+    }
+
+    /// Y la otra mitad, que es la que impide que este ADR rompa la replicación: un cambio
+    /// ESTRUCTURAL sigue saliendo en el acto, sin esperar al latido.
+    #[test]
+    fn structural_changes_still_change_the_hash() {
+        let base = sample();
+
+        let mut stabilized = base.clone();
+        stabilized.stabilized = true;
+        assert_ne!(
+            stable_chunk_hash(&base),
+            stable_chunk_hash(&stabilized),
+            "estabilizar un chunk tiene que propagarse ya"
+        );
+
+        let mut anchored = base.clone();
+        anchored.anchored = true;
+        assert_ne!(stable_chunk_hash(&base), stable_chunk_hash(&anchored));
+
+        let mut other_template = base.clone();
+        other_template.template_id = 9;
+        assert_ne!(stable_chunk_hash(&base), stable_chunk_hash(&other_template));
     }
 }
 
