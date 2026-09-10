@@ -16302,3 +16302,32 @@ otro**, y eso es mucho peor que gastar unos KB. Va en ADR propio, con su medici�
 
 ---
 
+## ADR-137 — Enmienda 2: CORRECCIÓN — `animation` NO es peso muerto (2026-09-10) — ACEPTADA
+
+La enmienda 1 y `STATE.md` afirmaban que el campo `animation` de `PlayerUpdate` era peso muerto y
+que se podía quitar del wire gratis en el próximo bump. **Es falso, y por poco se aplica.**
+
+El error vino de buscar consumidores sólo en `Assets/Scripts/`. `ProxyPickupHook` vive en
+`Assets/_Migration/STPIntegration/RemoteAvatar/`, lee `animationState` y **dispara el trigger
+`Pickup` del Animator** del proxy remoto. O sea que el campo es el canal del gesto de recoger
+(ADR-011) y llega hasta la animación de verdad.
+
+Y quien más lo usa es el **robapieles**: ADR-050 punto 15, el gesto fingido de recoger existe
+precisamente para que **otro jugador lo vea** («the theatre needs an AUDIENCE»). Quitarlo del wire
+habría dejado el teatro sin público — en silencio, sin error, y sin que ningún test lo dijera,
+porque `game_loop/tests.rs:1447` comprueba que el phantom se marca la animación **en el host**, no
+que viaje.
+
+Lo que sigue siendo cierto de la enmienda 1: es un `String` clonado en el camino caliente, y desde
+ADR-140 D4 se clona **por destinatario** (3.000 veces por ronda con 50 juntos, contra 50 antes).
+Eso sí es optimizable, pero **conservando el dato**: serializar cada pose UNA vez por origen y
+concatenar los bytes ya hechos en el lote, sin volver a pasar por `serde` ni clonar la cadena. Ésa
+es la siguiente optimización de verdad, y no es «borrar un campo que no usa nadie».
+
+**La lección, que vale más que el campo:** «no encuentro consumidores» no es «no hay consumidores».
+El proyecto tiene código de gameplay repartido entre `Assets/Scripts/` y `Assets/_Migration/`, y un
+grep a medias en un sistema con hooks fabricados en runtime (`.claude/rules/worldgen3-backend.md` §7
+avisa de lo mismo para WG3) produce exactamente esta clase de conclusión.
+
+---
+
