@@ -76,7 +76,11 @@ fn note_sent_by_kind(kind: &str, bytes: usize, self_id: PeerId, elapsed_ms: u64)
         })
         .collect();
 
-    info!(
+    // `warn!` y no `info!` a propósito, aunque no sea un aviso: sin `BACKROOMS_VERBOSE_LOG=1` el
+    // log de un build sólo deja pasar WARN, y esta traza es inútil si no llega justo en la partida
+    // real que se quiere medir. Medido el 10-09: 235 líneas del backend, todas WARN, cero INFO.
+    // Vuelve a `info!` en cuanto el reparto esté leído.
+    warn!(
         "BWTRACE event=sent_by_kind self_id={self_id} total={:.1}KB/s secs={secs:.0} {}",
         total as f64 / 1024.0 / secs,
         detail.join(" ")

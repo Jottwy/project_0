@@ -120,7 +120,9 @@ fn note_entity_tick(elapsed: std::time::Duration) {
 
     let avg_ms = total as f64 / ticks as f64 / 1000.0;
     let max_ms = max as f64 / 1000.0;
-    info!(
+    // `warn!` por la misma razón que BWTRACE: sin `BACKROOMS_VERBOSE_LOG=1` un build sólo deja
+    // pasar WARN, y esta medida sólo sirve tomada en la partida real. Vuelve a `info!` al leerla.
+    warn!(
         "ENTTRACE event=entity_tick_cost ticks={ticks} avg_ms={avg_ms:.3} max_ms={max_ms:.3} \
          budget_ms=16.67 avg_pct={:.1} max_pct={:.1}",
         100.0 * avg_ms / 16.67,
