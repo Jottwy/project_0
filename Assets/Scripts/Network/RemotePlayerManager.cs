@@ -165,6 +165,23 @@ namespace BackroomsSurvival.Net
                     continue;
                 }
 
+                // Un peer TODAVÍA SIN POSE llega en el origen literal, y crear su proxy ahí lo
+                // planta en (0,0,0) hasta que llegue la primera pose de verdad: es el bug que se
+                // veía como «al conectarse tarda en actualizar su posición». Medido el 10-09 en
+                // partida real — `spawned id=23612, name=jottwydev, pos=(0.00, 0.00, 0.00)` para
+                // quien entraba, mientras el que ya estaba dentro nacía en su sitio.
+                //
+                // El origen no es una posición legítima que se pueda confundir con ésta: el emisor
+                // lo descarta explícitamente antes de enviar (`PlayerPoseTransmitter`, «discard the
+                // literal origin only»), así que en el wire sólo significa «aún no sé dónde estoy».
+                // Se espera a la primera pose real; sin ella no hay nada que dibujar en su sitio.
+                if (rp.position == Vector3.zero)
+                {
+                    if (logProxy)
+                        Debug.Log($"[RemotePlayerManager] id={rp.id} sin pose todavía (origen): no se crea proxy aún");
+                    continue;
+                }
+
                 _idsThisFrame.Add(rp.id);
 
                 // Bug fix (remote proxy floating): the backend relays the player-pivot Y
