@@ -149,7 +149,6 @@ pub const STATIC_ROSTER_HEARTBEAT_CAP: std::time::Duration = std::time::Duration
 #[derive(Debug, Default)]
 pub struct RosterGate {
     last_hash: Option<u64>,
-    last_peers: usize,
     last_sent: Option<std::time::Instant>,
     /// Rondas que quedan de la ráfaga post-cambio. Ver `ROSTER_CHANGE_BURST`.
     repeats_left: u8,
@@ -195,14 +194,20 @@ impl RosterGate {
     pub fn should_send(
         &mut self,
         hash: u64,
-        peers: usize,
         now: std::time::Instant,
         heartbeat: std::time::Duration,
     ) -> bool {
         let changed = self.last_hash != Some(hash);
-        // ADR-071 decisión 4: quien acaba de entrar no tiene nada. Esperar al latido le daría un
-        // mundo vacío durante segundos.
-        let joined = peers > self.last_peers;
+        // ADR-141: `joined` estaba AQUÍ y se ha ido. La intención (ADR-071 decisión 4, quien entra
+        // no puede esperar al latido) sigue siendo correcta y sigue cumpliéndose, pero la cumple
+        // `pending_full_sync` mandándole el mundo A ÉL. Esta puerta sólo sabe abrir o cerrar, y
+        // abrirla significaba retransmitir a TODOS: medido, cada entrada multiplicaba por seis o
+        // por diez el tráfico de chunks y al sexto jugador la ráfaga se tragaba los latidos de los
+        // demás.
+        //
+        // El parámetro `peers` se retira en vez de dejarlo sin mirar: un parámetro muerto es la
+        // forma exacta en que alguien vuelve a pasar una cuenta de peers dentro de seis meses y
+        // reabre la tormenta sin que nada se queje.
         // El latido se compara contra el EFECTIVO, no contra la base: sin retroceso configurado son
         // el mismo valor y esto no cambia nada.
         let effective = self.effective_heartbeat(heartbeat);
@@ -210,32 +215,28 @@ impl RosterGate {
             .last_sent
             .is_none_or(|t| now.duration_since(t) >= effective);
 
-        // Un cambio (o un peer nuevo) rearma la ráfaga: esta ronda y las siguientes salen a 10 Hz
-        // como antes de ADR-071, que es lo que repone una página perdida en 100 ms en vez de en 3 s.
-        if changed || joined {
+        // Un cambio rearma la ráfaga: esta ronda y las siguientes salen a 10 Hz como antes de
+        // ADR-071, que es lo que repone una página perdida en 100 ms en vez de en 3 s.
+        if changed {
             self.repeats_left = ROSTER_CHANGE_BURST;
             // Y devuelve el latido a la base: la ventana en la que una pérdida es probable acaba de
             // reabrirse, así que aquí el retroceso tiene que desaparecer del todo.
             self.quiet_rounds = 0;
         }
 
-        if changed || joined || stale || self.repeats_left > 0 {
+        if changed || stale || self.repeats_left > 0 {
             // Solo cuenta como ronda silenciosa la que sale ÚNICAMENTE porque tocaba latido. Una de
             // la ráfaga no: la ráfaga es parte de la reparación de un cambio, y contarla haría que
             // tres rondas seguidas tras cada cambio dispararan el retroceso a 24 s justo después de
             // que el contenido se moviera, que es lo contrario de lo que se busca.
-            if stale && !changed && !joined && self.repeats_left == 0 {
+            if stale && !changed && self.repeats_left == 0 {
                 self.quiet_rounds = self.quiet_rounds.saturating_add(1);
             }
             self.last_hash = Some(hash);
-            self.last_peers = peers;
             self.last_sent = Some(now);
             self.repeats_left = self.repeats_left.saturating_sub(1);
             return true;
         }
-        // Una salida SÍ se registra aunque no emitamos: si no, `peers > last_peers` volvería a
-        // dispararse cuando el siguiente entre y el conteo apenas recupere el valor viejo.
-        self.last_peers = peers;
         false
     }
 }
@@ -599,7 +600,7 @@ mod tests {
                     live.push(building(90_000 + round as u32)); // una pieza nueva cada 5 s
                 }
                 let now = t0 + std::time::Duration::from_millis(round as u64 * 100);
-                if gate.should_send(content_hash(&live), 1, now, ROSTER_HEARTBEAT) {
+                if gate.should_send(content_hash(&live), now, ROSTER_HEARTBEAT) {
                     sent_rounds += 1;
                 }
             }
@@ -615,10 +616,9 @@ mod tests {
 
     // ── ADR-071: un roster que no ha cambiado no se envía ──
 
-    fn gate_send(gate: &mut RosterGate, items: &[StpCarryableInfo], peers: usize) -> bool {
+    fn gate_send(gate: &mut RosterGate, items: &[StpCarryableInfo]) -> bool {
         gate.should_send(
             content_hash(items),
-            peers,
             std::time::Instant::now(),
             ROSTER_HEARTBEAT,
         )
@@ -632,21 +632,21 @@ mod tests {
         let mut gate = RosterGate::default();
 
         assert!(
-            gate_send(&mut gate, &items, 1),
+            gate_send(&mut gate, &items),
             "la primera ronda siempre sale: el gate no ha emitido nada todavía"
         );
         for i in 1..ROSTER_CHANGE_BURST {
             assert!(
-                gate_send(&mut gate, &items, 1),
+                gate_send(&mut gate, &items),
                 "ronda {i} de la ráfaga post-cambio tiene que salir (autocuración a 10 Hz)"
             );
         }
         assert!(
-            !gate_send(&mut gate, &items, 1),
+            !gate_send(&mut gate, &items),
             "agotada la ráfaga y sin cambios, el gate TIENE que cortar — es toda la cura"
         );
         assert!(
-            !gate_send(&mut gate, &items, 1),
+            !gate_send(&mut gate, &items),
             "y seguir cortando mientras nadie toque el roster"
         );
     }
@@ -658,13 +658,13 @@ mod tests {
         let mut items = vec![carryable(1)];
         let mut gate = RosterGate::default();
         for _ in 0..ROSTER_CHANGE_BURST {
-            gate_send(&mut gate, &items, 1);
+            gate_send(&mut gate, &items);
         }
-        assert!(!gate_send(&mut gate, &items, 1), "preparación: ya calla");
+        assert!(!gate_send(&mut gate, &items), "preparación: ya calla");
 
         items.push(carryable(2)); // alguien soltó algo
         assert!(
-            gate_send(&mut gate, &items, 1),
+            gate_send(&mut gate, &items),
             "un roster que cambió sale en la ronda siguiente, sin esperar al latido"
         );
     }
@@ -677,9 +677,9 @@ mod tests {
         let mut items = vec![carryable(1), carryable(2)];
         let mut gate = RosterGate::default();
         for _ in 0..ROSTER_CHANGE_BURST {
-            gate_send(&mut gate, &items, 1);
+            gate_send(&mut gate, &items);
         }
-        assert!(!gate_send(&mut gate, &items, 1), "preparación: ya calla");
+        assert!(!gate_send(&mut gate, &items), "preparación: ya calla");
 
         items[1].position[1] += 0.5; // cae medio metro
         assert_eq!(
@@ -688,46 +688,38 @@ mod tests {
             "la longitud NO cambia: ese es el punto del test"
         );
         assert!(
-            gate_send(&mut gate, &items, 1),
+            gate_send(&mut gate, &items),
             "el hash es del contenido, no de la cuenta"
         );
     }
 
-    /// Decisión 4. Quien acaba de entrar no tiene roster ninguno; si el gate le hace esperar al
-    /// latido, ve un mundo vacío durante segundos y cree que el juego está roto.
+    /// ADR-141 — la puerta ya NO se abre porque haya entrado alguien, y esto lo fija.
+    ///
+    /// Los dos tests que vivían aquí comprobaban la decisión 4 de ADR-071 a este nivel:
+    /// `a_new_peer_forces_a_send_even_with_nothing_changed` y
+    /// `a_leaving_peer_neither_forces_a_send_nor_hides_the_next_join`. La GARANTÍA que protegían
+    /// —quien entra no espera al latido— sigue viva y sigue siendo obligatoria; lo que cambió es
+    /// quién la cumple: `pending_full_sync` le manda el mundo a él, dirigido, en vez de que esta
+    /// puerta se lo retransmita a toda la partida. Su reemplazo está en `network::tests`
+    /// (`a_newcomer_is_served_the_world_without_broadcasting_to_everyone`), que es el nivel donde
+    /// ahora se decide.
+    ///
+    /// Esto se afirma en negativo a propósito: si alguien vuelve a meter una cuenta de peers en
+    /// `should_send`, este test se pone rojo y el que lo haga lee por qué.
     #[test]
-    fn a_new_peer_forces_a_send_even_with_nothing_changed() {
+    fn a_join_no_longer_opens_the_gate_for_everyone() {
         let items = vec![carryable(1)];
         let mut gate = RosterGate::default();
         for _ in 0..ROSTER_CHANGE_BURST {
-            gate_send(&mut gate, &items, 1);
+            gate_send(&mut gate, &items);
         }
-        assert!(!gate_send(&mut gate, &items, 1), "preparación: ya calla");
+        assert!(!gate_send(&mut gate, &items), "preparación: ya calla");
 
+        // Antes de ADR-141, aquí entraba un peer y la puerta se abría. Ahora no hay nada que
+        // decírselo: el contenido no ha cambiado y el latido no ha vencido, así que calla.
         assert!(
-            gate_send(&mut gate, &items, 2),
-            "un peer nuevo tiene que forzar el envío del roster entero"
-        );
-    }
-
-    /// Y la contrapartida: que alguien SE VAYA no fuerza nada. Sin registrar la bajada, el conteo
-    /// se quedaría alto y la siguiente entrada no se detectaría como tal.
-    #[test]
-    fn a_leaving_peer_neither_forces_a_send_nor_hides_the_next_join() {
-        let items = vec![carryable(1)];
-        let mut gate = RosterGate::default();
-        for _ in 0..ROSTER_CHANGE_BURST {
-            gate_send(&mut gate, &items, 2);
-        }
-        assert!(!gate_send(&mut gate, &items, 2), "preparación: ya calla");
-
-        assert!(
-            !gate_send(&mut gate, &items, 1),
-            "que uno se vaya no obliga a reenviar nada a los que quedan"
-        );
-        assert!(
-            gate_send(&mut gate, &items, 2),
-            "pero la siguiente entrada SÍ, aunque el conteo solo esté recuperando su valor viejo"
+            !gate_send(&mut gate, &items),
+            "una entrada no puede reabrir el broadcast: esa era la tormenta que tumbaba la partida"
         );
     }
 
@@ -740,15 +732,15 @@ mod tests {
         let now = std::time::Instant::now();
         let hash = content_hash(&items);
         for _ in 0..ROSTER_CHANGE_BURST {
-            gate.should_send(hash, 1, now, ROSTER_HEARTBEAT);
+            gate.should_send(hash, now, ROSTER_HEARTBEAT);
         }
         assert!(
-            !gate.should_send(hash, 1, now, ROSTER_HEARTBEAT),
+            !gate.should_send(hash, now, ROSTER_HEARTBEAT),
             "preparación: ya calla"
         );
 
         assert!(
-            gate.should_send(hash, 1, now, std::time::Duration::ZERO),
+            gate.should_send(hash, now, std::time::Duration::ZERO),
             "vencido el latido, la ronda sale aunque el roster sea idéntico"
         );
     }
@@ -770,7 +762,7 @@ mod tests {
             // que la puerta impone, en vez de asumirlo.
             loop {
                 t += std::time::Duration::from_secs(1);
-                if gate.should_send(hash, 1, t, ROSTER_HEARTBEAT) {
+                if gate.should_send(hash, t, ROSTER_HEARTBEAT) {
                     out.push(t.duration_since(t0));
                     break;
                 }
@@ -789,7 +781,7 @@ mod tests {
 
         // Se consume la ráfaga inicial (la primera llamada cuenta como cambio: no había hash).
         for _ in 0..=ROSTER_CHANGE_BURST {
-            gate.should_send(hash, 1, t0, ROSTER_HEARTBEAT);
+            gate.should_send(hash, t0, ROSTER_HEARTBEAT);
         }
 
         let marks = quiet_emissions(&mut gate, hash, t0, 6);
@@ -811,19 +803,19 @@ mod tests {
         let mut gate = RosterGate::with_backoff(STATIC_ROSTER_HEARTBEAT_CAP);
 
         for _ in 0..=ROSTER_CHANGE_BURST {
-            gate.should_send(content_hash(&one), 1, t0, ROSTER_HEARTBEAT);
+            gate.should_send(content_hash(&one), t0, ROSTER_HEARTBEAT);
         }
         // Se deja el retroceso bien estirado antes de tocar el contenido.
         let marks = quiet_emissions(&mut gate, content_hash(&one), t0, 4);
         let stretched = t0 + *marks.last().unwrap();
 
         assert!(
-            gate.should_send(content_hash(&two), 1, stretched, ROSTER_HEARTBEAT),
+            gate.should_send(content_hash(&two), stretched, ROSTER_HEARTBEAT),
             "un cambio sale en el acto, por muy estirado que estuviera el latido"
         );
         // Y tras consumir la ráfaga, el siguiente latido vuelve a ser el de base, no el del techo.
         for _ in 0..ROSTER_CHANGE_BURST {
-            gate.should_send(content_hash(&two), 1, stretched, ROSTER_HEARTBEAT);
+            gate.should_send(content_hash(&two), stretched, ROSTER_HEARTBEAT);
         }
         let after = quiet_emissions(&mut gate, content_hash(&two), stretched, 1);
         assert_eq!(
@@ -843,7 +835,7 @@ mod tests {
         let mut gate = RosterGate::default();
 
         for _ in 0..=ROSTER_CHANGE_BURST {
-            gate.should_send(hash, 1, t0, ROSTER_HEARTBEAT);
+            gate.should_send(hash, t0, ROSTER_HEARTBEAT);
         }
 
         let marks = quiet_emissions(&mut gate, hash, t0, 5);
@@ -851,24 +843,29 @@ mod tests {
         assert_eq!(gaps, vec![3, 3, 3, 3], "sin tope, el latido es plano");
     }
 
-    /// Quien ENTRA no espera al techo. Es ADR-071 decisión 4, y el retroceso no puede erosionarla:
-    /// un joiner con el chunk estirado a 30 s vería el mundo aparecer a trozos durante medio minuto.
+    /// El retroceso NO puede tragarse un cambio, por muy estirado que esté el latido.
+    ///
+    /// Antes de ADR-141 este test comprobaba que un peer nuevo derrotaba al retroceso; ahora al
+    /// recién llegado se le sirve dirigido y esta puerta ni se entera de que existe. Lo que sigue
+    /// siendo crítico —y es lo que se afirma— es que el retroceso no aísle a los que YA están: un
+    /// chunk estirado a 30 s que cambia tiene que salir en el acto, o el mundo se congela medio
+    /// minuto para todos.
     #[test]
-    fn a_new_peer_defeats_the_backoff() {
-        let items = vec![carryable(1)];
-        let hash = content_hash(&items);
+    fn the_backoff_never_swallows_a_real_change() {
+        let one = vec![carryable(1)];
+        let two = vec![carryable(1), carryable(2)];
         let t0 = std::time::Instant::now();
         let mut gate = RosterGate::with_backoff(STATIC_ROSTER_HEARTBEAT_CAP);
 
         for _ in 0..=ROSTER_CHANGE_BURST {
-            gate.should_send(hash, 1, t0, ROSTER_HEARTBEAT);
+            gate.should_send(content_hash(&one), t0, ROSTER_HEARTBEAT);
         }
-        let marks = quiet_emissions(&mut gate, hash, t0, 4);
+        let marks = quiet_emissions(&mut gate, content_hash(&one), t0, 4);
         let stretched = t0 + *marks.last().unwrap();
 
         assert!(
-            gate.should_send(hash, 2, stretched, ROSTER_HEARTBEAT),
-            "un peer nuevo abre la puerta sin esperar al latido estirado"
+            gate.should_send(content_hash(&two), stretched, ROSTER_HEARTBEAT),
+            "con el latido en el techo, un cambio real sigue saliendo en la misma ronda"
         );
     }
 

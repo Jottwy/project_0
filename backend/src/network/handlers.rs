@@ -1233,6 +1233,13 @@ impl NetworkManager {
         // Add the peer.
         let peer = PeerConnection::new(assigned_id, player_name.clone(), from_addr);
         self.peers.insert(assigned_id, peer);
+        // ADR-141: se apunta para que los emisores le sirvan el mundo A ÉL. Antes esto lo cubría la
+        // condición `joined` del gate, que abría la puerta y retransmitía a TODOS — la tormenta que
+        // tumbaba la partida al sexto jugador. Va aquí, en el ÚNICO sitio donde el host admite a un
+        // peer de verdad: los otros `peers.insert` son fantasmas y criaturas (ADR-016/043/079), que
+        // no reciben nada y no deben pedir un mundo.
+        self.pending_full_sync
+            .insert(assigned_id, crate::network::roster::ROSTER_CHANGE_BURST);
         info!(
             "MPTRACE step=C event=host_register_peer self_id={} sender_id={} assigned_id={} peer_id={} endpoint={} peer_count={} remote_players_count=<n/a> remote_players_ids={:?}",
             self.local_id,

@@ -981,12 +981,14 @@ pub async fn broadcast_peer_roster(net: &mut NetworkManager, player: &Player) {
     // donde importa: la pose fina de quien tienes cerca llega por `relay_as` a 30 Hz. Esto sólo
     // gobierna a los que están FUERA del AOI — los que no ves.
     let composition: Vec<(u16, bool)> = list.iter().map(|p| (p.id, p.relay_only)).collect();
+    // ADR-141: éste es el ÚNICO roster que no necesita el camino dirigido, y por una razón y no por
+    // descuido — su contenido ES la lista de peers, así que la llegada de uno nuevo ya cambia el
+    // hash y la puerta se abre sola por CAMBIO. Aquí el broadcast a todos es lo correcto: todos
+    // tienen que enterarse de quién ha entrado.
     let open = {
-        let peers_len = net.peers.len();
         let gate = &mut net.roster_gates.peers;
         gate.should_send(
             roster::content_hash(&composition),
-            peers_len,
             std::time::Instant::now(),
             roster::ROSTER_HEARTBEAT,
         )
@@ -1081,6 +1083,32 @@ pub(crate) fn relay_destinations(net: &NetworkManager) -> Vec<PeerId> {
 ///
 /// La condición no cambia de significado, se le da el número que siempre quiso decir: alguien nuevo
 /// a quien hay que darle el mundo.
+/// ADR-141 — los peers a los que hay que servirles el mundo DIRIGIDO esta ronda.
+///
+/// Orden estable (regla dura 13): se recorre ordenado por id y no las claves del `HashMap`.
+pub(crate) fn newcomers(net: &NetworkManager) -> Vec<PeerId> {
+    let mut out: Vec<PeerId> = net
+        .pending_full_sync
+        .keys()
+        .copied()
+        .filter(|id| net.is_gameplay_destination(*id))
+        .collect();
+    out.sort_unstable();
+    out
+}
+
+/// ADR-141 — cierra la ronda de servicio a los recién llegados.
+///
+/// Se llama UNA vez por vuelta del bucle de juego, después de que hayan corrido todos los emisores.
+/// Si lo hiciera cada emisor, el primero en ejecutarse consumiría la cuenta y el recién llegado se
+/// quedaría sin los otros cinco rosters — con el techo de ADR-139 enm. 2, hasta 30 s sin mundo.
+pub fn tick_pending_full_sync(net: &mut NetworkManager) {
+    net.pending_full_sync.retain(|_, rounds| {
+        *rounds = rounds.saturating_sub(1);
+        *rounds > 0
+    });
+}
+
 pub(crate) fn gameplay_destination_count(net: &NetworkManager) -> usize {
     net.peers
         .values()
@@ -1458,17 +1486,31 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager) {
 /// ADR-071: ask one roster's gate whether this round goes out. Factored so the five broadcasts
 /// share the rule instead of each carrying its own copy of it — the five differ only in which
 /// roster and which gate, and a rule copied five times is a rule that drifts in four of them.
-fn roster_gate_open<T: serde::Serialize>(
-    gate: &mut roster::RosterGate,
-    items: &[T],
-    peers: usize,
-) -> bool {
+fn roster_gate_open<T: serde::Serialize>(gate: &mut roster::RosterGate, items: &[T]) -> bool {
     gate.should_send(
         roster::content_hash(items),
-        peers,
         std::time::Instant::now(),
         roster::ROSTER_HEARTBEAT,
     )
+}
+
+/// ADR-141 — despacha UNA página: a todos si la puerta se abrió, y sólo a los recién llegados si no.
+///
+/// Los dos caminos mandan el MISMO mensaje; lo único que cambia es el sobre. Está factorizado porque
+/// son seis emisores y una regla copiada seis veces es una regla que se desvía en cinco.
+async fn send_page_to(
+    net: &mut NetworkManager,
+    payload: &PacketPayload,
+    open: bool,
+    to: &[PeerId],
+) {
+    if open {
+        net.broadcast_unreliable(payload).await;
+        return;
+    }
+    for dest in to {
+        net.send_unreliable_to(*dest, payload).await;
+    }
 }
 
 pub async fn broadcast_stp_items(net: &mut NetworkManager) {
@@ -1478,10 +1520,11 @@ pub async fn broadcast_stp_items(net: &mut NetworkManager) {
     // ADR-071: skip the whole round if this roster is byte-identical to the last one that went
     // out. The gate still gets asked at 10 Hz, so the first round AFTER a change ships it exactly
     // as before — this costs no propagation latency, it only stops re-sending what everyone has.
-    // Fuera de la llamada: `gameplay_destination_count` toma prestado `net` entero y el gate ya se
-    // presta mutable en el argumento anterior.
-    let peers = gameplay_destination_count(net);
-    if !roster_gate_open(&mut net.roster_gates.items, &net.stp_items, peers) {
+    // ADR-141: fuera de la llamada, porque `newcomers` toma prestado `net` entero y el gate ya se
+    // presta mutable en el argumento siguiente.
+    let fresh = newcomers(net);
+    let open = roster_gate_open(&mut net.roster_gates.items, &net.stp_items);
+    if !open && fresh.is_empty() {
         return;
     }
     let generation = net.timestamp();
@@ -1494,7 +1537,7 @@ pub async fn broadcast_stp_items(net: &mut NetworkManager) {
             page: index as u16,
             page_count,
         };
-        net.broadcast_unreliable(&payload).await;
+        send_page_to(net, &payload, open, &fresh).await;
         // ADR-060 (d): ceder entre páginas. Sin esto la ronda entera sale como una ráfaga
         // ininterrumpida y desborda el buffer de recepción del socket del receptor (~64 KB por
         // defecto): MEDIDO, a partir de ~56 páginas empezaba a perderse al menos una por ronda,
@@ -1516,8 +1559,9 @@ pub async fn broadcast_corpses(net: &mut NetworkManager, world: &World) {
     // at it: the roster is assembled from `world.corpses` rather than stored flat. The clone is
     // orders of magnitude cheaper than the send it prevents, so it is not worth restructuring the
     // storage to save it.
-    let peers = gameplay_destination_count(net);
-    if !roster_gate_open(&mut net.roster_gates.corpses, &all, peers) {
+    let fresh = newcomers(net);
+    let open = roster_gate_open(&mut net.roster_gates.corpses, &all);
+    if !open && fresh.is_empty() {
         return;
     }
     let generation = net.timestamp();
@@ -1530,7 +1574,7 @@ pub async fn broadcast_corpses(net: &mut NetworkManager, world: &World) {
             page: index as u16,
             page_count,
         };
-        net.broadcast_unreliable(&payload).await;
+        send_page_to(net, &payload, open, &fresh).await;
         // ADR-060 (d): ceder entre páginas. Sin esto la ronda entera sale como una ráfaga
         // ininterrumpida y desborda el buffer de recepción del socket del receptor (~64 KB por
         // defecto): MEDIDO, a partir de ~56 páginas empezaba a perderse al menos una por ronda,
@@ -1617,8 +1661,9 @@ pub async fn broadcast_level4_state(net: &mut NetworkManager) {
         net.level4.window_open,
         net.level4.return_dest,
     )];
-    let peers = gameplay_destination_count(net);
-    if !roster_gate_open(&mut net.roster_gates.level4, &wire_fields, peers) {
+    let fresh = newcomers(net);
+    let open = roster_gate_open(&mut net.roster_gates.level4, &wire_fields);
+    if !open && fresh.is_empty() {
         return;
     }
     let payload = PacketPayload::Level4State {
@@ -1626,7 +1671,7 @@ pub async fn broadcast_level4_state(net: &mut NetworkManager) {
         window_open: net.level4.window_open,
         return_dest: net.level4.return_dest,
     };
-    net.broadcast_unreliable(&payload).await;
+    send_page_to(net, &payload, open, &fresh).await;
 }
 
 /// Host-as-server relay of the STP building roster: the host broadcasts its full
@@ -1637,8 +1682,9 @@ pub async fn broadcast_stp_buildings(net: &mut NetworkManager) {
     }
     // ADR-071. This is the roster the measurement singled out: a built base is static for hours and
     // was being re-sent 10 times a second forever.
-    let peers = gameplay_destination_count(net);
-    if !roster_gate_open(&mut net.roster_gates.buildings, &net.stp_buildings, peers) {
+    let fresh = newcomers(net);
+    let open = roster_gate_open(&mut net.roster_gates.buildings, &net.stp_buildings);
+    if !open && fresh.is_empty() {
         return;
     }
     let generation = net.timestamp();
@@ -1651,7 +1697,7 @@ pub async fn broadcast_stp_buildings(net: &mut NetworkManager) {
             page: index as u16,
             page_count,
         };
-        net.broadcast_unreliable(&payload).await;
+        send_page_to(net, &payload, open, &fresh).await;
         // ADR-060 (d): ceder entre páginas. Sin esto la ronda entera sale como una ráfaga
         // ininterrumpida y desborda el buffer de recepción del socket del receptor (~64 KB por
         // defecto): MEDIDO, a partir de ~56 páginas empezaba a perderse al menos una por ronda,
@@ -1667,8 +1713,9 @@ pub async fn broadcast_stp_carryables(net: &mut NetworkManager) {
         return;
     }
     // ADR-071.
-    let peers = gameplay_destination_count(net);
-    if !roster_gate_open(&mut net.roster_gates.carryables, &net.stp_carryables, peers) {
+    let fresh = newcomers(net);
+    let open = roster_gate_open(&mut net.roster_gates.carryables, &net.stp_carryables);
+    if !open && fresh.is_empty() {
         return;
     }
     let generation = net.timestamp();
@@ -1681,7 +1728,7 @@ pub async fn broadcast_stp_carryables(net: &mut NetworkManager) {
             page: index as u16,
             page_count,
         };
-        net.broadcast_unreliable(&payload).await;
+        send_page_to(net, &payload, open, &fresh).await;
         // ADR-060 (d): ceder entre páginas. Sin esto la ronda entera sale como una ráfaga
         // ininterrumpida y desborda el buffer de recepción del socket del receptor (~64 KB por
         // defecto): MEDIDO, a partir de ~56 páginas empezaba a perderse al menos una por ronda,
@@ -1697,12 +1744,9 @@ pub async fn broadcast_stp_harvestables(net: &mut NetworkManager) {
         return;
     }
     // ADR-071.
-    let peers = gameplay_destination_count(net);
-    if !roster_gate_open(
-        &mut net.roster_gates.harvestables,
-        &net.stp_harvestables,
-        peers,
-    ) {
+    let fresh = newcomers(net);
+    let open = roster_gate_open(&mut net.roster_gates.harvestables, &net.stp_harvestables);
+    if !open && fresh.is_empty() {
         return;
     }
     let generation = net.timestamp();
@@ -1715,7 +1759,7 @@ pub async fn broadcast_stp_harvestables(net: &mut NetworkManager) {
             page: index as u16,
             page_count,
         };
-        net.broadcast_unreliable(&payload).await;
+        send_page_to(net, &payload, open, &fresh).await;
         // ADR-060 (d): ceder entre páginas. Sin esto la ronda entera sale como una ráfaga
         // ininterrumpida y desborda el buffer de recepción del socket del receptor (~64 KB por
         // defecto): MEDIDO, a partir de ~56 páginas empezaba a perderse al menos una por ronda,
@@ -1745,13 +1789,10 @@ pub async fn broadcast_chunk_states(net: &mut NetworkManager, world: &World, pla
         return;
     }
     let player_chunk = world_to_chunk(player_pos);
-    // 2026-09-10: DESTINATARIOS, no peers. La condición `joined` de ADR-071 existe porque quien
-    // acaba de entrar no tiene mundo; una criatura no recibe chunks jamás —su entrada en `peers`
-    // lleva la addr inerte de ADR-079 y la guarda de `send.rs` la rechaza— así que contarla hacía
-    // que CADA nacimiento reenviara todos los chunks a todo el mundo. Con `net.peers.len()` un
-    // mundo poblado dispara `joined` sin parar y ninguna puerta llega a cerrarse: ni el latido
-    // retrocedido ni el corte por hash de ADR-139 sobreviven a eso.
-    let peers = gameplay_destination_count(net);
+    // ADR-141: éste era el emisor que se medía a 95-122 pkt/s en cada entrada, contra una línea base
+    // de 10-20. Ahora quien acaba de llegar recibe los 64 chunks DIRIGIDOS a él y los que ya estaban
+    // dentro no se enteran de que ha entrado nadie.
+    let fresh = newcomers(net);
     // Las claves visitadas en ESTA ronda. Se recogen para poder tirar después los gates de chunks
     // que ya no se emiten (descargados o alejados): sin la poda el mapa crece con cada chunk que
     // el jugador visita y no vuelve a pisar, durante toda la sesión.
@@ -1793,12 +1834,13 @@ pub async fn broadcast_chunk_states(net: &mut NetworkManager, world: &World, pla
             });
             gate.should_send(
                 stable_chunk_hash(&data),
-                peers,
                 std::time::Instant::now(),
                 roster::ROSTER_HEARTBEAT,
             )
         };
-        if !open {
+        // El gate se pregunta SIEMPRE, también cuando sólo hay recién llegados: si se saltara, su
+        // `last_sent` no avanzaría y el chunk saldría por latido justo después de haberlo mandado.
+        if !open && fresh.is_empty() {
             continue;
         }
         // TAREA 2 (2026-08-31): PAGINADO. Un `ChunkSyncData` mide 1094 B VACÍO y 2078 B con 13
@@ -1810,7 +1852,7 @@ pub async fn broadcast_chunk_states(net: &mut NetworkManager, world: &World, pla
         let generation = net.timestamp();
         for page in chunk_state_pages(data, generation) {
             let payload = PacketPayload::ChunkState { data: page };
-            net.broadcast_unreliable(&payload).await;
+            send_page_to(net, &payload, open, &fresh).await;
         }
         // ADR-060 (d): ceder entre páginas. Sin esto la ronda entera sale como una ráfaga
         // ininterrumpida y desborda el buffer de recepción del socket del receptor (~64 KB por
@@ -2944,14 +2986,14 @@ mod chunk_broadcast_tests {
         let now = std::time::Instant::now();
         let hash = roster::content_hash(std::slice::from_ref(&data));
         for _ in 0..roster::ROSTER_CHANGE_BURST {
-            gate.should_send(hash, 1, now, roster::ROSTER_HEARTBEAT);
+            gate.should_send(hash, now, roster::ROSTER_HEARTBEAT);
         }
         assert!(
-            !gate.should_send(hash, 1, now, roster::ROSTER_HEARTBEAT),
+            !gate.should_send(hash, now, roster::ROSTER_HEARTBEAT),
             "preparación: ya calla"
         );
         assert!(
-            gate.should_send(hash, 1, now, std::time::Duration::ZERO),
+            gate.should_send(hash, now, std::time::Duration::ZERO),
             "vencido el latido, la ronda sale aunque el chunk sea idéntico"
         );
     }
@@ -2965,19 +3007,19 @@ mod chunk_broadcast_tests {
         let mut b = roster::RosterGate::default();
         let now = std::time::Instant::now();
         for _ in 0..roster::ROSTER_CHANGE_BURST {
-            a.should_send(1, 1, now, roster::ROSTER_HEARTBEAT);
-            b.should_send(1, 1, now, roster::ROSTER_HEARTBEAT);
+            a.should_send(1, now, roster::ROSTER_HEARTBEAT);
+            b.should_send(1, now, roster::ROSTER_HEARTBEAT);
         }
-        assert!(!a.should_send(1, 1, now, roster::ROSTER_HEARTBEAT));
-        assert!(!b.should_send(1, 1, now, roster::ROSTER_HEARTBEAT));
+        assert!(!a.should_send(1, now, roster::ROSTER_HEARTBEAT));
+        assert!(!b.should_send(1, now, roster::ROSTER_HEARTBEAT));
 
         // Solo `a` cambia (hash distinto). `b` con el mismo hash de siempre sigue callado.
         assert!(
-            a.should_send(2, 1, now, roster::ROSTER_HEARTBEAT),
+            a.should_send(2, now, roster::ROSTER_HEARTBEAT),
             "el chunk que cambió tiene que salir"
         );
         assert!(
-            !b.should_send(1, 1, now, roster::ROSTER_HEARTBEAT),
+            !b.should_send(1, now, roster::ROSTER_HEARTBEAT),
             "el chunk vecino, sin cambios, tiene que seguir callado"
         );
     }
@@ -3462,7 +3504,7 @@ mod uplink_probe {
                 h_bytes,
             ];
             for (k, gate) in gates.iter_mut().enumerate() {
-                if gate.should_send(hashes[k], PEERS, now, ROSTER_HEARTBEAT) {
+                if gate.should_send(hashes[k], now, ROSTER_HEARTBEAT) {
                     busy_bytes += sizes[k];
                 }
             }
@@ -3610,7 +3652,7 @@ mod uplink_probe {
                 for (i, wire) in &chunk_wires {
                     // Un chunk "activo" cambia de contenido en cada ronda; el resto es idéntico.
                     let hash = if *i < churn { round as u64 + 1 } else { 0 };
-                    if gates[*i].should_send(hash, PEERS, now, ROSTER_HEARTBEAT) {
+                    if gates[*i].should_send(hash, now, ROSTER_HEARTBEAT) {
                         sent_bytes += wire;
                     }
                 }
@@ -3714,7 +3756,7 @@ mod uplink_probe {
                 let now = t0 + Duration::from_millis(round as u64 * 200);
                 for (i, wire) in &chunk_wires {
                     let hash = if *i < churn { round as u64 + 1 } else { 0 };
-                    if gates[*i].should_send(hash, PEERS, now, ROSTER_HEARTBEAT) {
+                    if gates[*i].should_send(hash, now, ROSTER_HEARTBEAT) {
                         sent_bytes += wire;
                     }
                 }

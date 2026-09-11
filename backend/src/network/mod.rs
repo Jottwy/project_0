@@ -246,6 +246,20 @@ pub struct NetworkManager {
     /// justamente el gasto que este fix elimina. Clave `(x, z, layer)`, la misma tripleta con la
     /// que `WorldSyncProgress` cuenta completitud.
     pub chunk_gates: std::collections::HashMap<(i32, i32, i8), crate::network::roster::RosterGate>,
+    /// ADR-141 — peers que acaban de entrar y a los que todavía hay que servirles el mundo, con las
+    /// rondas que les quedan de servicio.
+    ///
+    /// Existe porque `RosterGate` es por ROSTER y no por destinatario: su condición `joined` sólo
+    /// sabía abrir la puerta, y abrirla significaba retransmitir a TODOS. Medido en dos playtests de
+    /// 8 instancias, cada entrada multiplicaba por seis o por diez el tráfico de chunks (de 10-20 a
+    /// 95-122 pkt/s) y al sexto jugador la ráfaga se tragaba los latidos de los demás: todos se
+    /// declaraban muertos en el mismo milisegundo.
+    ///
+    /// Rondas y no un instante límite: lo que hace falta garantizar es que al recién llegado le pase
+    /// por delante CADA emisor —los cinco rosters y los chunks—, y eso se cuenta en vueltas del
+    /// bucle, no en segundos. Con un plazo de tiempo, un bucle lento le dejaría el mundo a medias
+    /// hasta el siguiente latido, que desde ADR-139 enm. 2 puede tardar 30 s.
+    pub pending_full_sync: std::collections::HashMap<PeerId, u8>,
     /// F0.1 (enmienda ADR-073, E0): `broadcast_world_sync` (el goteo del mundo ENTERO, fiable,
     /// chunk a chunk) se disparaba directo desde cada pickup/drop legacy — 84,9 KB por goteo a
     /// CADA peer, medido. `true` marca "el mundo cambió desde el último goteo despachado"; el
@@ -640,6 +654,7 @@ impl NetworkManager {
             world_sync_dirty: false,
             world_sync_last_sent: None,
             aoi_pose_pairs: std::collections::HashSet::with_capacity(64),
+            pending_full_sync: std::collections::HashMap::new(),
             pose_relay_round: 0,
             pending_events: Vec::new(),
             present_at_join: std::collections::HashSet::new(),

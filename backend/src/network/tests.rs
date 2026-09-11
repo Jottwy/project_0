@@ -1683,6 +1683,60 @@ async fn pose_relay_addresses_real_peers_only_but_still_relays_phantom_poses() {
     );
 }
 
+/// ADR-141 — quien acaba de entrar recibe el mundo DIRIGIDO, y los que ya estaban no se enteran.
+///
+/// Es el reemplazo de `a_new_peer_forces_a_send_even_with_nothing_changed` (que vivía en
+/// `roster::tests` y comprobaba la misma garantía al nivel de la puerta, cuando abrirla significaba
+/// retransmitir a todos). La garantía de ADR-071 decisión 4 no se ha relajado: lo que cambia es que
+/// ahora se cumple sin molestar a la partida entera.
+///
+/// Se afirma sobre `newcomers`, que es lo que deciden los seis emisores, y sobre las rondas de
+/// servicio: un recién llegado tiene que sobrevivir en la lista las rondas suficientes para que le
+/// pase por delante CADA emisor, no sólo el primero.
+#[tokio::test]
+async fn a_newcomer_is_served_the_world_without_broadcasting_to_everyone() {
+    use crate::network::roster::ROSTER_CHANGE_BURST;
+
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let veteran = 2;
+    let rookie = 3;
+    let addr: SocketAddr = "127.0.0.1:9999".parse().unwrap();
+    host.peers.insert(
+        veteran,
+        PeerConnection::new(veteran, "Veterano".into(), addr),
+    );
+    host.peers
+        .insert(rookie, PeerConnection::new(rookie, "Novato".into(), addr));
+
+    assert!(
+        super::sync::newcomers(&host).is_empty(),
+        "sin nadie apuntado, ningún emisor tiene a quien servir"
+    );
+
+    host.pending_full_sync.insert(rookie, ROSTER_CHANGE_BURST);
+    assert_eq!(
+        super::sync::newcomers(&host),
+        vec![rookie],
+        "sólo el recién llegado recibe el mundo dirigido; el veterano ya lo tiene"
+    );
+
+    // La cuenta aguanta las rondas prometidas. Si se agotara antes, el recién llegado se quedaría
+    // sin los rosters de los emisores que corren después del primero.
+    for round in 1..ROSTER_CHANGE_BURST {
+        super::sync::tick_pending_full_sync(&mut host);
+        assert_eq!(
+            super::sync::newcomers(&host),
+            vec![rookie],
+            "ronda {round}: todavía le faltan emisores por servir"
+        );
+    }
+    super::sync::tick_pending_full_sync(&mut host);
+    assert!(
+        super::sync::newcomers(&host).is_empty(),
+        "y al terminar sus rondas deja de ser un recién llegado, o el ahorro no existe"
+    );
+}
+
 /// 2026-09-10 — la condición `joined` de las puertas de roster (ADR-071 decisión 4) cuenta a quien
 /// puede RECIBIR, no a quien está en `peers`.
 ///
@@ -1732,14 +1786,14 @@ fn only_the_corpse_gate_backs_its_heartbeat_off() {
         let hash = content_hash(&[7u32]);
         let t0 = std::time::Instant::now();
         for _ in 0..=ROSTER_CHANGE_BURST {
-            gate.should_send(hash, 1, t0, ROSTER_HEARTBEAT);
+            gate.should_send(hash, t0, ROSTER_HEARTBEAT);
         }
         let mut t = t0;
         let mut last = t0;
         for _ in 0..=quiet {
             loop {
                 t += std::time::Duration::from_secs(1);
-                if gate.should_send(hash, 1, t, ROSTER_HEARTBEAT) {
+                if gate.should_send(hash, t, ROSTER_HEARTBEAT) {
                     last = t;
                     break;
                 }
@@ -1748,7 +1802,7 @@ fn only_the_corpse_gate_backs_its_heartbeat_off() {
         let prev = last;
         loop {
             t += std::time::Duration::from_secs(1);
-            if gate.should_send(hash, 1, t, ROSTER_HEARTBEAT) {
+            if gate.should_send(hash, t, ROSTER_HEARTBEAT) {
                 return t.duration_since(prev).as_secs();
             }
         }

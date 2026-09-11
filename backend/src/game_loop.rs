@@ -2852,6 +2852,13 @@ pub async fn run(
         // F0.8: `&mut` — cada chunk lleva su gate de emisión (mismo mecanismo que ADR-071).
         if tick.is_multiple_of(CHUNK_BROADCAST_EVERY) {
             sync::broadcast_chunk_states(&mut net, &world, player.position).await;
+            // ADR-141: la cuenta de servicio al recién llegado baja AQUÍ, una vez por ronda y
+            // después de que hayan corrido todos los emisores, no dentro de cada uno. Si la bajara
+            // cada emisor, el primero en ejecutarse la consumiría y el que acaba de entrar se
+            // quedaría sin los otros cinco rosters hasta el siguiente latido — que desde ADR-139
+            // enm. 2 puede tardar 30 s. Va en la misma cadencia que los chunks porque es el emisor
+            // más lento de los seis: atarla a la rápida serviría menos rondas de las que promete.
+            sync::tick_pending_full_sync(&mut net);
         }
 
         // F0.1: consume el flag de world_sync coalescido en CADA tick (no solo en los de
