@@ -4,16 +4,16 @@
 > `docs/SESSION-LOG.md`, donde vive todo el histórico. Aquí sólo lo vigente.
 
 ## Estado
-- **WorldGen3 es el mundo servido.** Wire **62** en las dos puntas (`ipc/server.rs:38`, `WireSchema.cs:25`) — ADR-137 lo subió el 10-09.
+- **WorldGen3 es el mundo servido.** Wire **63** en las dos puntas (`ipc/server.rs`, `WireSchema.cs`), confirmado en los logs del 11-09.
 - **Contrato WG3 v1 = Alpha 1** (`docs/WG3-ALPHA1-ROADMAP.md`): días 1–2 hechos; 3 y 5 APARCADOS detrás de la tanda de oficinas (Joel, 06-09).
 - **Multijugador por Steam, punta a punta y SIN LAG** (10-09, build 25230867): **253,8 → 13,9 KB/s**, cola 1,9 s → **0**. Suite 1442/1442.
 - **El commit tiene gate** (`tools/dev/validate-scope.ps1`, hook PreToolUse): rojo = el commit no se ejecuta. Alcance por `git diff --cached`.
 - Alpha 1 itch nov 2026 · Next Fest feb 2027 · EA primavera 2027 (`docs/SCALING-ROADMAP.md:196-198`). E0 de red cerrada y medida.
 
 ## Próximo paso ÚNICO
-- **PVS por salas: que un jugador sólo reciba a quien PUEDE ver** (ADR pendiente). El lag ya no es el techo (enlace al 5,4 %), pero el relay de
-  poses crece N×(N−1) y el broadcast sale una copia POR PEER: 50 juntos son ~5,6 MB/s + ~690 KB/s, las dos por encima del techo; con ~8 vecinos
-  visibles, ~900 KB/s, que sí cabe. El AOI de 100 m no sabe de muros. **Medir antes con `BWTRACE`.**
+- **Tramos en vez de poses para lo previsible** (ADR pendiente, bump de wire). Con 16 el relay es el 57 % de 185,6 KB/s y 9 de cada 10 parejas
+  son una CRIATURA: la que recorre un pasillo no necesita cadencia sino «de aquí a allí a esta velocidad», y el cliente interpola. **A todos por
+  igual** — ADR-074 prohíbe que el filtro distinga la fuente. PVS ya ENCENDIDO (ADR-140, `ad7d3c57`), oculta el 24,3 %.
 
 ## En curso
 - **ADR-128, mundo ×2: tercera pasada, NO commiteado.** 24 tests en rojo; `MAX_SEGMENT_M` no se toca (D3 anulado), `bounds()` en metros
@@ -94,6 +94,16 @@
 
 ## Últimas tandas
 
+### 2026-09-11 — 43.ª tanda: el colapso de 8 jugadores CERRADO, y 16 aguantan (BuildID 25257405, sin `SetLive`)
+- **Dos cachés se vaciaban ENTEROS al pasar del tope** (rásteres y REGIONES de WG3), con el mismo comentario justificándolo y la misma premisa
+  escrita para un jugador quieto. El de regiones tiraba `plan_region`, el generador. `cre_block` peor tick **4 473 → 401 ms**, bloqueos 84 → 3,
+  expulsiones 12 → 0. ADR-106 D3 ya pedía desalojo por distancia; lo escrito era `clear()`.
+- **ADR-141** y **ADR-140 ENCENDIDO** (PVS por salas, oculta el 24,3 %). 16 instancias aguantan: 185,6 KB/s, 2 bloqueos, 0 expulsiones.
+  **Nadie ha verificado EN JUEGO que el PVS no haga invisible a alguien** — el arnés no renderiza y no puede verlo.
+- **ADR-142 enm. 1: su D3 era falso** (cachear el sorteo: 0,43 ms contra 950 del reparto). El relay NO crece con N² sino con las CRIATURAS
+  (×1,56 población → ×1,54 tráfico). El arnés no era reproducible: cada instancia se restauraba donde la dejó la corrida anterior (ADR-045).
+- `LOOPTRACE`/`SYNCTRACE`/`PVSTRACE` nuevos, en `warn!` (devolver a `info!`). SIN commitear ni verificar: el filtro de la pose del anfitrión.
+
 ### 2026-09-10 — 42.ª tanda: de «extremadamente lag» a 13,9 KB/s (detalle completo en `SESSION-LOG.md`)
 - **253,8 → 13,9 KB/s (−94,5 %)**, cola **1,9 s → 0**, jitter 70 → 7 ms, enlace del 99 % al **5,4 %**. Partida real por Steam, dos redes.
 - **Medir descartó tres optimizaciones «obvias»**: `MovementReconciler` (RTT real 24 ms), LOD de entidades (0,2 % del tick) y el relay de
@@ -149,24 +159,4 @@
   `Template_Tool`; el wieldable dibuja la manivela desde la FASE del Animator en `LateUpdate`. Izquierda por IK sobre el pomo, hombro adelantado 64 cm.
 - Ocho tests nuevos (`CrankFlashlightAnimationTests`) + 15/15 de item; CompileCheck 0 ×4. Idle de 26 MB → 4,7 (curvas constantes a dos claves).
 - Sin ver en Play: `FistFromEye` (0,10, −0,11, 0,36) y lente 8°↓/8°← son diseño; el fundido de la izquierda (0,3 s) y el bamboleo (1,2°) piden ojo.
-
-### 2026-09-07 — 36.ª tanda: la linterna de manivela (ADR-133), de cero a en la mano del vecino, en rama aparte
-- Seis commits en `claude/crank-flashlight-model-1d8632` (`5063f09e`…`c5d9b8ad`), SIN fusionar. Carga en `Durability` (como el bote, ADR-068);
-  `BR_Battery Health` nueva, sorteada 0,8–1 y persistida. Hereda de `Wieldable`: `FPSWieldablesInput.cs:137` hace `as IUseInputHandler`; un puente no ve `Hold`.
-- Parpadeo por `intensity`, NUNCA `enabled` (ADR-042 relaya `light_on` a 10 Hz; ADR-080 detecta por él). Joel: 0,40 velocidad, 18–22 s/vuelta, 60 s × salud,
-  ruido 10 m/vuelta (`WorldNoise.CrankLoudness`), bit 6 `RemoteButtons.Cranking`, nace al 10–50 %.
-- DOS mallas padre-hijo. Tres fallos cazados por CAPTURA (`BackroomsCrankFlashlightShot.cs`, sin Play): pivote en el POMO (grosor 0,0132/0,0071),
-  eje Z que barría por dentro (→ X), separación a ojo (→ derivada de las dos mallas, 0,0438). Mallas 93 k + 97 k tris (24 MB): piden remesh.
-- Pickup propio + icono (`tools/dev/MakeItemIcon.py`): el heredado DABA UNA ANTORCHA al recoger. `ProxyCrankHook` en runtime sobre el modelo de mano
-  (`ProxyHeldItemHook.cs`), sin rehornear. `BackroomsEditModeFixtureRunner` (Test Runner muerto): 13/13. Loot: no sale hasta levantar `RestrictCacheCatalog`.
-
-### 2026-09-07 — 35.ª tanda: el día 3 — UV al mundo, macizos fundidos y caras enterradas
-- **La costura de textura NO la arreglaba el fundido**: la UV arrancaba en (0,0) por cara y la FASE se reiniciaba en cada caja. Ahora
-  proyecta la esquina en MUNDO, módulo el periodo (sin él, a 5 km la UV vale 2 500 y el float pierde el milímetro). `UvPerMetre` 0,5 intacto.
-- **Fundido por (máscara de planta, estilo, aspecto, loseta) y NO por chunk**: el chunk no se parte en Y y mete 7-8 plantas, y un Renderer
-  tiene UNA máscara. Fuera, con test: el invisible de ADR-129 D2 y los prismas de ADR-125. **4 718 macizos → 550 renderers** en Play.
-- **Caras enterradas podadas**: ésa es la causa del z-fighting, no el número de mallas. Sólo si OTRA caja cubre la cara ENTERA — un falso
-  positivo es un agujero por el que se ve dentro de una pared. Tapar NO es mutuo, y hay test.
-- Antes (sonda `probe_solids_per_chunk`): 5 119 macizos y 1 401 tramos en la (0,0), 90 % fundibles. Capturas `perf_*` sin agujeros y con la
-  retícula del suelo continua entre cajas. EditMode 38/39: el rojo de `cor_ramp` es PREEXISTENTE (lee volúmenes, no la malla).
 

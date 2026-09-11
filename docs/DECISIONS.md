@@ -16625,3 +16625,90 @@ debajo del presupuesto de 16,67 ms en el peor tick, no sólo en la media.
 
 ---
 
+## ADR-142 — Enmienda 1: D3 era falso, y lo que arregló el colapso fueron dos cachés que este ADR no nombraba (2026-09-11)
+
+### Qué se midió y qué dijo
+
+D3 proponía cachear el sorteo de población, «la mitad barata». Se instrumentó el reconcile por
+dentro (`SYNCTRACE`) antes de escribirlo, y el sorteo resultó no costar nada:
+
+```
+worst_storeys_ms=175.49  worst_retire_ms=0.02  worst_scan_ms=0.43  worst_populate_ms=950.13
+```
+
+`scan` es el sorteo. **Cuatro décimas de milisegundo contra novecientos cincuenta del reparto.**
+Implementar D3 tal y como está escrito habría costado una tanda y medido cero.
+
+Lo caro eran las consultas a WG3, y todas iban a parar al mismo sitio: `Wg3WorldCache`, que al
+pasar de 16 regiones **se vaciaba entero**, obligando a replanificar regiones completas —
+`plan_region`, el generador de mundo— en la ronda siguiente. El mismo fallo que
+`MAX_CACHED_RASTERS` un nivel más abajo, con el mismo comentario justificándolo y la misma premisa
+escrita para un solo jugador.
+
+Los dos se arreglaron con desalojo por uso reciente (`ebd8b12a`, `92acd74f`), y eso es lo que cerró
+el colapso de ocho jugadores que ADR-141 había dejado abierto:
+
+| | antes | después |
+|---|---|---|
+| `cre_block` peor tick | 4 473 ms | 401 ms |
+| bloqueos por corrida | 84 | 3 |
+| expulsiones | 12 | 0 |
+
+**Ninguno de los dos arreglos estaba en este ADR.** Se llegó a ellos midiendo, no planificando.
+
+### El relay NO crece con N², crece con las criaturas
+
+Este ADR y ADR-140 daban por hecho que el relay de poses crece con el cuadrado de los jugadores.
+Con la población actual es falso, y los datos lo dicen:
+
+| | criaturas | relay |
+|---|---|---|
+| 8 jugadores | 81 | 94,0 KB/s |
+| 16 jugadores | 126 | 145,3 KB/s |
+
+Criaturas ×1,56, tráfico ×1,54. El relay toma como ORÍGENES todos los peers y como destinos sólo a
+los jugadores: con 16 y 126, nueve de cada diez parejas son una criatura mandando su pose. El
+crecimiento cuadrático existe, pero está tapado por un término lineal mucho mayor.
+
+### Trampa de método: las corridas no eran comparables
+
+Cada instancia guarda su posición y se restaura donde la dejó la corrida anterior (ADR-045), así
+que dos corridas del mismo binario partían de mundos distintos. Se descubrió al ver la población de
+criaturas cambiar 10× entre corridas que se creían idénticas, con posiciones guardadas de (−23, −2)
+a (1 152, −119).
+
+El arnés borra ahora los guardados antes de empezar. **Con esa condición la línea base baja**: 185,6
+KB/s con 16 en vez de los 214–227 medidos sobre mundos sucios, y el PVS oculta el 24,3 % de las
+parejas en vez del 20,5 %. Toda comparación anterior a esto lleva ese sesgo.
+
+### Lo que sustituye a D3
+
+D3 se retira. Lo que queda vivo del ADR es D1/D2 (los tres niveles), D4 (identidad del mundo), D5
+(persistir desviaciones) y D6 (anclar al ascender), y **su justificación cambia**: ya no es ahorrar
+CPU —el bloque de criaturas está en 1,98 ms de media sobre 16,67— sino tener un mundo coherente y
+con memoria.
+
+En su lugar entra la idea de Joel, que ataca lo que sí es caro: **una criatura previsible no
+necesita cadencia, necesita un TRAMO**. En vez de una pose cada 33 ms, de dónde a dónde y a qué
+velocidad, y el cliente interpola hasta que cambie de rumbo. Cuando alguien la tiene delante, se
+vuelve a la pose fina.
+
+**Y tiene que aplicarse a TODOS, jugadores incluidos.** ADR-074 declara innegociable que el filtro
+no se comporte distinto según quién sea la fuente: el robapieles se hace pasar por un jugador, y una
+cadencia propia lo delataría igual que un radio propio. Es mensaje nuevo, así que va con bump de
+wire y ADR propio (regla dura 7).
+
+### Lo que se descartó por el camino, con su razón
+
+- **Bajar la cadencia del anillo exterior**: ADR-074 enmienda ya lo evaluó y lo rechazó — 50–100 m
+  es donde vive la fase `stalk` del robapieles, y a 500 ms entre poses se ve a saltos.
+- **Repartir simulación a los clientes con el anfitrión verificando** (Joel): verificar una
+  simulación continua cuesta lo mismo que calcularla, y para simular una criatura hay que decirle al
+  cliente dónde está — un chivato perfecto que ninguna verificación deshace. Donde sí se aplica ya
+  está aplicado: el cliente GENERA el mundo desde la semilla en vez de recibirlo.
+- **Población del mundo en vez de por jugador como optimización**: el reparto ya es por CHUNK y
+  deduplica entre jugadores, así que no cambia el número de criaturas activas. Sigue siendo buena
+  idea por diseño, no por rendimiento.
+
+---
+

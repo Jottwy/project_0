@@ -3285,3 +3285,26 @@ si las sondas de `J:/wg3*` valen algo o se borran. Las ramas viejas (`angry-jack
 - Barrido 27/27 con **islas 6,4 → 6,0** y nav 100 %; pisable −0,3 %. `fill` 13 → 19 ms (los pares de tramos). Suite **1407/1407**.
 - Fuera, declarado: `WEIRD_SPREAD` por profundidad (vive en la subdivisión del plan) y TODO el cliente (r2b), que pisa la rama de materiales.
 
+
+## Movido VERBATIM desde STATE.md el 2026-09-11 (presupuesto de 20 KB)
+
+### 2026-09-07 — 36.ª tanda: la linterna de manivela (ADR-133), de cero a en la mano del vecino, en rama aparte
+- Seis commits en `claude/crank-flashlight-model-1d8632` (`5063f09e`…`c5d9b8ad`), SIN fusionar. Carga en `Durability` (como el bote, ADR-068);
+  `BR_Battery Health` nueva, sorteada 0,8–1 y persistida. Hereda de `Wieldable`: `FPSWieldablesInput.cs:137` hace `as IUseInputHandler`; un puente no ve `Hold`.
+- Parpadeo por `intensity`, NUNCA `enabled` (ADR-042 relaya `light_on` a 10 Hz; ADR-080 detecta por él). Joel: 0,40 velocidad, 18–22 s/vuelta, 60 s × salud,
+  ruido 10 m/vuelta (`WorldNoise.CrankLoudness`), bit 6 `RemoteButtons.Cranking`, nace al 10–50 %.
+- DOS mallas padre-hijo. Tres fallos cazados por CAPTURA (`BackroomsCrankFlashlightShot.cs`, sin Play): pivote en el POMO (grosor 0,0132/0,0071),
+  eje Z que barría por dentro (→ X), separación a ojo (→ derivada de las dos mallas, 0,0438). Mallas 93 k + 97 k tris (24 MB): piden remesh.
+- Pickup propio + icono (`tools/dev/MakeItemIcon.py`): el heredado DABA UNA ANTORCHA al recoger. `ProxyCrankHook` en runtime sobre el modelo de mano
+  (`ProxyHeldItemHook.cs`), sin rehornear. `BackroomsEditModeFixtureRunner` (Test Runner muerto): 13/13. Loot: no sale hasta levantar `RestrictCacheCatalog`.
+
+### 2026-09-07 — 35.ª tanda: el día 3 — UV al mundo, macizos fundidos y caras enterradas
+- **La costura de textura NO la arreglaba el fundido**: la UV arrancaba en (0,0) por cara y la FASE se reiniciaba en cada caja. Ahora
+  proyecta la esquina en MUNDO, módulo el periodo (sin él, a 5 km la UV vale 2 500 y el float pierde el milímetro). `UvPerMetre` 0,5 intacto.
+- **Fundido por (máscara de planta, estilo, aspecto, loseta) y NO por chunk**: el chunk no se parte en Y y mete 7-8 plantas, y un Renderer
+  tiene UNA máscara. Fuera, con test: el invisible de ADR-129 D2 y los prismas de ADR-125. **4 718 macizos → 550 renderers** en Play.
+- **Caras enterradas podadas**: ésa es la causa del z-fighting, no el número de mallas. Sólo si OTRA caja cubre la cara ENTERA — un falso
+  positivo es un agujero por el que se ve dentro de una pared. Tapar NO es mutuo, y hay test.
+- Antes (sonda `probe_solids_per_chunk`): 5 119 macizos y 1 401 tramos en la (0,0), 90 % fundibles. Capturas `perf_*` sin agujeros y con la
+  retícula del suelo continua entre cajas. EditMode 38/39: el rojo de `cor_ramp` es PREEXISTENTE (lee volúmenes, no la malla).
+
