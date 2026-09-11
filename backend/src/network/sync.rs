@@ -1340,8 +1340,25 @@ struct PvsKey {
     region: crate::world::wg3::world::Wg3RegionCoord,
     storey: usize,
     space: usize,
-    visible: Vec<usize>,
+    /// Salas visibles para ENTRAR en el relay: el criterio estricto.
+    visible_enter: Vec<usize>,
+    /// Salas visibles para SEGUIR en él: un salto más de margen.
+    visible_stay: Vec<usize>,
 }
+
+/// Saltos de más que se conceden a un par que YA se estaba relayando.
+///
+/// **El PVS nació sin histéresis y eso fue un fallo, no una simplificación.** El radio lleva la
+/// suya desde ADR-074 —se entra a 100 m y no se sale hasta 120— precisamente para que nadie
+/// parpadee en la frontera; el grafo de salas se evaluaba de cero en cada ronda, así que alguien
+/// andando junto a un vano cambiaba de «se ve» a «no se ve» varias veces por segundo. Cada
+/// reaparición deja al cliente sin historial que interpolar, y se ve como un salto.
+///
+/// Lo reportó Joel en el primer playtest con dos: «tirones en cuanto aparece de nuevo el player».
+///
+/// Un salto y no dos: el margen tiene que ser el mínimo que rompa el ciclo. Con dos, la banda de
+/// duda se hace tan ancha que el filtro deja de filtrar.
+const PVS_STAY_EXTRA_HOPS: usize = 1;
 
 /// Resuelve la clave de un peer, o `None` si no se puede afirmar nada.
 ///
@@ -1364,14 +1381,13 @@ fn pvs_key_for(ctx: &mut PvsCtx<'_>, pos: [f32; 3]) -> Option<PvsKey> {
     let storey = vis.storey_at_cm((pos[1] * 100.0) as i32)?;
     let graph = vis.storey(storey)?;
     let space = graph.space_at_cm((pos[0] * 100.0) as i32, (pos[2] * 100.0) as i32)?;
+    let hops = crate::world::wg3::visibility::DEFAULT_VISIBILITY_HOPS;
     Some(PvsKey {
         region,
         storey,
         space,
-        visible: graph.visible_from(
-            space,
-            crate::world::wg3::visibility::DEFAULT_VISIBILITY_HOPS,
-        ),
+        visible_enter: graph.visible_from(space, hops),
+        visible_stay: graph.visible_from(space, hops + PVS_STAY_EXTRA_HOPS),
     })
 }
 
@@ -1419,14 +1435,20 @@ fn note_pvs_round(considered: usize, hidden: usize) {
 /// Regiones distintas se dejan pasar porque el grafo es POR REGIÓN y no sabe nada del otro lado de
 /// la costura; plantas distintas, porque un hueco de escalera comunica plantas y el grafo tampoco
 /// sabe de eso (`visibility.rs`).
-fn pvs_allows(a: Option<&PvsKey>, b: Option<&PvsKey>) -> bool {
+/// `was_relaying` es lo que este par hacía en la ronda anterior, igual que en
+/// `aoi_pose_should_relay`: quien ya estaba dentro aguanta un salto más, quien estaba fuera
+/// necesita el criterio estricto. Es la histéresis, y sin ella el par parpadea junto a un vano.
+fn pvs_allows(a: Option<&PvsKey>, b: Option<&PvsKey>, was_relaying: bool) -> bool {
     let (Some(a), Some(b)) = (a, b) else {
         return true;
     };
     if a.region != b.region || a.storey != b.storey {
         return true;
     }
-    a.visible.contains(&b.space)
+    match was_relaying {
+        true => a.visible_stay.contains(&b.space),
+        false => a.visible_enter.contains(&b.space),
+    }
 }
 
 pub async fn broadcast_peer_poses(net: &mut NetworkManager, mut pvs: Option<PvsCtx<'_>>) {
@@ -1505,6 +1527,7 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager, mut pvs: Option<PvsC
                 if !pvs_allows(
                     pvs_keys.get(src_id).and_then(|k| k.as_ref()),
                     pvs_keys.get(&dest_id).and_then(|k| k.as_ref()),
+                    was,
                 ) {
                     pvs_hidden += 1;
                     continue;
@@ -3289,7 +3312,18 @@ mod chunk_broadcast_tests {
 mod pvs_tests {
     use super::*;
 
+    /// Sin margen: ve lo mismo entrando que quedándose. Para los casos que no hablan de histéresis.
     fn key(region: (i32, i32), storey: usize, space: usize, visible: &[usize]) -> PvsKey {
+        key_hyst(region, storey, space, visible, visible)
+    }
+
+    fn key_hyst(
+        region: (i32, i32),
+        storey: usize,
+        space: usize,
+        enter: &[usize],
+        stay: &[usize],
+    ) -> PvsKey {
         PvsKey {
             region: crate::world::wg3::world::Wg3RegionCoord {
                 x: region.0,
@@ -3297,7 +3331,8 @@ mod pvs_tests {
             },
             storey,
             space,
-            visible: visible.to_vec(),
+            visible_enter: enter.to_vec(),
+            visible_stay: stay.to_vec(),
         }
     }
 
@@ -3305,14 +3340,14 @@ mod pvs_tests {
     fn a_peer_without_a_room_is_always_relayed() {
         let somewhere = key((0, 0), 0, 3, &[3]);
         assert!(
-            pvs_allows(None, Some(&somewhere)),
+            pvs_allows(None, Some(&somewhere), false),
             "origen sin sala resuelta: no se puede afirmar nada, así que se envía"
         );
         assert!(
-            pvs_allows(Some(&somewhere), None),
+            pvs_allows(Some(&somewhere), None, false),
             "destino sin sala resuelta: igual"
         );
-        assert!(pvs_allows(None, None), "ninguno de los dos: igual");
+        assert!(pvs_allows(None, None, false), "ninguno de los dos: igual");
     }
 
     #[test]
@@ -3321,7 +3356,7 @@ mod pvs_tests {
         // ocultar por ignorancia, que es exactamente el error caro.
         let a = key((0, 0), 0, 1, &[1]);
         let b = key((1, 0), 0, 9, &[9]);
-        assert!(pvs_allows(Some(&a), Some(&b)));
+        assert!(pvs_allows(Some(&a), Some(&b), false));
     }
 
     #[test]
@@ -3329,14 +3364,14 @@ mod pvs_tests {
         // Un hueco de escalera comunica plantas y este grafo no lo sabe (`visibility.rs`).
         let a = key((0, 0), 0, 1, &[1]);
         let b = key((0, 0), 1, 1, &[1]);
-        assert!(pvs_allows(Some(&a), Some(&b)));
+        assert!(pvs_allows(Some(&a), Some(&b), false));
     }
 
     #[test]
     fn two_rooms_that_communicate_see_each_other() {
         let a = key((0, 0), 0, 0, &[0, 1, 2]);
         let b = key((0, 0), 0, 2, &[0, 1, 2]);
-        assert!(pvs_allows(Some(&a), Some(&b)));
+        assert!(pvs_allows(Some(&a), Some(&b), false));
     }
 
     /// El único caso en el que este filtro dice que NO. Si deja de existir, el PVS no está
@@ -3345,7 +3380,40 @@ mod pvs_tests {
     fn a_sealed_room_is_the_only_thing_that_gets_cut() {
         let a = key((0, 0), 0, 0, &[0, 1]);
         let sealed = key((0, 0), 0, 7, &[7]);
-        assert!(!pvs_allows(Some(&a), Some(&sealed)));
+        assert!(!pvs_allows(Some(&a), Some(&sealed), false));
+    }
+
+    /// **La histéresis, y por qué existe.** Sin ella el PVS se evalúa de cero en cada ronda, así
+    /// que un par junto a un vano cambia de «se ve» a «no se ve» varias veces por segundo; cada
+    /// reaparición deja al cliente sin historial que interpolar y se ve como un salto. Lo reportó
+    /// Joel en el primer playtest con dos jugadores.
+    ///
+    /// Es la misma forma que el radio lleva desde ADR-074 —entrar es estricto, quedarse es
+    /// generoso— y aquí la unidad no son metros sino SALTOS en el grafo.
+    #[test]
+    fn a_pair_already_relaying_survives_one_extra_hop() {
+        // La sala 9 está a un salto de más: fuera del criterio de entrada, dentro del de estancia.
+        let a = key_hyst((0, 0), 0, 0, &[0, 1], &[0, 1, 9]);
+        let borderline = key((0, 0), 0, 9, &[9]);
+
+        assert!(
+            !pvs_allows(Some(&a), Some(&borderline), false),
+            "para ENTRAR manda el criterio estricto"
+        );
+        assert!(
+            pvs_allows(Some(&a), Some(&borderline), true),
+            "quien ya estaba dentro aguanta un salto más: sin esto, parpadea"
+        );
+    }
+
+    /// Y el margen es UN salto, no una barra libre: lo que está de verdad lejos se corta aunque se
+    /// estuviera relayando. Sin esta mitad, la histéresis se convertiría en «una vez visto,
+    /// visible para siempre» y el filtro dejaría de filtrar.
+    #[test]
+    fn hysteresis_does_not_make_visibility_permanent() {
+        let a = key_hyst((0, 0), 0, 0, &[0, 1], &[0, 1, 9]);
+        let far = key((0, 0), 0, 42, &[42]);
+        assert!(!pvs_allows(Some(&a), Some(&far), true));
     }
 
     /// Cada uno ve desde SU sala: el corte se decide con la lista del ORIGEN, no con una relación
@@ -3354,9 +3422,9 @@ mod pvs_tests {
     fn visibility_is_asked_from_the_source() {
         let seer = key((0, 0), 0, 0, &[0, 5]);
         let seen = key((0, 0), 0, 5, &[5]);
-        assert!(pvs_allows(Some(&seer), Some(&seen)));
+        assert!(pvs_allows(Some(&seer), Some(&seen), false));
         assert!(
-            !pvs_allows(Some(&seen), Some(&seer)),
+            !pvs_allows(Some(&seen), Some(&seer), false),
             "la lista del origen es la que manda, y aquí la del otro no incluye la sala 0"
         );
     }
