@@ -175,6 +175,16 @@ pub struct Wg3ServedWorld {
     solids: Vec<Wg3Solid>,
     /// ADR-129 — las anclas de atrezo. Se reparten por su posición, como los macizos por su centro.
     props: Vec<Wg3Prop>,
+    /// ADR-140 — el grafo de visibilidad por salas, LO ÚNICO que sobrevive del plan.
+    ///
+    /// `plan_region` construía el plan, se lo pasaba a `fill_building` y lo tiraba: en partida el
+    /// backend tenía geometría y no salas, así que el PVS no tenía a quién preguntar. Esto conserva
+    /// una caja y una lista de vecinos por sala —decenas de bytes— en vez del plan entero, que es
+    /// justo lo que el módulo `visibility` dejó escrito como requisito para encenderse.
+    ///
+    /// Vacío en los caminos que no planifican (`compose_region`, el oráculo de paridad), y un grafo
+    /// vacío responde «se ve» a todo: la degradación cae del lado seguro por construcción.
+    visibility: super::visibility::RegionVisibility,
 }
 
 /// Los ajustes con los que se compone una región del mundo SERVIDO.
@@ -326,6 +336,18 @@ impl Wg3ServedWorld {
             );
         }
 
+        // ADR-140 — el grafo se saca AQUÍ, que es el único sitio donde el plan todavía existe.
+        // Después de esta función `building` se tira, y con él las salas: lo que queda es
+        // geometría, y de la geometría no se puede reconstruir quién comunica con quién.
+        let visibility = super::visibility::RegionVisibility::new(
+            building
+                .storeys
+                .iter()
+                .map(super::visibility::VisibilityGraph::from_plan)
+                .collect(),
+            building.ground,
+        );
+
         Self {
             world_seed,
             placements: filled.placements,
@@ -333,7 +355,14 @@ impl Wg3ServedWorld {
             carves: filled.carves,
             solids: filled.solids,
             props: filled.props,
+            visibility,
         }
+    }
+
+    /// ADR-140 — el grafo de visibilidad de esta región. Vacío en los caminos que no planifican, y
+    /// un grafo vacío responde «se ve» a todo.
+    pub fn visibility(&self) -> &super::visibility::RegionVisibility {
+        &self.visibility
     }
 
     /// ADR-096 — compone UNA REGIÓN: acotada a su caja y sembrada en su centro.
@@ -381,6 +410,9 @@ impl Wg3ServedWorld {
             carves: composed.carves,
             // El compositor por bocas es legado y no emite macizos: ADR-105 vive en el PLAN.
             solids: Vec::new(),
+            // ADR-140 — el compositor por bocas no planifica salas, asi que no hay grafo que
+            // guardar. Vacio significa <<se ve>>, que es la direccion segura.
+            visibility: super::visibility::RegionVisibility::default(),
             props: Vec::new(),
         }
     }
@@ -412,6 +444,9 @@ impl Wg3ServedWorld {
             carves: composed.carves,
             // El compositor por bocas es legado y no emite macizos: ADR-105 vive en el PLAN.
             solids: Vec::new(),
+            // ADR-140 — el compositor por bocas no planifica salas, asi que no hay grafo que
+            // guardar. Vacio significa <<se ve>>, que es la direccion segura.
+            visibility: super::visibility::RegionVisibility::default(),
             props: Vec::new(),
         }
     }

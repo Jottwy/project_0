@@ -74,7 +74,7 @@ async fn measure_kb_per_second(net: &mut NetworkManager, spread: Spread, count: 
 
     // Un segundo de poses a 30 Hz (ADR-138 D1).
     for _ in 0..30 {
-        super::sync::broadcast_peer_poses(net).await;
+        super::sync::broadcast_peer_poses(net, None).await;
     }
 
     let after = super::send::sent_bytes_total();
@@ -187,7 +187,7 @@ async fn moving_players_cost_more_than_still_ones() {
         let before = super::send::sent_bytes_total();
         for tick in 0..30 {
             step_all_peers(&mut host, tick);
-            super::sync::broadcast_peer_poses(&mut host).await;
+            super::sync::broadcast_peer_poses(&mut host, None).await;
         }
         let kb = (super::send::sent_bytes_total() - before) as f64 / 1024.0;
         println!(
@@ -289,7 +289,7 @@ async fn cpu_breakdown_by_phase() {
             step_all_peers(&mut host, tick);
 
             let t = std::time::Instant::now();
-            super::sync::broadcast_peer_poses(&mut host).await;
+            super::sync::broadcast_peer_poses(&mut host, None).await;
             poses_ms += t.elapsed().as_secs_f64() * 1000.0;
 
             let t = std::time::Instant::now();
@@ -339,7 +339,7 @@ async fn host_cpu_per_broadcast_round() {
         const ROUNDS: u32 = 20;
         for tick in 0..ROUNDS as usize {
             step_all_peers(&mut host, tick);
-            super::sync::broadcast_peer_poses(&mut host).await;
+            super::sync::broadcast_peer_poses(&mut host, None).await;
             super::sync::broadcast_chunk_states(
                 &mut host,
                 &world,

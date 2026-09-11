@@ -2933,7 +2933,17 @@ pub async fn run(
                 // correctly. Host-only; no-op below two peers.
                 // E1 (ADR-074): `&mut` — el relay filtra por área de interés y mantiene el estado
                 // de histéresis de los pares que está relayando.
-                sync::broadcast_peer_poses(&mut net).await;
+                // ADR-140 — y ahora también con el grafo de salas. `None` si WG3 no manda: el PVS
+                // pregunta por SALAS, y sin WG3 no hay salas que preguntar, sólo geometría.
+                let pvs =
+                    wg3.manifest()
+                        .filter(|_| wg3.is_enabled())
+                        .map(|manifest| sync::PvsCtx {
+                            worlds: &mut wg3_world,
+                            manifest,
+                            world_seed: net.world_seed,
+                        });
+                sync::broadcast_peer_poses(&mut net, pvs).await;
                 // ADR-071: `&mut` now, because each of these owns a send gate that it updates when
                 // it decides a round goes out. They still run at 10 Hz — what changed is that a
                 // roster nobody touched since the last round returns immediately.

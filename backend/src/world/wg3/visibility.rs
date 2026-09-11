@@ -197,6 +197,15 @@ impl RegionVisibility {
         self.storeys.is_empty()
     }
 
+    /// El grafo de una planta concreta.
+    ///
+    /// Lo usa el relay para resolver la sala de cada peer UNA vez por ronda en vez de una por par:
+    /// con N peers, `can_see` por pareja sería N² consultas al grafo, y la respuesta para un mismo
+    /// peer es la misma en todas. Ver `PvsKey` en `network::sync`.
+    pub fn storey(&self, index: usize) -> Option<&VisibilityGraph> {
+        self.storeys.get(index)
+    }
+
     /// A qué planta pertenece una altura, o `None` si cae **cerca de una costura** y por tanto no se
     /// puede afirmar sin arriesgarse (ver [`STOREY_SEAM_MARGIN_CM`]).
     ///

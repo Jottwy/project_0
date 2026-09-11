@@ -1313,7 +1313,123 @@ pub(crate) fn spray_draft_destinations_from(
 /// E1 / ADR-074 (fase 1): `&mut` porque el relay mantiene el estado de histéresis del AOI
 /// (`aoi_pose_pairs`). Sigue emitiendo a 10 Hz — lo que cambia es A QUIÉN, no qué ni cuándo, así
 /// que no toca un byte del wire (mismo criterio que ADR-071 y F0.8).
-pub async fn broadcast_peer_poses(net: &mut NetworkManager) {
+/// ADR-140 — lo que el relay necesita para preguntarle al grafo de salas.
+///
+/// Se pasa por parámetro y no vive en `NetworkManager` por la misma razón que la caché de regiones
+/// (R3, `world.rs`): el mundo lo POSEE el bucle de juego. `None` es el camino de siempre, sin PVS.
+pub struct PvsCtx<'a> {
+    pub worlds: &'a mut crate::world::wg3::world::Wg3WorldCache,
+    pub manifest: &'a crate::world::wg3::manifest::Wg3Manifest,
+    pub world_seed: u64,
+}
+
+/// Radio dentro del cual se relaya SIEMPRE, diga lo que diga el grafo.
+///
+/// El módulo `visibility` lo exige por escrito: «quien consulte esto debe unirlo con un radio mínimo
+/// que se ve SIEMPRE, pase lo que pase». Aquí ese radio no es un número redondo cualquiera — son
+/// 35 m porque la VOZ llega a 25 (`VOICE_RADIUS_M`) más 6 de margen de relay. Si el PVS pudiera
+/// ocultar a alguien más cerca que eso, se oiría hablar a un jugador cuya posición no se está
+/// recibiendo, y esa asimetría es peor que el ancho de banda que ahorra.
+pub const PVS_MIN_RADIUS_M: f32 = 35.0;
+
+/// La sala de un peer y las salas que desde ella se ven, resueltas UNA vez por ronda.
+///
+/// Con N peers, preguntar `can_see` por pareja son N² consultas al grafo para N respuestas
+/// distintas. Esto las resuelve una vez por peer y deja la prueba por pareja en una pertenencia.
+struct PvsKey {
+    region: crate::world::wg3::world::Wg3RegionCoord,
+    storey: usize,
+    space: usize,
+    visible: Vec<usize>,
+}
+
+/// Resuelve la clave de un peer, o `None` si no se puede afirmar nada.
+///
+/// `None` NO significa invisible: significa que este filtro no opina, y quien no opina deja pasar.
+/// Se devuelve ante un grafo vacío, una cota en la costura entre plantas, o una posición que no cae
+/// dentro de ninguna sala (un pasillo generado, el exterior).
+fn pvs_key_for(ctx: &mut PvsCtx<'_>, pos: [f32; 3]) -> Option<PvsKey> {
+    use crate::world::wg3::chunk::Wg3ChunkCoord;
+    use crate::world::wg3::world::Wg3RegionCoord;
+
+    let coord = Wg3ChunkCoord::containing(pos[0], pos[2]);
+    let region = Wg3RegionCoord::of_chunk(coord);
+    let vis = ctx
+        .worlds
+        .region_for(ctx.manifest, ctx.world_seed, coord)
+        .visibility();
+    if vis.is_empty() {
+        return None;
+    }
+    let storey = vis.storey_at_cm((pos[1] * 100.0) as i32)?;
+    let graph = vis.storey(storey)?;
+    let space = graph.space_at_cm((pos[0] * 100.0) as i32, (pos[2] * 100.0) as i32)?;
+    Some(PvsKey {
+        region,
+        storey,
+        space,
+        visible: graph.visible_from(
+            space,
+            crate::world::wg3::visibility::DEFAULT_VISIBILITY_HOPS,
+        ),
+    })
+}
+
+/// PVSTRACE — cuántas parejas oculta el grafo de las que el radio ya había aceptado.
+///
+/// Es la medida que dice si encender esto sirve de algo, y va aparte del ancho de banda a
+/// propósito: `BWTRACE` diría que se manda menos, pero no si se manda menos porque el PVS
+/// funciona o porque había menos gente. `warn!` por la misma razón que las otras trazas.
+fn note_pvs_round(considered: usize, hidden: usize) {
+    use std::time::Instant;
+    static ACC: std::sync::Mutex<(u64, u64)> = std::sync::Mutex::new((0, 0));
+    static LAST_DUMP: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+
+    let (total, cut) = {
+        let Ok(mut acc) = ACC.lock() else {
+            return; // un mutex envenenado no justifica tumbar el relay: esto es diagnóstico
+        };
+        acc.0 += considered as u64;
+        acc.1 += hidden as u64;
+        *acc
+    };
+    let Ok(mut last) = LAST_DUMP.lock() else {
+        return;
+    };
+    let now = Instant::now();
+    match *last {
+        Some(t) if now.duration_since(t).as_secs() < 5 => return,
+        _ => *last = Some(now),
+    }
+    let pct = match total {
+        0 => 0.0,
+        n => 100.0 * cut as f64 / n as f64,
+    };
+    log::warn!(
+        "PVSTRACE event=pose_pairs_filtered considered={total} hidden={cut} hidden_pct={pct:.1} \
+         min_radius_m={PVS_MIN_RADIUS_M}"
+    );
+}
+
+/// ¿Deja pasar el PVS esta pareja? **Ante cualquier duda, sí.**
+///
+/// Pura y sin red a propósito, igual que `aoi_pose_should_relay`: la mitad que puede hacer a un
+/// jugador invisible tiene que poder probarse sin sockets.
+///
+/// Regiones distintas se dejan pasar porque el grafo es POR REGIÓN y no sabe nada del otro lado de
+/// la costura; plantas distintas, porque un hueco de escalera comunica plantas y el grafo tampoco
+/// sabe de eso (`visibility.rs`).
+fn pvs_allows(a: Option<&PvsKey>, b: Option<&PvsKey>) -> bool {
+    let (Some(a), Some(b)) = (a, b) else {
+        return true;
+    };
+    if a.region != b.region || a.storey != b.storey {
+        return true;
+    }
+    a.visible.contains(&b.space)
+}
+
+pub async fn broadcast_peer_poses(net: &mut NetworkManager, mut pvs: Option<PvsCtx<'_>>) {
     if net.peers.len() < 2 {
         return;
     }
@@ -1353,6 +1469,20 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager) {
     let mut relayed: std::collections::HashMap<PeerId, Vec<PeerId>> =
         std::collections::HashMap::with_capacity(poses.len());
     let mut next_pairs = std::collections::HashSet::with_capacity(net.aoi_pose_pairs.len().max(16));
+
+    // ADR-140 — las salas de todos, resueltas una vez. Fuera del bucle de pares a propósito: es la
+    // diferencia entre N consultas al grafo y N².
+    let pvs_keys: std::collections::HashMap<PeerId, Option<PvsKey>> = match pvs.as_mut() {
+        Some(ctx) => poses
+            .iter()
+            .map(|(id, pos)| (*id, pvs_key_for(ctx, *pos)))
+            .collect(),
+        None => std::collections::HashMap::new(),
+    };
+    let pvs_on = pvs.is_some();
+    let mut pvs_hidden = 0usize;
+    let mut pvs_considered = 0usize;
+
     for (src_id, src_pos) in &poses {
         for &dest_id in &dest_ids {
             if dest_id == *src_id {
@@ -1365,6 +1495,21 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager) {
             if !aoi_pose_should_relay(*src_pos, *dpos, was, AOI_POSE_RADIUS_M) {
                 continue;
             }
+            // ADR-140 — el PVS va DESPUÉS del radio y nunca en su lugar: es una condición más, la
+            // más restrictiva, y sólo puede quitar destinatarios que el radio ya había aceptado.
+            //
+            // **El radio mínimo gana siempre.** Dentro de `PVS_MIN_RADIUS_M` no se pregunta nada:
+            // ahí el grafo no tiene derecho a ocultar a nadie (ver la constante).
+            if pvs_on && distance_sq(*src_pos, *dpos) > PVS_MIN_RADIUS_M * PVS_MIN_RADIUS_M {
+                pvs_considered += 1;
+                if !pvs_allows(
+                    pvs_keys.get(src_id).and_then(|k| k.as_ref()),
+                    pvs_keys.get(&dest_id).and_then(|k| k.as_ref()),
+                ) {
+                    pvs_hidden += 1;
+                    continue;
+                }
+            }
             // El par SIGUE dentro del AOI aunque esta ronda no le toque emitir: el estado de la
             // histéresis es "nos estamos viendo", no "emití hace 100 ms". Si se registrara solo al
             // emitir, un par del anillo exterior perdería su marca en las rondas alternas y
@@ -1375,6 +1520,9 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager) {
                 relayed.entry(*src_id).or_default().push(dest_id);
             }
         }
+    }
+    if pvs_on {
+        note_pvs_round(pvs_considered, pvs_hidden);
     }
     let relayed_count: usize = relayed.values().map(|d| d.len()).sum();
 
@@ -3128,6 +3276,92 @@ mod chunk_broadcast_tests {
 /// ADR-060. El invariante que estos tests fijan no es "los chunks llegan" sino QUE NO SE ABRE EL
 /// GATE DE SPAWN antes de tiempo: el emisor pasÃ³ de un datagrama a N, y el gate viejo
 /// (`!world.chunks.is_empty()`) se habrÃ­a disparado con el primero.
+/// ADR-140 — **la mitad del PVS que puede hacer invisible a un jugador.**
+///
+/// El módulo `visibility` lo escribe como la regla que gobierna el diseño: si el grafo se equivoca
+/// diciendo «no lo ves» cuando sí lo ves, un jugador desaparece para otro; si se equivoca al revés,
+/// se gastan unos KB. Los dos errores no valen lo mismo, así que todo lo que no se puede afirmar
+/// tiene que dejar pasar.
+///
+/// Se prueba sobre `pvs_allows`, que es pura: la mitad peligrosa de esto no debe necesitar sockets
+/// para ponerse en rojo.
+#[cfg(test)]
+mod pvs_tests {
+    use super::*;
+
+    fn key(region: (i32, i32), storey: usize, space: usize, visible: &[usize]) -> PvsKey {
+        PvsKey {
+            region: crate::world::wg3::world::Wg3RegionCoord {
+                x: region.0,
+                z: region.1,
+            },
+            storey,
+            space,
+            visible: visible.to_vec(),
+        }
+    }
+
+    #[test]
+    fn a_peer_without_a_room_is_always_relayed() {
+        let somewhere = key((0, 0), 0, 3, &[3]);
+        assert!(
+            pvs_allows(None, Some(&somewhere)),
+            "origen sin sala resuelta: no se puede afirmar nada, así que se envía"
+        );
+        assert!(
+            pvs_allows(Some(&somewhere), None),
+            "destino sin sala resuelta: igual"
+        );
+        assert!(pvs_allows(None, None), "ninguno de los dos: igual");
+    }
+
+    #[test]
+    fn across_a_region_seam_everything_is_relayed() {
+        // El grafo es POR REGIÓN y no sabe nada del otro lado de la costura. Ocultar ahí sería
+        // ocultar por ignorancia, que es exactamente el error caro.
+        let a = key((0, 0), 0, 1, &[1]);
+        let b = key((1, 0), 0, 9, &[9]);
+        assert!(pvs_allows(Some(&a), Some(&b)));
+    }
+
+    #[test]
+    fn across_storeys_everything_is_relayed() {
+        // Un hueco de escalera comunica plantas y este grafo no lo sabe (`visibility.rs`).
+        let a = key((0, 0), 0, 1, &[1]);
+        let b = key((0, 0), 1, 1, &[1]);
+        assert!(pvs_allows(Some(&a), Some(&b)));
+    }
+
+    #[test]
+    fn two_rooms_that_communicate_see_each_other() {
+        let a = key((0, 0), 0, 0, &[0, 1, 2]);
+        let b = key((0, 0), 0, 2, &[0, 1, 2]);
+        assert!(pvs_allows(Some(&a), Some(&b)));
+    }
+
+    /// El único caso en el que este filtro dice que NO. Si deja de existir, el PVS no está
+    /// filtrando nada y el ahorro que mide `PVSTRACE` sería mentira.
+    #[test]
+    fn a_sealed_room_is_the_only_thing_that_gets_cut() {
+        let a = key((0, 0), 0, 0, &[0, 1]);
+        let sealed = key((0, 0), 0, 7, &[7]);
+        assert!(!pvs_allows(Some(&a), Some(&sealed)));
+    }
+
+    /// Cada uno ve desde SU sala: el corte se decide con la lista del ORIGEN, no con una relación
+    /// que se dé por simétrica sin comprobarla.
+    #[test]
+    fn visibility_is_asked_from_the_source() {
+        let seer = key((0, 0), 0, 0, &[0, 5]);
+        let seen = key((0, 0), 0, 5, &[5]);
+        assert!(pvs_allows(Some(&seer), Some(&seen)));
+        assert!(
+            !pvs_allows(Some(&seen), Some(&seer)),
+            "la lista del origen es la que manda, y aquí la del otro no incluye la sala 0"
+        );
+    }
+}
+
 #[cfg(test)]
 mod world_drip_tests {
     use super::*;

@@ -2277,7 +2277,7 @@ async fn far_apart_joiners_stop_receiving_each_others_poses_over_real_sockets() 
     // Dos rondas, porque el anillo exterior emite en rondas alternas (LOD): con una sola no se
     // podría distinguir "filtrado por AOI" de "esta ronda no le tocaba".
     for _ in 0..2 {
-        crate::network::sync::broadcast_peer_poses(&mut host).await;
+        crate::network::sync::broadcast_peer_poses(&mut host, None).await;
         tokio::time::sleep(Duration::from_millis(60)).await;
     }
     let a_got = drain_pose_updates(&mut a).await;
@@ -2294,7 +2294,7 @@ async fn far_apart_joiners_stop_receiving_each_others_poses_over_real_sockets() 
     // 20 m de A y su pose TIENE que empezar a llegar.
     place_peer(&mut host, 3002, [20.0, 1.8, 0.0]);
     for _ in 0..2 {
-        crate::network::sync::broadcast_peer_poses(&mut host).await;
+        crate::network::sync::broadcast_peer_poses(&mut host, None).await;
         tokio::time::sleep(Duration::from_millis(60)).await;
     }
     let a_now = drain_pose_updates(&mut a).await;
@@ -2326,7 +2326,7 @@ async fn a_phantom_inside_the_aoi_is_relayed_like_any_player() {
     place_peer(&mut host, 4001, [0.0, 1.8, 0.0]);
 
     for _ in 0..2 {
-        crate::network::sync::broadcast_peer_poses(&mut host).await;
+        crate::network::sync::broadcast_peer_poses(&mut host, None).await;
         tokio::time::sleep(Duration::from_millis(60)).await;
     }
     assert!(
@@ -2376,7 +2376,7 @@ async fn a_relay_only_roster_entry_makes_the_phantom_visible_to_the_joiner() {
     // La pose relayada aplica sobre la entrada — incluidos los cosméticos que sella el driver.
     host.peers.get_mut(&phantom_id).unwrap().revealed = true;
     for _ in 0..2 {
-        crate::network::sync::broadcast_peer_poses(&mut host).await;
+        crate::network::sync::broadcast_peer_poses(&mut host, None).await;
         tokio::time::sleep(Duration::from_millis(60)).await;
     }
     joiner.process_incoming().await;
