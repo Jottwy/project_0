@@ -16395,3 +16395,79 @@ Sin cambio de wire: cambia CUÁNDO se emite, no el qué. Suite: 1459 verdes, 0 r
 
 ---
 
+## ADR-141 — La tormenta de entrada: quien llega recibe el mundo, y los demás no tienen que enterarse (2026-09-11) — PROPUESTA (Joel: «podemos plantear e implementar el ADR»)
+
+**El hallazgo.** Dos playtests de 8 instancias murieron igual: todos los jugadores se declaran
+muertos **en el mismo milisegundo**. No degrada, colapsa.
+
+```
+T22:48:18Z  peer_id=2..8  last_seen_ms_ago≈7120  threshold_ms=5000   (8 con ventana)
+T23:39:49Z  peer_id=2..6  last_seen_ms_ago≈5310  threshold_ms=5000   (8 sin render, entradas espaciadas 12 s)
+```
+
+Espaciar las entradas doce segundos no lo evitó, así que no es una avalancha de conexiones
+simultáneas. Y no es la máquina: sin render, cada cliente gastó 15-31 s de CPU (contra 286-562 con
+ventana), quedaban 22 GB libres y la CPU al 0 %.
+
+Lo que sí se ve, midiendo `ChunkState` por ventanas de 5 s en el anfitrión:
+
+```
+t= 55s  122,4 pkt/s   <- entra un joiner
+t= 66s  102,0 pkt/s   <- entra otro
+t= 86s   95,6 pkt/s   <- entra el sexto, y caen los cinco de golpe
+t= 97s    8,5 pkt/s   <- quedan dos
+```
+
+Contra una línea base de 10-20 pkt/s. **Cada entrada multiplica por seis o por diez el tráfico de
+chunks**, y el pico de la sexta entrada se lleva por delante a todos los que ya estaban dentro: los
+latidos se pierden dentro de la ráfaga y el temporizador de 5 s vence a la vez en las dos puntas
+(el joiner 2 declaró muertos a sus peers 29 s ANTES de que el anfitrión lo declarara muerto a él —
+la pérdida es mutua, no de un lado).
+
+**La causa, y por qué estaba escondida.** `RosterGate` es **por roster, no por destinatario**. Su
+condición `joined` (ADR-071 decisión 4) existe para que quien acaba de entrar reciba el mundo, pero
+la puerta sólo sabe abrirse o cerrarse: cuando se abre, el contenido sale por **broadcast a todos**.
+Así que un jugador nuevo obliga al anfitrión a reenviar los 64 chunks y los cinco rosters **a los
+seis que ya estaban dentro y no necesitaban nada**.
+
+El coste de una entrada crece con el número de jugadores ya presentes. Con cinco dentro aguanta; al
+sexto revienta. Es el mismo error de forma que la enmienda 2 de ADR-139 —preguntarle a una
+condición por un número que no significa lo que parece— pero en el eje del destinatario en vez del
+de la cuenta.
+
+Nada de esto contradice ADR-071: la decisión 4 sigue siendo correcta, quien entra NO puede esperar
+al latido. Lo que cambia es a quién se le manda.
+
+**Decisión 1 — quien entra se apunta en una lista, y se le sirve a él.** `NetworkManager` gana
+`pending_full_sync: HashMap<PeerId, u8>`, sembrado con `ROSTER_CHANGE_BURST` rondas en el punto
+donde hoy se registra el peer (`handlers.rs`, `self.peers.insert(assigned_id, peer)`). Cada emisor,
+por ronda:
+
+  * si la puerta se abre por CAMBIO o por LATIDO → broadcast, exactamente como hoy;
+  * si no se abre pero hay peers en la lista → se arman las mismas páginas y se mandan **dirigidas**
+    sólo a ellos, con `send_unreliable_to`.
+
+El contador baja UNA vez por ronda del bucle de juego, no una por emisor: si lo decrementara cada
+emisor, el primero en correr dejaría al recién llegado sin los otros cuatro rosters.
+
+**Decisión 2 — `joined` sale de `RosterGate`.** Con la decisión 1, la condición pierde su razón de
+ser, y dejarla puesta reabriría la tormenta desde el primer sitio que volviera a pasar una cuenta de
+peers. El parámetro se retira de `should_send` en vez de dejarlo muerto: un parámetro que nadie mira
+es la forma en que esto vuelve dentro de seis meses.
+
+**Lo que NO cambia:** ni el wire, ni el formato, ni la paginación, ni el contenido. `apply_chunk_sync`
+y los ensambladores de roster siguen viendo exactamente los mismos mensajes; cambia el sobre, no la
+carta. Un peer sin actualizar no puede notar la diferencia.
+
+**Riesgo asumido y cómo se acota.** Si la lista de pendientes se vaciara antes de que un emisor
+llegue a servir al recién llegado, ese jugador vería un mundo incompleto hasta el siguiente latido
+—hasta 30 s con el techo de la enmienda 2 de ADR-139, que es mucho—. Por eso el contador es de
+rondas y no de tiempo, baja en el bucle y no en el emisor, y hay un test que fija que un peer nuevo
+recibe TODOS los rosters antes de que su cuenta llegue a cero.
+
+**Verificación:** el arnés de 8 instancias sin render, que ya reprodujo el fallo dos veces. El
+criterio es binario y no admite interpretación: los ocho siguen dentro pasados cinco minutos, y el
+pico de `ChunkState` en cada entrada se queda en la línea base en vez de multiplicarse.
+
+---
+
