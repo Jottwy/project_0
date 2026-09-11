@@ -32,6 +32,76 @@ use crate::world::grid_gen::{
 /// once a second for a population this cheap to scan.
 const FACELING_POPULATION_SYNC_INTERVAL: f32 = 1.0;
 
+/// SYNCTRACE — el reconcile de población por DENTRO.
+///
+/// `LOOPTRACE` señaló `cre_adult_sync` con 1 157 ms en el peor tick, pero la fase entera es una
+/// caja negra. El ADR-142 supuso que el peso estaba en rehacer el sorteo; leyendo el código, el
+/// sorteo es un RNG y unas posiciones, mientras que dentro del reparto hay consultas a WG3
+/// (`wg3_spawn_point`, `prewarm_for_move`) que nadie había medido.
+///
+/// **Se mide antes de tocar.** En esta misma tanda una corazonada ya señaló al culpable equivocado,
+/// y el arreglo del caché de rásteres salió de medir, no de suponer.
+///
+/// Cuatro tramos: las plantas de los jugadores, la retirada, el barrido de candidatos (el sorteo) y
+/// el reparto (lo que consulta a WG3). Sólo mide; no cambia una línea de comportamiento.
+#[derive(Default)]
+pub(super) struct SyncPhases {
+    storeys_us: u128,
+    retire_us: u128,
+    scan_us: u128,
+    populate_us: u128,
+}
+
+/// Peor caso acumulado entre vuelcos: `(storeys, retire, scan, populate, candidatos)`.
+///
+/// **La primera versión de esto sólo imprimía el reconcile que pillaba al pasar los 5 s**, y eso
+/// no sirve: los reconciles caros son raros —sólo cuando hay chunks nuevos que tocar— así que el
+/// muestreo daba ceros mientras `LOOPTRACE` marcaba 1 108 ms en esa misma fase. Una traza que no
+/// puede ver el caso que se busca es peor que ninguna, porque parece una medida.
+static SYNC_WORST: std::sync::Mutex<[u128; 5]> = std::sync::Mutex::new([0; 5]);
+
+impl SyncPhases {
+    /// Guarda el peor caso de cada tramo y lo vuelca cada 5 s, misma forma y mismo `warn!` que
+    /// ENTTRACE: sin `BACKROOMS_VERBOSE_LOG=1` un build sólo deja pasar WARN, y esto sólo sirve
+    /// medido en la partida real. Vuelve a `info!` al terminar de leerlo.
+    fn dump(&self, who: &str, candidates: usize, movers: usize) {
+        use std::time::Instant;
+        static LAST_DUMP: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+
+        let worst = {
+            let Ok(mut w) = SYNC_WORST.lock() else {
+                return; // un mutex envenenado no justifica tumbar el bucle: esto es diagnóstico
+            };
+            w[0] = w[0].max(self.storeys_us);
+            w[1] = w[1].max(self.retire_us);
+            w[2] = w[2].max(self.scan_us);
+            w[3] = w[3].max(self.populate_us);
+            w[4] = w[4].max(candidates as u128);
+            *w
+        };
+
+        let Ok(mut last) = LAST_DUMP.lock() else {
+            return;
+        };
+        let now = Instant::now();
+        match *last {
+            Some(t) if now.duration_since(t).as_secs() < 5 => return,
+            _ => *last = Some(now),
+        }
+        let ms = |v: u128| v as f64 / 1000.0;
+        warn!(
+            "SYNCTRACE event=population_reconcile who={who} movers={movers} \
+             worst_candidates={} worst_storeys_ms={:.2} worst_retire_ms={:.2} \
+             worst_scan_ms={:.2} worst_populate_ms={:.2}",
+            worst[4],
+            ms(worst[0]),
+            ms(worst[1]),
+            ms(worst[2]),
+            ms(worst[3])
+        );
+    }
+}
+
 /// v1 PLACEHOLDER, unmeasured — ADR-094 point 5 flags density/radii as "por medir con sonda"
 /// exactly like ADR-043's own table did before ITS measurement pass. An office chunk is 50 m
 /// (`CELL_SIZE_M * CHUNK_CELLS`) on a side, so 70 m from a player already reaches one from an
@@ -360,9 +430,13 @@ impl AdultDriver {
 
         // ADR-110 D3 — las plantas de los jugadores, una sola vez: las usan la retirada y el
         // despertar, y tienen que ser LA MISMA respuesta o el mundo se vacía en las escaleras.
+        let mut phases = SyncPhases::default();
+        let t = std::time::Instant::now();
         let storeys = player_storeys(&mut wg3, &players);
+        phases.storeys_us = t.elapsed().as_micros();
 
         // ── Put away the ones nobody is near any more ──
+        let t = std::time::Instant::now();
         let mut retired: Vec<PeerId> = Vec::new();
         for m in &self.movers {
             let Some(peer) = net.peers.get(&m.id) else {
@@ -388,11 +462,14 @@ impl AdultDriver {
             net.despawn_faceling(*id);
         }
         self.movers.retain(|m| !retired.contains(&m.id));
+        phases.retire_us = t.elapsed().as_micros();
 
         // ── Wake up the ones somebody walked near ──
         if self.movers.len() >= FACELING_ACTIVE_CAP {
+            phases.dump("adult", 0, self.movers.len());
             return;
         }
+        let t = std::time::Instant::now();
         let taken: HashSet<(i32, i32)> = self.movers.iter().map(|m| m.home_chunk).collect();
         let mut seen_chunks: HashSet<((i32, i32), u8)> = HashSet::new();
         let mut drawn: Vec<[f32; 3]> = Vec::new();
@@ -482,7 +559,10 @@ impl AdultDriver {
         // `sort_by` es ESTABLE: los empates conservan el orden del recorrido, que es determinista.
         // Nada de aleatoriedad para deshacer el sesgo — eso lo cambiaría por otro problema.
         candidatos.sort_by(|a, b| a.distance.total_cmp(&b.distance));
+        phases.scan_us = t.elapsed().as_micros();
 
+        let t = std::time::Instant::now();
+        let candidate_count = candidatos.len();
         for cand in candidatos {
             let (cx, cz) = cand.chunk;
             let (layer, drawn) = (cand.storey, cand.drawn);
@@ -564,6 +644,8 @@ impl AdultDriver {
                 );
             }
         }
+        phases.populate_us = t.elapsed().as_micros();
+        phases.dump("adult", candidate_count, self.movers.len());
     }
 
     /// ADR-108 — ¿se puede pisar aquí? Mismo dispatch que el robapieles.

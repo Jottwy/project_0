@@ -12825,6 +12825,53 @@ fn probe_variant_spots() {
     flush(&row);
 }
 
+/// **El caché de REGIONES tampoco se vacía entero.** Mismo fallo que el de rásteres, un nivel más
+/// arriba y bastante más caro: lo que se tira aquí no es geometría cacheada, es `plan_region`, o
+/// sea el generador de mundo.
+///
+/// El comentario que justificaba el vaciado decía que recomponer «cuesta milisegundos». Cierto con
+/// un jugador quieto; falso en cuanto siete se reparten y las criaturas preguntan por sus
+/// alrededores. Medido con `SYNCTRACE` en el arnés de ocho instancias sin render, el reparto de
+/// población llegó a **950 ms** en un solo reconcile, contra 0,43 ms del sorteo.
+///
+/// La propiedad es la misma y por la misma razón: **la cuenta no baja nunca**. Mirar el estado
+/// final no separa las dos políticas.
+#[test]
+fn the_region_cache_never_shrinks_when_it_overflows() {
+    use crate::world::wg3::world::Wg3WorldCache;
+
+    /// Bastantes regiones para desbordar cualquier tope razonable. Se recorre en línea recta por
+    /// coordenadas de chunk muy separadas para que cada parada caiga en una región distinta.
+    const STOPS: i32 = 80;
+    /// Salto en chunks, holgadamente mayor que una región.
+    const STRIDE: i32 = 32;
+
+    let m = real_manifest();
+    let mut worlds = Wg3WorldCache::default();
+
+    let mut high_water = 0usize;
+    for i in 0..STOPS {
+        let coord = crate::world::wg3::chunk::Wg3ChunkCoord {
+            x: i * STRIDE,
+            z: 0,
+        };
+        let _ = worlds.region_for(&m, SERVED_SEED, coord);
+
+        let now = worlds.cached_region_count();
+        assert!(
+            now >= high_water,
+            "el caché de regiones bajó de {high_water} a {now} en la parada {i}: eso es poda por \
+             vaciado, y cada región que se tira hay que volver a PLANIFICARLA"
+        );
+        high_water = now;
+    }
+
+    assert!(
+        high_water > 1,
+        "el recorrido no llegó a desbordar: {high_water} regiones retenidas"
+    );
+}
+
 /// **El caché de rásteres conserva el movimiento en curso, aunque el tope se quede corto.**
 ///
 /// La poda anterior tiraba el caché ENTERO al pasar del tope, y ese tope (64) se midió contra el
