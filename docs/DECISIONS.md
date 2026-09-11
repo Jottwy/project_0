@@ -16471,3 +16471,157 @@ pico de `ChunkState` en cada entrada se queda en la línea base en vez de multip
 
 ---
 
+## ADR-142 — Las criaturas no se sortean cada segundo: tres niveles de existencia y una población que el mundo ya tenía (2026-09-11) — PROPUESTA (Joel: «que la cantidad de criaturas no varíe, existan en el mundo… y que el cálculo aleatorio sea la primera vez que se genera el mundo»; «algo tipo que no se cargue la entidad pero esté en movimiento y a cierta distancia se spawnea»)
+
+### Contexto: lo que el anfitrión estaba haciendo con su tick
+
+ADR-141 cerró la tormenta de entrada y **no** cerró el colapso de ocho jugadores. La causa restante
+se midió con `LOOPTRACE` (commit `912e92e1`), que desglosa el tick por fases. El peor tick de la
+corrida de las 12:51, arnés de ocho instancias sin render:
+
+```
+total_ms=7540.2  unaccounted_ms=0.0
+cre_block=7531.48   net_send=7.88   world_state=0.81   ipc_in=0.00
+```
+
+`unaccounted` a cero significa que no queda ninguna fase sin instrumentar: **el bloque de criaturas
+es el 99,9 % del bloqueo**. La red, sospechosa durante dos días, pone 8 ms de 7 540.
+
+Dentro del bloque había dos culpables, y el primero ya está cerrado. `cre_prewarm` —rasterizar
+geometría de WG3 para resolver colisión— se llevaba 2 373 ms en el peor tick porque el caché de
+rásteres se vaciaba entero al pasar del tope (commit `ebd8b12a`, vuelta al desalojo que ADR-106 D3
+ya pedía). Tras ese arreglo:
+
+| | peor tick | media |
+|---|---|---|
+| `cre_prewarm` antes | 2 373,70 ms | 2,54 ms |
+| `cre_prewarm` después | 11,97 ms | 0,00 ms |
+
+Lo que queda, y es lo que este ADR ataca, son los cuatro `sync_population`:
+
+```
+cre_block=5093   cre_phantom=2017   cre_adult_sync=1157
+                 cre_child_sync=981   cre_watcher=890
+```
+
+La sesión sigue cayéndose: 32 bloqueos y 12 expulsiones por corrida, frente a 50 y 14 antes del
+caché. Mejor, no arreglado.
+
+### El hecho que cambia el diseño: el sorteo YA es determinista
+
+`world::faceling_spawn::draw_adults_into` es función pura de `(world_seed, cx, cz, axis,
+density_scale, wg3)`. La misma semilla pone los mismos adultos en el mismo chunk, siempre. **La
+población fija por semilla que pide Joel ya existe**; lo que no existe es aprovecharla.
+
+Lo que cuesta no es sortear: es **volver a sortear**. `sync_population` recorre cada chunk dentro
+del radio de activación **de cada jugador**, una vez por segundo y por especie, y rehace un cálculo
+cuyo resultado no puede haber cambiado. Con siete jugadores repartidos eso son cuatro barridos por
+segundo sobre cuatro vecindarios distintos.
+
+Y hay un segundo coste que no es CPU: al dormirse, una criatura **pierde su identidad**. Su `PeerId`
+sale de un contador, no de quién es; al despertar vuelve a nacer en el punto que dice el sorteo, no
+donde se quedó. Por eso el mundo no tiene memoria de dónde estaban las cosas.
+
+Esto corrige de paso una afirmación propia: en esta misma sesión dije que pasar la posición del
+anfitrión a `prewarm_for_move` multiplicaba el coste por criatura. Es falso — son los mismos nueve
+chunks para todas y se cachean una vez. El destrozo era la política de poda, y se midió.
+
+### D1 — Tres niveles de existencia, y sólo uno consume tick
+
+- **Dormida.** Existe sólo como semilla. Ni se guarda, ni se recorre, ni se le pregunta nada. Es el
+  estado del 99,99 % de la población, y su coste es **cero** porque nadie la itera.
+- **Ambiente.** Se evalúa **bajo demanda**, sin colisión, sin `PeerId` y sin red. Es quien responde
+  a «¿hay algo que pudiera oír esto?».
+- **Activa.** Entidad real: peer, colisión, IA, relay. Sólo cerca de alguien, con los topes de hoy
+  (`FACELING_ACTIVE_CAP` = 32, `PHANTOM_ACTIVE_CAP` = 6).
+
+La propiedad que hace esto viable es que **el nivel dormido no tiene bucle**. El mundo no tiene
+borde, así que «que existan todas» sólo es sostenible si la inmensa mayoría nunca se toca.
+
+### D2 — Una dormida se mueve sin que nadie la mueva
+
+Su posición es función cerrada del tiempo: `pos(t) = f(semilla, clave, t)`, un paseo determinista
+sobre su chunk de origen. No se actualiza: **se evalúa cuando hace falta**. Un millón de criaturas a
+100 000 m cuestan lo mismo que ninguna.
+
+Es lo que Joel pedía con «que se mueva a nivel de bits muy pequeños»; el ahorro no está en el tamaño
+del estado, está en que **no hay estado que recorrer**.
+
+### D3 — El sorteo se cachea por `(chunk, planta)`
+
+Siendo función pura, se calcula una vez y se guarda mientras el chunk siga en el conjunto de
+trabajo, con desalojo por uso reciente —la misma disciplina y por la misma razón que el caché de
+rásteres de `ebd8b12a`, no una invención nueva.
+
+Esto es lo que quita los cuatro barridos por segundo, y **es la mitad barata del ADR**: no toca ni
+persistencia ni identidad. Se puede implementar y medir sola.
+
+### D4 — La identidad sale del mundo, no de un contador
+
+Cada criatura tiene una `creature_key` derivada de `(chunk, planta, índice en el sorteo)`. El
+`PeerId` sigue siendo efímero y sigue **sin viajar por el wire** (ADR-016 §1): la clave es interna.
+
+Sin esto, D5 no puede existir —no hay a qué atar lo guardado— y despertar a «la misma» criatura es
+una frase sin significado.
+
+### D5 — Se persisten las DESVIACIONES, no la población
+
+Guardar la población entera es imposible: es infinita. Se guarda sólo lo que ya no está donde su
+sorteo dice, con su `creature_key`. Lo que nunca se tocó no ocupa un byte porque la semilla lo
+reconstruye idéntico.
+
+Campo nuevo en `SaveFile` con `#[serde(default)]`, como `sprays` y `corpses`: **un save anterior
+carga sin migración y sin `.bak`**. Es cambio de schema de guardado, y por eso este ADR existe antes
+que el código (regla dura 7).
+
+### D6 — Ascender ANCLA a celda válida
+
+Una dormida se mueve sin colisión y acabará dentro de una pared. Da igual mientras nadie la vea,
+pero al ascender hay que dejarla en un sitio andable. Eso es una consulta a WG3 **pagada una vez por
+ascenso**, no diez veces por segundo y criatura.
+
+Sin este anclaje el sistema entrega criaturas dentro de macizos, que es peor que el problema que
+resuelve.
+
+### D7 — Sin cambio de wire
+
+Mismos mensajes y mismos opcodes. Una criatura activa es un peer exactamente como hoy. `WIRE_SCHEMA_VERSION`
+se queda en **63**.
+
+### Lo que este ADR NO dice
+
+- **No promete arreglar «al cargar siempre aparece una entidad al lado».** Ese fallo no está
+  diagnosticado: `FACELING_MIN_SPAWN_DISTANCE` ya existe y ya lo debería impedir para los facelings,
+  así que probablemente sea otra especie u otro camino. Lo que este diseño quita es el **mecanismo**
+  —que al cargar se sortee población alrededor del jugador—, y eso hay que verificarlo, no
+  suponerlo.
+- **El robapieles entra con cuidado.** `cre_phantom` son 2 017 ms y es la partida mayor, pero
+  `PhantomDriver` vive dentro de los **seis invariantes intocables de ADR-038**. D3 se le puede
+  aplicar sin tocarlos; D1/D2 sobre el robapieles piden enmienda propia con sus tests delante.
+- **El sonido va aparte.** Ampliar el radio de detección se apoya en el nivel ambiente de D1, pero
+  es enmienda a la percepción y tiene su propio ADR.
+- **No se sube ningún tope de población.** Este ADR cambia cuándo se decide quién está despierto, no
+  cuántos hay.
+
+### Riesgo abierto
+
+El nivel ambiente de D1 no tiene consumidor hasta que exista el ADR del sonido. Implementarlo sin
+consumidor sería andamiaje muerto, así que **la primera tanda puede quedarse en D3 + D4**, que ya
+atacan los cuatro `sync_population` medidos.
+
+### Verificación
+
+El arnés de ocho instancias sin render, contra la línea base ya medida en la corrida de las 13:52,
+que queda escrita aquí para que la comparación no dependa de la memoria de nadie:
+
+```
+cre_block    peor 5093 ms   media 2,90 ms
+cre_phantom  peor 2017 ms
+32 bloqueos, 12 expulsiones
+```
+
+El criterio es binario: los ocho siguen dentro pasados cinco minutos y `cre_block` se queda por
+debajo del presupuesto de 16,67 ms en el peor tick, no sólo en la media.
+
+---
+
