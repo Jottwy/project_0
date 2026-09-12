@@ -130,6 +130,14 @@ namespace BackroomsSurvival.Gameplay
                 CreateEye(body.transform, new Vector3(0.15f, 0.35f, 0.45f), bodyScale);
             }
 
+            // R7 (12-09) — igual que el proxy de un jugador o un vigilante
+            // (RemotePlayerManager.cs), esta cápsula no la monta WG3: nace con la máscara de
+            // render por defecto (bit 0, la planta más honda de los sótanos con ADR-130) y el
+            // ambiente es negro desde el 07-09. Sin esto, un Lurker/Crawler/Shadow se veía negro
+            // del todo en cuanto subía a cualquier planta que no fuera el sótano más profundo —
+            // «desaparece al subir escaleras», reportado por Joel.
+            BackroomsSurvival.WorldGen3.Wg3DynamicLitLayers.Attach(root);
+
             return new EntityVisual
             {
                 go = root,
