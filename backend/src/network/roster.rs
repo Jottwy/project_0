@@ -353,7 +353,12 @@ pub struct CellRosterAssembler<T> {
     partial: std::collections::HashMap<[i32; 2], PartialCell<T>>,
     /// Lo último aplicado, por celda. Es de aquí de donde sale el roster plano que ve el resto
     /// del código, y lo que conserva una celda cuya ronda llegó rota.
-    applied: std::collections::HashMap<[i32; 2], Vec<T>>,
+    ///
+    /// **`BTreeMap` y no `HashMap` (ADR-074 enm. 5, C3):** el roster plano sale de recorrer este
+    /// mapa, así que con un `HashMap` el MISMO contenido salía en distinto orden cada ronda. Eso
+    /// es salida iterando un mapa sin ordenar — regla dura 13 — y además hace que el cliente vea
+    /// «cambio» donde no lo hay.
+    applied: std::collections::BTreeMap<[i32; 2], Vec<T>>,
 }
 
 #[derive(Debug)]
@@ -370,7 +375,7 @@ impl<T> Default for CellRosterAssembler<T> {
         Self {
             staged: std::collections::HashMap::new(),
             partial: std::collections::HashMap::new(),
-            applied: std::collections::HashMap::new(),
+            applied: std::collections::BTreeMap::new(),
         }
     }
 }

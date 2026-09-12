@@ -301,6 +301,32 @@ impl NetworkManager {
         }
     }
 
+    /// ADR-074 enm. 5 (C2) — codifica un paquete no fiable UNA vez, para mandarlo a varios
+    /// destinatarios con `send_unreliable_bytes_to`.
+    ///
+    /// Existe porque el troceo por celda manda subconjuntos distintos a cada peer: sin esto, 32
+    /// jugadores serializarían 32 veces el mismo contenido y el ahorro de cable se pagaría en CPU
+    /// del anfitrión, que es justo el recurso que ADR-140 D4 acababa de liberar.
+    pub(super) fn encode_unreliable(&self, payload: &PacketPayload) -> Vec<u8> {
+        let header = PacketHeader::new(payload.type_code(), self.local_id, 0, self.timestamp());
+        encode_packet(&header, payload)
+    }
+
+    /// Manda a UN destinatario un paquete ya codificado por `encode_unreliable`.
+    ///
+    /// Aplica la misma guarda de destino legítimo que `send_unreliable_to` — la condición vive en
+    /// `is_gameplay_destination` y ninguna superficie nueva puede heredar media (TAREA 4).
+    pub(super) async fn send_unreliable_bytes_to(&self, peer_id: PeerId, data: &[u8]) {
+        if !self.is_gameplay_destination(peer_id) {
+            self.note_illegal_destination(peer_id, "unreliable_bytes_to");
+            return;
+        }
+        if let Some(peer) = self.peers.get(&peer_id) {
+            self.send_datagram(data, peer.addr, "unreliable_bytes_to")
+                .await;
+        }
+    }
+
     /// Broadcast an unreliable packet to all connected peers.
     pub async fn broadcast_unreliable(&self, payload: &PacketPayload) {
         let header = PacketHeader::new(payload.type_code(), self.local_id, 0, self.timestamp());

@@ -193,6 +193,13 @@ pub enum NetworkEvent {
         amount: f32,
         requester_id: u16,
     },
+    /// ADR-145 D3 — un joiner pide registrar un prop de atrezo antes de golpearlo por primera
+    /// vez. Sin comprobación de alcance (no es un golpe, es un alta idempotente de posición) —
+    /// por eso no necesita `requester_id`, a diferencia de `StpHarvestHitRequest`.
+    StpRegisterHarvestableRequest {
+        id: u32,
+        position: [f32; 3],
+    },
     /// ADR-028 Fase E: a joiner's player died — it asks the host to spawn the corpse.
     CorpseSpawnRequest {
         request_id: u64,

@@ -382,23 +382,22 @@ impl NetworkManager {
                 generation,
                 page,
                 page_count,
+                cell,
             } => {
-                // Host-authoritative STP item roster: joiners mirror it verbatim so
-                // their build_world_state replicates the same items. (Phase 1.)
-                //
-                // ADR-060 (d): el reemplazo verbatim se conserva, pero solo cuando la generación
-                // está COMPLETA — una página suelta no puede sustituir al roster entero.
+                // ADR-074 fase 2: una página YA NO aplica nada. Se acumula por celda y el
+                // roster no cambia hasta que llega el cierre de la ronda, que es lo único
+                // que dice qué celdas debían venir (y por tanto cuáles están vacías).
                 if !self.accepts_authority_from(sender_id) {
                     self.note_authority_ignored(sender_id, "stp_items");
                     return None;
                 }
-                if let Some(complete) =
-                    self.roster_assemblers
-                        .items
-                        .accept(generation, page, page_count, items)
-                {
-                    self.stp_items = complete;
-                }
+                self.roster_assemblers.items.accept_page(
+                    cell,
+                    generation,
+                    page,
+                    page_count,
+                    items,
+                );
                 None
             }
 
@@ -407,21 +406,22 @@ impl NetworkManager {
                 generation,
                 page,
                 page_count,
+                cell,
             } => {
-                // Host-authoritative STP building roster: joiners mirror it verbatim so
-                // their build_world_state replicates the same pieces. (Phase B1.)
-                // ADR-060 (d): reemplazo solo con la generación completa.
+                // ADR-074 fase 2: una página YA NO aplica nada. Se acumula por celda y el
+                // roster no cambia hasta que llega el cierre de la ronda, que es lo único
+                // que dice qué celdas debían venir (y por tanto cuáles están vacías).
                 if !self.accepts_authority_from(sender_id) {
                     self.note_authority_ignored(sender_id, "stp_buildings");
                     return None;
                 }
-                if let Some(complete) =
-                    self.roster_assemblers
-                        .buildings
-                        .accept(generation, page, page_count, buildings)
-                {
-                    self.stp_buildings = complete;
-                }
+                self.roster_assemblers.buildings.accept_page(
+                    cell,
+                    generation,
+                    page,
+                    page_count,
+                    buildings,
+                );
                 None
             }
 
@@ -455,6 +455,12 @@ impl NetworkManager {
                 amount,
                 requester_id: sender_id,
             }),
+
+            // ADR-145 D3: alta idempotente, sin comprobación de alcance — mismo upsert que
+            // `set_stp_harvestables`, pero alcanzable también por un joiner.
+            PacketPayload::StpRegisterHarvestableRequest { id, position } => {
+                Some(NetworkEvent::StpRegisterHarvestableRequest { id, position })
+            }
 
             // ADR-081 llevado a la demolición: el dueño se comprueba contra la CABECERA. Por eso
             // este arm no puede vivir en la lista 1:1 de arriba — necesita `sender_id`, que el
@@ -597,21 +603,22 @@ impl NetworkManager {
                 generation,
                 page,
                 page_count,
+                cell,
             } => {
-                // Host-authoritative carryable roster: joiners mirror it verbatim. (B2.5)
-                // ADR-060 (d): reemplazo solo con la generación completa.
+                // ADR-074 fase 2: una página YA NO aplica nada. Se acumula por celda y el
+                // roster no cambia hasta que llega el cierre de la ronda, que es lo único
+                // que dice qué celdas debían venir (y por tanto cuáles están vacías).
                 if !self.accepts_authority_from(sender_id) {
                     self.note_authority_ignored(sender_id, "stp_carryables");
                     return None;
                 }
-                if let Some(complete) = self.roster_assemblers.carryables.accept(
+                self.roster_assemblers.carryables.accept_page(
+                    cell,
                     generation,
                     page,
                     page_count,
                     carryables,
-                ) {
-                    self.stp_carryables = complete;
-                }
+                );
                 None
             }
 
@@ -628,21 +635,22 @@ impl NetworkManager {
                 generation,
                 page,
                 page_count,
+                cell,
             } => {
-                // Host-authoritative harvestable health roster: joiners mirror it. (B2.6)
-                // ADR-060 (d): reemplazo solo con la generación completa.
+                // ADR-074 fase 2: una página YA NO aplica nada. Se acumula por celda y el
+                // roster no cambia hasta que llega el cierre de la ronda, que es lo único
+                // que dice qué celdas debían venir (y por tanto cuáles están vacías).
                 if !self.accepts_authority_from(sender_id) {
                     self.note_authority_ignored(sender_id, "stp_harvestables");
                     return None;
                 }
-                if let Some(complete) = self.roster_assemblers.harvestables.accept(
+                self.roster_assemblers.harvestables.accept_page(
+                    cell,
                     generation,
                     page,
                     page_count,
                     harvestables,
-                ) {
-                    self.stp_harvestables = complete;
-                }
+                );
                 None
             }
 
@@ -674,11 +682,55 @@ impl NetworkManager {
                 generation,
                 page,
                 page_count,
-            } => self
-                .roster_assemblers
-                .corpses
-                .accept(generation, page, page_count, corpses)
-                .map(|complete| NetworkEvent::CorpseListReceived { corpses: complete }),
+                cell,
+            } => {
+                // ADR-074 fase 2: igual que los otros cuatro, la página sólo se acumula. El evento
+                // sale en el cierre de la ronda (`RosterScopeEnd`), no aquí.
+                self.roster_assemblers
+                    .corpses
+                    .accept_page(cell, generation, page, page_count, corpses);
+                None
+            }
+
+            // ADR-074 fase 2 — el cierre de una ronda de roster: aquí y sólo aquí se adopta lo
+            // acumulado, con la regla de tres líneas de `accept_scope_end`.
+            PacketPayload::RosterScopeEnd {
+                kind,
+                generation,
+                cells,
+            } => {
+                if !self.accepts_authority_from(sender_id) {
+                    self.note_authority_ignored(sender_id, "roster_scope_end");
+                    return None;
+                }
+                let a = &mut self.roster_assemblers;
+                match kind {
+                    crate::network::protocol::RosterKind::ITEMS => {
+                        self.stp_items = a.items.accept_scope_end(generation, &cells);
+                        None
+                    }
+                    crate::network::protocol::RosterKind::BUILDINGS => {
+                        self.stp_buildings = a.buildings.accept_scope_end(generation, &cells);
+                        None
+                    }
+                    crate::network::protocol::RosterKind::CARRYABLES => {
+                        self.stp_carryables = a.carryables.accept_scope_end(generation, &cells);
+                        None
+                    }
+                    crate::network::protocol::RosterKind::HARVESTABLES => {
+                        self.stp_harvestables = a.harvestables.accept_scope_end(generation, &cells);
+                        None
+                    }
+                    crate::network::protocol::RosterKind::CORPSES => {
+                        Some(NetworkEvent::CorpseListReceived {
+                            corpses: a.corpses.accept_scope_end(generation, &cells),
+                        })
+                    }
+                    // Un `kind` desconocido se ignora en vez de romper: un peer más nuevo puede
+                    // mandar un sexto roster, y perder su cierre sólo cuesta no adoptarlo.
+                    _ => None,
+                }
+            }
 
         }
         [
@@ -1793,6 +1845,25 @@ mod authority_tests {
                 generation: 1,
                 page: 0,
                 page_count: 1,
+                cell: [0, 0],
+            },
+        }
+    }
+
+    /// ADR-074 fase 2: una página ya no aplica nada por sí sola — hace falta el cierre de la
+    /// ronda, que es lo que dice qué celdas debían venir. Los tests de autoridad mandan los dos.
+    fn roster_scope_end(
+        sender_id: u16,
+        addr: SocketAddr,
+        kind: crate::network::protocol::RosterKind,
+    ) -> IncomingPacket {
+        IncomingPacket {
+            addr,
+            header: PacketHeader::new(PacketType::RosterScopeEnd as u16, sender_id, 0, 0),
+            payload: PacketPayload::RosterScopeEnd {
+                kind,
+                generation: 1,
+                cells: vec![[0, 0]],
             },
         }
     }
@@ -1806,6 +1877,7 @@ mod authority_tests {
                 generation: 1,
                 page: 0,
                 page_count: 1,
+                cell: [0, 0],
             },
         }
     }
@@ -1855,6 +1927,13 @@ mod authority_tests {
         joiner
             .handle_packet(empty_harvestable_roster(9, host_addr))
             .await;
+        joiner
+            .handle_packet(roster_scope_end(
+                9,
+                host_addr,
+                crate::network::protocol::RosterKind::HARVESTABLES,
+            ))
+            .await;
         assert_eq!(
             joiner.stp_harvestables.len(),
             1,
@@ -1864,6 +1943,13 @@ mod authority_tests {
         // De su host: se aplica, como siempre.
         joiner
             .handle_packet(empty_harvestable_roster(1, host_addr))
+            .await;
+        joiner
+            .handle_packet(roster_scope_end(
+                1,
+                host_addr,
+                crate::network::protocol::RosterKind::HARVESTABLES,
+            ))
             .await;
         assert!(
             joiner.stp_harvestables.is_empty(),
@@ -1883,6 +1969,13 @@ mod authority_tests {
 
         joiner
             .handle_packet(empty_harvestable_roster(1, host_addr))
+            .await;
+        joiner
+            .handle_packet(roster_scope_end(
+                1,
+                host_addr,
+                crate::network::protocol::RosterKind::HARVESTABLES,
+            ))
             .await;
         assert!(
             joiner.stp_harvestables.is_empty(),

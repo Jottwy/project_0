@@ -5178,6 +5178,7 @@ fn a_full_inventory_corpse_survives_the_roster_without_losing_loot() {
             generation: 1,
             page: 0,
             page_count: 1,
+            cell: [0, 0],
         };
         let header = protocol::PacketHeader::new(payload.type_code(), 1, 0, 0);
         let bytes = protocol::encode_packet(&header, &payload).len();
@@ -6211,7 +6212,11 @@ async fn thin_poses_keep_the_last_full_cosmetics_over_real_sockets() {
     // Ronda 0: par nuevo → completa.
     round(&mut host).await;
     let got = drain_cosmetics_from(&mut a, 3002).await;
-    assert_eq!(got, vec![(777, [11, 22, 33, 44])], "la primera pose lleva los cosméticos");
+    assert_eq!(
+        got,
+        vec![(777, [11, 22, 33, 44])],
+        "la primera pose lleva los cosméticos"
+    );
     let (hash0, sent0) = mark(&host).expect("el par tiene marca tras la primera completa");
 
     // Rondas 1 y 2: delgadas (la marca no se mueve) y A sigue viendo los cosméticos, porque los
@@ -6219,15 +6224,27 @@ async fn thin_poses_keep_the_last_full_cosmetics_over_real_sockets() {
     for _ in 0..2 {
         round(&mut host).await;
         let got = drain_cosmetics_from(&mut a, 3002).await;
-        assert_eq!(got, vec![(777, [11, 22, 33, 44])], "una delgada conserva los cosméticos");
-        assert_eq!(mark(&host), Some((hash0, sent0)), "sin cambios, la marca no se toca: fue delgada");
+        assert_eq!(
+            got,
+            vec![(777, [11, 22, 33, 44])],
+            "una delgada conserva los cosméticos"
+        );
+        assert_eq!(
+            mark(&host),
+            Some((hash0, sent0)),
+            "sin cambios, la marca no se toca: fue delgada"
+        );
     }
 
     // Cambio: la siguiente ronda lleva los nuevos y la marca avanza.
     host.peers.get_mut(&3002).unwrap().held_item = 778;
     round(&mut host).await;
     let got = drain_cosmetics_from(&mut a, 3002).await;
-    assert_eq!(got, vec![(778, [11, 22, 33, 44])], "un cambio viaja en la misma ronda");
+    assert_eq!(
+        got,
+        vec![(778, [11, 22, 33, 44])],
+        "un cambio viaja en la misma ronda"
+    );
     let (hash1, sent1) = mark(&host).unwrap();
     assert_ne!(hash1, hash0);
     assert!(sent1 > sent0);
@@ -6238,5 +6255,109 @@ async fn thin_poses_keep_the_last_full_cosmetics_over_real_sockets() {
     drain_cosmetics_from(&mut a, 3002).await;
     let (hash2, sent2) = mark(&host).unwrap();
     assert_eq!(hash2, hash1, "mismos cosméticos");
-    assert_eq!(sent2, sent1 + POSE_COSMETICS_REPAIR_ROUNDS, "la reparación reenvía la completa");
+    assert_eq!(
+        sent2,
+        sent1 + POSE_COSMETICS_REPAIR_ROUNDS,
+        "la reparación reenvía la completa"
+    );
+}
+
+/// **ADR-074 fase 2 por sockets reales**: el roster llega troceado por celda y el joiner sólo lo
+/// adopta al llegar el CIERRE de la ronda. Y el invariante que una corrección del 2026-08-15 dejó
+/// escrito: si el gate de ADR-071 corta la ronda, no sale nada — ni páginas ni cierre—, porque un
+/// cierre suelto vaciaría en el cliente las celdas que sólo estaban calladas.
+#[tokio::test]
+async fn a_roster_is_adopted_on_the_scope_end_and_a_gated_round_sends_nothing() {
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let host_addr = loopback_addr(&host);
+    let mut joiner = NetworkManager::bind(0, 3001, 0, false).await.unwrap();
+    joiner.initiate_connection(host_addr).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    host.process_incoming().await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    joiner.process_incoming().await;
+    assert_eq!(host.peers.len(), 1, "setup: el joiner conectado");
+
+    // Dos objetos en celdas MUY separadas: obliga a más de una celda y a que el cierre las lleve
+    // las dos. Sin el cierre, ninguna se aplicaría.
+    host.stp_items = vec![
+        crate::network::protocol::StpItemInfo {
+            id: 1,
+            def_id: 10,
+            count: 1,
+            position: [5.0, 1.0, 5.0],
+            rotation: 0.0,
+            settling: false,
+        },
+        crate::network::protocol::StpItemInfo {
+            id: 2,
+            def_id: 11,
+            count: 3,
+            position: [500.0, 1.0, -500.0],
+            rotation: 90.0,
+            settling: false,
+        },
+    ];
+
+    crate::network::sync::broadcast_stp_items(&mut host).await;
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    joiner.process_incoming().await;
+    let mut got: Vec<u32> = joiner.stp_items.iter().map(|i| i.id).collect();
+    got.sort_unstable();
+    assert_eq!(
+        got,
+        vec![1, 2],
+        "las dos celdas se adoptan en el cierre de la ronda"
+    );
+
+    // Segunda ronda SIN cambios: el gate corta y no sale absolutamente nada. Si saliera un cierre
+    // sin páginas, el joiner vaciaría sus celdas y `stp_items` quedaría vacío — que es justo el bug.
+    //
+    // Hace falta agotar antes la ventana de recién llegado (ADR-141): mientras el joiner esté en
+    // `pending_full_sync` la ronda sale IGUAL aunque el gate esté cerrado, que es lo que esa
+    // decisión promete y no lo que este test mide.
+    while !crate::network::sync::newcomers(&host).is_empty() {
+        crate::network::sync::tick_pending_full_sync(&mut host);
+    }
+    // Y agotar la ráfaga de ADR-071 (`ROSTER_CHANGE_BURST`), que manda unas rondas más tras cada
+    // cambio: hasta que se acaba, el gate sigue abierto a propósito.
+    let mut quiet = 0;
+    for _ in 0..10 {
+        let mark = crate::network::send::sent_bytes_total();
+        crate::network::sync::broadcast_stp_items(&mut host).await;
+        if crate::network::send::sent_bytes_total() == mark {
+            quiet += 1;
+            break;
+        }
+    }
+    assert_eq!(
+        quiet, 1,
+        "la ráfaga tiene que agotarse en menos de diez rondas"
+    );
+    let before = crate::network::send::sent_bytes_total();
+    crate::network::sync::broadcast_stp_items(&mut host).await;
+    assert_eq!(
+        crate::network::send::sent_bytes_total(),
+        before,
+        "ronda cortada por el gate: ni una página ni un cierre"
+    );
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    joiner.process_incoming().await;
+    assert_eq!(
+        joiner.stp_items.len(),
+        2,
+        "y el joiner conserva lo que tenía"
+    );
+
+    // Un cambio vuelve a abrir la puerta, y el objeto retirado desaparece del joiner.
+    host.stp_items.remove(1);
+    crate::network::sync::broadcast_stp_items(&mut host).await;
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    joiner.process_incoming().await;
+    let got: Vec<u32> = joiner.stp_items.iter().map(|i| i.id).collect();
+    assert_eq!(
+        got,
+        vec![1],
+        "la celda que se quedó sin contenido se vacía en el cierre"
+    );
 }

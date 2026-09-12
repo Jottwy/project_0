@@ -347,6 +347,52 @@ async fn pose_cadence_curve_by_spread() {
     }
 }
 
+/// **ADR-074 fase 2 — lo que cuesta un roster según DÓNDE está la gente.** Los jugadores se
+/// reparten por la MISMA superficie donde está el botín (`fill_stp_rosters` siembra ~200 × 80 m),
+/// que es el caso honesto: con los peers sintéticos a 250 m de todo, el scope no encontraría nada
+/// y el número saldría precioso y falso.
+///
+/// Mide UNA ronda emitida (la primera tras sembrar, con el gate abierto), que es lo que el troceo
+/// por celda cambia; las rondas que el gate corta cuestan cero con scope y sin él.
+#[tokio::test]
+#[ignore = "arnés de carga"]
+async fn roster_cost_by_where_people_are() {
+    println!(
+        "
+=== ADR-074 fase 2 — coste de una ronda de roster con la gente DENTRO del mundo ===
+"
+    );
+    for (items, buildings) in [(300usize, 150usize), (1000, 400)] {
+        for count in [8usize, 16, 32] {
+            let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+            register_synthetic_peers(&mut host, count, Spread::SameRoom);
+            fill_stp_rosters(&mut host, items, buildings);
+            // Repartidos por el rectángulo del botín, en espiral de Vogel (determinista).
+            let ids: Vec<PeerId> = host.peers.keys().copied().collect();
+            for (i, id) in ids.into_iter().enumerate() {
+                let k = i as f32 + 0.5;
+                let a = k * 2.399_963;
+                if let Some(p) = host.peers.get_mut(&id) {
+                    p.position = [
+                        100.0 + a.cos() * 100.0 * (k / count as f32).sqrt(),
+                        1.8,
+                        40.0 + a.sin() * 40.0 * (k / count as f32).sqrt(),
+                    ];
+                }
+            }
+            let before = super::send::sent_bytes_total();
+            super::sync::broadcast_stp_items(&mut host).await;
+            super::sync::broadcast_stp_buildings(&mut host).await;
+            let kb = (super::send::sent_bytes_total() - before) as f64 / 1024.0;
+            println!(
+                "  {items:>4} objetos + {buildings:>3} piezas  N={count:>3}  ->  {kb:>7.1} KB en UNA ronda  ({:.1} KB por jugador)",
+                kb / count as f64
+            );
+        }
+        println!();
+    }
+}
+
 /// **Dónde se van los milisegundos**, fase por fase. Sin esto, optimizar es adivinar — y en esta
 /// tanda adivinar ya falló tres veces.
 #[tokio::test]

@@ -2966,6 +2966,13 @@ pub async fn run(
                     );
                 }
                 sync::broadcast_stp_harvestables(&mut net).await;
+                // ADR-145 D7 — la bolsa: barrido por tiempo, ANTES del reparto de cofres (igual
+                // que el regen de harvestables arriba), para que un cofre vencido desaparezca en
+                // la misma ronda.
+                let bags_expired = sweep_expired_bags(&mut net, &mut world);
+                if bags_expired > 0 {
+                    info!("MPTRACE step=BAG event=bags_swept count={bags_expired}");
+                }
                 // ADR-115 — el saqueo, en el mismo sitio y por el mismo motivo que la línea de
                 // arriba: por barrido del roster, no en el camino de la toma. Dos pasos:
                 //   1. Un cofre que ya no está es un cofre que alguien vació (el mapa de
@@ -4028,6 +4035,15 @@ async fn handle_network_event(
                     requester_pos,
                     net,
                 );
+            }
+        }
+
+        // ADR-145 D3: alta idempotente forwardeada por un joiner, sin comprobación de alcance
+        // (no muta salud, sólo abre la entrada para que el `stp_harvest_hit` que la sigue no
+        // caiga en `stp_harvest_hit_no_target`).
+        NetworkEvent::StpRegisterHarvestableRequest { id, position } => {
+            if net.is_host {
+                register_stp_harvestable(net, id, position);
             }
         }
 
@@ -5410,7 +5426,7 @@ async fn handle_action(
                     // Un crafteo del cliente produce `recipe.amount` unidades por ejecución; el
                     // `amount` reportado se acepta sólo si es ese (o un múltiplo exacto, por si
                     // un cliente agrupa): lo demás es forma inválida, no una receta distinta.
-                    Some(recipe) if amount % recipe.amount != 0 => info!(
+                    Some(recipe) if !amount.is_multiple_of(recipe.amount) => info!(
                         "MPTRACE step=CRAFT event=craft_rejected reason=bad_amount item_id={} amount={} per_craft={}",
                         item_id, amount, recipe.amount
                     ),
@@ -5447,6 +5463,35 @@ async fn handle_action(
                         }
                     }
                 }
+            }
+        }
+        // ADR-145 D7 — el host, tras ver que el desmontaje de un Cabinet/Shelf/Fridge/Rack
+        // agotó su `remaining` (D5), pide poner reloj al cofre de D6 SI sigue existiendo y NO
+        // está vacío. Host-only: un joiner no decide despawns. Sin `corpse_id` no hay nada que
+        // expirar; un `corpse_id` que ya no existe (lo vaciaron antes) o ya está vacío no hace
+        // nada — el despawn-on-empty normal ya se encargó.
+        "expire_stp_chest" => {
+            if !net.is_host {
+                return;
+            }
+            let corpse_id = json_u64(&action.data, "corpse_id").unwrap_or(0) as u32;
+            let seconds = action
+                .data
+                .get("seconds")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0)
+                .max(0.0);
+            let has_loot = world
+                .corpses
+                .get(&corpse_id)
+                .map(|c| !crate::world::corpse::corpse_loot_is_empty(&c.items))
+                .unwrap_or(false);
+            if has_loot {
+                net.bag_expires_at.insert(
+                    corpse_id,
+                    std::time::Instant::now() + std::time::Duration::from_secs_f64(seconds),
+                );
+                info!("MPTRACE step=BAG event=bag_armed corpse_id={corpse_id} seconds={seconds}");
             }
         }
         // ADR-025 respawn-on-demand: the client's native Respawn button asks the server to
@@ -6382,19 +6427,8 @@ async fn handle_action(
             let received = specs.len();
             let mut added = 0;
             for s in specs {
-                match net.stp_harvestables.iter_mut().find(|h| h.id == s.id) {
-                    // Ya lo conocíamos: la posición se refresca (el sembrador la resuelve con un
-                    // rayo y puede afinarla), pero la salud NO se toca.
-                    Some(existing) => existing.position = s.position,
-                    None => {
-                        net.stp_harvestables
-                            .push(crate::network::protocol::StpHarvestableInfo {
-                                id: s.id,
-                                position: s.position,
-                                remaining: 1.0,
-                            });
-                        added += 1;
-                    }
+                if register_stp_harvestable(net, s.id, s.position) {
+                    added += 1;
                 }
             }
             info!(
@@ -6404,6 +6438,30 @@ async fn handle_action(
                 added,
                 net.stp_harvestables.len()
             );
+        }
+        // ADR-145 D3 — registro DIFERIDO: un prop de atrezo (Wg3Prop) no entra en
+        // `net.stp_harvestables` al instanciarse, sólo la primera vez que alguien lo golpea. El
+        // cliente que golpea (host o joiner) manda ESTA acción justo antes de `stp_harvest_hit`,
+        // con la posición que ya conoce del mensaje de atrezo (`Wg3PropMsg`, determinista sobre
+        // `world_seed`) — mismo upsert idempotente que `set_stp_harvestables`, así que mandarla en
+        // cada golpe (no sólo el primero) es gratis: «ya lo conocíamos» no toca `remaining`.
+        // Mismo patrón host/joiner que `stp_harvest_hit`: el host aplica, el joiner reenvía P2P.
+        "register_prop_harvestable" => {
+            let id = json_u64(&action.data, "id").unwrap_or(0) as u32;
+            let position = json_vec3(&action.data, "position").unwrap_or([0.0, 0.0, 0.0]);
+            if id == 0 {
+                return;
+            }
+            if net.is_host {
+                register_stp_harvestable(net, id, position);
+            } else {
+                let payload =
+                    crate::network::protocol::PacketPayload::StpRegisterHarvestableRequest {
+                        id,
+                        position,
+                    };
+                net.send_reliable(1, &payload).await;
+            }
         }
         // Phase B2.6: a client reports a harvest hit. Host-authoritative: the host reduces the
         // harvestable's `remaining` and the relay propagates it. A joiner forwards to the host.
@@ -8101,6 +8159,52 @@ async fn process_stp_carryable_pickup(
         // F0.3: veredicto — sin él, el carryable queda reservado en el host y ausente del cliente.
         net.send_verdict(requester_id, &payload).await;
     }
+}
+
+/// Upsert compartido de `set_stp_harvestables` (ADR-114 D2) y `register_prop_harvestable`
+/// (ADR-145 D3): un id ya conocido sólo refresca su posición (la salud NUNCA se toca aquí —
+/// volver a registrar un mueble ya golpeado no debe devolverlo entero); un id nuevo entra con
+/// `remaining: 1.0`. Devuelve `true` si insertó una entrada nueva.
+fn register_stp_harvestable(net: &mut NetworkManager, id: u32, position: [f32; 3]) -> bool {
+    match net.stp_harvestables.iter_mut().find(|h| h.id == id) {
+        Some(existing) => {
+            existing.position = position;
+            false
+        }
+        None => {
+            net.stp_harvestables
+                .push(crate::network::protocol::StpHarvestableInfo {
+                    id,
+                    position,
+                    remaining: 1.0,
+                });
+            true
+        }
+    }
+}
+
+/// ADR-145 D7 — retira de `world.corpses` cualquier bolsa cuyo reloj (`net.bag_expires_at`) haya
+/// vencido, TENGA O NO loot todavía dentro. A diferencia del despawn-on-empty normal (que sólo
+/// corre tras un `take` y nunca mira el reloj), éste es el único camino que borra un cofre con
+/// contenido — y sólo alcanza a los que llevan reloj puesto (D6/D7 los arma explícitamente vía
+/// `expire_stp_chest`; un cofre de mundo normal nunca entra en `bag_expires_at`). Devuelve
+/// cuántas bolsas retiró.
+fn sweep_expired_bags(net: &mut NetworkManager, world: &mut World) -> usize {
+    if net.bag_expires_at.is_empty() {
+        return 0;
+    }
+    let now = std::time::Instant::now();
+    let expired: Vec<u32> = net
+        .bag_expires_at
+        .iter()
+        .filter(|(_, at)| now >= **at)
+        .map(|(id, _)| *id)
+        .collect();
+    for id in &expired {
+        net.bag_expires_at.remove(id);
+        world.corpses.remove(id);
+    }
+    expired.len()
 }
 
 /// Phase B2.6: host reduces a scene harvestable's authoritative `remaining` by `amount`.
