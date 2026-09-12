@@ -623,12 +623,17 @@ namespace BackroomsSurvival.WorldGen3
                     if (wantsShadow && !shadowTaken)
                     {
                         shadowTaken = true;
-                        light.shadows = LightShadows.Soft;
                         // Sin bajar la fuerza, el contacto sale negro: la escena tiene ambiente
                         // cálido y una sola puntual sin rebote, así que la sombra dura se lee como
-                        // agujero. Tres cuartos deja el volumen y no mata la lectura.
+                        // agujero. Tres cuartos deja el volumen y no mata la lectura. Se fija
+                        // AUNQUE el presupuesto (R4) la deje en None por ahora: Unity ignora estos
+                        // dos campos sin sombra, y quedan listos para cuando el jugador se acerque
+                        // y Wg3ShadowBudget se la reclame a otra más lejana.
                         light.shadowStrength = 0.72f;
                         light.shadowNearPlane = 0.3f;
+                        // R4 — la candidata de ESTE tramo entra a competir por el tope GLOBAL de
+                        // sombras del mundo cargado; no se enciende aquí directamente.
+                        Wg3ShadowBudget.Register(light);
                     }
                     else
                     {
