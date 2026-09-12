@@ -17143,5 +17143,33 @@ durabilidad; el `recipes.rs` viejo (ni se borra ni se usa: borrarlo es limpieza 
    receta, JSON regenerado ≡ commiteado). Fila 8 de `vendor-patches.md`.
 3. Test de cargo que lee el JSON; `DECISIONS-INDEX.md` regenerado.
 
+### ENMIENDA DE ESTADO (2026-09-12, mismas horas) — la enmienda 1 pasa a APROBADA e IMPLEMENTADA
+
+Joel: «Apruebo tal cual». Aterrizada en `18867acd` (Rust: `crafting::spec`, brazo `craft_item`,
+oráculo `docs/data/crafting-recipes.json`) y `531ad943` (Unity: `NetworkedCraftingManager`,
+`CraftingReporter`, `SendCraftItem`, receta de la venda, menú `Backrooms/Create Craft Assets`,
+fila 8 de `vendor-patches.md`). Dos correcciones de hecho que la implementación destapó, sin cambiar
+ninguna decisión:
+
+1. **«21 recetas vendor vivas» eran 21 `CraftingData`, pero sólo 11 craftables**: las 10 prendas y
+   el garrote llevan `_craftAmount 0` (sólo desmontaje) y `CraftingUI` no las lista. El oráculo y la
+   tabla Rust llevan las 11 + la venda = **12**, que es lo que `IsCraftable` dice.
+2. **El swap de E1.5 no puede ir por `SaveAsPrefabAsset`**: `STP_Player.prefab` arrastra un script
+   perdido del vendor (guid `13af2440cac04114f9ba2fa04afa800b`, preexistente, fuera de alcance) y
+   Unity se niega a guardar un prefab con «missing script». La primera pasada imprimió «sustituido»
+   sin escribir nada. Se hace por cambio de GUID en el texto del prefab (un renglón), leyendo los
+   GUID de los `.meta`; las dos clases serializan los mismos campos, así que el `_craftAudio` se
+   conserva sin copiarlo. Un test lo afirma sobre el prefab guardado, no sobre el log.
+3. **`craft_item` lleva un tercer campo, `kept`** (auditoría del cierre): con la bolsa llena STP
+   suelta el sobrante al mundo, y sumar `amount` entero al espejo habría inflado justo el save que
+   E1.3 protege. El servidor descuenta ingredientes por `amount` y suma sólo `kept` (0..=amount;
+   ausente = todo se quedó, por compatibilidad). Un `amount` fuera de 1..=65 535 o un `kept` fuera
+   de rango se rechaza con traza `bad_amount`, nunca se reinterpreta.
+
+Verificación: `cargo test` 1 502/0; Unity EditMode headless 32/32 en las suites tocadas
+(`CraftAssetsTests` 5/5); `CheckRegressionChecklist.ps1` casilla 8 en verde; `Builds/Backend`
+desplegado con `craft_item` dentro. **Sin ver en Play**: nadie ha crafteado una venda con el backend
+mirando — es la misma deuda que la linterna y la venda ya arrastran en `STATE.md`.
+
 ---
 

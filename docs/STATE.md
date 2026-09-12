@@ -25,7 +25,11 @@
 - **Migración STP servidor-autoritativo**: Steps 1–2 y slice 3.1 (plumbing) hechos y verificados. Falta slice 3.2
   (capa L2 de predicción), reescribir los 8 call sites de `Inventory` y retirar `PlayerController.cs` (DEPRECATED por ADR-009).
 - ADR-014 fase 2 (borrado diferido 200 ms + reserva host-only anti-duplicado): backend implementado, **pendiente de playtest**. Sin ver en Play:
-  linterna (ADR-133) y venda (`bb9e3cc1`).
+  linterna (ADR-133, ya sale de cofres `2d1b0118`), venda (`bb9e3cc1`) y su crafteo (`531ad943`).
+- **Loot de oficinas, plan aprobado por Joel el 12-09, SIN ADR todavía (será ADR-145)**: los 20 kinds de atrezo de ADR-129 desmontables (retira
+  ADR-114 D10), Shelf/Rack/Cabinet/Box/Fridge también contenedores (rompe D9) y al agotarlos el loot cae en UNA bolsa con caducidad de 10 min
+  (wire nuevo), plancha de madera carriable conviviendo con el item, y el roster de harvestables sólo con props TOCADOS (enmienda D3). Gate de
+  escasez del suelo INTACTO por decisión de Joel; cero materiales nuevos.
 
 ## Riesgos abiertos
 - **Autoridad del servidor: los tres agujeros CERRADOS** (`78e156e6` dueño al demoler; `ebb42911`/`bb3c7e5c` cantidad y posición contra el
@@ -34,7 +38,8 @@
   contraste; igual el hash de `ChunkLootRoll` y los goldens de `scale`/`density`. Un oráculo JSON común es una sesión: **B5**.
 - **Steam (ADR-135 enm. 2) VERIFICADO el 09-09 con redes y cuentas distintas: el criterio físico ya se cumple.** Sin probar el relay propio
   (ADR-117 sin VPS), que ya NO bloquea Alpha 1. **`invited_by` sin prueba** (ADR-136 enm. 1 (a)): cualquiera nace a 2 m de una identidad viva.
-- **Crafteo P1 sin cerrar**: las recetas consumen un enum Rust de 9 variantes abstractas, no items (ADR-064). Sin esto, minar no sirve.
+- **Crafteo P1 CERRADO en código (ADR-064 enm. 1, 12-09)**: `craft_item` valida contra `stp_inventory` y muta el espejo; 12 recetas (11 vendor +
+  venda = 2 Cloth) con oráculo `docs/data/crafting-recipes.json`. **Sin ver en Play.** El gate de escasez sigue: la tela hoy sólo cae de sillas (ADR-114).
 - **ADR-009 L2 a medias**: `MovementReconciler` sigue borrado, pero **NO era la causa del lag** (RTT real 24 ms, movimiento client-authoritative).
   Lo vivo de ese hueco: salud al borde de la muerte y respawn invisible. **LOD de entidades DESCARTADO con medida**: 0,2 % del tick (10-09).
 - **Dos mundos de colisión** (histórico): el backend colisiona contra su generador y el cliente contra lo que streamea. Con WG3 hay que remedirlo.
@@ -94,6 +99,14 @@
   STP; `TODO(balance)` de loot; doc-comments stale; el agarre TOCA pero no RODEA (el bote cuelga de la tapa) y el pulgar entra 12,8 mm sin puerta.
 
 ## Últimas tandas
+
+### 2026-09-12 — 52.ª tanda: la linterna sale de los cofres y el crafteo deja de ser mudo para el servidor (ADR-064 enm. 1)
+- **Linterna** (`2d1b0118`): no era bug, era `RestrictCacheCatalog`; entra en la pool de cofres junto al destornillador (~1/15), gate intacto.
+- **ADR-064 enm. 1** (`122140bf`): el menú de crafteo YA existía y crafteaba client-local (11 recetas vendor); la puerta es `craft_item`
+  fire-and-forget, servidor valida y MUTA `stp_inventory` (el save es correcto antes del `report_inventory`), sin wire. Rust `18867acd`, Unity `531ad943`.
+- **Dos trampas medidas**: `Character` mapea componentes con `baseType.Assembly.GetTypes()` (un `ICraftingManagerCC` fuera del ensamblado vendor
+  revienta) → fichero AÑADIDO en territorio vendor, fila 8; y `SaveAsPrefabAsset` se niega en `STP_Player.prefab` (script perdido `13af2440…`
+  preexistente) → swap por GUID en el texto. Primer espejo C#↔Rust con oráculo JSON común (patrón para B5). `cargo test` 1 502/0, EditMode 32/32.
 
 ### 2026-09-12 — 51.ª tanda: el relay deja de ser cuadrático, y la animación deja de ser texto (wire 64)
 - **Índice espacial** (`7972d207`): el bucle de pares era O(N²) aunque el radio rechazara a todos — preguntar cuesta igual que aceptar. Casillas
