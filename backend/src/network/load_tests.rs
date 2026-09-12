@@ -169,6 +169,45 @@ fn step_all_peers(net: &mut NetworkManager, tick: usize) {
     }
 }
 
+/// ADR-146 — cómo se mueven los peers sintéticos en `tramo_gate_by_motion`.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Motion {
+    /// `step_all_peers`: un vaivén de 30 cm por ronda que cambia de rumbo cada ronda. Es lo
+    /// contrario de previsible, el peor caso del gate de tramos.
+    Jitter,
+    /// Pasillo: tramos rectos de 1,3 a 2,3 s a paso de criatura (3 m/s) o de carrera (5,5 m/s),
+    /// giros de 90° y una parada de cada cuatro tramos. Lo que el gate existe para ahorrar.
+    Corridor,
+}
+
+/// Una ronda del relay en segundos, para integrar el movimiento de pasillo.
+const ROUND_S: f32 = 1.0 / 30.0;
+
+/// Avanza a cada peer un paso de pasillo. Todo sale del `id` y del `tick`, NUNCA del orden de
+/// `net.peers` (un `HashMap`): así dos corridas del mismo arnés mueven a la gente igual.
+fn corridor_step(net: &mut NetworkManager, tick: usize) {
+    let ids: Vec<PeerId> = net.peers.keys().copied().collect();
+    for id in ids {
+        let i = id as usize;
+        let seg_len = 40 + (i * 7) % 30;
+        let seg = (tick + i * 13) / seg_len;
+        let speed = if seg % 4 == 3 {
+            0.0
+        } else if i.is_multiple_of(2) {
+            3.0
+        } else {
+            5.5
+        };
+        let heading = ((seg % 4) as f32 + (i % 4) as f32) * 90.0;
+        let (dx, dz) = (heading.to_radians().cos(), heading.to_radians().sin());
+        if let Some(p) = net.peers.get_mut(&id) {
+            p.position[0] += dx * speed * ROUND_S;
+            p.position[2] += dz * speed * ROUND_S;
+            p.rotation = heading % 360.0;
+        }
+    }
+}
+
 /// Llena los rosters de STP como una partida avanzada: objetos por el suelo y una base construida.
 ///
 /// Son las dos cosas que más crecen con el tiempo de juego y que un playtest de diez minutos nunca
@@ -342,6 +381,63 @@ async fn pose_cadence_curve_by_spread() {
                 "  {spread:?}  N={count:>3}  ->  {kb:>8.1} KB/s   {:.1} Hz medio por par",
                 poses_sent as f64 / pairs
             );
+        }
+        println!();
+    }
+}
+
+/// **ADR-146 — el gate de tramos, apagado y encendido, según cómo se mueve la gente.** Mismo host,
+/// mismos peers y mismo reloj sintético (33 ms por ronda, `broadcast_peer_poses_at`) con el gate
+/// apagado y encendido; lo único que cambia es `tramo_gate_enabled`. Dos movimientos: el vaivén de
+/// siempre (peor caso, nada es previsible) y el de pasillo (lo que el gate existe para ahorrar).
+///
+/// Con reloj sintético porque la estimación de velocidad y la reparación son por TIEMPO, y este
+/// arnés recorre sus rondas en milisegundos: con el reloj real toda velocidad saldría disparada y
+/// se mediría un gate que nunca omite. La misma trampa que la de los rosters, más arriba.
+///
+/// Esto NO decide el encendido (ADR-146 D6): lo decide la partida de 16 instancias con el error
+/// por humanos y criaturas. Esto dice cuánto hay en juego y si el vaivén sale más caro que hoy.
+///
+/// Correr SOLO, filtrado: el contador de bytes es global y otros tests en paralelo lo ensucian.
+/// `cargo test --bin backrooms_server tramo_gate_by_motion -- --ignored --nocapture`
+#[tokio::test]
+#[ignore = "arnés de carga"]
+async fn tramo_gate_by_motion() {
+    const ROUNDS: u32 = 90;
+    println!(
+        "
+=== ADR-146 — gate de tramos: KB/s apagado y encendido (3 s, 90 rondas, reloj sintético) ===
+"
+    );
+    for spread in [Spread::SameRoom, Spread::Hall { radius_m: 100.0 }] {
+        for motion in [Motion::Jitter, Motion::Corridor] {
+            for count in [16usize, 32] {
+                let mut kb = [0.0f64; 2];
+                for (k, gate) in [false, true].into_iter().enumerate() {
+                    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+                    register_synthetic_peers(&mut host, count, spread);
+                    host.tramo_gate_enabled = gate;
+                    let t0 = std::time::Instant::now();
+                    let before = super::send::sent_bytes_total();
+                    for tick in 0..ROUNDS {
+                        match motion {
+                            Motion::Jitter => step_all_peers(&mut host, tick as usize),
+                            Motion::Corridor => corridor_step(&mut host, tick as usize),
+                        }
+                        let now = t0 + std::time::Duration::from_millis(33) * tick;
+                        super::sync::broadcast_peer_poses_at(&mut host, None, now).await;
+                    }
+                    let bytes = super::send::sent_bytes_total() - before;
+                    kb[k] = bytes as f64 / 1024.0 * 30.0 / ROUNDS as f64;
+                }
+                println!(
+                    "  {spread:?} {motion:?} N={count:>3}  ->  apagado {:>7.1} KB/s   \
+                     encendido {:>7.1} KB/s   ({:+.0} %)",
+                    kb[0],
+                    kb[1],
+                    100.0 * (kb[1] - kb[0]) / kb[0]
+                );
+            }
         }
         println!();
     }
