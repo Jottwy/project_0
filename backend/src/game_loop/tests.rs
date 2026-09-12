@@ -2648,6 +2648,30 @@ async fn a_failed_ambush_returns_to_stalk_without_revealing() {
 }
 
 #[tokio::test]
+async fn an_ambush_does_not_connect_across_a_vertical_gap_even_with_a_clear_line() {
+    // 2026-09-12 — mismo fallo que en SPRINT (ver `a_vertical_gap_beyond_reach_does_not_strike_
+    // even_with_a_clear_line`), pero por el otro camino de ataque: la emboscada también gateaba
+    // en `dist` (XZ) en vez de en la distancia 3D real.
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let start = [0.0, 1.8, 0.0];
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
+    let mut driver = PhantomDriver::new(42);
+    driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+    driver.movers[0].state = PhantomState::Ambush;
+    driver.wg3 = Some(crate::world::wg3::collision::Wg3CollisionCache::new());
+    let at = Vec3::from_array(net.peers[&pid].position);
+    let player = Vec3::new(at.x, at.y + 5.0, at.z); // XZ cero, 5 m por encima en REAL
+
+    driver.step(&mut net, 0.1, player, 0.0, false, false, 0, false, 0);
+
+    assert_eq!(
+        driver.attacks.len(),
+        0,
+        "una emboscada no puede conectar con un objetivo a 5 m de distancia vertical real"
+    );
+}
+
+#[tokio::test]
 async fn ambush_is_once_per_hunt_and_cooldown_gated() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
@@ -3173,6 +3197,41 @@ async fn extra_reach_never_strikes_through_a_wall() {
     assert!(
         attacks.is_empty(),
         "reach must not pass through a built wall, got {attacks:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_vertical_gap_beyond_reach_does_not_strike_even_with_a_clear_line() {
+    // 2026-09-12 — Joel: entidades atacan a través de un techo/suelo cuando el jugador está a
+    // otra altura (un hueco de escalera real deja la línea de visión despejada entre plantas).
+    // `dist` en la comprobación de alcance era la XZ de `choose_target`: de pie justo debajo o
+    // encima de la lámpara, un objetivo a metros de distancia REAL contaba como "en alcance".
+    //
+    // `Wg3CollisionCache::new()` sin `prewarm_for_move` no tiene NINGÚN ráster cacheado
+    // (`raster_for` da `None` en cualquier punto), así que `line_of_sight` no encuentra nada
+    // sólido a lo largo del rayo y siempre lo da por despejado — la MISMA condición que un hueco
+    // de escalera real, aislada de la generación procedural para que este test no dependa de
+    // dónde caiga un tramo concreto en el mundo de la semilla 42.
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let start = [0.0, 1.8, 0.0];
+    let pid = net.spawn_phantom("Robapieles_Test", start, None);
+    let mut driver = PhantomDriver::new(42);
+    driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+    driver.movers[0].state = PhantomState::Sprint;
+    driver.wg3 = Some(crate::world::wg3::collision::Wg3CollisionCache::new());
+    let here = Vec3::from_array(net.peers[&pid].position);
+
+    // Misma X, Z que el robapieles — distancia HORIZONTAL cero, lo que la marca como el objetivo
+    // más cercano posible para `choose_target` — pero 5 m por encima: muy por delante de
+    // PHANTOM_ATTACK_REACH (2,4 m) en distancia REAL, aunque la XZ diga "aquí mismo".
+    let player = Vec3::new(here.x, here.y + 5.0, here.z);
+
+    let attacks = driver.step(&mut net, 0.1, player, 0.0, false, false, 0, false, 0);
+
+    assert!(
+        attacks.is_empty(),
+        "un objetivo a 5 m de distancia vertical REAL no puede ser alcanzado aunque la línea de \
+         visión esté despejada y la distancia horizontal sea cero, got {attacks:?}"
     );
 }
 

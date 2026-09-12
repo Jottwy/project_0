@@ -4407,7 +4407,14 @@ impl PhantomDriver {
         // the "sigue sin atacar cuando te pegas a una pared" of the play-test. Measuring the
         // distance against the stance instead would have been the wrong fix in the other direction:
         // it would hand out free reach. So: `dist` stays yours, the line stops where the body can.
-        let in_reach = dist < PHANTOM_ATTACK_REACH && self.can_see(layer, from, line_to);
+        //
+        // 2026-09-12 fix — `dist` is `choose_target`'s XZ-only distance (`distance_xz`), never
+        // meant to gate a strike on its own: with a stairwell opening between floors, `can_see`
+        // correctly reports a clear line (there IS one, through the opening) while `dist` reports
+        // "in reach" for a target several metres above or below in Y. The reach itself has to be
+        // real 3D — the wall/floor rejection is `can_see`'s job, not the distance's.
+        let dist_3d = from.distance(tpos);
+        let in_reach = dist_3d < PHANTOM_ATTACK_REACH && self.can_see(layer, from, line_to);
         // ADR-080 point 3 — THE SWING THAT DOES NOT LAND MAKES A SOUND. Being at arm's length
         // while the blow is locked out (recovering from the previous one) was completely silent:
         // the claw that grazed you registered as nothing at all. Its own short cooldown, because
@@ -4553,7 +4560,9 @@ impl PhantomDriver {
         }
         // No front/behind split, unlike SPRINT's own strike — a knockdown does not care which way
         // you were facing — so the yaw component of `target` goes unused here.
-        let (tid, tpos, dist, _) = target.unwrap();
+        // `dist` (XZ-only) ya no decide el alcance aquí — ver el fix de 2026-09-12 más abajo,
+        // que usa la distancia 3D real (`dist_3d`).
+        let (tid, tpos, _dist, _) = target.unwrap();
         self.movers[i].last_known_player_pos = Some(tpos);
         self.movers[i].last_seen_vel = ctx.target_vels.get(&tid).copied();
 
@@ -4574,8 +4583,13 @@ impl PhantomDriver {
         // ADR-082: to the contact stance, for the same reason and with the same fallback as SPRINT.
         // An ambush that cannot land on somebody with their back to a wall is an ambush that fails
         // in exactly the spot people back into when something charges them.
+        //
+        // 2026-09-12 fix — same as SPRINT's own strike: `dist` is XZ-only, and an ambush timed
+        // through a stairwell opening could otherwise land on a target several metres above or
+        // below. Real 3D distance; `can_see` still does the wall/floor rejection.
         let ambush_line_to = self.contact_or_target(layer, from, tpos);
-        let in_reach = dist < PHANTOM_ATTACK_REACH && self.can_see(layer, from, ambush_line_to);
+        let dist_3d = from.distance(tpos);
+        let in_reach = dist_3d < PHANTOM_ATTACK_REACH && self.can_see(layer, from, ambush_line_to);
         if in_reach {
             let dx = tpos.x - from.x;
             let dz = tpos.z - from.z;

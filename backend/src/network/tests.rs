@@ -6113,3 +6113,43 @@ async fn an_invited_joiner_gets_the_point_through_a_real_handshake() {
     );
     assert_eq!(host.next_spawn_unit, 0);
 }
+
+/// La otra mitad del mismo invariante, y la que faltaba: **un `relay_only` tampoco es destino,
+/// aunque no sea un phantom inyectado**.
+///
+/// El test de arriba sólo cubre `spawn_phantom`, que además del centinela inerte apunta el id en
+/// `phantom_ids`. Los facelings y los vigilantes (ADR-131) entran por `insert_faceling_peer`: mismo
+/// centinela `127.0.0.1:1`, misma imposibilidad de recibir, pero NO están en ese registro. Con el
+/// filtro mirando sólo `is_phantom` se colaban como destino y el socket los rechazaba al final —
+/// medido en partida real el 10-09, `SEND_FAIL illegal_gameplay_destination ... peer_id=61002
+/// phantom=false relay_only=true`, y con ADR-140 D4 clonando además cada pose para tirarla.
+#[tokio::test]
+async fn a_relay_only_creature_is_never_a_pose_destination() {
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let real_id = 2;
+    let addr: SocketAddr = "127.0.0.1:9999".parse().unwrap();
+    host.peers
+        .insert(real_id, PeerConnection::new(real_id, "Real".into(), addr));
+    // Por el camino de verdad: el mismo que usa el bucle de juego para poblar el mundo.
+    let faceling = host.insert_faceling_peer("Faceling", [10.0, 1.8, 10.0], 1);
+    let watcher = host.insert_faceling_peer("Watcher", [20.0, 1.8, 20.0], 2);
+
+    assert!(
+        !host.is_phantom(faceling) && !host.is_phantom(watcher),
+        "el caso que importa es justo el que is_phantom NO reconoce"
+    );
+
+    let dests = super::sync::relay_destinations(&host);
+
+    assert_eq!(
+        dests,
+        vec![real_id],
+        "un relay_only jamás puede ser destino de poses, got {dests:?}"
+    );
+    // Y como con los phantoms: siguen en `peers`, así que sus poses se siguen reenviando a quien
+    // sí puede recibirlas. Quitarlos como ORIGEN sería la sobrecorrección fácil.
+    assert!(
+        host.peers.contains_key(&faceling) && host.peers.contains_key(&watcher),
+        "un relay_only sigue siendo ORIGEN de poses"
+    );
+}

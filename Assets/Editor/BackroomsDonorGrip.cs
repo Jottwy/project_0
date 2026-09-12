@@ -31,10 +31,22 @@ namespace BackroomsSurvival.EditorTools
         /// </summary>
         internal static bool TryReadHandle(GameObject root, string skinNodeName, string tipChildHint,
             out Transform dominantBone, out Vector3 axisLocal, out Vector3 fistLocal, string tag)
+            => TryReadHandle(root, skinNodeName, tipChildHint, out dominantBone, out axisLocal,
+                out fistLocal, out _, tag);
+
+        /// <summary>
+        /// Igual, y además el RADIO del mango del donante: la mediana de la distancia de sus
+        /// vértices al eje. Es lo que hace falta para cambiar un cilindro por otro sin mover la
+        /// mano — el objeto nuevo va donde estaba el del vendor, corrido por la diferencia de radio.
+        /// </summary>
+        internal static bool TryReadHandle(GameObject root, string skinNodeName, string tipChildHint,
+            out Transform dominantBone, out Vector3 axisLocal, out Vector3 fistLocal,
+            out float radius, string tag)
         {
             dominantBone = null;
             axisLocal = Vector3.up;
             fistLocal = Vector3.zero;
+            radius = 0f;
 
             SkinnedMeshRenderer skin = null;
             foreach (var smr in root.GetComponentsInChildren<SkinnedMeshRenderer>(true))
@@ -112,6 +124,17 @@ namespace BackroomsSurvival.EditorTools
 
             axisLocal = axis.normalized;
             fistLocal = centre - axis * Vector3.Dot(centre, axis);
+
+            // El RADIO del mango: mediana de la distancia al eje, que ignora la cabeza del hacha o
+            // la llama de la antorcha (la media sí las cuenta y sale un mango que no existe).
+            var distances = new System.Collections.Generic.List<float>(handSpace.Count);
+            foreach (var v in handSpace)
+            {
+                Vector3 d = v - centre;
+                distances.Add((d - axisLocal * Vector3.Dot(d, axisLocal)).magnitude);
+            }
+            distances.Sort();
+            radius = distances[distances.Count / 2];
 
             Debug.Log($"{tag} Agarre leído de '{skinNodeName}' en espacio de '{dominantBone.name}': " +
                       $"{handSpace.Count} vértices, centro {centre}, eje {axisLocal}, punta " +

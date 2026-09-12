@@ -371,6 +371,7 @@ namespace BackroomsSurvival.WorldGen3
 
             Transform eye = viewer != null ? viewer : (Camera.main != null ? Camera.main.transform : null);
             if (eye == null) return;
+            EnsureViewerLitLayers(eye);
 
             Vector2Int centre = ChunkOf(eye.position);
             for (int dz = -radius; dz <= radius; dz++)
@@ -386,6 +387,23 @@ namespace BackroomsSurvival.WorldGen3
 
             Prune(centre);
             CullLights(eye.position);
+        }
+
+        private Transform _litViewerRoot;
+
+        /// <summary>
+        /// Los brazos de primera persona y lo que llevas en la mano viven bajo la raíz del jugador
+        /// y no los monta WG3, así que nacen con la máscara de render por defecto —B3 con tres
+        /// sótanos— y en cualquier otra planta salen negros (<see cref="Wg3DynamicLitLayers"/>).
+        /// Se cuelga de la raíz del ojo UNA vez; el componente repasa los wieldables que se
+        /// activen después. Si el viewer cambia de raíz (otra sesión, otro prefab), se repite.
+        /// </summary>
+        private void EnsureViewerLitLayers(Transform eye)
+        {
+            Transform root = eye.root;
+            if (root == _litViewerRoot) return;
+            _litViewerRoot = root;
+            Wg3DynamicLitLayers.Attach(root.gameObject);
         }
 
         /// <summary>El punto desde el que se mide el culling de luces AHORA, sin esperar al
@@ -674,9 +692,13 @@ namespace BackroomsSurvival.WorldGen3
             // ni fuente que quede huérfana al descargar.
             if (hum.positions.Count > 0 && ambience != null)
             {
+                // R6 — `root.layer` (la capa de motor del GameObject, para colisión/culling de
+                // Unity) NUNCA se toca en este chunk y no significa «planta»: se deja tal cual como
+                // último recurso del director si algún día llega un lote SIN `hum.storeys`, pero lo
+                // que de verdad separa las plantas de este chunk es `hum.storeys`, una por lámpara.
                 BackroomsSurvival.Gameplay.Audio.FluorescentHumDirector.RegisterChunkLamps(
                     root.transform, root.layer, hum.positions, hum.pitches,
-                    hum.flickerHz, hum.flickerPhase, ambience, 0);
+                    hum.flickerHz, hum.flickerPhase, ambience, 0, hum.storeys);
                 _builtLamps += hum.positions.Count;
             }
 

@@ -14,6 +14,14 @@ namespace BackroomsSurvival.WorldGen3
     /// se pierde si se copia sin leerlo: así **ningún <c>AudioSource</c> cuelga jamás de un chunk**, y
     /// descargarlo no puede dejar fuentes huérfanas. El director reparte sus propias fuentes entre las
     /// posiciones que se le dan.
+    ///
+    /// R6 (12-09) — <see cref="storeys"/>. Un chunk WG3 mide 50 m en XZ y NO se parte en Y, así que
+    /// puede meter siete u ocho plantas en un solo alta. El director aislaba por planta con UN valor
+    /// por LOTE entero (el que ya usaba WG2, donde un chunk sí es una sola planta); aplicado a un
+    /// lote de WG3 eso comparaba la planta de la primera lámpara contra todas las demás — o, peor,
+    /// un valor que nadie llegó a fijar nunca (ver el commit que añade esto). La planta va por
+    /// LÁMPARA, calculada aquí con la misma <see cref="Wg3StoreyLayers.RawStoreyOf"/> que ya reparte
+    /// la luz, para que oído y ojo estén de acuerdo en qué es «tu planta».
     /// </summary>
     public sealed class Wg3HumBatch
     {
@@ -21,6 +29,7 @@ namespace BackroomsSurvival.WorldGen3
         public readonly List<float> pitches = new List<float>();
         public readonly List<float> flickerHz = new List<float>();
         public readonly List<float> flickerPhase = new List<float>();
+        public readonly List<int> storeys = new List<int>();
     }
 
     public sealed class Wg3Materials
@@ -359,7 +368,8 @@ namespace BackroomsSurvival.WorldGen3
             Wg3StoreyLayers.Apply(renderer,
                 Wg3StoreyLayers.ForSurface(segment.FloorY, segment.Height));
 
-            AddColliders(go, volumes, origin);
+            // R5 — el sonido del paso, por el mismo papel que ya viste la superficie.
+            AddColliders(go, volumes, origin, Wg3StyleSurfaces.FloorFor(segment.style));
 
             if (addLight) AddSegmentLights(go, segment, lampMaterial, hum, worldSeed, cadence);
 
@@ -423,8 +433,11 @@ namespace BackroomsSurvival.WorldGen3
         /// deja el suelo iluminado igual que en una sala normal y el techo alto en penumbra, que en un
         /// atrio es lo que se quiere.
         ///
-        /// **No se toca ni el alcance, ni la intensidad, ni el color**: son valores que Joel validó
-        /// mirándolos en partida. Lo que cambia aquí es CUÁNTOS y DÓNDE.
+        /// **La intensidad y el color siguen sin tocarse**: son valores que Joel validó mirándolos
+        /// en partida. Lo que SÍ cambia (R3, 12-09, con su autorización explícita) es el ALCANCE: ver
+        /// <see cref="BoundedRange"/> más abajo, una lámpara ya no puede alumbrar más allá de su
+        /// propio tramo más el grosor de una pared, así que una sala de 4 m deja de regar las dos
+        /// vecinas con un alcance pensado para naves de 25.
         /// </summary>
         private static void AddSegmentLights(GameObject go, Wg3Segment segment,
             Material lampMaterial, Wg3HumBatch hum, int worldSeed, Wg3LightCadenceSettings cadence)
@@ -474,16 +487,10 @@ namespace BackroomsSurvival.WorldGen3
             int nz = Mathf.Clamp(Mathf.RoundToInt(segment.SizeZ / Spacing), 1, MaxPerAxis);
             float y = Mathf.Min(segment.Height - 0.2f, HangHeight);
 
-            // Día 2 del cierre (Joel: la foto de la oficina) — los PANELES fluorescentes de 60×120
-            // en rejilla sobre las placas del techo, en vez de una luminaria cuadrada por lámpara.
-            // Son mallas emisivas, no luces: las luces siguen siendo las de siempre (≤ 2 × 2 por
-            // tramo), así que Forward+ no paga nada por esto.
             // ADR-130 D4 (r2b) — el decaimiento de ESTA planta. Se calcula una vez por tramo y se
             // reparte a todo lo que lo mira: las luminarias del falso techo, los umbrales de la
             // cadencia y el color de cada lámpara. En la calle vale 0 y nada de lo de abajo cambia.
             float decay = Wg3StoreyLayers.DecayOfFloor(segment.FloorY);
-
-            if (lampMaterial != null) AddPanels(go.transform, segment, lampMaterial, decay);
 
             // Cadencia de luces (rama unity-lighting-cadence, fusionada el 2026-09-06). La celda de
             // cada fixture es lo que acota el jitter: un plafón se mueve dentro de SU celda y nunca
@@ -495,13 +502,6 @@ namespace BackroomsSurvival.WorldGen3
             float marginX = Mathf.Min(1.0f, segment.SizeX * 0.5f);
             float marginZ = Mathf.Min(1.0f, segment.SizeZ * 0.5f);
 
-            // LA SOMBRA VA A LA PRIMERA ENCENDIDA, no a la de índice (0,0). Con un 12 % de plafones
-            // muertos, atar la sombra al índice deja una nave de cada ocho sin ninguna sombra —
-            // justo las que se apuntalaron con esto.
-            bool shadowTaken = false;
-            // Por el mismo motivo que la sombra: el relleno va a la primera ENCENDIDA del tramo.
-            bool fillTaken = false;
-
             // EL DESPACHO A OSCURAS: uno por planta y chunk con todas las lámparas muertas, no el
             // 12 % que le tocaría por la cadencia. La regla y el porqué del sorteo por punto están en
             // `Wg3LightCadence.IsDarkOffice`; aquí sólo se fuerza el resultado, y se fuerza ANTES de
@@ -509,6 +509,32 @@ namespace BackroomsSurvival.WorldGen3
             bool blackout = Wg3LightCadence.IsDarkOffice(worldSeed, segment.style,
                 Wg3StoreyLayers.RawStoreyOf(segment.FloorY),
                 segment.MinX, segment.MinZ, segment.SizeX, segment.SizeZ);
+
+            // Día 2 del cierre (Joel: la foto de la oficina) — los PANELES fluorescentes de 60×120
+            // en rejilla sobre las placas del techo, en vez de una luminaria cuadrada por lámpara.
+            // Son mallas emisivas, no luces: las luces siguen siendo las de siempre (≤ 2 × 2 por
+            // tramo), así que Forward+ no paga nada por esto.
+            //
+            // R3 (12-09, Joel autorizó tocar esto) — necesitan saber DÓNDE quedan las luces REALES
+            // del tramo antes de dibujarse: la auditoría de rendimiento contó 12 587 paneles contra
+            // 3 101 Light, y hasta ahora los 12 587 brillaban igual sin que la mayoría iluminara
+            // nada. Se resuelven aquí las mismas posiciones que el bucle de abajo va a construir
+            // —misma llamada a `Wg3LightCadence.Resolve`, determinista por posición— y el bucle de
+            // abajo las vuelve a resolver para levantar el `GameObject`: es la misma función pura
+            // sobre los mismos números, no una segunda fuente de verdad que pueda discrepar.
+            if (lampMaterial != null)
+            {
+                List<Vector2> lit = ResolveLitFixtureOffsets(segment, worldSeed, cadence, decay,
+                    blackout, cellX, cellZ, nx, nz);
+                AddPanels(go.transform, segment, lampMaterial, decay, lit);
+            }
+
+            // LA SOMBRA VA A LA PRIMERA ENCENDIDA, no a la de índice (0,0). Con un 12 % de plafones
+            // muertos, atar la sombra al índice deja una nave de cada ocho sin ninguna sombra —
+            // justo las que se apuntalaron con esto.
+            bool shadowTaken = false;
+            // Por el mismo motivo que la sombra: el relleno va a la primera ENCENDIDA del tramo.
+            bool fillTaken = false;
 
             // La EMERGENCIA sólo existe en pasillos y cruces. Es lo que hace que un plafón fundido
             // pase de «esta parte del mundo no se ve» a «esta parte del mundo se quedó sin luz», que
@@ -546,13 +572,16 @@ namespace BackroomsSurvival.WorldGen3
                         continue;
                     }
 
+                    // R3 — se guardan por separado porque BoundedRange las necesita después,
+                    // y recalcular el mismo Clamp dos veces es la clase de duplicación que acaba
+                    // divergiendo el día que alguien toque un solo sitio.
+                    float lampLocalX = Mathf.Clamp(nominalX + fixture.offset.x, marginX, segment.SizeX - marginX);
+                    float lampLocalZ = Mathf.Clamp(nominalZ + fixture.offset.y, marginZ, segment.SizeZ - marginZ);
+
                     var lamp = new GameObject($"light_{ix}_{iz}");
                     lamp.hideFlags = HideFlags.DontSave;
                     lamp.transform.SetParent(go.transform, false);
-                    lamp.transform.localPosition = new Vector3(
-                        Mathf.Clamp(nominalX + fixture.offset.x, marginX, segment.SizeX - marginX),
-                        y,
-                        Mathf.Clamp(nominalZ + fixture.offset.y, marginZ, segment.SizeZ - marginZ));
+                    lamp.transform.localPosition = new Vector3(lampLocalX, y, lampLocalZ);
 
                     var light = lamp.AddComponent<Light>();
                     light.type = LightType.Point;
@@ -568,7 +597,12 @@ namespace BackroomsSurvival.WorldGen3
                     // El coste de Forward+ no sube en la misma proporción: el tope de 256 luces
                     // visibles cuenta LUCES, no volumen, y aquí no se añade ni una. Lo que sube es el
                     // trabajo de clustering, y por eso el número no es 20.
-                    light.range = 11f;
+                    // R3 (12-09) — 11 sigue siendo el TECHO validado por Joel; lo nuevo es
+                    // que no se entrega siempre: BoundedRange lo recorta a lo que hace falta
+                    // para bañar la esquina más lejana de ESTE tramo (más el grosor de una
+                    // pared), así que una nave sigue con 11 y una sala de 4 m deja de
+                    // atravesar dos vecinas para llegar a ningún sitio.
+                    light.range = BoundedRange(lampLocalX, lampLocalZ, segment.SizeX, segment.SizeZ, y, 11f);
                     // **El doble de 1,35, a petición de Joel tras el playtest del 2026-09-05.** Con
                     // 1,35 y el ambiente plano en 0,30 una sala corriente se leía a media luz y había
                     // que acercarse a una pared para ver de qué color era. No sube el coste de
@@ -589,12 +623,17 @@ namespace BackroomsSurvival.WorldGen3
                     if (wantsShadow && !shadowTaken)
                     {
                         shadowTaken = true;
-                        light.shadows = LightShadows.Soft;
                         // Sin bajar la fuerza, el contacto sale negro: la escena tiene ambiente
                         // cálido y una sola puntual sin rebote, así que la sombra dura se lee como
-                        // agujero. Tres cuartos deja el volumen y no mata la lectura.
+                        // agujero. Tres cuartos deja el volumen y no mata la lectura. Se fija
+                        // AUNQUE el presupuesto (R4) la deje en None por ahora: Unity ignora estos
+                        // dos campos sin sombra, y quedan listos para cuando el jugador se acerque
+                        // y Wg3ShadowBudget se la reclame a otra más lejana.
                         light.shadowStrength = 0.72f;
                         light.shadowNearPlane = 0.3f;
+                        // R4 — la candidata de ESTE tramo entra a competir por el tope GLOBAL de
+                        // sombras del mundo cargado; no se enciende aquí directamente.
+                        Wg3ShadowBudget.Register(light);
                     }
                     else
                     {
@@ -648,7 +687,11 @@ namespace BackroomsSurvival.WorldGen3
                         fillGo.transform.localPosition = new Vector3(0f, FillHeight - y, 0f);
                         var fill = fillGo.AddComponent<Light>();
                         fill.type = LightType.Point;
-                        fill.range = 18f;
+                        // R3 (12-09) — 18 sigue siendo el TECHO validado; BoundedRange lo recorta con
+                        // la distancia desde el pecho hasta la esquina de TECHO más lejana (no la de
+                        // suelo: el relleno vive a la altura del pecho y su volumen es el que sube).
+                        fill.range = BoundedRange(lampLocalX, lampLocalZ, segment.SizeX, segment.SizeZ,
+                            Mathf.Max(segment.Height - FillHeight, 0.1f), 18f);
                         // 0,30 y no 0,22: al bajarlo dos metros, el techo queda a más del doble de
                         // distancia y la caída va con el cuadrado. Es la misma luz en el techo que
                         // antes, repartida por todo el paño en vez de amontonada en un círculo.
@@ -679,6 +722,11 @@ namespace BackroomsSurvival.WorldGen3
                         int gx = Mathf.RoundToInt(world.x);
                         int gz = Mathf.RoundToInt(world.z);
                         hum.positions.Add(world);
+                        // R6 — la planta del TRAMO, no la de la lámpara: es la misma cota que usa
+                        // Wg3StoreyLayers para la luz (ForLight/ForSurface parten de FloorY, nunca
+                        // de dónde cuelga el plafón), así que el corte de «tu planta» del zumbido
+                        // cae exactamente donde cae el de la luz.
+                        hum.storeys.Add(Wg3StoreyLayers.RawStoreyOf(segment.FloorY));
                         hum.pitches.Add(
                             BackroomsSurvival.Gameplay.Audio.FluorescentHumDirector.PitchFor(gx, gz));
                         // Frecuencia y fase salen del MISMO fixture que gobierna la Light, no de la
@@ -692,6 +740,78 @@ namespace BackroomsSurvival.WorldGen3
                     }
                 }
             }
+        }
+
+        /// <summary>
+        /// R3 (12-09, con autorización explícita de Joel para tocar estos números) — el alcance de
+        /// una Light acotado a lo que hace falta para bañar SU propio tramo, nunca más.
+        /// </summary>
+        /// <remarks>
+        /// Antes del reparto por plantas (<see cref="Wg3StoreyLayers"/>) el problema era que una
+        /// lámpara no llegaba a NADA; cerrado eso, apareció el segundo: sin sombra propia (la mayoría
+        /// de las luces del tramo no proyectan, ver <see cref="ShadowMinSide"/> más arriba) Forward+
+        /// no sabe que hay una pared entre dos salas — el alcance fijo de 11 m (plafón) y 18 m
+        /// (relleno) se pensó para naves de hasta 25 m y una sala de 4 m se llevaba el mismo alcance,
+        /// regando hasta dos salas vecinas por encima y por los lados.
+        ///
+        /// **La cota es geométrica, no un número inventado.** Se mide la distancia real desde la
+        /// lámpara hasta la esquina MÁS LEJANA de su propio tramo —la diagonal en planta más la
+        /// altura, con Pitágoras— y se le suma el grosor de una pared (espejo de
+        /// <c>segment::WALL_THICKNESS_M</c>, el mismo 0,15 que ya lleva <see cref="Wg3Piece"/>) más un
+        /// margen para que la esquina no quede justo en el borde del apagado suave de Unity, que
+        /// empieza antes del corte. El resultado nunca SUBE del alcance validado: `Mathf.Min` deja
+        /// una nave de 25 m exactamente como estaba.
+        /// </remarks>
+        private static float BoundedRange(float localX, float localZ, float sizeX, float sizeZ,
+            float heightAboveFloor, float maxRange)
+        {
+            // Espejo de `segment::WALL_THICKNESS_M` — el mismo grosor que ya trae
+            // `Wg3Piece.wallThickness`. Que la lámpara siga bañando la cara interior de SU pared es
+            // la intención; que atraviese la del vecino no lo es.
+            const float WallThicknessM = 0.15f;
+            float dxFar = Mathf.Max(localX, sizeX - localX);
+            float dzFar = Mathf.Max(localZ, sizeZ - localZ);
+            float horizontalToFarCorner = Mathf.Sqrt(dxFar * dxFar + dzFar * dzFar);
+            float toFarCorner = Mathf.Sqrt(
+                horizontalToFarCorner * horizontalToFarCorner + heightAboveFloor * heightAboveFloor);
+            // El ×1,25 deja la esquina más lejana al 80 % del alcance nuevo: dentro de la caída por
+            // inverso del cuadrado, no en la rampa de apagado suave de Unity (el último tramo del
+            // alcance, donde Unity fuerza la intensidad a cero aunque la fórmula diera más). Sin el
+            // margen, una sala pequeña dejaría su propia esquina casi a oscuras.
+            return Mathf.Min(maxRange, toFarCorner * 1.25f + WallThicknessM);
+        }
+
+        /// <summary>
+        /// R3 — las posiciones LOCALES (x, z del tramo) de las luces que de verdad van a encenderse
+        /// en este tramo, para que <see cref="AddPanels"/> sepa qué panel atenuar.
+        /// </summary>
+        /// <remarks>
+        /// Resuelve el MISMO fixture que el bucle principal de <see cref="AddSegmentLights"/>, con
+        /// los mismos argumentos: `Wg3LightCadence.Resolve` es una función pura sembrada por
+        /// posición de mundo (no por RNG con estado), así que llamarla dos veces con los mismos
+        /// números da el mismo resultado — no es una segunda fuente de verdad, es la misma consultada
+        /// antes de que el bucle principal construya sus `GameObject`.
+        /// </remarks>
+        private static List<Vector2> ResolveLitFixtureOffsets(Wg3Segment segment, int worldSeed,
+            Wg3LightCadenceSettings cadence, float decay, bool blackout,
+            float cellX, float cellZ, int nx, int nz)
+        {
+            var positions = new List<Vector2>(blackout ? 0 : nx * nz);
+            if (blackout) return positions;
+            for (int ix = 0; ix < nx; ix++)
+            {
+                for (int iz = 0; iz < nz; iz++)
+                {
+                    float nominalX = cellX * (ix + 0.5f);
+                    float nominalZ = cellZ * (iz + 0.5f);
+                    Wg3Fixture fixture = Wg3LightCadence.Resolve(worldSeed,
+                        segment.MinX + nominalX, segment.MinZ + nominalZ,
+                        ix * nz + iz, cellX, cellZ, cadence, decay);
+                    if (fixture.lit)
+                        positions.Add(new Vector2(nominalX + fixture.offset.x, nominalZ + fixture.offset.y));
+                }
+            }
+            return positions;
         }
 
         /// <summary>
@@ -791,6 +911,32 @@ namespace BackroomsSurvival.WorldGen3
         private static readonly int BaseColorId = Shader.PropertyToID("_BaseColor");
         private static readonly int ColorId = Shader.PropertyToID("_Color");
         private static readonly int EmissionColorId = Shader.PropertyToID("_EmissionColor");
+
+        /// <summary>
+        /// R3 (12-09) — el panel al <see cref="PanelDimFactor"/> cuando ninguna Light real anda cerca.
+        /// </summary>
+        /// <remarks>
+        /// Todos los paneles de un tramo comparten UN <c>lampMaterial</c> (mismo motivo que
+        /// <see cref="EmissiveVariant"/>: por SRP Batcher), así que no se puede apagar un panel suelto
+        /// sin crear una segunda variante — igual que el monitor o la emergencia, cacheada una vez por
+        /// material fuente y compartida por toda la sesión. Sólo escala la EMISIÓN: el albedo del
+        /// difusor no cambia, es la misma placa, sólo que su tubo de detrás alumbra menos.
+        /// </remarks>
+        private static readonly Dictionary<Material, Material> DimmedPanelCache =
+            new Dictionary<Material, Material>();
+
+        private static Material DimmedPanelVariant(Material source)
+        {
+            if (source == null) return null;
+            if (DimmedPanelCache.TryGetValue(source, out Material cached) && cached != null) return cached;
+
+            var m = new Material(source) { hideFlags = HideFlags.DontSave };
+            m.name = $"{source.name}_dim";
+            if (m.HasProperty(EmissionColorId))
+                m.SetColor(EmissionColorId, source.GetColor(EmissionColorId) * PanelDimFactor);
+            DimmedPanelCache[source] = m;
+            return m;
+        }
 
         /// <summary>
         /// ADR-107 D2 — el panel emisivo que se ve cuando miras al techo.
@@ -1038,8 +1184,18 @@ namespace BackroomsSurvival.WorldGen3
         /// eje largo del tramo. Sin collider: es decoración del techo. Y para un tramo de doble
         /// altura cuelga con su planta de arriba (la del techo), que es la que lo alumbra.
         /// </summary>
+        // R3 (12-09) — radio, en el techo, dentro del cual un panel se lee como iluminado por una
+        // Light real. Es la mitad del espaciado de luces de AddSegmentLights (Spacing = 9 m): a esa
+        // distancia dos plafones vecinos ya se solapan, así que es donde deja de haber una lámpara
+        // «cerca» de verdad. Más allá, el panel sigue brillando (sigue siendo tubo sano) pero atenuado.
+        private const float PanelLitRadiusM = 4.5f;
+
+        // Al 60 %: brilla menos que uno con lámpara real al lado, pero sigue leyéndose como fluorescente
+        // encendido, no como apagado (eso ya lo decide `Wg3LightCadence.PanelMissing` más arriba).
+        private const float PanelDimFactor = 0.6f;
+
         private static void AddPanels(Transform parent, Wg3Segment segment, Material lampMaterial,
-            float decay)
+            float decay, List<Vector2> litPositions)
         {
             // La retícula vive en Wg3CeilingGrid y no aquí: el detalle sonoro cuelga una rejilla de
             // aire del techo y necesita los mismos números para no meterla dentro de una luminaria.
@@ -1051,6 +1207,8 @@ namespace BackroomsSurvival.WorldGen3
                 : new Vector3(PanelShortM, 0.05f, PanelLongM);
             float y = segment.Height - size.y * 0.5f + 0.01f;
             uint mask = Wg3StoreyLayers.ForLight(segment.FloorY + segment.Height - 0.1f);
+            Material dimmed = DimmedPanelVariant(lampMaterial);
+            float litRadiusSq = PanelLitRadiusM * PanelLitRadiusM;
             for (int ix = 0; ix < cx; ix++)
             {
                 for (int iz = 0; iz < cz; iz++)
@@ -1074,10 +1232,27 @@ namespace BackroomsSurvival.WorldGen3
                     go.transform.localScale = size;
                     go.AddComponent<MeshFilter>().sharedMesh = LuminaireMesh();
                     var r = go.AddComponent<MeshRenderer>();
-                    r.sharedMaterial = lampMaterial;
+                    // R3 — lo que brilla al 100 % es lo que ilumina de verdad. Un panel a más de
+                    // PanelLitRadiusM de TODAS las luces reales del tramo (litPositions vacía en un
+                    // despacho a oscuras, o simplemente lejos en una nave grande) se atenúa: sigue
+                    // siendo tubo sano, pero deja de prometer una luz que no está.
+                    r.sharedMaterial = NearAnyLitFixture(px, pz, litPositions, litRadiusSq)
+                        ? lampMaterial
+                        : (dimmed != null ? dimmed : lampMaterial);
                     Wg3StoreyLayers.Apply(r, mask);
                 }
             }
+        }
+
+        private static bool NearAnyLitFixture(float px, float pz, List<Vector2> litPositions, float radiusSq)
+        {
+            if (litPositions == null) return true; // sin lista, no se sabe: no se penaliza al panel.
+            for (int i = 0; i < litPositions.Count; i++)
+            {
+                float dx = px - litPositions[i].x, dz = pz - litPositions[i].y;
+                if (dx * dx + dz * dz <= radiusSq) return true;
+            }
+            return false;
         }
 
         /// <summary>
@@ -1417,7 +1592,16 @@ namespace BackroomsSurvival.WorldGen3
             return renderers;
         }
 
-        private static void AddColliders(GameObject root, List<Wg3Volume> volumes, Vector3 origin)
+        /// <summary>Los volúmenes que un jugador PISA, y por eso los únicos que reciben
+        /// <paramref name="floorMaterial"/> en <see cref="AddColliders"/> — R5. Una pared o un techo
+        /// con el mismo <c>PhysicsMaterial</c> que el suelo no cambia nada audible (nadie choca de
+        /// lado contra un collider lo bastante despacio para que suene) y sí complica leer qué
+        /// superficie es cada una en el inspector.</summary>
+        private static bool IsWalkable(Wg3VolumeKind kind) =>
+            kind == Wg3VolumeKind.Floor || kind == Wg3VolumeKind.Step;
+
+        private static void AddColliders(GameObject root, List<Wg3Volume> volumes, Vector3 origin,
+            PhysicsMaterial floorMaterial = null)
         {
             for (int v = 0; v < volumes.Count; v++)
             {
@@ -1425,6 +1609,8 @@ namespace BackroomsSurvival.WorldGen3
                 if (!vol.IsSolid) continue;
                 // ADR-125 — los prismas llevan collider de malla, que pone `AssembleSolid`.
                 if (vol.shape != Wg3Shape.Box) continue;
+
+                bool walkable = floorMaterial != null && IsWalkable(vol.kind);
 
                 float yaw = Mathf.Repeat(vol.yawDegrees, 90f);
                 bool axisAligned = yaw < YawEpsilon || yaw > 90f - YawEpsilon;
@@ -1437,6 +1623,7 @@ namespace BackroomsSurvival.WorldGen3
                     bool swapped = Mathf.Repeat(vol.yawDegrees, 180f) > 45f;
                     box.center = vol.center - origin;
                     box.size = swapped ? new Vector3(vol.size.z, vol.size.y, vol.size.x) : vol.size;
+                    if (walkable) box.sharedMaterial = floorMaterial;
                 }
                 else
                 {
@@ -1444,7 +1631,9 @@ namespace BackroomsSurvival.WorldGen3
                     child.transform.SetParent(root.transform, false);
                     child.transform.localPosition = vol.center - origin;
                     child.transform.localRotation = Quaternion.Euler(0f, vol.yawDegrees, 0f);
-                    child.AddComponent<BoxCollider>().size = vol.size;
+                    var box = child.AddComponent<BoxCollider>();
+                    box.size = vol.size;
+                    if (walkable) box.sharedMaterial = floorMaterial;
                 }
             }
         }

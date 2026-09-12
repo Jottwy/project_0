@@ -4,9 +4,9 @@
 > `docs/SESSION-LOG.md`, donde vive todo el histórico. Aquí sólo lo vigente.
 
 ## Estado
-- **WorldGen3 es el mundo servido.** Wire **63** en las dos puntas (`ipc/server.rs`, `WireSchema.cs`), confirmado en los logs del 11-09.
+- **WorldGen3 es el mundo servido.** Wire **64** en las dos puntas (`ipc/server.rs:38`, `WireSchema.cs:25`) — ADR-143 lo subió el 12-09.
 - **Contrato WG3 v1 = Alpha 1** (`docs/WG3-ALPHA1-ROADMAP.md`): días 1–2 hechos; 3 y 5 APARCADOS detrás de la tanda de oficinas (Joel, 06-09).
-- **Multijugador por Steam, punta a punta y SIN LAG** (10-09, build 25230867): **253,8 → 13,9 KB/s**, cola 1,9 s → **0**. Suite 1442/1442.
+- **Multijugador por Steam, SIN LAG** (10-09): **253,8 → 13,9 KB/s**, cola → **0**. **Build 25238618 SUBIDA con todo (wire 63), SIN rama: Joel la habilita.**
 - **El commit tiene gate** (`tools/dev/validate-scope.ps1`, hook PreToolUse): rojo = el commit no se ejecuta. Alcance por `git diff --cached`.
 - Alpha 1 itch nov 2026 · Next Fest feb 2027 · EA primavera 2027 (`docs/SCALING-ROADMAP.md:196-198`). E0 de red cerrada y medida.
 
@@ -41,9 +41,9 @@
 - `handle_spawn_world_chest` (`game_loop.rs`) y `World::spawn_corpse` (`world/corpse.rs`) aceptan la posición del cliente sin validar andabilidad.
 - Sin anti-cheat de posesión ni cantidad en `consume_item` (ADR-030): trust-the-client asumido y documentado.
 - `IPCClient.cs`: cuatro `catch { }` mudos en los notificadores de listeners — pueden tragar fallos hoy mismo.
-- **EditMode: 1 440 tests, 12 rojos** medidos el 08-09 headless, y los MISMOS sobre la base de la rama (por eso se puede afirmar que son ajenos):
-  `Wg3Composer` ×3, `Wg3DensityField` ×2, `Wg3ScaleField`, `StorageRackDisplay` ×2, `Wg3LightCadence`, `IgdProtocol`, `OfficeAmbience`,
-  `ZoneAmbienceSet`; +2 saltados de `NetworkInitializer`. En cargo, `phantom_sprints_after_patience_exceeded` **flaquea con la máquina cargada**.
+- **EditMode: 1 528 tests, 12 rojos** medidos el 12-09 headless: los 12 del 08-09 (`Wg3Composer` ×3, `Wg3DensityField` ×2, `Wg3ScaleField`,
+  `StorageRackDisplay` ×2, `Wg3LightCadence`, `IgdProtocol` flaky, `OfficeAmbience`, `ZoneAmbienceSet`). El 13.º, `ViewmodelWarpTests` por la
+  venda con URP/Lit, ARREGLADO el 12-09 (`BR_Bandage_FP_Material`). En cargo, `phantom_sprints_after_patience_exceeded` **flaquea cargado**.
 - **Auditoría del 02-09, tres ALTO sin corregir** (`AUDIT-2026-08-28.md`): A28-29 un sobre «Relayed» se cree sin comparar el origen UDP con
   el relay (`classify_inbound`); A28-30 descripción UPnP sin tope (`StackOverflowException`); A28-31 `spawnedOnDeplete` nunca vuelve a `false`.
 - **Ramas viejas CERRADO** (06-09, 34.ª tanda). Aparcados a propósito por Joel: tres wip del 03-09 con base vieja y rebase pendiente —
@@ -62,7 +62,8 @@
 - **Gate volumétrico near-spawn**: `volumetric_grid` sólo en el chunk del showcase, y sigue deshabilitado.
 - Celdas Rust de 2,5 m: la conversión celda→tile vive SÓLO en Unity (`tileX = cellX / 2`). La de WG3 mide 0,5: toda constante heredada cambia de significado.
 - `SilentHealthUIBridge` sincroniza `fillAmount` por reflexión: cambios en `HealthUI`/`Health` deben conservar los nombres.
-- **Dado por bueno por Joel (05/06-09)**: luces 2,7/3,2 con alcance 11/9 m y ambiente cálido plano; techos 300/380/1,15; `UvPerMetre` 0,5; feeder 3P 1,5/4,5.
+- **Dado por bueno por Joel (05/06-09)**: luces 2,7/3,2 con alcance 11/9 m y ambiente cálido plano; techos 300/380/1,15; `UvPerMetre` 0,5;
+  feeder 3P 1,5/4,5; `FistFromTail` del bote a 0,68 (0,55 medido y PEOR, ADR-077 enm. 5).
 - **Aplicar gráficos EN EL EDITOR ensucia** `PC_RPAsset.asset` y `QualitySettings.asset`: al acabar, dejar `High` y revertir. En build no pasa.
 
 ## Deuda declarada
@@ -90,9 +91,29 @@
 - **Audio + gráficos MEZCLADOS de idioma**: gráficos en inglés (ADR-134, decisión Joel), voz en español (ADR-046).
 - **El gate de C# miente en un worktree**: `csproj` y `Library` son del clon principal (`docs/DEV-ENVIRONMENT.md`), y el `.csproj` es una FOTO:
   tras tocar un `.asmdef` da falso rojo o falso verde hasta que Unity refresque. Menores: `MPTRACE` sin commitear en cuatro ficheros del vendor
-  STP; `TODO(balance)` de loot; doc-comments stale.
+  STP; `TODO(balance)` de loot; doc-comments stale; el agarre TOCA pero no RODEA (el bote cuelga de la tapa) y el pulgar entra 12,8 mm sin puerta.
 
 ## Últimas tandas
+
+### 2026-09-12 — 51.ª tanda: el relay deja de ser cuadrático, y la animación deja de ser texto (wire 64)
+- **Índice espacial** (`7972d207`): el bucle de pares era O(N²) aunque el radio rechazara a todos — preguntar cuesta igual que aceptar. Casillas
+  del radio de SALIDA (con el de entrada la histéresis se rompe en silencio). Repartidos **~310 → ~3.500** y lineal; en sala sigue 22 (muro: cable).
+- **Tope por destinatario** (`c4452964`) y **cono de atención** (`bae5ffe6`), los dos APAGADOS. El cono da **−35 %, sala 22 → 27**; no se enciende
+  hasta que el búfer del cliente mida el ritmo POR PEER (hoy mezclar 30 y 15 Hz cerca lo secaría). Un test exige que siga apagado.
+- **ADR-143, wire 64** (`47b0eccb`): animación como byte. Pose **74 → 65 B (12 % de TODAS)** y muere el `clone()` por pose. El cliente reconstruye
+  la misma cadena: `ProxyPickupHook` y los tests de EditMode pasan SIN tocarlos. Tres constantes mentían (256 KB/s, y `MPTRACE` decía **⅓** del real).
+- **Techos con veredicto**: sala **22**, emparejados **~330**, repartidos **~3.500**. El coste va con los PARES que se ven, no con los jugadores:
+  20 en diez parejas cuestan **13× menos** que 20 juntos. Corregidas dos estimaciones mías: en sala el aforo sube por la RAÍZ del ahorro, no en proporción.
+
+### 2026-09-12 — 50.ª tanda: la suite EditMode al día — poses reales en los tests de proxies y la venda que no warpeaba
+- **`RemotePlayerManagerTests` 5 rojos → 8/8** (`07fcf69a`): mandaban `position = Vector3.zero` y el gestor lo descarta desde el 10-09 como «peer
+  sin pose» (`RemotePlayerManager.cs:280`); ahora `RealPose` (3, 0, 14) y `TheLiteralOriginDoesNotSpawnAProxy` fija la guarda. Gestor intacto.
+- **Suite completa headless: 1 528 tests, 12 rojos conocidos, 2 saltados** (`cea357c1`); destapó el 13.º, `ViewmodelWarpTests`: el rollo de la venda
+  llevaba `BR_Bandage_Material` (URP/Lit) en la mano — regla 14 rota desde que nació la venda.
+- **Venda arreglada** (`31f3e897`): `BR_Bandage_FP_Material` (`LitFieldOfView`, `_SmoothnessIntensity` 0,08) para el rollo y la banda de los brazos 1P;
+  `BandageVisual.Attach(firstPerson:)`, menú `Backrooms/Venda/Rewarp venda`, `Rewarp held items` cubre 4. 5/5. El de mundo queda para el proxy.
+- **Método**: headless desde el worktree con `Library` en junction funciona con el editor cerrado (reimporta ~1 min, deja 54 `Materials/` del super);
+  `-executeMethod` para el rewarp. Pusheado el tronco `07fcf69a..31f3e897` con dos commits de la otra sesión (`d89b21a0`, `ca32d825`).
 
 ### 2026-09-11 — 43.ª tanda: el colapso de 8 jugadores CERRADO, y 16 aguantan (BuildID 25257405, sin `SetLive`)
 - **Dos cachés se vaciaban ENTEROS al pasar del tope** (rásteres y REGIONES de WG3), con el mismo comentario justificándolo y la misma premisa
@@ -104,59 +125,13 @@
   (×1,56 población → ×1,54 tráfico). El arnés no era reproducible: cada instancia se restauraba donde la dejó la corrida anterior (ADR-045).
 - `LOOPTRACE`/`SYNCTRACE`/`PVSTRACE` nuevos, en `warn!` (devolver a `info!`). SIN commitear ni verificar: el filtro de la pose del anfitrión.
 
-### 2026-09-10 — 42.ª tanda: de «extremadamente lag» a 13,9 KB/s (detalle completo en `SESSION-LOG.md`)
-- **253,8 → 13,9 KB/s (−94,5 %)**, cola **1,9 s → 0**, jitter 70 → 7 ms, enlace del 99 % al **5,4 %**. Partida real por Steam, dos redes.
-- **Medir descartó tres optimizaciones «obvias»**: `MovementReconciler` (RTT real 24 ms), LOD de entidades (0,2 % del tick) y el relay de
-  poses (8 %). El culpable era `ChunkState`, con el **92 %**, y sólo salió al desglosar el `BWTRACE` por opcode.
-- **ADR-137** (wire posicional, pose 246 → 76 B, wire 61→62), **ADR-138** (reproducción diferida con retardo adaptativo + 30 Hz) y
-  **ADR-139 D1** (el gate del chunk hashea sólo lo estable: 215 → 12,7 pkt/s, sin tocar el wire).
-- Dos bugs de Joel: el que entra nacía en **(0,0,0)**, y los contadores sumaban criaturas como jugadores. Y el arnés de playtest **nunca
-  arrancó sin clicks** pese a documentarlo. Suite 1442/1442, CompileCheck 0 ×4, 16 commits, seis builds a Steam.
+### 2026-09-12 — 49.ª tanda: saneamiento — el índice estancado del clon, la rama FOV fusionada y el inventario de sesiones
+- **Clon principal**: `sync.rs`, `network/tests.rs`, `STATE.md`, `SESSION-LOG.md` y `SERVER_BROWSER.md` ESTACIONADOS en la versión de `9ff790df`
+  (la restauración del WIP de la 48.ª): un commit habría revertido `6750e5b0` y la 48.ª. Restaurados a HEAD; el WIP de Unity de Joel (12 ficheros) intacto.
+- **`claude/fov-bug-animated-objects-3fe716` fusionada** (ADR-077 enm. 5 `db5c1946`, 13 `.meta` huérfanos, `packages-lock`): conflicto sólo en 4 docs;
+  los dos apéndices de `DECISIONS.md` conservados (16 333 + 78 = 16 411 líneas), índice regenerado. Su tanda del 09-09 va VERBATIM a `SESSION-LOG.md`.
+- **Sin fusionar y SIN commitear**: `showcase-lighting-broken` (lámparas 3×3, relleno a 1,2 m y 0,30, 5 `.mat`, 54 carpetas `Materials/`) y
+  `wf_09042814-13d-4` (crafting sobre base del 08-27). Decisión de Joel. `J:/wg3_*`, `skeptic-boxes` y las tres wip del 03-09 no se tocan.
 
-### 2026-09-09 — 41.ª tanda: la invitación te deja AL LADO de quien te invitó (ADR-136), y el aviso de quién entra
-- **VERIFICADO EN PLAY por Joel** (build 25217339, sin `SetLive`): invitación por overlay, nacer junto al invitador y el cartel de entrada. Y el
-  precio, dicho por él: «extremadamente lag» — pasa a próximo paso y a Riesgos con nombre.
-- **R0, el fallo que habría hundido todo lo demás**: `HandleLobbyEntered` usaba la sobrecarga de TRES argumentos, así que una invitación entraba
-  sin relay ni túnel de Steam mientras el navegador sí los pasaba. `LobbyJoinTarget` lee las mismas claves para las dos rutas.
-- **R1/R3 sin bump de wire** (ADR-116 D3): `platform_id`/`invited_by` con `serde(default)`; mapa identidad→peer con el host DENTRO (por eso «host
-  invita» y «cliente invita» son el mismo código); punto desde el ROSTER (D4); `Invited` gana a `Restored`. El aviso, `PeerDiscovered` por roster.
-- **Convergencia y dos trampas**: tronco + luces por planta + ADR-077 fusionados; `DECISIONS.md` chocó dos veces y se resolvió conservando los dos
-  apéndices. El `.csproj` no listaba 10 `.cs` nuevos (CompileCheck habría dado falso verde) y `rustfmt` reescribió el WIP de `wg3` (revertido).
-
-### 2026-09-09 — 40.ª tanda: primer playtest real de Steam — redes y cuentas distintas (ADR-135 enm. 2)
-- Joel probó con un segundo equipo en OTRA red y OTRA cuenta de Steam: conexión bidireccional, `transport=steam`. Primera vez que el
-  criterio físico de ADR-117 D9 (dos jugadores en redes distintas se juntan) se cumple de verdad — la vía Steam lo cierra, no el relay propio.
-- Dos bugs del bombeo, cazados en el mismo playtest (`4da8889e`): `Poll()` era `void` y se tragaba su excepción (203 excepciones a máxima
-  velocidad tras invalidar Steam el socket); nadie cerraba el túnel con Alt+F4 (`IsBackground`). Arreglo: `Poll()` → `bool`, `Application.quitting`.
-- Sin cambios de wire ni de las decisiones D1-D11. `SteamTunnelTests` 23/23; arnés 368/369 (1 rojo preexistente ajeno, `IgdProtocol`). CompileCheck 0×4.
-
-### 2026-09-08 — 38.ª tanda: la venda aplicada — un ESTADO por brazo, no un efecto (`bb9e3cc1`, en tronco)
-- No existía nada médico: salud escalar, cero heridas por zona, cero item. `PlayerMedicalState` es objeto plano con singleton estático — un
-  MonoBehaviour se lo lleva el rig de STP al reconstruirse. El lado del golpe sale del impacto y luego de la FUERZA, que va al revés.
-- **Red gratis**: bits 7/8 de `buttons` (ADR-044), sin campo, sin bump, sin ADR y sin una línea de Rust (`.claude/rules/red-wire-y-autoridad.md` §2).
-- **Los brazos de 1P NO son del jugador: cada wieldable trae SU copia del esqueleto** (12 prefabs, `Forearm.*`; el 3P usa `LowerArm.*`), así que el
-  hook vigila el wieldable ACTIVO. Y la venda se apaga con la MALLA del brazo: es su propio renderer y flotaría sola al guardar el arma.
-- **El primer horneado del avatar BORRÓ el `RealForm`** del robapieles (falta `MeshyImports`, gitignored), con exit 0 y sólo un aviso: se vio como
-  −81 líneas de diff. Re-horneado y verificado. Radio de 3P **medido sobre la malla** tras dos estimaciones a ojo fallidas en sentidos opuestos.
-  15 tests nuevos verdes, CompileCheck 0 ×4, capturas en los dos rigs; los hooks siguen sin verse en Play.
-
-### 2026-09-08 — 39.ª tanda: menú de calidad gráfica (ADR-134 enmienda 1)
-- Seis escalones + Custom + 17 ajustes en la pestaña Graphics; ni DLSS ni raytracing: son HDRP-only, así que la fila es Off/FSR 1.0/STP.
-  (`GraphicsQualityPresets.cs`, `BackroomsGraphicsOptionsUI.cs`, `GraphicsOptionsRowsBuilder.cs`): patrón ADR-046.
-- BUG: `onValueChanged` con `_writingWidgets` bajada rebota al Ultra. Arreglo:
-  `SetValueWithoutNotify`/`SetIsOnWithoutNotify` (`BackroomsGraphicsOptionsUI.cs`), test sin él rojo (1/6).
-- ADR-134+1: UN solo pipeline en caliente. CAPACIDADES (soportes) vs PRESUPUESTOS (escala/muestras/dist/atlas).
-  Antialiasing por cámara; «sin sombras» = dist 0 (`BackroomsGraphicsApplier.cs`).
-- Verificado EN PLAY (STP_Showcase): Very Low (0,6x/1/0 m), Ultra (1,25x/8/120 m), High (1x/2/50 m).
-  EditMode headless 26/26 en tres fixtures. CompileCheck 0 ×4.
-
-### 2026-09-07 — 37.ª tanda: la mano al milímetro y la cuerda con la izquierda (ADR-133 enm. 1)
-- Joel: «muy arriba, no orgánico», mano «al milímetro» con foto de referencia, y la otra mano girando la manivela. Cuatro clips HORNEADOS por código
-  (`BackroomsCrankFlashlightPoseBaker.cs`): idle/equipar/enfundar muestrean la antorcha del FBX del vendor y recolocan el brazo; la cuerda es propia.
-- Puño+tubo rígidos bajo `Hand.R`; alabeo BARRIDO por torsión de muñeca ≈ vendor (63° → −65°); IK de dos huesos; los dedos se cierran por CONTACTO
-  (primer ángulo que no penetra, dos pasadas, una sola vez): todas las falanges a 7 mm eje-piel. La pila de dedos va 5,4 cm delante del origen de `Torch`.
-- Manivela al arco LIBRE de la mano (−88°, izquierda): la órbita del pomo a 9 mm de aire de la derecha. Capa «Crank» en controller copiado del
-  `Template_Tool`; el wieldable dibuja la manivela desde la FASE del Animator en `LateUpdate`. Izquierda por IK sobre el pomo, hombro adelantado 64 cm.
-- Ocho tests nuevos (`CrankFlashlightAnimationTests`) + 15/15 de item; CompileCheck 0 ×4. Idle de 26 MB → 4,7 (curvas constantes a dos claves).
-- Sin ver en Play: `FistFromEye` (0,10, −0,11, 0,36) y lente 8°↓/8°← son diseño; el fundido de la izquierda (0,3 s) y el bamboleo (1,2°) piden ojo.
-
+> **Dos sesiones en paralelo el 10-09** convergen aquí: una atacó el lag de red (42.ª–43.ª abajo, wire acabó en
+> **63** con ADR-140), la otra midió y tocó el cliente (44.ª–47.ª). Renumeradas por orden cronológico real.

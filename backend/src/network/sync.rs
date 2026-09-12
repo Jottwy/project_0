@@ -1064,12 +1064,24 @@ pub fn peer_list_datagrams(peers: Vec<PeerInfo>) -> Vec<PacketPayload> {
 /// No se escapaba ningún datagrama, pero se pagaba el AOI, el `clone()` de la pose y el lote entero
 /// para un destino imposible. Y un filtro que enumera un subconjunto de las condiciones del otro es
 /// justo la clase de duplicado que se desincroniza en silencio cuando se añade la quinta.
+/// **Sale ORDENADO, y no es cosmético — regla dura 13.** `net.peers` es un `HashMap`: su orden de
+/// iteración es arbitrario y cambia entre ejecuciones. El bucle de emisión recorre este `Vec` para
+/// decidir el orden de salida, y el índice espacial llena sus casillas con él; los dos daban por
+/// buena una «estabilidad» que el `Vec` tenía sólo dentro de una ronda, no entre corridas. Ordenar
+/// por id lo vuelve cierto de verdad y cuesta un `sort` de N ids por ronda.
+///
+/// (Lo detectó la rama de auditoría de rendimiento en `6750e5b0`, sobre la versión de este filtro
+/// que aún enumeraba las condiciones a mano. El predicado compartido y el orden son arreglos
+/// independientes del mismo sitio, y aquí van los dos.)
 pub(crate) fn relay_destinations(net: &NetworkManager) -> Vec<PeerId> {
-    net.peers
+    let mut out: Vec<PeerId> = net
+        .peers
         .values()
         .filter(|p| net.peer_is_gameplay_destination(p))
         .map(|p| p.id)
-        .collect()
+        .collect();
+    out.sort_unstable();
+    out
 }
 
 /// 2026-09-10 — cuántos peers pueden RECIBIR, para la condición `joined` de las puertas de roster.
@@ -3686,10 +3698,14 @@ mod attention_cone_tests {
         // Entra apagado a propósito: el búfer de interpolación del cliente mide el ritmo GLOBAL y
         // no por peer, y hasta que eso cambie mezclar 30 y 15 Hz CERCA produciría tirones. Ver el
         // doc de `POSE_CONE_HALF_ANGLE_DEG`.
-        assert!(
-            !POSE_CONE_ENABLED,
-            "el cono no puede encenderse sin el retardo de interpolación por peer en Unity"
-        );
+        // `const` porque el valor se conoce al compilar y clippy exige que se diga: así el fallo
+        // llega al compilar, no al correr los tests, que para una puerta de este tipo es mejor.
+        const {
+            assert!(
+                !POSE_CONE_ENABLED,
+                "el cono no puede encenderse sin el retardo de interpolación por peer en Unity"
+            )
+        };
         assert_eq!(
             POSE_CONE_HALF_ANGLE_DEG, 180.0,
             "180° = todo cuenta como delante = ni un byte de diferencia con hoy"
@@ -3871,8 +3887,8 @@ mod fidelity_cap_tests {
         let left = [-10.0, 0.0, 0.0];
         let right = [10.0, 0.0, 0.0];
 
-        let mut a = vec![cand(100.0, right, 1), cand(100.0, left, 2)];
-        let mut b = vec![cand(100.0, right, 2), cand(100.0, left, 1)];
+        let mut a = [cand(100.0, right, 1), cand(100.0, left, 2)];
+        let mut b = [cand(100.0, right, 2), cand(100.0, left, 1)];
         a.sort_unstable_by(pose_fidelity_order);
         b.sort_unstable_by(pose_fidelity_order);
 
@@ -3889,7 +3905,7 @@ mod fidelity_cap_tests {
 
         // Y la distancia manda sobre todo lo demás: el más cercano gana aunque su identificador sea
         // el más alto de la bolsa.
-        let mut c = vec![
+        let mut c = [
             cand(900.0, [30.0, 0.0, 0.0], 1),
             cand(4.0, [2.0, 0.0, 0.0], 999),
         ];

@@ -1,0 +1,88 @@
+renderers=20318 visible=9610 withPropertyBlock=0 instancedMaterialSlots=66 distinctKeys=83
+count	visible	type|shader|material|pb|shadows
+12587	6378	MeshRenderer|Universal Render Pipeline/Lit|LayerLampEmissive|pb=0|shadows=On
+3096	470	MeshRenderer|Universal Render Pipeline/Lit|URP_M_OfficePapers|pb=0|shadows=On
+624	331	MeshRenderer|Universal Render Pipeline/Lit|Canon_M_Backrooms_Floor_s3|pb=0|shadows=On
+602	318	MeshRenderer|Universal Render Pipeline/Lit|Canon_M_Backrooms_Ceiling_s3|pb=0|shadows=On
+593	315	MeshRenderer|Backrooms/GridWallOffset|Canon_M_Backrooms_Wall_s3|pb=0|shadows=On
+553	296	MeshRenderer|Universal Render Pipeline/Lit|LayerPropMatte_s3|pb=0|shadows=On
+372	294	MeshRenderer|Backrooms/GridWallOffset|Canon_M_Backrooms_Wall|pb=0|shadows=On
+474	282	MeshRenderer|Universal Render Pipeline/Lit|Canon_M_Backrooms_Floor_s2|pb=0|shadows=On
+345	274	MeshRenderer|Universal Render Pipeline/Lit|LayerPropMatte|pb=0|shadows=On
+444	264	MeshRenderer|Universal Render Pipeline/Lit|Canon_M_Backrooms_Ceiling_s2|pb=0|shadows=On
+444	264	MeshRenderer|Backrooms/GridWallOffset|Canon_M_Backrooms_Wall_s2|pb=0|shadows=On
+414	246	MeshRenderer|Universal Render Pipeline/Lit|LayerPropMatte_s2|pb=0|shadows=On
+390	222	MeshRenderer|Universal Render Pipeline/Lit|Wg3Sign|pb=0|shadows=Off
+268	213	MeshRenderer|Universal Render Pipeline/Lit|Canon_M_Backrooms_Ceiling|pb=0|shadows=On
+256	202	MeshRenderer|Universal Render Pipeline/Lit|Wg3_FloorOffice|pb=0|shadows=On
+175	165	MeshRenderer|Universal Render Pipeline/Lit|Canon_M_Backrooms_Floor_s1|pb=0|shadows=On
+216	160	MeshRenderer|Universal Render Pipeline/Lit|Paper Tray|pb=0|shadows=On
+165	156	MeshRenderer|Universal Render Pipeline/Lit|Canon_M_Backrooms_Ceiling_s1|pb=0|shadows=On
+165	156	MeshRenderer|Backrooms/GridWallOffset|Canon_M_Backrooms_Wall_s1|pb=0|shadows=On
+228	153	MeshRenderer|Universal Render Pipeline/Lit|Canon_M_Backrooms_Floor_s4|pb=0|shadows=On
+220	149	MeshRenderer|Universal Render Pipeline/Lit|Canon_M_Backrooms_Ceiling_s4|pb=0|shadows=On
+155	147	MeshRenderer|Universal Render Pipeline/Lit|LayerPropMatte_s1|pb=0|shadows=On
+381	147	MeshRenderer|Universal Render Pipeline/Lit|LayerPropMatte_s6|pb=0|shadows=On
+381	147	MeshRenderer|Universal Render Pipeline/Lit|Canon_M_Backrooms_Floor_s6|pb=0|shadows=On
+381	147	MeshRenderer|Backrooms/GridWallOffset|Canon_M_Backrooms_Wall_s6|pb=0|shadows=On
+381	147	MeshRenderer|Universal Render Pipeline/Lit|Canon_M_Backrooms_Ceiling_s6|pb=0|shadows=On
+214	141	MeshRenderer|Universal Render Pipeline/Lit|Air Vent|pb=0|shadows=On
+209	140	MeshRenderer|Backrooms/GridWallOffset|Canon_M_Backrooms_Wall_s4|pb=0|shadows=On
+206	126	MeshRenderer|Universal Render Pipeline/Lit|Canon_M_Backrooms_Floor_s5|pb=0|shadows=On
+183	121	MeshRenderer|Universal Render Pipeline/Lit|LayerPropMatte_s4|pb=0|shadows=On
+151	117	MeshRenderer|Universal Render Pipeline/Lit|Canon_M_Backrooms_Floor|pb=0|shadows=On
+188	114	MeshRenderer|Universal Render Pipeline/Lit|Canon_M_Backrooms_Ceiling_s5|pb=0|shadows=On
+186	113	MeshRenderer|Backrooms/GridWallOffset|Canon_M_Backrooms_Wall_s5|pb=0|shadows=On
+142	108	MeshRenderer|Universal Render Pipeline/Lit|Wg3_CeilingOffice|pb=0|shadows=On
+164	99	MeshRenderer|Universal Render Pipeline/Lit|LayerPropMatte_s5|pb=0|shadows=On
+92	67	MeshRenderer|Universal Render Pipeline/Lit|Pc And Monitor|pb=0|shadows=On
+97	62	MeshRenderer|Universal Render Pipeline/Lit|LayerLampEmissive_emissive|pb=0|shadows=On
+104	61	MeshRenderer|Universal Render Pipeline/Lit|Cardboard Boxes|pb=0|shadows=On
+80	60	MeshRenderer|Universal Render Pipeline/Lit|Keyboard And Mouse|pb=0|shadows=On
+67	51	MeshRenderer|Universal Render Pipeline/Lit|Laptop Background|pb=0|shadows=On
+80	48	MeshRenderer|Universal Render Pipeline/Lit|Wall Clock|pb=0|shadows=On
+97	47	MeshRenderer|Universal Render Pipeline/Lit|Cupboard|pb=0|shadows=On
+57	45	MeshRenderer|Universal Render Pipeline/Lit|Desk 1|pb=0|shadows=On
+53	38	MeshRenderer|Universal Render Pipeline/Lit|Desk 2|pb=0|shadows=On
+52	37	MeshRenderer|Universal Render Pipeline/Lit|Office Phone|pb=0|shadows=On
+38	31	MeshRenderer|Universal Render Pipeline/Lit|Chair 2|pb=0|shadows=On
+43	31	MeshRenderer|Universal Render Pipeline/Lit|Chair 3|pb=0|shadows=On
+41	29	MeshRenderer|Universal Render Pipeline/Lit|Trash Can 1|pb=0|shadows=On
+56	28	MeshRenderer|Universal Render Pipeline/Lit|Runtime_Lit|pb=0|shadows=On
+56	28	MeshRenderer|TextMeshPro/Mobile/Distance Field|LiberationSans SDF Material (Instance)|pb=0|shadows=Off
+31	27	MeshRenderer|Universal Render Pipeline/Lit|Chair 1|pb=0|shadows=On
+25	16	MeshRenderer|Universal Render Pipeline/Lit|Laptop Background_emissive|pb=0|shadows=On
+32	16	MeshRenderer|Universal Render Pipeline/Lit|Whiteboard|pb=0|shadows=On
+25	15	SkinnedMeshRenderer|Universal Render Pipeline/Lit|FacelingAdultRealForm|pb=0|shadows=On
+20	12	MeshRenderer|Universal Render Pipeline/Lit|Glass|pb=0|shadows=On
+22	10	SkinnedMeshRenderer|Universal Render Pipeline/Lit|FacelingChildRealForm|pb=0|shadows=On
+9	7	MeshRenderer|Universal Render Pipeline/Lit|Wg3_Partition|pb=0|shadows=On
+72	7	MeshRenderer|Universal Render Pipeline/Lit|URP_M_WarehouseAssets|pb=0|shadows=On
+4	4	MeshRenderer|Universal Render Pipeline/Lit|Metal 3|pb=0|shadows=On
+122	4	MeshRenderer|Universal Render Pipeline/Lit|WoodenCrate|pb=0|shadows=On
+10	3	SkinnedMeshRenderer|Shader Graphs/Skin|MaleSurvivorSkin (Instance)|pb=0|shadows=On
+10	3	SkinnedMeshRenderer|Universal Render Pipeline/Lit|Beard|pb=0|shadows=On
+10	3	SkinnedMeshRenderer|Universal Render Pipeline/Lit|MaleSurvivorEyes|pb=0|shadows=On
+8	3	MeshRenderer|Universal Render Pipeline/Lit|Laserjet Print|pb=0|shadows=On
+2	2	MeshRenderer|Universal Render Pipeline/Lit|Wood|pb=0|shadows=On
+2	2	MeshRenderer|Universal Render Pipeline/Lit|Leather 2|pb=0|shadows=On
+2	2	MeshRenderer|Universal Render Pipeline/Lit|Leather 1|pb=0|shadows=On
+4	2	MeshRenderer|Universal Render Pipeline/Lit|BR_CrankFlashlight_Mat|pb=0|shadows=On
+1	1	MeshRenderer|Universal Render Pipeline/Lit|Reception Counter|pb=0|shadows=On
+1	0	MeshRenderer|Universal Render Pipeline/Lit|Canon_M_Backrooms_Floor_s8|pb=0|shadows=On
+1	0	MeshRenderer|Universal Render Pipeline/Lit|Canon_M_Backrooms_Floor_s7|pb=0|shadows=On
+1	0	MeshRenderer|Universal Render Pipeline/Lit|LayerPropMatte_s7|pb=0|shadows=On
+1	0	MeshRenderer|Backrooms/GridWallOffset|Canon_M_Backrooms_Wall_s7|pb=0|shadows=On
+1	0	MeshRenderer|Backrooms/GridWallOffset|Canon_M_Backrooms_Wall_s8|pb=0|shadows=On
+1	0	MeshRenderer|Universal Render Pipeline/Lit|Canon_M_Backrooms_Ceiling_s7|pb=0|shadows=On
+1	0	SkinnedMeshRenderer|Universal Render Pipeline/Lit|TShirt_White|pb=0|shadows=On
+1	0	SkinnedMeshRenderer|Universal Render Pipeline/Lit|Boots|pb=0|shadows=On
+6	0	MeshRenderer|Universal Render Pipeline/Lit|Runtime_Transparent|pb=0|shadows=Off
+3	0	MeshRenderer|Universal Render Pipeline/Lit|Lit|pb=0|shadows=On
+1	0	MeshRenderer|Universal Render Pipeline/Lit|Canon_M_Backrooms_Ceiling_s8|pb=0|shadows=On
+1	0	SkinnedMeshRenderer|Universal Render Pipeline/Lit|Pants_Woodland|pb=0|shadows=On
+10	0	MeshRenderer|Universal Render Pipeline/Lit|Runtime_Emissive|pb=0|shadows=On
+1	0	MeshRenderer|Universal Render Pipeline/Lit|LayerPropMatte_s8|pb=0|shadows=On
+lights enabled=294 activeInHierarchy=294 withShadowsActive=6 total=3102 wg3Lights=3101 wg3Renderers=16453 wg3Colliders=19410 wg3Transforms=24796
+visibleRenderers=9610 visibleMeshTriangles=474074
+distinctMaterials=209

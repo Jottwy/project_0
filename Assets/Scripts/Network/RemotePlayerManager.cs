@@ -634,6 +634,13 @@ namespace BackroomsSurvival.Net
                 builtSpecies = species
             };
 
+            // El mundo reparte la luz por planta (Wg3StoreyLayers) y un prefab nace con la máscara
+            // por defecto, que con tres sótanos es B3: en la calle el proxy salía NEGRO con las
+            // paredes de al lado iluminadas. Un cuerpo cambia de planta a cada paso, así que lleva
+            // todas las capas. Va DESPUÉS del cartel del nombre para cubrirlo también, y el
+            // componente repasa lo que se le cuelgue más tarde (pickups, marcador).
+            BackroomsSurvival.WorldGen3.Wg3DynamicLitLayers.Attach(go);
+
             return view;
         }
 

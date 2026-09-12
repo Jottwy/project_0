@@ -1,0 +1,26 @@
+renderers=2958 visible=58 withPropertyBlock=0 instancedMaterialSlots=13 distinctKeys=22
+count	visible	type|shader|material|pb|shadows
+2716	52	MeshRenderer|Universal Render Pipeline/Lit|URP_M_OfficePapers|pb=0|shadows=On
+57	3	MeshRenderer|Universal Render Pipeline/Lit|Paper Tray|pb=0|shadows=On
+37	2	MeshRenderer|Universal Render Pipeline/Lit|Laptop Background|pb=0|shadows=On
+8	1	MeshRenderer|Universal Render Pipeline/Lit|Laptop Background_emissive|pb=0|shadows=On
+2	0	SkinnedMeshRenderer|Universal Render Pipeline/Lit|Beard|pb=0|shadows=On
+5	0	SkinnedMeshRenderer|Universal Render Pipeline/Lit|FacelingAdultRealForm|pb=0|shadows=On
+2	0	SkinnedMeshRenderer|Shader Graphs/Skin|MaleSurvivorSkin (Instance)|pb=0|shadows=On
+2	0	MeshRenderer|Universal Render Pipeline/Lit|Wood|pb=0|shadows=On
+2	0	MeshRenderer|Universal Render Pipeline/Lit|Leather 2|pb=0|shadows=On
+11	0	MeshRenderer|Universal Render Pipeline/Lit|Runtime_Lit|pb=0|shadows=On
+1	0	MeshRenderer|Universal Render Pipeline/Lit|Reception Counter|pb=0|shadows=On
+10	0	MeshRenderer|Universal Render Pipeline/Lit|Runtime_Emissive|pb=0|shadows=On
+4	0	MeshRenderer|Universal Render Pipeline/Lit|Metal 3|pb=0|shadows=On
+2	0	SkinnedMeshRenderer|Universal Render Pipeline/Lit|MaleSurvivorEyes|pb=0|shadows=On
+2	0	MeshRenderer|Universal Render Pipeline/Lit|Leather 1|pb=0|shadows=On
+3	0	MeshRenderer|Universal Render Pipeline/Lit|Lit|pb=0|shadows=On
+4	0	MeshRenderer|Universal Render Pipeline/Lit|BR_CrankFlashlight_Mat|pb=0|shadows=On
+15	0	MeshRenderer|Universal Render Pipeline/Lit|Glass|pb=0|shadows=On
+11	0	MeshRenderer|TextMeshPro/Mobile/Distance Field|LiberationSans SDF Material (Instance)|pb=0|shadows=Off
+60	0	MeshRenderer|Universal Render Pipeline/Lit|Wall Clock|pb=0|shadows=On
+6	0	MeshRenderer|Universal Render Pipeline/Lit|Runtime_Transparent|pb=0|shadows=Off
+4	0	SkinnedMeshRenderer|Universal Render Pipeline/Lit|FacelingChildRealForm|pb=0|shadows=On
+lights enabled=0 withShadows=0 total=0
+distinctMaterials=50

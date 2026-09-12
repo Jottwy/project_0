@@ -8,6 +8,92 @@
 > la sesión viva, el próximo paso, lo que está en curso, lo que no se toca, la deuda conocida y
 > los riesgos abiertos. Aquí solo vive lo que ya pasó, de lo más reciente a lo más antiguo.
 
+
+## Trasladado de STATE.md el 2026-09-10 (cuarto corte): la tanda 38
+
+### 2026-09-08 — 38.ª tanda: la venda aplicada — un ESTADO por brazo, no un efecto (`bb9e3cc1`, en tronco)
+- No existía nada médico: salud escalar, cero heridas por zona, cero item. `PlayerMedicalState` es objeto plano con singleton estático — un
+  MonoBehaviour se lo lleva el rig de STP al reconstruirse. El lado del golpe sale del impacto y luego de la FUERZA, que va al revés.
+- **Red gratis**: bits 7/8 de `buttons` (ADR-044), sin campo, sin bump, sin ADR y sin una línea de Rust (`.claude/rules/red-wire-y-autoridad.md` §2).
+- **Los brazos de 1P NO son del jugador: cada wieldable trae SU copia del esqueleto** (12 prefabs, `Forearm.*`; el 3P usa `LowerArm.*`), así que el
+  hook vigila el wieldable ACTIVO. Y la venda se apaga con la MALLA del brazo: es su propio renderer y flotaría sola al guardar el arma.
+- **El primer horneado del avatar BORRÓ el `RealForm`** del robapieles (falta `MeshyImports`, gitignored), con exit 0 y sólo un aviso: se vio como
+  −81 líneas de diff. Re-horneado y verificado. Radio de 3P **medido sobre la malla** tras dos estimaciones a ojo fallidas en sentidos opuestos.
+  15 tests nuevos verdes, CompileCheck 0 ×4, capturas en los dos rigs; los hooks siguen sin verse en Play.
+
+
+## Trasladado de STATE.md el 2026-09-10 (tercer corte): la tanda 39
+
+### 2026-09-08 — 39.ª tanda: menú de calidad gráfica (ADR-134 enmienda 1)
+- Seis escalones + Custom + 17 ajustes en la pestaña Graphics; ni DLSS ni raytracing: son HDRP-only, así que la fila es Off/FSR 1.0/STP.
+  (`GraphicsQualityPresets.cs`, `BackroomsGraphicsOptionsUI.cs`, `GraphicsOptionsRowsBuilder.cs`): patrón ADR-046.
+- BUG: `onValueChanged` con `_writingWidgets` bajada rebota al Ultra. Arreglo:
+  `SetValueWithoutNotify`/`SetIsOnWithoutNotify` (`BackroomsGraphicsOptionsUI.cs`), test sin él rojo (1/6).
+- ADR-134+1: UN solo pipeline en caliente. CAPACIDADES (soportes) vs PRESUPUESTOS (escala/muestras/dist/atlas).
+  Antialiasing por cámara; «sin sombras» = dist 0 (`BackroomsGraphicsApplier.cs`).
+- Verificado EN PLAY (STP_Showcase): Very Low (0,6x/1/0 m), Ultra (1,25x/8/120 m), High (1x/2/50 m).
+  EditMode headless 26/26 en tres fixtures. CompileCheck 0 ×4.
+
+
+## Trasladado de STATE.md el 2026-09-10 (segundo corte): la tanda 37
+
+### 2026-09-07 — 37.ª tanda: la mano al milímetro y la cuerda con la izquierda (ADR-133 enm. 1)
+- Joel: «muy arriba, no orgánico», mano «al milímetro» con foto de referencia, y la otra mano girando la manivela. Cuatro clips HORNEADOS por código
+  (`BackroomsCrankFlashlightPoseBaker.cs`): idle/equipar/enfundar muestrean la antorcha del FBX del vendor y recolocan el brazo; la cuerda es propia.
+- Puño+tubo rígidos bajo `Hand.R`; alabeo BARRIDO por torsión de muñeca ≈ vendor (63° → −65°); IK de dos huesos; los dedos se cierran por CONTACTO
+  (primer ángulo que no penetra, dos pasadas, una sola vez): todas las falanges a 7 mm eje-piel. La pila de dedos va 5,4 cm delante del origen de `Torch`.
+- Manivela al arco LIBRE de la mano (−88°, izquierda): la órbita del pomo a 9 mm de aire de la derecha. Capa «Crank» en controller copiado del
+  `Template_Tool`; el wieldable dibuja la manivela desde la FASE del Animator en `LateUpdate`. Izquierda por IK sobre el pomo, hombro adelantado 64 cm.
+- Ocho tests nuevos (`CrankFlashlightAnimationTests`) + 15/15 de item; CompileCheck 0 ×4. Idle de 26 MB → 4,7 (curvas constantes a dos claves).
+- Sin ver en Play: `FistFromEye` (0,10, −0,11, 0,36) y lente 8°↓/8°← son diseño; el fundido de la izquierda (0,3 s) y el bamboleo (1,2°) piden ojo.
+
+
+## Trasladado de STATE.md el 2026-09-10: las tandas 35 y 36
+
+### 2026-09-07 — 36.ª tanda: la linterna de manivela (ADR-133), de cero a en la mano del vecino, en rama aparte
+- Seis commits en `claude/crank-flashlight-model-1d8632` (`5063f09e`…`c5d9b8ad`), SIN fusionar. Carga en `Durability` (como el bote, ADR-068);
+  `BR_Battery Health` nueva, sorteada 0,8–1 y persistida. Hereda de `Wieldable`: `FPSWieldablesInput.cs:137` hace `as IUseInputHandler`; un puente no ve `Hold`.
+- Parpadeo por `intensity`, NUNCA `enabled` (ADR-042 relaya `light_on` a 10 Hz; ADR-080 detecta por él). Joel: 0,40 velocidad, 18–22 s/vuelta, 60 s × salud,
+  ruido 10 m/vuelta (`WorldNoise.CrankLoudness`), bit 6 `RemoteButtons.Cranking`, nace al 10–50 %.
+- DOS mallas padre-hijo. Tres fallos cazados por CAPTURA (`BackroomsCrankFlashlightShot.cs`, sin Play): pivote en el POMO (grosor 0,0132/0,0071),
+  eje Z que barría por dentro (→ X), separación a ojo (→ derivada de las dos mallas, 0,0438). Mallas 93 k + 97 k tris (24 MB): piden remesh.
+- Pickup propio + icono (`tools/dev/MakeItemIcon.py`): el heredado DABA UNA ANTORCHA al recoger. `ProxyCrankHook` en runtime sobre el modelo de mano
+  (`ProxyHeldItemHook.cs`), sin rehornear. `BackroomsEditModeFixtureRunner` (Test Runner muerto): 13/13. Loot: no sale hasta levantar `RestrictCacheCatalog`.
+
+### 2026-09-07 — 35.ª tanda: el día 3 — UV al mundo, macizos fundidos y caras enterradas
+- **La costura de textura NO la arreglaba el fundido**: la UV arrancaba en (0,0) por cara y la FASE se reiniciaba en cada caja. Ahora
+  proyecta la esquina en MUNDO, módulo el periodo (sin él, a 5 km la UV vale 2 500 y el float pierde el milímetro). `UvPerMetre` 0,5 intacto.
+- **Fundido por (máscara de planta, estilo, aspecto, loseta) y NO por chunk**: el chunk no se parte en Y y mete 7-8 plantas, y un Renderer
+  tiene UNA máscara. Fuera, con test: el invisible de ADR-129 D2 y los prismas de ADR-125. **4 718 macizos → 550 renderers** en Play.
+- **Caras enterradas podadas**: ésa es la causa del z-fighting, no el número de mallas. Sólo si OTRA caja cubre la cara ENTERA — un falso
+  positivo es un agujero por el que se ve dentro de una pared. Tapar NO es mutuo, y hay test.
+- Antes (sonda `probe_solids_per_chunk`): 5 119 macizos y 1 401 tramos en la (0,0), 90 % fundibles. Capturas `perf_*` sin agujeros y con la
+  retícula del suelo continua entre cajas. EditMode 38/39: el rojo de `cor_ramp` es PREEXISTENTE (lee volúmenes, no la malla).
+
+
+=======
+## Trasladado de STATE.md el 2026-09-12: la 40.ª tanda, y la tanda del viewmodel del 09-09 que vino con `claude/fov-bug-animated-objects-3fe716`
+
+> La segunda se numeró 38.ª EN SU RAMA; en el tronco la 38.ª es la venda (más abajo). Texto verbatim de las dos.
+
+### 2026-09-09 — 40.ª tanda: primer playtest real de Steam — redes y cuentas distintas (ADR-135 enm. 2)
+- Joel probó con un segundo equipo en OTRA red y OTRA cuenta de Steam: conexión bidireccional, `transport=steam`. Primera vez que el
+  criterio físico de ADR-117 D9 (dos jugadores en redes distintas se juntan) se cumple de verdad — la vía Steam lo cierra, no el relay propio.
+- Dos bugs del bombeo, cazados en el mismo playtest (`4da8889e`): `Poll()` era `void` y se tragaba su excepción (203 excepciones a máxima
+  velocidad tras invalidar Steam el socket); nadie cerraba el túnel con Alt+F4 (`IsBackground`). Arreglo: `Poll()` → `bool`, `Application.quitting`.
+- Sin cambios de wire ni de las decisiones D1-D11. `SteamTunnelTests` 23/23; arnés 368/369 (1 rojo preexistente ajeno, `IgdProtocol`). CompileCheck 0×4.
+
+### 2026-09-09 — 38.ª tanda: el warp del viewmodel como regla, y las manos desde la pose neutra (ADR-077 enm. 2-5)
+- FOV de los tres objetos nuevos: `_FOV`/`_FOVEnabled` son GLOBALES y sólo alabea `LitFieldOfView*.shadergraph`. DOS materiales por
+  objeto (`X.mat` mundo, `FP_X.mat` mano) vía `BackroomsViewmodelMaterials.cs`, con el metálico de Meshy reempaquetado en `_MaskMap`.
+- Puerta `ViewmodelWarpTests.cs`. Enm. 3: el agarre se lee del donante SKINNED por bindpose. Enm. 4 (`dbfde7e3`): dedos horneados
+  sobre la malla y destornillador a UNA mano. Enm. 5: mano desde la NEUTRA, flexión con topes 90/105/75 (pulgar 50/55/60).
+- Enm. 5 también: eje de cierre ESCRITO (−X; pulgar +Z), muñeca por ángulos y el sitio del objeto BARRIDO milímetro a milímetro por
+  coste. Tres algoritmos dieron el mismo número byte a byte: la búsqueda leía como choque la falange del medio, que se hunde aposta.
+- Medido: yemas del destornillador +11,9 / −2,8 / −1,2 / +1,3 mm; del bote −0,6 / −1,4 / +7,6 y el índice en el pulsador a 9,7 cm.
+  EditMode **1421/1435** (los 12 rojos, los conocidos); CompileCheck 0 ×4. MAL: nada queda ENCERRADO, el bote cuelga de la tapa.
+
+>>>>>>> migration/worldgraph-v1
 ## Trasladado de STATE.md el 2026-09-10: la 42.ª tanda, entera
 
 ### 2026-09-10 — 42.ª tanda: de «extremadamente lag» a 13,9 KB/s — medir antes de tocar, cuatro veces seguidas
@@ -81,6 +167,7 @@ con la sesión viva), «es un crash» (falso: sin dumps y con los procesos vivos
 
 **Estado final:** suite backend **1442/1442**, `CompileCheckClient` 0 ×4, 16 commits, tres ADR (137, 138, 139) y seis builds subidas a Steam.
 
+<<<<<<< HEAD
 ## Trasladado de STATE.md el 2026-09-09: las tandas 33 y 34
 
 ### 2026-09-06 — 34.ª tanda: el decaimiento del CLIENTE (ADR-130 r2b) y el cierre de las ramas viejas
@@ -3286,6 +3373,15 @@ si las sondas de `J:/wg3*` valen algo o se borran. Las ramas viejas (`angry-jack
 - Fuera, declarado: `WEIRD_SPREAD` por profundidad (vive en la subdivisión del plan) y TODO el cliente (r2b), que pisa la rama de materiales.
 
 
+### 2026-09-09 — 41.ª tanda: la invitación te deja AL LADO de quien te invitó (ADR-136), y el aviso de quién entra
+- **VERIFICADO EN PLAY por Joel** (build 25217339, sin `SetLive`): invitación por overlay, nacer junto al invitador y el cartel de entrada. Y el
+  precio, dicho por él: «extremadamente lag» — pasa a próximo paso y a Riesgos con nombre.
+- **R0, el fallo que habría hundido todo lo demás**: `HandleLobbyEntered` usaba la sobrecarga de TRES argumentos, así que una invitación entraba
+  sin relay ni túnel de Steam mientras el navegador sí los pasaba. `LobbyJoinTarget` lee las mismas claves para las dos rutas.
+- **R1/R3 sin bump de wire** (ADR-116 D3): `platform_id`/`invited_by` con `serde(default)`; mapa identidad→peer con el host DENTRO (por eso «host
+  invita» y «cliente invita» son el mismo código); punto desde el ROSTER (D4); `Invited` gana a `Restored`. El aviso, `PeerDiscovered` por roster.
+- **Convergencia y dos trampas**: tronco + luces por planta + ADR-077 fusionados; `DECISIONS.md` chocó dos veces y se resolvió conservando los dos
+  apéndices. El `.csproj` no listaba 10 `.cs` nuevos (CompileCheck habría dado falso verde) y `rustfmt` reescribió el WIP de `wg3` (revertido).
 ## Movido VERBATIM desde STATE.md el 2026-09-11 (presupuesto de 20 KB)
 
 ### 2026-09-07 — 36.ª tanda: la linterna de manivela (ADR-133), de cero a en la mano del vecino, en rama aparte
@@ -3308,3 +3404,82 @@ si las sondas de `J:/wg3*` valen algo o se borran. Las ramas viejas (`angry-jack
 - Antes (sonda `probe_solids_per_chunk`): 5 119 macizos y 1 401 tramos en la (0,0), 90 % fundibles. Capturas `perf_*` sin agujeros y con la
   retícula del suelo continua entre cajas. EditMode 38/39: el rojo de `cor_ramp` es PREEXISTENTE (lee volúmenes, no la malla).
 
+## Trasladado de STATE.md el 2026-09-12 (fusion de las dos ramas): las tandas que no caben en el presupuesto
+
+### 2026-09-10 — 42.ª tanda: de «extremadamente lag» a 13,9 KB/s (detalle completo en `SESSION-LOG.md`)
+- **253,8 → 13,9 KB/s (−94,5 %)**, cola **1,9 s → 0**, jitter 70 → 7 ms, enlace del 99 % al **5,4 %**. Partida real por Steam, dos redes.
+- **Medir descartó tres optimizaciones «obvias»**: `MovementReconciler` (RTT real 24 ms), LOD de entidades (0,2 % del tick) y el relay de
+  poses (8 %). El culpable era `ChunkState`, con el **92 %**, y sólo salió al desglosar el `BWTRACE` por opcode.
+- **ADR-137** (wire posicional, pose 246 → 76 B, wire 61→62), **ADR-138** (reproducción diferida con retardo adaptativo + 30 Hz) y
+  **ADR-139 D1** (el gate del chunk hashea sólo lo estable: 215 → 12,7 pkt/s, sin tocar el wire).
+- Dos bugs de Joel: el que entra nacía en **(0,0,0)**, y los contadores sumaban criaturas como jugadores. Y el arnés de playtest **nunca
+  arrancó sin clicks** pese a documentarlo. Suite 1442/1442, CompileCheck 0 ×4, 16 commits, seis builds a Steam.
+
+### 2026-09-09 — 41.ª tanda: la invitación te deja AL LADO de quien te invitó (ADR-136), y el aviso de quién entra
+- **VERIFICADO EN PLAY por Joel** (build 25217339, sin `SetLive`): invitación por overlay, nacer junto al invitador y el cartel de entrada. Y el
+  precio, dicho por él: «extremadamente lag» — pasa a próximo paso y a Riesgos con nombre.
+- **R0, el fallo que habría hundido todo lo demás**: `HandleLobbyEntered` usaba la sobrecarga de TRES argumentos, así que una invitación entraba
+  sin relay ni túnel de Steam mientras el navegador sí los pasaba. `LobbyJoinTarget` lee las mismas claves para las dos rutas.
+- **R1/R3 sin bump de wire** (ADR-116 D3): `platform_id`/`invited_by` con `serde(default)`; mapa identidad→peer con el host DENTRO (por eso «host
+  invita» y «cliente invita» son el mismo código); punto desde el ROSTER (D4); `Invited` gana a `Restored`. El aviso, `PeerDiscovered` por roster.
+- **Convergencia y dos trampas**: tronco + luces por planta + ADR-077 fusionados; `DECISIONS.md` chocó dos veces y se resolvió conservando los dos
+  apéndices. El `.csproj` no listaba 10 `.cs` nuevos (CompileCheck habría dado falso verde) y `rustfmt` reescribió el WIP de `wg3` (revertido).
+
+### 2026-09-10 — 48.ª tanda: fusión de las dos ramas y build 25238618 subida a Steam
+- **Fusionadas** `claude/unwander-performance-audit-85a655` y `migration/worldgraph-v1` (`9ff790df`). Sin choque de
+  código; sólo `STATE.md`/`SESSION-LOG.md`, resueltos renumerando por orden real. `cargo test` 1453/1453, C# 4/4.
+- **Build de Steam 25238618 SUBIDA, sin rama asignada** (sin `SetLive`, comprobado): 600 ficheros, 12 cambiados,
+  74,75 MB. Ensayo previo con exclusiones verificadas. **Falta que Joel la habilite** en Steamworks → Builds.
+- **El WIP sin commitear de Joel se respetó**: copia plana fuera de git de 16 ficheros, `reset --hard` para construir
+  limpio, y restaurado después — verificado por checksum, `git status` idéntico al de antes. Detalle en `SERVER_BROWSER.md` §16.
+
+### 2026-09-10 — 47.ª tanda: playtest real — antes/después del fix de GC, red de 4 instancias medida
+- **Fix de replicadores STP (`79bccf28`), antes/después aislado, cámara fija**: dentro del ruido (±2-4 %) porque
+  ESTE mundo de prueba tiene CERO piezas STP construidas — el ahorro escala con piezas, no con tiempo. Correcto
+  por construcción, sin evidencia empírica de ganancia todavía (falta sembrar una base poblada).
+- **4 instancias con guardado aislado: los backends SÍ conectan esta vez** (la aislación quitó la contienda con
+  la partida de Joel). BWTRACE real: **54-56 KB/s estables**, hasta 44 remotos, 0 timeouts — muy por debajo de
+  los 253,8 KB/s pre-ADR-137. **Bug encontrado, fuera de alcance**: joiners de `CONNECT_TO` (NO la vía Steam de
+  ADR-136) nacen en el origen y el AOI los deja ciegos — red válida, no jugable a 4. `PERF_AUDIT_v1.md` §6.
+
+### 2026-09-10 — 46.ª tanda: de «extremadamente lag» a 13,9 KB/s — y el techo pasa a ser N² (otra sesión, detalle en `SESSION-LOG.md`)
+- **253,8 → 13,9 KB/s (−94,5 %)**, cola **1,9 s → 0**, jitter 70 → 7 ms, enlace del 99 % al **5,4 %**. Partida real por Steam, dos redes.
+- **Medir descartó tres optimizaciones «obvias»**: `MovementReconciler` (RTT real 24 ms), LOD de entidades (0,2 % del tick) y el relay de
+  poses (8 %). El culpable era `ChunkState`, con el **92 %**, y sólo salió al desglosar el `BWTRACE` por opcode.
+- **ADR-137** (wire posicional, pose 246 → 76 B, wire 61→62), **ADR-138** (reproducción diferida con retardo adaptativo + 30 Hz),
+  **ADR-139** (el gate del chunk hashea sólo lo estable) y **ADR-140** (roster con gate, varias poses por datagrama, wire →**63**).
+- Dos bugs de Joel: el que entra nacía en **(0,0,0)**, y los contadores sumaban criaturas como jugadores. Y el arnés de playtest **nunca
+  arrancó sin clicks** pese a documentarlo. Suite 1442/1442, CompileCheck 0 ×4, 16+ commits, seis builds a Steam.
+
+### 2026-09-10 — 45.ª tanda: GRD probado y descartado; y un hallazgo sobre el guardado compartido
+- **GPU Resident Drawer (técnica 4 vía B) verificado con A/B real: DESCARTADO.** `m_GPUResidentDrawerMode: 1`
+  fuerza ~1h54 de recompilación sin caché y el `Player.log` trae `wrong cbuffer setup. Missing
+  DOTS_INSTANCING_ON variant?` — `GridWallOffset.shader` (HLSL a mano) es incompatible, GRD no lo excluye en
+  silencio. Revertido, cero huella. Solo la vía A (fundir paneles) sigue en pie como IMPLEMENTAR.
+- **Hallazgo aparte, ya corregido**: los builds de perf usaban el `ProjectSettings.asset` tal cual (mismo
+  companyName/productName que el build de Steam de Joel) → guardado en la MISMA carpeta que su partida viva.
+  Sin daño verificado (sin demolish/damage/kill), 28 ficheros basura borrados con su OK. Ahora aislado con
+  `companyName` temporal, nunca commiteado.
+
+### 2026-09-10 — 44.ª tanda: aplicada la única técnica de la auditoría sin riesgo visual (GC de los replicadores STP)
+- **`StpBuildingReplicator`/`StpItemReplicator`/`StpCarryableReplicator`.LateUpdate** dejan de allocar un `HashSet<uint>`+
+  `List<uint>` NUEVOS cada frame (`_aliveScratch`/`_staleScratch` reutilizados, `.Clear()` en vez de `new`).
+- **`AddedKey` (string+`StringBuilder` por PIEZA, por FRAME) → `AddedKeyHash` (FNV-1a, `long`, cero alloc)**: solo se
+  comparaba por igualdad, nunca se mostraba ni persistía — mismo resultado observable, cero asignación.
+- El resto de técnicas (culling por planta, fundir paneles, tope de sombras, mip streaming) cambian algo visible y
+  quedan para su propia tarea con verificación en Play, tal como dice la auditoría. CompileCheck 4/4 (sin editor).
+
+### 2026-09-10 — 43.ª tanda: la primera medición del CLIENTE — y el cuello NO es la GPU (`docs/perf/PERF_AUDIT_v1.md`)
+- **Solo análisis, cero código de producción.** Sonda `Assets/_PerfProbe/PerfProbe.cs` (dev build, `PERFPROBE=1`, borrable), 10 corridas de 60 s
+  con autopiloto por inyección del Input System. Crudos en `docs/perf/raw/`; informe y dos borradores de ADR en `docs/perf/`.
+- **CPU-bound, no GPU-bound**: GPU p50 4,9-8,0 ms contra 14-24 ms de hilo principal; 1-7 % de frames GPU-bound a 1080p (84 % solo a 4K).
+  **Subframes híbridos: DESCARTADOS para Alpha 1**, con el número que lo justifica y la condición de reapertura escrita.
+- **Lo que sí sale**: 12 587 paneles de techo sueltos (62 % de 20 147 renderers); 429 luces vivas, 297-359 en frustum de 512 y 24 caras de sombra;
+  2,02 GB de texturas con mip streaming APAGADO; 5 MB/s de basura y 107-169 GC.Collect/min; 356 ms al construir 5 chunks.
+- **Pre-Alpha, 9-13 días, sin wire ni ADR**: cull por planta → fundir paneles → LOD de remotos → allocs → mip streaming + pacing → warmup de
+  shaders, con gate cada paso. Huecos: sin equipo de gama baja (extrapolado) y **arnés de 4 instancias roto** (los joiners no entran; S3 solo host).
+
+### 2026-09-10 — 42.ª tanda: fusión de las dos sesiones paralelas del 10-09 en una sola rama
+- `claude/unwander-performance-audit-85a655` (tandas 43-47 arriba) fusionada con `migration/worldgraph-v1` (tanda 46, ADR-137→140,
+  wire 63). Sin conflicto de código — ninguna de las dos tocó los mismos ficheros de red/wire; solo `STATE.md`/`SESSION-LOG.md`
+  chocaron por editar la misma sección en paralelo, resuelto renumerando por orden cronológico real.

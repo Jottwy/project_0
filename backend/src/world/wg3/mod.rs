@@ -47,10 +47,10 @@ pub mod world;
 
 // `pub(crate)` para que las pruebas del bucle de juego (ADR-045 enm. 2) monten el mismo mundo servido
 // —manifiesto real y semilla servida— sin duplicar el cargador.
+/// Sonda escéptica de interpenetración de cajas: fuerza bruta O(n²) con clasificación propia.
+#[cfg(test)]
+mod skeptic_boxes;
 #[cfg(test)]
 pub(crate) mod tests;
 #[cfg(test)]
 mod validate_tests;
-/// Sonda escéptica de interpenetración de cajas: fuerza bruta O(n²) con clasificación propia.
-#[cfg(test)]
-mod skeptic_boxes;
