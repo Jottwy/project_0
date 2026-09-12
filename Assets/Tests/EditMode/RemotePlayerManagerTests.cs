@@ -216,5 +216,49 @@ namespace BackroomsSurvival.Tests
             _manager.UpdateFromWorldState(players);
             Assert.AreEqual("pickup", _manager.ActivePlayers[1].animationState);
         }
+        /// ADR-074 enm. 3: el `world_state` (10 Hz) repite la pose de un peer lejano mientras el
+        /// relay no la refresca (5–10 Hz). Guardarla dos veces con dos horas distintas parava la
+        /// interpolación y luego saltaba; ahora una pose idéntica a la anterior no es muestra.
+        [Test]
+        public void ARepeatedPoseIsNotANewSample()
+        {
+            var view = new RemotePlayerView();
+            Assert.IsTrue(RemotePlayerManager.PushSample(view, new Vector3(1f, 0f, 1f), 10f, 0.0f));
+            Assert.IsFalse(RemotePlayerManager.PushSample(view, new Vector3(1f, 0f, 1f), 10f, 0.1f));
+            Assert.IsFalse(RemotePlayerManager.PushSample(view, new Vector3(1f, 0f, 1f), 10f, 0.2f));
+            Assert.AreEqual(1, view.samples.Count);
+            Assert.IsTrue(RemotePlayerManager.PushSample(view, new Vector3(1.5f, 0f, 1f), 10f, 0.3f));
+            Assert.AreEqual(2, view.samples.Count);
+        }
+
+        /// ADR-074 enm. 3: el intervalo que se mide es entre poses DISTINTAS, y el retardo propio
+        /// del peer lo cubre con margen (1,5×) para no quedarse sin dos muestras. A 5 Hz
+        /// (200 ms) sale por encima del retardo global; pegado (30 Hz) se queda en el global.
+        [Test]
+        public void AFarPeerGetsALongerDelayThanTheGlobalOne()
+        {
+            var far = new RemotePlayerView();
+            float now = 0f;
+            for (int i = 0; i < 40; i++)
+            {
+                // Dos snapshots por pose nueva (10 Hz de world_state, 5 Hz de refresco).
+                RemotePlayerManager.PushSample(far, new Vector3(i, 0f, 0f), 0f, now);
+                RemotePlayerManager.PushSample(far, new Vector3(i, 0f, 0f), 0f, now + 0.1f);
+                now += 0.2f;
+            }
+            Assert.AreEqual(0.2f, far.changeInterval, 0.02f, "intervalo entre poses distintas");
+            float farDelay = RemotePlayerManager.PerPeerDelayTarget(far, 0.08f);
+            Assert.AreEqual(0.3f, farDelay, 0.03f, "1,5 × 200 ms, por encima del global de 80 ms");
+
+            var near = new RemotePlayerView();
+            now = 0f;
+            for (int i = 0; i < 40; i++)
+            {
+                RemotePlayerManager.PushSample(near, new Vector3(i, 0f, 0f), 0f, now);
+                now += 1f / 30f;
+            }
+            Assert.AreEqual(0.08f, RemotePlayerManager.PerPeerDelayTarget(near, 0.08f), 1e-4f,
+                "pegado, el retardo es el global: la curva no cambia nada de cerca");
+        }
     }
 }

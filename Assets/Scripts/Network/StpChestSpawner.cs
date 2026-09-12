@@ -92,7 +92,13 @@ namespace BackroomsSurvival.Net
         // desmontables (ADR-114 D6) y, como el agua, tiene que leerse como "encontrado": loot
         // concentrado, no un objeto tirado por el suelo. Con el reparto 80/15/5 de
         // RollObjectCount sale en ~1 de cada 10 cofres (el slot extra, a medias con el bote).
-        private static readonly string[] MaterialPool = { "Spray Can", "Screwdriver" };
+        //
+        // 2026-09-12 (Joel): la LINTERNA DE MANIVELA entra por la misma puerta y con el mismo
+        // razonamiento. ADR-133 la dejó en la pool del suelo detrás de `RestrictCacheCatalog`
+        // como decisión de balance pendiente; la decisión es ésta: sale de los cofres, no del
+        // suelo, y el gate de escasez del mundo suelto NO se levanta. Con tres entradas
+        // equiprobables el slot extra se reparte a tercios: ~1 linterna cada 15 cofres.
+        private static readonly string[] MaterialPool = { "Spray Can", "Screwdriver", "Crank Flashlight" };
         // WeaponPool RETIRADA por el recorte, misma razón que MedicalPool: era
         // { "Bone Club", "Steel Pickaxe" } — lo que quedaba tras el recorte de catálogo vendor de
         // 2026-08-10, que ya había sacado armas de fuego/caza y el kit de cazador.

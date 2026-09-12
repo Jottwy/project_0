@@ -23,12 +23,23 @@ namespace BackroomsSurvival.Tests
         }
 
         [Test]
-        public void ElCofreSirveAguaDestornilladorYBote()
+        public void ElCofreSirveAguaDestornilladorBoteYLinterna()
         {
             CollectionAssert.AreEqual(new[] { "Almond Water" }, Pool("ConsumablePool"),
                 "exactamente un agua por cofre: cuenta medida contra los drenajes de sed");
-            CollectionAssert.AreEquivalent(new[] { "Spray Can", "Screwdriver" }, Pool("MaterialPool"),
-                "el destornillador entra en el cofre (2026-09-02) junto al bote; nada más");
+            CollectionAssert.AreEquivalent(new[] { "Spray Can", "Screwdriver", "Crank Flashlight" }, Pool("MaterialPool"),
+                "destornillador (2026-09-02) y linterna (2026-09-12) entran en el cofre junto al bote; nada más");
+        }
+
+        [Test]
+        public void LaLinternaNoSaleDelSueloMientrasDureElRecorte()
+        {
+            // ADR-133 la dejó en la pool del suelo detrás de RestrictCacheCatalog; la decisión de
+            // Joel (2026-09-12) es que salga de los cofres SIN levantar el recorte de escasez.
+            CollectionAssert.DoesNotContain(Pool(typeof(ChunkLootRoll), "RestrictedCachePool"), "Crank Flashlight");
+            var gate = typeof(ChunkLootRoll).GetField("RestrictCacheCatalog", BindingFlags.NonPublic | BindingFlags.Static);
+            Assert.IsNotNull(gate, "ChunkLootRoll.RestrictCacheCatalog ya no existe con ese nombre");
+            Assert.IsTrue((bool)gate.GetValue(null), "el recorte de escasez del suelo sigue en pie: la linterna no lo levanta");
         }
 
         [Test]

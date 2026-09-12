@@ -5366,6 +5366,73 @@ async fn handle_action(
                 );
             }
         }
+        // ADR-064 enm. 1 (E1.1/E1.3): the client reports a CRAFT it already performed (STP does
+        // the stack maths client-side, §4 of the ADR). The server validates the recipe against
+        // the reported `stp_inventory` mirror and, when it holds, MUTATES that mirror so the
+        // ADR-032 save is right in the window before the next debounced `report_inventory`
+        // (which then supersedes it, latest wins). A rejection only leaves a trace — this is
+        // NOT anti-cheat, exactly as ADR-064 requires to be written where it is implemented:
+        // the client already has the item. Fire-and-forget, ordered IPC, no request_id.
+        "craft_item" => {
+            let item_id = action
+                .data
+                .get("item_id")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0) as i32;
+            let amount = action
+                .data
+                .get("amount")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(1)
+                .clamp(1, u16::MAX as u64) as u16;
+            match crate::crafting::spec::crafting_spec(item_id) {
+                None => info!(
+                    "MPTRACE step=CRAFT event=craft_rejected reason=unknown_recipe item_id={}",
+                    item_id
+                ),
+                Some(recipe) => {
+                    // Un crafteo del cliente produce `recipe.amount` unidades por ejecución; el
+                    // `amount` reportado se acepta sólo si es ese (o un múltiplo exacto, por si
+                    // un cliente agrupa): lo demás es forma inválida, no una receta distinta.
+                    if !amount.is_multiple_of(recipe.amount) {
+                        info!(
+                            "MPTRACE step=CRAFT event=craft_rejected reason=bad_amount item_id={} amount={} per_craft={}",
+                            item_id, amount, recipe.amount
+                        );
+                    } else {
+                        let batches = amount / recipe.amount;
+                        let short = recipe.ingredients.iter().find(|ing| {
+                            stp_inventory_count(&player.stp_inventory, ing.item_id)
+                                < ing.count as u32 * batches as u32
+                        });
+                        if let Some(ing) = short {
+                            info!(
+                                "MPTRACE step=CRAFT event=craft_rejected reason=insufficient item_id={} ingredient={} need={} have={}",
+                                item_id,
+                                ing.item_id,
+                                ing.count as u32 * batches as u32,
+                                stp_inventory_count(&player.stp_inventory, ing.item_id)
+                            );
+                        } else {
+                            for ing in recipe.ingredients {
+                                stp_inventory_remove(
+                                    &mut player.stp_inventory,
+                                    ing.item_id,
+                                    ing.count as u32 * batches as u32,
+                                );
+                            }
+                            stp_inventory_add(&mut player.stp_inventory, item_id, amount);
+                            info!(
+                                "MPTRACE step=CRAFT event=craft_applied item_id={} amount={} stacks={}",
+                                item_id,
+                                amount,
+                                player.stp_inventory.len()
+                            );
+                        }
+                    }
+                }
+            }
+        }
         // ADR-025 respawn-on-demand: the client's native Respawn button asks the server to
         // respawn. Honored ONLY while actually dead (sanitized like report_damage: a spammed or
         // abusive request while alive is a logged no-op). This is the resolve+reposition that the
@@ -6517,6 +6584,55 @@ fn pvp_weapon_spec(weapon_id: i32) -> Option<PvpWeaponSpec> {
         }),
         _ => None,
     }
+}
+
+// ─── ADR-064 enm. 1: helpers over the reported `stp_inventory` mirror used by `craft_item` ───
+//
+// The mirror is a flat `Vec<CorpseStack>` as the client reported it (several stacks of the same
+// id are normal: STP splits by slot). Counting sums them; removing walks them in order and
+// drops the ones that hit zero; adding tops up the first stack of that id (props are per-stack
+// and a crafted item has none, so a fresh stack carries an empty `props`). None of this is a
+// model of the inventory — it is bookkeeping on a snapshot the next `report_inventory` replaces.
+
+fn stp_inventory_count(inv: &[crate::world::corpse::CorpseStack], item_id: i32) -> u32 {
+    inv.iter()
+        .filter(|s| s.item_id == item_id)
+        .map(|s| s.quantity as u32)
+        .sum()
+}
+
+fn stp_inventory_remove(
+    inv: &mut Vec<crate::world::corpse::CorpseStack>,
+    item_id: i32,
+    mut n: u32,
+) {
+    for s in inv.iter_mut() {
+        if n == 0 {
+            break;
+        }
+        if s.item_id != item_id {
+            continue;
+        }
+        let take = (s.quantity as u32).min(n);
+        s.quantity -= take as u16;
+        n -= take;
+    }
+    inv.retain(|s| s.quantity > 0);
+}
+
+fn stp_inventory_add(inv: &mut Vec<crate::world::corpse::CorpseStack>, item_id: i32, n: u16) {
+    if let Some(s) = inv
+        .iter_mut()
+        .find(|s| s.item_id == item_id && s.props.is_empty())
+    {
+        s.quantity = s.quantity.saturating_add(n);
+        return;
+    }
+    inv.push(crate::world::corpse::CorpseStack {
+        item_id,
+        quantity: n,
+        props: Vec::new(),
+    });
 }
 
 /// ADR-030 (+ amendment, Almond Water): fixed per-item restoration applied by `"consume_item"`.

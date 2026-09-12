@@ -905,6 +905,120 @@ async fn report_inventory_updates_player_stp_inventory_with_hygiene() {
     assert_eq!(player.stp_inventory[0].quantity, 3);
 }
 
+// ─── ADR-064 enm. 1: `craft_item` valida contra el espejo `stp_inventory` y lo muta ───────────
+
+const BANDAGE_ID: i32 = -1114026992;
+const CLOTH_ID: i32 = 8505358;
+
+async fn craft_action(player: &mut Player, data: serde_json::Value) {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let mut world = World::new(42);
+    let (tx, _rx) = broadcast::channel(16);
+    let mut processed: BoundedDedupeSet<(u16, u64)> = BoundedDedupeSet::with_capacity(DEDUPE_CAP);
+    let action = crate::ipc::PlayerAction {
+        action_type: "craft_item".into(),
+        data,
+    };
+    let mut adult_driver = AdultDriver::new(net.world_seed);
+    let mut child_driver = ChildDriver::new(net.world_seed);
+    handle_action(
+        &action,
+        player,
+        &mut world,
+        &mut net,
+        &mut adult_driver,
+        &mut child_driver,
+        &tx,
+        &mut processed,
+        0,
+        &wg3_off(),
+        &mut wg3_cache(),
+        &mut wg3_collision(),
+    )
+    .await;
+}
+
+fn stack(item_id: i32, quantity: u16) -> crate::world::corpse::CorpseStack {
+    crate::world::corpse::CorpseStack {
+        item_id,
+        quantity,
+        props: Vec::new(),
+    }
+}
+
+// Una receta que el servidor no conoce no toca el espejo: la traza dice unknown_recipe y nada más.
+#[tokio::test]
+async fn craft_item_unknown_recipe_leaves_the_mirror_untouched() {
+    let mut player = Player::new(1, "Host");
+    player.stp_inventory = vec![stack(CLOTH_ID, 5)];
+    craft_action(
+        &mut player,
+        serde_json::json!({ "item_id": 123456, "amount": 1 }),
+    )
+    .await;
+    assert_eq!(player.stp_inventory, vec![stack(CLOTH_ID, 5)]);
+}
+
+// Sin tela suficiente, el crafteo se rechaza en la traza y el espejo queda como estaba: el
+// cliente ya tiene la venda (trust-the-client, ADR-064), pero el servidor no la inventa.
+#[tokio::test]
+async fn craft_item_insufficient_ingredients_is_rejected_without_mutation() {
+    let mut player = Player::new(1, "Host");
+    player.stp_inventory = vec![stack(CLOTH_ID, 1)];
+    craft_action(
+        &mut player,
+        serde_json::json!({ "item_id": BANDAGE_ID, "amount": 1 }),
+    )
+    .await;
+    assert_eq!(player.stp_inventory, vec![stack(CLOTH_ID, 1)]);
+}
+
+// Con los ingredientes, el espejo se muta como lo hará STP: menos 2 telas (repartidas en dos
+// stacks, como reporta el cliente por slot), más una venda nueva. Así el save de ADR-032 es
+// correcto en la ventana previa al siguiente report_inventory.
+#[tokio::test]
+async fn craft_item_applied_mutates_the_mirror_across_stacks() {
+    let mut player = Player::new(1, "Host");
+    player.stp_inventory = vec![stack(CLOTH_ID, 1), stack(999, 1), stack(CLOTH_ID, 2)];
+    craft_action(
+        &mut player,
+        serde_json::json!({ "item_id": BANDAGE_ID, "amount": 1 }),
+    )
+    .await;
+    assert_eq!(
+        player.stp_inventory,
+        vec![stack(999, 1), stack(CLOTH_ID, 1), stack(BANDAGE_ID, 1)]
+    );
+}
+
+// Un `amount` que no es múltiplo de lo que produce la receta no es «otra receta»: se rechaza.
+// Y un múltiplo exacto (dos crafteos agrupados) consume el doble.
+#[tokio::test]
+async fn craft_item_amount_must_be_a_multiple_of_the_recipe_output() {
+    let mut player = Player::new(1, "Host");
+    player.stp_inventory = vec![stack(CLOTH_ID, 4)];
+    craft_action(
+        &mut player,
+        serde_json::json!({ "item_id": BANDAGE_ID, "amount": 0 }),
+    )
+    .await;
+    // amount 0 se clampa a 1 (forma mínima válida): consume 2.
+    assert_eq!(
+        player.stp_inventory,
+        vec![stack(CLOTH_ID, 2), stack(BANDAGE_ID, 1)]
+    );
+    craft_action(
+        &mut player,
+        serde_json::json!({ "item_id": BANDAGE_ID, "amount": 2 }),
+    )
+    .await;
+    // Dos vendas de golpe: 4 telas, y sólo quedaban 2 → insuficiente, sin cambios.
+    assert_eq!(
+        player.stp_inventory,
+        vec![stack(CLOTH_ID, 2), stack(BANDAGE_ID, 1)]
+    );
+}
+
 // ADR-045 Fase 3: a Fase-3-aware client's report_inventory ALSO populates inventory_v2, in
 // the SAME action — no new IPC action name. container/slot/props round-trip; a legacy entry
 // mixed into the same array (no container/slot) is skipped from v2 but still lands in

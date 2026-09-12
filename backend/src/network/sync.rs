@@ -1151,13 +1151,18 @@ pub const AOI_POSE_RADIUS_M: f32 = 100.0;
 /// dos jugadores andando sobre la frontera se verían parpadear varias veces por segundo.
 pub const AOI_POSE_EXIT_FACTOR: f32 = 1.2;
 
-/// E1 / ADR-074 (enmienda 2026-08-15) — radio del anillo INTERIOR: dentro de él las poses van a
-/// la cadencia completa (`POSE_RELAY_HZ`, hoy 30), fuera van a media (una ronda de cada dos,
-/// `POSE_RELAY_OUTER_HZ`, hoy 15).
-///
-/// La mitad del radio del AOI, que con reparto uniforme deja ~25 % de los pares en el anillo
-/// interior y ~75 % en el exterior (el área crece con el cuadrado).
-pub const AOI_POSE_NEAR_RADIUS_M: f32 = AOI_POSE_RADIUS_M * 0.5;
+/// ADR-074 enmienda 3 (2026-09-12) — suelo de la cadencia por distancia, en Hz. Es el número que
+/// la enmienda del 08-15 fijó para el anillo exterior y por la misma razón: 50–100 m es donde vive
+/// la fase `stalk` del robapieles, a 200 ms entre poses todavía se lee fluido y a 500 ms no. Como
+/// la IA no se puede exceptuar (sería un oráculo), el suelo vale para TODOS los pares.
+pub const POSE_HZ_FLOOR: u64 = 5;
+
+/// ADR-074 enmienda 3 — forma de la curva. La cadencia cae desde `POSE_RELAY_HZ` a 0 m hasta
+/// `POSE_HZ_FLOOR` a `AOI_POSE_RADIUS_M` siguiendo `floor + (near − floor) · (1 − d/R)^POWER`.
+/// Potencia 1 es una recta (ahorra ×1,4 sobre los dos anillos), 2 cuadrática (×2,0), **3 cúbica
+/// (×2,5)**: cae rápido donde ya no se aprecia y toca el suelo a ~73 m. Elegida por Joel a la
+/// vista de la tabla metro a metro; se cambia aquí y en ningún otro sitio.
+pub const POSE_LOD_POWER: i32 = 3;
 
 /// Rondas de relay por segundo: el bucle corre a 60 Hz y emite una de cada
 /// `NET_BROADCAST_EVERY` ticks.
@@ -1168,8 +1173,42 @@ pub const AOI_POSE_NEAR_RADIUS_M: f32 = AOI_POSE_RADIUS_M * 0.5;
 /// carga, y se cierra igual: derivado en un sitio, con un test que lo ata a su origen.
 pub const POSE_RELAY_HZ: u64 = 60 / crate::game_loop::NET_BROADCAST_EVERY;
 
-/// Cadencia del anillo EXTERIOR, que va a una ronda de cada dos. Ver `aoi_pose_due_this_round`.
-pub const POSE_RELAY_OUTER_HZ: u64 = POSE_RELAY_HZ / 2;
+/// ADR-074 enmienda 3 — cadencia objetivo de un par a `dist_m` metros, en Hz enteros.
+///
+/// Monótona no creciente, `POSE_RELAY_HZ` a 0 m, `POSE_HZ_FLOOR` desde donde la curva lo toca y
+/// hasta el borde del AOI. Pura: solo distancia, jamás qué es la fuente (ADR-074 decisión 1).
+pub fn pose_hz(dist_m: f32) -> u64 {
+    let t = (1.0 - dist_m / AOI_POSE_RADIUS_M).clamp(0.0, 1.0);
+    let near = POSE_RELAY_HZ as f32;
+    let floor = POSE_HZ_FLOOR as f32;
+    let hz = (floor + (near - floor) * t.powi(POSE_LOD_POWER)).round() as u64;
+    hz.clamp(POSE_HZ_FLOOR, POSE_RELAY_HZ)
+}
+
+/// ADR-074 enmienda 3 — ¿emite este par en la ronda `round` a `hz` Hz?
+///
+/// Bresenham en enteros, sin estado: en cualquier ventana de `POSE_RELAY_HZ` rondas seguidas
+/// salen EXACTAMENTE `hz` emisiones, repartidas lo más uniforme posible. `phase` desplaza la
+/// ventana por par, que es lo que hace que N pares a la misma cadencia no emitan todos en la
+/// misma ronda (carga plana). Determinista: sólo enteros y sólo `(round, hz, phase)`.
+pub fn due_at_hz(round: u64, hz: u64, phase: u64) -> bool {
+    let hz = hz.min(POSE_RELAY_HZ);
+    if hz >= POSE_RELAY_HZ {
+        return true;
+    }
+    if hz == 0 {
+        return false;
+    }
+    let r = round.wrapping_add(phase);
+    (r.wrapping_mul(hz) / POSE_RELAY_HZ) != (r.wrapping_sub(1).wrapping_mul(hz) / POSE_RELAY_HZ)
+}
+
+/// Desplazamiento de ventana de un par, en rondas. Sale de los dos ids y de nada más (regla 13:
+/// determinista, sin `HashMap`), y mezcla en vez de sumar para que `(1,2)` y `(2,1)` —los dos
+/// sentidos del mismo par— no compartan fase.
+pub fn pose_pair_phase(src: PeerId, dest: PeerId) -> u64 {
+    ((src as u64).wrapping_mul(0x9E37_79B9)).wrapping_add(dest as u64) % POSE_RELAY_HZ
+}
 
 /// Lado de la casilla del índice espacial del relay, en metros.
 ///
@@ -1233,17 +1272,17 @@ fn pose_fidelity_order(
         .then(a.2.cmp(&b.2))
 }
 
-/// E1 / ADR-074 (enmienda) — ¿le toca a este par emitir en esta ronda?
+/// ADR-074 enmienda 3 — ¿le toca a este par emitir en esta ronda?
 ///
-/// Dentro del anillo interior, siempre. Fuera, una de cada dos rondas, **escalonando por
-/// la paridad de `(src + dest)`** para que la mitad de los pares lejanos vaya en las rondas pares
-/// y la otra mitad en las impares: sin ese reparto, "media cadencia" produciría una ronda cara y
-/// otra vacía en vez de una carga plana.
+/// Antes eran dos anillos (30 Hz hasta 50 m, 15 Hz hasta 100). Ahora es una curva continua en
+/// pasos de 1 Hz: `pose_hz` decide la cadencia por la distancia y `due_at_hz` la reparte en
+/// rondas con Bresenham, desplazada por par para que la carga salga plana. Cerca no cambia nada
+/// (a 3 m sigue a 29–30 Hz); lo que se ahorra está en 20–70 m, donde 30 Hz movían píxeles.
 ///
-/// El anillo exterior va a media cadencia y no a la quinta parte que ADR-074 escribió primero
-/// porque 50–100 m es exactamente donde vive la fase `stalk` del robapieles, y a 500 ms se vería a
-/// saltos. **No se le puede exceptuar** —una cadencia propia lo delataría igual que un radio
-/// propio— así que sube la del anillo entero. La decisión y su precio están en la enmienda.
+/// El suelo de 5 Hz es el de la enmienda del 08-15 y por la misma razón: 50–100 m es exactamente
+/// donde vive la fase `stalk` del robapieles, y a 500 ms se vería a saltos. **No se le puede
+/// exceptuar** —una cadencia propia lo delataría igual que un radio propio— así que el suelo vale
+/// para todos.
 ///
 /// Como todo en este filtro: decide por DISTANCIA y por el par, jamás por qué es la fuente.
 pub fn aoi_pose_due_this_round(
@@ -1256,23 +1295,8 @@ pub fn aoi_pose_due_this_round(
     let dx = src_pos[0] - dest_pos[0];
     let dy = src_pos[1] - dest_pos[1];
     let dz = src_pos[2] - dest_pos[2];
-    let dist_sq = dx * dx + dy * dy + dz * dz;
-    if dist_sq <= AOI_POSE_NEAR_RADIUS_M * AOI_POSE_NEAR_RADIUS_M {
-        return true; // anillo interior: cadencia completa
-    }
-    half_cadence_round(src, dest, round)
-}
-
-/// La mitad de las rondas, **escalonada por el par** para que la carga salga plana en vez de una
-/// ronda cara y otra vacía.
-///
-/// Extraída porque ahora la usan dos reglas —el anillo exterior y el cono de atención— y que las
-/// dos usen LA MISMA es lo que hace que componerlas sea idempotente: una fuente lejana Y a la
-/// espalda se queda en media cadencia, no en un cuarto. Si cada regla tuviera su propio escalonado,
-/// aplicar las dos daría 7,5 Hz sin que nadie lo hubiera decidido.
-pub fn half_cadence_round(src: PeerId, dest: PeerId, round: u64) -> bool {
-    let phase = (src as u64).wrapping_add(dest as u64) & 1;
-    round & 1 == phase
+    let dist_m = (dx * dx + dy * dy + dz * dz).sqrt();
+    due_at_hz(round, pose_hz(dist_m), pose_pair_phase(src, dest))
 }
 
 /// Semiángulo del cono de atención del destinatario, en grados.
@@ -1282,7 +1306,7 @@ pub fn half_cadence_round(src: PeerId, dest: PeerId, round: u64) -> bool {
 ///
 /// # Qué hace cuando se enciende
 ///
-/// Lo que queda fuera del cono baja a media cadencia (`POSE_RELAY_OUTER_HZ`, hoy 15). No baja más,
+/// Lo que queda fuera del cono baja a media cadencia (`POSE_RELAY_HZ / 2`, hoy 15). No baja más,
 /// y ahí está la diferencia entre esto y la versión que se descartó: a 15 Hz el hueco entre poses
 /// son 66 ms, que a 4 m/s son 27 cm de error — imperceptible. A 1 Hz serían 4 m, y el error
 /// aparecería justo al girarte, que es el único instante en que esa pose te hacía falta.
@@ -1620,9 +1644,11 @@ fn pvs_allows(a: Option<&PvsKey>, b: Option<&PvsKey>, was_relaying: bool) -> boo
     }
 }
 
-pub async fn broadcast_peer_poses(net: &mut NetworkManager, mut pvs: Option<PvsCtx<'_>>) {
+/// Devuelve cuántas poses se pusieron en camino esta ronda (pares que emitieron): el arnés de
+/// carga lo usa para sacar el Hz medio por par; el bucle del juego lo ignora.
+pub async fn broadcast_peer_poses(net: &mut NetworkManager, mut pvs: Option<PvsCtx<'_>>) -> usize {
     if net.peers.len() < 2 {
-        return;
+        return 0;
     }
     // Snapshot ids + poses up front so we don't hold a borrow of net.peers across the
     // awaits below (and so a peer is never echoed its own pose).
@@ -1636,7 +1662,7 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager, mut pvs: Option<PvsC
     // destinations â€” no real peer can observe the difference.
     let dest_ids = relay_destinations(net);
     if dest_ids.is_empty() {
-        return; // only phantoms present: nobody to inform
+        return 0; // only phantoms present: nobody to inform
     }
     // E1: las posiciones de los destinos, para el filtro de AOI. Se toman ANTES del bucle porque
     // dentro ya no se puede leer `net.peers` (el envío toma prestado `net`).
@@ -1747,11 +1773,17 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager, mut pvs: Option<PvsC
             // cadencia, nunca menos: 15 Hz son 66 ms de hueco, 27 cm a paso de carrera, y eso no se
             // ve. Bajar más sí se vería, y justo al girarse.
             //
-            // Comparte escalonado con el anillo exterior (`half_cadence_round`) a propósito: una
-            // fuente lejana Y a la espalda se queda en media cadencia, no en un cuarto.
-            let mut due =
-                aoi_pose_due_this_round(*src_pos, *dpos, *src_id, dest_id, net.pose_relay_round);
-            if POSE_CONE_ENABLED && due {
+            // **Compone con la CURVA partiendo los Hz, no saltándose rondas.** La versión anterior
+            // de esto compartía escalonado con los dos anillos que había entonces; ADR-074 enm. 3
+            // los sustituyó por `pose_hz`, y halvear rondas encima de la curva habría llevado a una
+            // fuente lejana de 5 Hz hasta 2,5 — justo lo que el suelo de ADR-074 prohíbe, porque
+            // 50–100 m es donde vive la fase `stalk` del robapieles.
+            //
+            // Partiendo los Hz y respetando `POSE_HZ_FLOOR`, el suelo se cumple por construcción:
+            // a la espalda y lejos se queda en 5, no por debajo.
+            let dist_m = distance_sq(*src_pos, *dpos).sqrt();
+            let mut hz = pose_hz(dist_m);
+            if POSE_CONE_ENABLED {
                 let was_inside = net.pose_cone_pairs.contains(&(*src_id, dest_id));
                 let yaw = dest_yaw.get(&dest_id).copied().unwrap_or(0.0);
                 let inside = pose_in_attention_cone(
@@ -1764,9 +1796,10 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager, mut pvs: Option<PvsC
                 if inside {
                     next_cone.insert((*src_id, dest_id));
                 } else {
-                    due = half_cadence_round(*src_id, dest_id, net.pose_relay_round);
+                    hz = (hz / 2).max(POSE_HZ_FLOOR);
                 }
             }
+            let due = due_at_hz(net.pose_relay_round, hz, pose_pair_phase(*src_id, dest_id));
             if due {
                 // Candidato, todavía no emisión: el tope por destinatario se aplica más abajo,
                 // cuando la bolsa de cada uno esté entera. Igual que la cadencia, el recorte vive
@@ -1942,7 +1975,7 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager, mut pvs: Option<PvsC
         // pose), y su cociente es el ahorro real de la partida — no una estimación de sonda.
         let without_aoi = p * d - d.min(p);
         info!(
-            "MPTRACE step=R15 event=peer_pose_relay self_id={} peer_count={} real_dest_count={} relay_datagrams_per_call={} approx_per_sec={} without_aoi={} in_aoi={} aoi_radius_m={:.0} near_radius_m={:.0} max_fan_in={} cap_hits={} fidelity_cap={}",
+            "MPTRACE step=R15 event=peer_pose_relay self_id={} peer_count={} real_dest_count={} relay_datagrams_per_call={} approx_per_sec={} without_aoi={} in_aoi={} aoi_radius_m={:.0} floor_hz={} max_fan_in={} cap_hits={} fidelity_cap={}",
             net.local_id,
             p,
             d,
@@ -1953,7 +1986,7 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager, mut pvs: Option<PvsC
             // `relay_datagrams_per_call` es lo que ahorra el LOD, separado de lo que ahorra el AOI.
             net.aoi_pose_pairs.len(),
             AOI_POSE_RADIUS_M,
-            AOI_POSE_NEAR_RADIUS_M,
+            POSE_HZ_FLOOR,
             // El número que hace falta para bajar el tope con datos: cuánto recibe en una ronda el
             // destinatario que más recibe, y cuántos destinatarios llegaron a tocar el tope. Con
             // `cap_hits=0` en un playtest, el recorte no está haciendo nada y el techo de la sala
@@ -1964,6 +1997,7 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager, mut pvs: Option<PvsC
             POSE_FIDELITY_CAP
         );
     }
+    relayed_count
 }
 
 /// Host-as-server relay of the STP item roster: the host broadcasts its full
@@ -3072,47 +3106,114 @@ mod chunk_broadcast_tests {
         );
     }
 
-    /// LOD: cerca se emite en TODAS las rondas. Sin esto, un tiroteo a cinco metros se vería a
-    /// media cadencia, que es justo donde más se nota.
+    /// ADR-074 enm. 3 — la curva metro a metro, fijada por Joel: 30 Hz a 0 m, 5 Hz desde ~73 m.
+    /// Si alguien toca `POSE_LOD_POWER` o el suelo, esta tabla se pone roja y obliga a decidirlo.
     #[test]
-    fn a_peer_in_the_inner_ring_is_relayed_every_round() {
-        let close = [10.0, 1.8, 0.0]; // 10 m: dentro del anillo interior
+    fn the_cadence_curve_matches_the_agreed_table() {
+        for (d, hz) in [
+            (0.0, 30),
+            (3.0, 28),
+            (5.0, 26),
+            (10.0, 23),
+            (20.0, 18),
+            (30.0, 14),
+            (40.0, 10),
+            (50.0, 8),
+            (61.0, 6),
+            (73.0, 5),
+            (100.0, 5),
+            (150.0, 5),
+        ] {
+            assert_eq!(pose_hz(d), hz, "a {d} m la tabla dice {hz} Hz");
+        }
+    }
+
+    /// Monótona: nunca sube al alejarse, y siempre entre el suelo y la cadencia base.
+    #[test]
+    fn the_cadence_never_rises_with_distance() {
+        let mut prev = POSE_RELAY_HZ;
+        for m in 0..=120 {
+            let hz = pose_hz(m as f32);
+            assert!(hz <= prev, "a {m} m sube de {prev} a {hz} Hz");
+            assert!(
+                (POSE_HZ_FLOOR..=POSE_RELAY_HZ).contains(&hz),
+                "a {m} m: {hz} Hz fuera de rango"
+            );
+            prev = hz;
+        }
+    }
+
+    /// LOD: pegados se emite en TODAS las rondas. Sin esto, un tiroteo a un metro se vería a
+    /// menos cadencia, que es justo donde más se nota.
+    #[test]
+    fn a_peer_at_arms_length_is_relayed_every_round() {
+        let close = [0.5, 1.8, 0.0];
         for round in 0..6u64 {
             assert!(
                 aoi_pose_due_this_round(NEAR, close, 1, 2, round),
-                "ronda {round}: dentro del anillo interior no hay LOD que valga"
+                "ronda {round}: a medio metro no hay LOD que valga"
             );
         }
     }
 
-    /// LOD: en el anillo exterior se emite una de cada dos rondas — ni todas (no ahorraría) ni
-    /// ninguna (desaparecería).
+    /// Bresenham exacto: en cualquier ventana de 30 rondas seguidas salen EXACTAMENTE `hz`
+    /// emisiones, sea cual sea el desplazamiento del par. Ni una más (no ahorraría) ni una menos
+    /// (desaparecería); y a 80 m son las 5 del suelo.
     #[test]
-    fn a_peer_in_the_outer_ring_is_relayed_every_other_round() {
-        let far = [0.0, 1.8, 80.0]; // 80 m: fuera del interior (50), dentro del AOI (100)
-        let hits = (0..10u64)
+    fn a_window_of_thirty_rounds_carries_exactly_hz_emissions() {
+        for hz in POSE_HZ_FLOOR..=POSE_RELAY_HZ {
+            for phase in 0..POSE_RELAY_HZ {
+                for start in [0u64, 7, 1000] {
+                    let hits = (start..start + POSE_RELAY_HZ)
+                        .filter(|r| due_at_hz(*r, hz, phase))
+                        .count() as u64;
+                    assert_eq!(hits, hz, "hz={hz} phase={phase} start={start}");
+                }
+            }
+        }
+        let far = [0.0, 1.8, 80.0];
+        let hits = (0..30u64)
             .filter(|r| aoi_pose_due_this_round(NEAR, far, 1, 2, *r))
-            .count();
+            .count() as u64;
         assert_eq!(
-            hits, 5,
-            "el anillo exterior va a media cadencia: 5 de cada 10 rondas"
+            hits, POSE_HZ_FLOOR,
+            "a 80 m va al suelo: {POSE_HZ_FLOOR} de cada 30 rondas"
         );
     }
 
-    /// El escalonado, que es la diferencia entre media cadencia y una ronda cara alternando con
-    /// una vacía: dos pares lejanos con paridad distinta NO emiten en la misma ronda.
+    /// El escalonado, que es la diferencia entre «5 Hz» y una ronda cara alternando con cinco
+    /// vacías: con muchos pares lejanos, cada ronda lleva casi lo mismo. Sin `pose_pair_phase`
+    /// todos emitirían en las mismas rondas.
     #[test]
-    fn outer_ring_pairs_are_staggered_across_rounds() {
+    fn far_pairs_are_spread_flat_across_rounds() {
         let far = [0.0, 1.8, 80.0];
-        // (1,2) suma 3 → impar; (1,3) suma 4 → par. Nunca coinciden.
-        for round in 0..6u64 {
-            let a = aoi_pose_due_this_round(NEAR, far, 1, 2, round);
-            let b = aoi_pose_due_this_round(NEAR, far, 1, 3, round);
-            assert_ne!(
-                a, b,
-                "ronda {round}: dos pares de paridad distinta tienen que repartirse, no agolparse"
-            );
-        }
+        let pairs: Vec<(PeerId, PeerId)> = (1..=60u16)
+            .flat_map(|s| (1..=3u16).map(move |d| (s, s.wrapping_add(d * 37))))
+            .collect();
+        let per_round: Vec<usize> = (0..30u64)
+            .map(|r| {
+                pairs
+                    .iter()
+                    .filter(|(s, d)| aoi_pose_due_this_round(NEAR, far, *s, *d, r))
+                    .count()
+            })
+            .collect();
+        let mean = pairs.len() as f64 * POSE_HZ_FLOOR as f64 / 30.0;
+        let (lo, hi) = (
+            *per_round.iter().min().unwrap() as f64,
+            *per_round.iter().max().unwrap() as f64,
+        );
+        assert!(
+            lo >= mean * 0.5 && hi <= mean * 1.5,
+            "carga por ronda entre {lo} y {hi} con media {mean:.1}: no está repartida"
+        );
+    }
+
+    /// Los dos sentidos de un par no comparten fase: si (1,2) y (2,1) emitieran en las mismas
+    /// rondas, dos jugadores lejanos cargarían la misma ronda por partida doble.
+    #[test]
+    fn the_two_directions_of_a_pair_do_not_share_a_phase() {
+        assert_ne!(pose_pair_phase(1, 2), pose_pair_phase(2, 1));
     }
 
     /// Y el invariante que la enmienda añade: la cadencia tampoco puede depender de QUÉ es la
@@ -3707,28 +3808,32 @@ mod attention_cone_tests {
     }
 
     #[test]
-    fn far_and_behind_costs_half_cadence_and_not_a_quarter() {
-        // Las dos reglas que bajan cadencia —anillo exterior y cono— comparten escalonado. Que
-        // compongan a MEDIA y no a un cuarto depende de eso, y es la razón de que
-        // `half_cadence_round` exista como función en vez de estar copiada dos veces.
-        for round in 0..8u64 {
-            assert_eq!(
-                half_cadence_round(7, 11, round),
-                half_cadence_round(7, 11, round),
-                "aplicar la misma regla dos veces no puede recortar dos veces"
+    fn far_and_behind_never_drops_below_the_adr074_floor() {
+        // La composición con la curva de ADR-074 enm. 3. El cono parte los Hz, NO se salta rondas:
+        // una fuente lejana ya está en el suelo de 5 Hz, y halvear rondas encima la habría llevado
+        // a 2,5 — justo lo que el suelo existe para impedir, porque 50–100 m es la fase `stalk`.
+        for d in [0.0f32, 25.0, 50.0, 75.0, 99.0, 150.0] {
+            let full = pose_hz(d);
+            let behind = (full / 2).max(POSE_HZ_FLOOR);
+            assert!(
+                behind >= POSE_HZ_FLOOR,
+                "a {d} m y a la espalda quedaría en {behind} Hz, por debajo del suelo {POSE_HZ_FLOOR}"
+            );
+            assert!(
+                behind <= full,
+                "el cono sólo puede BAJAR la cadencia, nunca subirla ({behind} > {full} a {d} m)"
             );
         }
-        // Y reparte: la mitad de las rondas para un par, la otra mitad para el par de al lado.
-        let a: usize = (0..8).filter(|r| half_cadence_round(7, 11, *r)).count();
-        let b: usize = (0..8).filter(|r| half_cadence_round(7, 12, *r)).count();
-        assert_eq!(
-            (a, b),
-            (4, 4),
-            "media cadencia para los dos, en rondas opuestas"
-        );
+        // Y donde de verdad ahorra es cerca, que es donde la curva va alta.
+        assert_eq!(pose_hz(0.0), POSE_RELAY_HZ, "pegado: cadencia completa");
         assert!(
-            (0..8).all(|r| half_cadence_round(7, 11, r) != half_cadence_round(7, 12, r)),
-            "escalonados: la carga sale plana en vez de una ronda cara y otra vacía"
+            (pose_hz(0.0) / 2).max(POSE_HZ_FLOOR) < pose_hz(0.0),
+            "pegado y a la espalda sí baja: ahí está el ahorro del cono"
+        );
+        assert_eq!(
+            (pose_hz(99.0) / 2).max(POSE_HZ_FLOOR),
+            pose_hz(99.0),
+            "lejos ya está en el suelo, así que el cono no puede quitar nada más"
         );
     }
 
@@ -3851,11 +3956,12 @@ mod spatial_index_tests {
             "el relay emite una ronda de cada {} ticks de un bucle de 60 Hz",
             crate::game_loop::NET_BROADCAST_EVERY
         );
-        assert_eq!(
-            POSE_RELAY_OUTER_HZ * 2,
-            POSE_RELAY_HZ,
-            "el anillo exterior es exactamente media cadencia (`aoi_pose_due_this_round`)"
-        );
+        const {
+            assert!(
+                POSE_HZ_FLOOR < POSE_RELAY_HZ,
+                "el suelo de la curva tiene que quedar por debajo de la cadencia base"
+            )
+        };
     }
 
     #[test]

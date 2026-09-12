@@ -161,7 +161,62 @@ namespace BackroomsSurvival.Net
         }
 
         /// <summary>
-        /// Pose de <paramref name="view"/> en el instante «ahora − <see cref="InterpolationDelay"/>»,
+        /// ADR-074 enm. 3 — guarda una pose recibida SOLO si cambia respecto a la última. El
+        /// `world_state` llega a 10 Hz, pero la pose de un peer lejano se refresca en el relay a
+        /// 5–10 Hz: entre refrescos el snapshot repite la misma pose, y guardarla dos veces con
+        /// dos horas distintas haría que la interpolación se parase y saltase (el «escalón»). Lo
+        /// que se mide por peer es el intervalo entre poses DISTINTAS, que es su cadencia real y
+        /// lo que su retardo propio tiene que cubrir. Devuelve si se guardó.
+        /// </summary>
+        public static bool PushSample(RemotePlayerView view, Vector3 position, float yaw, float now)
+        {
+            var samples = view.samples;
+            if (samples.Count > 0)
+            {
+                var last = samples[samples.Count - 1];
+                if (last.position == position && Mathf.Approximately(last.yaw, yaw))
+                    return false; // el relay no ha refrescado a este peer: no es una muestra nueva
+            }
+            if (view.lastChangeTime >= 0f)
+            {
+                float gap = now - view.lastChangeTime;
+                // Un hueco largo (quieto, en segundo plano, fuera del AOI) no dice nada de su
+                // cadencia; el mismo criterio que la medida global.
+                if (gap < 1f)
+                    view.changeInterval = Mathf.Lerp(view.changeInterval, gap, ChangeIntervalSmoothing);
+            }
+            view.lastChangeTime = now;
+            samples.Add(new RemotePlayerView.PoseSample { time = now, position = position, yaw = yaw });
+            // Cota dura por si el consumidor no drenara (proxy fuera de pantalla, pausa larga):
+            // el buffer nunca es historia, sólo el tramo que hace falta para interpolar.
+            if (samples.Count > 16)
+                samples.RemoveRange(0, samples.Count - 16);
+            return true;
+        }
+
+        /// Media móvil del intervalo de cambio por peer. Más rápida que la global (0,1) porque
+        /// aquí hay menos muestras y la cadencia de un peer cambia de verdad al acercarse.
+        private const float ChangeIntervalSmoothing = 0.2f;
+
+        /// Techo del retardo POR PEER. Más alto que el global porque a 5 Hz (200 ms entre poses)
+        /// hacen falta ~300 ms para tener siempre dos muestras que rodeen el instante dibujado; a
+        /// esa distancia el desfase no se ve y el escalón sí.
+        private const float MaxPerPeerDelay = 0.35f;
+
+        /// <summary>
+        /// ADR-074 enm. 3 — retardo objetivo de UN peer: el global (jitter de la red) o, si su
+        /// cadencia real es más baja, lo que haga falta para no quedarse sin muestras entre dos
+        /// poses distintas. Un peer pegado sigue en el retardo global; uno a 80 m se dibuja más
+        /// atrasado, que a 80 m nadie ve.
+        /// </summary>
+        public static float PerPeerDelayTarget(RemotePlayerView view, float globalDelay)
+        {
+            return Mathf.Clamp(Mathf.Max(globalDelay, view.changeInterval * 1.5f),
+                MinInterpolationDelay, MaxPerPeerDelay);
+        }
+
+        /// <summary>
+        /// Pose de <paramref name="view"/> en el instante «ahora − <paramref name="delay"/>»,
         /// interpolada entre las dos muestras que lo rodean. Devuelve false mientras no haya dos
         /// (proxy recién creado, o un hueco largo sin recibir), y entonces el llamante se queda con
         /// el último valor conocido.
@@ -169,13 +224,13 @@ namespace BackroomsSurvival.Net
         /// De paso descarta lo ya consumido: se conserva UNA muestra por detrás del instante
         /// dibujado, que es la que hace de extremo izquierdo de la interpolación.
         /// </summary>
-        private static bool TrySamplePlaybackPose(RemotePlayerView view, out Vector3 position, out float yaw)
+        private static bool TrySamplePlaybackPose(RemotePlayerView view, float delay, out Vector3 position, out float yaw)
         {
             position = default;
             yaw = default;
 
             var samples = view.samples;
-            float renderTime = Time.unscaledTime - InterpolationDelay;
+            float renderTime = Time.unscaledTime - delay;
 
             int newestOlder = -1;
             for (int i = 0; i < samples.Count; i++)
@@ -335,16 +390,7 @@ namespace BackroomsSurvival.Net
                 view.targetRotation = rp.rotation;
                 // Se guarda la pose con su hora de llegada en vez de perseguirla directamente: el
                 // dibujo va por detrás y la reproduce a ritmo constante (ver InterpolationDelay).
-                view.samples.Add(new RemotePlayerView.PoseSample
-                {
-                    time = Time.unscaledTime,
-                    position = groundedPosition,
-                    yaw = rp.rotation,
-                });
-                // Cota dura por si el consumidor no drenara (proxy fuera de pantalla, pausa larga):
-                // el buffer nunca es historia, sólo el tramo que hace falta para interpolar.
-                if (view.samples.Count > 16)
-                    view.samples.RemoveRange(0, view.samples.Count - 16);
+                PushSample(view, groundedPosition, rp.rotation, Time.unscaledTime);
                 view.animationState = string.IsNullOrWhiteSpace(rp.animation) ? "idle" : rp.animation;
                 view.crouch = rp.crouch; // ADR-020
                 view.pitch = rp.pitch;   // ADR-021
@@ -425,7 +471,11 @@ namespace BackroomsSurvival.Net
                 // Pose a dibujar ESTE frame, reproducida con retardo (ver InterpolationDelay). Si
                 // todavía no hay dos muestras que rodeen ese instante, se cae al último valor
                 // conocido y el suavizado exponencial de abajo hace de red.
-                bool played = TrySamplePlaybackPose(view, out Vector3 playbackPos, out float playbackYaw);
+                // ADR-074 enm. 3: el retardo es POR PEER, y se mueve despacio por la misma razón
+                // que el global (ADR-138 D3): desplazar el instante dibujado ES un salto.
+                view.delay = Mathf.MoveTowards(view.delay, PerPeerDelayTarget(view, InterpolationDelay),
+                    DelayAdjustRate * Time.unscaledDeltaTime);
+                bool played = TrySamplePlaybackPose(view, view.delay, out Vector3 playbackPos, out float playbackYaw);
                 Vector3 aimPosition = played ? playbackPos : view.targetPosition;
                 float aimYaw = played ? playbackYaw : view.targetRotation;
 
@@ -522,6 +572,7 @@ namespace BackroomsSurvival.Net
             view.id = id;
             view.targetPosition = view.root != null ? view.root.position : Vector3.zero;
             view.samples.Clear(); // un proxy reciclado no arrastra el recorrido del anterior
+            view.changeInterval = 0.05f; view.lastChangeTime = -1f; view.delay = InterpolationDelay; // ADR-074 enm. 3
             view.targetRotation = view.root != null ? view.root.eulerAngles.y : 0f;
             view.yawVelocity = 0f; // [C] no carry-over from a recycled view
             ResetCosmetics(view); // ADR-022..ADR-049: recycled proxy starts clean (root just re-activated above)
@@ -553,6 +604,7 @@ namespace BackroomsSurvival.Net
             ResetCosmetics(view); // ADR-022..ADR-049
             view.targetPosition = Vector3.zero;
             view.samples.Clear();
+            view.changeInterval = 0.05f; view.lastChangeTime = -1f; view.delay = InterpolationDelay; // ADR-074 enm. 3
             view.targetRotation = 0f;
             view.yawVelocity = 0f; // [C]
 
@@ -851,6 +903,12 @@ namespace BackroomsSurvival.Net
         /// todo lo que ya quedó por detrás del instante que se está dibujando, así que su tamaño lo
         /// acota el retardo y no crece con la duración de la partida.
         public readonly List<PoseSample> samples = new List<PoseSample>(8);
+        /// ADR-074 enm. 3 — intervalo medido entre poses DISTINTAS de este peer (su cadencia real
+        /// tras el relay por distancia), la hora de la última, y el retardo propio con que se
+        /// dibuja (ver <see cref="RemotePlayerManager.PerPeerDelayTarget"/>).
+        public float changeInterval = 0.05f;
+        public float lastChangeTime = -1f;
+        public float delay = 0.15f;
         // ADR-011: scalar transient-action channel, read by ProxyPickupHook, which edge-detects the
         // transition into "pickup" and fires the Pickup trigger. The domain the backend actually
         // emits is exactly "idle" | "walk_slow" | "pickup" (sync.rs::broadcast_player_update).
