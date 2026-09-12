@@ -8562,7 +8562,7 @@ fn build_world_state(
             name: p.name.clone(),
             position: p.position,
             rotation: p.rotation,
-            animation: p.animation.clone(),
+            animation: p.animation,
             crouch: p.crouch,
             pitch: p.pitch,
             equipment: p.equipment,

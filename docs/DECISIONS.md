@@ -16712,3 +16712,78 @@ wire y ADR propio (regla dura 7).
 
 ---
 
+## ADR-143 — Nueve bytes para decir un bit: la animación deja de viajar como texto (2026-09-12) — PROPUESTA (Joel: «cómo se optimiza esos 9 bytes de animaciones a 1 haciendo que se vea exactamente igual»)
+
+### El problema, medido
+
+`PlayerUpdate.animation` es un `String`. Sobre MessagePack, `"walk_slow"` ocupa 10 B de una pose de
+74 (`load_tests::pose_byte_breakdown`, 12-09). Es el campo más caro de la pose con diferencia: el
+siguiente, `equipment`, cuesta 5 B, y vaciar `held_item`, `carry_*` o `pitch` no ahorra **nada**
+porque MessagePack ya mete los enteros pequeños en un byte.
+
+Eso viaja 30 veces por segundo por cada par que se ve. Y transporta seis valores: `idle`, `walk`,
+`walk_slow`, `run`, `pickup`, `interact`.
+
+**Lo que el cliente hace de verdad con ellos es distinguir uno.** El único consumidor es
+`ProxyPickupHook`, que compara `anim == "pickup"` y dispara un trigger del Animator en el flanco.
+La locomoción sale de la VELOCIDAD desde ADR-013, no de este campo. Se están pagando nueve bytes
+por pose para comunicar, en la práctica, un bit.
+
+### Decisión
+
+**D1 — El código sustituye al texto en los DOS cables.** `animation: String` pasa a `animation: u8`
+en `PacketPayload::PlayerUpdate` (backend↔backend), en `ipc::RemotePlayerState` y en
+`ipc::PlayerInput` (backend↔Unity). El mapeo a texto, si hace falta, ocurre ya dentro de C#.
+
+Se eligen los dos cables y no sólo el de red (Joel, 12-09). El de Unity es local y sus bytes no
+cuestan red, así que no entra por ahorro: entra para que **no haya dos representaciones del mismo
+dato** con una conversión en medio, que es exactamente la forma en que una de las dos se queda vieja.
+
+**D2 — Códigos estables y explícitos, nunca el orden de un `enum`.**
+
+```
+0 = idle        3 = run
+1 = walk        4 = pickup
+2 = walk_slow   5 = interact
+```
+
+Escritos a mano y no derivados de la posición en una declaración, porque reordenar la declaración no
+puede cambiar lo que significa un byte en el cable.
+
+**D3 — Un código desconocido cae en `idle`, jamás en un error.** Un peer más nuevo puede mandar un 6
+que este binario no conoce. Degradar a `idle` es cosmético y sigue la regla de ADR-020/024: lo que
+no se entiende se decodifica al valor por defecto, nunca rompe la sesión.
+
+**D4 — El resultado visual es idéntico por construcción.** El mapeo es total y biyectivo sobre los
+seis valores que existen hoy, así que `view.animationState` acaba con la misma cadena que hoy y
+`ProxyPickupHook` no se entera. La puerta es un test que recorre el mapeo en los DOS sentidos y que
+falla si algún literal del árbol no está cubierto — sin él, una ruta que produjera una cadena fuera
+de la lista se convertiría en `idle` en silencio, que es el único modo de fallo real de este cambio.
+
+### Lo que se gana, con su número
+
+- **9 B menos por pose, de 74 a 65: un 12 % de TODAS las poses**, no sólo de algunas. A diferencia
+  del cono de atención (que sólo toca lo que está a la espalda), esto se cobra en cada par.
+- **Se acaba el `clone()` por pose relayada.** El relay copia la `String` una vez por destinatario;
+  su propio comentario lo llama «cientos de `String` por segundo asignadas para nada». Un `u8` es
+  `Copy`. Eso rebaja CPU del emisor, que es el muro con la gente repartida.
+- **Se cae la necesidad de `ReadStringCached`** para este campo en el cliente.
+
+### Lo que NO se gana, y conviene tenerlo escrito
+
+En una sala el coste va con N², así que un 12 % de ahorro sube el aforo por la RAÍZ: unos 27 → 29
+jugadores combinado con el cono. **Arañar bytes en sala da poco por definición.** Lo que mueve el
+techo de verdad es cambiar la FORMA de la curva (presupuesto por destino), no su constante. Este ADR
+se justifica por el `clone()` y por aplicarse a todos los pares, no por el aforo.
+
+### Riesgos
+
+- **Regla dura 7 y el espejo de C#.** Es bump de `WIRE_SCHEMA_VERSION` y de `WireSchema.Expected`,
+  y van en el MISMO commit: subir una y no la otra no da aviso, deja el juego inarrancable.
+- **Superficie en C#.** Tocan `IPCMessages`, `RemotePlayerManager` y los tests de EditMode que hoy
+  comparan contra cadenas (`RemotePlayerManagerTests`). Es el precio elegido en D1.
+- **ADR-074 no entra aquí**: el campo no cambia de tamaño según quién sea la fuente. Todas las poses
+  pagan un byte, criaturas incluidas.
+
+---
+

@@ -33,7 +33,7 @@ pub enum NetworkEvent {
         id: PeerId,
         position: [f32; 3],
         rotation: f32,
-        animation: String,
+        animation: crate::network::protocol::PoseAnim,
         crouch: bool,
         pitch: i8,
         equipment: [i32; 4],

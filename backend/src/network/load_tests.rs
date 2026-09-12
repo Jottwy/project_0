@@ -727,7 +727,7 @@ async fn pose_byte_breakdown() {
         PacketPayload::PlayerUpdate {
             position: [1234.5, 1.8, -987.25],
             rotation: 137.5,
-            animation: "walk_slow".into(),
+            animation: super::protocol::PoseAnim::WALK_SLOW,
             crouch: false,
             pitch: -12,
             equipment: [101, 202, 303, 404],
@@ -768,7 +768,7 @@ async fn pose_byte_breakdown() {
             } => PacketPayload::PlayerUpdate {
                 position,
                 rotation,
-                animation: String::new(),
+                animation: super::protocol::PoseAnim::IDLE,
                 crouch,
                 pitch: 0,
                 equipment: [0; 4],
@@ -804,10 +804,10 @@ async fn pose_byte_breakdown() {
 
     println!("\n  Campo a campo, lo que cuesta vaciar cada cosa:");
     for (name, payload) in [
-        ("animation (String)", {
+        ("animation (ADR-143: u8)", {
             let mut p = full();
             if let PacketPayload::PlayerUpdate { animation, .. } = &mut p {
-                *animation = String::new();
+                *animation = super::protocol::PoseAnim::IDLE;
             }
             p
         }),

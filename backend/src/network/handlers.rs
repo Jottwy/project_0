@@ -336,13 +336,13 @@ impl NetworkManager {
                         });
                         entry.relay_only = true;
                         let rot = entry.rotation;
-                        let anim = entry.animation.clone();
+                        let anim = entry.animation;
                         entry.update_player_state(info.position, rot, anim);
                         continue;
                     }
                     if let Some(peer) = self.peers.get_mut(&info.id) {
                         let rot = peer.rotation;
-                        let anim = peer.animation.clone();
+                        let anim = peer.animation;
                         peer.update_player_state(info.position, rot, anim);
                     } else if let Ok(addr) = info.addr.parse::<SocketAddr>() {
                         // Auditoría de heartbeat (2026-08-30): la dirección tiene que ser de
@@ -761,7 +761,7 @@ impl NetworkManager {
                 species,
             } => {
                 if let Some(peer) = self.peers.get_mut(&sender_id) {
-                    peer.update_player_state(position, rotation, animation.clone());
+                    peer.update_player_state(position, rotation, animation);
                     peer.crouch = crouch; // ADR-020: cosmetic crouch, alongside the pose
                     peer.pitch = pitch; // ADR-021: cosmetic camera pitch, alongside the pose
                     peer.equipment = equipment; // ADR-022: cosmetic clothing, alongside the pose

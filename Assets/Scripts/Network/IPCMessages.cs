@@ -118,13 +118,60 @@ namespace BackroomsSurvival.Net
 
     // ───────────────────────── Remote players (pose relay) ─────────────────────────
 
+    /// <summary>
+    /// ADR-143 — espejo en C# de <c>PoseAnim::ALL</c> (backend/src/network/protocol.rs).
+    ///
+    /// Los códigos van escritos a mano en los dos lados y NO derivados de un orden de declaración:
+    /// reordenar una lista no puede cambiar lo que significa un byte en el cable. Si esta tabla y
+    /// la de Rust se separan, la animación de los demás jugadores se ve mal sin que nada falle —
+    /// por eso la prueba de round-trip vive en el backend y el bump de esquema es obligatorio.
+    /// </summary>
+    public static class PoseAnimNames
+    {
+        private static readonly string[] Names =
+            { "idle", "walk", "walk_slow", "run", "pickup", "interact" };
+
+        /// <summary>Nombre de un código; "idle" para cualquiera que este cliente no conozca.</summary>
+        public static string Of(int code) =>
+            code >= 0 && code < Names.Length ? Names[code] : "idle";
+
+        /// <summary>Código de un nombre; 0 (idle) para cualquiera que no esté en la tabla.</summary>
+        public static int Code(string name)
+        {
+            for (int i = 0; i < Names.Length; i++)
+                if (Names[i] == name) return i;
+            return 0;
+        }
+    }
+
     public class RemotePlayerMsg
     {
         public int id;
         public string name = "";
         public Vector3 position;
         public float rotation;
-        public string animation = "idle";
+        /// <summary>
+        /// ADR-143: la animación llega como CÓDIGO de un byte, no como texto. Costaba 10 B de una
+        /// pose de 74 sobre MessagePack, 30 veces por segundo y por cada par que se ve.
+        /// </summary>
+        public int animationCode;
+
+        /// <summary>
+        /// El nombre de siempre, reconstruido desde el código. Todo lo que ya leía
+        /// <c>animation</c> —<c>ProxyPickupHook</c>, los tests de EditMode— sigue viendo la misma
+        /// cadena exacta que antes: el cambio es de cable, no de comportamiento.
+        ///
+        /// ADR-143 D3: un código que este cliente no conoce (un backend más nuevo) se lee como
+        /// "idle" en vez de romper nada.
+        /// </summary>
+        /// El <c>set</c> existe para que nada de lo que ya escribía este campo por nombre tenga que
+        /// cambiar — los tests de EditMode incluidos. Que sigan pasando SIN tocarlos es
+        /// precisamente la prueba de que ADR-143 no cambia comportamiento, sólo representación.
+        public string animation
+        {
+            get => PoseAnimNames.Of(animationCode);
+            set => animationCode = PoseAnimNames.Code(value);
+        }
         // ADR-020: cosmetic crouch state of this remote player (host-relayed).
         public bool crouch;
         // ADR-021: cosmetic camera pitch in degrees (−90..90, quantized to 1° on the wire).
@@ -178,7 +225,7 @@ namespace BackroomsSurvival.Net
                 else if (MsgPackReader.Is(k, "name")) r.name = reader.ReadString();
                 else if (MsgPackReader.Is(k, "position")) r.position = reader.ReadVec3();
                 else if (MsgPackReader.Is(k, "rotation")) r.rotation = reader.ReadFloat();
-                else if (MsgPackReader.Is(k, "animation")) r.animation = reader.ReadStringCached();
+                else if (MsgPackReader.Is(k, "animation")) r.animationCode = (int)reader.ReadInt();
                 else if (MsgPackReader.Is(k, "crouch")) r.crouch = reader.ReadBool();
                 else if (MsgPackReader.Is(k, "pitch")) r.pitch = (int)reader.ReadInt();
                 else if (MsgPackReader.Is(k, "equipment")) reader.ReadIntArrayInto(r.equipment);

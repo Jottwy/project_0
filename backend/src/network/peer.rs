@@ -58,7 +58,7 @@ pub struct PeerConnection {
     // Remote player state (updated by PlayerUpdate packets)
     pub position: [f32; 3],
     pub rotation: f32,
-    pub animation: String,
+    pub animation: super::protocol::PoseAnim,
     /// ADR-020: cosmetic crouch state, set from PlayerUpdate; relayed, not authoritative.
     ///
     /// ADR-050 point 8: `update_player_state` still does not touch it, but this is no longer a
@@ -261,7 +261,12 @@ impl PeerConnection {
             .max()
     }
 
-    pub fn update_player_state(&mut self, position: [f32; 3], rotation: f32, animation: String) {
+    pub fn update_player_state(
+        &mut self,
+        position: [f32; 3],
+        rotation: f32,
+        animation: super::protocol::PoseAnim,
+    ) {
         self.position = position;
         self.rotation = rotation;
         self.animation = animation;

@@ -677,7 +677,7 @@ pub struct RemotePlayerState {
     pub name: String,
     pub position: [f32; 3],
     pub rotation: f32,
-    pub animation: String,
+    pub animation: crate::network::protocol::PoseAnim,
     /// ADR-020: cosmetic crouch state of this remote player (host-relayed).
     #[serde(default)]
     pub crouch: bool,

@@ -1644,7 +1644,7 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager, mut pvs: Option<PvsC
     };
     // Sólo id y posición: es lo ÚNICO que decide el AOI, y es todo `Copy`. La pose completa se
     // construye más abajo y sólo para quien acabe teniendo destinatarios — antes se armaban las P
-    // poses por ronda, con su `animation.clone()` cada una, y las de los orígenes que no interesan
+    // poses por ronda, y las de los orígenes que no interesan
     // a nadie se tiraban enteras. Con 24 criaturas y una persona dentro (medido el 10-09) eso eran
     // cientos de `String` por segundo asignadas para nada.
     let poses: Vec<(PeerId, [f32; 3])> = net.peers.values().map(|p| (p.id, p.position)).collect();
@@ -1829,7 +1829,7 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager, mut pvs: Option<PvsC
         let payload = PacketPayload::PlayerUpdate {
             position: p.position,
             rotation: p.rotation,
-            animation: p.animation.clone(),
+            animation: p.animation,
             crouch: p.crouch,
             pitch: p.pitch,
             equipment: p.equipment,
