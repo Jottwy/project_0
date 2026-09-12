@@ -1146,6 +1146,32 @@ pub const AOI_POSE_EXIT_FACTOR: f32 = 1.2;
 /// interior y ~75 % en el exterior (el área crece con el cuadrado).
 pub const AOI_POSE_NEAR_RADIUS_M: f32 = AOI_POSE_RADIUS_M * 0.5;
 
+/// Lado de la casilla del índice espacial del relay, en metros.
+///
+/// **Es el radio de SALIDA, no el de entrada, y la diferencia no es cosmética.** La histéresis del
+/// AOI deja que un par que ya se estaba viendo aguante hasta `AOI_POSE_RADIUS_M ×
+/// AOI_POSE_EXIT_FACTOR`; si la casilla midiera el radio de entrada, el índice descartaría pares
+/// que el filtro sí quería mantener y la histéresis dejaría de existir en silencio.
+///
+/// Con este lado, la vecindad de 3×3 es DEMOSTRABLEMENTE suficiente: dos puntos a menos del radio
+/// de salida no pueden caer a más de una casilla de distancia en ningún eje — si lo estuvieran, su
+/// separación mínima ya superaría el lado. `the_neighbourhood_never_drops_a_pair_the_radius_wants`
+/// lo barre en vez de fiarse de este párrafo.
+pub const POSE_CELL_M: f32 = AOI_POSE_RADIUS_M * AOI_POSE_EXIT_FACTOR;
+
+/// Casilla de un punto. Sólo X y Z: ignorar la altura sólo puede meter candidatos de MÁS en una
+/// casilla, nunca de menos, así que es seguro — dos puntos a menos del radio en 3D lo están también
+/// en X y en Z por separado.
+///
+/// `floor` y no truncado: truncar hacia cero haría la casilla del origen del doble de ancha, que no
+/// rompe nada pero deja una casilla que no mide lo que dice la constante.
+pub fn pose_cell(p: [f32; 3]) -> (i32, i32) {
+    (
+        (p[0] / POSE_CELL_M).floor() as i32,
+        (p[2] / POSE_CELL_M).floor() as i32,
+    )
+}
+
 /// Tope de fuentes que un destinatario recibe en una ronda.
 ///
 /// El radio y el grafo deciden par a par, y ninguno de los dos mira nunca cuánto acaba recibiendo
@@ -1542,14 +1568,36 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager, mut pvs: Option<PvsC
     let mut pvs_hidden = 0usize;
     let mut pvs_considered = 0usize;
 
+    // Índice espacial de los destinos. Sin él este bucle es O(N²) AUNQUE el radio rechace a todo el
+    // mundo, porque preguntar cuesta igual que aceptar: medido en `host_total_player_ceiling`, con
+    // la gente repartida —donde el radio no deja pasar ni una pose— doblar N multiplicaba el coste
+    // por cuatro, y el techo caía en 320 con el cable a cero. El filtro ahorraba cable y no ahorraba
+    // nada de CPU.
+    //
+    // Las casillas se llenan en el orden de `dest_ids` (Vec), así que cada cubo conserva un orden
+    // estable y el recorrido de abajo sigue siendo reproducible — regla dura 13.
+    let mut cells: std::collections::HashMap<(i32, i32), Vec<PeerId>> =
+        std::collections::HashMap::with_capacity(dest_ids.len());
+    for &dest_id in &dest_ids {
+        if let Some(dpos) = dest_pos.get(&dest_id) {
+            cells.entry(pose_cell(*dpos)).or_default().push(dest_id);
+        }
+    }
+
     for (src_id, src_pos) in &poses {
-        for &dest_id in &dest_ids {
+        // Sólo la casilla propia y las ocho de alrededor: cualquier destino fuera de esas nueve
+        // está más lejos que el radio de SALIDA y el filtro lo iba a rechazar seguro, así que ni se
+        // le pregunta. Lo que se salta es exactamente el trabajo que antes se pagaba para nada.
+        let (cx, cz) = pose_cell(*src_pos);
+        for (dest_id, dpos) in (-1..=1)
+            .flat_map(|dx| (-1..=1).map(move |dz| (cx + dx, cz + dz)))
+            .filter_map(|cell| cells.get(&cell))
+            .flatten()
+            .filter_map(|id| dest_pos.get(id).map(|p| (*id, p)))
+        {
             if dest_id == *src_id {
                 continue; // never echo a peer its own pose
             }
-            let Some(dpos) = dest_pos.get(&dest_id) else {
-                continue;
-            };
             let was = net.aoi_pose_pairs.contains(&(*src_id, dest_id));
             if !aoi_pose_should_relay(*src_pos, *dpos, was, AOI_POSE_RADIUS_M) {
                 continue;
@@ -3395,6 +3443,119 @@ mod chunk_broadcast_tests {
 ///
 /// Se prueba sobre `pvs_allows`, que es pura: la mitad peligrosa de esto no debe necesitar sockets
 /// para ponerse en rojo.
+#[cfg(test)]
+mod spatial_index_tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    /// Una nube que cruza el origen y cae en coordenadas negativas a propósito, con separaciones
+    /// que se sientan justo encima de las dos fronteras que importan (el radio de entrada, 100, y
+    /// el de salida, 120).
+    fn cloud() -> Vec<[f32; 3]> {
+        let mut pts = Vec::new();
+        for i in 0..18 {
+            for j in 0..18 {
+                let jitter = ((i * 7 + j * 13) % 11) as f32 - 5.0;
+                pts.push([
+                    (i as f32 - 9.0) * 58.0 + jitter,
+                    1.8,
+                    (j as f32 - 9.0) * 58.0 - jitter,
+                ]);
+            }
+        }
+        pts
+    }
+
+    /// Los pares que el índice llega a VISITAR, con la vecindad de 3×3 del relay.
+    fn visited_by_index(pts: &[[f32; 3]]) -> HashSet<(usize, usize)> {
+        let mut cells: std::collections::HashMap<(i32, i32), Vec<usize>> =
+            std::collections::HashMap::new();
+        for (i, p) in pts.iter().enumerate() {
+            cells.entry(pose_cell(*p)).or_default().push(i);
+        }
+        let mut seen = HashSet::new();
+        for (i, a) in pts.iter().enumerate() {
+            let (cx, cz) = pose_cell(*a);
+            for dx in -1..=1 {
+                for dz in -1..=1 {
+                    if let Some(bucket) = cells.get(&(cx + dx, cz + dz)) {
+                        for &j in bucket {
+                            if i != j {
+                                seen.insert((i, j));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        seen
+    }
+
+    /// Los pares que el radio ACEPTA, a fuerza bruta: todos contra todos, sin índice.
+    fn accepted_by_radius(pts: &[[f32; 3]], was_relaying: bool) -> HashSet<(usize, usize)> {
+        let mut ok = HashSet::new();
+        for (i, a) in pts.iter().enumerate() {
+            for (j, b) in pts.iter().enumerate() {
+                if i != j && aoi_pose_should_relay(*a, *b, was_relaying, AOI_POSE_RADIUS_M) {
+                    ok.insert((i, j));
+                }
+            }
+        }
+        ok
+    }
+
+    #[test]
+    fn the_index_never_drops_a_pair_the_radius_wants() {
+        // La propiedad que hace correcto el atajo: el índice puede visitar de MÁS (y los rechaza el
+        // radio, como siempre), pero jamás de MENOS. Si alguna vez visitara de menos, un jugador se
+        // volvería invisible para otro sin que nada fallara — el peor tipo de bug de este relay,
+        // porque no da error, sólo borra gente.
+        let pts = cloud();
+        let visited = visited_by_index(&pts);
+
+        // Las dos ramas de la histéresis, porque usan radios distintos y el lado de la casilla se
+        // eligió por el de SALIDA precisamente para cubrir la segunda.
+        for was_relaying in [false, true] {
+            let wanted = accepted_by_radius(&pts, was_relaying);
+            let dropped: Vec<_> = wanted.difference(&visited).collect();
+            assert!(
+                dropped.is_empty(),
+                "el índice se dejó {} pares que el radio aceptaba (was_relaying={was_relaying});                  el primero es {:?}",
+                dropped.len(),
+                dropped.first()
+            );
+        }
+    }
+
+    #[test]
+    fn the_cell_is_at_least_the_exit_radius() {
+        // Si alguien encoge la casilla por debajo del radio de salida, la vecindad de 3×3 deja de
+        // ser suficiente y el test de arriba se pone rojo. Esta es la razón escrita, para que el
+        // rojo se lea en un segundo en vez de en una tarde.
+        let exit = AOI_POSE_RADIUS_M * AOI_POSE_EXIT_FACTOR;
+        assert!(
+            POSE_CELL_M >= exit,
+            "casilla {POSE_CELL_M} m < radio de salida {exit} m: la vecindad de 3x3 ya no cubre              todo lo que la histéresis quiere mantener"
+        );
+    }
+
+    #[test]
+    fn the_index_saves_work_instead_of_just_moving_it() {
+        // Que sea correcto no basta: tiene que ahorrar. Se mide sobre la MISMA nube densa que usa
+        // el test de correccion —58 m de paso contra un radio de 100— que es casi el peor caso
+        // realista: ahi las casillas van llenas y la vecindad de 3x3 abarca buena parte del mundo.
+        // Con la gente de verdad repartida el ahorro es de otro orden; este umbral es el suelo, no
+        // la expectativa.
+        let pts = cloud();
+        let brute = pts.len() * (pts.len() - 1);
+        let visited = visited_by_index(&pts).len();
+        assert!(
+            visited * 4 < brute,
+            "el índice visita {visited} de {brute} pares: menos de un 4x en el caso más denso no              justifica el índice"
+        );
+    }
+}
+
 #[cfg(test)]
 mod fidelity_cap_tests {
     use super::*;

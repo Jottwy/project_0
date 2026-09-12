@@ -455,31 +455,38 @@ async fn host_cpu_per_broadcast_round() {
 /// crece con N y lo que toda esta tanda ha estado optimizando. El coste de los rosters tiene su
 /// propio arnes (`loot_and_buildings_by_world_age`) y se lee en KB por rafaga, nunca por segundo.
 ///
-/// # Lo que la primera corrida destapo (2026-09-12)
+/// # Lo que destapo, y lo que se arreglo con ello (2026-09-12)
 ///
-/// Juntos: 20 aguanta, 24 revienta el cable. Confirma por medida el ~22 que hasta ahora era una
-/// extrapolacion desde los 505 KB/s de N=16.
+/// Juntos: 20 aguanta, 24 revienta el cable. Confirma por medida el ~22 que hasta entonces era una
+/// extrapolacion desde los 505 KB/s de N=16. No ha cambiado desde entonces y no deberia: en una
+/// sala todos caen en la misma casilla del indice y el muro es el cable, no la CPU.
 ///
-/// Repartidos: 300 aguantan al 95 % del tick, 320 revienta. **Y eso corrige a la baja el ~600 que
-/// se venia diciendo**, que salia de extrapolar linealmente desde N=50. No es lineal:
+/// Repartidos, la primera corrida dio 300 al 95 % del tick y 320 reventado — **corrigiendo a la
+/// baja el ~600 que se venia diciendo**, que salia de extrapolar linealmente desde N=50. No era
+/// lineal: doblar N multiplicaba el coste por ~4.
+///
+/// La causa: el bucle de pares era O(N^2) **aunque el AOI rechazara todo**, porque preguntar cuesta
+/// igual que aceptar. El AOI ahorraba cable y no ahorraba nada de CPU, justo en el caso —gente
+/// repartida— donde el cable ya no es el problema.
+///
+/// Con el indice espacial puesto (casillas del radio de SALIDA, vecindad de 3x3), la misma escalera
+/// da lineal y el techo se mueve un orden de magnitud:
 ///
 /// ```text
-///    50 ->  0,51 ms      200 ->  6,97 ms
-///   100 ->  2,44 ms      300 -> 15,83 ms
+///          antes          despues
+///    200    6,97 ms        1,08 ms
+///    400   revienta        2,15 ms
+///   1600        --         7,13 ms
+///   3200        --        14,51 ms   <- ultimo que aguanta
+///   4000        --        19,59 ms   <- revienta
 /// ```
 ///
-/// Doblar N multiplica el coste por ~4. El bucle de pares es O(N^2) **aunque el AOI rechace todo**,
-/// porque rechazar tambien cuesta: `for src in poses { for dest in dest_ids { ... } }` se recorre
-/// entero pase lo que pase. O sea que el AOI ahorra CABLE pero no ahorra CPU, y con la gente
-/// repartida —que es el caso donde el cable ya no importa— lo unico que queda es el cuadrado.
+/// Techo repartido: de ~310 a ~3.500. Y ahora SI es lineal (~0,005 ms por peer), asi que por
+/// primera vez extrapolar desde esta curva no es una mentira.
 ///
-/// La salida es un indice espacial: agrupar los peers por celda y visitar solo las celdas vecinas,
-/// que deja el recorrido en casi lineal. Es la siguiente optimizacion del emisor y ahora esta
-/// medida, no supuesta.
-///
-/// Nota sobre el tope por destinatario (`POSE_FIDELITY_CAP` = 96): los dos muros llegan ANTES de
-/// que ningun destinatario pueda juntar 96 fuentes, asi que esta corrida es tambien la
-/// comprobacion independiente de que el tope entro apagado.
+/// Nota sobre el tope por destinatario (`POSE_FIDELITY_CAP` = 96): en la rama juntos los dos muros
+/// llegan antes de que nadie junte 96 fuentes, y en la repartida el AOI ya corto casi todo. Esta
+/// corrida es tambien la comprobacion independiente de que el tope sigue entrando apagado.
 ///
 /// # Dos avisos mas sobre lo que este numero NO es
 ///
@@ -506,7 +513,7 @@ async fn host_total_player_ceiling() {
         // CPU tarda muchisimo repartidos.
         let ladder: &[usize] = match spread {
             Spread::SameRoom => &[8, 12, 16, 20, 24, 28, 32, 40, 48, 64, 96, 128],
-            Spread::Scattered => &[50, 100, 200, 260, 300, 320, 350, 400, 600, 1200],
+            Spread::Scattered => &[50, 100, 200, 400, 800, 1600, 2400, 3200, 4000, 5000, 6000],
         };
 
         println!("--- {spread:?} ---");
