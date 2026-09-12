@@ -14,6 +14,14 @@ namespace BackroomsSurvival.WorldGen3
     /// se pierde si se copia sin leerlo: así **ningún <c>AudioSource</c> cuelga jamás de un chunk**, y
     /// descargarlo no puede dejar fuentes huérfanas. El director reparte sus propias fuentes entre las
     /// posiciones que se le dan.
+    ///
+    /// R6 (12-09) — <see cref="storeys"/>. Un chunk WG3 mide 50 m en XZ y NO se parte en Y, así que
+    /// puede meter siete u ocho plantas en un solo alta. El director aislaba por planta con UN valor
+    /// por LOTE entero (el que ya usaba WG2, donde un chunk sí es una sola planta); aplicado a un
+    /// lote de WG3 eso comparaba la planta de la primera lámpara contra todas las demás — o, peor,
+    /// un valor que nadie llegó a fijar nunca (ver el commit que añade esto). La planta va por
+    /// LÁMPARA, calculada aquí con la misma <see cref="Wg3StoreyLayers.RawStoreyOf"/> que ya reparte
+    /// la luz, para que oído y ojo estén de acuerdo en qué es «tu planta».
     /// </summary>
     public sealed class Wg3HumBatch
     {
@@ -21,6 +29,7 @@ namespace BackroomsSurvival.WorldGen3
         public readonly List<float> pitches = new List<float>();
         public readonly List<float> flickerHz = new List<float>();
         public readonly List<float> flickerPhase = new List<float>();
+        public readonly List<int> storeys = new List<int>();
     }
 
     public sealed class Wg3Materials
@@ -707,6 +716,11 @@ namespace BackroomsSurvival.WorldGen3
                         int gx = Mathf.RoundToInt(world.x);
                         int gz = Mathf.RoundToInt(world.z);
                         hum.positions.Add(world);
+                        // R6 — la planta del TRAMO, no la de la lámpara: es la misma cota que usa
+                        // Wg3StoreyLayers para la luz (ForLight/ForSurface parten de FloorY, nunca
+                        // de dónde cuelga el plafón), así que el corte de «tu planta» del zumbido
+                        // cae exactamente donde cae el de la luz.
+                        hum.storeys.Add(Wg3StoreyLayers.RawStoreyOf(segment.FloorY));
                         hum.pitches.Add(
                             BackroomsSurvival.Gameplay.Audio.FluorescentHumDirector.PitchFor(gx, gz));
                         // Frecuencia y fase salen del MISMO fixture que gobierna la Light, no de la

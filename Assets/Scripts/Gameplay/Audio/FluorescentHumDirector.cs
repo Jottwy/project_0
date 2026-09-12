@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using BackroomsSurvival.Gameplay.GridWorld;
+using BackroomsSurvival.WorldGen3; // Wg3StoreyLayers.RawStoreyOf — R6, el aislamiento por planta
 using PolymindGames; // AudioManager / AudioChannel — el mixer del juego
 using UnityEngine;
 
@@ -148,7 +149,11 @@ namespace BackroomsSurvival.Gameplay.Audio
         private struct LampBatch
         {
             public Transform root;      // raíz del chunk; null (destruida) ⇒ lote retirado
-            public int       layer;     // capa macro, para aislar verticalmente
+            // R6 — `layer` es el FALLBACK de WG2: un chunk de esa rejilla es una sola planta, así
+            // que un valor por lote basta. `storeys` es la planta REAL de cada lámpara (WG3, donde
+            // un chunk mete varias plantas); si viene, manda sobre `layer` lámpara a lámpara.
+            public int       layer;
+            public int[]     storeys;   // null ⇒ usar `layer` para TODO el lote (camino de WG2)
             public Vector3[] positions; // MUNDO, muestreadas al registrar
             public float[]   pitches;
             public float[]   flickerHz;    // 0 = lámpara fija
@@ -238,7 +243,7 @@ namespace BackroomsSurvival.Gameplay.Audio
         public static void RegisterChunkLamps(Transform chunkRoot, int worldLayer,
             List<Vector3> worldPositions, List<float> pitches,
             List<float> flickerHz, List<float> flickerPhase,
-            LayerVisualConfig cfg, int zoneKind)
+            LayerVisualConfig cfg, int zoneKind, List<int> storeys = null)
         {
             if (chunkRoot == null || cfg == null) return;
             if (worldPositions == null || worldPositions.Count == 0) return;
@@ -251,18 +256,24 @@ namespace BackroomsSurvival.Gameplay.Audio
             var pit = new float[n];
             var fhz = new float[n];
             var fph = new float[n];
+            // R6 — sólo se materializa si TODAS las lámparas traen su planta; a medio llenar sería
+            // peor que no tenerlo (unas lámparas la respetan y otras caen al `layer` del lote entero
+            // sin que nada lo distinga desde fuera).
+            int[] sto = (storeys != null && storeys.Count == n) ? new int[n] : null;
             for (int i = 0; i < n; i++)
             {
                 pos[i] = worldPositions[i];
                 pit[i] = (pitches      != null && i < pitches.Count)      ? pitches[i]      : 1f;
                 fhz[i] = (flickerHz    != null && i < flickerHz.Count)    ? flickerHz[i]    : 0f;
                 fph[i] = (flickerPhase != null && i < flickerPhase.Count) ? flickerPhase[i] : 0f;
+                if (sto != null) sto[i] = storeys[i];
             }
 
             director._batches.Add(new LampBatch
             {
                 root      = chunkRoot,
                 layer     = worldLayer,
+                storeys   = sto,
                 positions = pos,
                 pitches   = pit,
                 flickerHz    = fhz,
@@ -480,18 +491,23 @@ namespace BackroomsSurvival.Gameplay.Audio
 
         private void Reassign(Vector3 ear)
         {
-            // Aislamiento vertical POR CAPA, no por distancia. Las capas están a 4 m
+            // Aislamiento vertical POR CAPA, no por distancia. Las capas de WG2 están a 4 m
             // (GridConstants.LayerHeight) y la lámpara cuelga a 3,7 m del suelo de la suya,
             // así que la lámpara de la capa de ABAJO queda a 1,95 m del oído — MÁS CERCA en
             // vertical que la de tu propia capa (2,05 m). Ningún corte por |dy| las separa;
-            // el índice de capa sí, y es el mismo criterio que el cullingMask de las luces.
+            // el índice de capa sí.
             int earLayer = Mathf.FloorToInt(ear.y / GridConstants.LayerHeight);
+            // R6 — y el mismo criterio para WG3, con SU cota (3,32 m + sótanos), que es la que de
+            // verdad usa el cullingMask de las luces (`Wg3StoreyLayers`). `earLayer` de arriba con
+            // el número de WG2 no sirve aquí: un chunk WG3 mete varias plantas en un solo lote, así
+            // que el filtro por planta va LÁMPARA A LÁMPARA (ver `LampBatch.storeys`), no por lote.
+            int earStoreyWg3 = Wg3StoreyLayers.RawStoreyOf(ear.y);
 
             _candidates.Clear();
             _refs.Clear();
             // La distancia a la lámpara más cercana sale GRATIS de este mismo barrido: el
-            // aislamiento no añade ni un sondeo. Ojo, solo cuenta lámparas de la capa del
-            // oyente — las de otra capa no son compañía, están al otro lado de una losa.
+            // aislamiento no añade ni un sondeo. Ojo, solo cuenta lámparas de la planta del
+            // oyente — las de otra planta no son compañía, están al otro lado de una losa.
             float nearestSqr = float.MaxValue;
 
             for (int b = _batches.Count - 1; b >= 0; b--)
@@ -504,7 +520,10 @@ namespace BackroomsSurvival.Gameplay.Audio
                     _batches.RemoveAt(b);
                     continue;
                 }
-                if (batch.layer != earLayer) continue; // aislamiento vertical, ver arriba
+                // Un lote de WG2 SIGUE siendo una sola planta (su generador lo garantiza), así que
+                // el corte por lote entero es correcto ahí y más barato que mirar lámpara a lámpara.
+                bool perLampStorey = batch.storeys != null;
+                if (!perLampStorey && batch.layer != earLayer) continue;
 
                 // Resuelto AQUÍ y no al registrar: mover humVolume en el Inspector durante
                 // el Play se oye en la siguiente pasada. Un lote a 0 (zona muda) no genera
@@ -516,6 +535,12 @@ namespace BackroomsSurvival.Gameplay.Audio
 
                 for (int i = 0; i < batch.count; i++)
                 {
+                    // R6 — WG3: la planta de ESTA lámpara, no la del lote (que ni existe: un chunk
+                    // WG3 reparte sus lámparas entre varias plantas). Sin esto una nave de ocho
+                    // plantas o suena entera de golpe o se calla entera según con qué lámpara
+                    // ganara el lote al registrarse.
+                    if (perLampStorey && batch.storeys[i] != earStoreyWg3) continue;
+
                     float sqr = (batch.positions[i] - ear).sqrMagnitude;
                     // La medida del aislamiento va ANTES del culling por alcance: si midiera
                     // después, una lámpara a 9 m no contaría y el jugador figuraría como

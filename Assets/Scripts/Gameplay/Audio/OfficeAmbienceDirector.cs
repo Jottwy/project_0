@@ -631,10 +631,18 @@ namespace BackroomsSurvival.Gameplay.Audio
         private const float ReassignInterval = 0.25f;
         private const float LoopFadeSeconds = 0.35f;
 
-        /// <summary>Media planta: una fuente de la planta de al lado no se oye a través del
-        /// forjado. El corte por |dy| es lo que impide que un teléfono con 18 m de alcance
-        /// suene desde el piso de arriba.</summary>
-        private const float SameStoreyM = 2.6f;
+        /// <summary>
+        /// R6 (12-09) — ya NO es un corte por distancia. Antes era |dy| ≤ 2,6 m, pensado para
+        /// impedir que un teléfono con 18 m de alcance sonara desde el piso de arriba, pero con la
+        /// planta de WG3 a 3,32 m ese número tenía dos fallos: una fuente cerca del TECHO de tu
+        /// propia planta (a más de 2,6 m del oído) se cortaba aunque estuvierais en la misma sala, y
+        /// una fuente pegada al SUELO de la planta de arriba (a menos de 2,6 m del oído si tú estás
+        /// cerca del techo de la tuya) sonaba a través de la losa. El corte real es el mismo índice
+        /// de planta que ya reparte la luz — <see cref="Wg3StoreyLayers.RawStoreyOf"/> — comparado
+        /// entre la fuente y el oyente, no una distancia.
+        /// </summary>
+        private static bool SamePlanta(float sourceY, float earY) =>
+            Wg3StoreyLayers.RawStoreyOf(sourceY) == Wg3StoreyLayers.RawStoreyOf(earY);
 
         private Transform _listener;
         private float _listenerRetry;
@@ -766,7 +774,7 @@ namespace BackroomsSurvival.Gameplay.Audio
                     int k = (int)e.kind;
 
                     Vector3 d = e.position - ear;
-                    if (Mathf.Abs(d.y) > SameStoreyM) continue; // aislamiento entre plantas
+                    if (!SamePlanta(e.position.y, ear.y)) continue; // R6 — aislamiento entre plantas
                     float dist = d.magnitude;
                     if (dist > KindMaxDistance[k]) continue;
 

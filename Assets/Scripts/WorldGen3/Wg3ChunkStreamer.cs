@@ -692,9 +692,13 @@ namespace BackroomsSurvival.WorldGen3
             // ni fuente que quede huérfana al descargar.
             if (hum.positions.Count > 0 && ambience != null)
             {
+                // R6 — `root.layer` (la capa de motor del GameObject, para colisión/culling de
+                // Unity) NUNCA se toca en este chunk y no significa «planta»: se deja tal cual como
+                // último recurso del director si algún día llega un lote SIN `hum.storeys`, pero lo
+                // que de verdad separa las plantas de este chunk es `hum.storeys`, una por lámpara.
                 BackroomsSurvival.Gameplay.Audio.FluorescentHumDirector.RegisterChunkLamps(
                     root.transform, root.layer, hum.positions, hum.pitches,
-                    hum.flickerHz, hum.flickerPhase, ambience, 0);
+                    hum.flickerHz, hum.flickerPhase, ambience, 0, hum.storeys);
                 _builtLamps += hum.positions.Count;
             }
 
