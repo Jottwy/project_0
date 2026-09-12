@@ -285,6 +285,25 @@ cabecera de ventana 36 px. Sin contenedor abierto, su ventana queda como hueco a
 - Viñeta de urgencias sin números. El reloj de muñeca vive en el brazo 1P, no en el canvas.
 - Con `TAB` abierto el HUD de juego se oculta salvo la viñeta.
 
+## D12 — Estilo visual: «Bajo el fluorescente» — DECIDIDO (2026-09-13)
+Maqueta: https://claude.ai/code/artifact/2dd29608-2b1b-4ca8-9637-0886eb24c976 (mismo reparto aprobado, otra piel).
+La interfaz parece de oficina bajo un tubo fluorescente, no de videojuego ni de película de terror.
+- **La luz del nivel guía**: selección y huecos válidos brillan con el verde pálido de los fluorescentes; el tubo
+  parpadea de vez en cuando (desactivable por accesibilidad).
+- **Etiquetas Dymo**: títulos de columna, pestañas, tooltip, botones y badges en cinta embosada negra, ligeramente
+  torcida; los «no se puede» en cinta roja.
+- **Huecos hundidos**: rebaje oscuro con sombra interior, sin marcos ni biseles; el objeto (render) descansa dentro.
+- **Cámara barata**: grano, viñeta y tinte amarillo verdoso **también sobre la interfaz**.
+- **Etiqueta de almacén** (papel con agujero) para el panel del objeto: lo único claro de la pantalla.
+- **Barra inferior con objetos**: la funda es una cincha de nylon; la carga, una regla con marcas.
+- **Evitar**: neón, glitch exagerado, tipografías de terror.
+
+Tokens de la maqueta: fondo `#15140C`, tinta `#EBE7D3`, luz fluorescente `#DFE9B8`, cinta Dymo `#121212` sobre
+`#F1F0E8`, cinta roja `#8F231C`, papel de almacén `#E9E2C7`. Tipos: Barlow Semi Condensed (títulos y nombres) e IBM Plex
+Mono (cintas, cifras); ambas OFL, requieren generar sus SDF de TextMeshPro.
+**Sin comprobar en Unity**: un canvas Screen Space Overlay no recibe el post-proceso de URP, así que grano, viñeta y
+tinte sobre la UI piden overlay propio o canvas en Screen Space Camera.
+
 **Del vendor se reutiliza** (confirmar pieza a pieza al implementar): `ItemSlotUI`, `ItemPropertyProgressBarDisplay`
 (barra de condición), `ItemWeightDisplay` / `InventoryWeightDisplayUI`, `ItemDragger` / `ItemDragHandler`,
 `ItemSelector`, `ItemTooltipUI`, `ItemActionsUI`, `HotbarUI` (funda), `StorageStationUI` (contenedor),
