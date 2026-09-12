@@ -77,9 +77,6 @@
   en HUD, fuga de luz entre plantas, claims sin guarda de aislamiento (ADR-110 D4), contenedores host-local, planta −1.
 - **Verticalidad jugable** (escalera o hueco entre capas): diferida a post-Alpha 1 con ADR propio; `require_walkable_above`/`_below` sin consumidor.
 - **Farmeo y almacenaje**: E4 y Bloque A sin empezar (dos decisiones de Joel); el sync de contenedores construidos pide ADR y bump de wire, 2-3 días.
-- **Objetivo propuesto por Joel (12-09): remotos a ≤100 ms con 50 juntos** = suelo de ~15 Hz (hoy 5 Hz ≈ 300 ms). Cuenta: 2 450 pares a 15 Hz ×
-  23 B = ~825 KB/s. ADR-146 (tramos + extrapolación) cubre parte; SIN ADR aún: pose por diferencias (~12 B), presupuesto adaptado a la línea del
-  host (hoy 192 fijo) y relay VPS (P4). Con tramos + diferencias la cuenta da ~170 KB/s, dentro del presupuesto actual.
 - **Pendiente de la tanda del lag** (10-09): `PeerList` a 27,5 datagramas/s con UN jugador; **D2** de ADR-139 (partir `ChunkState`, con bump) sin
   decidir; el `layout` viaja aunque el cliente GENERA el chunk. **`animation` NO es peso muerto** (ADR-137 enm. 2): lo consume `ProxyPickupHook` y
   es el teatro del robapieles. `BWTRACE`/`ENTTRACE` en `warn!` a propósito: devolver a `info!` al terminar.
@@ -101,10 +98,10 @@
 ### 2026-09-12 — 53.ª tanda: más jugadores por partida — la subida del host de 4 786 a ~320 KB/s con 50 juntos (wire 66)
 - **El techo es la SUBIDA del host, no la CPU** (2,7 ms/ronda con 50). Plan P0–P4 de Joel: P0 fusión del lag, P1 cadencia cúbica (ADR-074 enm. 3),
   P2 pose delgada (ADR-144, 23/45 B), aforo por destino + cono ENCENDIDO (enm. 4), P3 rosters por celda con scope 5×5 (enm. 5–6). P4 VPS bloqueado.
-- **Arnés N=50 juntos, KB/s**: 4 786 → 3 472 (cúbica) → 1 371 (ADR-144) → 612 (aforo y cono), régimen ~320: el techo es el suelo de 5 Hz.
-- **Rosters** (`2eab4fc7`, `eda78987`): N=32 en 1 km², 1000 + 400 → **~1300 a 95,8 KB** por ronda. La entrega 1 no subió el wire; la 2 sí (enm. 6).
-- **Host+joiner reales sin Unity** (cliente IPC en Python): 6/6, objetos cerca sí, lejos no, entran y salen al moverse. **NADA visto en Play**:
-  el cliente de Steam va en wire 63; probar en la próxima build cruzar fronteras de celda y remotos lejanos a 5 Hz.
+- **N=50 juntos**: 4 786 → 612 KB/s (régimen ~320, suelo 5 Hz). **Rosters** (`2eab4fc7`, `eda78987`, enm. 6): N=32 en 1 km², ~1300 → 95,8 KB.
+- **Host+joiner reales sin Unity** 6/6 (cliente IPC en Python). **NADA visto en Play** (Steam en wire 63): probar fronteras de celda y remotos a 5 Hz.
+- **Objetivo siguiente de Joel: remotos a ≤100 ms con 50 juntos** (suelo ~15 Hz). ADR-146 cubre tramos + extrapolación; SIN ADR: pose por
+  diferencias (23 → ~12 B), presupuesto según la línea del host (hoy 192 fijo) y VPS. Tramos + diferencias: ~170 KB/s a 15 Hz.
 - **Steam sin `SetLive`**: 25272104 (wire 64) y 25272796 (+ traza RTT). Con wire 66 la próxima pide cliente reconstruido, desde el CLON PRINCIPAL.
 - **RTT por peer en `MPTRACE step=RTT`** (Karn: nunca de un reenviado; 0 = sin muestra). **`a_region_is_worth_its_size` FLAKY**: rojo en suite, verde solo.
 
