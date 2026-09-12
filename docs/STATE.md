@@ -95,15 +95,15 @@
 
 ## Últimas tandas
 
-### 2026-09-12 — 51.ª tanda: el relay deja de ser cuadrático, y la animación deja de ser texto (wire 64)
-- **Índice espacial** (`7972d207`): el bucle de pares era O(N²) aunque el radio rechazara a todos — preguntar cuesta igual que aceptar. Casillas
-  del radio de SALIDA (con el de entrada la histéresis se rompe en silencio). Repartidos **~310 → ~3.500** y lineal; en sala sigue 22 (muro: cable).
+### 2026-09-12 — 51.ª tanda: el relay deja de ser cuadrático, y la animación deja de ser texto (wire 64, BuildID 25272104)
+- **SteamPipe sin `SetLive`** (BuildID 25272104, 27 ficheros): **cliente RECONSTRUIDO, no sólo el backend** — el wire vive en las DOS puntas y uno
+  viejo daría `wire_schema_mismatch`. Backend solo ⇒ cambiar el exe; wire ⇒ rebuild, y desde el CLON PRINCIPAL (worktree = reimport, 15 min).
+- **Índice espacial** (`7972d207`): el bucle de pares era O(N²) aunque el radio rechazara a todos. Casillas del radio de SALIDA (con el de entrada
+  la histéresis se rompe en silencio). **Techos medidos: sala 22 (cable), emparejados ~330, repartidos ~310 → ~3.500 (CPU) y ya lineal.**
 - **Tope por destinatario** (`c4452964`) y **cono de atención** (`bae5ffe6`), los dos APAGADOS. El cono da **−35 %, sala 22 → 27**; no se enciende
-  hasta que el búfer del cliente mida el ritmo POR PEER (hoy mezclar 30 y 15 Hz cerca lo secaría). Un test exige que siga apagado.
+  hasta que el búfer del cliente mida el ritmo POR PEER. Un test exige que siga apagado.
 - **ADR-143, wire 64** (`47b0eccb`): animación como byte. Pose **74 → 65 B (12 % de TODAS)** y muere el `clone()` por pose. El cliente reconstruye
-  la misma cadena: `ProxyPickupHook` y los tests de EditMode pasan SIN tocarlos. Tres constantes mentían (256 KB/s, y `MPTRACE` decía **⅓** del real).
-- **Techos con veredicto**: sala **22**, emparejados **~330**, repartidos **~3.500**. El coste va con los PARES que se ven, no con los jugadores:
-  20 en diez parejas cuestan **13× menos** que 20 juntos. Corregidas dos estimaciones mías: en sala el aforo sube por la RAÍZ del ahorro, no en proporción.
+  la misma cadena y los tests de EditMode pasan SIN tocarlos. Tres constantes mentían (256 KB/s; `MPTRACE` decía **⅓** del tráfico real).
 
 ### 2026-09-12 — 50.ª tanda: la suite EditMode al día — poses reales en los tests de proxies y la venda que no warpeaba
 - **`RemotePlayerManagerTests` 5 rojos → 8/8** (`07fcf69a`): mandaban `position = Vector3.zero` y el gestor lo descarta desde el 10-09 como «peer
