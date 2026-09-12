@@ -11,21 +11,21 @@
 - Alpha 1 itch nov 2026 · Next Fest feb 2027 · EA primavera 2027 (`docs/SCALING-ROADMAP.md:196-198`). E0 de red cerrada y medida.
 
 ## Próximo paso ÚNICO
-- **Tramos en vez de poses para lo previsible** (ADR pendiente, bump de wire). Con 16 el relay es el 57 % de 185,6 KB/s y 9 de cada 10 parejas
-  son una CRIATURA: la que recorre un pasillo no necesita cadencia sino «de aquí a allí a esta velocidad», y el cliente interpola. **A todos por
-  igual** — ADR-074 prohíbe que el filtro distinga la fuente. PVS ya ENCENDIDO (ADR-140, `ad7d3c57`), oculta el 24,3 %.
+- **Presupuesto de bytes POR DESTINATARIO** (ADR pendiente, sin wire). Lo único que cambia la FORMA de la curva en sala: hoy N², aforo medido **23**
+  (muro: el MB/s de Steam; la CPU al 20 %). Arañar bytes sube el aforo por la RAÍZ y da poco (ADR-143: 22→23; el cono daría 27); con cupo por
+  cliente el cuadrado pasa a recta, predicción **~60**. La costura ya está (`c4452964`): cambiar «los 96 de arriba» por «los que quepan en X KB/s».
 
 ## En curso
+- **`latency_ms` se mide y se TIRA** (`peer.rs:219`): ninguna traza la publica, así que no se puede responder «¿a cuántos ms va esta partida?».
 - **ADR-128, mundo ×2: tercera pasada, NO commiteado.** 24 tests en rojo; `MAX_SEGMENT_M` no se toca (D3 anulado), `bounds()` en metros
   de MUNDO con `plan_bounds()`. **Sigue sin verificarse que lo servido salga ×2.** Parche verbatim en `docs/SESSION-LOG.md`.
 - **Contrato WG3 v1**, 5 días. Día 1 (`65d267c3`) y día 2 (`c7c9dd01`, `510223b8`, ADR-129) cerrados; el día 4 de gramática lo sustituyó
   ADR-129 (rampa, tabique diagonal y anti-enfilada pasan a v2 salvo decisión). Quedan día 3 (rendimiento) y día 5 (verificación, etiqueta).
 - **Oficinas (33.ª) y B1–B4 FUSIONADOS en `migration/worldgraph-v1`** (06-09). Queda ADR-130 r2b, día 3, r3, r4, B5 (autoridad) y podar ramas (Joel).
-- ADR-123 (agacharse y conductos) PROPUESTO, pendiente de Joel. ADR-127 (rampa de techo, wire 61) propuesto para el día 4.
+- ADR-123 (agacharse/conductos) y ADR-127 (rampa de techo, wire 61): PROPUESTOS, pendientes de Joel.
 - **Migración STP servidor-autoritativo**: Steps 1–2 y slice 3.1 (plumbing) hechos y verificados. Falta slice 3.2
   (capa L2 de predicción), reescribir los 8 call sites de `Inventory` y retirar `PlayerController.cs` (DEPRECATED por ADR-009).
-- ADR-014 fase 2 (borrado diferido 200 ms + reserva host-only anti-duplicado): backend implementado, **pendiente de playtest**. Sin ver en Play:
-  linterna (ADR-133) y venda (`bb9e3cc1`).
+- ADR-014 fase 2 (borrado diferido + reserva anti-duplicado): backend hecho, **pendiente de playtest**, como linterna (ADR-133) y venda.
 
 ## Riesgos abiertos
 - **Autoridad del servidor: los tres agujeros CERRADOS** (`78e156e6` dueño al demoler; `ebb42911`/`bb3c7e5c` cantidad y posición contra el
