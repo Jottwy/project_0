@@ -247,6 +247,20 @@ if (-not (Test-Path $vendorRoot)) {
     Check-Auto "Reverb por zona expuesto en FPS_AudioMixer" `
         ($rvb -ge 7) `
         "$rvb parametros Rvb* (baseline 7)"
+
+    # 8 — Crafteo con puerta de servidor (ADR-064 enm. 1). DOS comprobaciones: que el fichero
+    #     anadido siga ahi y que STP_Player.prefab ya NO lleve el CraftingManager del vendor
+    #     (guid e0af9c7c...). Un reimport restaura el componente del vendor y el crafteo vuelve
+    #     a ser mudo para el backend, sin ningun error. Cura: menu Backrooms/Create Craft Assets.
+    $netCraft = Join-Path $vendorRoot "STP\Code\Runtime\Inventory\Crafting\NetworkedCraftingManager.cs"
+    $stpPlayer = Join-Path $vendorRoot "STP\Prefabs\Core\STP_Player.prefab"
+    $vendorCraftBack = $true
+    if (Test-Path $stpPlayer) {
+        $vendorCraftBack = @(Select-String -Path $stpPlayer -Pattern "e0af9c7c4c1735342b97ad73a070d01e" -SimpleMatch).Count -gt 0
+    }
+    Check-Auto "Gestor de crafteo con puerta de servidor (ADR-064 enm. 1)" `
+        ((Test-Path $netCraft) -and -not $vendorCraftBack) `
+        $(if (-not (Test-Path $netCraft)) { "falta NetworkedCraftingManager.cs" } elseif ($vendorCraftBack) { "STP_Player.prefab lleva otra vez el CraftingManager del vendor" } else { "fichero ok; STP_Player sin el gestor del vendor" })
 }
 
 Write-Host ""

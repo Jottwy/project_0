@@ -31,7 +31,19 @@ MonoBehaviour:
   _rarity: {fileID: 11400000, guid: 5518a16c9a5a70d4585369c90f14f295, type: 2}
   _actions: []
   _properties: []
-  _data: []
+  _data:
+  - rid: 3885882187154980864
   references:
     version: 2
-    RefIds: []
+    RefIds:
+    - rid: 3885882187154980864
+      type: {class: CraftingData, ns: PolymindGames.InventorySystem, asm: PolymindGames}
+      data:
+        _blueprint:
+        - Item:
+            _value: 8505358
+          Amount: 2
+        _craftAmount: 1
+        _craftDuration: 3
+        _craftLevel: 0
+        _dismantleEfficiency: 0

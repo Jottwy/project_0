@@ -1147,6 +1147,22 @@ namespace BackroomsSurvival.Net
         }
 
         /// <summary>
+        /// ADR-064 enm. 1: report a FINISHED craft of <paramref name="amount"/> units of
+        /// <paramref name="itemId"/> (the recipe's CraftAmount). STP already removed the blueprint
+        /// and added the product client-side (§4 of the ADR); the backend validates the recipe
+        /// against the reported `stp_inventory` and mutates that mirror, or logs a rejection —
+        /// never answers. Same contract as SendConsumeItem: ordered IPC, no request_id.
+        /// </summary>
+        public void SendCraftItem(int itemId, int amount)
+        {
+            SendActionFrame(ProtocolActionTypes.CraftItem, 2, w =>
+            {
+                w.WriteString("item_id"); w.WriteInt(itemId);
+                w.WriteString("amount"); w.WriteInt(amount);
+            });
+        }
+
+        /// <summary>
         /// ADR-093 E3: cross a Level 4 door. <paramref name="door"/> is
         /// <see cref="Level4Door.Entry"/> or <see cref="Level4Door.Return"/>. `requestId` is
         /// caller-generated (a simple per-session counter is enough — no dedupe on the backend,
