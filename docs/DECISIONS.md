@@ -17173,3 +17173,63 @@ mirando — es la misma deuda que la linterna y la venda ya arrastran en `STATE.
 
 ---
 
+## ADR-074 — Enmienda 4: el aforo por destinatario, y el cono de atención encendido (2026-09-12) — APROBADA (Joel: «a mayor players se baje los hz hasta un punto que sea aceptable… los que estén detrás también se bajen bastante»)
+
+### Qué falta tras la enmienda 3 y ADR-144
+
+La curva por distancia y la pose delgada bajan la CONSTANTE del N² de la sala; ninguna de las dos
+mira cuánta gente hay. Con 50 pegados el arnés seguía en 1 371 KB/s: cada uno recibía 49 poses a
+21 Hz de media. `POSE_FIDELITY_CAP` (96) corta a los sobrantes en seco y hoy no muerde a nadie.
+
+### Decisión
+
+**D1 — Un presupuesto de subida del anfitrión para poses, repartido entre destinatarios.**
+`HOST_POSE_BUDGET_KB_S` (192, tres cuartos de los 256 del arnés) en poses/s a `POSE_WIRE_BYTES_EST`
+(26 B), entre los destinatarios reales de la ronda. Cada destinatario tiene una DEMANDA: la suma de
+Hz de la curva sobre sus pares vivos en el AOI (la ronda anterior, `aoi_pose_pairs`). Si la demanda
+cabe en su parte, factor 1; si no, `parte / demanda`. Con más gente cada uno recibe menos cadencia
+de los que tiene lejos: **el servidor se amolda al número de jugadores**, que es lo que Joel pidió.
+
+**D2 — A bocajarro no se recorta.** Dentro de `POSE_BUDGET_NEAR_EXEMPT_M` (3 m) la cadencia es la
+de la curva, pase lo que pase con el aforo: en una sala llena el que tienes al lado se ve a 30 Hz.
+Fuera, `hz = round(hz_curva × factor)`, y el suelo de 5 Hz manda siempre.
+
+**D3 — El factor se mueve despacio.** `POSE_BUDGET_FACTOR_STEP` (0,05 por ronda): de 1 a 0,25 en
+medio segundo. Entrar o salir gente no da un escalón de cadencia, y la histéresis sale gratis.
+
+**D4 — El cono de atención se enciende: `POSE_CONE_HALF_ANGLE_DEG` 180 → 100.** Lo que queda a más
+de 100° de la mirada del destinatario (más 20° de histéresis para salir) va a la MITAD de la
+cadencia que le tocaría por distancia y aforo, nunca por debajo del suelo. Su prerrequisito —el
+retardo de interpolación por peer— lo cerró la enmienda 3 D4. Girar es instantáneo y por eso el
+cono sólo divide por dos; la distancia y el aforo pueden ser más agresivos porque no cambian de
+golpe.
+
+**D5 — Todo por distancia, aforo y ángulo; jamás por qué es la fuente.** `pose_pair_hz` no tiene
+por dónde saber si el origen es el robapieles (decisión 1 del ADR).
+
+### Descartado, con motivo (Joel: «si uno tapa a un player que ese cliente reciba menos hz»)
+
+Oclusión jugador-a-jugador: un cuerpo tapa un cono estrechísimo que se abre y se cierra varias
+veces por segundo al moverse la gente —el parpadeo de cadencia que la histéresis del PVS costó
+arreglar—, exige un raycast por par y ronda, y lo que tapa de verdad son las paredes, que ya cubre
+el PVS por salas de ADR-140. El «muchos en pantalla → menos Hz» lo cubre D1 con un número medible.
+
+### Medido (arnés `pose_cadence_curve_by_spread`, 1 s, KB/s; el factor aún baja durante ese segundo)
+
+| Reparto, N = 50 | inicio de sesión | + enm. 3 | + ADR-144 | + enm. 4 |
+|---|---|---|---|---|
+| Pegados (≤20 m) | 4 786 | 3 472 | 1 371 | **612** |
+| Nave de 50 m | 3 754 | 1 691 | 702 | **409** |
+| Nave de 100 m | 1 810 | 734 | 335 | **262** |
+
+En régimen, 50 pegados quedan en el suelo de 5 Hz para todo lo que no está a bocajarro:
+50 × 49 × 5 × 26 B ≈ 320 KB/s. El techo pasa a ser el SUELO de cadencia, no el número de jugadores.
+
+### Lo que NO cambia
+
+Sin wire. El AOI, el PVS, el tope de 96 y el índice espacial siguen; el aforo actúa dentro de lo que
+ellos dejan pasar. `MPTRACE` publica `budget_min` (el factor más bajo de la ronda) para leerlo en
+playtest.
+
+---
+
