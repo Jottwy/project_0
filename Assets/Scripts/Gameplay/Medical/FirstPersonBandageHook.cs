@@ -141,7 +141,8 @@ namespace BackroomsSurvival.Gameplay.Medical
                 if (!visible)
                     return; // nunca vendado: no se crea nada
 
-                bandage = BandageVisual.Attach(forearm);
+                // Cuelga de los brazos del viewmodel: material de primera persona (ADR-077 enm. 2).
+                bandage = BandageVisual.Attach(forearm, firstPerson: true);
                 if (bandage == null)
                     return;
             }

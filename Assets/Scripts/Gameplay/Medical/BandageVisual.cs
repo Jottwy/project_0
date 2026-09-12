@@ -31,6 +31,17 @@ namespace BackroomsSurvival.Gameplay.Medical
         /// </summary>
         public const string MaterialResourcePath = "BR_Bandage_Material";
 
+        /// <summary>
+        /// El MISMO material para lo que cuelga de la mano y de los brazos de PRIMERA persona, con el
+        /// shader de warp del viewmodel (ADR-077 enm. 2, regla 14): lo que va pegado a los brazos 1P
+        /// se dibuja con la proyección del viewmodel, y una venda con URP/Lit sale ~1,5× más grande
+        /// que el antebrazo que la lleva. Dos materiales por objeto, como el vendor.
+        /// </summary>
+        public const string FirstPersonMaterialResourcePath = "BR_Bandage_FP_Material";
+
+        /// <summary>El shader de los objetos del viewmodel (el del cuchillo, el hacha, la antorcha).</summary>
+        public const string FirstPersonShaderName = "Shader Graphs/LitFieldOfView";
+
         /// <summary>Color de la gasa, en un sitio: lo usan el material de runtime y el que crea el
         /// autor del item, y si divergen la venda de la mano y la del brazo no serían la misma tela.</summary>
         public static readonly Color ClothColor = new Color(0.86f, 0.83f, 0.75f);
@@ -67,6 +78,7 @@ namespace BackroomsSurvival.Gameplay.Medical
 
         private static Mesh _bandMesh;
         private static Material _bandMaterial;
+        private static Material _firstPersonMaterial;
         private static GameObject _prefab;
         private static bool _prefabLoaded;
 
@@ -76,12 +88,13 @@ namespace BackroomsSurvival.Gameplay.Medical
         /// cambio de estado sea un <c>SetActive</c> y no un Instantiate a mitad de partida.
         /// </summary>
         public static GameObject Attach(Transform forearm, float radius = DefaultRadius,
-                                        float length = DefaultLength, float alongBone = DefaultAlongBone)
+                                        float length = DefaultLength, float alongBone = DefaultAlongBone,
+                                        bool firstPerson = false)
         {
             if (forearm == null)
                 return null;
 
-            var go = InstantiateBody();
+            var go = InstantiateBody(firstPerson);
             go.name = "BR_Bandage";
             go.layer = forearm.gameObject.layer;
             go.transform.SetParent(forearm, false);
@@ -132,7 +145,7 @@ namespace BackroomsSurvival.Gameplay.Medical
             return forearm.InverseTransformPoint(forearm.GetChild(0).position).magnitude;
         }
 
-        private static GameObject InstantiateBody()
+        private static GameObject InstantiateBody(bool firstPerson)
         {
             var prefab = LoadOptionalPrefab();
             if (prefab != null)
@@ -143,7 +156,7 @@ namespace BackroomsSurvival.Gameplay.Medical
             filter.sharedMesh = BandMesh();
 
             var renderer = go.AddComponent<MeshRenderer>();
-            renderer.sharedMaterial = BandMaterial();
+            renderer.sharedMaterial = firstPerson ? FirstPersonMaterial() : BandMaterial();
             // Una venda no proyecta sombra útil y en primera persona la suya cae sobre la cámara.
             renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
             renderer.receiveShadows = true;
@@ -199,6 +212,40 @@ namespace BackroomsSurvival.Gameplay.Medical
 
             _bandMaterial = Build();
             return _bandMaterial;
+        }
+
+        /// <summary>El de primera persona: mismo criterio que <see cref="BandMaterial"/>, otro shader.</summary>
+        private static Material FirstPersonMaterial()
+        {
+            if (_firstPersonMaterial != null)
+                return _firstPersonMaterial;
+
+            _firstPersonMaterial = Resources.Load<Material>(FirstPersonMaterialResourcePath);
+            if (_firstPersonMaterial != null)
+                return _firstPersonMaterial;
+
+            // Sin el shader del vendor no hay warp posible: mejor la tela del mundo que ninguna.
+            _firstPersonMaterial = BuildFirstPerson() ?? BandMaterial();
+            return _firstPersonMaterial;
+        }
+
+        /// <summary>
+        /// La misma tela con el shader de warp. El viewmodel lee la smoothness de un mask map
+        /// (alfa = 1 cuando no hay) por <c>_SmoothnessIntensity</c>: de ahí que la intensidad sea la
+        /// smoothness de la tela. Devuelve null si falta el shader (vendor reimportado).
+        /// </summary>
+        public static Material BuildFirstPerson()
+        {
+            var shader = Shader.Find(FirstPersonShaderName);
+            if (shader == null)
+                return null;
+
+            var material = new Material(shader) { name = "BR_Bandage_FP" };
+            if (material.HasProperty("_BaseColor"))
+                material.SetColor("_BaseColor", ClothColor);
+            if (material.HasProperty("_SmoothnessIntensity"))
+                material.SetFloat("_SmoothnessIntensity", ClothSmoothness);
+            return material;
         }
 
         /// <summary>

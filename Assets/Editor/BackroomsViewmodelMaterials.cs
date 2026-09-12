@@ -234,9 +234,11 @@ namespace BackroomsSurvival.EditorTools
                 BackroomsCrankFlashlightModelApplier.MaterialPath, BackroomsCrankFlashlightModelApplier.FirstPersonMaterialPath,
                 BackroomsCrankFlashlightModelApplier.MaskMapPath, "[CrankFlashlightModel]");
 
+            done += BackroomsBandageCreator.RewarpQuiet() > 0 ? 1 : 0;
+
             AssetDatabase.SaveAssets();
             AssetDatabase.Refresh();
-            Debug.Log($"[ViewmodelMaterials] Rewarp: {done}/3 objetos de mano con material de primera persona.");
+            Debug.Log($"[ViewmodelMaterials] Rewarp: {done}/4 objetos de mano con material de primera persona.");
         }
 
         private static int Rewarp(string prefabPath, string nodeName, string worldMat, string fpMat, string maskMap, string tag)

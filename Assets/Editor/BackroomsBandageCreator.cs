@@ -139,18 +139,71 @@ namespace BackroomsSurvival.EditorTools
         private static void EnsureClothMaterial()
         {
             string path = "Assets/Resources/" + BandageVisual.MaterialResourcePath + ".mat";
-            if (AssetDatabase.LoadAssetAtPath<Material>(path) != null)
-                return;
-
-            var material = BandageVisual.Build();
-            if (material == null)
+            if (AssetDatabase.LoadAssetAtPath<Material>(path) == null)
             {
-                Debug.LogError("[Venda] Sin shader de URP: no se pudo crear el material de la gasa.");
-                return;
+                var material = BandageVisual.Build();
+                if (material == null)
+                {
+                    Debug.LogError("[Venda] Sin shader de URP: no se pudo crear el material de la gasa.");
+                    return;
+                }
+
+                AssetDatabase.CreateAsset(material, path);
+                Debug.Log($"[Venda] Creado '{path}'.");
             }
 
-            AssetDatabase.CreateAsset(material, path);
-            Debug.Log($"[Venda] Creado '{path}'.");
+            EnsureFirstPersonMaterial();
+        }
+
+        /// <summary>Ruta del material de primera persona de la gasa (ADR-077 enm. 2).</summary>
+        public const string FirstPersonMaterialPath =
+            "Assets/Resources/" + BandageVisual.FirstPersonMaterialResourcePath + ".mat";
+
+        /// <summary>El nodo del rollo que cuelga de la mano en el prefab del wieldable.</summary>
+        public const string GauzeRollNodeName = "BR_GauzeRoll";
+
+        /// <summary>
+        /// El material de PRIMERA persona de la gasa, como asset y por la misma razón que el de
+        /// mundo. Devuelve null si falta el shader del vendor.
+        /// </summary>
+        private static Material EnsureFirstPersonMaterial()
+        {
+            var existing = AssetDatabase.LoadAssetAtPath<Material>(FirstPersonMaterialPath);
+            if (existing != null)
+                return existing;
+
+            var material = BandageVisual.BuildFirstPerson();
+            if (material == null)
+            {
+                Debug.LogError("[Venda] Sin shader 'Shader Graphs/LitFieldOfView': no se pudo crear el material " +
+                               "de primera persona de la gasa (¿vendor reimportado?).");
+                return null;
+            }
+
+            AssetDatabase.CreateAsset(material, FirstPersonMaterialPath);
+            Debug.Log($"[Venda] Creado '{FirstPersonMaterialPath}'.");
+            return material;
+        }
+
+        /// <summary>
+        /// Cuelga el material de primera persona del rollo del wieldable ya horneado, sin rehornear
+        /// (el prefab existente no se toca en «Crear venda»). Es lo que hizo saltar
+        /// <c>ViewmodelWarpTests</c> el 12-09: el rollo llevaba el material de mundo.
+        /// </summary>
+        [MenuItem("Backrooms/Venda/Rewarp venda (ADR-077)", false, 96)]
+        public static void Rewarp()
+        {
+            int done = RewarpQuiet();
+            AssetDatabase.SaveAssets();
+            AssetDatabase.Refresh();
+            Debug.Log($"[Venda] Rewarp: {done} renderer(s) del rollo con material de primera persona.");
+        }
+
+        /// <summary>Sin guardar ni refrescar: para encadenarlo desde el rewarp global.</summary>
+        public static int RewarpQuiet()
+        {
+            var firstPerson = EnsureFirstPersonMaterial();
+            return BackroomsViewmodelMaterials.ApplyToWieldable(PrefabPath, GauzeRollNodeName, firstPerson, "[Venda]");
         }
 
         private static ItemDefinition CreateDefinition(ItemDefinition artDonor, ItemDefinition wieldableDonor)
@@ -289,11 +342,11 @@ namespace BackroomsSurvival.EditorTools
                 return;
             }
 
-            var roll = BandageVisual.Attach(hand, radius: 0.028f, length: 0.05f, alongBone: 0.35f);
+            var roll = BandageVisual.Attach(hand, radius: 0.028f, length: 0.05f, alongBone: 0.35f, firstPerson: true);
             if (roll == null)
                 return;
 
-            roll.name = "BR_GauzeRoll";
+            roll.name = GauzeRollNodeName;
             roll.SetActive(true);
         }
 
