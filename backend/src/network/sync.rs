@@ -1146,6 +1146,42 @@ pub const AOI_POSE_EXIT_FACTOR: f32 = 1.2;
 /// interior y ~75 % en el exterior (el área crece con el cuadrado).
 pub const AOI_POSE_NEAR_RADIUS_M: f32 = AOI_POSE_RADIUS_M * 0.5;
 
+/// Tope de fuentes que un destinatario recibe en una ronda.
+///
+/// El radio y el grafo deciden par a par, y ninguno de los dos mira nunca cuánto acaba recibiendo
+/// UNA persona. Con eso el coste de la sala crece con el cuadrado: cada uno que entra le añade una
+/// fuente a todos los demás. El tope rompe ese cuadrado — la bolsa de cada destinatario deja de
+/// depender de cuántos haya, y el coste del anfitrión pasa a crecer en línea recta.
+///
+/// **96 es deliberadamente alto: hoy no corta a nadie.** No es el número bueno, es el número que
+/// garantiza que esto entra sin cambiar una coma de lo que ya funciona. El bueno sale de medirlo,
+/// y por eso `MPTRACE` empieza a publicar `max_fan_in` y `cap_hits` en esta misma tanda: cuando un
+/// playtest diga cuánto recibe de verdad el que más recibe, el tope baja con datos delante.
+///
+/// Lo que se corta es lo más LEJANO, y ahí está la única trampa que importa: el orden mira
+/// distancia y, si empata, posición — jamás el identificador ni la especie. Un desempate por `id`
+/// bastaría para que a igual distancia ganara siempre el mismo tipo de fuente, y eso es
+/// exactamente el chivato que ADR-074 prohíbe. Ver `pose_fidelity_order`.
+pub const POSE_FIDELITY_CAP: usize = 96;
+
+/// Orden de recorte del tope: primero la distancia, y sólo para deshacer empates la POSICIÓN de la
+/// fuente, componente a componente.
+///
+/// ADR-074 gobierna este desempate igual que gobierna el radio y la cadencia: el filtro decide por
+/// dónde están las cosas y nunca por qué son. Si dos fuentes caen a la misma distancia exacta del
+/// destinatario, la que se queda la elige su posición en el mundo; el identificador sólo entra
+/// cuando las dos ocupan el MISMO punto, donde ya no hay nada que delatar.
+fn pose_fidelity_order(
+    a: &(f32, [f32; 3], PeerId),
+    b: &(f32, [f32; 3], PeerId),
+) -> std::cmp::Ordering {
+    a.0.total_cmp(&b.0)
+        .then(a.1[0].total_cmp(&b.1[0]))
+        .then(a.1[1].total_cmp(&b.1[1]))
+        .then(a.1[2].total_cmp(&b.1[2]))
+        .then(a.2.cmp(&b.2))
+}
+
 /// E1 / ADR-074 (enmienda) — ¿le toca a este par emitir en esta ronda?
 ///
 /// Dentro del anillo interior, siempre. Fuera, una de cada dos rondas (~5 Hz), **escalonando por
@@ -1485,11 +1521,12 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager, mut pvs: Option<PvsC
     // E1 (ADR-074 fase 1): decidir ANTES de enviar qué pares siguen dentro del AOI, y dejar el
     // estado de histéresis ya actualizado. Se hace en un paso aparte porque el envío toma
     // prestado `net` y aquí hace falta mutar `net.aoi_pose_pairs`.
-    // Los destinos que aún interesan, POR ORIGEN. Se agrupa así (en vez de una lista plana de
-    // pares) para que el bucle de envío consulte una sola vez por origen y no haga una búsqueda
-    // por cada par — con 32 peers, una lista plana convertiría este relay en O(N³).
-    let mut relayed: std::collections::HashMap<PeerId, Vec<PeerId>> =
-        std::collections::HashMap::with_capacity(poses.len());
+    // Los orígenes que le tocan a cada DESTINATARIO esta ronda, con la distancia y la posición que
+    // el tope necesita para ordenar. Se recoge por destinatario —y no por origen, como antes—
+    // porque el tope es suyo: sólo mirando su bolsa entera se sabe si hay que recortarla. El mapa
+    // por origen que el bucle de envío consume se arma después, ya recortado.
+    let mut due_by_dest: std::collections::HashMap<PeerId, Vec<(f32, [f32; 3], PeerId)>> =
+        std::collections::HashMap::with_capacity(dest_ids.len());
     let mut next_pairs = std::collections::HashSet::with_capacity(net.aoi_pose_pairs.len().max(16));
 
     // ADR-140 — las salas de todos, resueltas una vez. Fuera del bucle de pares a propósito: es la
@@ -1540,13 +1577,55 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager, mut pvs: Option<PvsC
             // frontera que la histéresis existe para evitar.
             next_pairs.insert((*src_id, dest_id));
             if aoi_pose_due_this_round(*src_pos, *dpos, *src_id, dest_id, net.pose_relay_round) {
-                relayed.entry(*src_id).or_default().push(dest_id);
+                // Candidato, todavía no emisión: el tope por destinatario se aplica más abajo,
+                // cuando la bolsa de cada uno esté entera. Igual que la cadencia, el recorte vive
+                // DESPUÉS de `next_pairs.insert` a propósito — un par que el tope deje fuera sigue
+                // estando dentro del radio, y si perdiera su marca volvería a exigir el radio de
+                // ENTRADA en la ronda siguiente. Ése es exactamente el parpadeo que costó el
+                // arreglo de la histéresis del PVS.
+                due_by_dest.entry(dest_id).or_default().push((
+                    distance_sq(*src_pos, *dpos),
+                    *src_pos,
+                    *src_id,
+                ));
             }
         }
     }
     if pvs_on {
         note_pvs_round(pvs_considered, pvs_hidden);
     }
+
+    // El tope por destinatario. Hasta aquí el filtro ha decidido par a par, que es lo que hace que
+    // el coste de una sala crezca con el cuadrado: nadie mira nunca cuánto acaba recibiendo UNA
+    // persona. Aquí se mira, y se corta por lo más lejano.
+    //
+    // Se recorre `dest_ids` (Vec) y no las claves del mapa, y dentro se ordena con un criterio
+    // total — regla dura 13: el orden de salida no puede depender de cómo itere un `HashMap`.
+    // `relayed` sale con la misma forma y el mismo orden que tenía cuando se llenaba en el bucle
+    // de pares, así que mientras el tope no muerda esto es un no-op byte a byte.
+    let mut relayed: std::collections::HashMap<PeerId, Vec<PeerId>> =
+        std::collections::HashMap::with_capacity(poses.len());
+    let mut max_fan_in = 0usize;
+    let mut cap_hits = 0usize;
+    for dest_id in &dest_ids {
+        let Some(cands) = due_by_dest.get_mut(dest_id) else {
+            continue;
+        };
+        max_fan_in = max_fan_in.max(cands.len());
+        if cands.len() > POSE_FIDELITY_CAP {
+            cap_hits += 1;
+            // `sort_unstable` puede permutar elementos equivalentes, y por eso el comparador es
+            // total hasta el final: sin el desempate por posición, dos fuentes a la misma
+            // distancia podrían alternar entre rondas y provocar el mismo parpadeo que el radio y
+            // el grafo ya evitan con histéresis.
+            cands.sort_unstable_by(pose_fidelity_order);
+            cands.truncate(POSE_FIDELITY_CAP);
+        }
+        for (_, _, src_id) in cands.iter() {
+            relayed.entry(*src_id).or_default().push(*dest_id);
+        }
+    }
+
     let relayed_count: usize = relayed.values().map(|d| d.len()).sum();
 
     // Se recorre `poses` (Vec, orden estable) y NO las claves de `relayed` (HashMap): el orden de
@@ -1632,7 +1711,7 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager, mut pvs: Option<PvsC
         // pose), y su cociente es el ahorro real de la partida — no una estimación de sonda.
         let without_aoi = p * d - d.min(p);
         info!(
-            "MPTRACE step=R15 event=peer_pose_relay self_id={} peer_count={} real_dest_count={} relay_datagrams_per_call={} approx_per_sec={} without_aoi={} in_aoi={} aoi_radius_m={:.0} near_radius_m={:.0}",
+            "MPTRACE step=R15 event=peer_pose_relay self_id={} peer_count={} real_dest_count={} relay_datagrams_per_call={} approx_per_sec={} without_aoi={} in_aoi={} aoi_radius_m={:.0} near_radius_m={:.0} max_fan_in={} cap_hits={} fidelity_cap={}",
             net.local_id,
             p,
             d,
@@ -1643,7 +1722,15 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager, mut pvs: Option<PvsC
             // `relay_datagrams_per_call` es lo que ahorra el LOD, separado de lo que ahorra el AOI.
             net.aoi_pose_pairs.len(),
             AOI_POSE_RADIUS_M,
-            AOI_POSE_NEAR_RADIUS_M
+            AOI_POSE_NEAR_RADIUS_M,
+            // El número que hace falta para bajar el tope con datos: cuánto recibe en una ronda el
+            // destinatario que más recibe, y cuántos destinatarios llegaron a tocar el tope. Con
+            // `cap_hits=0` en un playtest, el recorte no está haciendo nada y el techo de la sala
+            // sigue siendo el de siempre; en cuanto deje de ser cero, `max_fan_in` dice dónde
+            // ponerlo de verdad.
+            max_fan_in,
+            cap_hits,
+            POSE_FIDELITY_CAP
         );
     }
 }
@@ -3308,6 +3395,112 @@ mod chunk_broadcast_tests {
 ///
 /// Se prueba sobre `pvs_allows`, que es pura: la mitad peligrosa de esto no debe necesitar sockets
 /// para ponerse en rojo.
+#[cfg(test)]
+mod fidelity_cap_tests {
+    use super::*;
+
+    /// Un candidato tal y como lo recoge el bucle de pares: distancia al cuadrado, posición de la
+    /// fuente e identificador.
+    fn cand(dist_sq: f32, pos: [f32; 3], id: PeerId) -> (f32, [f32; 3], PeerId) {
+        (dist_sq, pos, id)
+    }
+
+    #[test]
+    fn the_cap_keeps_the_nearest_and_drops_the_farthest() {
+        let mut bag = vec![
+            cand(900.0, [30.0, 0.0, 0.0], 7),
+            cand(25.0, [5.0, 0.0, 0.0], 3),
+            cand(400.0, [20.0, 0.0, 0.0], 9),
+            cand(100.0, [10.0, 0.0, 0.0], 1),
+        ];
+        bag.sort_unstable_by(pose_fidelity_order);
+        bag.truncate(2);
+        let kept: Vec<PeerId> = bag.iter().map(|c| c.2).collect();
+        assert_eq!(
+            kept,
+            vec![3, 1],
+            "el recorte se queda con los dos MÁS CERCANOS; lo que se va es lo lejano"
+        );
+    }
+
+    #[test]
+    fn the_order_never_depends_on_who_the_source_is() {
+        // ADR-074: el filtro decide por dónde están las cosas, jamás por qué son. Si el
+        // identificador entrara en el desempate, a igual distancia ganaría siempre el mismo tipo de
+        // fuente y el tope se convertiría en un detector de robapieles.
+        //
+        // Dos fuentes equidistantes del destinatario, una a cada lado. El orden lo fija su
+        // posición, así que intercambiarles el identificador no puede moverlo.
+        let left = [-10.0, 0.0, 0.0];
+        let right = [10.0, 0.0, 0.0];
+
+        let mut a = vec![cand(100.0, right, 1), cand(100.0, left, 2)];
+        let mut b = vec![cand(100.0, right, 2), cand(100.0, left, 1)];
+        a.sort_unstable_by(pose_fidelity_order);
+        b.sort_unstable_by(pose_fidelity_order);
+
+        let pos_a: Vec<[f32; 3]> = a.iter().map(|c| c.1).collect();
+        let pos_b: Vec<[f32; 3]> = b.iter().map(|c| c.1).collect();
+        assert_eq!(
+            pos_a, pos_b,
+            "a igual distancia manda la POSICIÓN: cambiar los identificadores no reordena nada"
+        );
+        assert_eq!(
+            pos_a[0], left,
+            "y el desempate es determinista, no arbitrario"
+        );
+
+        // Y la distancia manda sobre todo lo demás: el más cercano gana aunque su identificador sea
+        // el más alto de la bolsa.
+        let mut c = vec![
+            cand(900.0, [30.0, 0.0, 0.0], 1),
+            cand(4.0, [2.0, 0.0, 0.0], 999),
+        ];
+        c.sort_unstable_by(pose_fidelity_order);
+        assert_eq!(
+            c[0].2, 999,
+            "la distancia decide antes que nada; el identificador sólo rompe empates exactos"
+        );
+    }
+
+    #[test]
+    fn the_order_is_total_so_the_cut_is_reproducible() {
+        // Regla dura 13: la salida no puede depender del orden en que llegaron los candidatos.
+        // `sort_unstable` permuta equivalentes, así que el comparador tiene que distinguirlos a
+        // todos o el recorte cambiaría de una ronda a otra con la misma escena — el parpadeo que el
+        // radio y el grafo ya evitan con histéresis.
+        let base = vec![
+            cand(100.0, [10.0, 0.0, 0.0], 4),
+            cand(100.0, [0.0, 10.0, 0.0], 2),
+            cand(100.0, [0.0, 0.0, 10.0], 8),
+            cand(25.0, [5.0, 0.0, 0.0], 5),
+        ];
+        let mut forward = base.clone();
+        let mut backward = base.clone();
+        backward.reverse();
+        forward.sort_unstable_by(pose_fidelity_order);
+        backward.sort_unstable_by(pose_fidelity_order);
+        assert_eq!(
+            forward, backward,
+            "misma escena, distinto orden de entrada: el recorte tiene que salir idéntico"
+        );
+    }
+
+    #[test]
+    fn the_cap_is_above_a_full_session_so_it_cannot_bite_on_players_alone() {
+        // El tope entra deliberadamente apagado: 96 está por encima de cualquier aforo que esta
+        // sesión admita, así que ninguna partida de sólo jugadores puede tocarlo. Lo que sí puede
+        // acercarse es la población de criaturas, y por eso `MPTRACE` publica `max_fan_in` y
+        // `cap_hits` — el número bueno sale de medirlos, no de esta constante.
+        let full_session = crate::network::protocol::SessionConfig::default().max_players as usize;
+        assert!(
+            POSE_FIDELITY_CAP > full_session,
+            "tope {POSE_FIDELITY_CAP} debe superar el aforo de sesión {full_session}: si no, deja \
+             de ser un cambio sin efecto y necesita medida antes de entrar"
+        );
+    }
+}
+
 #[cfg(test)]
 mod pvs_tests {
     use super::*;
