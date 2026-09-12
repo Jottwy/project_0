@@ -18,18 +18,14 @@
 ## En curso
 - **ADR-128, mundo ×2: tercera pasada, NO commiteado.** 24 tests en rojo; `MAX_SEGMENT_M` no se toca (D3 anulado), `bounds()` en metros
   de MUNDO con `plan_bounds()`. **Sigue sin verificarse que lo servido salga ×2.** Parche verbatim en `docs/SESSION-LOG.md`.
-- **Contrato WG3 v1**, 5 días. Día 1 (`65d267c3`) y día 2 (`c7c9dd01`, `510223b8`, ADR-129) cerrados; el día 4 de gramática lo sustituyó
-  ADR-129 (rampa, tabique diagonal y anti-enfilada pasan a v2 salvo decisión). Quedan día 3 (rendimiento) y día 5 (verificación, etiqueta).
+- **Contrato WG3 v1**, 5 días. Días 1 (`65d267c3`) y 2 (`c7c9dd01`, `510223b8`, ADR-129) cerrados; el día 4 de gramática lo sustituyó ADR-129
+  (rampa, tabique diagonal y anti-enfilada a v2 salvo decisión). Quedan día 3 (rendimiento) y día 5 (verificación, etiqueta).
 - **Oficinas (33.ª) y B1–B4 FUSIONADOS en `migration/worldgraph-v1`** (06-09). Queda ADR-130 r2b, día 3, r3, r4, B5 (autoridad) y podar ramas (Joel).
 - ADR-123 (agacharse y conductos) PROPUESTO, pendiente de Joel. ADR-127 (rampa de techo, wire 61) propuesto para el día 4.
 - **Migración STP servidor-autoritativo**: Steps 1–2 y slice 3.1 (plumbing) hechos y verificados. Falta slice 3.2
   (capa L2 de predicción), reescribir los 8 call sites de `Inventory` y retirar `PlayerController.cs` (DEPRECATED por ADR-009).
-- ADR-014 fase 2 (borrado diferido 200 ms + reserva host-only anti-duplicado): backend implementado, **pendiente de playtest**. Sin ver en Play:
-  linterna (ADR-133, ya sale de cofres `2d1b0118`), venda (`bb9e3cc1`) y su crafteo (`531ad943`).
-- **Loot de oficinas, plan aprobado por Joel el 12-09, SIN ADR todavía (será ADR-145)**: los 20 kinds de atrezo de ADR-129 desmontables (retira
-  ADR-114 D10), Shelf/Rack/Cabinet/Box/Fridge también contenedores (rompe D9) y al agotarlos el loot cae en UNA bolsa con caducidad de 10 min
-  (wire nuevo), plancha de madera carriable conviviendo con el item, y el roster de harvestables sólo con props TOCADOS (enmienda D3). Gate de
-  escasez del suelo INTACTO por decisión de Joel; cero materiales nuevos.
+- ADR-014 fase 2 (borrado diferido 200 ms, reserva anti-duplicado): backend hecho, **sin playtest**. Sin ver en Play: linterna (`2d1b0118`), venda, crafteo.
+- **Loot de oficinas (Joel, 12-09): plan aprobado, SIN ADR (será ADR-145)** — detalle verbatim en `SESSION-LOG.md`; gate de escasez INTACTO.
 
 ## Riesgos abiertos
 - **Autoridad del servidor: los tres agujeros CERRADOS** (`78e156e6` dueño al demoler; `ebb42911`/`bb3c7e5c` cantidad y posición contra el
@@ -38,8 +34,7 @@
   contraste; igual el hash de `ChunkLootRoll` y los goldens de `scale`/`density`. Un oráculo JSON común es una sesión: **B5**.
 - **Steam (ADR-135 enm. 2) VERIFICADO el 09-09 con redes y cuentas distintas: el criterio físico ya se cumple.** Sin probar el relay propio
   (ADR-117 sin VPS), que ya NO bloquea Alpha 1. **`invited_by` sin prueba** (ADR-136 enm. 1 (a)): cualquiera nace a 2 m de una identidad viva.
-- **Crafteo P1 CERRADO en código (ADR-064 enm. 1, 12-09)**: `craft_item` valida contra `stp_inventory` y muta el espejo; 12 recetas (11 vendor +
-  venda = 2 Cloth) con oráculo `docs/data/crafting-recipes.json`. **Sin ver en Play.** El gate de escasez sigue: la tela hoy sólo cae de sillas (ADR-114).
+- **Crafteo P1 cerrado en código (ADR-064 enm. 1, 12-09)**: `craft_item` valida y muta `stp_inventory`; 12 recetas con oráculo JSON. **Sin ver en Play.**
 - **ADR-009 L2 a medias**: `MovementReconciler` sigue borrado, pero **NO era la causa del lag** (RTT real 24 ms, movimiento client-authoritative).
   Lo vivo de ese hueco: salud al borde de la muerte y respawn invisible. **LOD de entidades DESCARTADO con medida**: 0,2 % del tick (10-09).
 - **Dos mundos de colisión** (histórico): el backend colisiona contra su generador y el cliente contra lo que streamea. Con WG3 hay que remedirlo.
