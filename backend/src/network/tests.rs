@@ -2251,6 +2251,93 @@ async fn drain_pose_updates(net: &mut NetworkManager) -> usize {
         .count()
 }
 
+/// ADR-146 D2 — el gate de tramos sobre sockets reales. Una criatura camina recto a 3 m/s pegada a
+/// un joiner. Con el gate APAGADO el joiner recibe su pose casi cada ronda; ENCENDIDO a mano, la
+/// recibe mucho menos, y la marca de cosméticos sólo cae en rondas en las que de verdad salió algo
+/// (un par omitido no puede sellar como enviado lo que no salió).
+///
+/// La reparación de cosméticos (30 rondas) cae ANTES que la de tramos (1 s de reloj, 30,3 rondas a
+/// 33 ms): si el gate sellara cosméticos al omitir, la ronda 30 sería una omitida con marca nueva.
+#[tokio::test]
+async fn the_tramo_gate_skips_a_straight_walk_and_never_seals_cosmetics_on_a_skip() {
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let host_addr = loopback_addr(&host);
+    let mut a = NetworkManager::bind(0, 3001, 0, false).await.unwrap();
+    a.initiate_connection(host_addr).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    host.process_incoming().await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    a.process_incoming().await;
+    assert_eq!(host.peers.len(), 1, "setup: el joiner conectado");
+    assert!(!host.tramo_gate_enabled, "el gate nace apagado (D6)");
+
+    let walker = host.spawn_phantom("Caminante", [0.0, 1.8, 0.0], None);
+    place_peer(&mut host, 3001, [0.0, 1.8, -2.0]);
+    const ROUNDS: u32 = 40;
+    let step = Duration::from_millis(33);
+
+    // Un tramo de pasillo: devuelve (rondas que emitieron, poses que llegaron al joiner).
+    async fn walk(
+        host: &mut NetworkManager,
+        a: &mut NetworkManager,
+        walker: PeerId,
+        step: Duration,
+    ) -> (Vec<u64>, usize) {
+        let t0 = std::time::Instant::now();
+        let mut sent_rounds = Vec::new();
+        for i in 0..ROUNDS {
+            let x = 3.0 * (step * i).as_secs_f32();
+            place_peer(host, walker, [x, 1.8, 0.0]);
+            let round = host.pose_relay_round;
+            let sent =
+                crate::network::sync::broadcast_peer_poses_at(host, None, t0 + step * i).await;
+            if sent > 0 {
+                sent_rounds.push(round);
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        (sent_rounds, drain_pose_updates(a).await)
+    }
+
+    let (off_sent, off_got) = walk(&mut host, &mut a, walker, step).await;
+
+    host.tramo_gate_enabled = true;
+    host.pose_tramo_sent.clear();
+    host.pose_cosmetics_sent.clear();
+    host.pose_velocity.clear();
+    let (on_sent, on_got) = walk(&mut host, &mut a, walker, step).await;
+
+    println!(
+        "tramos sobre sockets: apagado {} emitidas / {off_got} recibidas, encendido {} / {on_got}",
+        off_sent.len(),
+        on_sent.len()
+    );
+    assert!(
+        off_sent.len() >= (ROUNDS as usize) * 3 / 4,
+        "apagado emite casi cada ronda"
+    );
+    assert!(
+        off_got > 0 && on_got > 0,
+        "control: las poses llegan por el socket"
+    );
+    assert!(
+        on_sent.len() * 2 <= off_sent.len(),
+        "encendido, una recta a velocidad constante tiene que ahorrar al menos la mitad \
+         (apagado {}, encendido {})",
+        off_sent.len(),
+        on_sent.len()
+    );
+    let (_, sealed_round) = host
+        .pose_cosmetics_sent
+        .get(&(walker, 3001))
+        .copied()
+        .expect("el par emitió al menos una vez");
+    assert!(
+        on_sent.contains(&sealed_round),
+        "la marca de cosméticos ({sealed_round}) cayó en una ronda que NO emitió: {on_sent:?}"
+    );
+}
+
 /// **La verificación de E1 que las sondas no dan**: tres backends reales hablando por UDP, y se
 /// cuenta lo que cada joiner RECIBE — no lo que el emisor cree que manda.
 ///

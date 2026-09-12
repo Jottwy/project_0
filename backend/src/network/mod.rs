@@ -300,6 +300,14 @@ pub struct NetworkManager {
     /// origen, no de quién lo mira. Reemplazo entero por ronda sobre los peers presentes, así que un
     /// peer que se va se lleva la suya sin purga aparte.
     pub pose_velocity: std::collections::HashMap<PeerId, crate::network::sync::PoseVelocity>,
+    /// ADR-146 D2 — en el ANFITRIÓN: por par `(src, dest)`, el último tramo enviado (posición,
+    /// velocidad, rumbo, huella de lo discreto e instante). Decide si la pose de esta ronda se puede
+    /// omitir. Mismo ciclo de vida que `pose_cosmetics_sent`.
+    pub pose_tramo_sent:
+        std::collections::HashMap<(PeerId, PeerId), crate::network::sync::TramoMark>,
+    /// ADR-146 D6 — el gate de tramos, encendido o no. Nace de `sync::TRAMO_GATE_ENABLED`, y es un
+    /// campo y no sólo la constante para que el arnés mida apagado y encendido en la misma corrida.
+    pub tramo_gate_enabled: bool,
     /// ADR-074 enm. 4 — factor de aforo por DESTINATARIO (1 = la curva tal cual, menos = todos
     /// sus orígenes salvo los pegados bajan de cadencia en proporción). Se mueve despacio hacia su
     /// objetivo, ronda a ronda, para que entrar o salir gente no dé un salto de cadencia.
@@ -692,6 +700,8 @@ impl NetworkManager {
             pose_cosmetics_sent: std::collections::HashMap::new(),
             relay_cosmetics: std::collections::HashMap::new(),
             pose_velocity: std::collections::HashMap::new(),
+            pose_tramo_sent: std::collections::HashMap::new(),
+            tramo_gate_enabled: crate::network::sync::TRAMO_GATE_ENABLED,
             pose_budget_factor: std::collections::HashMap::new(),
             pending_full_sync: std::collections::HashMap::new(),
             pose_relay_round: 0,

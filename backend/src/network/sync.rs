@@ -1329,6 +1329,85 @@ pub fn estimate_pose_velocity(
     (PoseVelocity { pos, at: now, vel }, false)
 }
 
+/// ADR-146 D2 — tolerancia de POSICIÓN del gate: si la pose real cae a menos de esto de lo que
+/// predice el último tramo enviado, no se reenvía. Punto de partida; lo fija la medida.
+pub const TRAMO_POS_TOLERANCE_M: f32 = 0.20;
+
+/// ADR-146 D2 — tolerancia de YAW, en grados. Girar es instantáneo y se ve de cerca.
+pub const TRAMO_YAW_TOLERANCE_DEG: f32 = 4.0;
+
+/// ADR-146 D2 — tolerancia de PITCH, en pasos del `i8` que viaja.
+pub const TRAMO_PITCH_TOLERANCE: i16 = 2;
+
+/// ADR-146 D2 — reparación: pasado esto desde el último envío del par, se reenvía aunque la
+/// predicción siga acertando. En TIEMPO REAL y no en rondas emitidas: a 5 Hz con cono y aforo el
+/// hueco entre rondas que tocan es de hasta 200 ms, y contar rondas estiraba la reparación.
+pub const TRAMO_REPAIR: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// ADR-146 D2 — lo último que se envió a un par `(src, dest)`: basta para reproducir la
+/// predicción que el receptor está haciendo con ello.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TramoMark {
+    pub pos: [f32; 3],
+    /// La velocidad TAL COMO VIAJÓ (cuantizada y vuelta), que es con la que extrapola el receptor.
+    pub vel: [f32; 3],
+    pub yaw_u16: u16,
+    pub pitch: i8,
+    /// Huella de todo lo discreto: animación, flags, botones, contadores y cosméticos.
+    pub discrete: u64,
+    pub at: std::time::Instant,
+}
+
+/// ADR-146 D2 — huella de lo que no se puede predecir: cualquier cambio obliga a enviar. Incluye
+/// los cosméticos por su hash, así que un cambio de objeto en mano nunca espera a la reparación.
+pub fn pose_discrete_hash(wire: &PoseWire, cosmetics_hash: u64) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    wire.animation.hash(&mut h);
+    wire.flags.hash(&mut h);
+    wire.buttons.hash(&mut h);
+    wire.hit_seq.hash(&mut h);
+    wire.fire_seq.hash(&mut h);
+    wire.melee_seq.hash(&mut h);
+    wire.vocal_seq.hash(&mut h);
+    cosmetics_hash.hash(&mut h);
+    h.finish()
+}
+
+/// ADR-146 D2 — ¿el último tramo enviado a este par ya predice la pose de `now`? Si sí, el par se
+/// puede omitir esta ronda. Función pura: posición, rumbo, lo discreto y el reloj, y nada que diga
+/// qué es la fuente.
+pub fn tramo_predicts(
+    mark: &TramoMark,
+    pos: [f32; 3],
+    yaw_u16: u16,
+    pitch: i8,
+    discrete: u64,
+    now: std::time::Instant,
+) -> bool {
+    let elapsed = now.saturating_duration_since(mark.at);
+    if elapsed >= TRAMO_REPAIR || discrete != mark.discrete {
+        return false;
+    }
+    let t = elapsed.as_secs_f32();
+    let err = [
+        pos[0] - (mark.pos[0] + mark.vel[0] * t),
+        pos[1] - (mark.pos[1] + mark.vel[1] * t),
+        pos[2] - (mark.pos[2] + mark.vel[2] * t),
+    ];
+    let err_sq = err[0] * err[0] + err[1] * err[1] + err[2] * err[2];
+    if err_sq > TRAMO_POS_TOLERANCE_M * TRAMO_POS_TOLERANCE_M {
+        return false;
+    }
+    // Diferencia de rumbo por el camino corto: la resta en `u16` da la vuelta sola y como `i16`
+    // queda con signo.
+    let yaw_steps = (yaw_u16.wrapping_sub(mark.yaw_u16) as i16).unsigned_abs();
+    if yaw_steps as f32 * 360.0 / 65536.0 > TRAMO_YAW_TOLERANCE_DEG {
+        return false;
+    }
+    (pitch as i16 - mark.pitch as i16).abs() <= TRAMO_PITCH_TOLERANCE
+}
+
 /// Dentro de esta distancia el aforo NO recorta: un tiroteo cuerpo a cuerpo en una sala llena
 /// sigue a la cadencia de la curva. Es lo que Joel pidió: «si están a 2 metros de ti se vean a
 /// 30 Hz».
@@ -1854,11 +1933,16 @@ pub async fn broadcast_peer_poses_at(
 
     // ADR-146 D2 — la velocidad de cada ORIGEN, una vez por ronda y antes de todo filtro: es un
     // hecho del origen, no de quién lo mira. Reemplazo entero sobre los presentes, así que un peer
-    // que se fue se lleva la suya. El salto (teleport) lo consumirá el gate de tramos (commit 2b).
+    // que se fue se lleva la suya. Un SALTO (teleport) invalida los tramos de ese origen en todos
+    // sus pares: esta ronda emiten, pase lo que pase con la predicción.
     let mut next_velocity = std::collections::HashMap::with_capacity(poses.len());
+    let mut jumped_sources: std::collections::HashSet<PeerId> = std::collections::HashSet::new();
     for (id, pos) in &poses {
-        let (estimate, _jumped) = estimate_pose_velocity(net.pose_velocity.get(id), *pos, now);
+        let (estimate, jumped) = estimate_pose_velocity(net.pose_velocity.get(id), *pos, now);
         next_velocity.insert(*id, estimate);
+        if jumped {
+            jumped_sources.insert(*id);
+        }
     }
     net.pose_velocity = next_velocity;
 
@@ -2073,6 +2157,11 @@ pub async fn broadcast_peer_poses_at(
     let mut next_cosmetics: std::collections::HashMap<(PeerId, PeerId), (u64, u64)> =
         std::collections::HashMap::with_capacity(net.pose_cosmetics_sent.len().max(16));
     let round = net.pose_relay_round;
+    // ADR-146 D2: la marca de tramo por par de ESTA ronda, con el mismo ciclo de vida que la de
+    // cosméticos. Un par omitido conserva la suya; uno que salió del AOI la pierde.
+    let mut next_tramo: std::collections::HashMap<(PeerId, PeerId), TramoMark> =
+        std::collections::HashMap::with_capacity(net.pose_tramo_sent.len().max(16));
+    let mut tramo_skipped = 0usize;
 
     for (src_id, _) in &poses {
         // E1: si este origen no le interesa a nadie, ni se construye su pose ni se serializa.
@@ -2120,11 +2209,39 @@ pub async fn broadcast_peer_poses_at(
             cosmetics: None,
         };
         let src_position = p.position;
+        // ADR-146 D2: lo que el receptor tendrá para predecir, por origen y una sola vez.
+        let vel_sent = PoseWire::dequantize_vel(base.vel_cms);
+        let discrete = pose_discrete_hash(&base, hash);
+        let src_jumped = jumped_sources.contains(src_id);
         for &dest_id in dests {
             let Some(dpos) = dest_pos.get(&dest_id) else {
                 continue;
             };
             let key = (*src_id, dest_id);
+            // ADR-146 D2 — el gate. Va ANTES de la marca de cosméticos a propósito: un par omitido
+            // no puede sellar como enviado algo que no salió (la copia de abajo le conserva la
+            // marca anterior). Todo lo que decide es posición, rumbo, lo discreto y el reloj.
+            if let Some(mark) = net.pose_tramo_sent.get(&key) {
+                if net.tramo_gate_enabled
+                    && !src_jumped
+                    && tramo_predicts(mark, src_position, base.yaw_u16, base.pitch, discrete, now)
+                {
+                    next_tramo.insert(key, *mark);
+                    tramo_skipped += 1;
+                    continue;
+                }
+            }
+            next_tramo.insert(
+                key,
+                TramoMark {
+                    pos: src_position,
+                    vel: vel_sent,
+                    yaw_u16: base.yaw_u16,
+                    pitch: base.pitch,
+                    discrete,
+                    at: now,
+                },
+            );
             let last = net.pose_cosmetics_sent.get(&key).copied();
             let full = match last {
                 Some((h, sent_round)) => {
@@ -2151,6 +2268,13 @@ pub async fn broadcast_peer_poses_at(
         if !next_cosmetics.contains_key(pair) {
             if let Some(mark) = net.pose_cosmetics_sent.get(pair) {
                 next_cosmetics.insert(*pair, *mark);
+            }
+        }
+        // ADR-146: igual con el tramo. Sin esto, un par que no tocaba emitir perdería su marca y la
+        // siguiente ronda saldría aunque la predicción siguiera acertando.
+        if !next_tramo.contains_key(pair) {
+            if let Some(mark) = net.pose_tramo_sent.get(pair) {
+                next_tramo.insert(*pair, *mark);
             }
         }
     }
@@ -2180,6 +2304,10 @@ pub async fn broadcast_peer_poses_at(
     // peer que se fue se van con él sin necesidad de purga aparte.
     net.aoi_pose_pairs = next_pairs;
     net.pose_cosmetics_sent = next_cosmetics;
+    net.pose_tramo_sent = next_tramo;
+    // ADR-146: `relayed_count` son los pares que TOCABA emitir; lo que sale de verdad es eso menos
+    // lo que el gate omitió. Es lo que devuelve la función y lo que la traza publica.
+    let sent_count = relayed_count - tramo_skipped;
     net.pose_cone_pairs = next_cone;
     net.pose_relay_round = net.pose_relay_round.wrapping_add(1);
 
@@ -2235,12 +2363,12 @@ pub async fn broadcast_peer_poses_at(
         // pose), y su cociente es el ahorro real de la partida — no una estimación de sonda.
         let without_aoi = p * d - d.min(p);
         info!(
-            "MPTRACE step=R15 event=peer_pose_relay self_id={} peer_count={} real_dest_count={} relay_datagrams_per_call={} approx_per_sec={} without_aoi={} in_aoi={} aoi_radius_m={:.0} floor_hz={} budget_min={:.2} max_fan_in={} cap_hits={} fidelity_cap={}",
+            "MPTRACE step=R15 event=peer_pose_relay self_id={} peer_count={} real_dest_count={} relay_datagrams_per_call={} approx_per_sec={} without_aoi={} in_aoi={} aoi_radius_m={:.0} floor_hz={} budget_min={:.2} max_fan_in={} cap_hits={} fidelity_cap={} tramo_gate={} tramo_skipped={}",
             net.local_id,
             p,
             d,
-            relayed_count,
-            relayed_count as u64 * POSE_RELAY_HZ,
+            sent_count,
+            sent_count as u64 * POSE_RELAY_HZ,
             without_aoi,
             // Pares dentro del AOI, emitan o no esta ronda: su diferencia con
             // `relay_datagrams_per_call` es lo que ahorra el LOD, separado de lo que ahorra el AOI.
@@ -2255,10 +2383,14 @@ pub async fn broadcast_peer_poses_at(
             // ponerlo de verdad.
             max_fan_in,
             cap_hits,
-            POSE_FIDELITY_CAP
+            POSE_FIDELITY_CAP,
+            // ADR-146: lo que el gate de tramos se ahorró en esta ronda, ya descontado de lo que
+            // sale. Con el gate apagado siempre es 0.
+            net.tramo_gate_enabled,
+            tramo_skipped
         );
     }
-    relayed_count
+    sent_count
 }
 
 /// Host-as-server relay of the STP item roster: the host broadcasts its full
@@ -5629,5 +5761,167 @@ mod tramo_velocity_tests {
     #[test]
     fn the_tramo_gate_ships_off() {
         assert!(!TRAMO_GATE_ENABLED);
+    }
+}
+
+/// ADR-146 D2 — la predicción del gate de tramos, como función pura.
+#[cfg(test)]
+mod tramo_gate_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    fn mark_walking_x(at: Instant) -> TramoMark {
+        TramoMark {
+            pos: [0.0, 1.8, 0.0],
+            vel: [3.0, 0.0, 0.0],
+            yaw_u16: PoseWire::quantize_yaw(90.0),
+            pitch: 0,
+            discrete: 7,
+            at,
+        }
+    }
+
+    #[test]
+    fn a_straight_walk_is_predicted() {
+        let t0 = Instant::now();
+        let mark = mark_walking_x(t0);
+        let t = Duration::from_millis(300);
+        let pos = [3.0 * t.as_secs_f32() + 0.05, 1.8, 0.0];
+        assert!(tramo_predicts(&mark, pos, mark.yaw_u16, 0, 7, t0 + t));
+    }
+
+    #[test]
+    fn a_turn_breaks_the_prediction() {
+        let t0 = Instant::now();
+        let mark = mark_walking_x(t0);
+        // Medio segundo después dobló a +Z: a 3 m/s está ~1 m fuera de la recta prevista.
+        let pos = [0.9, 1.8, 0.6];
+        assert!(!tramo_predicts(
+            &mark,
+            pos,
+            mark.yaw_u16,
+            0,
+            7,
+            t0 + Duration::from_millis(500)
+        ));
+    }
+
+    #[test]
+    fn a_stop_breaks_the_prediction() {
+        let t0 = Instant::now();
+        let mark = mark_walking_x(t0);
+        // Se paró en seco donde estaba: la predicción sigue andando y a los 100 ms ya va 30 cm por
+        // delante.
+        assert!(!tramo_predicts(
+            &mark,
+            mark.pos,
+            mark.yaw_u16,
+            0,
+            7,
+            t0 + Duration::from_millis(100)
+        ));
+    }
+
+    #[test]
+    fn any_discrete_change_breaks_the_prediction() {
+        let t0 = Instant::now();
+        let mark = mark_walking_x(t0);
+        assert!(!tramo_predicts(&mark, mark.pos, mark.yaw_u16, 0, 8, t0));
+    }
+
+    #[test]
+    fn the_repair_forces_a_send_even_when_the_prediction_holds() {
+        let t0 = Instant::now();
+        let mark = mark_walking_x(t0);
+        let just_before = TRAMO_REPAIR - Duration::from_millis(1);
+        let pos_at = |d: Duration| [3.0 * d.as_secs_f32(), 1.8, 0.0];
+        assert!(tramo_predicts(
+            &mark,
+            pos_at(just_before),
+            mark.yaw_u16,
+            0,
+            7,
+            t0 + just_before
+        ));
+        assert!(!tramo_predicts(
+            &mark,
+            pos_at(TRAMO_REPAIR),
+            mark.yaw_u16,
+            0,
+            7,
+            t0 + TRAMO_REPAIR
+        ));
+    }
+
+    #[test]
+    fn yaw_and_pitch_have_their_own_tolerance_and_yaw_wraps() {
+        let t0 = Instant::now();
+        let mut mark = mark_walking_x(t0);
+        mark.yaw_u16 = PoseWire::quantize_yaw(359.0);
+        mark.vel = [0.0; 3];
+        // 359° → 1°: dos grados por el camino corto, no 358.
+        assert!(tramo_predicts(
+            &mark,
+            mark.pos,
+            PoseWire::quantize_yaw(1.0),
+            0,
+            7,
+            t0
+        ));
+        assert!(!tramo_predicts(
+            &mark,
+            mark.pos,
+            PoseWire::quantize_yaw(10.0),
+            0,
+            7,
+            t0
+        ));
+        assert!(tramo_predicts(&mark, mark.pos, mark.yaw_u16, 2, 7, t0));
+        assert!(!tramo_predicts(&mark, mark.pos, mark.yaw_u16, 3, 7, t0));
+    }
+
+    /// ADR-074 enm. 4 D5, enmendado por ADR-146: la decisión sale de la pose y del reloj. Este test
+    /// fija que la función no tiene por dónde enterarse de qué es un fantasma — dos orígenes con la
+    /// misma pose y la misma marca reciben el mismo veredicto, sin tercer argumento que lo cambie.
+    #[test]
+    fn the_tramo_gate_cannot_tell_a_phantom_from_a_player() {
+        let t0 = Instant::now();
+        let mark = mark_walking_x(t0);
+        let pos = [0.31, 1.8, 0.02];
+        let now = t0 + Duration::from_millis(100);
+        let as_player = tramo_predicts(&mark, pos, mark.yaw_u16, 0, 7, now);
+        let as_phantom = tramo_predicts(&mark, pos, mark.yaw_u16, 0, 7, now);
+        assert_eq!(as_player, as_phantom);
+    }
+
+    #[test]
+    fn the_discrete_hash_sees_cosmetics_and_counters() {
+        let wire = PoseWire {
+            pos_cm: [0; 3],
+            yaw_u16: 0,
+            pitch: 0,
+            animation: crate::network::protocol::PoseAnim::WALK,
+            flags: 0,
+            buttons: 0,
+            hit_seq: 0,
+            fire_seq: 0,
+            melee_seq: 0,
+            vocal_seq: 0,
+            vel_cms: [0; 3],
+            cosmetics: None,
+        };
+        let base = pose_discrete_hash(&wire, 1);
+        assert_ne!(base, pose_discrete_hash(&wire, 2), "cosméticos");
+        let fired = PoseWire {
+            fire_seq: 1,
+            ..wire.clone()
+        };
+        assert_ne!(base, pose_discrete_hash(&fired, 1), "contador de disparo");
+        // La velocidad NO entra: cambia cada ronda y la juzga la predicción, no la huella.
+        let moving = PoseWire {
+            vel_cms: [300, 0, 0],
+            ..wire
+        };
+        assert_eq!(base, pose_discrete_hash(&moving, 1));
     }
 }
