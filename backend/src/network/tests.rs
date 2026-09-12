@@ -2304,6 +2304,67 @@ async fn far_apart_joiners_stop_receiving_each_others_poses_over_real_sockets() 
     );
 }
 
+/// **Dos joiners JUNTOS y los dos LEJOS del anfitrión**, que es el caso que el test de arriba no
+/// cubre: allí la pareja estaba separada pero ambos al lado del host.
+///
+/// Importa porque es la pregunta que cualquiera se hace de este topología: si el host está en la
+/// otra punta del mapa, ¿esos dos se siguen viendo? La respuesta tiene que ser que SÍ, porque el
+/// filtro decide por la distancia ENTRE EL PAR y la posición del anfitrión no entra en la cuenta.
+/// Pero «tiene que ser» no es «se comprobó», y esto es justo lo que un índice espacial mal hecho
+/// rompería sin dar un error: bastaría con repartir las casillas respecto al host en vez de en
+/// coordenadas del mundo para que estos dos dejaran de verse a 1.500 m de distancia del origen.
+///
+/// El tráfico sigue pasando por el anfitrión —la topología es estrella, ADR-009, los joiners no se
+/// hablan entre ellos— así que esto NO prueba que la latencia sea buena, sólo que las poses llegan.
+#[tokio::test]
+async fn two_joiners_together_far_from_the_host_still_see_each_other() {
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let host_addr = loopback_addr(&host);
+    let mut a = NetworkManager::bind(0, 3101, 0, false).await.unwrap();
+    let mut b = NetworkManager::bind(0, 3102, 0, false).await.unwrap();
+
+    a.initiate_connection(host_addr).await;
+    b.initiate_connection(host_addr).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    host.process_incoming().await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    a.process_incoming().await;
+    b.process_incoming().await;
+    assert_eq!(host.peers.len(), 2, "setup: los dos joiners conectados");
+
+    // Los dos a 1.500 m del origen —muy por encima del radio del AOI, así que ninguno está «cerca
+    // del host»— y a 5 m el uno del otro.
+    place_peer(&mut host, 3101, [1500.0, 1.8, 1500.0]);
+    place_peer(&mut host, 3102, [1505.0, 1.8, 1500.0]);
+
+    for _ in 0..2 {
+        crate::network::sync::broadcast_peer_poses(&mut host, None).await;
+        tokio::time::sleep(Duration::from_millis(60)).await;
+    }
+    let a_got = drain_pose_updates(&mut a).await;
+    let b_got = drain_pose_updates(&mut b).await;
+
+    assert!(
+        a_got > 0,
+        "A tiene a B a 5 m: su pose TIENE que llegar por lejos que esté el anfitrión          (recibidos: {a_got})"
+    );
+    assert!(b_got > 0, "y simétricamente B la de A (recibidos: {b_got})");
+
+    // Control negativo, y es el que impide que este test pase por estar el filtro apagado: se
+    // separa a B 300 m de A, SIN acercar a ninguno de los dos al host. Si lo que decidiera fuese la
+    // distancia al anfitrión, esto seguiría relayando igual que antes.
+    place_peer(&mut host, 3102, [1800.0, 1.8, 1500.0]);
+    for _ in 0..2 {
+        crate::network::sync::broadcast_peer_poses(&mut host, None).await;
+        tokio::time::sleep(Duration::from_millis(60)).await;
+    }
+    let a_after = drain_pose_updates(&mut a).await;
+    assert_eq!(
+        a_after, 0,
+        "separados 300 m, el filtro tiene que cortar aunque los dos sigan igual de lejos del          anfitrión (recibidos: {a_after})"
+    );
+}
+
 /// El invariante de ADR-016 medido donde importa, en los datagramas: un fantasma (id ≥ 0xF000)
 /// dentro del AOI se relaya EXACTAMENTE igual que un jugador a la misma distancia. Si el AOI lo
 /// tratara distinto, el joiner podría distinguirlo sin verlo.
