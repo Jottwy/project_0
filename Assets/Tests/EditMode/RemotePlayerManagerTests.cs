@@ -13,6 +13,12 @@ namespace BackroomsSurvival.Tests
         private GameObject _managerGo;
         private RemotePlayerManager _manager;
 
+        // Una pose REAL. El gestor descarta el origen literal como «peer todavía sin pose»
+        // (RemotePlayerManager.UpdateFromWorldState, tanda del 10-09): un RemotePlayerMsg con
+        // position por defecto (Vector3.zero) NO crea proxy. Cada test que espera un proxy
+        // tiene que mandar una posición de verdad; ver TheLiteralOriginDoesNotSpawnAProxy.
+        private static readonly Vector3 RealPose = new Vector3(3f, 0f, 14f);
+
         [SetUp]
         public void SetUp()
         {
@@ -59,7 +65,7 @@ namespace BackroomsSurvival.Tests
             IgnoreEditModeMaterialLog();
             var players = new List<RemotePlayerMsg>
             {
-                new RemotePlayerMsg { id = 1, name = "Alice", position = Vector3.zero, rotation = 0f, animation = "idle" }
+                new RemotePlayerMsg { id = 1, name = "Alice", position = RealPose, rotation = 0f, animation = "idle" }
             };
 
             _manager.UpdateFromWorldState(players);
@@ -77,7 +83,7 @@ namespace BackroomsSurvival.Tests
             IgnoreEditModeMaterialLog();
             var players = new List<RemotePlayerMsg>
             {
-                new RemotePlayerMsg { id = 1, name = "Alice", position = Vector3.zero }
+                new RemotePlayerMsg { id = 1, name = "Alice", position = RealPose }
             };
             _manager.UpdateFromWorldState(players);
             Assert.AreEqual(1, _manager.ActiveCount);
@@ -94,7 +100,7 @@ namespace BackroomsSurvival.Tests
             IgnoreEditModeMaterialLog();
             var players = new List<RemotePlayerMsg>
             {
-                new RemotePlayerMsg { id = 1, name = "Alice" }
+                new RemotePlayerMsg { id = 1, name = "Alice", position = RealPose }
             };
             _manager.UpdateFromWorldState(players);
             _manager.UpdateFromWorldState(new List<RemotePlayerMsg>());
@@ -102,7 +108,7 @@ namespace BackroomsSurvival.Tests
 
             var newPlayers = new List<RemotePlayerMsg>
             {
-                new RemotePlayerMsg { id = 2, name = "Bob" }
+                new RemotePlayerMsg { id = 2, name = "Bob", position = RealPose }
             };
             _manager.UpdateFromWorldState(newPlayers);
 
@@ -141,14 +147,39 @@ namespace BackroomsSurvival.Tests
             IgnoreEditModeMaterialLog();
             var players = new List<RemotePlayerMsg>
             {
-                new RemotePlayerMsg { id = 1, name = "Alice" },
-                new RemotePlayerMsg { id = 2, name = "Bob" },
-                new RemotePlayerMsg { id = 3, name = "Charlie" },
+                new RemotePlayerMsg { id = 1, name = "Alice", position = RealPose },
+                new RemotePlayerMsg { id = 2, name = "Bob", position = RealPose },
+                new RemotePlayerMsg { id = 3, name = "Charlie", position = RealPose },
             };
 
             _manager.UpdateFromWorldState(players);
 
             Assert.AreEqual(3, _manager.ActiveCount);
+        }
+
+        /// <summary>
+        /// El origen literal significa en el wire «aún no sé dónde estoy» (el emisor lo descarta
+        /// antes de enviar) y el gestor lo trata así: sin proxy hasta la primera pose real. Sin
+        /// esta guarda el proxy nacía en (0,0,0) y ahí se quedaba hasta la primera pose.
+        /// </summary>
+        [Test]
+        public void TheLiteralOriginDoesNotSpawnAProxy()
+        {
+            IgnoreEditModeMaterialLog();
+            var players = new List<RemotePlayerMsg>
+            {
+                new RemotePlayerMsg { id = 1, name = "Alice", position = Vector3.zero, animation = "idle" }
+            };
+
+            _manager.UpdateFromWorldState(players);
+            Assert.AreEqual(0, _manager.ActiveCount, "el origen literal no debe crear proxy");
+            Assert.IsFalse(_manager.ActivePlayers.ContainsKey(1));
+
+            // En cuanto llega la primera pose real, el proxy nace en su sitio.
+            players[0].position = RealPose;
+            _manager.UpdateFromWorldState(players);
+            Assert.AreEqual(1, _manager.ActiveCount);
+            Assert.IsTrue(_manager.ActivePlayers.ContainsKey(1));
         }
 
         [Test]
@@ -169,7 +200,7 @@ namespace BackroomsSurvival.Tests
             // velocidad (ADR-013) y el melee viaja en melee_seq (ADR-044).
             var players = new List<RemotePlayerMsg>
             {
-                new RemotePlayerMsg { id = 1, name = "Alice", animation = "idle" }
+                new RemotePlayerMsg { id = 1, name = "Alice", position = RealPose, animation = "idle" }
             };
             _manager.UpdateFromWorldState(players);
             Assert.AreEqual("idle", _manager.ActivePlayers[1].animationState);
