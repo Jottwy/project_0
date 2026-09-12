@@ -25,7 +25,7 @@
 - **Migración STP servidor-autoritativo**: Steps 1–2 y slice 3.1 (plumbing) hechos y verificados. Falta slice 3.2
   (capa L2 de predicción), reescribir los 8 call sites de `Inventory` y retirar `PlayerController.cs` (DEPRECATED por ADR-009).
 - ADR-014 fase 2 (borrado diferido 200 ms, reserva anti-duplicado): backend hecho, **sin playtest**. Sin ver en Play: linterna (`2d1b0118`), venda, crafteo.
-- **ADR-145 aprobado** (`0b662110`); D3/D7 ya en tronco vía `2eab4fc7` (carrera de índice, verificado). Falta TODO Unity: D1/D2/D4/D5/D6.
+- **ADR-145 D1/D2/D4/D5 en Unity** (compila, EditMode sin ejecutar). Falta D6 (pide backend) y la nota de D3.
 
 ## Riesgos abiertos
 - **Autoridad del servidor CERRADA, también la última línea** (12-09): dueño al demoler (`78e156e6`), cantidad y posición contra el roster

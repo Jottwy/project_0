@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Reflection;
 using UnityEngine;
 using UnityEngine.Rendering.Universal;
 
@@ -956,7 +957,7 @@ namespace BackroomsSurvival.WorldGen3
         /// collider y un macizo debajo sería una mesa que frena dos veces, con dos formas).
         /// </summary>
         public static GameObject AssembleProp(BackroomsSurvival.Net.Wg3PropMsg prop, Transform parent,
-            int layer, string name, Wg3Materials materials = null, Material lampMaterial = null)
+            int layer, string name, long worldSeed, Wg3Materials materials = null, Material lampMaterial = null)
         {
             if (parent == null) return null;
             if (prop.kind == BackroomsSurvival.Net.Wg3PropMsg.Sign)
@@ -983,6 +984,14 @@ namespace BackroomsSurvival.WorldGen3
             foreach (Transform t in go.GetComponentsInChildren<Transform>(true)) t.gameObject.layer = layer;
             foreach (Renderer r in go.GetComponentsInChildren<Renderer>(true)) Wg3StoreyLayers.Apply(r, mask);
             foreach (Collider c in go.GetComponentsInChildren<Collider>(true)) c.enabled = false;
+
+            // ADR-145 D1/D2/D4/D5 — de los 18 kinds físicos, el que tenga clase de material se
+            // puede desmontar. Va DESPUÉS de apagar los colliders del pack (arriba): el hitbox
+            // propio que añade es OTRO GameObject, sin relación con esos.
+            var harvestClass = BackroomsSurvival.Net.Wg3PropHarvest.ClassFor(prop.kind);
+            if (harvestClass.HasValue)
+                MakeHarvestable(go, prop, worldSeed, harvestClass.Value);
+
             // EL MONITOR ENCENDIDO, uno de cada cinco. Va DESPUÉS del bucle de máscaras a propósito:
             // ese bucle pisa el `renderingLayerMask` de todos los renderers, y la pantalla necesita
             // el suyo igual que el resto del mueble — lo que cambia es el material, no la capa.
@@ -990,6 +999,165 @@ namespace BackroomsSurvival.WorldGen3
                 && Wg3LightCadence.MonitorLit(prop.xCm, prop.yCm, prop.zCm))
                 LightMonitorScreen(go);
             return go;
+        }
+
+        private static readonly Dictionary<BackroomsSurvival.Net.Wg3PropHarvest.MaterialClass,
+            PolymindGames.ResourceHarvesting.HarvestableResourceDefinition> _harvestDefCache = new();
+        private static readonly HashSet<BackroomsSurvival.Net.Wg3PropHarvest.MaterialClass> _warnedHarvestDef = new();
+
+        private static readonly FieldInfo _hrResourceDefinitionField = typeof(PolymindGames.ResourceHarvesting.HarvestableResource)
+            .GetField("_resourceDefinition", BindingFlags.NonPublic | BindingFlags.Instance);
+        private static readonly FieldInfo _hrUnharvestedField = typeof(PolymindGames.ResourceHarvesting.HarvestableResource)
+            .GetField("_unharvestedObject", BindingFlags.NonPublic | BindingFlags.Instance);
+        private static readonly FieldInfo _hrPartiallyField = typeof(PolymindGames.ResourceHarvesting.HarvestableResource)
+            .GetField("_partiallyHarvestedObject", BindingFlags.NonPublic | BindingFlags.Instance);
+        private static readonly FieldInfo _hrEventsField = typeof(PolymindGames.ResourceHarvesting.HarvestableResource)
+            .GetField("_events", BindingFlags.NonPublic | BindingFlags.Instance);
+        private static bool _hrReflectionWarned;
+
+        /// <summary>
+        /// ADR-145 D4/D2/D5 — un hitbox PROPIO (no el del pack, apagado arriba) en la capa
+        /// `StaticObject` (14): libre en todo el proyecto salvo esto, así que se editó la matriz de
+        /// físicas para que `Character` YA NO colisione con ella — entra en la máscara fija de
+        /// `MeleeHarvestAttack` (Default|StaticObject|DynamicObject) sin bloquear movimiento. El
+        /// macizo `Wg3Solid` sigue siendo lo único que frena, sin doble colisión.
+        ///
+        /// Va en un GameObject hijo DEDICADO (no en <paramref name="go"/>): `HarvestableResource`
+        /// exige un <c>Collider</c> en su MISMO GameObject (`[RequireComponent]`, y su `Awake` hace
+        /// `GetComponent&lt;Collider&gt;()`, no `GetComponentInChildren`), y el prefab del pack
+        /// puede traer collider en su propia raíz — poner el nuevo ahí sería ambiguo sobre cuál
+        /// encuentra `HarvestableResource`.
+        /// </summary>
+        private static void MakeHarvestable(GameObject go, BackroomsSurvival.Net.Wg3PropMsg prop,
+            long worldSeed, BackroomsSurvival.Net.Wg3PropHarvest.MaterialClass cls)
+        {
+            var definition = HarvestDefinitionFor(cls);
+            if (definition == null)
+                return; // faltan los assets de "Backrooms/Create Office Harvest Assets": decorativo, como hoy.
+
+            var hitbox = new GameObject("HarvestHitbox");
+            hitbox.hideFlags = HideFlags.DontSave;
+            hitbox.transform.SetParent(go.transform, false);
+            hitbox.layer = PolymindGames.LayerConstants.StaticObject;
+
+            Bounds b = LocalRendererBounds(go);
+            var box = hitbox.AddComponent<BoxCollider>();
+            box.center = b.center;
+            box.size = b.size;
+
+            var hr = hitbox.AddComponent<PolymindGames.ResourceHarvesting.HarvestableResource>();
+            if (!SetHarvestableFields(hr, definition, go))
+                return;
+
+            uint id = BackroomsSurvival.Net.Wg3PropHarvest.NetIdFor(worldSeed, prop.kind, prop.xCm, prop.yCm, prop.zCm);
+            var nh = hitbox.AddComponent<BackroomsSurvival.Net.NetworkHarvestableInstance>();
+            nh.id = id;
+            // D3 — el registro en el roster se manda en CADA golpe, no al instanciar: con miles de
+            // piezas de atrezo por radio de streaming, registrar todo al instanciar repetiría el
+            // coste que la 51.ª tanda quitó de las poses.
+            nh.registerOnHarvest = true;
+
+            if (cls == BackroomsSurvival.Net.Wg3PropHarvest.MaterialClass.MetalContainer)
+            {
+                // D5 — Cabinet/Shelf/Fridge/Rack sueltan el carryable Metal que YA existe, no un
+                // item nuevo de bolsa.
+                var metal = PolymindGames.WieldableSystem.CarryableDefinition.GetWithName("Metal");
+                if (metal != null)
+                {
+                    nh.logDefId = metal.Id;
+                    nh.logCount = 2;
+                }
+            }
+            else
+            {
+                var drops = BackroomsSurvival.Net.Wg3PropHarvest.ItemDropsFor(cls);
+                if (drops.Count > 0)
+                {
+                    nh.itemDrops = new List<BackroomsSurvival.Net.NetworkHarvestableInstance.ItemDrop>(drops.Count);
+                    foreach (var d in drops)
+                    {
+                        var def = PolymindGames.InventorySystem.ItemDefinition.GetWithName(d.Name);
+                        if (def == null) continue; // catálogo a medio autorar: se salta, no se rompe.
+                        nh.itemDrops.Add(new BackroomsSurvival.Net.NetworkHarvestableInstance.ItemDrop
+                        { defId = def.Id, count = d.Count });
+                    }
+                }
+            }
+
+            // D3 — indexado directo: este atrezo YA trae su id determinista (no pasa por
+            // `Bind`/emparejamiento por proximidad, que es para los árboles/rocas del vendor y
+            // para los tres muebles de ADR-114). Sin esto, la salud autoritativa y el flanco de
+            // depleción nunca lo encontrarían aunque aparezca en el roster.
+            BackroomsSurvival.Net.StpHarvestableSyncManager.Instance?.TrackDeferredInstance(nh);
+        }
+
+        private static PolymindGames.ResourceHarvesting.HarvestableResourceDefinition HarvestDefinitionFor(
+            BackroomsSurvival.Net.Wg3PropHarvest.MaterialClass cls)
+        {
+            if (_harvestDefCache.TryGetValue(cls, out var cached))
+                return cached;
+            var def = Resources.Load<PolymindGames.ResourceHarvesting.HarvestableResourceDefinition>(
+                $"Wg3Props/Definitions/BR_Office{cls}");
+            _harvestDefCache[cls] = def;
+            if (def == null && _warnedHarvestDef.Add(cls))
+                Debug.LogWarning($"[wg3] sin definición de harvest para la clase {cls}: ejecuta " +
+                                  "Backrooms/Create Office Harvest Assets");
+            return def;
+        }
+
+        /// <summary>Campos privados de `HarvestableResource` sin API pública para ponerlos en
+        /// runtime — mismo idioma que `StpHarvestableSyncManager` usa para el resto del vendor.
+        /// `_events` necesita un array NO NULO del tipo privado exacto (`RaiseEvent` hace
+        /// `foreach` sin comprobar nulo) — de ahí `Array.CreateInstance` en vez de nombrar el tipo.</summary>
+        private static bool SetHarvestableFields(PolymindGames.ResourceHarvesting.HarvestableResource hr,
+            PolymindGames.ResourceHarvesting.HarvestableResourceDefinition definition, GameObject visual)
+        {
+            if (_hrResourceDefinitionField == null || _hrUnharvestedField == null ||
+                _hrPartiallyField == null || _hrEventsField == null)
+            {
+                if (!_hrReflectionWarned)
+                {
+                    _hrReflectionWarned = true;
+                    Debug.LogError("[wg3] HarvestableResource cambió sus campos privados: el atrezo " +
+                                    "de oficina no se puede dar de alta (ADR-145 D5).");
+                }
+                return false;
+            }
+
+            _hrResourceDefinitionField.SetValue(hr, definition);
+            _hrUnharvestedField.SetValue(hr, visual);
+            _hrPartiallyField.SetValue(hr, visual);
+            _hrEventsField.SetValue(hr, System.Array.CreateInstance(_hrEventsField.FieldType.GetElementType(), 0));
+            return true;
+        }
+
+        /// <summary>Caja LOCAL (relativa a <paramref name="go"/>) que encierra sus renderers, sin
+        /// asumir que el pack los deja en el origen: transforma las 8 esquinas de cada
+        /// <c>Renderer.bounds</c> (mundo) al espacio local de <paramref name="go"/> y las encierra —
+        /// conservador si hay rotación fina, pero nunca más pequeño que el visual real.</summary>
+        private static Bounds LocalRendererBounds(GameObject go)
+        {
+            var renderers = go.GetComponentsInChildren<Renderer>(true);
+            if (renderers.Length == 0)
+                return new Bounds(Vector3.up * 0.5f, Vector3.one);
+
+            Matrix4x4 worldToLocal = go.transform.worldToLocalMatrix;
+            Bounds local = default;
+            bool has = false;
+            foreach (var r in renderers)
+            {
+                Vector3 c = r.bounds.center, e = r.bounds.extents;
+                for (int xi = -1; xi <= 1; xi += 2)
+                for (int yi = -1; yi <= 1; yi += 2)
+                for (int zi = -1; zi <= 1; zi += 2)
+                {
+                    Vector3 corner = c + Vector3.Scale(e, new Vector3(xi, yi, zi));
+                    Vector3 lp = worldToLocal.MultiplyPoint3x4(corner);
+                    if (!has) { local = new Bounds(lp, Vector3.zero); has = true; }
+                    else local.Encapsulate(lp);
+                }
+            }
+            return has ? local : new Bounds(Vector3.up * 0.5f, Vector3.one);
         }
 
         /// <summary>

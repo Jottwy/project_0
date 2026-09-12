@@ -87,5 +87,10 @@ namespace BackroomsSurvival.Net
         /// <summary>ADR-093 E3: cross a Level 4 door (entry or return). IPC-only, no wire
         /// bump — same additive-data pattern as bed_constructed/report_noise.</summary>
         public const string Level4Door = "level4_door";
+
+        /// <summary>ADR-145 D3: registro diferido de un `Wg3Prop` harvestable (id determinista +
+        /// posición). Host aplica directo; joiner lo reenvía por P2P (StpRegisterHarvestableRequest,
+        /// wire 0x5C). Idempotente — nunca toca `remaining` de un id ya conocido.</summary>
+        public const string RegisterPropHarvestable = "register_prop_harvestable";
     }
 }

@@ -20,6 +20,13 @@ namespace BackroomsSurvival.Net
         public int logCount;           // how many carryables to spawn on depletion
         public bool spawnedOnDeplete;  // host: guards one-shot depletion spawn
 
+        /// <summary>ADR-145 D3: registro diferido. Sólo el atrezo de `Wg3Prop` (ADR-129) lo pone a
+        /// true — se registra en CADA golpe, no al instanciar, porque con miles de piezas por
+        /// radio de streaming registrar todo al instanciar repetiría el coste que la 51.ª tanda
+        /// quitó de las poses. Los tres muebles de ADR-114 siguen registrándose al instanciar
+        /// (`StpWorldPropSpawner.Place`) y dejan esto en false, sin cambio de comportamiento.</summary>
+        public bool registerOnHarvest;
+
         /// <summary>ADR-114 D7/D8: los materiales de un mueble desmontable, resueltos a ids de
         /// `ItemDefinition`. Vacío en un árbol o una roca del vendor, que siguen soltando su
         /// carryable por `logDefId`/`logCount`.
@@ -84,6 +91,9 @@ namespace BackroomsSurvival.Net
 
             if (!IPCClient.TryGetInstance(out var ipc) || !ipc.IsConnected)
                 return;
+
+            if (registerOnHarvest)
+                ipc.SendRegisterPropHarvestable(id, transform.position);
 
             ipc.SendStpHarvestHit(NextHitId(), id, amount);
         }

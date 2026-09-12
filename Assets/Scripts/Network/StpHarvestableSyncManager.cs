@@ -385,6 +385,27 @@ namespace BackroomsSurvival.Net
             return true;
         }
 
+        /// <summary>
+        /// ADR-145 D3 — indexa un atrezo cuyo <see cref="NetworkHarvestableInstance"/> YA trae el
+        /// id determinista de D2 (<c>Wg3SceneAssembler.AssembleProp</c> lo añade y lo configura al
+        /// instanciar). A diferencia de <see cref="Bind"/>/<see cref="RegisterHostProp"/>: NO añade
+        /// el componente (ya existe) y NO manda ningún paquete — el registro en el roster va por
+        /// golpe (<c>NetworkHarvestableInstance.registerOnHarvest</c>), no por alta aquí.
+        ///
+        /// Sin esto, este id nunca entraría en <c>_bound</c> (poblarlo es lo único que hace
+        /// <see cref="Bind"/>, y aquí no se llama) y <see cref="ApplyAuthoritative"/>/
+        /// <see cref="MaybeSpawnOnDeplete"/> jamás lo alcanzarían pese a aparecer en el roster tras
+        /// el primer golpe. Tampoco pasa por <see cref="TryBindByProximity"/>: ese emparejamiento
+        /// es para los árboles/rocas del vendor y los tres muebles de ADR-114, que NO conocen su id
+        /// hasta que lo ven en el roster; el atrezo lo calcula solo.
+        /// </summary>
+        public void TrackDeferredInstance(NetworkHarvestableInstance nh)
+        {
+            if (nh == null || nh.id == 0 || _bound.ContainsKey(nh.id))
+                return;
+            _bound[nh.id] = nh;
+        }
+
         /// <summary>El manager vivo, para que el sembrador de props no tenga que buscarlo por la
         /// jerarquía (se autoarranca en un objeto `DontDestroyOnLoad` propio).</summary>
         public static StpHarvestableSyncManager Instance => _instance;

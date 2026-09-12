@@ -1561,6 +1561,20 @@ namespace BackroomsSurvival.Net
             });
         }
 
+        /// <summary>ADR-145 D3: registra (o refresca la posición de) un `Wg3Prop` harvestable
+        /// diferido. Sin coste de saber si ya estaba: el upsert del host nunca toca `remaining`
+        /// de un id conocido. Sólo la usan los harvestables con <c>registerOnHarvest</c>
+        /// (ver <see cref="NetworkHarvestableInstance"/>) — el atrezo de ADR-129, no los tres
+        /// muebles de ADR-114 (esos siguen registrándose al instanciar, sin cambios).</summary>
+        public void SendRegisterPropHarvestable(uint id, Vector3 position)
+        {
+            SendActionFrame(ProtocolActionTypes.RegisterPropHarvestable, 2, w =>
+            {
+                w.WriteString("id"); w.WriteInt(id);
+                w.WriteString("position"); WriteVec3(w, position);
+            });
+        }
+
         /// <summary>Send a UI lifecycle event (pause, save, quit, ...).</summary>
         public void SendUiEvent(string eventType)
         {

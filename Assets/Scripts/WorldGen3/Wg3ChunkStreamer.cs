@@ -633,7 +633,7 @@ namespace BackroomsSurvival.WorldGen3
                 // Los materiales van con el ancla porque el deterioro de la enm. 20 no tiene
                 // prefab: lo dibuja el ensamblador con el material de placa o el de luminaria.
                 var built = Wg3SceneAssembler.AssembleProp(prop, root.transform, root.layer,
-                    $"prop_{i:D3}_k{prop.kind}", EffectiveMaterials(), LampMaterial());
+                    $"prop_{i:D3}_k{prop.kind}", worldSeed, EffectiveMaterials(), LampMaterial());
                 // Se cuenta lo que LLEGA y lo que se MONTA por separado: un ancla que llega y no
                 // monta nada (prefab que falta, atlas sin importar) es invisible de la peor manera
                 // —el mundo sale entero, sólo que vacío— y sin estos dos números el diagnóstico
