@@ -219,6 +219,10 @@ pub enum PacketType {
     // vez (registro diferido: sin esto, el golpe llega a un id que el host no conoce y se
     // descarta silenciosamente, `stp_harvest_hit_no_target`). 0x5C: 0x46-0x5B ya están en uso.
     StpRegisterHarvestableRequest = 0x5C,
+    // ADR-145 D6 — un joiner pide dar de alta el cofre-atrezo (Cabinet/Shelf/Fridge/Rack) que
+    // acompaña a un harvestable de D3. Mismo motivo, mismo patrón, id de OTRA sal (espacio de
+    // ids separado de `world.corpses`, ver `Wg3PropHarvest.ChestIdFor` en Unity).
+    StpRegisterChestRequest = 0x5D,
     // ADR-028 Fase E: host-authoritative corpse relay (same block — loot/world-object family)
     CorpseList = 0x46,
     CorpseSpawnRequest = 0x47,
@@ -337,6 +341,7 @@ impl PacketType {
             0x44 => Some(Self::StpHarvestableList),
             0x45 => Some(Self::StpHarvestHitRequest),
             0x5C => Some(Self::StpRegisterHarvestableRequest),
+            0x5D => Some(Self::StpRegisterChestRequest),
             0x46 => Some(Self::CorpseList),
             0x47 => Some(Self::CorpseSpawnRequest),
             0x48 => Some(Self::CorpseTakeRequest),
@@ -1195,6 +1200,16 @@ pub enum PacketPayload {
         id: u32,
         position: [f32; 3],
     },
+    /// ADR-145 D6 — un joiner pide dar de alta el cofre que acompaña a un Cabinet/Shelf/Fridge/
+    /// Rack, con el loot ya sorteado client-side (`Wg3PropHarvest.ChestContentsFor`). `id` es
+    /// `Wg3PropChestId` — OTRA sal que `StpRegisterHarvestableRequest`, espacio de ids separado
+    /// del de `world.corpses` (bit 31 reservado, ver comentario en `register_prop_chest`). El
+    /// host lo aplica una sola vez: `World::spawn_chest_with_id` no pisa un id ya existente.
+    StpRegisterChestRequest {
+        id: u32,
+        position: [f32; 3],
+        items: Vec<crate::world::corpse::CorpseStack>,
+    },
 
     // ADR-028 Fase E: host-authoritative corpse relay. Corpses reuse the storage type
     // (`world::corpse::CorpseData`) directly on the wire — same precedent as ChunkLayoutV1.
@@ -1522,6 +1537,7 @@ impl PacketPayload {
             Self::StpRegisterHarvestableRequest { .. } => {
                 PacketType::StpRegisterHarvestableRequest as u16
             }
+            Self::StpRegisterChestRequest { .. } => PacketType::StpRegisterChestRequest as u16,
             Self::CorpseList { .. } => PacketType::CorpseList as u16,
             Self::CorpseSpawnRequest { .. } => PacketType::CorpseSpawnRequest as u16,
             Self::CorpseTakeRequest { .. } => PacketType::CorpseTakeRequest as u16,

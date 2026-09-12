@@ -1575,6 +1575,22 @@ namespace BackroomsSurvival.Net
             });
         }
 
+        /// <summary>ADR-145 D6: registra (o no-op si ya existe) el cofre que acompaña a un
+        /// Cabinet/Shelf/Fridge/Rack, con el loot ya sorteado client-side
+        /// (<c>Wg3PropHarvest.ChestContentsFor</c>). Mismo idioma que
+        /// <see cref="SendRegisterPropHarvestable"/>: sólo la usan los harvestables cuya clase de
+        /// material es <c>MetalContainer</c> (ver <see cref="NetworkHarvestableInstance"/>).</summary>
+        public void SendRegisterPropChest(uint id, Vector3 position,
+            System.Collections.Generic.IReadOnlyList<CorpseLootStack> items)
+        {
+            SendActionFrame(ProtocolActionTypes.RegisterPropChest, 3, w =>
+            {
+                w.WriteString("id"); w.WriteInt(id);
+                w.WriteString("position"); WriteVec3(w, position);
+                w.WriteString("items"); WriteLootStacks(w, items);
+            });
+        }
+
         /// <summary>Send a UI lifecycle event (pause, save, quit, ...).</summary>
         public void SendUiEvent(string eventType)
         {

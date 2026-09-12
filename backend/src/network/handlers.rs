@@ -464,6 +464,11 @@ impl NetworkManager {
                 Some(NetworkEvent::StpRegisterHarvestableRequest { id, position })
             }
 
+            // ADR-145 D6: mismo alta idempotente, otro espacio de ids (el del cofre-atrezo).
+            PacketPayload::StpRegisterChestRequest { id, position, items } => {
+                Some(NetworkEvent::StpRegisterChestRequest { id, position, items })
+            }
+
             // ADR-081 llevado a la demolición: el dueño se comprueba contra la CABECERA. Por eso
             // este arm no puede vivir en la lista 1:1 de arriba — necesita `sender_id`, que el
             // payload no trae ni debe traer.
@@ -1466,14 +1471,14 @@ impl NetworkManager {
         // ADR-136 D3 — la identidad se va con el peer. Sin esto, el siguiente que heredara el
         // número (`allocate_peer_id` los recicla) sería «la misma persona» para cualquier invitado.
         self.platform_ids.retain(|_, peer| *peer != id);
+        // ADR-146 D3 — la base del tramo también es estado indexado por PeerId: sin esto, el que
+        // heredara el número extrapolaría desde la última pose del anterior.
+        self.relay_tramo_base.remove(&id);
     }
 
     pub fn peer_ids(&self) -> Vec<PeerId> {
         let mut ids: Vec<PeerId> = self.peers.keys().copied().collect();
         ids.sort_unstable();
-        // ADR-146 D3 — la base del tramo también es estado indexado por PeerId: sin esto, el que
-        // heredara el número extrapolaría desde la última pose del anterior.
-        self.relay_tramo_base.remove(&id);
         ids
     }
 

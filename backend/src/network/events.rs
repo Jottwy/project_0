@@ -200,6 +200,14 @@ pub enum NetworkEvent {
         id: u32,
         position: [f32; 3],
     },
+    /// ADR-145 D6 — un joiner pide dar de alta el cofre que acompaña a un Cabinet/Shelf/Fridge/
+    /// Rack, con el loot ya sorteado client-side. Mismo alta idempotente que
+    /// `StpRegisterHarvestableRequest`, en otro id (`Wg3PropChestId`, otra sal).
+    StpRegisterChestRequest {
+        id: u32,
+        position: [f32; 3],
+        items: Vec<crate::world::corpse::CorpseStack>,
+    },
     /// ADR-028 Fase E: a joiner's player died — it asks the host to spawn the corpse.
     CorpseSpawnRequest {
         request_id: u64,

@@ -4052,6 +4052,17 @@ async fn handle_network_event(
             }
         }
 
+        // ADR-145 D6: mismo alta idempotente que D3, en `world.corpses` (otro id, otro mapa).
+        NetworkEvent::StpRegisterChestRequest {
+            id,
+            position,
+            items,
+        } => {
+            if net.is_host {
+                register_prop_chest(world, id, position, items);
+            }
+        }
+
         NetworkEvent::WorldInteractRequest {
             requester_id,
             request_id,
@@ -6474,6 +6485,31 @@ async fn handle_action(
                 net.send_reliable(1, &payload).await;
             }
         }
+        // ADR-145 D6 — mismo registro diferido que D3, pero para el cofre que acompaña a un
+        // Cabinet/Shelf/Fridge/Rack: otro id (`Wg3PropChestId`, otra sal), otro mapa
+        // (`world.corpses`, no `net.stp_harvestables`), y con el loot YA sorteado client-side
+        // (`items`, mismo formato `{item_id,quantity}` que `report_death_loot`/`spawn_world_chest`
+        // — reutiliza `parse_loot_stacks`). El id inválido (0) se descarta igual que D3; un id ya
+        // registrado lo ignora `World::spawn_chest_with_id`, así que mandarla en cada golpe no
+        // relootea ni resetea un cofre a medio saquear.
+        "register_prop_chest" => {
+            let id = json_u64(&action.data, "id").unwrap_or(0) as u32;
+            let position = json_vec3(&action.data, "position").unwrap_or([0.0, 0.0, 0.0]);
+            if id == 0 {
+                return;
+            }
+            let items = parse_loot_stacks(&action.data);
+            if net.is_host {
+                register_prop_chest(world, id, position, items);
+            } else {
+                let payload = crate::network::protocol::PacketPayload::StpRegisterChestRequest {
+                    id,
+                    position,
+                    items,
+                };
+                net.send_reliable(1, &payload).await;
+            }
+        }
         // Phase B2.6: a client reports a harvest hit. Host-authoritative: the host reduces the
         // harvestable's `remaining` and the relay propagates it. A joiner forwards to the host.
         "stp_harvest_hit" => {
@@ -8226,6 +8262,21 @@ fn register_stp_harvestable(net: &mut NetworkManager, id: u32, position: [f32; 3
             true
         }
     }
+}
+
+/// ADR-145 D6 — alta idempotente del cofre-atrezo en `world.corpses` (otro id, `Wg3PropChestId`,
+/// otra sal que el harvestable de D3 — ver `Wg3PropHarvest.ChestIdFor` en Unity). A diferencia de
+/// `register_stp_harvestable`, aquí NO hay "refrescar la posición de un id conocido": un cofre no
+/// se mueve, así que un id ya existente simplemente se ignora — `World::spawn_chest_with_id` ya
+/// lo resuelve así (`false` sin tocar nada), y volver a intentarlo en cada golpe (D3: "gratis")
+/// nunca resetea el loot que el cofre ya tenía, esté parcial o totalmente saqueado.
+fn register_prop_chest(
+    world: &mut World,
+    id: u32,
+    position: [f32; 3],
+    items: Vec<crate::world::corpse::CorpseStack>,
+) {
+    world.spawn_chest_with_id(id, Vec3::from_array(position), items);
 }
 
 /// ADR-145 D7 — retira de `world.corpses` cualquier bolsa cuyo reloj (`net.bag_expires_at`) haya

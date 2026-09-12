@@ -160,5 +160,86 @@ namespace BackroomsSurvival.Tests
             }
             Assert.AreEqual(0, collisions, $"{collisions} colisiones entre {seen.Count} props reales");
         }
+
+        // ── D6: el id del cofre y su loot ────────────────────────────────────────────────────────
+
+        [Test]
+        public void ChestIdIsStableAcrossRunsAndEveryComponentEnters()
+        {
+            uint a = Wg3PropHarvest.ChestIdFor(Seed, Wg3PropMsg.Cabinet, 100, 0, 250);
+            for (int i = 0; i < 10; i++)
+                Assert.AreEqual(a, Wg3PropHarvest.ChestIdFor(Seed, Wg3PropMsg.Cabinet, 100, 0, 250));
+
+            Assert.AreNotEqual(a, Wg3PropHarvest.ChestIdFor(Seed + 1, Wg3PropMsg.Cabinet, 100, 0, 250), "la semilla no entra");
+            Assert.AreNotEqual(a, Wg3PropHarvest.ChestIdFor(Seed, Wg3PropMsg.Shelf, 100, 0, 250), "kind no entra");
+            Assert.AreNotEqual(a, Wg3PropHarvest.ChestIdFor(Seed, Wg3PropMsg.Cabinet, 101, 0, 250), "x_cm no entra");
+            Assert.AreNotEqual(a, Wg3PropHarvest.ChestIdFor(Seed, Wg3PropMsg.Cabinet, 100, 1, 250), "y_cm no entra");
+            Assert.AreNotEqual(a, Wg3PropHarvest.ChestIdFor(Seed, Wg3PropMsg.Cabinet, 100, 0, 251), "z_cm no entra");
+        }
+
+        /// <summary>El bit reservado (ADR-145 D6): `World::next_corpse_id` en Rust es un contador
+        /// puro desde 1, así que ningún id de cofre-atrezo puede chocar con un cadáver o con un
+        /// cofre de `StpChestSpawner`/`StpWorldContainerSpawner` si SIEMPRE lleva este bit.</summary>
+        [Test]
+        public void ChestIdAlwaysCarriesTheReservedBit()
+        {
+            for (int x = -300; x < 300; x += 7)
+            {
+                uint id = Wg3PropHarvest.ChestIdFor(Seed, Wg3PropMsg.Rack, x, 0, x * 3);
+                Assert.AreNotEqual(0u, id & 0x8000_0000u, $"id={id:x8} sin el bit reservado");
+                Assert.AreNotEqual(0u, id);
+            }
+        }
+
+        /// <summary>Sal propia: ni la de `NetIdFor` (el harvestable de la MISMA pieza) ni la de
+        /// `ChunkDismantleRoll`/`StpWorldContainerSpawner`. Compartirla pondría el cofre y el
+        /// harvestable del mismo mueble en el mismo id — uno pisaría al otro en `world.corpses`
+        /// / `net.stp_harvestables`, que son mapas distintos pero con la MISMA fuente de verdad
+        /// de posición.</summary>
+        [Test]
+        public void TheChestSaltDiffersFromTheHarvestableSaltForTheSamePiece()
+        {
+            uint harvestId = Wg3PropHarvest.NetIdFor(Seed, Wg3PropMsg.Cabinet, 500, 0, 500);
+            uint chestId = Wg3PropHarvest.ChestIdFor(Seed, Wg3PropMsg.Cabinet, 500, 0, 500);
+            // Los dos podrían coincidir en los 31 bits bajos por puro azar sin que sea un fallo de
+            // diseño (son mezclas independientes) — lo que el ADR exige es que la MEZCLA sea
+            // distinta, comprobado abajo por el bit reservado que sólo lleva uno de los dos.
+            Assert.AreEqual(0u, harvestId & 0x8000_0000u, "el harvestable no debe llevar el bit del cofre");
+            Assert.AreNotEqual(0u, chestId & 0x8000_0000u);
+        }
+
+        [Test]
+        public void ContainerClassPropsNeverShareAChestId()
+        {
+            byte[] containers = { Wg3PropMsg.Cabinet, Wg3PropMsg.Shelf, Wg3PropMsg.Fridge, Wg3PropMsg.Rack };
+            var seen = new HashSet<uint>();
+            int collisions = 0;
+            foreach (byte kind in containers)
+            {
+                for (int x = -50; x < 50; x += 5)
+                {
+                    for (int z = -50; z < 50; z += 5)
+                    {
+                        if (!seen.Add(Wg3PropHarvest.ChestIdFor(Seed, kind, x * 10, 0, z * 10)))
+                            collisions++;
+                    }
+                }
+            }
+            Assert.AreEqual(0, collisions, $"{collisions} colisiones entre {seen.Count} cofres reales");
+        }
+
+        [Test]
+        public void ChestContentsAreDeterministicAndNeverEmpty()
+        {
+            var profile = ChunkLootRoll.DefaultStyleLootProfiles()[4]; // servicio/almacén
+
+            var a = Wg3PropHarvest.ChestContentsFor(Seed, Wg3PropMsg.Shelf, 100, 0, 250, profile);
+            var b = Wg3PropHarvest.ChestContentsFor(Seed, Wg3PropMsg.Shelf, 100, 0, 250, profile);
+            CollectionAssert.AreEqual(a, b, "el mismo cofre debe sortear el mismo contenido");
+            Assert.Greater(a.Count, 0, "un cofre sin loot sería inmortal en el backend (ADR-028 post-E3)");
+
+            var c = Wg3PropHarvest.ChestContentsFor(Seed, Wg3PropMsg.Fridge, 100, 0, 250, profile);
+            CollectionAssert.AreNotEqual(a, c, "kind entra en la semilla del sorteo de contenido");
+        }
     }
 }

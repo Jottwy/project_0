@@ -27,6 +27,13 @@ namespace BackroomsSurvival.Net
         /// (`StpWorldPropSpawner.Place`) y dejan esto en false, sin cambio de comportamiento.</summary>
         public bool registerOnHarvest;
 
+        /// <summary>ADR-145 D6: sólo puesto por <c>Wg3SceneAssembler.MakeHarvestable</c> para la
+        /// clase de material <c>MetalContainer</c> (Cabinet/Shelf/Fridge/Rack) — el cofre que
+        /// acompaña a este mueble. `chestLoot` vacío o nulo significa "este harvestable no es
+        /// también un cofre", y ningún otro desmontable (ADR-114 incluido) lo toca.</summary>
+        public uint chestId;
+        public System.Collections.Generic.List<CorpseLootStack> chestLoot;
+
         /// <summary>ADR-114 D7/D8: los materiales de un mueble desmontable, resueltos a ids de
         /// `ItemDefinition`. Vacío en un árbol o una roca del vendor, que siguen soltando su
         /// carryable por `logDefId`/`logCount`.
@@ -94,6 +101,9 @@ namespace BackroomsSurvival.Net
 
             if (registerOnHarvest)
                 ipc.SendRegisterPropHarvestable(id, transform.position);
+
+            if (chestLoot != null && chestLoot.Count > 0)
+                ipc.SendRegisterPropChest(chestId, transform.position, chestLoot);
 
             ipc.SendStpHarvestHit(NextHitId(), id, amount);
         }

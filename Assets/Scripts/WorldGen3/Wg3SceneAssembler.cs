@@ -1067,6 +1067,23 @@ namespace BackroomsSurvival.WorldGen3
                     nh.logDefId = metal.Id;
                     nh.logCount = 2;
                 }
+
+                // D6 — ADEMÁS es cofre. El id es OTRA sal (nunca el mismo que `id`): dos
+                // sistemas, dos ids, una posición.
+                nh.chestId = BackroomsSurvival.Net.Wg3PropHarvest.ChestIdFor(
+                    worldSeed, prop.kind, prop.xCm, prop.yCm, prop.zCm);
+                var contents = BackroomsSurvival.Net.Wg3PropHarvest.ChestContentsFor(
+                    worldSeed, prop.kind, prop.xCm, prop.yCm, prop.zCm, ChestProfileForStyle(prop.style));
+                if (contents.Count > 0)
+                {
+                    nh.chestLoot = new List<BackroomsSurvival.Net.CorpseLootStack>(contents.Count);
+                    foreach (string name in contents)
+                    {
+                        var def = PolymindGames.InventorySystem.ItemDefinition.GetWithName(name);
+                        if (def == null) continue; // catálogo a medio autorar: se salta, no se rompe.
+                        nh.chestLoot.Add(new BackroomsSurvival.Net.CorpseLootStack { itemId = def.Id, quantity = 1 });
+                    }
+                }
             }
             else
             {
@@ -1089,6 +1106,28 @@ namespace BackroomsSurvival.WorldGen3
             // para los tres muebles de ADR-114). Sin esto, la salud autoritativa y el flanco de
             // depleción nunca lo encontrarían aunque aparezca en el roster.
             BackroomsSurvival.Net.StpHarvestableSyncManager.Instance?.TrackDeferredInstance(nh);
+        }
+
+        private static BackroomsSurvival.Gameplay.GridWorld.ZoneLootTable _chestLootTable;
+        private static bool _chestLootTableLoaded;
+
+        /// <summary>ADR-145 D6 — la tabla por PAPEL, la misma que ya sirve al loot suelto y a
+        /// `StpWorldContainerSpawner` (ADR-108 D4): un armario de servicio pesa material y
+        /// medicina porque el perfil de su sala ya lo dice, sin tabla nueva. `prop.style` es el
+        /// papel de la sala para todo prop que no sea un Sign (ver el comentario de esa
+        /// excepción en `AssembleSign`).</summary>
+        private static BackroomsSurvival.Net.ZoneLootProfile ChestProfileForStyle(byte style)
+        {
+            if (!_chestLootTableLoaded)
+            {
+                _chestLootTable = Resources.Load<BackroomsSurvival.Gameplay.GridWorld.ZoneLootTable>("Loot/ZoneLootTable");
+                _chestLootTableLoaded = true;
+            }
+            if (_chestLootTable != null)
+                return _chestLootTable.ProfileForStyle(style);
+
+            var fallback = BackroomsSurvival.Net.ChunkLootRoll.DefaultStyleLootProfiles();
+            return fallback[Mathf.Clamp(style, 0, fallback.Length - 1)];
         }
 
         private static PolymindGames.ResourceHarvesting.HarvestableResourceDefinition HarvestDefinitionFor(

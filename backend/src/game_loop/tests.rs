@@ -1153,6 +1153,140 @@ async fn joiner_forwarded_registration_reaches_stp_harvestables_on_the_host() {
     assert_eq!(net.stp_harvestables[0].id, 42);
 }
 
+// Igual que `action_on`, pero devuelve también `World` — D6 vive en `world.corpses`, no en `net`.
+async fn action_on_with_world(
+    net_is_host_action: &str,
+    data: serde_json::Value,
+) -> (NetworkManager, World) {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let mut world = World::new(42);
+    let mut player = Player::new(1, "Host");
+    let (tx, _rx) = broadcast::channel(16);
+    let mut processed: BoundedDedupeSet<(u16, u64)> = BoundedDedupeSet::with_capacity(DEDUPE_CAP);
+    let action = crate::ipc::PlayerAction {
+        action_type: net_is_host_action.into(),
+        data,
+    };
+    let mut adult_driver = AdultDriver::new(net.world_seed);
+    let mut child_driver = ChildDriver::new(net.world_seed);
+    handle_action(
+        &action,
+        &mut player,
+        &mut world,
+        &mut net,
+        &mut adult_driver,
+        &mut child_driver,
+        &tx,
+        &mut processed,
+        0,
+        &wg3_off(),
+        &mut wg3_cache(),
+        &mut wg3_collision(),
+    )
+    .await;
+    (net, world)
+}
+
+// Un id nuevo entra como cofre con el loot mandado; repetir la MISMA llamada (mandarla en cada
+// golpe, como hace el cliente) no lo duplica ni le añade una segunda copia del loot.
+#[tokio::test]
+async fn register_prop_chest_creates_a_chest_and_is_idempotent() {
+    let data = serde_json::json!({
+        "id": 0x8000_0777u32,
+        "position": [1.0, 2.0, 3.0],
+        "items": [{ "item_id": 5, "quantity": 2 }],
+    });
+    let (_net, mut world) = action_on_with_world("register_prop_chest", data.clone()).await;
+    assert_eq!(world.corpses.len(), 1);
+    let chest = &world.corpses[&0x8000_0777];
+    assert!(chest.is_chest);
+    assert_eq!(chest.items, vec![bag_stack(5, 2)]);
+
+    // Segunda llamada, mismo id, loot DISTINTO: no debe pisar lo que ya había.
+    let action = crate::ipc::PlayerAction {
+        action_type: "register_prop_chest".into(),
+        data: serde_json::json!({
+            "id": 0x8000_0777u32,
+            "position": [1.0, 2.0, 3.0],
+            "items": [{ "item_id": 99, "quantity": 9 }],
+        }),
+    };
+    let mut net2 = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let mut player = Player::new(1, "Host");
+    let (tx, _rx) = broadcast::channel(16);
+    let mut processed: BoundedDedupeSet<(u16, u64)> = BoundedDedupeSet::with_capacity(DEDUPE_CAP);
+    let mut adult_driver = AdultDriver::new(net2.world_seed);
+    let mut child_driver = ChildDriver::new(net2.world_seed);
+    handle_action(
+        &action,
+        &mut player,
+        &mut world,
+        &mut net2,
+        &mut adult_driver,
+        &mut child_driver,
+        &tx,
+        &mut processed,
+        0,
+        &wg3_off(),
+        &mut wg3_cache(),
+        &mut wg3_collision(),
+    )
+    .await;
+    assert_eq!(world.corpses.len(), 1, "no debe crear un segundo cofre");
+    assert_eq!(
+        world.corpses[&0x8000_0777].items,
+        vec![bag_stack(5, 2)],
+        "un id ya registrado no relootea"
+    );
+}
+
+// Un id de 0 es forma inválida: no registra nada, igual que register_prop_harvestable.
+#[tokio::test]
+async fn register_prop_chest_rejects_zero_id() {
+    let data = serde_json::json!({
+        "id": 0u32,
+        "position": [1.0, 2.0, 3.0],
+        "items": [{ "item_id": 5, "quantity": 2 }],
+    });
+    let (_net, world) = action_on_with_world("register_prop_chest", data).await;
+    assert!(world.corpses.is_empty());
+}
+
+// El evento P2P forwardeado por un joiner (StpRegisterChestRequest) llega al MISMO
+// `world.corpses` que la acción local del host.
+#[tokio::test]
+async fn joiner_forwarded_chest_registration_reaches_world_corpses_on_the_host() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let mut world = World::new(42);
+    let mut player = Player::new(1, "Host");
+    let (tx, _rx) = broadcast::channel(16);
+    let mut processed: BoundedDedupeSet<(u16, u64)> = BoundedDedupeSet::with_capacity(DEDUPE_CAP);
+    let mut adult_driver = AdultDriver::new(net.world_seed);
+    let mut child_driver = ChildDriver::new(net.world_seed);
+    handle_network_event(
+        NetworkEvent::StpRegisterChestRequest {
+            id: 0x8000_0042,
+            position: [1.0, 1.0, 1.0],
+            items: vec![bag_stack(7, 1)],
+        },
+        &mut player,
+        &mut world,
+        &mut net,
+        &mut adult_driver,
+        &mut child_driver,
+        &tx,
+        &tx,
+        &mut processed,
+        0,
+        None,
+        &wg3_off(),
+        &mut wg3_cache(),
+    )
+    .await;
+    assert_eq!(world.corpses.len(), 1);
+    assert!(world.corpses[&0x8000_0042].is_chest);
+}
+
 fn bag_stack(item_id: i32, quantity: u16) -> crate::world::corpse::CorpseStack {
     crate::world::corpse::CorpseStack {
         item_id,

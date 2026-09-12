@@ -92,5 +92,10 @@ namespace BackroomsSurvival.Net
         /// posición). Host aplica directo; joiner lo reenvía por P2P (StpRegisterHarvestableRequest,
         /// wire 0x5C). Idempotente — nunca toca `remaining` de un id ya conocido.</summary>
         public const string RegisterPropHarvestable = "register_prop_harvestable";
+
+        /// <summary>ADR-145 D6: registro diferido del cofre que acompaña a un Cabinet/Shelf/
+        /// Fridge/Rack — mismo patrón que <see cref="RegisterPropHarvestable"/>, otro id
+        /// (`Wg3PropChestId`), otro mapa (`world.corpses`, no `net.stp_harvestables`).</summary>
+        public const string RegisterPropChest = "register_prop_chest";
     }
 }

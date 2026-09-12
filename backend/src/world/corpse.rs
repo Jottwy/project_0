@@ -208,6 +208,46 @@ impl World {
         id
     }
 
+    /// ADR-145 D6: create (or refresh nothing on) a host-seeded chest at a CLIENT-CHOSEN id
+    /// (`Wg3PropChestId`, derived deterministically from the paired Cabinet/Shelf/Fridge/Rack —
+    /// see `Wg3PropHarvest.ChestIdFor` in Unity), instead of `spawn_chest`'s auto-incremented one.
+    ///
+    /// `next_corpse_id` keeps issuing ids for `spawn_corpse`/`spawn_chest` from the SAME
+    /// `world.corpses` map, blind to whatever this method inserts — so a naive insert-by-key
+    /// could silently overwrite a player's corpse or another chest the moment the counter caught
+    /// up to a value a client happened to pick. Client-chosen chest ids are the caller's
+    /// responsibility to keep out of that range (Unity reserves bit 31, so the two spaces can
+    /// never overlap even after `next_corpse_id` wraps); this method's OWN safety net is simpler
+    /// and needs no such promise: if `id` already exists, do nothing and report `false` — a
+    /// second register (the client resends on every hit, ADR-145 D3's "gratis" upsert) must never
+    /// re-arm an already-looted-into chest with a fresh copy of its original loot.
+    pub fn spawn_chest_with_id(
+        &mut self,
+        id: u32,
+        position: Vec3,
+        mut items: Vec<CorpseStack>,
+    ) -> bool {
+        if self.corpses.contains_key(&id) {
+            return false;
+        }
+        sanitize_loot_stacks(&mut items);
+        self.corpses.insert(
+            id,
+            CorpseData {
+                id,
+                owner_id: 0,
+                owner_name: "Supply Crate".into(),
+                position,
+                equipment: [0; 4],
+                held_item: 0,
+                items,
+                is_chest: true,
+            },
+        );
+        self.revision = self.revision.wrapping_add(1);
+        true
+    }
+
     /// Take up to `quantity` from the stack at `item_index` of corpse `corpse_id`.
     /// Returns the stack actually granted. When the last stack leaves, the corpse
     /// entry is removed — it despawns by absence in the next WorldState (the same
@@ -647,6 +687,57 @@ mod tests {
             world.corpses.contains_key(&corpse_id),
             "the real corpse must be untouched"
         );
+    }
+
+    // ADR-145 D6: a chest at a CLIENT-CHOSEN id, not the auto-incremented one.
+    #[test]
+    fn spawn_chest_with_id_creates_a_chest_at_the_given_id() {
+        let mut world = World::new(42);
+        let pos = Vec3::new(3.0, 0.0, 14.0);
+        let ok = world.spawn_chest_with_id(0x8000_1234, pos, stacks(&[(1, 2)]));
+
+        assert!(ok);
+        let chest = &world.corpses[&0x8000_1234];
+        assert!(chest.is_chest);
+        assert_eq!(chest.owner_id, 0);
+        assert_eq!(chest.items, stacks(&[(1, 2)]));
+    }
+
+    /// El único freno anti-choque de este lado: un id que ya existe no se toca. Sin esto, mandar
+    /// `register_prop_chest` en cada golpe (ADR-145 D3: "gratis") re-armaría un cofre ya saqueado
+    /// con una copia nueva de su loot original — la propia autoridad se reventaría a golpes.
+    #[test]
+    fn spawn_chest_with_id_never_overwrites_an_existing_id() {
+        let mut world = World::new(42);
+        let pos = Vec3::new(3.0, 0.0, 14.0);
+        assert!(world.spawn_chest_with_id(0x8000_1234, pos, stacks(&[(1, 2)])));
+
+        // Vacía el cofre a mano, como haría un jugador saqueándolo por completo.
+        world.corpses.get_mut(&0x8000_1234).unwrap().items.clear();
+
+        let ok = world.spawn_chest_with_id(0x8000_1234, pos, stacks(&[(99, 5)]));
+        assert!(!ok, "un id ya existente no debe volver a armarse");
+        assert!(
+            world.corpses[&0x8000_1234].items.is_empty(),
+            "el segundo intento no debe reponer loot"
+        );
+    }
+
+    /// El id de un cofre de atrezo NUNCA debe pisar el de un cadáver o de un `StpChestSpawner`
+    /// existente en el mismo mapa — aunque el contador no sepa nada del id elegido en cliente.
+    #[test]
+    fn spawn_chest_with_id_does_not_collide_with_the_counter_assigned_space() {
+        let mut world = World::new(42);
+        let pos = Vec3::new(3.0, 0.0, 14.0);
+        let auto_id = spawn_test_corpse(&mut world, pos, stacks(&[(1, 1)]));
+
+        // Un id de atrezo con el bit alto puesto (la reserva real vive en Unity,
+        // `Wg3PropHarvest.ChestIdFor`) nunca coincide con el rango bajo del contador.
+        let chosen = auto_id | 0x8000_0000;
+        assert!(world.spawn_chest_with_id(chosen, pos, stacks(&[(2, 1)])));
+        assert_ne!(chosen, auto_id);
+        assert!(world.corpses.contains_key(&auto_id));
+        assert!(world.corpses.contains_key(&chosen));
     }
 
     // ADR-032 amendment: the shared hygiene helper — quantity<=0 dropped FIRST, then the

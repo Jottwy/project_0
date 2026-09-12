@@ -48,6 +48,7 @@ pub fn is_reliable(packet_type: u16) -> bool {
         | 0x43          // StpCarryableDropRequest
         | 0x45          // StpHarvestHitRequest
         | 0x5C          // StpRegisterHarvestableRequest (ADR-145 D3)
+        | 0x5D          // StpRegisterChestRequest (ADR-145 D6)
         | 0x47          // CorpseSpawnRequest        (ADR-028 Fase E)
         | 0x48          // CorpseTakeRequest         (ADR-028 Fase E)
         | 0x49          // CorpseTakeResult          (ADR-028 Fase E)
@@ -158,6 +159,17 @@ mod tests {
                 "0x{code:02x} era fiable antes de ADR-039"
             );
         }
+    }
+
+    /// ADR-145 D6: el forward de un joiner al registrar el cofre-atrezo tiene que ser fiable —
+    /// perderlo dejaría un Cabinet/Shelf/Fridge/Rack ya desmontado sin cofre que abrir, y nada
+    /// lo reintenta (el registro sólo viaja una vez por golpe, no en bucle).
+    #[test]
+    fn the_prop_chest_registration_is_reliable() {
+        assert!(
+            is_reliable(0x5D),
+            "0x5D StpRegisterChestRequest debe ser fiable"
+        );
     }
 
     /// Y lo que nunca fue fiable sigue sin serlo: la pose a 10 Hz y los heartbeats no se
