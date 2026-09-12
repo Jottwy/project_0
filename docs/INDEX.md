@@ -28,6 +28,7 @@
 - [perf/PERF_AUDIT_v1.md](perf/PERF_AUDIT_v1.md) — auditoría del cliente (09-10): frametime/GC/VRAM, 18 técnicas.
 - [systems/vendor-patches.md](systems/vendor-patches.md) — qué perdemos con cada reimport del vendor.
 - [systems/reverb-mixer.md](systems/reverb-mixer.md) — reverb por zona.
+- [AUDIO-PROPAGATION-ROADMAP.md](AUDIO-PROPAGATION-ROADMAP.md) — PROPUESTO: eco a distancia y sonido que dobla esquinas.
 - [systems/damage-sync.md](systems/damage-sync.md) — hit-reaction cosmético (ADR-024).
 
 ## Mundo (WorldGen3)
