@@ -77,6 +77,9 @@
   en HUD, fuga de luz entre plantas, claims sin guarda de aislamiento (ADR-110 D4), contenedores host-local, planta −1.
 - **Verticalidad jugable** (escalera o hueco entre capas): diferida a post-Alpha 1 con ADR propio; `require_walkable_above`/`_below` sin consumidor.
 - **Farmeo y almacenaje**: E4 y Bloque A sin empezar (dos decisiones de Joel); el sync de contenedores construidos pide ADR y bump de wire, 2-3 días.
+- **Objetivo propuesto por Joel (12-09): remotos a ≤100 ms con 50 juntos** = suelo de ~15 Hz (hoy 5 Hz ≈ 300 ms). Cuenta: 2 450 pares a 15 Hz ×
+  23 B = ~825 KB/s. ADR-146 (tramos + extrapolación) cubre parte; SIN ADR aún: pose por diferencias (~12 B), presupuesto adaptado a la línea del
+  host (hoy 192 fijo) y relay VPS (P4). Con tramos + diferencias la cuenta da ~170 KB/s, dentro del presupuesto actual.
 - **Pendiente de la tanda del lag** (10-09): `PeerList` a 27,5 datagramas/s con UN jugador; **D2** de ADR-139 (partir `ChunkState`, con bump) sin
   decidir; el `layout` viaja aunque el cliente GENERA el chunk. **`animation` NO es peso muerto** (ADR-137 enm. 2): lo consume `ProxyPickupHook` y
   es el teatro del robapieles. `BWTRACE`/`ENTTRACE` en `warn!` a propósito: devolver a `info!` al terminar.
