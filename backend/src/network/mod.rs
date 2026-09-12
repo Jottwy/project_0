@@ -279,6 +279,13 @@ pub struct NetworkManager {
     /// host y otro del cliente) pueden discrepar, y el que discrepa produce exactamente el
     /// parpadeo que la histéresis viene a evitar (ADR-074 decisión 2).
     pub aoi_pose_pairs: std::collections::HashSet<(PeerId, PeerId)>,
+    /// Pares que estaban DENTRO del cono de atención del destinatario la ronda pasada, para la
+    /// histéresis del cono (`sync::pose_in_attention_cone`).
+    ///
+    /// Vive aparte de `aoi_pose_pairs` porque son dos bandas muertas distintas sobre dos magnitudes
+    /// distintas —metros y grados— y mezclarlas haría que salir del radio borrara el estado
+    /// angular. Se queda vacío mientras el cono esté apagado (`POSE_CONE_ENABLED`).
+    pub pose_cone_pairs: std::collections::HashSet<(PeerId, PeerId)>,
     /// E1 / ADR-074 (enmienda): ronda del relay de poses, para la cadencia LOD. Los pares del
     /// anillo exterior emiten una de cada dos rondas, escalonados por paridad — ver
     /// `sync::aoi_pose_due_this_round`.
@@ -654,6 +661,7 @@ impl NetworkManager {
             world_sync_dirty: false,
             world_sync_last_sent: None,
             aoi_pose_pairs: std::collections::HashSet::with_capacity(64),
+            pose_cone_pairs: std::collections::HashSet::new(),
             pending_full_sync: std::collections::HashMap::new(),
             pose_relay_round: 0,
             pending_events: Vec::new(),

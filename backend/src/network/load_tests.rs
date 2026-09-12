@@ -93,7 +93,11 @@ fn register_synthetic_peers(net: &mut NetworkManager, count: usize, spread: Spre
                 ]
             }
         };
-        conn.update_player_state(pos, 0.0, "idle".into());
+        // Orientaciones repartidas y no todas a 0: con el cono de atención apagado esto no cambia
+        // ni un byte (el relay no mira `rotation`), pero deja el arnés listo para medirlo el día
+        // que se encienda — con todos mirando al mismo sitio, el reparto de quién está a la espalda
+        // de quién sale degenerado y el ahorro medido sería mentira.
+        conn.update_player_state(pos, (i as f32 * 37.0) % 360.0, "idle".into());
         net.peers.insert(id, conn);
     }
 }
@@ -696,4 +700,149 @@ async fn cost_by_how_people_group_up() {
         "\n  NO reventó: aguantó hasta N={:?}, el último escalón probado.\n",
         last_ok.unwrap_or(0)
     );
+}
+
+/// **De que esta hecha una pose, byte a byte.** Sin esto, "recortar detalle a lo que no miras" es
+/// una idea sin cifra: no se puede decidir que quitar hasta saber que cuesta cada cosa.
+///
+/// Mide sobre `rmp_serde`, el serializador de verdad, no sobre una estimacion de tamanyos de tipo.
+///
+/// # Lo que NO se puede quitar, y es la mitad util del resultado
+///
+/// La pose no lleva solo aspecto: lleva CONTADORES DE EVENTO (`hit_seq`, `vocal_seq`, `fire_seq`,
+/// `melee_seq`). Son justo lo que hay que saber de quien tienes detras — un disparo, un golpe, una
+/// vocalizacion. Recortarlos no ahorra bytes, borra eventos. Se quedan.
+///
+/// Lo que si sobra a la espalda es aspecto puro: la animacion (que ademas el cliente deriva de la
+/// velocidad desde ADR-013, no de este campo), el pitch de camara, la ropa y lo que lleva en la
+/// mano. Nada de eso cambia lo que pasa; solo lo que se ve, y no lo estas viendo.
+///
+/// `cargo test --bin backrooms_server pose_byte_breakdown -- --ignored --nocapture`
+#[tokio::test]
+#[ignore = "arnés de carga: se corre a mano, no es una regresión"]
+async fn pose_byte_breakdown() {
+    use super::protocol::PacketPayload;
+
+    fn full() -> PacketPayload {
+        PacketPayload::PlayerUpdate {
+            position: [1234.5, 1.8, -987.25],
+            rotation: 137.5,
+            animation: "walk_slow".into(),
+            crouch: false,
+            pitch: -12,
+            equipment: [101, 202, 303, 404],
+            held_item: 77,
+            hit_seq: 3,
+            dead: false,
+            revealed: false,
+            vocal_seq: 5,
+            vocal_kind: 2,
+            light_on: true,
+            fire_seq: 9,
+            buttons: 0b0010_1101,
+            melee_seq: 4,
+            carry_def: 12,
+            carry_count: 2,
+            species: 0,
+        }
+    }
+
+    /// La misma pose con SOLO el aspecto vaciado. Los contadores de evento siguen todos.
+    fn skinny() -> PacketPayload {
+        match full() {
+            PacketPayload::PlayerUpdate {
+                position,
+                rotation,
+                crouch,
+                hit_seq,
+                dead,
+                revealed,
+                vocal_seq,
+                vocal_kind,
+                light_on,
+                fire_seq,
+                buttons,
+                melee_seq,
+                species,
+                ..
+            } => PacketPayload::PlayerUpdate {
+                position,
+                rotation,
+                animation: String::new(),
+                crouch,
+                pitch: 0,
+                equipment: [0; 4],
+                held_item: 0,
+                hit_seq,
+                dead,
+                revealed,
+                vocal_seq,
+                vocal_kind,
+                light_on,
+                fire_seq,
+                buttons,
+                melee_seq,
+                carry_def: 0,
+                carry_count: 0,
+                species,
+            },
+            _ => unreachable!(),
+        }
+    }
+
+    let n_full = rmp_serde::to_vec(&full()).unwrap().len();
+    let n_skinny = rmp_serde::to_vec(&skinny()).unwrap().len();
+
+    println!("\n=== De qué está hecha una pose (MessagePack real) ===\n");
+    println!("  pose completa           {n_full:>4} B");
+    println!("  pose flaca (sin aspecto){n_skinny:>4} B");
+    println!(
+        "  ahorro                  {:>4} B  ({:.0} % del total)",
+        n_full - n_skinny,
+        100.0 * (n_full - n_skinny) as f64 / n_full as f64
+    );
+
+    println!("\n  Campo a campo, lo que cuesta vaciar cada cosa:");
+    for (name, payload) in [
+        ("animation (String)", {
+            let mut p = full();
+            if let PacketPayload::PlayerUpdate { animation, .. } = &mut p {
+                *animation = String::new();
+            }
+            p
+        }),
+        ("equipment [i32;4]", {
+            let mut p = full();
+            if let PacketPayload::PlayerUpdate { equipment, .. } = &mut p {
+                *equipment = [0; 4];
+            }
+            p
+        }),
+        ("held_item + carry", {
+            let mut p = full();
+            if let PacketPayload::PlayerUpdate {
+                held_item,
+                carry_def,
+                carry_count,
+                ..
+            } = &mut p
+            {
+                *held_item = 0;
+                *carry_def = 0;
+                *carry_count = 0;
+            }
+            p
+        }),
+        ("pitch (i8)", {
+            let mut p = full();
+            if let PacketPayload::PlayerUpdate { pitch, .. } = &mut p {
+                *pitch = 0;
+            }
+            p
+        }),
+    ] {
+        let n = rmp_serde::to_vec(&payload).unwrap().len();
+        println!("    {name:<22} -> -{:>2} B", n_full - n);
+    }
+    println!();
 }

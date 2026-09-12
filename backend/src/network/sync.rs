@@ -1248,8 +1248,90 @@ pub fn aoi_pose_due_this_round(
     if dist_sq <= AOI_POSE_NEAR_RADIUS_M * AOI_POSE_NEAR_RADIUS_M {
         return true; // anillo interior: cadencia completa
     }
+    half_cadence_round(src, dest, round)
+}
+
+/// La mitad de las rondas, **escalonada por el par** para que la carga salga plana en vez de una
+/// ronda cara y otra vacía.
+///
+/// Extraída porque ahora la usan dos reglas —el anillo exterior y el cono de atención— y que las
+/// dos usen LA MISMA es lo que hace que componerlas sea idempotente: una fuente lejana Y a la
+/// espalda se queda en media cadencia, no en un cuarto. Si cada regla tuviera su propio escalonado,
+/// aplicar las dos daría 7,5 Hz sin que nadie lo hubiera decidido.
+pub fn half_cadence_round(src: PeerId, dest: PeerId, round: u64) -> bool {
     let phase = (src as u64).wrapping_add(dest as u64) & 1;
     round & 1 == phase
+}
+
+/// Semiángulo del cono de atención del destinatario, en grados.
+///
+/// **180 significa APAGADO**: con ese valor todo el mundo cuenta como «delante» y esto no cambia ni
+/// un byte de lo que sale hoy. Entra así a propósito, igual que entró `POSE_FIDELITY_CAP`.
+///
+/// # Qué hace cuando se enciende
+///
+/// Lo que queda fuera del cono baja a media cadencia (`POSE_RELAY_OUTER_HZ`, hoy 15). No baja más,
+/// y ahí está la diferencia entre esto y la versión que se descartó: a 15 Hz el hueco entre poses
+/// son 66 ms, que a 4 m/s son 27 cm de error — imperceptible. A 1 Hz serían 4 m, y el error
+/// aparecería justo al girarte, que es el único instante en que esa pose te hacía falta.
+///
+/// **Girar es instantáneo y la distancia no**: por eso la cadencia por distancia puede ser agresiva
+/// y ésta no. Un flick de ratón son 200 ms para 180°, y el anfitrión no se entera hasta que le llega
+/// tu input.
+///
+/// # Lo que falta ANTES de bajarlo de 180
+///
+/// El búfer de interpolación del cliente (`RemotePlayerManager`) mide el ritmo de llegada **global,
+/// no por proxy**, y su propio suelo no puede bajar del intervalo de envío o se seca entre muestras
+/// y vuelve a perseguir la última pose — el tirón. Con una mezcla de 30 y 15 Hz la media se queda
+/// entre medias y los de 15 caen por debajo de su suelo. Eso ya pasa hoy con el anillo exterior;
+/// encender esto lo haría pasar CERCA, que es donde se nota. El retardo tiene que ser por peer
+/// primero.
+pub const POSE_CONE_HALF_ANGLE_DEG: f32 = 180.0;
+
+/// Margen de histéresis del cono, en grados: se entra a `POSE_CONE_HALF_ANGLE_DEG` y no se sale
+/// hasta ese ángulo más este margen.
+///
+/// Sin banda muerta el cono es inservible: giras constantemente, y un par pegado al borde cambiaría
+/// de cadencia varias veces por segundo. Es la misma lección que costó el arreglo del PVS.
+pub const POSE_CONE_HYSTERESIS_DEG: f32 = 20.0;
+
+/// ¿Merece la pena preguntar por el cono? Con 180° la respuesta es siempre sí y el producto escalar
+/// sobraría.
+pub const POSE_CONE_ENABLED: bool = POSE_CONE_HALF_ANGLE_DEG < 180.0;
+
+/// ¿Le queda esta fuente dentro del cono de atención del destinatario?
+///
+/// Geometría pura y nada más: la posición de los dos y hacia dónde mira el destinatario. **Jamás
+/// qué es la fuente** — ADR-074. Una criatura y un jugador en el mismo ángulo tienen que dar el
+/// mismo resultado, o el cono se convierte en un detector de robapieles.
+///
+/// Convención de `yaw` la misma que el resto del backend (Unity): adelante es `(sin, cos)`.
+///
+/// El semiángulo entra por parámetro y no se lee de la constante, igual que `aoi_pose_should_relay`
+/// recibe su radio: es lo que permite probar la geometría aunque la constante de producción tenga
+/// el cono apagado.
+pub fn pose_in_attention_cone(
+    dest_pos: [f32; 3],
+    dest_yaw_deg: f32,
+    src_pos: [f32; 3],
+    was_inside: bool,
+    half_angle_deg: f32,
+) -> bool {
+    let dx = src_pos[0] - dest_pos[0];
+    let dz = src_pos[2] - dest_pos[2];
+    let len = (dx * dx + dz * dz).sqrt();
+    if len < f32::EPSILON {
+        return true; // encima el uno del otro: no hay ángulo que medir
+    }
+    let half = if was_inside {
+        (half_angle_deg + POSE_CONE_HYSTERESIS_DEG).min(180.0)
+    } else {
+        half_angle_deg
+    };
+    let yaw = dest_yaw_deg.to_radians();
+    let dot = (yaw.sin() * dx + yaw.cos() * dz) / len;
+    dot >= half.to_radians().cos()
 }
 
 /// E1 / ADR-074 (fase 1): ¿debe viajar la pose de `src` a `dest` esta ronda?
@@ -1550,6 +1632,16 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager, mut pvs: Option<PvsC
         .iter()
         .filter_map(|id| net.peers.get(id).map(|p| (*id, p.position)))
         .collect();
+    // Hacia dónde mira cada destinatario. Sólo se recoge si el cono está encendido: con 180° todo
+    // cuenta como «delante» y este mapa sería peso muerto.
+    let dest_yaw: std::collections::HashMap<PeerId, f32> = if POSE_CONE_ENABLED {
+        dest_ids
+            .iter()
+            .filter_map(|id| net.peers.get(id).map(|p| (*id, p.rotation)))
+            .collect()
+    } else {
+        std::collections::HashMap::new()
+    };
     // Sólo id y posición: es lo ÚNICO que decide el AOI, y es todo `Copy`. La pose completa se
     // construye más abajo y sólo para quien acabe teniendo destinatarios — antes se armaban las P
     // poses por ronda, con su `animation.clone()` cada una, y las de los orígenes que no interesan
@@ -1567,6 +1659,8 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager, mut pvs: Option<PvsC
     let mut due_by_dest: std::collections::HashMap<PeerId, Vec<(f32, [f32; 3], PeerId)>> =
         std::collections::HashMap::with_capacity(dest_ids.len());
     let mut next_pairs = std::collections::HashSet::with_capacity(net.aoi_pose_pairs.len().max(16));
+    let mut next_cone: std::collections::HashSet<(PeerId, PeerId)> =
+        std::collections::HashSet::new();
 
     // ADR-140 — las salas de todos, resueltas una vez. Fuera del bucle de pares a propósito: es la
     // diferencia entre N consultas al grafo y N².
@@ -1637,7 +1731,31 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager, mut pvs: Option<PvsC
             // volvería a exigir el radio de ENTRADA cada dos rondas — justo el parpadeo en la
             // frontera que la histéresis existe para evitar.
             next_pairs.insert((*src_id, dest_id));
-            if aoi_pose_due_this_round(*src_pos, *dpos, *src_id, dest_id, net.pose_relay_round) {
+            // El cono de atención del destinatario. Lo que le queda a la espalda baja a MEDIA
+            // cadencia, nunca menos: 15 Hz son 66 ms de hueco, 27 cm a paso de carrera, y eso no se
+            // ve. Bajar más sí se vería, y justo al girarse.
+            //
+            // Comparte escalonado con el anillo exterior (`half_cadence_round`) a propósito: una
+            // fuente lejana Y a la espalda se queda en media cadencia, no en un cuarto.
+            let mut due =
+                aoi_pose_due_this_round(*src_pos, *dpos, *src_id, dest_id, net.pose_relay_round);
+            if POSE_CONE_ENABLED && due {
+                let was_inside = net.pose_cone_pairs.contains(&(*src_id, dest_id));
+                let yaw = dest_yaw.get(&dest_id).copied().unwrap_or(0.0);
+                let inside = pose_in_attention_cone(
+                    *dpos,
+                    yaw,
+                    *src_pos,
+                    was_inside,
+                    POSE_CONE_HALF_ANGLE_DEG,
+                );
+                if inside {
+                    next_cone.insert((*src_id, dest_id));
+                } else {
+                    due = half_cadence_round(*src_id, dest_id, net.pose_relay_round);
+                }
+            }
+            if due {
                 // Candidato, todavía no emisión: el tope por destinatario se aplica más abajo,
                 // cuando la bolsa de cada uno esté entera. Igual que la cadencia, el recorte vive
                 // DESPUÉS de `next_pairs.insert` a propósito — un par que el tope deje fuera sigue
@@ -1757,6 +1875,7 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager, mut pvs: Option<PvsC
     // desaparecer del estado, o la histéresis lo mantendría vivo para siempre. Y los pares de un
     // peer que se fue se van con él sin necesidad de purga aparte.
     net.aoi_pose_pairs = next_pairs;
+    net.pose_cone_pairs = next_cone;
     net.pose_relay_round = net.pose_relay_round.wrapping_add(1);
 
     // ADR-015 traffic gate instrumentation: throttled (~1/s, no mutable state) report of
@@ -3456,6 +3575,128 @@ mod chunk_broadcast_tests {
 ///
 /// Se prueba sobre `pvs_allows`, que es pura: la mitad peligrosa de esto no debe necesitar sockets
 /// para ponerse en rojo.
+#[cfg(test)]
+mod attention_cone_tests {
+    use super::*;
+
+    /// Semiángulo de prueba: un campo de visión de 100° son 50 a cada lado.
+    const HALF: f32 = 50.0;
+
+    /// Destinatario en el origen mirando a +Z (yaw 0, convención Unity: adelante es `(sin, cos)`).
+    fn at_origin_looking_north(src: [f32; 3], was_inside: bool) -> bool {
+        pose_in_attention_cone([0.0, 1.8, 0.0], 0.0, src, was_inside, HALF)
+    }
+
+    #[test]
+    fn what_you_are_looking_at_stays_at_full_cadence() {
+        assert!(
+            at_origin_looking_north([0.0, 1.8, 10.0], false),
+            "justo delante tiene que estar dentro del cono"
+        );
+        assert!(
+            at_origin_looking_north([7.0, 1.8, 10.0], false),
+            "a 35° del eje, dentro de los 50 de semiángulo"
+        );
+    }
+
+    #[test]
+    fn what_is_behind_you_drops_out() {
+        assert!(
+            !at_origin_looking_north([0.0, 1.8, -10.0], false),
+            "justo a la espalda tiene que quedar fuera"
+        );
+        assert!(
+            !at_origin_looking_north([10.0, 1.8, 0.0], false),
+            "a 90°, de perfil, ya está fuera de un semiángulo de 50"
+        );
+    }
+
+    #[test]
+    fn the_cone_has_a_dead_band_so_turning_does_not_flicker() {
+        // A 60° del eje: fuera del cono de ENTRADA (50) pero dentro del de SALIDA (50 + 20).
+        // Sin esta banda, girar la cabeza cambiaría la cadencia de un par varias veces por segundo,
+        // que es exactamente lo que costó el arreglo de la histéresis del PVS.
+        let side = [
+            10.0 * 60f32.to_radians().sin(),
+            1.8,
+            10.0 * 60f32.to_radians().cos(),
+        ];
+        assert!(
+            !at_origin_looking_north(side, false),
+            "preparación: a 60° NO se entra al cono"
+        );
+        assert!(
+            at_origin_looking_north(side, true),
+            "pero quien ya estaba dentro aguanta el margen de histéresis"
+        );
+    }
+
+    #[test]
+    fn the_dead_band_does_not_make_attention_permanent() {
+        // La mitad que impide que el arreglo se coma la optimización: si «una vez mirado, mirado
+        // para siempre», el cono no recortaría nada nunca y pasaría en verde igual.
+        assert!(
+            !at_origin_looking_north([0.0, 1.8, -10.0], true),
+            "a la espalda del todo se sale aunque se estuviera dentro"
+        );
+    }
+
+    #[test]
+    fn the_cone_reads_geometry_and_nothing_else() {
+        // ADR-074. La función no recibe quién es la fuente —no hay parámetro que lo diga— y dos
+        // posiciones simétricas respecto al eje de mirada tienen que dar lo mismo. Si alguna vez
+        // alguien añade un parámetro de especie aquí, este test es el sitio donde se discute.
+        let left = [-6.0, 1.8, 10.0];
+        let right = [6.0, 1.8, 10.0];
+        assert_eq!(
+            at_origin_looking_north(left, false),
+            at_origin_looking_north(right, false),
+            "el cono es simétrico: sólo mira el ángulo, jamás qué es la fuente"
+        );
+    }
+
+    #[test]
+    fn far_and_behind_costs_half_cadence_and_not_a_quarter() {
+        // Las dos reglas que bajan cadencia —anillo exterior y cono— comparten escalonado. Que
+        // compongan a MEDIA y no a un cuarto depende de eso, y es la razón de que
+        // `half_cadence_round` exista como función en vez de estar copiada dos veces.
+        for round in 0..8u64 {
+            assert_eq!(
+                half_cadence_round(7, 11, round),
+                half_cadence_round(7, 11, round),
+                "aplicar la misma regla dos veces no puede recortar dos veces"
+            );
+        }
+        // Y reparte: la mitad de las rondas para un par, la otra mitad para el par de al lado.
+        let a: usize = (0..8).filter(|r| half_cadence_round(7, 11, *r)).count();
+        let b: usize = (0..8).filter(|r| half_cadence_round(7, 12, *r)).count();
+        assert_eq!(
+            (a, b),
+            (4, 4),
+            "media cadencia para los dos, en rondas opuestas"
+        );
+        assert!(
+            (0..8).all(|r| half_cadence_round(7, 11, r) != half_cadence_round(7, 12, r)),
+            "escalonados: la carga sale plana en vez de una ronda cara y otra vacía"
+        );
+    }
+
+    #[test]
+    fn the_cone_ships_disabled() {
+        // Entra apagado a propósito: el búfer de interpolación del cliente mide el ritmo GLOBAL y
+        // no por peer, y hasta que eso cambie mezclar 30 y 15 Hz CERCA produciría tirones. Ver el
+        // doc de `POSE_CONE_HALF_ANGLE_DEG`.
+        assert!(
+            !POSE_CONE_ENABLED,
+            "el cono no puede encenderse sin el retardo de interpolación por peer en Unity"
+        );
+        assert_eq!(
+            POSE_CONE_HALF_ANGLE_DEG, 180.0,
+            "180° = todo cuenta como delante = ni un byte de diferencia con hoy"
+        );
+    }
+}
+
 #[cfg(test)]
 mod spatial_index_tests {
     use super::*;
