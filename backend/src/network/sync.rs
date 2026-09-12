@@ -1239,6 +1239,96 @@ pub const HOST_POSE_BUDGET_KB_S: f32 = 192.0;
 /// cabe en `HOST_POSE_BUDGET_KB_S`, en silencio.
 pub const POSE_WIRE_BYTES_EST: f32 = 34.0;
 
+/// ADR-146 D6 — el gate de tramos entra APAGADO. Apagado, la velocidad viaja igual y el receptor
+/// extrapola igual, pero el anfitrión no omite ninguna pose: se mide el error de la predicción sin
+/// cambiar lo que se ve. Se enciende sólo con la medida de 16 instancias por humanos y criaturas.
+pub const TRAMO_GATE_ENABLED: bool = false;
+
+/// ADR-146 D2 — tope del estimador de velocidad, en m/s. Por encima de la carrera de STP
+/// (7,29 m/s, ADR-138) con margen: un desplazamiento que implique más no es movimiento sino un
+/// salto —teleport, desplazamiento de chunk, respawn— y reinicia la estimación a cero.
+pub const TRAMO_MAX_SPEED_M_S: f32 = 12.0;
+
+/// Peso de la muestra nueva en la media móvil de la velocidad.
+const TRAMO_VEL_SMOOTHING: f32 = 0.5;
+
+/// Un origen cuya posición no cambia en este tiempo está quieto: su velocidad pasa a cero. Cubre
+/// el peor hueco entre poses de un jugador a 30 Hz con jitter, y no tanto como para que una
+/// criatura parada siga «andando» en el receptor.
+const TRAMO_STILL_AFTER: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// ADR-146 D2 — la velocidad estimada de un origen: la última posición distinta que se le vio,
+/// cuándo, y la velocidad suavizada hasta entonces.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PoseVelocity {
+    pub pos: [f32; 3],
+    pub at: std::time::Instant,
+    pub vel: [f32; 3],
+}
+
+/// ADR-146 D2 — estima la velocidad de un origen a partir de su posición en `now`. Devuelve la
+/// estimación nueva y si hubo SALTO (desplazamiento por encima de `TRAMO_MAX_SPEED_M_S`).
+///
+/// No recibe nada que diga qué es la fuente, y no puede: la velocidad sale de la posición y de
+/// nada más (ADR-146, enmienda a ADR-074 enm. 4 D5).
+pub fn estimate_pose_velocity(
+    prev: Option<&PoseVelocity>,
+    pos: [f32; 3],
+    now: std::time::Instant,
+) -> (PoseVelocity, bool) {
+    let Some(prev) = prev else {
+        return (
+            PoseVelocity {
+                pos,
+                at: now,
+                vel: [0.0; 3],
+            },
+            false,
+        );
+    };
+    let elapsed = now.saturating_duration_since(prev.at);
+    if pos == prev.pos {
+        // Sin muestra nueva: se conserva la velocidad hasta que el silencio dice «quieto». `at` no
+        // avanza, para que la siguiente muestra distinta mida su desplazamiento contra el tiempo
+        // real transcurrido y no contra una ronda.
+        let vel = if elapsed > TRAMO_STILL_AFTER {
+            [0.0; 3]
+        } else {
+            prev.vel
+        };
+        return (PoseVelocity { vel, ..*prev }, false);
+    }
+    let dt = elapsed.as_secs_f32();
+    if dt < 1e-3 {
+        // Dos posiciones en el mismo instante no definen velocidad; se ignora la muestra.
+        return (*prev, false);
+    }
+    let inst = [
+        (pos[0] - prev.pos[0]) / dt,
+        (pos[1] - prev.pos[1]) / dt,
+        (pos[2] - prev.pos[2]) / dt,
+    ];
+    let speed_sq = inst[0] * inst[0] + inst[1] * inst[1] + inst[2] * inst[2];
+    if speed_sq > TRAMO_MAX_SPEED_M_S * TRAMO_MAX_SPEED_M_S {
+        return (
+            PoseVelocity {
+                pos,
+                at: now,
+                vel: [0.0; 3],
+            },
+            true,
+        );
+    }
+    // Media convexa de dos vectores por debajo del tope: el resultado tampoco lo pasa.
+    let a = TRAMO_VEL_SMOOTHING;
+    let vel = [
+        prev.vel[0] + (inst[0] - prev.vel[0]) * a,
+        prev.vel[1] + (inst[1] - prev.vel[1]) * a,
+        prev.vel[2] + (inst[2] - prev.vel[2]) * a,
+    ];
+    (PoseVelocity { pos, at: now, vel }, false)
+}
+
 /// Dentro de esta distancia el aforo NO recorta: un tiroteo cuerpo a cuerpo en una sala llena
 /// sigue a la cadencia de la curva. Es lo que Joel pidió: «si están a 2 metros de ti se vean a
 /// 30 Hz».
@@ -1709,7 +1799,19 @@ fn pvs_allows(a: Option<&PvsKey>, b: Option<&PvsKey>, was_relaying: bool) -> boo
 
 /// Devuelve cuántas poses se pusieron en camino esta ronda (pares que emitieron): el arnés de
 /// carga lo usa para sacar el Hz medio por par; el bucle del juego lo ignora.
-pub async fn broadcast_peer_poses(net: &mut NetworkManager, mut pvs: Option<PvsCtx<'_>>) -> usize {
+pub async fn broadcast_peer_poses(net: &mut NetworkManager, pvs: Option<PvsCtx<'_>>) -> usize {
+    broadcast_peer_poses_at(net, pvs, std::time::Instant::now()).await
+}
+
+/// ADR-146 — lo mismo que `broadcast_peer_poses`, con el instante de la ronda INYECTADO. El juego
+/// pasa el reloj real; un arnés que recorre sus rondas en milisegundos pasa uno sintético, porque
+/// una estimación de velocidad por tiempo no se puede medir en algo que corre más rápido que el
+/// reloj (la misma trampa que `load_tests.rs` documenta para los rosters).
+pub async fn broadcast_peer_poses_at(
+    net: &mut NetworkManager,
+    mut pvs: Option<PvsCtx<'_>>,
+    now: std::time::Instant,
+) -> usize {
     if net.peers.len() < 2 {
         return 0;
     }
@@ -1749,6 +1851,16 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager, mut pvs: Option<PvsC
     // a nadie se tiraban enteras. Con 24 criaturas y una persona dentro (medido el 10-09) eso eran
     // cientos de `String` por segundo asignadas para nada.
     let poses: Vec<(PeerId, [f32; 3])> = net.peers.values().map(|p| (p.id, p.position)).collect();
+
+    // ADR-146 D2 — la velocidad de cada ORIGEN, una vez por ronda y antes de todo filtro: es un
+    // hecho del origen, no de quién lo mira. Reemplazo entero sobre los presentes, así que un peer
+    // que se fue se lleva la suya. El salto (teleport) lo consumirá el gate de tramos (commit 2b).
+    let mut next_velocity = std::collections::HashMap::with_capacity(poses.len());
+    for (id, pos) in &poses {
+        let (estimate, _jumped) = estimate_pose_velocity(net.pose_velocity.get(id), *pos, now);
+        next_velocity.insert(*id, estimate);
+    }
+    net.pose_velocity = next_velocity;
 
     // E1 (ADR-074 fase 1): decidir ANTES de enviar qué pares siguen dentro del AOI, y dejar el
     // estado de histéresis ya actualizado. Se hace en un paso aparte porque el envío toma
@@ -1998,8 +2110,13 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager, mut pvs: Option<PvsC
             fire_seq: p.fire_seq,
             melee_seq: p.melee_seq,
             vocal_seq: p.vocal_seq,
-            // ADR-146: a cero hasta que el estimador por origen exista (commit 2).
-            vel_cms: [0; 3],
+            // ADR-146 D1/D2: la velocidad estimada por el anfitrión, igual para todo origen.
+            vel_cms: PoseWire::quantize_vel(
+                net.pose_velocity
+                    .get(src_id)
+                    .map(|v| v.vel)
+                    .unwrap_or([0.0; 3]),
+            ),
             cosmetics: None,
         };
         let src_position = p.position;
@@ -5412,5 +5529,105 @@ mod pose_batch_size_tests {
             bytes <= SAFE_DATAGRAM_BYTES,
             "{MAX_POSES_PER_BATCH} poses = {bytes} B > {SAFE_DATAGRAM_BYTES}"
         );
+    }
+}
+
+/// ADR-146 D2 — el estimador de velocidad por origen. Es una función pura de (estimación previa,
+/// posición, instante): no tiene por dónde enterarse de si el origen es una criatura, y estos tests
+/// fijan su comportamiento sin reloj real.
+#[cfg(test)]
+mod tramo_velocity_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    const ROUND: Duration = Duration::from_millis(33);
+
+    fn speed(v: [f32; 3]) -> f32 {
+        (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
+    }
+
+    #[test]
+    fn the_first_sample_has_no_velocity() {
+        let (est, jumped) = estimate_pose_velocity(None, [1.0, 1.8, 2.0], Instant::now());
+        assert_eq!(est.vel, [0.0; 3]);
+        assert!(!jumped);
+    }
+
+    #[test]
+    fn a_straight_walk_converges_to_its_speed() {
+        let t0 = Instant::now();
+        let mut est = estimate_pose_velocity(None, [0.0, 1.8, 0.0], t0).0;
+        // 3 m/s en +X durante un segundo de rondas a 30 Hz.
+        for i in 1..=30u32 {
+            let t = t0 + ROUND * i;
+            let x = 3.0 * (ROUND * i).as_secs_f32();
+            est = estimate_pose_velocity(Some(&est), [x, 1.8, 0.0], t).0;
+        }
+        assert!((est.vel[0] - 3.0).abs() < 0.05, "vel={:?}", est.vel);
+        assert!(est.vel[1].abs() < 1e-3 && est.vel[2].abs() < 1e-3);
+    }
+
+    #[test]
+    fn a_source_that_stops_sending_new_positions_goes_still() {
+        let t0 = Instant::now();
+        let a = estimate_pose_velocity(None, [0.0, 1.8, 0.0], t0).0;
+        let b = estimate_pose_velocity(Some(&a), [0.1, 1.8, 0.0], t0 + ROUND).0;
+        assert!(speed(b.vel) > 0.0);
+        // Misma posición dentro del margen: conserva la velocidad (un hueco entre poses no es parar).
+        let c = estimate_pose_velocity(Some(&b), [0.1, 1.8, 0.0], t0 + ROUND * 3).0;
+        assert_eq!(c.vel, b.vel);
+        // Pasado el margen: quieto.
+        let d = estimate_pose_velocity(
+            Some(&c),
+            [0.1, 1.8, 0.0],
+            t0 + ROUND + Duration::from_millis(250),
+        )
+        .0;
+        assert_eq!(d.vel, [0.0; 3]);
+    }
+
+    #[test]
+    fn a_teleport_is_a_jump_and_resets_to_zero() {
+        let t0 = Instant::now();
+        let a = estimate_pose_velocity(None, [0.0, 1.8, 0.0], t0).0;
+        let b = estimate_pose_velocity(Some(&a), [0.1, 1.8, 0.0], t0 + ROUND).0;
+        let (c, jumped) = estimate_pose_velocity(Some(&b), [700.0, 1.8, 0.0], t0 + ROUND * 2);
+        assert!(jumped);
+        assert_eq!(c.vel, [0.0; 3]);
+        assert_eq!(c.pos, [700.0, 1.8, 0.0]);
+        // Tras el salto se vuelve a estimar desde la posición nueva, no desde la vieja.
+        let d = estimate_pose_velocity(Some(&c), [700.1, 1.8, 0.0], t0 + ROUND * 3).0;
+        assert!(speed(d.vel) < TRAMO_MAX_SPEED_M_S && speed(d.vel) > 0.0);
+    }
+
+    #[test]
+    fn the_estimate_never_exceeds_the_cap() {
+        let t0 = Instant::now();
+        let mut est = estimate_pose_velocity(None, [0.0, 1.8, 0.0], t0).0;
+        // Justo por debajo del tope, ronda tras ronda: la media convexa no lo puede pasar.
+        let step = (TRAMO_MAX_SPEED_M_S - 0.01) * ROUND.as_secs_f32();
+        for i in 1..=60u32 {
+            est = estimate_pose_velocity(Some(&est), [step * i as f32, 1.8, 0.0], t0 + ROUND * i).0;
+            assert!(
+                speed(est.vel) <= TRAMO_MAX_SPEED_M_S,
+                "ronda {i}: {:?}",
+                est.vel
+            );
+        }
+    }
+
+    #[test]
+    fn two_positions_in_the_same_instant_are_ignored() {
+        let t0 = Instant::now();
+        let a = estimate_pose_velocity(None, [0.0, 1.8, 0.0], t0).0;
+        let (b, jumped) = estimate_pose_velocity(Some(&a), [5.0, 1.8, 0.0], t0);
+        assert_eq!(b, a);
+        assert!(!jumped);
+    }
+
+    /// D6: mientras no haya medida, el gate sigue apagado. Encenderlo es una decisión con número.
+    #[test]
+    fn the_tramo_gate_ships_off() {
+        assert!(!TRAMO_GATE_ENABLED);
     }
 }

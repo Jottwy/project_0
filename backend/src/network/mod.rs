@@ -295,6 +295,11 @@ pub struct NetworkManager {
     /// relayado, para rellenar las poses delgadas. Vive aparte de `peers` porque un joiner recibe
     /// poses de orígenes que todavía no tiene registrados como peer (el roster llega después).
     pub relay_cosmetics: std::collections::HashMap<PeerId, crate::network::protocol::PoseCosmetics>,
+    /// ADR-146 D2 — en el ANFITRIÓN: la velocidad estimada de cada ORIGEN a partir de sus propias
+    /// posiciones, para que viaje en `PoseWire::vel_cms`. Por origen y no por par: es un hecho del
+    /// origen, no de quién lo mira. Reemplazo entero por ronda sobre los peers presentes, así que un
+    /// peer que se va se lleva la suya sin purga aparte.
+    pub pose_velocity: std::collections::HashMap<PeerId, crate::network::sync::PoseVelocity>,
     /// ADR-074 enm. 4 — factor de aforo por DESTINATARIO (1 = la curva tal cual, menos = todos
     /// sus orígenes salvo los pegados bajan de cadencia en proporción). Se mueve despacio hacia su
     /// objetivo, ronda a ronda, para que entrar o salir gente no dé un salto de cadencia.
@@ -686,6 +691,7 @@ impl NetworkManager {
             pose_cone_pairs: std::collections::HashSet::new(),
             pose_cosmetics_sent: std::collections::HashMap::new(),
             relay_cosmetics: std::collections::HashMap::new(),
+            pose_velocity: std::collections::HashMap::new(),
             pose_budget_factor: std::collections::HashMap::new(),
             pending_full_sync: std::collections::HashMap::new(),
             pose_relay_round: 0,
