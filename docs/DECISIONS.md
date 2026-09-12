@@ -16924,3 +16924,98 @@ comprueba en Play con dos instancias. La potencia y el suelo son un número cada
 
 ---
 
+## ADR-144 — La pose delgada: lo que cambia cada ronda viaja cada ronda, lo cosmético sólo cuando cambia (2026-09-12) — PROPUESTA (Joel: «sigue con P2», dieta de la pose)
+
+### El problema, medido
+
+Tras ADR-137 (posicional) y ADR-143 (`animation` a un byte), un `PlayerUpdate` mide **72 B**
+(75 dentro de un lote, con la etiqueta de variante). De esos, **49 B son campos que NO cambian de
+una ronda a la siguiente**: `equipment` `[i32; 4]` (12), `carry_def` (5), `held_item` (3),
+`species`, `carry_count`, `vocal_kind` y cuatro `bool` sueltos (`crouch`, `dead`, `revealed`,
+`light_on`, 1 B cada uno). Se reenvían a 30 Hz a cada destinatario porque «no hay delta
+compression en ninguna parte» (ADR-137, «lo que este ADR no arregla»).
+
+ADR-143 dejó escrito que arañar bytes en sala sube el aforo por la RAÍZ. Es cierto para un 12 %.
+Aquí no es un 12 %: **72 → 23 B en 29 de cada 30 rondas es ×3 en el flujo de poses**, y el aforo
+en sala sube ×1,7. Medido con `rmp_serde` posicional sobre los mismos valores del test
+`player_update_named_vs_positional_size`:
+
+| | B por pose |
+|---|---|
+| `PlayerUpdate` hoy | 72 |
+| Pose DELGADA (cinemática + contadores) | **23** |
+| Pose COMPLETA (delgada + cosméticos) | 45 |
+
+### Decisión
+
+**D1 — Dos formas de pose en el lote, no dos variantes del enum.** `PlayerUpdateBatch` pasa a
+llevar `Vec<PoseWire>`, donde `PoseWire` es una struct con los campos cinemáticos SIEMPRE y los
+cosméticos como `Option<PoseCosmetics>` (un byte `nil` cuando no va). Posicional, como todo desde
+ADR-137. `PlayerUpdate` (la variante que el EMISOR manda al anfitrión) no cambia: la dieta es del
+RELAY, que es donde se multiplica por N.
+
+**D2 — Cuantización de lo cinemático, idéntica por construcción a la vista.** `position` `[f32; 3]`
+(16 B) → `[i16; 3]` en **centímetros relativos a la posición del destinatario** (10 B): el lote es
+por destinatario desde ADR-140 D4, el AOI acota a 120 m y `i16` en cm llega a ±327 m; el origen
+viaja UNA vez en el lote como `[i32; 3]` en cm. `rotation` `f32` (5 B) → `u16` (3 B), 0,0055° por
+paso. Un centímetro y cinco milésimas de grado están por debajo de lo que el proxy interpola.
+`pitch` sigue `i8`. Los cuatro `bool` pasan a **bits de un `flags: u8`**.
+
+**D3 — Lo cosmético viaja cuando cambia, y una vez por segundo aunque no cambie.** El anfitrión
+guarda por par `(src, dest)` el hash de los cosméticos que envió por última vez, al lado de
+`aoi_pose_pairs` (mismo ciclo de vida: reemplazo entero por ronda, así un par que sale del AOI se
+lleva su marca). Si el hash actual difiere, o el par es nuevo, o han pasado 30 rondas desde la
+última completa, va la pose completa; si no, la delgada. La completa periódica es la reparación
+contra la pérdida del datagrama que llevaba el cambio: sin ella, un `held_item` perdido se quedaría
+mal hasta el siguiente cambio.
+
+**D4 — El receptor aplica lo que viene y conserva lo que no.** En `mod.rs` (donde el lote se
+desdobla en un `PlayerUpdate` por origen) la pose delgada se completa con los cosméticos que ese
+`PeerConnection` ya tiene, y el resto del camino (`handle_packet`, `update_player_state`,
+`build_world_state`, IPC a Unity) no cambia una línea. **Un origen del que nunca llegó una completa
+se aplica con cosméticos por defecto**, que es exactamente lo que hoy hace un peer viejo ante un
+campo que no conoce (`#[serde(default)]`): la primera completa llega en la misma ronda por D3.
+
+**D5 — Bump de wire 64 → 65 en las dos puntas** (`ipc/server.rs`, `WireSchema.cs`) aunque el IPC
+no cambie: es el único gate que impide que un peer con el lote viejo hable con uno nuevo, y el
+patrón de la casa es bumpearlo por cualquier cambio del P2P (ADR-137 D2). **Ningún cambio en C#
+más allá de la constante.**
+
+### Lo que se gana, con su número
+
+- Pose media en el relay: `(29 × 23 + 45) / 30 ≈ 24 B` frente a 72: **×3,0** en bytes de poses.
+- Compuesto con ADR-074 enm. 3 (×1,4 pegados, ×2,5 en nave de 100 m): pegados **×4,2**, nave
+  **×7,5**. Con 256 KB/s de subida: de ~12 juntos a **~25 juntos**; en nave de 50 m, de ~14 a
+  **~45**.
+- Se acaba el `clone()` de los `[i32; 4]` por destinatario en 29 de cada 30 rondas.
+
+### Lo que NO se gana, y conviene tenerlo escrito
+
+- Los contadores (`hit_seq`, `fire_seq`, `melee_seq`, `vocal_seq`) y `buttons` siguen en la delgada:
+  son flancos que el receptor detecta por diferencia y perderlos en un datagrama ya es hoy un
+  riesgo asumido; meterlos en la completa los dejaría a 1 Hz.
+- Sigue siendo N² en sala. La forma de la curva la puso la enmienda 3; esto baja la constante.
+- El coste de CPU sube un hash por par y ronda (FNV sobre ~25 B): con 50 juntos, 2 450 hashes a
+  30 Hz, del orden de 0,1 ms.
+
+### Riesgos
+
+- **Regla dura 7 y el espejo**: `WireSchema.Expected` y `WIRE_SCHEMA_VERSION` en el MISMO commit.
+- **Relativo al destinatario**: si el anfitrión no conoce la posición del destinatario (recién
+  entrado), el origen del lote es (0,0,0) y un origen a más de 327 m no cabe en `i16`. Se satura
+  con `clamp` y se registra; el AOI hace que no pase salvo en el primer instante.
+- **Determinismo (regla 13)**: el hash por par vive en un `HashMap` que sólo se consulta, nunca se
+  itera para emitir; el orden de salida sigue siendo el de `poses` (Vec).
+- **El test de round-trip** de `PlayerUpdateBatch` se reescribe con valores no-default y
+  distintos entre sí, delgada y completa.
+
+### Orden de implementación (commits separados)
+
+1. `PoseWire`/`PoseCosmetics` + cuantización + round-trip (protocol.rs).
+2. Emisión con hash por par y reparación a 30 rondas (sync.rs) + arnés: bytes por pose antes/después.
+3. Recepción (mod.rs) + test «una delgada tras una completa conserva los cosméticos» y «una
+   delgada sin completa previa aplica los defaults».
+4. Bump 65 en las dos puntas.
+
+---
+
