@@ -17,11 +17,11 @@ use crate::world::World;
 
 use log::{info, warn};
 
-use super::protocol::PoseWire;
 use super::protocol::{
     encode_packet, AnchorInfo, ChunkSyncData, EntitySyncData, ItemSyncData, PacketHeader,
     PacketPayload, PeerInfo, SessionConfig, StabilizerInfo,
 };
+use super::protocol::{PoseWire, RosterKind};
 use super::roster;
 use super::NetworkManager;
 use super::PeerId;
@@ -2171,6 +2171,134 @@ async fn send_page_to(
     }
 }
 
+/// ADR-074 fase 2 — **radio del scope**, en celdas (chunks) alrededor del destinatario.
+///
+/// 5×5 (±2) y no 3×3: el cliente sólo renderiza 3×3 (`ChunkStreamer.viewRadius = 1`), así que el
+/// anillo extra es margen para que nada aparezca de golpe al cruzar una frontera. Generoso a
+/// propósito — el coste de una celda de más es una página, y el de una de menos es un objeto que
+/// no está.
+pub const ROSTER_SCOPE_RADIUS_CELLS: i32 = 2;
+
+/// ADR-074 fase 2 — celdas en scope de un destinatario: las (2·r+1)² alrededor de la suya.
+///
+/// Orden determinista por construcción (dos bucles anidados), que es lo que exige la regla 13 para
+/// algo que acaba en el cable.
+pub fn roster_scope_cells(dest_pos: [f32; 3], radius: i32) -> Vec<[i32; 2]> {
+    let (cx, cz) = world_to_chunk(Vec3::new(dest_pos[0], dest_pos[1], dest_pos[2]));
+    let mut cells = Vec::with_capacity(((2 * radius + 1) * (2 * radius + 1)) as usize);
+    for dx in -radius..=radius {
+        for dz in -radius..=radius {
+            cells.push([cx + dx, cz + dz]);
+        }
+    }
+    cells
+}
+
+/// ADR-074 fase 2 — la celda de una entrada de roster: la misma que la del mundo (`world_to_chunk`),
+/// no una retícula nueva. Reusarla es lo que hace que el scope coincida con lo que el cliente carga.
+fn roster_cell_of(position: [f32; 3]) -> [i32; 2] {
+    let (cx, cz) = world_to_chunk(Vec3::new(position[0], position[1], position[2]));
+    [cx, cz]
+}
+
+/// ADR-074 fase 2 — emisor común de los cinco rosters, troceado POR CELDA.
+///
+/// Los cinco se diferencian en tres cosas: de qué lista salen, cómo se saca la posición de una
+/// entrada y qué variante de paquete la lleva. Todo lo demás —agrupar, paginar, elegir destinos,
+/// ceder entre páginas y cerrar la ronda— es idéntico, y por eso vive aquí una sola vez: una regla
+/// copiada cinco veces es una regla que se desvía en cuatro.
+///
+/// **El cierre sale SÓLO detrás de las páginas que salieron** (corrección de la enmienda del
+/// 2026-08-15): si el gate de ADR-071 cortó la ronda, esta función ni se llama. Un cierre suelto
+/// vaciaría en el cliente las celdas que sólo estaban calladas.
+async fn broadcast_roster_by_cell<T, C, M>(
+    net: &mut NetworkManager,
+    kind: RosterKind,
+    entries: &[T],
+    cell_of: C,
+    make_page: M,
+    open: bool,
+    fresh: &[PeerId],
+) where
+    T: serde::Serialize + Clone,
+    C: Fn(&T) -> [i32; 2],
+    M: Fn(Vec<T>, u32, u16, u16, [i32; 2]) -> PacketPayload,
+{
+    let generation = net.timestamp();
+
+    // 1. Agrupar por celda. `BTreeMap` y no `HashMap`: lo que sale al cable no puede depender de
+    //    cómo itere un mapa — regla dura 13.
+    let mut by_cell: std::collections::BTreeMap<[i32; 2], Vec<T>> =
+        std::collections::BTreeMap::new();
+    for entry in entries {
+        by_cell
+            .entry(cell_of(entry))
+            .or_default()
+            .push(entry.clone());
+    }
+
+    // 2. Serializar UNA vez por página y reutilizar los bytes con todos los destinatarios (C2).
+    let mut pages_by_cell: std::collections::BTreeMap<[i32; 2], Vec<Vec<u8>>> =
+        std::collections::BTreeMap::new();
+    for (cell, items) in &by_cell {
+        let pages = roster::paginate(items, roster::ROSTER_PAGE_BUDGET_BYTES);
+        let page_count = pages.len() as u16;
+        let encoded = pages
+            .into_iter()
+            .enumerate()
+            .map(|(index, page)| {
+                net.encode_unreliable(&make_page(
+                    page,
+                    generation,
+                    index as u16,
+                    page_count,
+                    *cell,
+                ))
+            })
+            .collect();
+        pages_by_cell.insert(*cell, encoded);
+    }
+
+    // 3. A quién le toca: a todos si la puerta se abrió, sólo a los recién llegados si no
+    //    (ADR-141). Se resuelve antes del bucle porque dentro ya no se puede prestar `net`.
+    let dests: Vec<PeerId> = if open {
+        net.broadcast_destinations()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect()
+    } else {
+        fresh.to_vec()
+    };
+
+    for dest in dests {
+        // ADR-074 enm. 5, entrega 1 de 2: el scope de esta entrega es TODAS las celdas con
+        // contenido, así que cada peer sigue recibiendo exactamente lo que recibía antes. El
+        // mecanismo —celdas, cierre de ronda y reensamblado por celda— entra vivo y probado sin
+        // que cambie lo que llega; el scope de verdad (5×5) es la entrega siguiente.
+        let scope: Vec<[i32; 2]> = pages_by_cell.keys().copied().collect();
+        for cell in &scope {
+            let Some(pages) = pages_by_cell.get(cell) else {
+                continue; // celda en scope sin contenido: el cierre dirá que está vacía
+            };
+            for data in pages {
+                net.send_unreliable_bytes_to(dest, data).await;
+                // ADR-060 (d): ceder entre páginas. Sin esto la ronda sale como una ráfaga
+                // ininterrumpida y desborda el buffer de recepción del socket del receptor.
+                tokio::task::yield_now().await;
+            }
+        }
+        net.send_unreliable_to(
+            dest,
+            &PacketPayload::RosterScopeEnd {
+                kind,
+                generation,
+                cells: scope,
+            },
+        )
+        .await;
+    }
+}
+
 pub async fn broadcast_stp_items(net: &mut NetworkManager) {
     if net.peers.is_empty() {
         return;
@@ -2185,23 +2313,23 @@ pub async fn broadcast_stp_items(net: &mut NetworkManager) {
     if !open && fresh.is_empty() {
         return;
     }
-    let generation = net.timestamp();
-    let pages = roster::paginate(&net.stp_items, roster::ROSTER_PAGE_BUDGET_BYTES);
-    let page_count = pages.len() as u16;
-    for (index, items) in pages.into_iter().enumerate() {
-        let payload = PacketPayload::StpItemList {
+    let entries = net.stp_items.clone();
+    broadcast_roster_by_cell(
+        net,
+        RosterKind::ITEMS,
+        &entries,
+        |e| roster_cell_of(e.position),
+        |items, generation, page, page_count, cell| PacketPayload::StpItemList {
             items,
             generation,
-            page: index as u16,
+            page,
             page_count,
-        };
-        send_page_to(net, &payload, open, &fresh).await;
-        // ADR-060 (d): ceder entre páginas. Sin esto la ronda entera sale como una ráfaga
-        // ininterrumpida y desborda el buffer de recepción del socket del receptor (~64 KB por
-        // defecto): MEDIDO, a partir de ~56 páginas empezaba a perderse al menos una por ronda,
-        // y con reensamblado todo-o-nada eso significa que el roster no converge NUNCA.
-        tokio::task::yield_now().await;
-    }
+            cell,
+        },
+        open,
+        &fresh,
+    )
+    .await;
 }
 
 /// ADR-028 Fase E: host-as-server relay of the corpse roster â€” the host broadcasts its
@@ -2222,23 +2350,22 @@ pub async fn broadcast_corpses(net: &mut NetworkManager, world: &World) {
     if !open && fresh.is_empty() {
         return;
     }
-    let generation = net.timestamp();
-    let pages = roster::paginate(&all, roster::ROSTER_PAGE_BUDGET_BYTES);
-    let page_count = pages.len() as u16;
-    for (index, corpses) in pages.into_iter().enumerate() {
-        let payload = PacketPayload::CorpseList {
+    broadcast_roster_by_cell(
+        net,
+        RosterKind::CORPSES,
+        &all,
+        |c| roster_cell_of([c.position.x, c.position.y, c.position.z]),
+        |corpses, generation, page, page_count, cell| PacketPayload::CorpseList {
             corpses,
             generation,
-            page: index as u16,
+            page,
             page_count,
-        };
-        send_page_to(net, &payload, open, &fresh).await;
-        // ADR-060 (d): ceder entre páginas. Sin esto la ronda entera sale como una ráfaga
-        // ininterrumpida y desborda el buffer de recepción del socket del receptor (~64 KB por
-        // defecto): MEDIDO, a partir de ~56 páginas empezaba a perderse al menos una por ronda,
-        // y con reensamblado todo-o-nada eso significa que el roster no converge NUNCA.
-        tokio::task::yield_now().await;
-    }
+            cell,
+        },
+        open,
+        &fresh,
+    )
+    .await;
 }
 
 /// TAREA 2 (2026-08-31) — parte los cadáveres que no caben en un datagrama en varias ENTRADAS del
@@ -2345,23 +2472,23 @@ pub async fn broadcast_stp_buildings(net: &mut NetworkManager) {
     if !open && fresh.is_empty() {
         return;
     }
-    let generation = net.timestamp();
-    let pages = roster::paginate(&net.stp_buildings, roster::ROSTER_PAGE_BUDGET_BYTES);
-    let page_count = pages.len() as u16;
-    for (index, buildings) in pages.into_iter().enumerate() {
-        let payload = PacketPayload::StpBuildingList {
+    let entries = net.stp_buildings.clone();
+    broadcast_roster_by_cell(
+        net,
+        RosterKind::BUILDINGS,
+        &entries,
+        |e| roster_cell_of(e.position),
+        |buildings, generation, page, page_count, cell| PacketPayload::StpBuildingList {
             buildings,
             generation,
-            page: index as u16,
+            page,
             page_count,
-        };
-        send_page_to(net, &payload, open, &fresh).await;
-        // ADR-060 (d): ceder entre páginas. Sin esto la ronda entera sale como una ráfaga
-        // ininterrumpida y desborda el buffer de recepción del socket del receptor (~64 KB por
-        // defecto): MEDIDO, a partir de ~56 páginas empezaba a perderse al menos una por ronda,
-        // y con reensamblado todo-o-nada eso significa que el roster no converge NUNCA.
-        tokio::task::yield_now().await;
-    }
+            cell,
+        },
+        open,
+        &fresh,
+    )
+    .await;
 }
 
 /// Host-as-server relay of the STP carryable roster: the host broadcasts its full
@@ -2376,23 +2503,23 @@ pub async fn broadcast_stp_carryables(net: &mut NetworkManager) {
     if !open && fresh.is_empty() {
         return;
     }
-    let generation = net.timestamp();
-    let pages = roster::paginate(&net.stp_carryables, roster::ROSTER_PAGE_BUDGET_BYTES);
-    let page_count = pages.len() as u16;
-    for (index, carryables) in pages.into_iter().enumerate() {
-        let payload = PacketPayload::StpCarryableList {
+    let entries = net.stp_carryables.clone();
+    broadcast_roster_by_cell(
+        net,
+        RosterKind::CARRYABLES,
+        &entries,
+        |e| roster_cell_of(e.position),
+        |carryables, generation, page, page_count, cell| PacketPayload::StpCarryableList {
             carryables,
             generation,
-            page: index as u16,
+            page,
             page_count,
-        };
-        send_page_to(net, &payload, open, &fresh).await;
-        // ADR-060 (d): ceder entre páginas. Sin esto la ronda entera sale como una ráfaga
-        // ininterrumpida y desborda el buffer de recepción del socket del receptor (~64 KB por
-        // defecto): MEDIDO, a partir de ~56 páginas empezaba a perderse al menos una por ronda,
-        // y con reensamblado todo-o-nada eso significa que el roster no converge NUNCA.
-        tokio::task::yield_now().await;
-    }
+            cell,
+        },
+        open,
+        &fresh,
+    )
+    .await;
 }
 
 /// Host-as-server relay of the STP harvestable health roster: the host broadcasts its full
@@ -2407,23 +2534,23 @@ pub async fn broadcast_stp_harvestables(net: &mut NetworkManager) {
     if !open && fresh.is_empty() {
         return;
     }
-    let generation = net.timestamp();
-    let pages = roster::paginate(&net.stp_harvestables, roster::ROSTER_PAGE_BUDGET_BYTES);
-    let page_count = pages.len() as u16;
-    for (index, harvestables) in pages.into_iter().enumerate() {
-        let payload = PacketPayload::StpHarvestableList {
+    let entries = net.stp_harvestables.clone();
+    broadcast_roster_by_cell(
+        net,
+        RosterKind::HARVESTABLES,
+        &entries,
+        |e| roster_cell_of(e.position),
+        |harvestables, generation, page, page_count, cell| PacketPayload::StpHarvestableList {
             harvestables,
             generation,
-            page: index as u16,
+            page,
             page_count,
-        };
-        send_page_to(net, &payload, open, &fresh).await;
-        // ADR-060 (d): ceder entre páginas. Sin esto la ronda entera sale como una ráfaga
-        // ininterrumpida y desborda el buffer de recepción del socket del receptor (~64 KB por
-        // defecto): MEDIDO, a partir de ~56 páginas empezaba a perderse al menos una por ronda,
-        // y con reensamblado todo-o-nada eso significa que el roster no converge NUNCA.
-        tokio::task::yield_now().await;
-    }
+            cell,
+        },
+        open,
+        &fresh,
+    )
+    .await;
 }
 
 /// Send nearby chunk states to all peers (for chunks the local player owns).
@@ -3349,6 +3476,47 @@ mod chunk_broadcast_tests {
     #[test]
     fn the_two_directions_of_a_pair_do_not_share_a_phase() {
         assert_ne!(pose_pair_phase(1, 2), pose_pair_phase(2, 1));
+    }
+
+    /// ADR-074 fase 2 — el scope son las 25 celdas alrededor de la del destinatario, centradas en
+    /// ella y en orden determinista. Si alguien cambia el radio, esta cuenta lo dice.
+    #[test]
+    fn the_scope_is_the_five_by_five_around_the_destination() {
+        let centre = world_to_chunk(Vec3::new(137.0, 1.8, -42.0));
+        let cells = roster_scope_cells([137.0, 1.8, -42.0], ROSTER_SCOPE_RADIUS_CELLS);
+        let side = (2 * ROSTER_SCOPE_RADIUS_CELLS + 1) as usize;
+        assert_eq!(cells.len(), side * side, "scope de {side}×{side}");
+        assert!(
+            cells.contains(&[centre.0, centre.1]),
+            "la celda propia está dentro"
+        );
+        assert!(
+            cells.contains(&[
+                centre.0 - ROSTER_SCOPE_RADIUS_CELLS,
+                centre.1 + ROSTER_SCOPE_RADIUS_CELLS
+            ]),
+            "y las esquinas también"
+        );
+        assert!(
+            !cells.contains(&[centre.0 + ROSTER_SCOPE_RADIUS_CELLS + 1, centre.1]),
+            "una celda más allá del radio NO entra"
+        );
+        // Determinista: dos llamadas dan exactamente la misma secuencia (regla dura 13).
+        assert_eq!(
+            cells,
+            roster_scope_cells([137.0, 1.8, -42.0], ROSTER_SCOPE_RADIUS_CELLS)
+        );
+    }
+
+    /// ADR-074 fase 2 — la celda de una entrada es la MISMA que la del mundo. Si alguien inventara
+    /// una retícula propia para los rosters, el scope dejaría de coincidir con lo que el cliente
+    /// carga y aparecerían objetos sin chunk donde ponerlos.
+    #[test]
+    fn a_roster_entry_lives_in_the_same_cell_as_the_world() {
+        for p in [[0.0, 1.8, 0.0], [137.0, 1.8, -42.0], [-0.1, 0.0, -0.1]] {
+            let (cx, cz) = world_to_chunk(Vec3::new(p[0], p[1], p[2]));
+            assert_eq!(roster_cell_of(p), [cx, cz]);
+        }
     }
 
     /// ADR-074 enm. 4 — el aforo: 1 mientras la demanda cabe, y la proporción cuando no.
@@ -4726,12 +4894,14 @@ mod uplink_probe {
                 generation: g,
                 page: 0,
                 page_count: 1,
+                cell: [0, 0],
             });
         let (i_pages, i_bytes) = roster_round_wire(&items, |p| PacketPayload::StpItemList {
             items: p,
             generation: g,
             page: 0,
             page_count: 1,
+            cell: [0, 0],
         });
         let (c_pages, c_bytes) =
             roster_round_wire(&carryables, |p| PacketPayload::StpCarryableList {
@@ -4739,6 +4909,7 @@ mod uplink_probe {
                 generation: g,
                 page: 0,
                 page_count: 1,
+                cell: [0, 0],
             });
         let (h_pages, h_bytes) =
             roster_round_wire(&harvestables, |p| PacketPayload::StpHarvestableList {
@@ -4746,6 +4917,7 @@ mod uplink_probe {
                 generation: g,
                 page: 0,
                 page_count: 1,
+                cell: [0, 0],
             });
         let round_pages = b_pages + i_pages + c_pages + h_pages;
         let round_bytes = b_bytes + i_bytes + c_bytes + h_bytes;
@@ -4785,6 +4957,7 @@ mod uplink_probe {
                     generation: g,
                     page: 0,
                     page_count: 1,
+                    cell: [0, 0],
                 })
                 .1,
                 i_bytes,

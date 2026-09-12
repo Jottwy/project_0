@@ -215,6 +215,10 @@ pub enum PacketType {
     StpCarryableDropRequest = 0x43,
     StpHarvestableList = 0x44,
     StpHarvestHitRequest = 0x45,
+    // ADR-145 D3 — un joiner pide registrar UN prop de atrezo antes de golpearlo por primera
+    // vez (registro diferido: sin esto, el golpe llega a un id que el host no conoce y se
+    // descarta silenciosamente, `stp_harvest_hit_no_target`). 0x5C: 0x46-0x5B ya están en uso.
+    StpRegisterHarvestableRequest = 0x5C,
     // ADR-028 Fase E: host-authoritative corpse relay (same block — loot/world-object family)
     CorpseList = 0x46,
     CorpseSpawnRequest = 0x47,
@@ -255,6 +259,9 @@ pub enum PacketType {
     StealReport = 0x56,
     /// ADR-140 D4 — varias poses en un datagrama. Ver `PacketPayload::PlayerUpdateBatch`.
     PlayerUpdateBatch = 0x5A,
+
+    /// ADR-074 fase 2 — cierre de una ronda de roster. Ver `PacketPayload::RosterScopeEnd`.
+    RosterScopeEnd = 0x5B,
     //
     // 0x57 el broadcast periódico de estado de región (self-healing, NO fiable — mismo trato
     // que los demás rosters). 0x58/0x59 son la pareja petición/veredicto de cruzar una puerta;
@@ -329,6 +336,7 @@ impl PacketType {
             0x43 => Some(Self::StpCarryableDropRequest),
             0x44 => Some(Self::StpHarvestableList),
             0x45 => Some(Self::StpHarvestHitRequest),
+            0x5C => Some(Self::StpRegisterHarvestableRequest),
             0x46 => Some(Self::CorpseList),
             0x47 => Some(Self::CorpseSpawnRequest),
             0x48 => Some(Self::CorpseTakeRequest),
@@ -586,11 +594,26 @@ fn default_page_count() -> u16 {
     1
 }
 
+/// ADR-074 fase 2 — de cuál de los cinco rosters es un cierre de ronda.
+///
+/// Los códigos se escriben a mano y no se derivan del orden de las variantes, por lo mismo que
+/// ADR-143 D2: reordenar una declaración no puede cambiar lo que significa un byte en el cable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct RosterKind(pub u8);
+
+impl RosterKind {
+    pub const ITEMS: Self = Self(0);
+    pub const BUILDINGS: Self = Self(1);
+    pub const CARRYABLES: Self = Self(2);
+    pub const HARVESTABLES: Self = Self(3);
+    pub const CORPSES: Self = Self(4);
+}
+
 // ─── ADR-144: la pose delgada del relay ───
 
 /// ADR-144 — lo COSMÉTICO de una pose: lo que no cambia de una ronda a la siguiente. Viaja dentro
 /// de `PoseWire` sólo cuando cambia (hash por par en el anfitrión) o como reparación periódica.
-#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub struct PoseCosmetics {
     pub equipment: [i32; 4],
     pub held_item: i32,
@@ -807,6 +830,10 @@ pub enum PacketPayload {
         page: u16,
         #[serde(default = "default_page_count")]
         page_count: u16,
+        /// ADR-074 fase 2 — de qué celda (chunk) es este trozo del roster. Va al FINAL porque el
+        /// formato es posicional desde ADR-137 y el orden de los campos ES el wire.
+        #[serde(default)]
+        cell: [i32; 2],
     },
     StpPickupRequest {
         item_id: u32,
@@ -840,6 +867,10 @@ pub enum PacketPayload {
         page: u16,
         #[serde(default = "default_page_count")]
         page_count: u16,
+        /// ADR-074 fase 2 — de qué celda (chunk) es este trozo del roster. Va al FINAL porque el
+        /// formato es posicional desde ADR-137 y el orden de los campos ES el wire.
+        #[serde(default)]
+        cell: [i32; 2],
     },
     StpPlaceRequest {
         place_id: u64,
@@ -1096,6 +1127,10 @@ pub enum PacketPayload {
         page: u16,
         #[serde(default = "default_page_count")]
         page_count: u16,
+        /// ADR-074 fase 2 — de qué celda (chunk) es este trozo del roster. Va al FINAL porque el
+        /// formato es posicional desde ADR-137 y el orden de los campos ES el wire.
+        #[serde(default)]
+        cell: [i32; 2],
     },
     StpCarryablePickupRequest {
         carryable_id: u32,
@@ -1120,11 +1155,23 @@ pub enum PacketPayload {
         page: u16,
         #[serde(default = "default_page_count")]
         page_count: u16,
+        /// ADR-074 fase 2 — de qué celda (chunk) es este trozo del roster. Va al FINAL porque el
+        /// formato es posicional desde ADR-137 y el orden de los campos ES el wire.
+        #[serde(default)]
+        cell: [i32; 2],
     },
     StpHarvestHitRequest {
         hit_id: u64,
         harvestable_id: u32,
         amount: f32,
+    },
+    /// ADR-145 D3 — un joiner pide registrar un prop de atrezo (posición YA determinista, la
+    /// misma que ya viaja en `Wg3PropMsg`) antes de golpearlo por primera vez. El host aplica
+    /// el mismo upsert idempotente de `set_stp_harvestables` («ya lo conocíamos: se refresca la
+    /// posición, la salud no se toca»); repetir la llamada en cada golpe no cuesta nada.
+    StpRegisterHarvestableRequest {
+        id: u32,
+        position: [f32; 3],
     },
 
     // ADR-028 Fase E: host-authoritative corpse relay. Corpses reuse the storage type
@@ -1141,6 +1188,10 @@ pub enum PacketPayload {
         page: u16,
         #[serde(default = "default_page_count")]
         page_count: u16,
+        /// ADR-074 fase 2 — de qué celda (chunk) es este trozo del roster. Va al FINAL porque el
+        /// formato es posicional desde ADR-137 y el orden de los campos ES el wire.
+        #[serde(default)]
+        cell: [i32; 2],
     },
     /// Joiner → host (reliable): "my player died with this loot snapshot — spawn the corpse".
     /// The host dedupes by (sender, request_id): reliable retransmits spawn exactly one corpse.
@@ -1375,6 +1426,29 @@ pub enum PacketPayload {
         /// que los ata; el test de round-trip de abajo delata al que se olvide.
         updates: Vec<PoseWire>,
     },
+    /// ADR-074 fase 2 (enmienda 2026-08-15, decisiones 1 y 6) — **cierre de una ronda de roster**,
+    /// con la lista de celdas que el host considera en scope para este destinatario.
+    ///
+    /// Es lo que cierra la ambigüedad que el troceo espacial introduce: sin él, no recibir nada de
+    /// una celda podría significar «está vacía» o «está lejos», y el cliente no puede distinguirlo
+    /// (inferirlo con su propia posición está PROHIBIDO: dos radios que discrepan hacen desaparecer
+    /// objetos). La regla de aplicación vive entera en `CellRosterAssembler::accept_scope_end`.
+    ///
+    /// **Un solo opcode para los cinco rosters**, con `kind` diciendo de cuál es: los cinco
+    /// comparten mecanismo, y cinco opcodes casi idénticos son cinco sitios donde desviarse.
+    ///
+    /// **Nunca se emite sin sus páginas.** Si el gate de ADR-071 corta la ronda, no salen páginas
+    /// NI cierre: un cierre suelto haría que el receptor vaciara celdas que sólo estaban calladas.
+    /// Es la corrección que un test cazó al escribir el receptor, y va en la misma frase que el
+    /// opcode para que nadie las separe.
+    ///
+    /// Va al FINAL del enum a propósito: desde ADR-137 el formato es posicional y el orden de las
+    /// variantes ES parte del wire.
+    RosterScopeEnd {
+        kind: RosterKind,
+        generation: u32,
+        cells: Vec<[i32; 2]>,
+    },
 }
 
 impl PacketPayload {
@@ -1423,6 +1497,9 @@ impl PacketPayload {
             Self::StpCarryableDropRequest { .. } => PacketType::StpCarryableDropRequest as u16,
             Self::StpHarvestableList { .. } => PacketType::StpHarvestableList as u16,
             Self::StpHarvestHitRequest { .. } => PacketType::StpHarvestHitRequest as u16,
+            Self::StpRegisterHarvestableRequest { .. } => {
+                PacketType::StpRegisterHarvestableRequest as u16
+            }
             Self::CorpseList { .. } => PacketType::CorpseList as u16,
             Self::CorpseSpawnRequest { .. } => PacketType::CorpseSpawnRequest as u16,
             Self::CorpseTakeRequest { .. } => PacketType::CorpseTakeRequest as u16,
@@ -1443,6 +1520,7 @@ impl PacketPayload {
             Self::Nack { .. } => PacketType::Nack as u16,
             Self::Ping { .. } => PacketType::Ping as u16,
             Self::PlayerUpdateBatch { .. } => PacketType::PlayerUpdateBatch as u16,
+            Self::RosterScopeEnd { .. } => PacketType::RosterScopeEnd as u16,
         }
     }
 }
@@ -1977,6 +2055,52 @@ mod tests {
         );
     }
 
+    /// ADR-074 fase 2 — el cierre de ronda va y vuelve con su `kind` y sus celdas, y el `cell` de
+    /// una página de roster sobrevive al round-trip posicional.
+    #[test]
+    fn roster_scope_end_and_cell_round_trip() {
+        let end = PacketPayload::RosterScopeEnd {
+            kind: RosterKind::BUILDINGS,
+            generation: 123_456,
+            cells: vec![[-3, 7], [0, 0], [12, -40]],
+        };
+        let bytes = rmp_serde::to_vec(&end).unwrap();
+        let back: PacketPayload = rmp_serde::from_slice(&bytes).unwrap();
+        match back {
+            PacketPayload::RosterScopeEnd {
+                kind,
+                generation,
+                cells,
+            } => {
+                assert_eq!(kind, RosterKind::BUILDINGS);
+                assert_eq!(generation, 123_456);
+                assert_eq!(cells, vec![[-3, 7], [0, 0], [12, -40]]);
+            }
+            other => panic!("no volvió como cierre: {other:?}"),
+        }
+
+        let page = PacketPayload::StpItemList {
+            items: Vec::new(),
+            generation: 9,
+            page: 1,
+            page_count: 2,
+            cell: [-5, 11],
+        };
+        let bytes = rmp_serde::to_vec(&page).unwrap();
+        match rmp_serde::from_slice::<PacketPayload>(&bytes).unwrap() {
+            PacketPayload::StpItemList {
+                cell,
+                page,
+                page_count,
+                generation,
+                ..
+            } => {
+                assert_eq!((cell, page, page_count, generation), ([-5, 11], 1, 2, 9));
+            }
+            other => panic!("no volvió como página de items: {other:?}"),
+        }
+    }
+
     #[test]
     fn player_update_round_trip() {
         let payload = PacketPayload::PlayerUpdate {
@@ -2432,6 +2556,7 @@ mod tests {
             generation: 0,
             page: 0,
             page_count: 1,
+            cell: [0, 0],
         };
         let header = PacketHeader::new(list.type_code(), 1, 1, 100);
         let (_, decoded) = decode_packet(&encode_packet(&header, &list)).unwrap();

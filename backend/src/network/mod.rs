@@ -142,11 +142,11 @@ impl<K: std::hash::Hash + Eq + Copy> BoundedDedupeSet<K> {
 /// `NetworkManager` en vez de cinco sueltos.
 #[derive(Debug, Default)]
 pub struct RosterAssemblers {
-    pub items: roster::RosterAssembler<protocol::StpItemInfo>,
-    pub buildings: roster::RosterAssembler<protocol::StpBuildingInfo>,
-    pub carryables: roster::RosterAssembler<protocol::StpCarryableInfo>,
-    pub harvestables: roster::RosterAssembler<protocol::StpHarvestableInfo>,
-    pub corpses: roster::RosterAssembler<crate::world::corpse::CorpseData>,
+    pub items: roster::CellRosterAssembler<protocol::StpItemInfo>,
+    pub buildings: roster::CellRosterAssembler<protocol::StpBuildingInfo>,
+    pub carryables: roster::CellRosterAssembler<protocol::StpCarryableInfo>,
+    pub harvestables: roster::CellRosterAssembler<protocol::StpHarvestableInfo>,
+    pub corpses: roster::CellRosterAssembler<crate::world::corpse::CorpseData>,
 }
 
 /// Incoming packet from the receive loop.
@@ -370,6 +370,15 @@ pub struct NetworkManager {
     /// guardó y empieza a contar desde la carga. Sólo el host la llena; en un joiner queda vacía
     /// porque su roster lo escribe el relay, no un golpe.
     pub depleted_harvestables_at: HashMap<u32, std::time::Instant>,
+    /// ADR-145 D7 — la bolsa: cuándo caduca el loot sin recoger de un cofre de mundo (D6) cuyo
+    /// mueble se desmontó antes de vaciarlo. `world.corpses` no se toca hasta que se cumple —
+    /// hasta entonces sigue siendo un cofre normal, inmortal, saqueable por cualquiera.
+    ///
+    /// Mismo criterio que `depleted_harvestables_at`, y por la misma razón: EN MEMORIA, no se
+    /// persiste. Un mundo recargado mientras una bolsa contaba su reloj la vuelve inmortal de
+    /// nuevo (se pierde el `insert`) — aceptable, es un caso raro y el peor efecto es que un
+    /// cofre no caduca, no que desaparezca antes de tiempo.
+    pub bag_expires_at: HashMap<u32, std::time::Instant>,
     /// ADR-115 — qué puntos de loot ya se llevaron, y cuándo (en segundos de tiempo de mundo).
     ///
     /// A diferencia de `depleted_harvestables_at`, esto SÍ se persiste: es la pieza entera del
@@ -694,6 +703,7 @@ impl NetworkManager {
             stp_harvestables: Vec::new(),
             processed_stp_harvest_hits: BoundedDedupeSet::with_capacity(DEDUPE_CAP),
             depleted_harvestables_at: HashMap::new(),
+            bag_expires_at: HashMap::new(),
             loot_marks: crate::world::loot_marks::LootMarkStore::new(),
             seen_chest_chunks: std::collections::HashSet::new(),
             play_time_base_seconds: 0,

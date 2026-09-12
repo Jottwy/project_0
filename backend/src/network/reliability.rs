@@ -47,6 +47,7 @@ pub fn is_reliable(packet_type: u16) -> bool {
         | 0x42          // StpCarryablePickupGranted
         | 0x43          // StpCarryableDropRequest
         | 0x45          // StpHarvestHitRequest
+        | 0x5C          // StpRegisterHarvestableRequest (ADR-145 D3)
         | 0x47          // CorpseSpawnRequest        (ADR-028 Fase E)
         | 0x48          // CorpseTakeRequest         (ADR-028 Fase E)
         | 0x49          // CorpseTakeResult          (ADR-028 Fase E)

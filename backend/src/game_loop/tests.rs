@@ -1037,6 +1037,236 @@ async fn craft_item_adds_only_the_kept_units_to_the_mirror() {
     assert_eq!(player.stp_inventory, vec![stack(BANDAGE_ID, 1)]);
 }
 
+// ─── ADR-145 D3: registro diferido de props de atrezo, y D7: la bolsa caduca ──────────────────
+
+async fn action_on(net_is_host_action: &str, data: serde_json::Value) -> NetworkManager {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let mut world = World::new(42);
+    let mut player = Player::new(1, "Host");
+    let (tx, _rx) = broadcast::channel(16);
+    let mut processed: BoundedDedupeSet<(u16, u64)> = BoundedDedupeSet::with_capacity(DEDUPE_CAP);
+    let action = crate::ipc::PlayerAction {
+        action_type: net_is_host_action.into(),
+        data,
+    };
+    let mut adult_driver = AdultDriver::new(net.world_seed);
+    let mut child_driver = ChildDriver::new(net.world_seed);
+    handle_action(
+        &action,
+        &mut player,
+        &mut world,
+        &mut net,
+        &mut adult_driver,
+        &mut child_driver,
+        &tx,
+        &mut processed,
+        0,
+        &wg3_off(),
+        &mut wg3_cache(),
+        &mut wg3_collision(),
+    )
+    .await;
+    net
+}
+
+// Un id nuevo entra con remaining=1.0 y sin tocar la posición de nada más; repetir la MISMA
+// llamada (mandarla en cada golpe, como hace el cliente) es un no-op sobre stp_harvestables.
+#[tokio::test]
+async fn register_prop_harvestable_upserts_without_duplicating() {
+    let net = action_on(
+        "register_prop_harvestable",
+        serde_json::json!({ "id": 777, "position": [1.0, 2.0, 3.0] }),
+    )
+    .await;
+    assert_eq!(net.stp_harvestables.len(), 1);
+    assert_eq!(net.stp_harvestables[0].id, 777);
+    assert_eq!(net.stp_harvestables[0].remaining, 1.0);
+}
+
+// Un id de 0 es forma inválida (Unity no debería mandarlo nunca): no registra nada.
+#[tokio::test]
+async fn register_prop_harvestable_rejects_zero_id() {
+    let net = action_on(
+        "register_prop_harvestable",
+        serde_json::json!({ "id": 0, "position": [1.0, 2.0, 3.0] }),
+    )
+    .await;
+    assert!(net.stp_harvestables.is_empty());
+}
+
+// register_stp_harvestable NUNCA toca la salud de un id ya conocido — ni por la acción local
+// del host ni por el forward P2P de un joiner (D3): sólo refresca la posición.
+#[tokio::test]
+async fn register_stp_harvestable_never_resets_remaining_of_a_known_id() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    net.stp_harvestables
+        .push(crate::network::protocol::StpHarvestableInfo {
+            id: 5,
+            position: [0.0, 0.0, 0.0],
+            remaining: 0.25,
+        });
+    let added = register_stp_harvestable(&mut net, 5, [9.0, 9.0, 9.0]);
+    assert!(!added, "un id ya conocido no cuenta como alta nueva");
+    assert_eq!(
+        net.stp_harvestables[0].remaining, 0.25,
+        "la salud no se toca"
+    );
+    assert_eq!(
+        net.stp_harvestables[0].position,
+        [9.0, 9.0, 9.0],
+        "la posición sí se refresca"
+    );
+}
+
+// El evento P2P forwardeado por un joiner (StpRegisterHarvestableRequest) usa el MISMO upsert
+// que la acción local del host — se prueba llamando directamente al manejador de eventos, que
+// es donde vive la puerta `if net.is_host`.
+#[tokio::test]
+async fn joiner_forwarded_registration_reaches_stp_harvestables_on_the_host() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let mut world = World::new(42);
+    let mut player = Player::new(1, "Host");
+    let (tx, _rx) = broadcast::channel(16);
+    let mut processed: BoundedDedupeSet<(u16, u64)> = BoundedDedupeSet::with_capacity(DEDUPE_CAP);
+    let mut adult_driver = AdultDriver::new(net.world_seed);
+    let mut child_driver = ChildDriver::new(net.world_seed);
+    handle_network_event(
+        NetworkEvent::StpRegisterHarvestableRequest {
+            id: 42,
+            position: [1.0, 1.0, 1.0],
+        },
+        &mut player,
+        &mut world,
+        &mut net,
+        &mut adult_driver,
+        &mut child_driver,
+        &tx,
+        &tx,
+        &mut processed,
+        0,
+        None,
+        &wg3_off(),
+        &mut wg3_cache(),
+    )
+    .await;
+    assert_eq!(net.stp_harvestables.len(), 1);
+    assert_eq!(net.stp_harvestables[0].id, 42);
+}
+
+fn bag_stack(item_id: i32, quantity: u16) -> crate::world::corpse::CorpseStack {
+    crate::world::corpse::CorpseStack {
+        item_id,
+        quantity,
+        props: Vec::new(),
+    }
+}
+
+// expire_stp_chest sólo arma el reloj si el cofre EXISTE y tiene loot; un cofre vacío o
+// inexistente no entra en bag_expires_at (nada que expirar).
+#[tokio::test]
+async fn expire_stp_chest_only_arms_a_chest_with_loot() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let mut world = World::new(42);
+    let with_loot = world.spawn_corpse(
+        0,
+        "Chest".into(),
+        Vec3::ZERO,
+        [0; 4],
+        0,
+        vec![bag_stack(1, 1)],
+    );
+    let empty = world.spawn_corpse(0, "Chest".into(), Vec3::ZERO, [0; 4], 0, vec![]);
+    let mut player = Player::new(1, "Host");
+    let (tx, _rx) = broadcast::channel(16);
+    let mut processed: BoundedDedupeSet<(u16, u64)> = BoundedDedupeSet::with_capacity(DEDUPE_CAP);
+    let mut adult_driver = AdultDriver::new(net.world_seed);
+    let mut child_driver = ChildDriver::new(net.world_seed);
+    for (corpse_id, expect_armed) in [(with_loot, true), (empty, false), (99999, false)] {
+        let action = crate::ipc::PlayerAction {
+            action_type: "expire_stp_chest".into(),
+            data: serde_json::json!({ "corpse_id": corpse_id, "seconds": 600.0 }),
+        };
+        handle_action(
+            &action,
+            &mut player,
+            &mut world,
+            &mut net,
+            &mut adult_driver,
+            &mut child_driver,
+            &tx,
+            &mut processed,
+            0,
+            &wg3_off(),
+            &mut wg3_cache(),
+            &mut wg3_collision(),
+        )
+        .await;
+        assert_eq!(
+            net.bag_expires_at.contains_key(&corpse_id),
+            expect_armed,
+            "corpse_id={corpse_id}"
+        );
+    }
+}
+
+// El barrido retira un cofre vencido AUNQUE siga teniendo loot dentro (a diferencia del
+// despawn-on-empty normal), y dos que no tienen reloj puesto sobreviven intactos.
+#[tokio::test]
+async fn sweep_expired_bags_removes_only_the_armed_and_expired_ones() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let mut world = World::new(42);
+    let expired = world.spawn_corpse(
+        0,
+        "Bag".into(),
+        Vec3::ZERO,
+        [0; 4],
+        0,
+        vec![bag_stack(1, 1)],
+    );
+    let not_yet = world.spawn_corpse(
+        0,
+        "Bag".into(),
+        Vec3::ZERO,
+        [0; 4],
+        0,
+        vec![bag_stack(1, 1)],
+    );
+    let untimed = world.spawn_corpse(
+        0,
+        "Chest".into(),
+        Vec3::ZERO,
+        [0; 4],
+        0,
+        vec![bag_stack(1, 1)],
+    );
+    net.bag_expires_at.insert(
+        expired,
+        std::time::Instant::now() - std::time::Duration::from_secs(1),
+    );
+    net.bag_expires_at.insert(
+        not_yet,
+        std::time::Instant::now() + std::time::Duration::from_secs(600),
+    );
+
+    let removed = sweep_expired_bags(&mut net, &mut world);
+
+    assert_eq!(removed, 1);
+    assert!(
+        !world.corpses.contains_key(&expired),
+        "vencido: fuera, aunque tuviera loot"
+    );
+    assert!(world.corpses.contains_key(&not_yet), "todavía no toca");
+    assert!(
+        world.corpses.contains_key(&untimed),
+        "sin reloj: un cofre normal no expira nunca"
+    );
+    assert!(!net.bag_expires_at.contains_key(&expired));
+    assert!(net.bag_expires_at.contains_key(&not_yet));
+
+    // Un segundo barrido sin nada vencido no hace nada (idempotente).
+    assert_eq!(sweep_expired_bags(&mut net, &mut world), 0);
+}
+
 // ADR-045 Fase 3: a Fase-3-aware client's report_inventory ALSO populates inventory_v2, in
 // the SAME action — no new IPC action name. container/slot/props round-trip; a legacy entry
 // mixed into the same array (no container/slot) is skipped from v2 but still lands in
