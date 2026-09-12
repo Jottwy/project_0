@@ -26,10 +26,13 @@ namespace PolymindGames.InventorySystem
     [HelpURL("https://polymindgames.gitbook.io/welcome-to-gitbook/qgUktTCVlUDA7CAODZfe/player/modules-and-behaviours/crafting#crafting-manager-module")]
     public sealed class NetworkedCraftingManager : CharacterBehaviour, ICraftingManagerCC, ISaveableComponent
     {
-        /// <summary>Un crafteo TERMINADO: el personaje, lo crafteado y cuántas unidades produjo la
-        /// receta (<c>CraftingData.CraftAmount</c>). Se dispara después de descontar el blueprint
-        /// y de meter el producto (o soltarlo si no cabía), nunca al cancelar.</summary>
-        public static event Action<ICharacter, ItemDefinition, int> ItemCrafted;
+        /// <summary>Un crafteo TERMINADO: el personaje, lo crafteado, cuántas unidades produjo la
+        /// receta (<c>CraftingData.CraftAmount</c>) y cuántas de ésas ENTRARON en el inventario
+        /// (<c>addedCount</c>; el resto se soltó al mundo porque no cabía). Se dispara después de
+        /// descontar el blueprint y de meter o soltar el producto, nunca al cancelar. Las dos
+        /// cuentas viajan porque el servidor descuenta ingredientes por la primera y sólo suma a su
+        /// espejo del inventario la segunda: lo soltado al suelo no está en la bolsa.</summary>
+        public static event Action<ICharacter, ItemDefinition, int, int> ItemCrafted;
 
         [SerializeField]
         [Tooltip("Craft Sound: Sound that will be played after crafting an item.")]
@@ -119,7 +122,7 @@ namespace PolymindGames.InventorySystem
             // local, que es la que STP hace de verdad (§4 del ADR); el backend sólo valida y espeja.
             var crafted = _currentItemToCraft;
             _currentItemToCraft = null;
-            ItemCrafted?.Invoke(Character, crafted, craftData.CraftAmount);
+            ItemCrafted?.Invoke(Character, crafted, craftData.CraftAmount, addedCount);
         }
 
         private void OnCraftCancel() => _currentItemToCraft = null;

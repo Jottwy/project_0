@@ -56,16 +56,20 @@ namespace BackroomsSurvival.Net
                 NetworkedCraftingManager.ItemCrafted -= OnItemCrafted;
         }
 
-        private static void OnItemCrafted(ICharacter character, ItemDefinition item, int amount)
+        /// <param name="crafted">Unidades que produjo la receta: por ellas el servidor descuenta ingredientes.</param>
+        /// <param name="kept">Las que ENTRARON en el inventario (el resto cayó al suelo): sólo ésas
+        /// se suman al espejo. Puede ser 0 con la bolsa llena, y aun así se informa: los
+        /// ingredientes se gastaron igual.</param>
+        private static void OnItemCrafted(ICharacter character, ItemDefinition item, int crafted, int kept)
         {
-            if (character == null || item == null || amount <= 0)
+            if (character == null || item == null || crafted <= 0)
                 return;
             if (!IsLocalPlayer(character))
                 return;
             if (!IPCClient.TryGetInstance(out var ipc) || !ipc.IsConnected)
                 return; // sin backend no hay a quién informar; el crafteo local ya ocurrió
 
-            ipc.SendCraftItem(item.Id, amount);
+            ipc.SendCraftItem(item.Id, crafted, Mathf.Clamp(kept, 0, crafted));
         }
 
         /// <summary>El local es el que lleva el motor de primera persona; un proxy remoto no lo
