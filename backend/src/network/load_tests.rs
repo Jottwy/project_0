@@ -27,6 +27,20 @@ use super::peer::PeerConnection;
 use super::{NetworkManager, PeerId};
 use std::net::SocketAddr;
 
+/// Techo de emisión del túnel, en KB/s.
+///
+/// **Este arnés dio 256 KB/s por buenos y era falso.** `SendRateMaxBytesPerSec` lleva puesto
+/// 1 MB/s en `FacepunchSteamTunnel.cs`; 256 KB/s es el valor por defecto de Valve, que este
+/// proyecto ya no usa. Todo porcentaje impreso por una corrida anterior a este commit está
+/// inflado ×4 — los KB/s en crudo siguen siendo válidos, la lectura «% del techo» no.
+///
+/// Con nombre y en un solo sitio a propósito: la constante vivía escrita a mano en dos `println!`
+/// distintos, que es exactamente cómo se queda vieja sin que nadie lo note.
+const STEAM_SEND_RATE_MAX_KB_S: f64 = 1024.0;
+
+/// Presupuesto de CPU de un tick a 60 Hz, en milisegundos.
+const TICK_BUDGET_MS: f64 = 16.67;
+
 /// Reparto de posiciones de los peers sintéticos.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Spread {
@@ -81,8 +95,8 @@ async fn measure_kb_per_second(net: &mut NetworkManager, spread: Spread, count: 
     let kb = (after - before) as f64 / 1024.0;
     println!(
         "  N={count:>3}  {spread:?}  ->  {kb:>8.1} KB/s de poses  \
-         ({:.1} % de un techo de 256 KB/s)",
-        100.0 * kb / 256.0
+         ({:.1} % del techo de {STEAM_SEND_RATE_MAX_KB_S:.0} KB/s)",
+        100.0 * kb / STEAM_SEND_RATE_MAX_KB_S
     );
     kb
 }
@@ -192,7 +206,7 @@ async fn moving_players_cost_more_than_still_ones() {
         let kb = (super::send::sent_bytes_total() - before) as f64 / 1024.0;
         println!(
             "  N={count:>3} moviéndose  ->  {kb:>8.1} KB/s  ({:.0} % del techo)",
-            100.0 * kb / 256.0
+            100.0 * kb / STEAM_SEND_RATE_MAX_KB_S
         );
     }
     println!();
@@ -319,6 +333,58 @@ async fn cpu_breakdown_by_phase() {
     println!();
 }
 
+/// **Hasta dónde llega la CPU con la gente REPARTIDA**, que es el caso que decide el tope de una
+/// sesión.
+///
+/// Juntos en una sala el muro es el ancho de banda y llega pronto: el relay crece con N² y a ~22
+/// se toca el megabyte de `SendRateMax`. Repartidos, el AOI y el PVS dejan las poses en CERO
+/// (medido), así que el límite deja de ser el cable y pasa a ser el propio bucle — y eso nadie lo
+/// había buscado: el arnés paraba en 50, donde todavía va al 20 %.
+///
+/// Sube hasta reventar y para en cuanto una ronda se come el presupuesto de 16,67 ms. El número que
+/// salga NO es «jugadores que caben»: es cuántos peers puede recorrer el emisor, que es la mitad
+/// del problema. La otra mitad —simular sus criaturas, servirles chunks— va aparte.
+#[tokio::test]
+#[ignore = "arnés de carga"]
+async fn host_cpu_ceiling_with_scattered_players() {
+    println!("\n=== Techo de CPU con jugadores REPARTIDOS (presupuesto: 16,67 ms) ===\n");
+
+    for count in [50usize, 100, 200, 400, 800, 1600] {
+        let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        register_synthetic_peers(&mut host, count, Spread::Scattered);
+        fill_stp_rosters(&mut host, 300, 150);
+        let mut world = crate::world::World::new(42);
+        for i in 0..64 {
+            world.ensure_chunk((i % 8, i / 8));
+        }
+
+        let started = std::time::Instant::now();
+        const ROUNDS: u32 = 20;
+        for tick in 0..ROUNDS as usize {
+            step_all_peers(&mut host, tick);
+            super::sync::broadcast_peer_poses(&mut host, None).await;
+            super::sync::broadcast_chunk_states(
+                &mut host,
+                &world,
+                crate::utils::Vec3::new(0.0, 1.8, 0.0),
+            )
+            .await;
+            super::sync::broadcast_stp_items(&mut host).await;
+            super::sync::broadcast_stp_buildings(&mut host).await;
+        }
+        let per_round_ms = started.elapsed().as_secs_f64() * 1000.0 / ROUNDS as f64;
+        let pct = 100.0 * per_round_ms / 16.67;
+        println!(
+            "  N={count:>5}  ->  {per_round_ms:>8.2} ms por ronda  ({pct:>5.0} % del presupuesto)"
+        );
+        if per_round_ms > 16.67 {
+            println!("\n  REVENTADO en N={count}: una ronda ya no cabe en un tick.\n");
+            return;
+        }
+    }
+    println!("\n  No reventó: el tope está por encima del último N probado.\n");
+}
+
 /// **El coste en CPU del anfitrión**, no en bytes: cuánto tarda una ronda completa de emisión con
 /// todo cargado a la vez. El presupuesto de un tick a 60 Hz son 16,67 ms.
 #[tokio::test]
@@ -356,4 +422,140 @@ async fn host_cpu_per_broadcast_round() {
         );
     }
     println!();
+}
+
+/// **El techo total: cuantos jugadores aguanta el anfitrion, y que muro toca primero.**
+///
+/// Los demas arneses de este fichero miden un eje cada uno y dejan el veredicto al lector. Este
+/// responde la pregunta entera, porque la respuesta honesta necesita los dos ejes a la vez: **no
+/// hay un numero de jugadores, hay dos, y cual manda depende de como esten repartidos.**
+///
+///   - Juntos en una sala, el muro es el CABLE. El relay crece con N^2 porque cada uno que entra le
+///     anyade una fuente a todos los demas, y el megabyte por segundo de `SendRateMax` se llena
+///     mucho antes de que la CPU se entere.
+///   - Repartidos, el AOI y el PVS dejan las poses casi en cero y el cable deja de ser el problema.
+///     Entonces el muro es el propio bucle, que recorre peers aunque no les mande nada.
+///
+/// Corta en cuanto uno de los dos presupuestos revienta y dice CUAL fue. Un techo sin decir que lo
+/// causo no sirve para optimizar: se ataca el eje equivocado.
+///
+/// # Por que aqui NO se llenan los rosters
+///
+/// La primera version de este arnes llamaba tambien a `broadcast_stp_items` y compania con 300
+/// objetos y 150 piezas, y daba a `Scattered` por reventado en N=50 con 1915 KB/s — un numero que
+/// contradice de frente que las poses repartidas salgan a cero.
+///
+/// No era ancho de banda: **la puerta de los rosters es por TIEMPO** (`RosterGate::should_send`
+/// mira un `Instant`), y este arnes recorre sus 30 rondas en unos milisegundos de reloj real. La
+/// puerta abre UNA vez, se emite un volcado entero de roster a los 50, y dividirlo por «un segundo
+/// simulado» convierte una rafaga en una tasa que no existe.
+///
+/// Es una trampa general de este fichero: **una puerta por tiempo no se puede medir en un arnes que
+/// corre mas rapido que el reloj.** Asi que aqui se mide SOLO el relay de poses, que es lo que
+/// crece con N y lo que toda esta tanda ha estado optimizando. El coste de los rosters tiene su
+/// propio arnes (`loot_and_buildings_by_world_age`) y se lee en KB por rafaga, nunca por segundo.
+///
+/// # Lo que la primera corrida destapo (2026-09-12)
+///
+/// Juntos: 20 aguanta, 24 revienta el cable. Confirma por medida el ~22 que hasta ahora era una
+/// extrapolacion desde los 505 KB/s de N=16.
+///
+/// Repartidos: 300 aguantan al 95 % del tick, 320 revienta. **Y eso corrige a la baja el ~600 que
+/// se venia diciendo**, que salia de extrapolar linealmente desde N=50. No es lineal:
+///
+/// ```text
+///    50 ->  0,51 ms      200 ->  6,97 ms
+///   100 ->  2,44 ms      300 -> 15,83 ms
+/// ```
+///
+/// Doblar N multiplica el coste por ~4. El bucle de pares es O(N^2) **aunque el AOI rechace todo**,
+/// porque rechazar tambien cuesta: `for src in poses { for dest in dest_ids { ... } }` se recorre
+/// entero pase lo que pase. O sea que el AOI ahorra CABLE pero no ahorra CPU, y con la gente
+/// repartida —que es el caso donde el cable ya no importa— lo unico que queda es el cuadrado.
+///
+/// La salida es un indice espacial: agrupar los peers por celda y visitar solo las celdas vecinas,
+/// que deja el recorrido en casi lineal. Es la siguiente optimizacion del emisor y ahora esta
+/// medida, no supuesta.
+///
+/// Nota sobre el tope por destinatario (`POSE_FIDELITY_CAP` = 96): los dos muros llegan ANTES de
+/// que ningun destinatario pueda juntar 96 fuentes, asi que esta corrida es tambien la
+/// comprobacion independiente de que el tope entro apagado.
+///
+/// # Dos avisos mas sobre lo que este numero NO es
+///
+///   - Es lo que el EMISOR aguanta. Simular las criaturas de esa gente y servirles chunks va
+///     aparte, y en una partida real llega antes.
+///   - Va en perfil de depuracion, como el resto del fichero. Los milisegundos son pesimistas
+///     contra release; valen para comparar entre escalones, no como cifra absoluta.
+///
+/// `cargo test --bin backrooms_server host_total_player_ceiling -- --ignored --nocapture`
+#[tokio::test]
+#[ignore = "arnés de carga: se corre a mano, no es una regresión"]
+async fn host_total_player_ceiling() {
+    // 30 rondas = un segundo simulado, igual que `measure_kb_per_second`, para que los KB/s salgan
+    // comparables con el resto del fichero. El coste por ronda va contra un tick de 60 Hz.
+    const ROUNDS: u32 = 30;
+
+    println!("\n=== TECHO TOTAL DE JUGADORES (solo relay de poses) ===");
+    println!(
+        "Presupuestos: {STEAM_SEND_RATE_MAX_KB_S:.0} KB/s de cable, {TICK_BUDGET_MS:.2} ms por ronda.\n"
+    );
+
+    for spread in [Spread::SameRoom, Spread::Scattered] {
+        // Escalones finos donde se espera el muro de cada forma: el cable llega pronto juntos, la
+        // CPU tarda muchisimo repartidos.
+        let ladder: &[usize] = match spread {
+            Spread::SameRoom => &[8, 12, 16, 20, 24, 28, 32, 40, 48, 64, 96, 128],
+            Spread::Scattered => &[50, 100, 200, 260, 300, 320, 350, 400, 600, 1200],
+        };
+
+        println!("--- {spread:?} ---");
+        let mut last_ok: Option<usize> = None;
+        let mut verdict: Option<(usize, &str)> = None;
+
+        for &count in ladder {
+            let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+            register_synthetic_peers(&mut host, count, spread);
+
+            let before = super::send::sent_bytes_total();
+            let started = std::time::Instant::now();
+            for tick in 0..ROUNDS as usize {
+                step_all_peers(&mut host, tick);
+                super::sync::broadcast_peer_poses(&mut host, None).await;
+            }
+            let ms = started.elapsed().as_secs_f64() * 1000.0 / ROUNDS as f64;
+            let kb = (super::send::sent_bytes_total() - before) as f64 / 1024.0;
+
+            println!(
+                "  N={count:>5}  ->  {kb:>8.1} KB/s ({:>5.0} %)   {ms:>7.3} ms/ronda ({:>5.1} %)",
+                100.0 * kb / STEAM_SEND_RATE_MAX_KB_S,
+                100.0 * ms / TICK_BUDGET_MS
+            );
+
+            if kb > STEAM_SEND_RATE_MAX_KB_S {
+                verdict = Some((count, "el CABLE (ancho de banda)"));
+                break;
+            }
+            if ms > TICK_BUDGET_MS {
+                verdict = Some((count, "la CPU del emisor"));
+                break;
+            }
+            last_ok = Some(count);
+        }
+
+        match (verdict, last_ok) {
+            (Some((broke_at, what)), Some(ok)) => println!(
+                "\n  REVENTADO en N={broke_at}: el muro fue {what}.\n  \
+                 Ultimo N que aguanto entero: {ok}.\n"
+            ),
+            (Some((broke_at, what)), None) => println!(
+                "\n  REVENTADO ya en el primer escalon (N={broke_at}): el muro fue {what}.\n"
+            ),
+            (None, Some(ok)) => println!(
+                "\n  NO reventó: aguantó hasta N={ok}, el último escalón probado.\n  \
+                 El techo real está por encima — sube la escalera si hace falta el número.\n"
+            ),
+            (None, None) => println!("\n  Escalera vacía: nada que medir.\n"),
+        }
+    }
 }
