@@ -586,6 +586,129 @@ fn default_page_count() -> u16 {
     1
 }
 
+// ─── ADR-144: la pose delgada del relay ───
+
+/// ADR-144 — lo COSMÉTICO de una pose: lo que no cambia de una ronda a la siguiente. Viaja dentro
+/// de `PoseWire` sólo cuando cambia (hash por par en el anfitrión) o como reparación periódica.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct PoseCosmetics {
+    pub equipment: [i32; 4],
+    pub held_item: i32,
+    pub carry_def: i32,
+    pub carry_count: u8,
+    pub species: u8,
+    pub vocal_kind: u8,
+}
+
+/// ADR-144 — una pose en el LOTE del relay. Lo cinemático y los contadores siempre; lo cosmético
+/// como `Option` (un byte `nil` cuando no va). Posicional, como todo desde ADR-137: el orden de
+/// los campos ES el wire.
+///
+/// `pos_cm` es RELATIVO al `origin_cm` del lote (la posición del destinatario tal y como la conoce
+/// el anfitrión): el AOI acota a 120 m y un `i16` en centímetros llega a ±327 m. `yaw_u16` reparte
+/// los 360° en 65 536 pasos (0,0055°). Un centímetro y cinco milésimas de grado quedan por debajo
+/// de lo que el proxy interpola: idéntico a la vista por construcción.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PoseWire {
+    pub pos_cm: [i16; 3],
+    pub yaw_u16: u16,
+    pub pitch: i8,
+    pub animation: PoseAnim,
+    /// bit 0 `crouch`, bit 1 `dead`, bit 2 `revealed`, bit 3 `light_on`.
+    pub flags: u8,
+    pub buttons: u16,
+    pub hit_seq: u8,
+    pub fire_seq: u8,
+    pub melee_seq: u8,
+    pub vocal_seq: u8,
+    pub cosmetics: Option<PoseCosmetics>,
+}
+
+impl PoseWire {
+    pub const FLAG_CROUCH: u8 = 1 << 0;
+    pub const FLAG_DEAD: u8 = 1 << 1;
+    pub const FLAG_REVEALED: u8 = 1 << 2;
+    pub const FLAG_LIGHT_ON: u8 = 1 << 3;
+
+    /// Metros → centímetros relativos, saturando: un origen a más de 327 m del destinatario no
+    /// cabe, y el AOI hace que no pase salvo en el primer instante de un recién llegado.
+    pub fn quantize_pos(position: [f32; 3], origin_cm: [i32; 3]) -> [i16; 3] {
+        let mut out = [0i16; 3];
+        for i in 0..3 {
+            let cm = (position[i] * 100.0).round() as i64 - origin_cm[i] as i64;
+            out[i] = cm.clamp(i16::MIN as i64, i16::MAX as i64) as i16;
+        }
+        out
+    }
+
+    pub fn dequantize_pos(pos_cm: [i16; 3], origin_cm: [i32; 3]) -> [f32; 3] {
+        let mut out = [0f32; 3];
+        for i in 0..3 {
+            out[i] = (origin_cm[i] as i64 + pos_cm[i] as i64) as f32 / 100.0;
+        }
+        out
+    }
+
+    /// Posición del destinatario en metros → origen del lote en centímetros enteros.
+    pub fn origin_cm(position: [f32; 3]) -> [i32; 3] {
+        [
+            (position[0] * 100.0).round() as i32,
+            (position[1] * 100.0).round() as i32,
+            (position[2] * 100.0).round() as i32,
+        ]
+    }
+
+    pub fn quantize_yaw(rotation_deg: f32) -> u16 {
+        let turns = rotation_deg.rem_euclid(360.0) / 360.0;
+        ((turns * 65536.0).round() as u32 & 0xFFFF) as u16
+    }
+
+    pub fn dequantize_yaw(yaw_u16: u16) -> f32 {
+        yaw_u16 as f32 / 65536.0 * 360.0
+    }
+
+    /// Reconstruye el `PlayerUpdate` de siempre a partir de la pose del lote. Si la pose es
+    /// delgada, los cosméticos salen de `fallback` (los que el receptor ya tenía de ese origen,
+    /// o los por defecto si nunca llegó una completa).
+    pub fn into_player_update(self, origin_cm: [i32; 3], fallback: PoseCosmetics) -> PacketPayload {
+        let c = self.cosmetics.unwrap_or(fallback);
+        PacketPayload::PlayerUpdate {
+            position: Self::dequantize_pos(self.pos_cm, origin_cm),
+            rotation: Self::dequantize_yaw(self.yaw_u16),
+            animation: self.animation,
+            crouch: self.flags & Self::FLAG_CROUCH != 0,
+            pitch: self.pitch,
+            equipment: c.equipment,
+            held_item: c.held_item,
+            hit_seq: self.hit_seq,
+            dead: self.flags & Self::FLAG_DEAD != 0,
+            revealed: self.flags & Self::FLAG_REVEALED != 0,
+            light_on: self.flags & Self::FLAG_LIGHT_ON != 0,
+            fire_seq: self.fire_seq,
+            buttons: self.buttons,
+            melee_seq: self.melee_seq,
+            vocal_seq: self.vocal_seq,
+            vocal_kind: c.vocal_kind,
+            carry_def: c.carry_def,
+            carry_count: c.carry_count,
+            species: c.species,
+        }
+    }
+}
+
+impl Default for PoseCosmetics {
+    fn default() -> Self {
+        Self {
+            equipment: [0; 4],
+            held_item: 0,
+            carry_def: 0,
+            carry_count: 0,
+            species: 0,
+            vocal_kind: 0,
+        }
+    }
+}
+
 // ─── Packet payload (MessagePack body after the 12-byte header) ───
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1254,12 +1377,16 @@ pub enum PacketPayload {
     /// Va al FINAL del enum a propósito: desde ADR-137 el formato es posicional y el orden de las
     /// variantes ES parte del wire.
     PlayerUpdateBatch {
+        /// ADR-144 D2 — origen de las posiciones relativas del lote: la posición del
+        /// destinatario, en centímetros enteros.
+        origin_cm: [i32; 3],
         /// De quién es cada pose, en el mismo orden que `updates`.
         senders: Vec<u16>,
-        /// Cada elemento es un `PlayerUpdate`. Se guarda así, y no como una struct con los 19
-        /// campos repetidos, para que añadir un campo a la pose no haya que hacerlo en dos sitios
-        /// — que es exactamente como se desincronizan dos formatos que deberían ser uno.
-        updates: Vec<PacketPayload>,
+        /// ADR-144 D1 — cada elemento es una `PoseWire`: delgada (sin cosméticos) en casi todas
+        /// las rondas, completa cuando cambian o como reparación. Un campo nuevo de pose se
+        /// añade en `PoseWire` Y en `PlayerUpdate`, y `into_player_update` es el sitio único
+        /// que los ata; el test de round-trip de abajo delata al que se olvide.
+        updates: Vec<PoseWire>,
     },
 }
 
@@ -1708,6 +1835,127 @@ mod tests {
             positional < named / 2,
             "las claves deberían ser más de la mitad del datagrama: named={named} posicional={positional}"
         );
+    }
+
+    /// ADR-144 — la pose del lote reconstruye el `PlayerUpdate` de siempre, delgada y completa,
+    /// con valores no-default y distintos entre sí (un campo mal colocado con ceros pasaría).
+    #[test]
+    fn pose_wire_round_trips_thin_and_full() {
+        let origin = PoseWire::origin_cm([100.25, 1.8, -50.0]);
+        let cosmetics = PoseCosmetics {
+            equipment: [101, 202, 303, 404],
+            held_item: 12345,
+            carry_def: -1208217892,
+            carry_count: 3,
+            species: 2,
+            vocal_kind: 7,
+        };
+        let full = PoseWire {
+            pos_cm: PoseWire::quantize_pos([110.0, 1.8, -20.5], origin),
+            yaw_u16: PoseWire::quantize_yaw(90.0),
+            pitch: -45,
+            animation: PoseAnim::PICKUP,
+            flags: PoseWire::FLAG_CROUCH | PoseWire::FLAG_REVEALED,
+            buttons: 0b11,
+            hit_seq: 7,
+            fire_seq: 9,
+            melee_seq: 4,
+            vocal_seq: 6,
+            cosmetics: Some(cosmetics),
+        };
+        let bytes = rmp_serde::to_vec(&full).unwrap();
+        let back: PoseWire = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(back, full);
+
+        let PacketPayload::PlayerUpdate {
+            position,
+            rotation,
+            animation,
+            crouch,
+            pitch,
+            equipment,
+            held_item,
+            hit_seq,
+            dead,
+            revealed,
+            light_on,
+            fire_seq,
+            buttons,
+            melee_seq,
+            vocal_seq,
+            vocal_kind,
+            carry_def,
+            carry_count,
+            species,
+        } = back.clone().into_player_update(origin, PoseCosmetics::default())
+        else {
+            panic!("into_player_update tiene que dar un PlayerUpdate");
+        };
+        assert!((position[0] - 110.0).abs() < 0.006 && (position[2] + 20.5).abs() < 0.006);
+        assert!((position[1] - 1.8).abs() < 0.006);
+        assert!((rotation - 90.0).abs() < 0.01);
+        assert_eq!(animation, PoseAnim::PICKUP);
+        assert!(crouch && revealed && !dead && !light_on);
+        assert_eq!(pitch, -45);
+        assert_eq!((equipment, held_item, carry_def, carry_count, species, vocal_kind),
+            ([101, 202, 303, 404], 12345, -1208217892, 3, 2, 7));
+        assert_eq!((hit_seq, fire_seq, buttons, melee_seq, vocal_seq), (7, 9, 0b11, 4, 6));
+
+        // Delgada: los cosméticos salen del fallback.
+        let thin = PoseWire { cosmetics: None, ..full.clone() };
+        let PacketPayload::PlayerUpdate { equipment, held_item, species, .. } =
+            thin.into_player_update(origin, cosmetics)
+        else {
+            panic!()
+        };
+        assert_eq!((equipment, held_item, species), ([101, 202, 303, 404], 12345, 2));
+    }
+
+    /// ADR-144 — los tamaños que justifican el ADR, atados a un test para que no se degraden en
+    /// silencio: delgada ≤ 24 B, completa ≤ 46 B, contra los 72 del `PlayerUpdate`.
+    #[test]
+    fn pose_wire_sizes_stay_within_the_adr_budget() {
+        let wire = PoseWire {
+            pos_cm: [1234, -180, 9876],
+            yaw_u16: 40000,
+            pitch: -45,
+            animation: PoseAnim::WALK,
+            flags: 0b1011,
+            buttons: 3,
+            hit_seq: 7,
+            fire_seq: 9,
+            melee_seq: 4,
+            vocal_seq: 6,
+            cosmetics: None,
+        };
+        let thin = rmp_serde::to_vec(&wire).unwrap().len();
+        let full = rmp_serde::to_vec(&PoseWire {
+            cosmetics: Some(PoseCosmetics {
+                equipment: [101, 202, 303, 404],
+                held_item: 12345,
+                carry_def: -1208217892,
+                carry_count: 3,
+                species: 2,
+                vocal_kind: 2,
+            }),
+            ..wire
+        })
+        .unwrap()
+        .len();
+        println!("PoseWire: delgada={thin} B  completa={full} B");
+        assert!(thin <= 24, "delgada={thin} B");
+        assert!(full <= 46, "completa={full} B");
+    }
+
+    /// ADR-144 D2 — la cuantización satura en vez de dar la vuelta, y el yaw cierra el círculo.
+    #[test]
+    fn quantization_saturates_and_yaw_wraps() {
+        let origin = PoseWire::origin_cm([0.0, 0.0, 0.0]);
+        assert_eq!(PoseWire::quantize_pos([1000.0, 0.0, -1000.0], origin), [i16::MAX, 0, i16::MIN]);
+        assert_eq!(PoseWire::quantize_pos([0.004, 0.006, -0.006], origin), [0, 1, -1]);
+        assert_eq!(PoseWire::quantize_yaw(360.0), 0);
+        assert_eq!(PoseWire::quantize_yaw(-90.0), PoseWire::quantize_yaw(270.0));
+        assert!((PoseWire::dequantize_yaw(PoseWire::quantize_yaw(123.456)) - 123.456).abs() < 0.006);
     }
 
     #[test]
