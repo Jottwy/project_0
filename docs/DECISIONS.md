@@ -17432,3 +17432,69 @@ destornillador; ADR-128 (mundo ×2) aplicado a las posiciones de estos props —
 
 ---
 
+## ADR-074 — Enmienda 5: la fase 2 (rosters por celda) se implementa, con el número de wire de hoy (2026-09-12) — APROBADA (Joel: «sigue con P3»)
+
+### Por qué esta enmienda y no un ADR nuevo
+
+La fase 2 está **diseñada entera** en la enmienda del 2026-08-15 (decisiones 1–7, más la corrección
+del gate) y su **mitad receptora está construida y probada** desde entonces: `CellRosterAssembler`
+(`roster.rs`), con la regla de tres líneas de `accept_scope_end` y siete tests. Lo que nunca se
+escribió es el emisor, así que ninguna de las dos mitades está viva: los cinco `broadcast_stp_*`
+siguen mandando el roster ENTERO a todo el mundo y los `handlers` siguen reensamblando con el
+`RosterAssembler` global. Esta enmienda no rediseña nada: dice que se implementa ahora, corrige el
+número de wire y fija los cuatro detalles que sólo aparecen al escribir el emisor.
+
+### Lo que se mide hoy, y que es el motivo
+
+Arnés `loot_and_buildings_by_world_age` (32 jugadores, 10 rondas, release):
+
+| Mundo | KB en 10 rondas |
+|---|---|
+| 50 objetos + 20 piezas | 189 |
+| 300 + 150 | 1 226 |
+| 1 000 + 400 | **3 924** |
+
+392 KB por ronda emitida con una base seria, y **crece con el tamaño del MUNDO, no con lo que el
+jugador ve**. Es el segundo techo medido el 2026-08-14 (convergencia entre 4 800 y 9 600 elementos:
+por encima, el roster deja de replicarse EN SILENCIO porque ninguna generación llega completa).
+
+### Correcciones y detalles nuevos
+
+**C1 — El bump es 65 → 66**, no 33 → 34: aquel número era el de agosto y el wire ya va por 65
+(ADR-144 D5). Las dos puntas en el mismo commit, como siempre.
+
+**C2 — Las páginas se serializan por CELDA, no por destinatario.** El troceo por celda se hace una
+vez por ronda y cada peer recibe las páginas de las celdas de su scope. Sin esto, 32 jugadores
+serializarían 32 veces el mismo contenido: el ahorro de cable se pagaría en CPU del anfitrión, que
+es justo el recurso que ADR-140 D4 acababa de liberar.
+
+**C3 — El orden de salida del receptor pasa a ser determinista.** `CellRosterAssembler.applied` era
+un `HashMap`, así que el roster plano salía en un orden que cambiaba entre rondas aunque el
+contenido fuese idéntico. Pasa a `BTreeMap` (orden por celda): regla dura 13, y además evita que el
+cliente vea "cambio" donde no lo hay.
+
+**C4 — Un destinatario sin posición conocida recibe el scope de (0,0).** No se le puede calcular el
+suyo, y dejarlo sin cierre lo congelaría. Dura una ronda: en cuanto su pose llega, el scope es el
+suyo. Es el mismo criterio que ADR-144 usa para el origen del lote de poses.
+
+**C5 — El scope lo decide la posición que el host tiene del peer** (`peers[id].position`), nunca la
+que el cliente diga, y se sigue prohibiendo que el cliente lo infiera (decisión 1 de la fase 2).
+
+### Lo que NO cambia
+
+El gate de ADR-071 sigue siendo por roster y global: si el contenido no cambió, no salen páginas
+**ni cierre** (la corrección de 2026-08-15, que es lo que impide borrar el mundo del cliente). El
+latido, la ráfaga de tres rondas, el retroceso de la enmienda 2 y el `yield_now` entre páginas
+siguen igual. La celda es el chunk (`world_to_chunk`) y el scope 5×5.
+
+### Orden de implementación (dos commits, y el primero no cambia ni un byte de comportamiento)
+
+1. **Mecanismo**: `cell` en los cinco paquetes de roster, opcode `RosterScopeEnd` con `kind`,
+   emisor troceando por celda, receptor con `CellRosterAssembler`, bump 66. El scope de esta
+   entrega es **todas las celdas**, así que cada peer sigue recibiendo el mundo entero: el
+   mecanismo entra vivo y probado sin que cambie lo que llega.
+2. **El ahorro**: el scope pasa a ser 5×5 alrededor del peer. Un diff pequeño y el número del arnés
+   antes/después.
+
+---
+
