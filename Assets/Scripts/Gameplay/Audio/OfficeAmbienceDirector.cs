@@ -526,8 +526,14 @@ namespace BackroomsSurvival.Gameplay.Audio
 
         private const float CutoffOpen = 22000f;
         private const float CutoffOccluded = 900f;
+        // Suelo del corte con 2+ paredes (AudioOcclusionMath.Cutoff extrapola por debajo de
+        // CutoffOccluded): con un teléfono a 18 m es fácil cruzar tres tabiques de golpe.
+        private const float CutoffFloorDeep = 250f;
         private const float OcclusionTau = 0.25f;  // cruzar un vano no da un salto
         private const float OccludedVolume = 0.45f;
+
+        // Buffer de la sonda de paredes: reusado cada frame para no asignar.
+        private readonly RaycastHit[] _wallHits = new RaycastHit[4];
 
         /// <summary>Una sonda por FRAME rotando entre las seis fuentes: el coste queda plano en
         /// vez de en picos, y cada fuente se revisa ~10 veces por segundo a 60 fps.</summary>
@@ -732,8 +738,10 @@ namespace BackroomsSurvival.Gameplay.Audio
             Slot slot = _slots[_occlusionCursor];
             if (slot.mode == SlotMode.Idle) { slot.occlusion = 0f; return; }
 
-            slot.occlusion = Physics.Linecast(_listener.position, slot.tr.position,
-                GeometryMask, QueryTriggerInteraction.Ignore) ? 1f : 0f;
+            // Ya no es sí/no: CUENTA cuántas paredes cruza, así que un teléfono a través de dos
+            // tabiques suena más tapado que uno detrás de un solo panel.
+            slot.occlusion = AudioOcclusionMath.CountWalls(_listener.position, slot.tr.position,
+                GeometryMask, _wallHits);
         }
 
         private void PruneDeadBatches()
@@ -923,7 +931,7 @@ namespace BackroomsSurvival.Gameplay.Audio
             slot.target = 0f;
             slot.busyUntil = now + clip.length + 0.05f;
             SnapOcclusion(slot);
-            slot.src.volume = Mathf.Lerp(1f, OccludedVolume, slot.occlusionNow);
+            slot.src.volume = AudioOcclusionMath.VolumeGain(slot.occlusionNow, OccludedVolume);
             slot.src.PlayOneShot(clip, KindVolume[k] * _masterVolume);
         }
 
@@ -937,11 +945,12 @@ namespace BackroomsSurvival.Gameplay.Audio
         /// </summary>
         private void SnapOcclusion(Slot slot)
         {
-            slot.occlusion = _listener != null && GeometryMask != 0 && Physics.Linecast(
-                _listener.position, slot.tr.position,
-                GeometryMask, QueryTriggerInteraction.Ignore) ? 1f : 0f;
+            slot.occlusion = (_listener != null && GeometryMask != 0)
+                ? AudioOcclusionMath.CountWalls(_listener.position, slot.tr.position, GeometryMask, _wallHits)
+                : 0f;
             slot.occlusionNow = slot.occlusion;
-            slot.lowPass.cutoffFrequency = Mathf.Lerp(CutoffOpen, CutoffOccluded, slot.occlusionNow);
+            slot.lowPass.cutoffFrequency = AudioOcclusionMath.Cutoff(
+                slot.occlusionNow, CutoffOpen, CutoffOccluded, CutoffFloorDeep);
         }
 
         private void DriveSlots(float dt, float now)
@@ -955,9 +964,9 @@ namespace BackroomsSurvival.Gameplay.Audio
                 // frame: sin esto, cruzar un vano daría un escalón de filtro y de volumen.
                 slot.occlusionNow = Mathf.Lerp(slot.occlusionNow, slot.occlusion,
                     Mathf.Clamp01(dt / OcclusionTau));
-                slot.lowPass.cutoffFrequency =
-                    Mathf.Lerp(CutoffOpen, CutoffOccluded, slot.occlusionNow);
-                float duck = Mathf.Lerp(1f, OccludedVolume, slot.occlusionNow);
+                slot.lowPass.cutoffFrequency = AudioOcclusionMath.Cutoff(
+                    slot.occlusionNow, CutoffOpen, CutoffOccluded, CutoffFloorDeep);
+                float duck = AudioOcclusionMath.VolumeGain(slot.occlusionNow, OccludedVolume);
 
                 switch (slot.mode)
                 {

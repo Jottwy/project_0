@@ -102,7 +102,15 @@ namespace BackroomsSurvival.Gameplay.Audio
         // sin borrarlo.
         private const float CutoffOpen     = 22000f;
         private const float CutoffOccluded = 800f;
+        // Suelo del corte con 2+ paredes (AudioOcclusionMath.Cutoff extrapola por debajo de
+        // CutoffOccluded): sin él, tres paredes seguidas mandarían el low-pass a un número
+        // negativo y el resultado se oiría como silencio roto, no como "muy amortiguado".
+        private const float CutoffFloorDeep = 200f;
         private const float OcclusionTau   = 0.25f; // suavizado: cruzar un vano no da un salto
+
+        // Buffer de la sonda de paredes: reusado cada frame para no asignar. Cuatro basta —
+        // más de tres paredes seguidas ya deja el zumbido inaudible antes de agotarlo.
+        private readonly RaycastHit[] _wallHits = new RaycastHit[4];
 
         /// <summary>
         /// Un raycast por FRAME en round-robin, no ocho de golpe. Con 8 fuentes cada una se
@@ -622,7 +630,7 @@ namespace BackroomsSurvival.Gameplay.Audio
 
                 // baseVolume NO se toca: lo refresca el ajuste en vivo desde la config, y
                 // meterle aquí la oclusión lo iría apagando acumulativamente cada frame.
-                float occGain = Mathf.Lerp(1f, OccludedVolume, slot.occlusionNow);
+                float occGain = AudioOcclusionMath.VolumeGain(slot.occlusionNow, OccludedVolume);
                 float isoGain = IsolationDirector.ColourHumVolume(1f);
                 slot.src.volume = slot.baseVolume * slot.envelope * slot.flickerGain
                                 * occGain * isoGain * _masterVolume;
@@ -670,8 +678,8 @@ namespace BackroomsSurvival.Gameplay.Audio
                 Mathf.Clamp01(dt / OcclusionTau));
             // El corte se interpola sobre el VALOR ya suavizado, no sobre el objetivo: así un
             // vano cruzado a la carrera no produce un escalón de filtro.
-            slot.lowPass.cutoffFrequency =
-                Mathf.Lerp(CutoffOpen, CutoffOccluded, slot.occlusionNow);
+            slot.lowPass.cutoffFrequency = AudioOcclusionMath.Cutoff(
+                slot.occlusionNow, CutoffOpen, CutoffOccluded, CutoffFloorDeep);
         }
 
         /// <summary>
@@ -688,10 +696,10 @@ namespace BackroomsSurvival.Gameplay.Audio
 
             // Contra la geometría del mundo y nada más: props, jugadores y el propio rig no
             // deben tapar una lámpara, y QueryTriggerInteraction.Ignore evita que un volumen
-            // de disparo cuente como pared.
-            bool blocked = Physics.Linecast(_listener.position, slot.tr.position,
-                GridChunkBuilder.GeoMask, QueryTriggerInteraction.Ignore);
-            slot.occlusion = blocked ? 1f : 0f;
+            // de disparo cuente como pared. Ya no es sí/no: CUENTA cuántas cruza, así que una
+            // lámpara al otro lado de dos tabiques suena más tapada que una detrás de uno solo.
+            slot.occlusion = AudioOcclusionMath.CountWalls(_listener.position, slot.tr.position,
+                GridChunkBuilder.GeoMask, _wallHits);
         }
 
         // ── Selección (pura, y por eso testeable) ───────────────────────────────
