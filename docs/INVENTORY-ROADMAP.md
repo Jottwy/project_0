@@ -6,6 +6,7 @@
 
 Maquetas (privadas, en claude.ai):
 - **Vigente — Inventario del superviviente** (pantalla única con todo lo decidido): https://claude.ai/code/artifact/a6e37c3e-3c76-4cd7-a5ff-2c7be05d96e2
+- **Laboratorio de casillas** (anatomía de la casilla, consumo por uso, chaqueta que se rompe por zonas): https://claude.ai/code/artifact/954d887c-bbd3-4705-820f-575533665636
 - Histórico: carpeta de expediente (descartada) https://claude.ai/code/artifact/fa50a401-6765-4ac0-80d0-919825e05d2a ·
   mochila abierta con tres tipos https://claude.ai/code/artifact/fa8937b4-f523-47da-abb4-9388f93de1eb ·
   inventario ordenado por el cuerpo https://claude.ai/code/artifact/a938f1c3-0c7d-4d0b-88c8-89f663d325ce
@@ -161,3 +162,73 @@ Nada de esto estaba escrito antes. Dirección: realismo a lo SCUM, adaptado a lo
   **desbloquea**, no informa: un wiki de fans existirá igual. La web del juego se genera del mismo JSON de recetas que
   usan servidor y cliente (`CraftingRecipesOracle`); **nada de navegador real embebido** (plugin de pago, sin conexión no
   va, superficie de seguridad). Las recetas aprendidas van al guardado: ADR.
+
+## Desgaste, consumo y rotura (2026-09-12, laboratorio de casillas)
+
+### D9 — Desgaste en porcentaje continuo — DECIDIDO
+Herramientas y ropa tienen condición 0–100 % continua (no cinco estados discretos). Cada uso o golpe resta; la
+barra de la casilla es continua. Recomendado, sin confirmar: entero en pantalla y decimales ocultos por debajo.
+A 0 % nada desaparece: queda **inservible y se desmonta** en piezas (tela, chatarra, muelle).
+Vendor: ya hay propiedad de durabilidad en los items, `WieldableDurabilityDepleter`, `RepairStation` y `DismantleAction`.
+
+### D10 — Los consumibles se gastan por uso y el icono lo enseña — DECIDIDO
+Cinta, hilo, gas, agua: se gastan en porcentaje según el tamaño del trabajo, no por unidades (el vendor gasta
+unidades: esto es propio). **El dibujo de la casilla cambia con lo que queda**: el rollo de cinta adelgaza, el nivel
+de agua y de gas se ve a través del envase, el carrete de hilo se vacía; la herramienta se oxida y se mella.
+La cinta a 0 % deja el **tubo de cartón**; la botella vacía queda para rellenar.
+Cifras de laboratorio: parche pequeño −10 % de cinta, grande −25 %; coser un corte −8 % de hilo, un desgarro −15 % y 1 tela.
+
+Anatomía de la casilla, siempre en el mismo sitio: (1) dibujo según lo que queda, (2) medidor de tamaño (D7),
+(3) cantidad solo si se apila (D8), (4) barra continua — condición o cantidad restante —, (5) una marca de estado
+como mucho (parcheado, roto, húmedo, sucio, vacío).
+
+### D11 — La ropa se rompe donde recibe el golpe — DECIDIDO en dirección, sin ADR
+Joel lo quiere, sabiendo que es caro. Todas estas consecuencias entran:
+- Cada prenda se divide en **zonas con su protección** (chaqueta de laboratorio: pecho izq./der., costado izq./der.,
+  manga izq./der.; protección base 20 %).
+- Un disparo o una puñalada **dentro de un bolsillo lo destroza y su contenido cae**; fuera de un bolsillo solo abre
+  agujero. Laboratorio: desgarro deja la zona a 0 % de protección, corte al 40 %.
+- **La cinta tapa el agujero y devuelve parte de la protección (60 % de la base), pero NO devuelve el bolsillo** (Joel).
+- Reparar con materiales; inservible se desmonta.
+
+Pendiente de Joel (recomendación entre paréntesis):
+1. ¿Coser devuelve el bolsillo? (sí, con hilo y, si es desgarro, tela: arreglo rápido = cinta, arreglo bueno = coser; protección al 90 %).
+2. ¿Lo que cae por el agujero va al suelo del mundo en el acto? (sí, se oye y se puede recoger).
+3. ¿Qué decide si el golpe dio en el bolsillo? (probabilidad dentro de la zona del cuerpo según lo que cubre el
+   bolsillo, antes que el punto exacto sobre la malla).
+4. ¿La condición afecta a algo más que la protección (abrigo, reparto)? Cada efecto entra en la lista cerrada de D6.
+
+**Depende del cuerpo por zonas**: hoy hay un solo hitbox en el tronco; sin saber que el golpe fue en el costado
+izquierdo, la ropa no puede romperse ahí. D11 va detrás de ese ADR.
+
+### En el modelo 3D — PROPUESTO
+**El estado manda y el modelo lo pinta.** La prenda guarda por zona sana/corte/desgarro/parcheada/cosida y por
+bolsillo entero/roto: unos pocos bits, que son la verdad de juego, guardado y red. El shader dibuja a partir de ese
+estado y de una semilla por impacto; ningún cliente necesita la posición exacta (mismo patrón que ADR-143).
+
+| Técnica | Veredicto |
+|---|---|
+| **Falso agujero**: el shader oscurece con borde deshilachado por ruido; cinta y costura como capas encima | **Empezar aquí.** A distancia de juego se lee como agujero |
+| Recorte real (alpha clip) | Solo si el falso se queda corto. **Sin comprobar** si el cuerpo bajo la ropa está oculto (se vería el vacío) |
+| Piezas intactas/rotas pre-modeladas | Mucho arte por prenda; solo prendas icónicas |
+| Decals de URP | **No**: en mallas animadas el decal resbala |
+| Tela simulada o malla que se rasga | Fuera de alcance |
+
+Cómo sabe el shader dónde está cada zona sin depender de las UV (las de Meshy suelen venir desordenadas): **color de
+vértice por zona** pintado en Blender; centros de los agujeros como array corto (≤16 por prenda) vía
+`MaterialPropertyBlock`; **pose de reposo del vértice guardada en un canal extra al importar** (`AssetPostprocessor`)
+para que la marca no resbale con la animación.
+
+Condicionantes del proyecto:
+- **Primera persona**: las mangas viven dentro de cada wieldable (memoria `fp-arms-live-inside-each-wieldable`) y todo
+  lo colgado de los brazos 1P warpea (regla 14, ADR-077 enm. 2). El shader de daño necesita variante warpeada y el
+  estado se reaplica a los brazos de cada arma al cambiar.
+- **Red**: nunca en la pose (65 B, medida al byte); mensaje fiable solo cuando cambia. Entra en el guardado: ADR y
+  bump de wire, junto a la enmienda de ADR-022.
+
+Troceado:
+- **A** — solo inventario: zonas, bolsillos rotos, cinta y costura en casillas y muñeco. Sin 3D.
+- **B** — spike visual local: falso agujero, cinta y costura en **una sola prenda** (chaqueta de trabajo), 3P y brazos
+  1P, sin red. Decide si merece la pena.
+- **C** — los demás lo ven: mensaje fiable, guardado, ADR.
+- **D** — recorte real o piezas rotas en prendas concretas, solo si el falso agujero no basta.
