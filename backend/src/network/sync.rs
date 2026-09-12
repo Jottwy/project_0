@@ -1408,6 +1408,40 @@ pub fn tramo_predicts(
     (pitch as i16 - mark.pitch as i16).abs() <= TRAMO_PITCH_TOLERANCE
 }
 
+/// ADR-146 D3 — tope de extrapolación en el RECEPTOR. Por encima del peor hueco de reparación del
+/// anfitrión (1 s de `TRAMO_REPAIR` más los 200 ms de la cadencia mínima): mientras el origen siga
+/// dentro del AOI, siempre llega un tramo nuevo antes. Pasado esto el proxy se CONGELA en vez de
+/// seguir andando hacia donde ya no está.
+pub const TRAMO_MAX_EXTRAPOLATION: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// ADR-146 D3 — lo último que un receptor sabe del movimiento de un origen relayado: posición y
+/// velocidad tal como llegaron, y cuándo llegaron (reloj del RECEPTOR).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TramoBase {
+    pub pos: [f32; 3],
+    pub vel: [f32; 3],
+    pub at: std::time::Instant,
+}
+
+/// ADR-146 D3 — la posición del origen en `now`, extrapolada desde su base con tope.
+pub fn extrapolate_tramo(base: &TramoBase, now: std::time::Instant) -> [f32; 3] {
+    let t = now
+        .saturating_duration_since(base.at)
+        .min(TRAMO_MAX_EXTRAPOLATION)
+        .as_secs_f32();
+    [
+        base.pos[0] + base.vel[0] * t,
+        base.pos[1] + base.vel[1] * t,
+        base.pos[2] + base.vel[2] * t,
+    ]
+}
+
+/// ADR-146 D3 — si la base todavía manda sobre la posición del origen. Mientras viva, un roster no
+/// puede escribirla: su foto es más vieja que la extrapolación.
+pub fn tramo_base_is_live(base: &TramoBase, now: std::time::Instant) -> bool {
+    now.saturating_duration_since(base.at) < TRAMO_MAX_EXTRAPOLATION
+}
+
 /// Dentro de esta distancia el aforo NO recorta: un tiroteo cuerpo a cuerpo en una sala llena
 /// sigue a la cadencia de la curva. Es lo que Joel pidió: «si están a 2 metros de ti se vean a
 /// 30 Hz».
@@ -5760,7 +5794,7 @@ mod tramo_velocity_tests {
     /// D6: mientras no haya medida, el gate sigue apagado. Encenderlo es una decisión con número.
     #[test]
     fn the_tramo_gate_ships_off() {
-        assert!(!TRAMO_GATE_ENABLED);
+        const { assert!(!TRAMO_GATE_ENABLED) };
     }
 }
 
@@ -5923,5 +5957,53 @@ mod tramo_gate_tests {
             ..wire
         };
         assert_eq!(base, pose_discrete_hash(&moving, 1));
+    }
+}
+
+/// ADR-146 D3 — la extrapolación del receptor, como función pura.
+#[cfg(test)]
+mod tramo_receiver_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    fn walking(at: Instant) -> TramoBase {
+        TramoBase {
+            pos: [10.0, 1.8, -4.0],
+            vel: [3.0, 0.0, -1.0],
+            at,
+        }
+    }
+
+    #[test]
+    fn the_receiver_walks_the_tramo_forward() {
+        let t0 = Instant::now();
+        let p = extrapolate_tramo(&walking(t0), t0 + Duration::from_millis(500));
+        assert!(
+            (p[0] - 11.5).abs() < 1e-4 && (p[2] + 4.5).abs() < 1e-4,
+            "{p:?}"
+        );
+        assert_eq!(p[1], 1.8);
+    }
+
+    #[test]
+    fn past_the_cap_the_proxy_freezes_instead_of_walking_on() {
+        let t0 = Instant::now();
+        let base = walking(t0);
+        let at_cap = extrapolate_tramo(&base, t0 + TRAMO_MAX_EXTRAPOLATION);
+        let way_later = extrapolate_tramo(&base, t0 + Duration::from_secs(30));
+        assert_eq!(at_cap, way_later);
+        assert!(tramo_base_is_live(
+            &base,
+            t0 + TRAMO_MAX_EXTRAPOLATION - Duration::from_millis(1)
+        ));
+        assert!(!tramo_base_is_live(&base, t0 + TRAMO_MAX_EXTRAPOLATION));
+    }
+
+    /// El tope tiene que cubrir el peor hueco del anfitrión, o un origen quieto en el AOI se
+    /// congelaría y saltaría en cada reparación.
+    #[test]
+    fn the_cap_covers_the_worst_repair_gap() {
+        let worst_gap = TRAMO_REPAIR + Duration::from_millis(1000 / POSE_HZ_FLOOR);
+        assert!(TRAMO_MAX_EXTRAPOLATION > worst_gap);
     }
 }

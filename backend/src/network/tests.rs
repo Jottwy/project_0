@@ -2338,6 +2338,84 @@ async fn the_tramo_gate_skips_a_straight_walk_and_never_seals_cosmetics_on_a_ski
     );
 }
 
+/// ADR-146 D3 — el receptor sobre sockets reales. Una criatura camina y el joiner guarda la base
+/// de su tramo; sin poses nuevas, avanzar el reloj la mueve con su velocidad; un roster con la foto
+/// del anfitrión NO la devuelve atrás mientras el tramo vive (el tirón de `handlers.rs` que señaló
+/// la auditoría), y SÍ la corrige cuando el tramo ha caducado — el control positivo.
+#[tokio::test]
+async fn the_joiner_extrapolates_a_relayed_tramo_and_a_roster_does_not_pull_it_back() {
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let host_addr = loopback_addr(&host);
+    let mut joiner = NetworkManager::bind(0, 4001, 0, false).await.unwrap();
+    joiner.initiate_connection(host_addr).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    host.process_incoming().await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    joiner.process_incoming().await;
+
+    let walker = host.spawn_phantom("Caminante", [0.0, 1.8, 0.0], None);
+    place_peer(&mut host, walker, [0.0, 1.8, 0.0]);
+    place_peer(&mut host, 4001, [0.0, 1.8, -2.0]);
+    let host_player = crate::player::session::Player::new(host.local_id, "Host");
+    crate::network::sync::broadcast_peer_roster(&mut host, &host_player).await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    joiner.process_incoming().await;
+    assert!(
+        joiner.peers.contains_key(&walker),
+        "setup: el joiner registra a la criatura"
+    );
+
+    // Diez rondas a 3 m/s en +X con reloj sintético: el anfitrión estima y manda la velocidad.
+    let t0 = std::time::Instant::now();
+    let step = Duration::from_millis(33);
+    for i in 0..10u32 {
+        let x = 3.0 * (step * i).as_secs_f32();
+        place_peer(&mut host, walker, [x, 1.8, 0.0]);
+        crate::network::sync::broadcast_peer_poses_at(&mut host, None, t0 + step * i).await;
+    }
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    joiner.process_incoming().await;
+    let base = *joiner
+        .relay_tramo_base
+        .get(&walker)
+        .expect("el lote deja base de tramo en el receptor");
+    assert!(base.vel[0] > 2.0 && base.vel[0] < 3.5, "vel={:?}", base.vel);
+
+    // Medio segundo después, sin poses nuevas: el proxy sigue andando con su velocidad.
+    joiner.advance_relayed_tramos(base.at + Duration::from_millis(500));
+    let advanced = joiner.peers[&walker].position;
+    let expected_x = base.pos[0] + base.vel[0] * 0.5;
+    assert!(
+        (advanced[0] - expected_x).abs() < 0.01,
+        "avanzado {advanced:?}, esperado x={expected_x}"
+    );
+
+    // Un roster con la foto del anfitrión NO lo devuelve atrás mientras el tramo vive.
+    place_peer(&mut host, walker, [0.2, 1.8, 0.0]);
+    crate::network::sync::broadcast_peer_roster(&mut host, &host_player).await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    joiner.process_incoming().await;
+    assert_eq!(
+        joiner.peers[&walker].position, advanced,
+        "con el tramo vivo, el roster no puede hacer retroceder al proxy"
+    );
+
+    // Con el tramo caducado, el roster vuelve a mandar. Sin este control, el assert de arriba
+    // pasaría igual si el roster no hubiera llegado.
+    joiner.relay_tramo_base.get_mut(&walker).unwrap().at = std::time::Instant::now()
+        - crate::network::sync::TRAMO_MAX_EXTRAPOLATION
+        - Duration::from_millis(10);
+    place_peer(&mut host, walker, [0.4, 1.8, 0.0]);
+    crate::network::sync::broadcast_peer_roster(&mut host, &host_player).await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    joiner.process_incoming().await;
+    assert_eq!(
+        joiner.peers[&walker].position,
+        [0.4, 1.8, 0.0],
+        "con el tramo caducado, el roster corrige la posición"
+    );
+}
+
 /// **La verificación de E1 que las sondas no dan**: tres backends reales hablando por UDP, y se
 /// cuenta lo que cada joiner RECIBE — no lo que el emisor cree que manda.
 ///

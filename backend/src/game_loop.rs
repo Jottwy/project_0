@@ -1966,6 +1966,9 @@ pub async fn run(
             )
             .await;
         }
+        // ADR-146 D3: en un joiner, los orígenes relayados avanzan con su tramo hasta ESTE tick,
+        // antes de que nada lea `peer.position`. En el anfitrión no hay bases y no hace nada.
+        net.advance_relayed_tramos(std::time::Instant::now());
         phases.add(PH_NET_IN, t_phase.elapsed());
 
         // ADR-045 Fase 2: resolve the per-player save file, exactly once, the first tick both

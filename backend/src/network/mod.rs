@@ -308,6 +308,11 @@ pub struct NetworkManager {
     /// ADR-146 D6 — el gate de tramos, encendido o no. Nace de `sync::TRAMO_GATE_ENABLED`, y es un
     /// campo y no sólo la constante para que el arnés mida apagado y encendido en la misma corrida.
     pub tramo_gate_enabled: bool,
+    /// ADR-146 D3 — en el RECEPTOR: la base del último tramo de cada origen relayado. Vive aparte de
+    /// `peer.position`, como `relay_cosmetics`, porque la posición es lo que se extrapola desde aquí
+    /// y un roster no la puede pisar mientras la base esté viva. Se va con el peer en
+    /// `purge_peer_state`. El anfitrión nunca abre lotes, así que en él queda vacío.
+    pub relay_tramo_base: std::collections::HashMap<PeerId, crate::network::sync::TramoBase>,
     /// ADR-074 enm. 4 — factor de aforo por DESTINATARIO (1 = la curva tal cual, menos = todos
     /// sus orígenes salvo los pegados bajan de cadencia en proporción). Se mueve despacio hacia su
     /// objetivo, ronda a ronda, para que entrar o salir gente no dé un salto de cadencia.
@@ -702,6 +707,7 @@ impl NetworkManager {
             pose_velocity: std::collections::HashMap::new(),
             pose_tramo_sent: std::collections::HashMap::new(),
             tramo_gate_enabled: crate::network::sync::TRAMO_GATE_ENABLED,
+            relay_tramo_base: std::collections::HashMap::new(),
             pose_budget_factor: std::collections::HashMap::new(),
             pending_full_sync: std::collections::HashMap::new(),
             pose_relay_round: 0,
@@ -1198,11 +1204,23 @@ impl NetworkManager {
                 // nunca llegó una completa, con los por defecto (la primera completa viene en la
                 // misma ronda, D3), igual que un peer viejo ante un campo desconocido.
                 let origin_cm = *origin_cm;
+                // ADR-146 D3: la base del tramo se sella con el reloj del RECEPTOR, que es con el que
+                // se extrapola. Uno por lote: todas sus poses llegaron en el mismo datagrama.
+                let arrived = std::time::Instant::now();
                 let entries: Vec<(u16, crate::network::protocol::PacketPayload)> = senders
                     .iter()
                     .copied()
                     .zip(updates.iter().cloned())
                     .map(|(sender, wire)| {
+                        use crate::network::protocol::PoseWire;
+                        self.relay_tramo_base.insert(
+                            sender,
+                            crate::network::sync::TramoBase {
+                                pos: PoseWire::dequantize_pos(wire.pos_cm, origin_cm),
+                                vel: PoseWire::dequantize_vel(wire.vel_cms),
+                                at: arrived,
+                            },
+                        );
                         let fallback = match wire.cosmetics {
                             Some(full) => {
                                 self.relay_cosmetics.insert(sender, full);
@@ -1235,6 +1253,31 @@ impl NetworkManager {
             events.extend(self.handle_packet(pkt).await);
         }
         events
+    }
+
+    /// ADR-146 D3 — en el RECEPTOR, una vez por tick: cada origen con base de tramo avanza hasta
+    /// `now` con su velocidad, con tope. Lo ven `build_world_state` (y con él Unity) y todo lo que en
+    /// el joiner lea `peer.position`. Iterar el mapa aquí no emite nada, así que su orden da igual.
+    pub fn advance_relayed_tramos(&mut self, now: std::time::Instant) {
+        for (id, base) in &self.relay_tramo_base {
+            if let Some(peer) = self.peers.get_mut(id) {
+                peer.position = crate::network::sync::extrapolate_tramo(base, now);
+            }
+        }
+    }
+
+    /// ADR-146 D3 — la posición que un ROSTER (`PeerList`) puede escribir en un peer. Con base de
+    /// tramo viva, la del roster es una foto del anfitrión más vieja que la extrapolación, y
+    /// aplicarla haría retroceder al proxy en cada roster: se conserva la actual. Sin base, o con la
+    /// base caducada, manda el roster como siempre.
+    pub(super) fn roster_position(&self, id: PeerId, roster_pos: [f32; 3]) -> [f32; 3] {
+        let now = std::time::Instant::now();
+        match (self.relay_tramo_base.get(&id), self.peers.get(&id)) {
+            (Some(base), Some(peer)) if crate::network::sync::tramo_base_is_live(base, now) => {
+                peer.position
+            }
+            _ => roster_pos,
+        }
     }
 
     /// F0.3: encola un evento para que `process_incoming` lo emita en su próxima pasada.

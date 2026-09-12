@@ -315,6 +315,8 @@ impl NetworkManager {
                     if info.id == self.local_id {
                         continue; // never track ourselves as a remote
                     }
+                    // ADR-146 D3: con un tramo vivo, la foto del roster no pisa la extrapolación.
+                    let roster_pos = self.roster_position(info.id, info.position);
                     if info.relay_only {
                         // ADR-079: entrada solo-relay (el fantasma del host). Se registra para
                         // que las poses relayadas (ADR-015) tengan dónde aplicar — sin esto la
@@ -337,13 +339,13 @@ impl NetworkManager {
                         entry.relay_only = true;
                         let rot = entry.rotation;
                         let anim = entry.animation;
-                        entry.update_player_state(info.position, rot, anim);
+                        entry.update_player_state(roster_pos, rot, anim);
                         continue;
                     }
                     if let Some(peer) = self.peers.get_mut(&info.id) {
                         let rot = peer.rotation;
                         let anim = peer.animation;
-                        peer.update_player_state(info.position, rot, anim);
+                        peer.update_player_state(roster_pos, rot, anim);
                     } else if let Ok(addr) = info.addr.parse::<SocketAddr>() {
                         // Auditoría de heartbeat (2026-08-30): la dirección tiene que ser de
                         // ALGUIEN. Una sin especificar (`0.0.0.0`) significa "esta máquina" al
@@ -1469,6 +1471,9 @@ impl NetworkManager {
     pub fn peer_ids(&self) -> Vec<PeerId> {
         let mut ids: Vec<PeerId> = self.peers.keys().copied().collect();
         ids.sort_unstable();
+        // ADR-146 D3 — la base del tramo también es estado indexado por PeerId: sin esto, el que
+        // heredara el número extrapolaría desde la última pose del anterior.
+        self.relay_tramo_base.remove(&id);
         ids
     }
 
