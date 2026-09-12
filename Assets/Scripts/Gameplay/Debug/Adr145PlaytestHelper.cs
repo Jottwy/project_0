@@ -68,9 +68,25 @@ namespace BackroomsSurvival.Gameplay.Debug_
                 return "ADR145: destornillador no encontrado en el catálogo.";
 
             var (added, rejectReason) = character.Inventory.AddItemsById(def.Id, 1);
-            return added > 0
-                ? "ADR145: destornillador en la mochila."
-                : $"ADR145: no cupo el destornillador ({rejectReason}).";
+            if (added <= 0)
+                return $"ADR145: no cupo el destornillador ({rejectReason}).";
+
+            // AddItemsById sólo lo mete en la mochila (Inventory.cs no llama a SelectAtIndex en
+            // ningún punto) — equiparlo es SIEMPRE una acción aparte del jugador (tecla de hotbar,
+            // clic en "Equip", o recogerlo del mundo por WieldableItemPickup). Sin esto el
+            // jugador sigue golpeando con lo que tuviera antes en la mano, y el destornillador se
+            // queda de adorno en la mochila — exactamente lo que pasó en el primer playtest real.
+            var holster = character.Inventory.FindContainer(ItemContainerFilters.WithTag(ItemConstants.WieldableTag));
+            var wieldableInventory = character.GetCC<IWieldableInventoryCC>();
+            if (holster == null || wieldableInventory == null)
+                return "ADR145: destornillador en la mochila, sin holster/CC para equiparlo solo (equípalo a mano).";
+
+            var slot = holster.FindSlot(ItemSlotFilters.WithItemId(def.Id));
+            if (!slot.IsValid())
+                return "ADR145: destornillador en la mochila, no entró en el holster (equípalo a mano).";
+
+            wieldableInventory.SelectAtIndex(slot.Index, false);
+            return "ADR145: destornillador equipado en la mano.";
         }
 
         private static string JumpToNearestOffice(ICharacter character)
