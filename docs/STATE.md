@@ -4,7 +4,7 @@
 > `docs/SESSION-LOG.md`, donde vive todo el histórico. Aquí sólo lo vigente.
 
 ## Estado
-- **WorldGen3 es el mundo servido.** Wire **64** en las dos puntas (`ipc/server.rs:38`, `WireSchema.cs:25`) — ADR-143 lo subió el 12-09.
+- **WorldGen3 es el mundo servido.** Wire **66** en las dos puntas (`ipc/server.rs:38`, `WireSchema.cs:25`) — ADR-074 fase 2 lo subió el 12-09.
 - **Contrato WG3 v1 = Alpha 1** (`docs/WG3-ALPHA1-ROADMAP.md`): días 1–2 hechos; 3 y 5 APARCADOS detrás de la tanda de oficinas (Joel, 06-09).
 - **Multijugador por Steam, SIN LAG** (10-09): **253,8 → 13,9 KB/s**, cola → **0**. **Build 25238618 SUBIDA con todo (wire 63), SIN rama: Joel la habilita.**
 - **El commit tiene gate** (`tools/dev/validate-scope.ps1`, hook PreToolUse): rojo = el commit no se ejecuta. Alcance por `git diff --cached`.
@@ -95,7 +95,13 @@
 
 ## Últimas tandas
 
-### 2026-09-12 — 53.ª tanda: el tronco con ADR-074 fase 2 fusionado, y lo que aún no estaba escrito
+### 2026-09-12 — 53.ª tanda: más jugadores por partida — la subida del host de 4 786 a ~320 KB/s con 50 juntos (wire 66)
+- **El techo es la SUBIDA del host, no la CPU** (2,7 ms/ronda con 50). Plan P0–P4 de Joel: P0 fusión del lag, P1 cadencia cúbica (ADR-074 enm. 3),
+  P2 pose delgada (ADR-144, 23/45 B), aforo por destino + cono ENCENDIDO (enm. 4), P3 rosters por celda con scope 5×5 (enm. 5–6). P4 VPS bloqueado.
+- **Arnés N=50 juntos, KB/s**: 4 786 → 3 472 (cúbica) → 1 371 (ADR-144) → 612 (aforo y cono), régimen ~320: el techo es el suelo de 5 Hz.
+- **Rosters** (`2eab4fc7`, `eda78987`): N=32 en 1 km², 1000 + 400 → **~1300 a 95,8 KB** por ronda. La entrega 1 no subió el wire; la 2 sí (enm. 6).
+- **Host+joiner reales sin Unity** (cliente IPC en Python): 6/6, objetos cerca sí, lejos no, entran y salen al moverse. **NADA visto en Play**:
+  el cliente de Steam va en wire 63; probar en la próxima build cruzar fronteras de celda y remotos lejanos a 5 Hz.
 - **Steam sin `SetLive`**: 25272104 (wire 64) y 25272796 (+ traza RTT). Con wire 66 la próxima pide cliente reconstruido, desde el CLON PRINCIPAL.
 - **RTT por peer en `MPTRACE step=RTT`** (Karn: nunca de un reenviado; 0 = sin muestra). **`a_region_is_worth_its_size` FLAKY**: rojo en suite, verde solo.
 
