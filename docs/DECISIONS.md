@@ -17679,3 +17679,52 @@ volver a medir.
 
 ---
 
+## ADR-146 — ENMIENDA DE ESTADO (2026-09-12, misma tarde): APROBADA por Joel («Apruebo tal cual»)
+
+Aprobada sin cambios sobre el texto de `e0e43501`. Coordinación decidida por Joel: la traza de RTT
+por peer de la rama `claude/multiplayer-lag-optimization-b5cc3b` (`30cbf3f1`), que toca
+`broadcast_peer_poses` y `aoi_pose_due_this_round`, se fusiona en el tronco ANTES de escribir el gate
+(commit 2). Hasta entonces sólo avanzan los commits que no tocan esa lógica: el 1 (`PoseWire`, que en
+`sync.rs` sólo cambia dos constantes, un comentario y el literal con `vel_cms` a cero) y el 3
+(receptor, fuera de `sync.rs`).
+
+---
+
+## ADR-145 — ENMIENDA DE ESTADO (2026-09-12, misma noche): D3 se implementó más simple de lo escrito, y D6 necesitó un mecanismo que el texto no especificaba
+
+Todo el ADR está en tronco (`0b662110` el texto, `2eab4fc7` D3/D7, `b0977a01` D1/D2/D4/D5, `ff5a30cf`
+D6). Dos correcciones de hecho que la implementación destapó, ninguna cambia lo que Joel aprobó:
+
+1. **D3 no lleva la tabla local que proponía el texto.** El párrafo original imaginaba que el host
+   guardaría el id y la tabla de materiales en una estructura NUEVA, fuera de `net.stp_harvestables`,
+   e insertaría en el roster de verdad sólo la primera vez que `remaining` bajara de 1,0 — es decir,
+   diferir la entrada en el roster hasta que el mueble estuviera CASI agotado. Al implementarlo
+   resultó innecesario: Unity manda la misma acción `register_prop_harvestable` (id + posición, ya
+   deterministas por `Wg3PropHarvestId`) en CADA golpe, tanto si es host como si reenvía por P2P
+   (`StpRegisterHarvestableRequest`, 0x5C), y el host hace el mismo upsert idempotente que ya usaba
+   `set_stp_harvestables` (`register_stp_harvestable`): si el id ya existe sólo refresca la posición,
+   nunca toca `remaining`. Eso mete el prop en el roster desde el PRIMER golpe, no cerca del
+   agotamiento — más pronto que lo que D3 proponía, pero el ahorro real seguía intacto: la inmensa
+   mayoría del atrezo de un radio de streaming no se toca nunca, así que nunca entra en el roster.
+   Mandarlo en cada golpe en vez de una sola vez es gratis porque el upsert no hace nada si ya lo
+   conocía. Ni tabla nueva, ni una segunda estructura que mantener sincronizada con `net.stp_harvestables`.
+
+2. **D6 necesitaba un mecanismo anti-colisión que el texto no daba.** «Un id DISTINTO derivado con
+   OTRA sal — dos sistemas, dos ids, una posición» describe la INTENCIÓN pero no cómo evitar que ese
+   id choque: `world.corpses: HashMap<u32, CorpseData>` ya reparte cadáveres de jugador Y cofres de
+   `StpChestSpawner`/`StpWorldContainerSpawner` desde un ÚNICO contador (`World::next_corpse_id`,
+   autoincremento puro desde 1) — es el mismo mapa, un solo emisor de claves. Un id calculado en
+   cliente sin más habría podido coincidir, tarde o temprano, con uno que ese contador emitiera
+   después, y `HashMap::insert` pisa sin avisar: se habría perdido un cadáver o un cofre en silencio.
+   La corrección: `Wg3PropHarvest.ChestIdFor` (Unity) pone SIEMPRE el bit 31 del id — un contador que
+   arranca en 1 y sólo suma jamás lo alcanza, así que los dos espacios de ids quedan disjuntos por
+   construcción, no por probabilidad. `World::spawn_chest_with_id` (Rust) además no pisa un id ya
+   existente (`false` sin tocar nada), que es lo que hace seguro mandar el registro del cofre en cada
+   golpe igual que D3 manda el del harvestable.
+
+Verificación: `cargo test` 1 655/0 (Rust); Unity compila en las 4 asmdef; 19 tests EditMode nuevos
+entre D1/D2/D4/D5/D6 (`Wg3PropHarvestTests`), sin ejecutar la suite completa — editor ocupado por otra
+sesión, misma deuda que ya arrastran la linterna, la venda y el crafteo en `STATE.md`.
+
+---
+
