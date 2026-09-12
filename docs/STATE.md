@@ -16,7 +16,7 @@
   cliente el cuadrado pasa a recta, predicción **~60**. La costura ya está (`c4452964`): cambiar «los 96 de arriba» por «los que quepan en X KB/s».
 
 ## En curso
-- **`latency_ms` se mide y se TIRA** (`peer.rs:219`): ninguna traza la publica, así que no se puede responder «¿a cuántos ms va esta partida?».
+- **RTT publicado** (`30cbf3f1`, `MPTRACE step=RTT`): sólo de fiables sin reenvío (Karn), y un 0 es «sin muestra». Falta verlo en Play.
 - **ADR-128, mundo ×2: tercera pasada, NO commiteado.** 24 tests en rojo; `MAX_SEGMENT_M` no se toca (D3 anulado), `bounds()` en metros
   de MUNDO con `plan_bounds()`. **Sigue sin verificarse que lo servido salga ×2.** Parche verbatim en `docs/SESSION-LOG.md`.
 - **Contrato WG3 v1**, 5 días. Día 1 (`65d267c3`) y día 2 (`c7c9dd01`, `510223b8`, ADR-129) cerrados; el día 4 de gramática lo sustituyó
@@ -96,8 +96,8 @@
 ## Últimas tandas
 
 ### 2026-09-12 — 51.ª tanda: el relay deja de ser cuadrático, y la animación deja de ser texto (wire 64, BuildID 25272104)
-- **SteamPipe sin `SetLive`** (BuildID 25272104, 27 ficheros): **cliente RECONSTRUIDO, no sólo el backend** — el wire vive en las DOS puntas y uno
-  viejo daría `wire_schema_mismatch`. Backend solo ⇒ cambiar el exe; wire ⇒ rebuild, y desde el CLON PRINCIPAL (worktree = reimport, 15 min).
+- **SteamPipe sin `SetLive`**: **25272104** (wire 64, cliente RECONSTRUIDO: el wire vive en las DOS puntas) y **25272796** (traza de RTT, sólo
+  backend). La regla, medida: backend ⇒ exe + resubir, 2 min y 7 MB; wire ⇒ rebuild, y desde el CLON PRINCIPAL (worktree = reimport, 15 min).
 - **Índice espacial** (`7972d207`): el bucle de pares era O(N²) aunque el radio rechazara a todos. Casillas del radio de SALIDA (con el de entrada
   la histéresis se rompe en silencio). **Techos medidos: sala 22 (cable), emparejados ~330, repartidos ~310 → ~3.500 (CPU) y ya lineal.**
 - **Tope por destinatario** (`c4452964`) y **cono de atención** (`bae5ffe6`), los dos APAGADOS. El cono da **−35 %, sala 22 → 27**; no se enciende
