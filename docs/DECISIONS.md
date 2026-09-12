@@ -17019,3 +17019,129 @@ más allá de la constante.**
 
 ---
 
+## ADR-064 — Enmienda 1: la acción `craft_item`, el hook en territorio vendor y la venda como primera receta (2026-09-12) — PROPUESTA (Joel: «ADR-064 completo primero»)
+
+**Contexto.** Joel pide «habilitar en el menú de crafteo las vendas con la tela» y, antes de la
+receta, «el sistema que se planteó»: la decisión VALIDADA de ADR-064 (el crafteo habla ids de
+`ItemDefinition` y el servidor valida contra `stp_inventory`), cuyo slice 1 quedó DIFERIDO el
+2026-08-10 y desde entonces figura en `STATE.md` como «Crafteo P1 sin cerrar». Tres hechos medidos
+hoy que el ADR original no tenía delante:
+
+1. **El menú de crafteo YA existe y YA craftea, client-local.** `CraftingUI` vive dentro de
+   `STP_UI_Inventory.prefab`, lista TODA `ItemDefinition` con `CraftingData.IsCraftable`
+   (`InitializeCraftableItems`), y con `Workstation == null` sirve el nivel 0 (crafteo a mano). El
+   jugador real es `STP_Player.prefab` (variante de `FPS_Player`, la instancia `STP_GameMode`), que
+   lleva el `CraftingManager` del vendor como componente AÑADIDO de la variante. Hay **21 recetas
+   vendor vivas** (`Rope` = 2 Cloth, `Wooden Torch` = 4 Stick + 2 Cloth, `Hunting Axe`, arcos,
+   flechas, ropa…): hoy cualquiera se craftea sin que el servidor se entere. El «sistema» no hay que
+   construirlo: hay que **ponerle la puerta de ADR-064 §4** a uno que ya corre.
+2. **`BR_Bandage` (id `-1114026992`) no tiene `CraftingData`**; `STP_Cloth` (id `8505358`) existe
+   y está en `MaterialPool` detrás del gate de escasez (hoy no cae; caerá de las sillas, ADR-114 D8).
+3. **Un sustituto del `CraftingManager` NO puede vivir en nuestro ensamblado.** `Character`
+   construye `_characterComponentToInterfacePairs` con `baseType.Assembly.GetTypes()`
+   (`Character.cs:27`): sólo ve las clases del ensamblado `PolymindGames`. Un `ICraftingManagerCC`
+   en `BackroomsSurvival` rompe `GetCharacterComponentsInChildren` con `KeyNotFoundException` en la
+   primera consulta. El molde de ADR-030 (`NetworkedConsumeAction`, un `ItemAction` que es un asset
+   de datos) no aplica: aquí el punto de enganche es un componente de personaje, y el vendor es
+   `sealed` y no emite ningún evento de «crafteado».
+
+### Decisiones
+
+**E1.1 — La acción es `craft_item { item_id: i32, amount: u16 }`, fire-and-forget, sin
+`request_id`.** Mismo contrato que `consume_item` (ADR-030): acción local sobre el canal IPC
+ordenado, sin dedupe, sin respuesta. Resuelve la primera pendiente del ADR: NO hay respuesta que
+esperar porque el descuento y el alta del producto los sigue haciendo STP en el cliente (§4
+original), y la reconciliación posterior la da `report_inventory`, que ya se dispara por cambio.
+
+**E1.2 — Sin bump de `WIRE_SCHEMA_VERSION`.** Una acción nueva es una cadena más en el `match` de
+`handle_action`; un backend que no la conozca cae en `_ => {}` (ya escrito) y un cliente viejo
+simplemente no la envía. Precedente: `consume_item` (ADR-030) y `report_noise` (ADR-041) entraron
+sin bump. La regla dura 7 no se toca porque el protocolo no cambia de forma, sólo de vocabulario
+de acciones, que ya era abierto.
+
+**E1.3 — El servidor VALIDA contra `stp_inventory` y MUTA el espejo; no rechaza hacia el
+cliente.** Tabla `crafting_spec(item_id) -> Option<&'static [(i32, u16)]>` en el módulo
+`crafting/` (existente, hoy scaffolding sin llamadores: `recipes.rs` se queda intacto, congelado
+como manda «Qué PROHÍBE»; la tabla nueva no toca el enum `Item`). Flujo:
+- receta desconocida → `MPTRACE step=CRAFT event=craft_rejected reason=unknown_recipe`;
+- ingredientes insuficientes en `stp_inventory` → `… reason=insufficient item_id= need= have=`;
+- aceptada → se DESCUENTAN los ingredientes y se SUMA el producto en `player.stp_inventory`
+  (`CorpseStack`, apilando por `item_id` sin props) y se loguea `craft_applied`.
+La mutación del espejo existe por una razón concreta: el save de ADR-032 lee `stp_inventory`, y
+entre el crafteo y el `report_inventory` debounced hay una ventana en la que un cierre brusco
+guardaría el inventario de ANTES. Con el espejo mutado, el save es correcto en esa ventana; el
+siguiente `report_inventory` lo pisa igual (latest wins, ya escrito).
+**Esto NO es anti-trampas** — se repite aquí porque ADR-064 obliga a escribirlo donde se
+implemente: el rechazo sólo deja traza. La puerta está donde el ADR la puso, y el día que haya que
+cerrarla el sitio es este `match`, no otro.
+
+**E1.4 — Tiempo de crafteo y estación: los cuenta el CLIENTE, sin ampliar.** `_craftDuration` y
+`_craftLevel` de `CraftingData` siguen siendo los de STP; el servidor no cronometra ni valida la
+proximidad a una estación. Cierra las otras dos pendientes del ADR original **por omisión
+declarada**: la venda es nivel 0 (a mano) y los tiempos T2/T3 de estabilizadores son de otro ADR.
+
+**E1.5 — El hook cliente es un fichero AÑADIDO en territorio vendor, con el precedente de
+`GameBootGate`.** `NetworkedCraftingManager.cs` junto a `CraftingManager.cs`, en el MISMO
+ensamblado (única forma de estar en el mapa de `Character`), `CharacterBehaviour` +
+`ICraftingManagerCC`, copia línea a línea del `Craft`/`OnCraftItemEnd` del vendor más UNA cosa:
+`public static event Action<ItemDefinition, int> ItemCrafted`, disparado en `OnCraftItemEnd` tras
+el `AddItemsById`. Ni una línea del vendor se edita. En nuestro ensamblado, `CraftingReporter`
+(MonoBehaviour junto a `InventoryReporter`) se suscribe y llama a `IPCClient.SendCraftItem`. El
+componente se SUSTITUYE en `STP_Player.prefab` (quitar el `CraftingManager` añadido de la
+variante, añadir el nuestro con el mismo `_craftAudio`) por menú de editor crear-si-falta, y se
+inventaría en `docs/systems/vendor-patches.md` como fila 8: un reimport lo borra y el síntoma es
+que el crafteo vuelve a ser mudo para el servidor (no que deje de funcionar).
+
+**E1.6 — La tabla Rust espeja TODAS las recetas del catálogo, con oráculo JSON común.** Si el
+servidor sólo conociera la venda, las 21 recetas vendor darían `unknown_recipe` en cada crafteo
+legítimo y la traza dejaría de significar nada. Se acuña `docs/data/crafting-recipes.json`
+(`{ item_id, amount, ingredients: [{item_id, count}] }`, ordenado por `item_id`): un test de
+EditMode lo REGENERA desde los `CraftingData` reales y falla si difiere del commiteado; un test de
+cargo lo LEE y falla si `crafting_spec` difiere de él. Es el primer espejo C#↔Rust con oráculo
+compartido, el patrón que `STATE.md` pide para B5 (`Wg3Identity`, `ChunkLootRoll`, `scale`,
+`density`); aquí cabe porque son ~22 filas.
+
+**E1.7 — La primera receta propia: venda = 2 Cloth, 1 unidad, 3 s, nivel 0, sin desmontaje
+(`_dismantleEfficiency 0`).** Se añade al `_data` de `BR_Bandage.asset` por el mismo menú de
+E1.5 (crear-si-falta: no toca un `CraftingData` ya presente). El número 2 es la paridad con
+`Rope` (2 Cloth), la receta vendor de tela más barata; `TODO(balance)` como todo lo demás.
+
+**E1.8 — Qué queda FUERA.** Los cuatro materiales de electrónica (siguen sin autorar);
+estabilizadores y sus tiempos; rechazo con efecto en el cliente; estación por proximidad;
+durabilidad; el `recipes.rs` viejo (ni se borra ni se usa: borrarlo es limpieza aparte).
+
+### Alternativas rechazadas
+
+- **(A) Observar el inventario desde fuera** (`Inventory.Changed` + flanco de `IsCrafting`):
+  RECHAZADA. Cancelar y terminar dejan `IsCrafting` igual a `false`; distinguir un crafteo de
+  un pickup exigiría diferenciar el inventario entero por evento, y un falso positivo mandaría
+  `craft_item` por un objeto recogido del suelo.
+- **(B) Sólo reconciliar por `report_inventory`, sin acción:** RECHAZADA. Es exactamente lo que
+  hay hoy, y no cumple §4 del ADR: el servidor nunca sabe que hubo un crafteo, sólo que el
+  inventario cambió.
+- **(C) Editar `CraftingManager.cs` para añadir el evento:** RECHAZADA por la regla del proyecto
+  (nunca editar métodos del vendor; se pierde en el reimport sin aviso).
+- **(D) Tabla Rust sólo con recetas propias:** RECHAZADA (E1.6): convierte la traza en ruido.
+
+### Riesgos
+
+- **Dos `ICraftingManagerCC` bajo el mismo `Character`** lanzan `LogError` en DEBUG y una
+  excepción de diccionario en release: el menú de editor comprueba que el vendor se ha quitado
+  ANTES de añadir el nuestro, y un test de EditMode lo afirma sobre `STP_Player.prefab`.
+- **`STP_Player.prefab` es asset vendor**: ya lleva parches propios (filas 5 y 7); el reimport
+  los borra a todos juntos y `CheckRegressionChecklist.ps1` es quien avisa.
+- **El JSON se desincroniza si alguien toca un `CraftingData` a mano**: por eso el test de
+  EditMode REGENERA y compara, en vez de sólo leer.
+
+### Orden de implementación (commits separados)
+
+1. Rust: `crafting_spec` + brazo `craft_item` + 3 tests (desconocida, insuficiente, aplicada
+   con espejo mutado). `docs/data/crafting-recipes.json` acuñado a mano desde los 21 + venda.
+2. Unity: `NetworkedCraftingManager.cs` (vendor, añadido) + `CraftingReporter` +
+   `IPCClient.SendCraftItem` + `ProtocolActionTypes.CraftItem`; menú `Backrooms/Create Craft
+   Assets` (swap en `STP_Player.prefab` + `CraftingData` de la venda); tests de EditMode (swap,
+   receta, JSON regenerado ≡ commiteado). Fila 8 de `vendor-patches.md`.
+3. Test de cargo que lee el JSON; `DECISIONS-INDEX.md` regenerado.
+
+---
+
