@@ -16865,3 +16865,62 @@ se justifica por el `clone()` y por aplicarse a todos los pares, no por el aforo
 
 ---
 
+## ADR-074 — Enmienda 3: la cadencia por distancia deja de ser dos anillos y pasa a ser una curva (2026-09-12) — APROBADA (Joel: «vale planifica con potencia 3»)
+
+### Qué se midió
+
+El arnés de carga (`load_tests.rs`, release, tras la fusión de ADR-140..143) dice que el techo de
+jugadores por partida NO es la CPU del anfitrión (2,7 ms por ronda con 50 juntos, el 16 % del tick)
+sino su **subida**: 70 B por pose y destinatario a 30 Hz, ≈2,1 KB/s por par. Con 8 juntos son
+118 KB/s; con 16, 505; con 50, 5 073. Los dos anillos de la enmienda del 08-15 (30 Hz hasta 50 m,
+15 Hz hasta 100) dejan a un par a 40 m emitiendo a 30 Hz, donde el proxy se mueve píxeles.
+
+### Decisión
+
+**D1 — Una curva continua en pasos de 1 Hz**, `hz(d) = round(5 + 25 · (1 − d/100)³)`, en vez de
+dos anillos. 30 Hz a 0 m, 29 a 1 m, 23 a 10 m, 18 a 20 m, 14 a 30 m, 10 a 40 m, 8 a 50 m, 6 a
+61 m, **5 Hz desde 73 m hasta el borde del AOI**. La potencia (`POSE_LOD_POWER`) la eligió Joel a
+la vista de la tabla metro a metro: 1 es una recta y ahorra ×1,4; 2, ×2,0; **3, ×2,5**. Lo que se
+percibe es lineal porque el movimiento aparente también cae con la distancia.
+
+**D2 — El suelo sigue en 5 Hz y sigue valiendo para todos.** Es el número y la razón de la
+enmienda del 08-15: 50–100 m es la fase `stalk` del robapieles, a 200 ms se lee fluido y a 500 ms
+no, y como la IA no se puede exceptuar (sería un oráculo, decisión 1 del ADR), el suelo es de todos.
+
+**D3 — Reparto por Bresenham en enteros, sin estado.** Un par emite en la ronda `r` si
+`⌊(r+φ)·hz/30⌋ ≠ ⌊(r+φ−1)·hz/30⌋`, con `φ` derivada de los dos ids (mezcla, no suma: los dos
+sentidos de un par no comparten fase). En cualquier ventana de 30 rondas salen EXACTAMENTE `hz`
+poses, y N pares a la misma distancia se reparten plano entre rondas. Sustituye a la paridad de
+`(src + dest)`; el cono de atención (apagado) conserva su `half_cadence_round`.
+
+**D4 — El cliente descarta muestras repetidas y lleva retardo POR PEER.** Unity recibe las poses
+remotas por `world_state` a 10 Hz: a 5 Hz de refresco el snapshot repite la misma pose dos veces,
+y guardarla dos veces paraba la interpolación y luego saltaba. `PushSample` sólo guarda poses que
+CAMBIAN y mide por peer el intervalo entre ellas; el retardo de cada proxy es
+`max(global, 1,5 × intervalo)`, acotado a 350 ms. Pegado, el retardo sigue siendo el global de
+ADR-138; a 80 m el proxy va ~300 ms atrasado, que a 80 m nadie ve. **Este es justo el
+prerrequisito que el cono de atención dejó escrito para poder encenderse.**
+
+### Medido (arnés `pose_cadence_curve_by_spread`, 1 s, N = 32, Hz medio por par)
+
+| Reparto | antes | después | KB/s antes → después |
+|---|---|---|---|
+| Pegados (todos a ≤20 m) | 30,0 | 21,7 | 1 932 → 1 402 (×1,4) |
+| Nave de 50 m (área uniforme) | 23,6 | 10,6 | 1 526 → 680 (×2,2) |
+| Nave de 100 m | 11,3 | 4,5 | 733 → 296 (×2,5) |
+
+### Lo que NO cambia
+
+- **Sin wire**: cambia cada cuánto sale una pose hacia un destino, no qué lleva ni su formato.
+- La histéresis del AOI (`AOI_POSE_EXIT_FACTOR`), el PVS por salas, el tope por destinatario y el
+  índice espacial quedan como estaban: la curva decide DESPUÉS de que un par esté dentro.
+- La medida global del jitter (ADR-138 D2/D3) sigue existiendo; el retardo por peer sólo la
+  supera cuando la cadencia real de ese peer lo exige.
+
+### Lo que esta enmienda NO decide
+
+Si 5 Hz a 73–100 m y ~300 ms de retardo se leen bien con jugadores reales en un pasillo largo: se
+comprueba en Play con dos instancias. La potencia y el suelo son un número cada uno (`sync.rs`).
+
+---
+
