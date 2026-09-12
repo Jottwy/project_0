@@ -17498,3 +17498,46 @@ siguen igual. La celda es el chunk (`world_to_chunk`) y el scope 5×5.
 
 ---
 
+## ADR-074 — Enmienda 6: la fase 2 está hecha, y la entrega 1 no subió el wire (2026-09-12) — IMPLEMENTADA
+
+**Estado:** IMPLEMENTADA en `migration/worldgraph-v1`, pusheada. Sólo estado y medida: no cambia
+ninguna decisión de la enmienda 5.
+
+**Commits.** Entrega 1, mecanismo: `2eab4fc7`. Entrega 2, scope 5×5: `eda78987`.
+
+**Corrección del orden escrito.** La enmienda 5 ponía el bump a 66 en la entrega 1, y no se hizo:
+`2eab4fc7` cambió el formato posicional de los cinco rosters con `WIRE_SCHEMA_VERSION` aún en 65.
+Se subió a 66 en `eda78987`, en Rust y C# a la vez, con su entrada en
+`docs/systems/ipc-wire-schema.md`. Entre los dos commits no se hizo ningún build.
+
+**Cómo funciona, en tres líneas.** El host agrupa cada roster por chunk, pagina cada chunk y
+codifica cada página una vez. A cada peer le manda las páginas de las 25 celdas alrededor de la
+posición que el HOST tiene de él, y detrás un `RosterScopeEnd` con esas celdas. El receptor acumula
+y sólo adopta en el cierre: una celda del cierre sin páginas queda vacía, y lo que sale del scope
+desaparece.
+
+**Medido, arnés `roster_cost_by_where_people_are`**, una ronda de objetos y piezas, N=32:
+
+| Caso | Sin scope | Con scope 5×5 |
+|---|---|---|
+| Mundo de 1 km², 1000 objetos + 400 piezas | ~1300 KB | 95,8 KB |
+| Mundo de 1 km², 4000 + 1600 | — | 345 KB |
+| Rectángulo denso de ~200 × 80 m, 1000 + 400 | 1325 KB | 1164 KB |
+
+En el rectángulo denso un 5×5 lo cubre casi entero, y por eso apenas baja. El coste por jugador pasa
+a depender de la densidad de lo que tiene cerca, no del tamaño del mundo.
+
+**Verificado con dos backends reales, sin Unity** (release, puertos propios, `DEV_GOD_TRAVERSAL=1`,
+un cliente IPC en Python haciendo de Unity). Seis pasos, los seis bien, y logs sin errores:
+1. Los dos hablan wire 66 y el joiner ve al host.
+2. Un objeto soltado junto a los dos llega a los dos.
+3. El host se teletransporta a 700 m y el joiner ve su pose nueva.
+4. Un objeto soltado allí lo tiene el host, pero no el joiner.
+5. El joiner va junto al host: tiene el objeto lejano y el del origen desaparece.
+6. El joiner vuelve: el del origen reaparece y el lejano desaparece.
+
+**Sin verificar.** Nada de esto se ha visto en Unity. Falta ver que cruzar una frontera de celda no
+hace parpadear objetos, y que los contenedores y cadáveres de otras celdas se comportan igual.
+
+---
+
