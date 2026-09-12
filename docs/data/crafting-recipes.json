@@ -1,0 +1,205 @@
+{
+  "_comment": "ADR-064 enm. 1 E1.6 - oraculo comun C#<->Rust de las recetas craftables (CraftingData.IsCraftable). Lo REGENERA CraftingRecipesOracleTests (EditMode) y lo LEE crafting::spec (cargo test). No editar a mano.",
+  "recipes": [
+    {
+      "item_id": -1351326566,
+      "name": "STP_Metal Arrow",
+      "amount": 5,
+      "level": 0,
+      "ingredients": [
+        {
+          "item_id": -9821754,
+          "count": 1
+        },
+        {
+          "item_id": 9878845,
+          "count": 1
+        },
+        {
+          "item_id": 1760821921,
+          "count": 1
+        }
+      ]
+    },
+    {
+      "item_id": -1159981804,
+      "name": "STP_Steel Pickaxe",
+      "amount": 1,
+      "level": 1,
+      "ingredients": [
+        {
+          "item_id": 1760821921,
+          "count": 5
+        },
+        {
+          "item_id": 9878845,
+          "count": 5
+        },
+        {
+          "item_id": -20407,
+          "count": 2
+        }
+      ]
+    },
+    {
+      "item_id": -1114026992,
+      "name": "BR_Bandage",
+      "amount": 1,
+      "level": 0,
+      "ingredients": [
+        {
+          "item_id": 8505358,
+          "count": 2
+        }
+      ]
+    },
+    {
+      "item_id": -270636157,
+      "name": "STP_Stone Arrow",
+      "amount": 5,
+      "level": 0,
+      "ingredients": [
+        {
+          "item_id": -9821754,
+          "count": 1
+        },
+        {
+          "item_id": 9878845,
+          "count": 1
+        },
+        {
+          "item_id": -2172927,
+          "count": 1
+        }
+      ]
+    },
+    {
+      "item_id": -7892144,
+      "name": "STP_Wooden Bow",
+      "amount": 1,
+      "level": 1,
+      "ingredients": [
+        {
+          "item_id": -20407,
+          "count": 2
+        },
+        {
+          "item_id": 9878845,
+          "count": 2
+        },
+        {
+          "item_id": 8505358,
+          "count": 1
+        }
+      ]
+    },
+    {
+      "item_id": -7174886,
+      "name": "STP_Antibiotics",
+      "amount": 1,
+      "level": 0,
+      "ingredients": [
+        {
+          "item_id": -2044372056,
+          "count": 3
+        }
+      ]
+    },
+    {
+      "item_id": -5283776,
+      "name": "STP_Wooden Torch",
+      "amount": 1,
+      "level": 0,
+      "ingredients": [
+        {
+          "item_id": 9878845,
+          "count": 4
+        },
+        {
+          "item_id": 8505358,
+          "count": 2
+        }
+      ]
+    },
+    {
+      "item_id": -52379,
+      "name": "STP_Wooden Spear",
+      "amount": 1,
+      "level": 0,
+      "ingredients": [
+        {
+          "item_id": 9878845,
+          "count": 5
+        }
+      ]
+    },
+    {
+      "item_id": -20407,
+      "name": "STP_Rope",
+      "amount": 1,
+      "level": 0,
+      "ingredients": [
+        {
+          "item_id": 8505358,
+          "count": 2
+        }
+      ]
+    },
+    {
+      "item_id": 2211292,
+      "name": "STP_Hunting Axe",
+      "amount": 1,
+      "level": 1,
+      "ingredients": [
+        {
+          "item_id": 1760821921,
+          "count": 5
+        },
+        {
+          "item_id": 9878845,
+          "count": 5
+        },
+        {
+          "item_id": -20407,
+          "count": 2
+        }
+      ]
+    },
+    {
+      "item_id": 4548792,
+      "name": "STP_Wooden Arrow",
+      "amount": 5,
+      "level": 0,
+      "ingredients": [
+        {
+          "item_id": -9821754,
+          "count": 1
+        },
+        {
+          "item_id": 9878845,
+          "count": 1
+        }
+      ]
+    },
+    {
+      "item_id": 5085425,
+      "name": "STP_Stone Spear",
+      "amount": 1,
+      "level": 1,
+      "ingredients": [
+        {
+          "item_id": -2172927,
+          "count": 5
+        },
+        {
+          "item_id": 9878845,
+          "count": 5
+        },
+        {
+          "item_id": -20407,
+          "count": 2
+        }
+      ]
+    }
+  ]
+}
