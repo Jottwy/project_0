@@ -17233,3 +17233,17 @@ playtest.
 
 ---
 
+## ADR-144 — ENMIENDA DE ESTADO (2026-09-12, misma tarde): APROBADA por Joel («apruebo ADR-144 tal cual») e IMPLEMENTADA
+
+Tal cual estaba escrito, en los cuatro pasos y en el orden previsto: `a5ab65d3` (D1/D2, `PoseWire`
+y cuantización, tamaños atados por test: delgada ≤24 B, completa ≤46), `bbb7c225` (D3/D4, emisión
+con hash por par y reparación a 30 rondas, receptor con `relay_cosmetics`), `2e42f5f9` (D5, wire
+64 → 65 en las dos puntas). Un detalle que el ADR no preveía y que el test por sockets reales sacó:
+el receptor NO puede rellenar una delgada desde `peers`, porque un joiner recibe poses de orígenes
+que aún no tiene registrados (el roster llega después); de ahí `relay_cosmetics`, aparte de `peers`
+y limpiado cuando el peer se va. Medido con N = 32 (KB/s): pegados 1 402 → 554, nave de 50 m
+680 → 292, nave de 100 m 296 → 146. `cargo test` 1 509/0. **Sin ver en Play**: cliente de Steam
+en wire 64, hace falta build nueva.
+
+---
+
