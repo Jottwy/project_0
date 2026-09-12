@@ -313,6 +313,10 @@ pub struct NetworkManager {
     /// y un roster no la puede pisar mientras la base esté viva. Se va con el peer en
     /// `purge_peer_state`. El anfitrión nunca abre lotes, así que en él queda vacío.
     pub relay_tramo_base: std::collections::HashMap<PeerId, crate::network::sync::TramoBase>,
+    /// ADR-146 D6 — en el RECEPTOR: la ventana del error de extrapolación por humanos y criaturas,
+    /// y desde cuándo se acumula. Se vuelca como `MPTRACE step=TRAMO` una vez por segundo.
+    pub relay_tramo_errors: crate::network::sync::TramoErrorWindow,
+    pub relay_tramo_errors_since: std::time::Instant,
     /// ADR-074 enm. 4 — factor de aforo por DESTINATARIO (1 = la curva tal cual, menos = todos
     /// sus orígenes salvo los pegados bajan de cadencia en proporción). Se mueve despacio hacia su
     /// objetivo, ronda a ronda, para que entrar o salir gente no dé un salto de cadencia.
@@ -708,6 +712,8 @@ impl NetworkManager {
             pose_tramo_sent: std::collections::HashMap::new(),
             tramo_gate_enabled: crate::network::sync::TRAMO_GATE_ENABLED,
             relay_tramo_base: std::collections::HashMap::new(),
+            relay_tramo_errors: crate::network::sync::TramoErrorWindow::default(),
+            relay_tramo_errors_since: std::time::Instant::now(),
             pose_budget_factor: std::collections::HashMap::new(),
             pending_full_sync: std::collections::HashMap::new(),
             pose_relay_round: 0,
@@ -1213,10 +1219,23 @@ impl NetworkManager {
                     .zip(updates.iter().cloned())
                     .map(|(sender, wire)| {
                         use crate::network::protocol::PoseWire;
+                        let pos = PoseWire::dequantize_pos(wire.pos_cm, origin_cm);
+                        // ADR-146 D6: antes de pisar la base, cuánto se había desviado la
+                        // extrapolación de lo que dice esta pose. Criatura = id inyectado (faselings
+                        // y robapieles), sólo para la traza; el relay no lo sabe ni lo usa.
+                        if let Some(old) = self.relay_tramo_base.get(&sender) {
+                            let predicted = crate::network::sync::extrapolate_tramo(old, arrived);
+                            let err = ((pos[0] - predicted[0]).powi(2)
+                                + (pos[1] - predicted[1]).powi(2)
+                                + (pos[2] - predicted[2]).powi(2))
+                            .sqrt();
+                            self.relay_tramo_errors
+                                .record(sender >= FACELING_ID_BASE, err);
+                        }
                         self.relay_tramo_base.insert(
                             sender,
                             crate::network::sync::TramoBase {
-                                pos: PoseWire::dequantize_pos(wire.pos_cm, origin_cm),
+                                pos,
                                 vel: PoseWire::dequantize_vel(wire.vel_cms),
                                 at: arrived,
                             },
@@ -1264,6 +1283,37 @@ impl NetworkManager {
                 peer.position = crate::network::sync::extrapolate_tramo(base, now);
             }
         }
+        self.flush_tramo_error_trace(now);
+    }
+
+    /// ADR-146 D6 — vuelca la ventana del error de extrapolación una vez por segundo. En `warn!`
+    /// a propósito, como `BWTRACE`: tiene que llegar al log de la partida que decide el encendido.
+    fn flush_tramo_error_trace(&mut self, now: std::time::Instant) {
+        if now.saturating_duration_since(self.relay_tramo_errors_since)
+            < std::time::Duration::from_secs(1)
+        {
+            return;
+        }
+        let window = std::mem::take(&mut self.relay_tramo_errors);
+        self.relay_tramo_errors_since = now;
+        if window.human_cm.is_empty() && window.creature_cm.is_empty() {
+            return;
+        }
+        let (hn, hmean, hp95, hmax) = crate::network::sync::tramo_error_summary(&window.human_cm);
+        let (cn, cmean, cp95, cmax) =
+            crate::network::sync::tramo_error_summary(&window.creature_cm);
+        log::warn!(
+            "MPTRACE step=TRAMO event=extrapolation_error self_id={} human_n={} human_mean_cm={:.1} human_p95_cm={} human_max_cm={} creature_n={} creature_mean_cm={:.1} creature_p95_cm={} creature_max_cm={}",
+            self.local_id,
+            hn,
+            hmean,
+            hp95,
+            hmax,
+            cn,
+            cmean,
+            cp95,
+            cmax
+        );
     }
 
     /// ADR-146 D3 — la posición que un ROSTER (`PeerList`) puede escribir en un peer. Con base de

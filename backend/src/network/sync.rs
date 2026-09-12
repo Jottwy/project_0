@@ -1442,6 +1442,49 @@ pub fn tramo_base_is_live(base: &TramoBase, now: std::time::Instant) -> bool {
     now.saturating_duration_since(base.at) < TRAMO_MAX_EXTRAPOLATION
 }
 
+/// ADR-146 D6 — tope de muestras por ventana de la traza de error. Con 16 jugadores y ~126
+/// criaturas a 30 Hz caben de sobra en un segundo; el tope sólo evita que una ventana que no se
+/// vuelca crezca sin límite.
+pub const TRAMO_ERROR_WINDOW_CAP: usize = 8192;
+
+/// ADR-146 D6 — el error de extrapolación que ve el RECEPTOR, en centímetros: la distancia entre
+/// donde había llevado a un origen con su tramo y donde dice la pose nueva que estaba. Es el salto
+/// que se vería al corregir, y la condición de encendido del gate compara humanos con criaturas.
+///
+/// Separar por tipo aquí NO toca el relay: es una traza del receptor, y el filtro sigue sin saber
+/// qué es la fuente (ADR-074 enm. 4 D5). Sin esta separación la medida que pide D6 no existe.
+#[derive(Debug, Default, Clone)]
+pub struct TramoErrorWindow {
+    pub human_cm: Vec<u32>,
+    pub creature_cm: Vec<u32>,
+}
+
+impl TramoErrorWindow {
+    pub fn record(&mut self, creature: bool, err_m: f32) {
+        let samples = if creature {
+            &mut self.creature_cm
+        } else {
+            &mut self.human_cm
+        };
+        if samples.len() < TRAMO_ERROR_WINDOW_CAP {
+            samples.push((err_m.max(0.0) * 100.0).round() as u32);
+        }
+    }
+}
+
+/// ADR-146 D6 — resumen de una ventana: (muestras, media, p95, máximo), en centímetros.
+pub fn tramo_error_summary(samples: &[u32]) -> (usize, f32, u32, u32) {
+    if samples.is_empty() {
+        return (0, 0.0, 0, 0);
+    }
+    let mut sorted = samples.to_vec();
+    sorted.sort_unstable();
+    let n = sorted.len();
+    let mean = sorted.iter().map(|&x| x as f64).sum::<f64>() / n as f64;
+    let p95 = sorted[(n * 95).div_ceil(100) - 1];
+    (n, mean as f32, p95, sorted[n - 1])
+}
+
 /// Dentro de esta distancia el aforo NO recorta: un tiroteo cuerpo a cuerpo en una sala llena
 /// sigue a la cadencia de la curva. Es lo que Joel pidió: «si están a 2 metros de ti se vean a
 /// 30 Hz».
@@ -6005,5 +6048,31 @@ mod tramo_receiver_tests {
     fn the_cap_covers_the_worst_repair_gap() {
         let worst_gap = TRAMO_REPAIR + Duration::from_millis(1000 / POSE_HZ_FLOOR);
         assert!(TRAMO_MAX_EXTRAPOLATION > worst_gap);
+    }
+
+    #[test]
+    fn the_error_summary_gives_mean_p95_and_max() {
+        assert_eq!(tramo_error_summary(&[]), (0, 0.0, 0, 0));
+        // 1..=100 cm: media 50,5, p95 = 95, máximo 100, y el orden de llegada no importa.
+        let mut samples: Vec<u32> = (1..=100).rev().collect();
+        samples.swap(3, 70);
+        let (n, mean, p95, max) = tramo_error_summary(&samples);
+        assert_eq!((n, p95, max), (100, 95, 100));
+        assert!((mean - 50.5).abs() < 1e-3);
+        assert_eq!(tramo_error_summary(&[7]), (1, 7.0, 7, 7));
+    }
+
+    #[test]
+    fn the_error_window_splits_by_type_and_is_capped() {
+        let mut w = TramoErrorWindow::default();
+        w.record(false, 0.123);
+        w.record(true, 0.5);
+        w.record(true, -1.0);
+        assert_eq!(w.human_cm, vec![12]);
+        assert_eq!(w.creature_cm, vec![50, 0]);
+        for _ in 0..TRAMO_ERROR_WINDOW_CAP * 2 {
+            w.record(false, 1.0);
+        }
+        assert_eq!(w.human_cm.len(), TRAMO_ERROR_WINDOW_CAP);
     }
 }
