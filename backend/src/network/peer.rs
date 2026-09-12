@@ -215,8 +215,17 @@ impl PeerConnection {
             .position(|p| p.sequence == acked_sequence)
         {
             let pkt = self.reliable_queue.remove(idx).unwrap();
-            let rtt = pkt.sent_at.elapsed();
-            self.latency_ms = rtt.as_millis().min(u16::MAX as u128) as u16;
+            // **Sólo se muestrea el RTT de un paquete que NO se ha reenviado** (algoritmo de Karn).
+            // `sent_at` se estampa al encolar y `collect_retransmits` NO lo reinicia, así que el
+            // `elapsed()` de un reenviado incluye toda la espera del backoff: un enlace de 20 ms
+            // reportaría cientos. Y el ack tampoco dice a qué intento contesta, así que emparejarlo
+            // es imposible. Descartar la muestra es lo correcto: se prefiere no saber el RTT a
+            // creerse uno inventado, y menos cuando el momento en que se mira es justo aquel en el
+            // que hay reenvíos.
+            if pkt.retries == 0 {
+                let rtt = pkt.sent_at.elapsed();
+                self.latency_ms = rtt.as_millis().min(u16::MAX as u128) as u16;
+            }
             true
         } else {
             false

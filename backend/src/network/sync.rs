@@ -1890,6 +1890,45 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager, mut pvs: Option<PvsC
     net.pose_cone_pairs = next_cone;
     net.pose_relay_round = net.pose_relay_round.wrapping_add(1);
 
+    // El RTT por peer, que hasta hoy se MEDÍA Y SE TIRABA: `PeerConnection::latency_ms` se
+    // calculaba del ack de un fiable y ninguna traza lo publicaba, así que a la pregunta «¿a
+    // cuántos ms va esta partida?» no se podía contestar teniendo el número ya en memoria.
+    //
+    // Va aquí, en la misma puerta de ~1/s que el resto del MPTRACE, y ordenado por id (regla dura
+    // 13). Sale el de los destinos REALES: un `relay_only` no acusa recibo de nada, así que su
+    // latencia sería siempre 0 y ensuciaría la lectura.
+    //
+    // **Un 0 significa «sin muestra todavía», no «cero milisegundos».** La muestra sólo se toma de
+    // un fiable que llegó a la primera (Karn, ver `process_ack`), y las poses van sin garantía: en
+    // una partida tranquila pueden pasar segundos entre fiables.
+    if net.session_start.elapsed().as_millis() % 1000 < 120 {
+        let mut rtts: Vec<(PeerId, u16)> = dest_ids
+            .iter()
+            .filter_map(|id| net.peers.get(id).map(|p| (*id, p.latency_ms)))
+            .collect();
+        rtts.sort_unstable_by_key(|(id, _)| *id);
+        if !rtts.is_empty() {
+            let sampled: Vec<u16> = rtts
+                .iter()
+                .map(|(_, ms)| *ms)
+                .filter(|ms| *ms > 0)
+                .collect();
+            let peers = rtts
+                .iter()
+                .map(|(id, ms)| format!("{id}:{ms}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            info!(
+                "MPTRACE step=RTT event=peer_latency dest_count={} sampled={} min_ms={} max_ms={} peers=[{}]",
+                rtts.len(),
+                sampled.len(),
+                sampled.iter().min().copied().unwrap_or(0),
+                sampled.iter().max().copied().unwrap_or(0),
+                peers
+            );
+        }
+    }
+
     // ADR-015 traffic gate instrumentation: throttled (~1/s, no mutable state) report of
     // the relay's datagram rate so the host log can be measured in play-test. Since ADR-043
     // the cost is PÃ—D (minus the self-echoes), where P counts every pose relayed and D only

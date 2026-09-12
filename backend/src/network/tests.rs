@@ -6153,3 +6153,52 @@ async fn a_relay_only_creature_is_never_a_pose_destination() {
         "un relay_only sigue siendo ORIGEN de poses"
     );
 }
+
+/// **Karn**: el RTT NO se muestrea de un paquete reenviado.
+///
+/// `sent_at` se estampa al encolar y `collect_retransmits` no lo reinicia, asi que el `elapsed()`
+/// de un reenviado incluye toda la espera del backoff — un enlace de 20 ms reportaria cientos. Y el
+/// ack no dice a que intento contesta, asi que no hay forma de emparejarlo.
+///
+/// Importa porque el momento en que alguien mira la latencia es justo aquel en el que hay
+/// reenvios: publicar la muestra envenenada seria peor que no publicarla.
+#[tokio::test]
+async fn the_rtt_is_never_sampled_from_a_retransmitted_packet() {
+    use std::time::Duration;
+
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let peer_id = 2;
+    let addr: SocketAddr = "127.0.0.1:9999".parse().unwrap();
+    host.peers
+        .insert(peer_id, PeerConnection::new(peer_id, "Peer".into(), addr));
+
+    let peer = host.peers.get_mut(&peer_id).unwrap();
+    assert_eq!(peer.latency_ms, 0, "preparación: sin muestra todavía");
+
+    // Un fiable que se reenvía y luego recibe su ack.
+    let seq = 7001;
+    peer.queue_reliable(seq, vec![1, 2, 3]);
+    if let Some(pkt) = peer.reliable_queue.front_mut() {
+        pkt.retries = 2; // ya se reenvió dos veces
+    }
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    assert!(
+        peer.process_ack(seq),
+        "preparación: el ack encuentra su paquete"
+    );
+    assert_eq!(
+        peer.latency_ms, 0,
+        "un ack de un paquete REENVIADO no puede dejar latencia: su `elapsed` lleva el backoff dentro"
+    );
+
+    // Y uno que llega a la primera SÍ deja muestra.
+    let seq2 = 7002;
+    peer.queue_reliable(seq2, vec![4, 5, 6]);
+    tokio::time::sleep(Duration::from_millis(15)).await;
+    assert!(peer.process_ack(seq2));
+    assert!(
+        peer.latency_ms > 0,
+        "el que llegó a la primera sí es una muestra válida (fue {} ms)",
+        peer.latency_ms
+    );
+}
