@@ -95,6 +95,15 @@
 
 ## Últimas tandas
 
+### 2026-09-12 — 54.ª tanda: techos medidos otra vez tras la fase 2 — en release la CPU no es el muro
+- **Release** (`9dc2d867`; los 2 de CPU en `f9a7814e`): sala aguanta **64** y revienta en 96 por CABLE (2 091 KB/s); emparejados ≥**400** (último
+  escalón); repartidos **6 000** al 28 % del tick sin reventar, 1 600 con rosters al 47 %. N=50 juntos: **3,0 ms/ronda** (poses 2,00 + rosters 1,56).
+- Sustituye los techos de la 51.ª (22 / ~330 / ~3 500). **Debug miente en CPU**: el mismo arnés daba sala 48 «muro CPU» y 50 juntos al 118 %.
+  Techos de CPU sólo con `cargo test --release --bin backrooms_server <arnés> -- --ignored --nocapture --test-threads=1`.
+- **Arneses que mienten**: `pose_byte_breakdown` mide el `PlayerUpdate` viejo (65 B), no `PoseWire`; el goteo de chunks sale NO MEDIDO (peer inerte).
+- Cadencia media: 50 juntos 9,2 Hz, nave de 100 m 3,4 Hz (el objetivo de 100 ms pide suelo ~15). **Techo de criaturas SIN arnés.**
+- Estudio de mundo único / 100 000 jugadores / zonas: artifact `de32d0ff` (claude.ai/code/artifact), sin ADR ni doc en el repo.
+
 ### 2026-09-12 — 53.ª tanda: más jugadores por partida — la subida del host de 4 786 a ~320 KB/s con 50 juntos (wire 66)
 - **El techo es la SUBIDA del host, no la CPU** (2,7 ms/ronda con 50). Plan P0–P4 de Joel: P0 fusión del lag, P1 cadencia cúbica (ADR-074 enm. 3),
   P2 pose delgada (ADR-144, 23/45 B), aforo por destino + cono ENCENDIDO (enm. 4), P3 rosters por celda con scope 5×5 (enm. 5–6). P4 VPS bloqueado.
