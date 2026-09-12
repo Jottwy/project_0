@@ -6,6 +6,88 @@ use serde::{Deserialize, Serialize};
 use crate::world::chunk::ChunkLayoutV1;
 
 pub const HEADER_SIZE: usize = 12;
+
+/// ADR-143 — la animación de una pose, como CÓDIGO y no como texto.
+///
+/// `"walk_slow"` costaba 10 B de una pose de 74 sobre MessagePack, 30 veces por segundo y por cada
+/// par que se ve, para transportar seis valores de los que el cliente sólo distingue uno
+/// (`ProxyPickupHook` compara contra `pickup`; la locomoción sale de la velocidad desde ADR-013).
+///
+/// Los códigos van **escritos a mano y no derivados del orden de declaración** (ADR-143 D2):
+/// reordenar una declaración no puede cambiar lo que significa un byte en el cable.
+///
+/// `#[serde(transparent)]` para que viaje como un entero pelado, sin envoltorio de struct.
+#[derive(
+    Clone, Copy, PartialEq, Eq, Debug, Default, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(transparent)]
+pub struct PoseAnim(pub u8);
+
+impl PoseAnim {
+    pub const IDLE: Self = Self(0);
+    pub const WALK: Self = Self(1);
+    pub const WALK_SLOW: Self = Self(2);
+    pub const RUN: Self = Self(3);
+    pub const PICKUP: Self = Self(4);
+    pub const INTERACT: Self = Self(5);
+
+    /// El mapeo COMPLETO, en un solo sitio y en los dos sentidos. Es la fuente de la que salen
+    /// `as_str` y `From<&str>`, y el test exhaustivo que los recorre.
+    pub const ALL: [(Self, &'static str); 6] = [
+        (Self::IDLE, "idle"),
+        (Self::WALK, "walk"),
+        (Self::WALK_SLOW, "walk_slow"),
+        (Self::RUN, "run"),
+        (Self::PICKUP, "pickup"),
+        (Self::INTERACT, "interact"),
+    ];
+
+    /// ADR-143 D3: un código que este binario no conoce —un peer más nuevo— se lee como `idle`.
+    /// Cosmético y nunca un error, igual que los `serde(default)` de ADR-020/024.
+    pub fn as_str(self) -> &'static str {
+        let mut i = 0;
+        while i < Self::ALL.len() {
+            if Self::ALL[i].0 .0 == self.0 {
+                return Self::ALL[i].1;
+            }
+            i += 1;
+        }
+        "idle"
+    }
+}
+
+impl From<&str> for PoseAnim {
+    /// Una cadena fuera de la lista cae en `idle`. El test exhaustivo del módulo es lo que impide
+    /// que eso pase por accidente con un literal real del árbol.
+    fn from(s: &str) -> Self {
+        let mut i = 0;
+        while i < Self::ALL.len() {
+            if Self::ALL[i].1.as_bytes() == s.as_bytes() {
+                return Self::ALL[i].0;
+            }
+            i += 1;
+        }
+        Self::IDLE
+    }
+}
+
+impl From<String> for PoseAnim {
+    fn from(s: String) -> Self {
+        Self::from(s.as_str())
+    }
+}
+
+impl std::fmt::Display for PoseAnim {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl PartialEq<&str> for PoseAnim {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
 pub const MAX_PACKET_SIZE: usize = 65535;
 
 /// Techo REAL de un datagrama que sale a la red, cabecera de paquete incluida.
@@ -752,7 +834,7 @@ pub enum PacketPayload {
     PlayerUpdate {
         position: [f32; 3],
         rotation: f32,
-        animation: String,
+        animation: PoseAnim,
         /// ADR-020: cosmetic crouch (appended last + serde(default) → a v2 peer that
         /// omits it decodes to false; wire-compat across the v2→v3 schema bump).
         #[serde(default)]
@@ -1287,6 +1369,119 @@ pub fn decode_packet(data: &[u8]) -> Result<(PacketHeader, PacketPayload), Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ADR-143 D4 — el mapeo es total y biyectivo sobre los seis valores, en los DOS sentidos.
+    #[test]
+    fn every_animation_code_round_trips_through_its_name() {
+        for (code, name) in PoseAnim::ALL {
+            assert_eq!(code.as_str(), name, "código {} -> nombre", code.0);
+            assert_eq!(PoseAnim::from(name), code, "nombre {name} -> código");
+        }
+        let codes: std::collections::HashSet<u8> = PoseAnim::ALL.iter().map(|(c, _)| c.0).collect();
+        assert_eq!(
+            codes.len(),
+            PoseAnim::ALL.len(),
+            "dos valores no pueden compartir código"
+        );
+    }
+
+    /// ADR-143 D3 — lo que no se entiende se degrada, jamás revienta.
+    #[test]
+    fn an_unknown_code_reads_as_idle_instead_of_failing() {
+        assert_eq!(
+            PoseAnim(200).as_str(),
+            "idle",
+            "un peer más nuevo manda un código futuro"
+        );
+        assert_eq!(
+            PoseAnim::from("moonwalk"),
+            PoseAnim::IDLE,
+            "y una cadena desconocida igual"
+        );
+    }
+
+    /// ADR-143 D2 — los códigos están escritos a mano y este test los fija. Cambiar uno rompe la
+    /// compatibilidad con todo binario ya publicado, así que tiene que doler al tocarlo.
+    #[test]
+    fn the_codes_are_frozen_because_they_are_on_the_wire() {
+        assert_eq!(
+            PoseAnim::ALL.map(|(c, _)| c.0),
+            [0, 1, 2, 3, 4, 5],
+            "reordenar la declaración no puede cambiar lo que significa un byte en el cable"
+        );
+    }
+
+    /// **La puerta de verdad de este ADR.** Recorre el árbol de fuentes y exige que todo literal
+    /// que alguien le pase a `update_player_state` esté en `PoseAnim::ALL`.
+    ///
+    /// Sin esto, el único modo de fallo real del cambio pasa desapercibido: una ruta que produzca
+    /// una cadena fuera de la lista se convierte en `idle` **en silencio**, y lo que se pierde es
+    /// un gesto que sí se veía antes. Un test que sólo comprobara los seis que ya conozco no
+    /// serviría de nada, porque el peligro es justo el séptimo.
+    #[test]
+    fn no_animation_literal_in_the_tree_falls_outside_the_mapping() {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for e in entries.flatten() {
+                let path = e.path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().is_some_and(|x| x == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        walk(&root, &mut files);
+        assert!(
+            !files.is_empty(),
+            "preparación: el barrido tiene que encontrar fuentes"
+        );
+
+        let known: std::collections::HashSet<&str> =
+            PoseAnim::ALL.iter().map(|(_, n)| *n).collect();
+        let mut offenders: Vec<String> = Vec::new();
+
+        for file in &files {
+            let Ok(text) = std::fs::read_to_string(file) else {
+                continue;
+            };
+            for (n, line) in text.lines().enumerate() {
+                if !line.contains("update_player_state(") {
+                    continue;
+                }
+                // Los literales de esa misma línea. Basta con la línea porque todas las llamadas
+                // del árbol caben en una; si alguna se parte, este test deja de verla y hay que
+                // volver aquí — anotado a propósito en vez de fingir un analizador.
+                for piece in line.split('"').skip(1).step_by(2) {
+                    // Sólo lo que PARECE un nombre de animación. Sin este filtro el test se caza a
+                    // sí mismo —su propia aguja de búsqueda es un literal de esa línea— y de paso
+                    // se comería cualquier otra cadena que conviva con la llamada.
+                    let looks_like_a_name = !piece.is_empty()
+                        && piece.bytes().all(|b| b.is_ascii_lowercase() || b == b'_');
+                    if looks_like_a_name && !known.contains(piece) {
+                        offenders.push(format!(
+                            "{}:{} -> \"{piece}\"",
+                            file.file_name().unwrap().to_string_lossy(),
+                            n + 1
+                        ));
+                    }
+                }
+            }
+        }
+
+        assert!(
+            offenders.is_empty(),
+            "hay literales de animación que PoseAnim no conoce y se degradarían a `idle` sin avisar:
+  {}",
+            offenders.join("
+  ")
+        );
+    }
 
     #[test]
     fn header_round_trip() {

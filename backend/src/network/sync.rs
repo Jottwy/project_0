@@ -981,12 +981,14 @@ pub async fn broadcast_peer_roster(net: &mut NetworkManager, player: &Player) {
     // donde importa: la pose fina de quien tienes cerca llega por `relay_as` a 30 Hz. Esto sólo
     // gobierna a los que están FUERA del AOI — los que no ves.
     let composition: Vec<(u16, bool)> = list.iter().map(|p| (p.id, p.relay_only)).collect();
+    // ADR-141: éste es el ÚNICO roster que no necesita el camino dirigido, y por una razón y no por
+    // descuido — su contenido ES la lista de peers, así que la llegada de uno nuevo ya cambia el
+    // hash y la puerta se abre sola por CAMBIO. Aquí el broadcast a todos es lo correcto: todos
+    // tienen que enterarse de quién ha entrado.
     let open = {
-        let peers_len = net.peers.len();
         let gate = &mut net.roster_gates.peers;
         gate.should_send(
             roster::content_hash(&composition),
-            peers_len,
             std::time::Instant::now(),
             roster::ROSTER_HEARTBEAT,
         )
@@ -1054,29 +1056,76 @@ pub fn peer_list_datagrams(peers: Vec<PeerInfo>) -> Vec<PacketPayload> {
 /// the alternative (asserting on datagrams) would need a live UDP endpoint per phantom, which is
 /// exactly the thing that does not exist â€” a phantom's `addr` is the inert `127.0.0.1:1` stamped
 /// at injection (`NetworkManager::spawn_phantom`).
-/// **`is_phantom` NO basta, y por eso el filtro mira las DOS marcas.** `is_phantom` es sólo
-/// `phantom_ids.contains(id)`, el registro de robapieles inyectados; los facelings y los vigilantes
-/// (ADR-131) se dan de alta por `insert_faceling_peer`, que marca `relay_only` y estampa el mismo
-/// centinela inerte pero NO entra en ese registro. Con medio predicado se colaban como destino, se
-/// les construía el lote y el socket los rechazaba al final — visto en partida real el 10-09:
-/// `SEND_FAIL illegal_gameplay_destination kind=unreliable_to peer_id=61002 phantom=false
-/// relay_only=true endpoint=Some(127.0.0.1:1)`, una vez por segundo (el tope del logger, no el de
-/// los rechazos). Con ADR-140 D4 eso además clona cada pose visible por destinatario para tirarla.
+/// 2026-09-10 — se pregunta por el MISMO predicado que decide el envío
+/// (`peer_is_gameplay_destination`) en vez de repetir aquí una de sus cuatro condiciones. El filtro
+/// de fantasmas cubría una sola: medido en partida real, el relay armaba lotes para peers
+/// `relay_only` —criaturas anunciadas con la addr inerte de ADR-079— que la guarda de `send.rs`
+/// rechazaba después (`MPTRACE step=SEND_FAIL event=illegal_gameplay_destination peer_id=61002`).
+/// No se escapaba ningún datagrama, pero se pagaba el AOI, el `clone()` de la pose y el lote entero
+/// para un destino imposible. Y un filtro que enumera un subconjunto de las condiciones del otro es
+/// justo la clase de duplicado que se desincroniza en silencio cuando se añade la quinta.
+/// **Sale ORDENADO, y no es cosmético — regla dura 13.** `net.peers` es un `HashMap`: su orden de
+/// iteración es arbitrario y cambia entre ejecuciones. El bucle de emisión recorre este `Vec` para
+/// decidir el orden de salida, y el índice espacial llena sus casillas con él; los dos daban por
+/// buena una «estabilidad» que el `Vec` tenía sólo dentro de una ronda, no entre corridas. Ordenar
+/// por id lo vuelve cierto de verdad y cuesta un `sort` de N ids por ronda.
 ///
-/// El predicado completo es el que `real_peer_count` ya usaba: ni phantom, ni `relay_only`.
-/// Sale ORDENADO — regla dura 13. `net.peers` es un `HashMap`, así que el orden de iteración es
-/// arbitrario y cambia entre ejecuciones; el bucle de ADR-140 D4 recorre este `Vec` para emitir y
-/// su comentario ya daba por hecho un «orden estable» que no existía. Ordenar por id lo vuelve
-/// cierto y cuesta un `sort` de N ids por ronda.
+/// (Lo detectó la rama de auditoría de rendimiento en `6750e5b0`, sobre la versión de este filtro
+/// que aún enumeraba las condiciones a mano. El predicado compartido y el orden son arreglos
+/// independientes del mismo sitio, y aquí van los dos.)
 pub(crate) fn relay_destinations(net: &NetworkManager) -> Vec<PeerId> {
     let mut out: Vec<PeerId> = net
         .peers
-        .iter()
-        .filter(|(id, p)| !net.is_phantom(**id) && !p.relay_only)
-        .map(|(id, _)| *id)
+        .values()
+        .filter(|p| net.peer_is_gameplay_destination(p))
+        .map(|p| p.id)
         .collect();
     out.sort_unstable();
     out
+}
+
+/// 2026-09-10 — cuántos peers pueden RECIBIR, para la condición `joined` de las puertas de roster.
+///
+/// `net.peers.len()` contaba también a las criaturas y al robapieles, que no reciben nada: su addr
+/// es la inerte de ADR-079/043 y la guarda de `send.rs` las rechaza. Con esa cuenta, `joined`
+/// (`peers > last_peers`) se disparaba en CADA nacimiento y reenviaba el roster entero —los cinco, y
+/// los chunks— a todo el mundo. En un mundo poblado eso ocurre sin parar, así que ninguna puerta
+/// llegaba a cerrarse del todo y el ahorro de ADR-071 y ADR-139 se evaporaba en silencio: sin error,
+/// sin log, solo tráfico.
+///
+/// La condición no cambia de significado, se le da el número que siempre quiso decir: alguien nuevo
+/// a quien hay que darle el mundo.
+/// ADR-141 — los peers a los que hay que servirles el mundo DIRIGIDO esta ronda.
+///
+/// Orden estable (regla dura 13): se recorre ordenado por id y no las claves del `HashMap`.
+pub(crate) fn newcomers(net: &NetworkManager) -> Vec<PeerId> {
+    let mut out: Vec<PeerId> = net
+        .pending_full_sync
+        .keys()
+        .copied()
+        .filter(|id| net.is_gameplay_destination(*id))
+        .collect();
+    out.sort_unstable();
+    out
+}
+
+/// ADR-141 — cierra la ronda de servicio a los recién llegados.
+///
+/// Se llama UNA vez por vuelta del bucle de juego, después de que hayan corrido todos los emisores.
+/// Si lo hiciera cada emisor, el primero en ejecutarse consumiría la cuenta y el recién llegado se
+/// quedaría sin los otros cinco rosters — con el techo de ADR-139 enm. 2, hasta 30 s sin mundo.
+pub fn tick_pending_full_sync(net: &mut NetworkManager) {
+    net.pending_full_sync.retain(|_, rounds| {
+        *rounds = rounds.saturating_sub(1);
+        *rounds > 0
+    });
+}
+
+pub(crate) fn gameplay_destination_count(net: &NetworkManager) -> usize {
+    net.peers
+        .values()
+        .filter(|p| net.peer_is_gameplay_destination(p))
+        .count()
 }
 
 /// E1 / ADR-074 (fase 1) — radio del área de interés de las poses, en metros.
@@ -1103,21 +1152,96 @@ pub const AOI_POSE_RADIUS_M: f32 = 100.0;
 pub const AOI_POSE_EXIT_FACTOR: f32 = 1.2;
 
 /// E1 / ADR-074 (enmienda 2026-08-15) — radio del anillo INTERIOR: dentro de él las poses van a
-/// la cadencia completa (10 Hz), fuera van a media (una ronda de cada dos, ~5 Hz).
+/// la cadencia completa (`POSE_RELAY_HZ`, hoy 30), fuera van a media (una ronda de cada dos,
+/// `POSE_RELAY_OUTER_HZ`, hoy 15).
 ///
 /// La mitad del radio del AOI, que con reparto uniforme deja ~25 % de los pares en el anillo
 /// interior y ~75 % en el exterior (el área crece con el cuadrado).
 pub const AOI_POSE_NEAR_RADIUS_M: f32 = AOI_POSE_RADIUS_M * 0.5;
 
+/// Rondas de relay por segundo: el bucle corre a 60 Hz y emite una de cada
+/// `NET_BROADCAST_EVERY` ticks.
+///
+/// **No se escribe a mano.** Estuvo escrito a mano —un `* 10` metido en el `MPTRACE` de abajo— y se
+/// quedó viejo cuando ADR-138 D1 subió la cadencia de 20 a 30 Hz: desde entonces ese log ha venido
+/// diciendo un TERCIO del tráfico real. Es el mismo accidente que el techo de 256 KB/s del arnés de
+/// carga, y se cierra igual: derivado en un sitio, con un test que lo ata a su origen.
+pub const POSE_RELAY_HZ: u64 = 60 / crate::game_loop::NET_BROADCAST_EVERY;
+
+/// Cadencia del anillo EXTERIOR, que va a una ronda de cada dos. Ver `aoi_pose_due_this_round`.
+pub const POSE_RELAY_OUTER_HZ: u64 = POSE_RELAY_HZ / 2;
+
+/// Lado de la casilla del índice espacial del relay, en metros.
+///
+/// **Es el radio de SALIDA, no el de entrada, y la diferencia no es cosmética.** La histéresis del
+/// AOI deja que un par que ya se estaba viendo aguante hasta `AOI_POSE_RADIUS_M ×
+/// AOI_POSE_EXIT_FACTOR`; si la casilla midiera el radio de entrada, el índice descartaría pares
+/// que el filtro sí quería mantener y la histéresis dejaría de existir en silencio.
+///
+/// Con este lado, la vecindad de 3×3 es DEMOSTRABLEMENTE suficiente: dos puntos a menos del radio
+/// de salida no pueden caer a más de una casilla de distancia en ningún eje — si lo estuvieran, su
+/// separación mínima ya superaría el lado. `the_neighbourhood_never_drops_a_pair_the_radius_wants`
+/// lo barre en vez de fiarse de este párrafo.
+pub const POSE_CELL_M: f32 = AOI_POSE_RADIUS_M * AOI_POSE_EXIT_FACTOR;
+
+/// Casilla de un punto. Sólo X y Z: ignorar la altura sólo puede meter candidatos de MÁS en una
+/// casilla, nunca de menos, así que es seguro — dos puntos a menos del radio en 3D lo están también
+/// en X y en Z por separado.
+///
+/// `floor` y no truncado: truncar hacia cero haría la casilla del origen del doble de ancha, que no
+/// rompe nada pero deja una casilla que no mide lo que dice la constante.
+pub fn pose_cell(p: [f32; 3]) -> (i32, i32) {
+    (
+        (p[0] / POSE_CELL_M).floor() as i32,
+        (p[2] / POSE_CELL_M).floor() as i32,
+    )
+}
+
+/// Tope de fuentes que un destinatario recibe en una ronda.
+///
+/// El radio y el grafo deciden par a par, y ninguno de los dos mira nunca cuánto acaba recibiendo
+/// UNA persona. Con eso el coste de la sala crece con el cuadrado: cada uno que entra le añade una
+/// fuente a todos los demás. El tope rompe ese cuadrado — la bolsa de cada destinatario deja de
+/// depender de cuántos haya, y el coste del anfitrión pasa a crecer en línea recta.
+///
+/// **96 es deliberadamente alto: hoy no corta a nadie.** No es el número bueno, es el número que
+/// garantiza que esto entra sin cambiar una coma de lo que ya funciona. El bueno sale de medirlo,
+/// y por eso `MPTRACE` empieza a publicar `max_fan_in` y `cap_hits` en esta misma tanda: cuando un
+/// playtest diga cuánto recibe de verdad el que más recibe, el tope baja con datos delante.
+///
+/// Lo que se corta es lo más LEJANO, y ahí está la única trampa que importa: el orden mira
+/// distancia y, si empata, posición — jamás el identificador ni la especie. Un desempate por `id`
+/// bastaría para que a igual distancia ganara siempre el mismo tipo de fuente, y eso es
+/// exactamente el chivato que ADR-074 prohíbe. Ver `pose_fidelity_order`.
+pub const POSE_FIDELITY_CAP: usize = 96;
+
+/// Orden de recorte del tope: primero la distancia, y sólo para deshacer empates la POSICIÓN de la
+/// fuente, componente a componente.
+///
+/// ADR-074 gobierna este desempate igual que gobierna el radio y la cadencia: el filtro decide por
+/// dónde están las cosas y nunca por qué son. Si dos fuentes caen a la misma distancia exacta del
+/// destinatario, la que se queda la elige su posición en el mundo; el identificador sólo entra
+/// cuando las dos ocupan el MISMO punto, donde ya no hay nada que delatar.
+fn pose_fidelity_order(
+    a: &(f32, [f32; 3], PeerId),
+    b: &(f32, [f32; 3], PeerId),
+) -> std::cmp::Ordering {
+    a.0.total_cmp(&b.0)
+        .then(a.1[0].total_cmp(&b.1[0]))
+        .then(a.1[1].total_cmp(&b.1[1]))
+        .then(a.1[2].total_cmp(&b.1[2]))
+        .then(a.2.cmp(&b.2))
+}
+
 /// E1 / ADR-074 (enmienda) — ¿le toca a este par emitir en esta ronda?
 ///
-/// Dentro del anillo interior, siempre. Fuera, una de cada dos rondas (~5 Hz), **escalonando por
+/// Dentro del anillo interior, siempre. Fuera, una de cada dos rondas, **escalonando por
 /// la paridad de `(src + dest)`** para que la mitad de los pares lejanos vaya en las rondas pares
 /// y la otra mitad en las impares: sin ese reparto, "media cadencia" produciría una ronda cara y
 /// otra vacía en vez de una carga plana.
 ///
-/// El anillo exterior va a 5 Hz y no a los 2 Hz que ADR-074 escribió primero porque 50–100 m es
-/// exactamente donde vive la fase `stalk` del robapieles, y a 500 ms entre poses se vería a
+/// El anillo exterior va a media cadencia y no a la quinta parte que ADR-074 escribió primero
+/// porque 50–100 m es exactamente donde vive la fase `stalk` del robapieles, y a 500 ms se vería a
 /// saltos. **No se le puede exceptuar** —una cadencia propia lo delataría igual que un radio
 /// propio— así que sube la del anillo entero. La decisión y su precio están en la enmienda.
 ///
@@ -1136,8 +1260,90 @@ pub fn aoi_pose_due_this_round(
     if dist_sq <= AOI_POSE_NEAR_RADIUS_M * AOI_POSE_NEAR_RADIUS_M {
         return true; // anillo interior: cadencia completa
     }
+    half_cadence_round(src, dest, round)
+}
+
+/// La mitad de las rondas, **escalonada por el par** para que la carga salga plana en vez de una
+/// ronda cara y otra vacía.
+///
+/// Extraída porque ahora la usan dos reglas —el anillo exterior y el cono de atención— y que las
+/// dos usen LA MISMA es lo que hace que componerlas sea idempotente: una fuente lejana Y a la
+/// espalda se queda en media cadencia, no en un cuarto. Si cada regla tuviera su propio escalonado,
+/// aplicar las dos daría 7,5 Hz sin que nadie lo hubiera decidido.
+pub fn half_cadence_round(src: PeerId, dest: PeerId, round: u64) -> bool {
     let phase = (src as u64).wrapping_add(dest as u64) & 1;
     round & 1 == phase
+}
+
+/// Semiángulo del cono de atención del destinatario, en grados.
+///
+/// **180 significa APAGADO**: con ese valor todo el mundo cuenta como «delante» y esto no cambia ni
+/// un byte de lo que sale hoy. Entra así a propósito, igual que entró `POSE_FIDELITY_CAP`.
+///
+/// # Qué hace cuando se enciende
+///
+/// Lo que queda fuera del cono baja a media cadencia (`POSE_RELAY_OUTER_HZ`, hoy 15). No baja más,
+/// y ahí está la diferencia entre esto y la versión que se descartó: a 15 Hz el hueco entre poses
+/// son 66 ms, que a 4 m/s son 27 cm de error — imperceptible. A 1 Hz serían 4 m, y el error
+/// aparecería justo al girarte, que es el único instante en que esa pose te hacía falta.
+///
+/// **Girar es instantáneo y la distancia no**: por eso la cadencia por distancia puede ser agresiva
+/// y ésta no. Un flick de ratón son 200 ms para 180°, y el anfitrión no se entera hasta que le llega
+/// tu input.
+///
+/// # Lo que falta ANTES de bajarlo de 180
+///
+/// El búfer de interpolación del cliente (`RemotePlayerManager`) mide el ritmo de llegada **global,
+/// no por proxy**, y su propio suelo no puede bajar del intervalo de envío o se seca entre muestras
+/// y vuelve a perseguir la última pose — el tirón. Con una mezcla de 30 y 15 Hz la media se queda
+/// entre medias y los de 15 caen por debajo de su suelo. Eso ya pasa hoy con el anillo exterior;
+/// encender esto lo haría pasar CERCA, que es donde se nota. El retardo tiene que ser por peer
+/// primero.
+pub const POSE_CONE_HALF_ANGLE_DEG: f32 = 180.0;
+
+/// Margen de histéresis del cono, en grados: se entra a `POSE_CONE_HALF_ANGLE_DEG` y no se sale
+/// hasta ese ángulo más este margen.
+///
+/// Sin banda muerta el cono es inservible: giras constantemente, y un par pegado al borde cambiaría
+/// de cadencia varias veces por segundo. Es la misma lección que costó el arreglo del PVS.
+pub const POSE_CONE_HYSTERESIS_DEG: f32 = 20.0;
+
+/// ¿Merece la pena preguntar por el cono? Con 180° la respuesta es siempre sí y el producto escalar
+/// sobraría.
+pub const POSE_CONE_ENABLED: bool = POSE_CONE_HALF_ANGLE_DEG < 180.0;
+
+/// ¿Le queda esta fuente dentro del cono de atención del destinatario?
+///
+/// Geometría pura y nada más: la posición de los dos y hacia dónde mira el destinatario. **Jamás
+/// qué es la fuente** — ADR-074. Una criatura y un jugador en el mismo ángulo tienen que dar el
+/// mismo resultado, o el cono se convierte en un detector de robapieles.
+///
+/// Convención de `yaw` la misma que el resto del backend (Unity): adelante es `(sin, cos)`.
+///
+/// El semiángulo entra por parámetro y no se lee de la constante, igual que `aoi_pose_should_relay`
+/// recibe su radio: es lo que permite probar la geometría aunque la constante de producción tenga
+/// el cono apagado.
+pub fn pose_in_attention_cone(
+    dest_pos: [f32; 3],
+    dest_yaw_deg: f32,
+    src_pos: [f32; 3],
+    was_inside: bool,
+    half_angle_deg: f32,
+) -> bool {
+    let dx = src_pos[0] - dest_pos[0];
+    let dz = src_pos[2] - dest_pos[2];
+    let len = (dx * dx + dz * dz).sqrt();
+    if len < f32::EPSILON {
+        return true; // encima el uno del otro: no hay ángulo que medir
+    }
+    let half = if was_inside {
+        (half_angle_deg + POSE_CONE_HYSTERESIS_DEG).min(180.0)
+    } else {
+        half_angle_deg
+    };
+    let yaw = dest_yaw_deg.to_radians();
+    let dot = (yaw.sin() * dx + yaw.cos() * dz) / len;
+    dot >= half.to_radians().cos()
 }
 
 /// E1 / ADR-074 (fase 1): ¿debe viajar la pose de `src` a `dest` esta ronda?
@@ -1272,11 +1478,149 @@ pub(crate) fn spray_draft_destinations_from(
 /// peer, stamped with that peer's id via `send_unreliable_as`, reusing the exact
 /// PlayerUpdate receive path. Host-only and a no-op below two peers (a joiner's peer set
 /// is just {host}, nothing to relay; with one joiner there is no second joiner to inform).
-/// Sent at the player-update cadence (`NET_BROADCAST_EVERY`, 10 Hz).
+/// Sent at the player-update cadence (`NET_BROADCAST_EVERY`, `POSE_RELAY_HZ`).
 /// E1 / ADR-074 (fase 1): `&mut` porque el relay mantiene el estado de histéresis del AOI
-/// (`aoi_pose_pairs`). Sigue emitiendo a 10 Hz — lo que cambia es A QUIÉN, no qué ni cuándo, así
+/// (`aoi_pose_pairs`). Sigue emitiendo a `POSE_RELAY_HZ` — lo que cambia es A QUIÉN, no qué ni cuándo, así
 /// que no toca un byte del wire (mismo criterio que ADR-071 y F0.8).
-pub async fn broadcast_peer_poses(net: &mut NetworkManager) {
+/// ADR-140 — lo que el relay necesita para preguntarle al grafo de salas.
+///
+/// Se pasa por parámetro y no vive en `NetworkManager` por la misma razón que la caché de regiones
+/// (R3, `world.rs`): el mundo lo POSEE el bucle de juego. `None` es el camino de siempre, sin PVS.
+pub struct PvsCtx<'a> {
+    pub worlds: &'a mut crate::world::wg3::world::Wg3WorldCache,
+    pub manifest: &'a crate::world::wg3::manifest::Wg3Manifest,
+    pub world_seed: u64,
+}
+
+/// Radio dentro del cual se relaya SIEMPRE, diga lo que diga el grafo.
+///
+/// El módulo `visibility` lo exige por escrito: «quien consulte esto debe unirlo con un radio mínimo
+/// que se ve SIEMPRE, pase lo que pase». Aquí ese radio no es un número redondo cualquiera — son
+/// 35 m porque la VOZ llega a 25 (`VOICE_RADIUS_M`) más 6 de margen de relay. Si el PVS pudiera
+/// ocultar a alguien más cerca que eso, se oiría hablar a un jugador cuya posición no se está
+/// recibiendo, y esa asimetría es peor que el ancho de banda que ahorra.
+pub const PVS_MIN_RADIUS_M: f32 = 35.0;
+
+/// La sala de un peer y las salas que desde ella se ven, resueltas UNA vez por ronda.
+///
+/// Con N peers, preguntar `can_see` por pareja son N² consultas al grafo para N respuestas
+/// distintas. Esto las resuelve una vez por peer y deja la prueba por pareja en una pertenencia.
+struct PvsKey {
+    region: crate::world::wg3::world::Wg3RegionCoord,
+    storey: usize,
+    space: usize,
+    /// Salas visibles para ENTRAR en el relay: el criterio estricto.
+    visible_enter: Vec<usize>,
+    /// Salas visibles para SEGUIR en él: un salto más de margen.
+    visible_stay: Vec<usize>,
+}
+
+/// Saltos de más que se conceden a un par que YA se estaba relayando.
+///
+/// **El PVS nació sin histéresis y eso fue un fallo, no una simplificación.** El radio lleva la
+/// suya desde ADR-074 —se entra a 100 m y no se sale hasta 120— precisamente para que nadie
+/// parpadee en la frontera; el grafo de salas se evaluaba de cero en cada ronda, así que alguien
+/// andando junto a un vano cambiaba de «se ve» a «no se ve» varias veces por segundo. Cada
+/// reaparición deja al cliente sin historial que interpolar, y se ve como un salto.
+///
+/// Lo reportó Joel en el primer playtest con dos: «tirones en cuanto aparece de nuevo el player».
+///
+/// Un salto y no dos: el margen tiene que ser el mínimo que rompa el ciclo. Con dos, la banda de
+/// duda se hace tan ancha que el filtro deja de filtrar.
+const PVS_STAY_EXTRA_HOPS: usize = 1;
+
+/// Resuelve la clave de un peer, o `None` si no se puede afirmar nada.
+///
+/// `None` NO significa invisible: significa que este filtro no opina, y quien no opina deja pasar.
+/// Se devuelve ante un grafo vacío, una cota en la costura entre plantas, o una posición que no cae
+/// dentro de ninguna sala (un pasillo generado, el exterior).
+fn pvs_key_for(ctx: &mut PvsCtx<'_>, pos: [f32; 3]) -> Option<PvsKey> {
+    use crate::world::wg3::chunk::Wg3ChunkCoord;
+    use crate::world::wg3::world::Wg3RegionCoord;
+
+    let coord = Wg3ChunkCoord::containing(pos[0], pos[2]);
+    let region = Wg3RegionCoord::of_chunk(coord);
+    let vis = ctx
+        .worlds
+        .region_for(ctx.manifest, ctx.world_seed, coord)
+        .visibility();
+    if vis.is_empty() {
+        return None;
+    }
+    let storey = vis.storey_at_cm((pos[1] * 100.0) as i32)?;
+    let graph = vis.storey(storey)?;
+    let space = graph.space_at_cm((pos[0] * 100.0) as i32, (pos[2] * 100.0) as i32)?;
+    let hops = crate::world::wg3::visibility::DEFAULT_VISIBILITY_HOPS;
+    Some(PvsKey {
+        region,
+        storey,
+        space,
+        visible_enter: graph.visible_from(space, hops),
+        visible_stay: graph.visible_from(space, hops + PVS_STAY_EXTRA_HOPS),
+    })
+}
+
+/// PVSTRACE — cuántas parejas oculta el grafo de las que el radio ya había aceptado.
+///
+/// Es la medida que dice si encender esto sirve de algo, y va aparte del ancho de banda a
+/// propósito: `BWTRACE` diría que se manda menos, pero no si se manda menos porque el PVS
+/// funciona o porque había menos gente. `warn!` por la misma razón que las otras trazas.
+fn note_pvs_round(considered: usize, hidden: usize) {
+    use std::time::Instant;
+    static ACC: std::sync::Mutex<(u64, u64)> = std::sync::Mutex::new((0, 0));
+    static LAST_DUMP: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+
+    let (total, cut) = {
+        let Ok(mut acc) = ACC.lock() else {
+            return; // un mutex envenenado no justifica tumbar el relay: esto es diagnóstico
+        };
+        acc.0 += considered as u64;
+        acc.1 += hidden as u64;
+        *acc
+    };
+    let Ok(mut last) = LAST_DUMP.lock() else {
+        return;
+    };
+    let now = Instant::now();
+    match *last {
+        Some(t) if now.duration_since(t).as_secs() < 5 => return,
+        _ => *last = Some(now),
+    }
+    let pct = match total {
+        0 => 0.0,
+        n => 100.0 * cut as f64 / n as f64,
+    };
+    log::warn!(
+        "PVSTRACE event=pose_pairs_filtered considered={total} hidden={cut} hidden_pct={pct:.1} \
+         min_radius_m={PVS_MIN_RADIUS_M}"
+    );
+}
+
+/// ¿Deja pasar el PVS esta pareja? **Ante cualquier duda, sí.**
+///
+/// Pura y sin red a propósito, igual que `aoi_pose_should_relay`: la mitad que puede hacer a un
+/// jugador invisible tiene que poder probarse sin sockets.
+///
+/// Regiones distintas se dejan pasar porque el grafo es POR REGIÓN y no sabe nada del otro lado de
+/// la costura; plantas distintas, porque un hueco de escalera comunica plantas y el grafo tampoco
+/// sabe de eso (`visibility.rs`).
+/// `was_relaying` es lo que este par hacía en la ronda anterior, igual que en
+/// `aoi_pose_should_relay`: quien ya estaba dentro aguanta un salto más, quien estaba fuera
+/// necesita el criterio estricto. Es la histéresis, y sin ella el par parpadea junto a un vano.
+fn pvs_allows(a: Option<&PvsKey>, b: Option<&PvsKey>, was_relaying: bool) -> bool {
+    let (Some(a), Some(b)) = (a, b) else {
+        return true;
+    };
+    if a.region != b.region || a.storey != b.storey {
+        return true;
+    }
+    match was_relaying {
+        true => a.visible_stay.contains(&b.space),
+        false => a.visible_enter.contains(&b.space),
+    }
+}
+
+pub async fn broadcast_peer_poses(net: &mut NetworkManager, mut pvs: Option<PvsCtx<'_>>) {
     if net.peers.len() < 2 {
         return;
     }
@@ -1300,9 +1644,19 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager) {
         .iter()
         .filter_map(|id| net.peers.get(id).map(|p| (*id, p.position)))
         .collect();
+    // Hacia dónde mira cada destinatario. Sólo se recoge si el cono está encendido: con 180° todo
+    // cuenta como «delante» y este mapa sería peso muerto.
+    let dest_yaw: std::collections::HashMap<PeerId, f32> = if POSE_CONE_ENABLED {
+        dest_ids
+            .iter()
+            .filter_map(|id| net.peers.get(id).map(|p| (*id, p.rotation)))
+            .collect()
+    } else {
+        std::collections::HashMap::new()
+    };
     // Sólo id y posición: es lo ÚNICO que decide el AOI, y es todo `Copy`. La pose completa se
     // construye más abajo y sólo para quien acabe teniendo destinatarios — antes se armaban las P
-    // poses por ronda, con su `animation.clone()` cada una, y las de los orígenes que no interesan
+    // poses por ronda, y las de los orígenes que no interesan
     // a nadie se tiraban enteras. Con 24 criaturas y una persona dentro (medido el 10-09) eso eran
     // cientos de `String` por segundo asignadas para nada.
     let poses: Vec<(PeerId, [f32; 3])> = net.peers.values().map(|p| (p.id, p.position)).collect();
@@ -1310,23 +1664,78 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager) {
     // E1 (ADR-074 fase 1): decidir ANTES de enviar qué pares siguen dentro del AOI, y dejar el
     // estado de histéresis ya actualizado. Se hace en un paso aparte porque el envío toma
     // prestado `net` y aquí hace falta mutar `net.aoi_pose_pairs`.
-    // Los destinos que aún interesan, POR ORIGEN. Se agrupa así (en vez de una lista plana de
-    // pares) para que el bucle de envío consulte una sola vez por origen y no haga una búsqueda
-    // por cada par — con 32 peers, una lista plana convertiría este relay en O(N³).
-    let mut relayed: std::collections::HashMap<PeerId, Vec<PeerId>> =
-        std::collections::HashMap::with_capacity(poses.len());
+    // Los orígenes que le tocan a cada DESTINATARIO esta ronda, con la distancia y la posición que
+    // el tope necesita para ordenar. Se recoge por destinatario —y no por origen, como antes—
+    // porque el tope es suyo: sólo mirando su bolsa entera se sabe si hay que recortarla. El mapa
+    // por origen que el bucle de envío consume se arma después, ya recortado.
+    let mut due_by_dest: std::collections::HashMap<PeerId, Vec<(f32, [f32; 3], PeerId)>> =
+        std::collections::HashMap::with_capacity(dest_ids.len());
     let mut next_pairs = std::collections::HashSet::with_capacity(net.aoi_pose_pairs.len().max(16));
+    let mut next_cone: std::collections::HashSet<(PeerId, PeerId)> =
+        std::collections::HashSet::new();
+
+    // ADR-140 — las salas de todos, resueltas una vez. Fuera del bucle de pares a propósito: es la
+    // diferencia entre N consultas al grafo y N².
+    let pvs_keys: std::collections::HashMap<PeerId, Option<PvsKey>> = match pvs.as_mut() {
+        Some(ctx) => poses
+            .iter()
+            .map(|(id, pos)| (*id, pvs_key_for(ctx, *pos)))
+            .collect(),
+        None => std::collections::HashMap::new(),
+    };
+    let pvs_on = pvs.is_some();
+    let mut pvs_hidden = 0usize;
+    let mut pvs_considered = 0usize;
+
+    // Índice espacial de los destinos. Sin él este bucle es O(N²) AUNQUE el radio rechace a todo el
+    // mundo, porque preguntar cuesta igual que aceptar: medido en `host_total_player_ceiling`, con
+    // la gente repartida —donde el radio no deja pasar ni una pose— doblar N multiplicaba el coste
+    // por cuatro, y el techo caía en 320 con el cable a cero. El filtro ahorraba cable y no ahorraba
+    // nada de CPU.
+    //
+    // Las casillas se llenan en el orden de `dest_ids` (Vec), así que cada cubo conserva un orden
+    // estable y el recorrido de abajo sigue siendo reproducible — regla dura 13.
+    let mut cells: std::collections::HashMap<(i32, i32), Vec<PeerId>> =
+        std::collections::HashMap::with_capacity(dest_ids.len());
+    for &dest_id in &dest_ids {
+        if let Some(dpos) = dest_pos.get(&dest_id) {
+            cells.entry(pose_cell(*dpos)).or_default().push(dest_id);
+        }
+    }
+
     for (src_id, src_pos) in &poses {
-        for &dest_id in &dest_ids {
+        // Sólo la casilla propia y las ocho de alrededor: cualquier destino fuera de esas nueve
+        // está más lejos que el radio de SALIDA y el filtro lo iba a rechazar seguro, así que ni se
+        // le pregunta. Lo que se salta es exactamente el trabajo que antes se pagaba para nada.
+        let (cx, cz) = pose_cell(*src_pos);
+        for (dest_id, dpos) in (-1..=1)
+            .flat_map(|dx| (-1..=1).map(move |dz| (cx + dx, cz + dz)))
+            .filter_map(|cell| cells.get(&cell))
+            .flatten()
+            .filter_map(|id| dest_pos.get(id).map(|p| (*id, p)))
+        {
             if dest_id == *src_id {
                 continue; // never echo a peer its own pose
             }
-            let Some(dpos) = dest_pos.get(&dest_id) else {
-                continue;
-            };
             let was = net.aoi_pose_pairs.contains(&(*src_id, dest_id));
             if !aoi_pose_should_relay(*src_pos, *dpos, was, AOI_POSE_RADIUS_M) {
                 continue;
+            }
+            // ADR-140 — el PVS va DESPUÉS del radio y nunca en su lugar: es una condición más, la
+            // más restrictiva, y sólo puede quitar destinatarios que el radio ya había aceptado.
+            //
+            // **El radio mínimo gana siempre.** Dentro de `PVS_MIN_RADIUS_M` no se pregunta nada:
+            // ahí el grafo no tiene derecho a ocultar a nadie (ver la constante).
+            if pvs_on && distance_sq(*src_pos, *dpos) > PVS_MIN_RADIUS_M * PVS_MIN_RADIUS_M {
+                pvs_considered += 1;
+                if !pvs_allows(
+                    pvs_keys.get(src_id).and_then(|k| k.as_ref()),
+                    pvs_keys.get(&dest_id).and_then(|k| k.as_ref()),
+                    was,
+                ) {
+                    pvs_hidden += 1;
+                    continue;
+                }
             }
             // El par SIGUE dentro del AOI aunque esta ronda no le toque emitir: el estado de la
             // histéresis es "nos estamos viendo", no "emití hace 100 ms". Si se registrara solo al
@@ -1334,11 +1743,80 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager) {
             // volvería a exigir el radio de ENTRADA cada dos rondas — justo el parpadeo en la
             // frontera que la histéresis existe para evitar.
             next_pairs.insert((*src_id, dest_id));
-            if aoi_pose_due_this_round(*src_pos, *dpos, *src_id, dest_id, net.pose_relay_round) {
-                relayed.entry(*src_id).or_default().push(dest_id);
+            // El cono de atención del destinatario. Lo que le queda a la espalda baja a MEDIA
+            // cadencia, nunca menos: 15 Hz son 66 ms de hueco, 27 cm a paso de carrera, y eso no se
+            // ve. Bajar más sí se vería, y justo al girarse.
+            //
+            // Comparte escalonado con el anillo exterior (`half_cadence_round`) a propósito: una
+            // fuente lejana Y a la espalda se queda en media cadencia, no en un cuarto.
+            let mut due =
+                aoi_pose_due_this_round(*src_pos, *dpos, *src_id, dest_id, net.pose_relay_round);
+            if POSE_CONE_ENABLED && due {
+                let was_inside = net.pose_cone_pairs.contains(&(*src_id, dest_id));
+                let yaw = dest_yaw.get(&dest_id).copied().unwrap_or(0.0);
+                let inside = pose_in_attention_cone(
+                    *dpos,
+                    yaw,
+                    *src_pos,
+                    was_inside,
+                    POSE_CONE_HALF_ANGLE_DEG,
+                );
+                if inside {
+                    next_cone.insert((*src_id, dest_id));
+                } else {
+                    due = half_cadence_round(*src_id, dest_id, net.pose_relay_round);
+                }
+            }
+            if due {
+                // Candidato, todavía no emisión: el tope por destinatario se aplica más abajo,
+                // cuando la bolsa de cada uno esté entera. Igual que la cadencia, el recorte vive
+                // DESPUÉS de `next_pairs.insert` a propósito — un par que el tope deje fuera sigue
+                // estando dentro del radio, y si perdiera su marca volvería a exigir el radio de
+                // ENTRADA en la ronda siguiente. Ése es exactamente el parpadeo que costó el
+                // arreglo de la histéresis del PVS.
+                due_by_dest.entry(dest_id).or_default().push((
+                    distance_sq(*src_pos, *dpos),
+                    *src_pos,
+                    *src_id,
+                ));
             }
         }
     }
+    if pvs_on {
+        note_pvs_round(pvs_considered, pvs_hidden);
+    }
+
+    // El tope por destinatario. Hasta aquí el filtro ha decidido par a par, que es lo que hace que
+    // el coste de una sala crezca con el cuadrado: nadie mira nunca cuánto acaba recibiendo UNA
+    // persona. Aquí se mira, y se corta por lo más lejano.
+    //
+    // Se recorre `dest_ids` (Vec) y no las claves del mapa, y dentro se ordena con un criterio
+    // total — regla dura 13: el orden de salida no puede depender de cómo itere un `HashMap`.
+    // `relayed` sale con la misma forma y el mismo orden que tenía cuando se llenaba en el bucle
+    // de pares, así que mientras el tope no muerda esto es un no-op byte a byte.
+    let mut relayed: std::collections::HashMap<PeerId, Vec<PeerId>> =
+        std::collections::HashMap::with_capacity(poses.len());
+    let mut max_fan_in = 0usize;
+    let mut cap_hits = 0usize;
+    for dest_id in &dest_ids {
+        let Some(cands) = due_by_dest.get_mut(dest_id) else {
+            continue;
+        };
+        max_fan_in = max_fan_in.max(cands.len());
+        if cands.len() > POSE_FIDELITY_CAP {
+            cap_hits += 1;
+            // `sort_unstable` puede permutar elementos equivalentes, y por eso el comparador es
+            // total hasta el final: sin el desempate por posición, dos fuentes a la misma
+            // distancia podrían alternar entre rondas y provocar el mismo parpadeo que el radio y
+            // el grafo ya evitan con histéresis.
+            cands.sort_unstable_by(pose_fidelity_order);
+            cands.truncate(POSE_FIDELITY_CAP);
+        }
+        for (_, _, src_id) in cands.iter() {
+            relayed.entry(*src_id).or_default().push(*dest_id);
+        }
+    }
+
     let relayed_count: usize = relayed.values().map(|d| d.len()).sum();
 
     // Se recorre `poses` (Vec, orden estable) y NO las claves de `relayed` (HashMap): el orden de
@@ -1363,7 +1841,7 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager) {
         let payload = PacketPayload::PlayerUpdate {
             position: p.position,
             rotation: p.rotation,
-            animation: p.animation.clone(),
+            animation: p.animation,
             crouch: p.crouch,
             pitch: p.pitch,
             equipment: p.equipment,
@@ -1409,6 +1887,7 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager) {
     // desaparecer del estado, o la histéresis lo mantendría vivo para siempre. Y los pares de un
     // peer que se fue se van con él sin necesidad de purga aparte.
     net.aoi_pose_pairs = next_pairs;
+    net.pose_cone_pairs = next_cone;
     net.pose_relay_round = net.pose_relay_round.wrapping_add(1);
 
     // ADR-015 traffic gate instrumentation: throttled (~1/s, no mutable state) report of
@@ -1424,18 +1903,26 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager) {
         // pose), y su cociente es el ahorro real de la partida — no una estimación de sonda.
         let without_aoi = p * d - d.min(p);
         info!(
-            "MPTRACE step=R15 event=peer_pose_relay self_id={} peer_count={} real_dest_count={} relay_datagrams_per_call={} approx_per_sec={} without_aoi={} in_aoi={} aoi_radius_m={:.0} near_radius_m={:.0}",
+            "MPTRACE step=R15 event=peer_pose_relay self_id={} peer_count={} real_dest_count={} relay_datagrams_per_call={} approx_per_sec={} without_aoi={} in_aoi={} aoi_radius_m={:.0} near_radius_m={:.0} max_fan_in={} cap_hits={} fidelity_cap={}",
             net.local_id,
             p,
             d,
             relayed_count,
-            relayed_count * 10,
+            relayed_count as u64 * POSE_RELAY_HZ,
             without_aoi,
             // Pares dentro del AOI, emitan o no esta ronda: su diferencia con
             // `relay_datagrams_per_call` es lo que ahorra el LOD, separado de lo que ahorra el AOI.
             net.aoi_pose_pairs.len(),
             AOI_POSE_RADIUS_M,
-            AOI_POSE_NEAR_RADIUS_M
+            AOI_POSE_NEAR_RADIUS_M,
+            // El número que hace falta para bajar el tope con datos: cuánto recibe en una ronda el
+            // destinatario que más recibe, y cuántos destinatarios llegaron a tocar el tope. Con
+            // `cap_hits=0` en un playtest, el recorte no está haciendo nada y el techo de la sala
+            // sigue siendo el de siempre; en cuanto deje de ser cero, `max_fan_in` dice dónde
+            // ponerlo de verdad.
+            max_fan_in,
+            cap_hits,
+            POSE_FIDELITY_CAP
         );
     }
 }
@@ -1449,17 +1936,31 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager) {
 /// ADR-071: ask one roster's gate whether this round goes out. Factored so the five broadcasts
 /// share the rule instead of each carrying its own copy of it — the five differ only in which
 /// roster and which gate, and a rule copied five times is a rule that drifts in four of them.
-fn roster_gate_open<T: serde::Serialize>(
-    gate: &mut roster::RosterGate,
-    items: &[T],
-    peers: usize,
-) -> bool {
+fn roster_gate_open<T: serde::Serialize>(gate: &mut roster::RosterGate, items: &[T]) -> bool {
     gate.should_send(
         roster::content_hash(items),
-        peers,
         std::time::Instant::now(),
         roster::ROSTER_HEARTBEAT,
     )
+}
+
+/// ADR-141 — despacha UNA página: a todos si la puerta se abrió, y sólo a los recién llegados si no.
+///
+/// Los dos caminos mandan el MISMO mensaje; lo único que cambia es el sobre. Está factorizado porque
+/// son seis emisores y una regla copiada seis veces es una regla que se desvía en cinco.
+async fn send_page_to(
+    net: &mut NetworkManager,
+    payload: &PacketPayload,
+    open: bool,
+    to: &[PeerId],
+) {
+    if open {
+        net.broadcast_unreliable(payload).await;
+        return;
+    }
+    for dest in to {
+        net.send_unreliable_to(*dest, payload).await;
+    }
 }
 
 pub async fn broadcast_stp_items(net: &mut NetworkManager) {
@@ -1469,7 +1970,11 @@ pub async fn broadcast_stp_items(net: &mut NetworkManager) {
     // ADR-071: skip the whole round if this roster is byte-identical to the last one that went
     // out. The gate still gets asked at 10 Hz, so the first round AFTER a change ships it exactly
     // as before — this costs no propagation latency, it only stops re-sending what everyone has.
-    if !roster_gate_open(&mut net.roster_gates.items, &net.stp_items, net.peers.len()) {
+    // ADR-141: fuera de la llamada, porque `newcomers` toma prestado `net` entero y el gate ya se
+    // presta mutable en el argumento siguiente.
+    let fresh = newcomers(net);
+    let open = roster_gate_open(&mut net.roster_gates.items, &net.stp_items);
+    if !open && fresh.is_empty() {
         return;
     }
     let generation = net.timestamp();
@@ -1482,7 +1987,7 @@ pub async fn broadcast_stp_items(net: &mut NetworkManager) {
             page: index as u16,
             page_count,
         };
-        net.broadcast_unreliable(&payload).await;
+        send_page_to(net, &payload, open, &fresh).await;
         // ADR-060 (d): ceder entre páginas. Sin esto la ronda entera sale como una ráfaga
         // ininterrumpida y desborda el buffer de recepción del socket del receptor (~64 KB por
         // defecto): MEDIDO, a partir de ~56 páginas empezaba a perderse al menos una por ronda,
@@ -1504,7 +2009,9 @@ pub async fn broadcast_corpses(net: &mut NetworkManager, world: &World) {
     // at it: the roster is assembled from `world.corpses` rather than stored flat. The clone is
     // orders of magnitude cheaper than the send it prevents, so it is not worth restructuring the
     // storage to save it.
-    if !roster_gate_open(&mut net.roster_gates.corpses, &all, net.peers.len()) {
+    let fresh = newcomers(net);
+    let open = roster_gate_open(&mut net.roster_gates.corpses, &all);
+    if !open && fresh.is_empty() {
         return;
     }
     let generation = net.timestamp();
@@ -1517,7 +2024,7 @@ pub async fn broadcast_corpses(net: &mut NetworkManager, world: &World) {
             page: index as u16,
             page_count,
         };
-        net.broadcast_unreliable(&payload).await;
+        send_page_to(net, &payload, open, &fresh).await;
         // ADR-060 (d): ceder entre páginas. Sin esto la ronda entera sale como una ráfaga
         // ininterrumpida y desborda el buffer de recepción del socket del receptor (~64 KB por
         // defecto): MEDIDO, a partir de ~56 páginas empezaba a perderse al menos una por ronda,
@@ -1604,7 +2111,9 @@ pub async fn broadcast_level4_state(net: &mut NetworkManager) {
         net.level4.window_open,
         net.level4.return_dest,
     )];
-    if !roster_gate_open(&mut net.roster_gates.level4, &wire_fields, net.peers.len()) {
+    let fresh = newcomers(net);
+    let open = roster_gate_open(&mut net.roster_gates.level4, &wire_fields);
+    if !open && fresh.is_empty() {
         return;
     }
     let payload = PacketPayload::Level4State {
@@ -1612,7 +2121,7 @@ pub async fn broadcast_level4_state(net: &mut NetworkManager) {
         window_open: net.level4.window_open,
         return_dest: net.level4.return_dest,
     };
-    net.broadcast_unreliable(&payload).await;
+    send_page_to(net, &payload, open, &fresh).await;
 }
 
 /// Host-as-server relay of the STP building roster: the host broadcasts its full
@@ -1623,11 +2132,9 @@ pub async fn broadcast_stp_buildings(net: &mut NetworkManager) {
     }
     // ADR-071. This is the roster the measurement singled out: a built base is static for hours and
     // was being re-sent 10 times a second forever.
-    if !roster_gate_open(
-        &mut net.roster_gates.buildings,
-        &net.stp_buildings,
-        net.peers.len(),
-    ) {
+    let fresh = newcomers(net);
+    let open = roster_gate_open(&mut net.roster_gates.buildings, &net.stp_buildings);
+    if !open && fresh.is_empty() {
         return;
     }
     let generation = net.timestamp();
@@ -1640,7 +2147,7 @@ pub async fn broadcast_stp_buildings(net: &mut NetworkManager) {
             page: index as u16,
             page_count,
         };
-        net.broadcast_unreliable(&payload).await;
+        send_page_to(net, &payload, open, &fresh).await;
         // ADR-060 (d): ceder entre páginas. Sin esto la ronda entera sale como una ráfaga
         // ininterrumpida y desborda el buffer de recepción del socket del receptor (~64 KB por
         // defecto): MEDIDO, a partir de ~56 páginas empezaba a perderse al menos una por ronda,
@@ -1656,11 +2163,9 @@ pub async fn broadcast_stp_carryables(net: &mut NetworkManager) {
         return;
     }
     // ADR-071.
-    if !roster_gate_open(
-        &mut net.roster_gates.carryables,
-        &net.stp_carryables,
-        net.peers.len(),
-    ) {
+    let fresh = newcomers(net);
+    let open = roster_gate_open(&mut net.roster_gates.carryables, &net.stp_carryables);
+    if !open && fresh.is_empty() {
         return;
     }
     let generation = net.timestamp();
@@ -1673,7 +2178,7 @@ pub async fn broadcast_stp_carryables(net: &mut NetworkManager) {
             page: index as u16,
             page_count,
         };
-        net.broadcast_unreliable(&payload).await;
+        send_page_to(net, &payload, open, &fresh).await;
         // ADR-060 (d): ceder entre páginas. Sin esto la ronda entera sale como una ráfaga
         // ininterrumpida y desborda el buffer de recepción del socket del receptor (~64 KB por
         // defecto): MEDIDO, a partir de ~56 páginas empezaba a perderse al menos una por ronda,
@@ -1689,11 +2194,9 @@ pub async fn broadcast_stp_harvestables(net: &mut NetworkManager) {
         return;
     }
     // ADR-071.
-    if !roster_gate_open(
-        &mut net.roster_gates.harvestables,
-        &net.stp_harvestables,
-        net.peers.len(),
-    ) {
+    let fresh = newcomers(net);
+    let open = roster_gate_open(&mut net.roster_gates.harvestables, &net.stp_harvestables);
+    if !open && fresh.is_empty() {
         return;
     }
     let generation = net.timestamp();
@@ -1706,7 +2209,7 @@ pub async fn broadcast_stp_harvestables(net: &mut NetworkManager) {
             page: index as u16,
             page_count,
         };
-        net.broadcast_unreliable(&payload).await;
+        send_page_to(net, &payload, open, &fresh).await;
         // ADR-060 (d): ceder entre páginas. Sin esto la ronda entera sale como una ráfaga
         // ininterrumpida y desborda el buffer de recepción del socket del receptor (~64 KB por
         // defecto): MEDIDO, a partir de ~56 páginas empezaba a perderse al menos una por ronda,
@@ -1736,7 +2239,10 @@ pub async fn broadcast_chunk_states(net: &mut NetworkManager, world: &World, pla
         return;
     }
     let player_chunk = world_to_chunk(player_pos);
-    let peers = net.peers.len();
+    // ADR-141: éste era el emisor que se medía a 95-122 pkt/s en cada entrada, contra una línea base
+    // de 10-20. Ahora quien acaba de llegar recibe los 64 chunks DIRIGIDOS a él y los que ya estaban
+    // dentro no se enteran de que ha entrado nadie.
+    let fresh = newcomers(net);
     // Las claves visitadas en ESTA ronda. Se recogen para poder tirar después los gates de chunks
     // que ya no se emiten (descargados o alejados): sin la poda el mapa crece con cada chunk que
     // el jugador visita y no vuelve a pisar, durante toda la sesión.
@@ -1769,15 +2275,22 @@ pub async fn broadcast_chunk_states(net: &mut NetworkManager, world: &World, pla
         // que en esa misma medida era el 8 %), y el resto se refresca en el siguiente latido de
         // `ROSTER_HEARTBEAT`. Se envía exactamente el mismo mensaje: cambia CUÁNDO, no el qué.
         let open = {
-            let gate = net.chunk_gates.entry(key).or_default();
+            // 2026-09-10: la puerta de los chunks —y SOLO ella— retrocede el latido. Ver
+            // `STATIC_ROSTER_HEARTBEAT_CAP`: el 32 % del tráfico medido era geometría estática repitiéndose
+            // cada 3 s. `or_insert_with` y no `or_default` porque el tope es del gate, no del
+            // llamante: una puerta creada por defecto en otro sitio no debe heredar el retroceso.
+            let gate = net.chunk_gates.entry(key).or_insert_with(|| {
+                roster::RosterGate::with_backoff(roster::STATIC_ROSTER_HEARTBEAT_CAP)
+            });
             gate.should_send(
                 stable_chunk_hash(&data),
-                peers,
                 std::time::Instant::now(),
                 roster::ROSTER_HEARTBEAT,
             )
         };
-        if !open {
+        // El gate se pregunta SIEMPRE, también cuando sólo hay recién llegados: si se saltara, su
+        // `last_sent` no avanzaría y el chunk saldría por latido justo después de haberlo mandado.
+        if !open && fresh.is_empty() {
             continue;
         }
         // TAREA 2 (2026-08-31): PAGINADO. Un `ChunkSyncData` mide 1094 B VACÍO y 2078 B con 13
@@ -1789,7 +2302,7 @@ pub async fn broadcast_chunk_states(net: &mut NetworkManager, world: &World, pla
         let generation = net.timestamp();
         for page in chunk_state_pages(data, generation) {
             let payload = PacketPayload::ChunkState { data: page };
-            net.broadcast_unreliable(&payload).await;
+            send_page_to(net, &payload, open, &fresh).await;
         }
         // ADR-060 (d): ceder entre páginas. Sin esto la ronda entera sale como una ráfaga
         // ininterrumpida y desborda el buffer de recepción del socket del receptor (~64 KB por
@@ -2923,14 +3436,14 @@ mod chunk_broadcast_tests {
         let now = std::time::Instant::now();
         let hash = roster::content_hash(std::slice::from_ref(&data));
         for _ in 0..roster::ROSTER_CHANGE_BURST {
-            gate.should_send(hash, 1, now, roster::ROSTER_HEARTBEAT);
+            gate.should_send(hash, now, roster::ROSTER_HEARTBEAT);
         }
         assert!(
-            !gate.should_send(hash, 1, now, roster::ROSTER_HEARTBEAT),
+            !gate.should_send(hash, now, roster::ROSTER_HEARTBEAT),
             "preparación: ya calla"
         );
         assert!(
-            gate.should_send(hash, 1, now, std::time::Duration::ZERO),
+            gate.should_send(hash, now, std::time::Duration::ZERO),
             "vencido el latido, la ronda sale aunque el chunk sea idéntico"
         );
     }
@@ -2944,19 +3457,19 @@ mod chunk_broadcast_tests {
         let mut b = roster::RosterGate::default();
         let now = std::time::Instant::now();
         for _ in 0..roster::ROSTER_CHANGE_BURST {
-            a.should_send(1, 1, now, roster::ROSTER_HEARTBEAT);
-            b.should_send(1, 1, now, roster::ROSTER_HEARTBEAT);
+            a.should_send(1, now, roster::ROSTER_HEARTBEAT);
+            b.should_send(1, now, roster::ROSTER_HEARTBEAT);
         }
-        assert!(!a.should_send(1, 1, now, roster::ROSTER_HEARTBEAT));
-        assert!(!b.should_send(1, 1, now, roster::ROSTER_HEARTBEAT));
+        assert!(!a.should_send(1, now, roster::ROSTER_HEARTBEAT));
+        assert!(!b.should_send(1, now, roster::ROSTER_HEARTBEAT));
 
         // Solo `a` cambia (hash distinto). `b` con el mismo hash de siempre sigue callado.
         assert!(
-            a.should_send(2, 1, now, roster::ROSTER_HEARTBEAT),
+            a.should_send(2, now, roster::ROSTER_HEARTBEAT),
             "el chunk que cambió tiene que salir"
         );
         assert!(
-            !b.should_send(1, 1, now, roster::ROSTER_HEARTBEAT),
+            !b.should_send(1, now, roster::ROSTER_HEARTBEAT),
             "el chunk vecino, sin cambios, tiene que seguir callado"
         );
     }
@@ -3065,6 +3578,504 @@ mod chunk_broadcast_tests {
 /// ADR-060. El invariante que estos tests fijan no es "los chunks llegan" sino QUE NO SE ABRE EL
 /// GATE DE SPAWN antes de tiempo: el emisor pasÃ³ de un datagrama a N, y el gate viejo
 /// (`!world.chunks.is_empty()`) se habrÃ­a disparado con el primero.
+/// ADR-140 — **la mitad del PVS que puede hacer invisible a un jugador.**
+///
+/// El módulo `visibility` lo escribe como la regla que gobierna el diseño: si el grafo se equivoca
+/// diciendo «no lo ves» cuando sí lo ves, un jugador desaparece para otro; si se equivoca al revés,
+/// se gastan unos KB. Los dos errores no valen lo mismo, así que todo lo que no se puede afirmar
+/// tiene que dejar pasar.
+///
+/// Se prueba sobre `pvs_allows`, que es pura: la mitad peligrosa de esto no debe necesitar sockets
+/// para ponerse en rojo.
+#[cfg(test)]
+mod attention_cone_tests {
+    use super::*;
+
+    /// Semiángulo de prueba: un campo de visión de 100° son 50 a cada lado.
+    const HALF: f32 = 50.0;
+
+    /// Destinatario en el origen mirando a +Z (yaw 0, convención Unity: adelante es `(sin, cos)`).
+    fn at_origin_looking_north(src: [f32; 3], was_inside: bool) -> bool {
+        pose_in_attention_cone([0.0, 1.8, 0.0], 0.0, src, was_inside, HALF)
+    }
+
+    #[test]
+    fn what_you_are_looking_at_stays_at_full_cadence() {
+        assert!(
+            at_origin_looking_north([0.0, 1.8, 10.0], false),
+            "justo delante tiene que estar dentro del cono"
+        );
+        assert!(
+            at_origin_looking_north([7.0, 1.8, 10.0], false),
+            "a 35° del eje, dentro de los 50 de semiángulo"
+        );
+    }
+
+    #[test]
+    fn what_is_behind_you_drops_out() {
+        assert!(
+            !at_origin_looking_north([0.0, 1.8, -10.0], false),
+            "justo a la espalda tiene que quedar fuera"
+        );
+        assert!(
+            !at_origin_looking_north([10.0, 1.8, 0.0], false),
+            "a 90°, de perfil, ya está fuera de un semiángulo de 50"
+        );
+    }
+
+    #[test]
+    fn the_cone_has_a_dead_band_so_turning_does_not_flicker() {
+        // A 60° del eje: fuera del cono de ENTRADA (50) pero dentro del de SALIDA (50 + 20).
+        // Sin esta banda, girar la cabeza cambiaría la cadencia de un par varias veces por segundo,
+        // que es exactamente lo que costó el arreglo de la histéresis del PVS.
+        let side = [
+            10.0 * 60f32.to_radians().sin(),
+            1.8,
+            10.0 * 60f32.to_radians().cos(),
+        ];
+        assert!(
+            !at_origin_looking_north(side, false),
+            "preparación: a 60° NO se entra al cono"
+        );
+        assert!(
+            at_origin_looking_north(side, true),
+            "pero quien ya estaba dentro aguanta el margen de histéresis"
+        );
+    }
+
+    #[test]
+    fn the_dead_band_does_not_make_attention_permanent() {
+        // La mitad que impide que el arreglo se coma la optimización: si «una vez mirado, mirado
+        // para siempre», el cono no recortaría nada nunca y pasaría en verde igual.
+        assert!(
+            !at_origin_looking_north([0.0, 1.8, -10.0], true),
+            "a la espalda del todo se sale aunque se estuviera dentro"
+        );
+    }
+
+    #[test]
+    fn the_cone_reads_geometry_and_nothing_else() {
+        // ADR-074. La función no recibe quién es la fuente —no hay parámetro que lo diga— y dos
+        // posiciones simétricas respecto al eje de mirada tienen que dar lo mismo. Si alguna vez
+        // alguien añade un parámetro de especie aquí, este test es el sitio donde se discute.
+        let left = [-6.0, 1.8, 10.0];
+        let right = [6.0, 1.8, 10.0];
+        assert_eq!(
+            at_origin_looking_north(left, false),
+            at_origin_looking_north(right, false),
+            "el cono es simétrico: sólo mira el ángulo, jamás qué es la fuente"
+        );
+    }
+
+    #[test]
+    fn far_and_behind_costs_half_cadence_and_not_a_quarter() {
+        // Las dos reglas que bajan cadencia —anillo exterior y cono— comparten escalonado. Que
+        // compongan a MEDIA y no a un cuarto depende de eso, y es la razón de que
+        // `half_cadence_round` exista como función en vez de estar copiada dos veces.
+        for round in 0..8u64 {
+            assert_eq!(
+                half_cadence_round(7, 11, round),
+                half_cadence_round(7, 11, round),
+                "aplicar la misma regla dos veces no puede recortar dos veces"
+            );
+        }
+        // Y reparte: la mitad de las rondas para un par, la otra mitad para el par de al lado.
+        let a: usize = (0..8).filter(|r| half_cadence_round(7, 11, *r)).count();
+        let b: usize = (0..8).filter(|r| half_cadence_round(7, 12, *r)).count();
+        assert_eq!(
+            (a, b),
+            (4, 4),
+            "media cadencia para los dos, en rondas opuestas"
+        );
+        assert!(
+            (0..8).all(|r| half_cadence_round(7, 11, r) != half_cadence_round(7, 12, r)),
+            "escalonados: la carga sale plana en vez de una ronda cara y otra vacía"
+        );
+    }
+
+    #[test]
+    fn the_cone_ships_disabled() {
+        // Entra apagado a propósito: el búfer de interpolación del cliente mide el ritmo GLOBAL y
+        // no por peer, y hasta que eso cambie mezclar 30 y 15 Hz CERCA produciría tirones. Ver el
+        // doc de `POSE_CONE_HALF_ANGLE_DEG`.
+        // `const` porque el valor se conoce al compilar y clippy exige que se diga: así el fallo
+        // llega al compilar, no al correr los tests, que para una puerta de este tipo es mejor.
+        const {
+            assert!(
+                !POSE_CONE_ENABLED,
+                "el cono no puede encenderse sin el retardo de interpolación por peer en Unity"
+            )
+        };
+        assert_eq!(
+            POSE_CONE_HALF_ANGLE_DEG, 180.0,
+            "180° = todo cuenta como delante = ni un byte de diferencia con hoy"
+        );
+    }
+}
+
+#[cfg(test)]
+mod spatial_index_tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    /// Una nube que cruza el origen y cae en coordenadas negativas a propósito, con separaciones
+    /// que se sientan justo encima de las dos fronteras que importan (el radio de entrada, 100, y
+    /// el de salida, 120).
+    fn cloud() -> Vec<[f32; 3]> {
+        let mut pts = Vec::new();
+        for i in 0..18 {
+            for j in 0..18 {
+                let jitter = ((i * 7 + j * 13) % 11) as f32 - 5.0;
+                pts.push([
+                    (i as f32 - 9.0) * 58.0 + jitter,
+                    1.8,
+                    (j as f32 - 9.0) * 58.0 - jitter,
+                ]);
+            }
+        }
+        pts
+    }
+
+    /// Los pares que el índice llega a VISITAR, con la vecindad de 3×3 del relay.
+    fn visited_by_index(pts: &[[f32; 3]]) -> HashSet<(usize, usize)> {
+        let mut cells: std::collections::HashMap<(i32, i32), Vec<usize>> =
+            std::collections::HashMap::new();
+        for (i, p) in pts.iter().enumerate() {
+            cells.entry(pose_cell(*p)).or_default().push(i);
+        }
+        let mut seen = HashSet::new();
+        for (i, a) in pts.iter().enumerate() {
+            let (cx, cz) = pose_cell(*a);
+            for dx in -1..=1 {
+                for dz in -1..=1 {
+                    if let Some(bucket) = cells.get(&(cx + dx, cz + dz)) {
+                        for &j in bucket {
+                            if i != j {
+                                seen.insert((i, j));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        seen
+    }
+
+    /// Los pares que el radio ACEPTA, a fuerza bruta: todos contra todos, sin índice.
+    fn accepted_by_radius(pts: &[[f32; 3]], was_relaying: bool) -> HashSet<(usize, usize)> {
+        let mut ok = HashSet::new();
+        for (i, a) in pts.iter().enumerate() {
+            for (j, b) in pts.iter().enumerate() {
+                if i != j && aoi_pose_should_relay(*a, *b, was_relaying, AOI_POSE_RADIUS_M) {
+                    ok.insert((i, j));
+                }
+            }
+        }
+        ok
+    }
+
+    #[test]
+    fn the_index_never_drops_a_pair_the_radius_wants() {
+        // La propiedad que hace correcto el atajo: el índice puede visitar de MÁS (y los rechaza el
+        // radio, como siempre), pero jamás de MENOS. Si alguna vez visitara de menos, un jugador se
+        // volvería invisible para otro sin que nada fallara — el peor tipo de bug de este relay,
+        // porque no da error, sólo borra gente.
+        let pts = cloud();
+        let visited = visited_by_index(&pts);
+
+        // Las dos ramas de la histéresis, porque usan radios distintos y el lado de la casilla se
+        // eligió por el de SALIDA precisamente para cubrir la segunda.
+        for was_relaying in [false, true] {
+            let wanted = accepted_by_radius(&pts, was_relaying);
+            let dropped: Vec<_> = wanted.difference(&visited).collect();
+            assert!(
+                dropped.is_empty(),
+                "el índice se dejó {} pares que el radio aceptaba (was_relaying={was_relaying});                  el primero es {:?}",
+                dropped.len(),
+                dropped.first()
+            );
+        }
+    }
+
+    #[test]
+    fn the_relay_rate_stays_tied_to_the_loop_that_produces_it() {
+        // La razón de que esta constante exista. Estaba escrita a mano como un `* 10` dentro del
+        // MPTRACE y se quedó vieja cuando ADR-138 D1 subió la cadencia de 20 a 30 Hz: el log llevaba
+        // desde entonces diciendo un tercio del tráfico real, sin que nada fallara.
+        //
+        // Ahora se deriva, y esto ata la derivación a su origen: si alguien cambia el ritmo del
+        // bucle, lo que salta es un test y no un número silenciosamente equivocado en un log que se
+        // lee durante los playtests.
+        assert_eq!(
+            POSE_RELAY_HZ * crate::game_loop::NET_BROADCAST_EVERY,
+            60,
+            "el relay emite una ronda de cada {} ticks de un bucle de 60 Hz",
+            crate::game_loop::NET_BROADCAST_EVERY
+        );
+        assert_eq!(
+            POSE_RELAY_OUTER_HZ * 2,
+            POSE_RELAY_HZ,
+            "el anillo exterior es exactamente media cadencia (`aoi_pose_due_this_round`)"
+        );
+    }
+
+    #[test]
+    fn the_cell_is_at_least_the_exit_radius() {
+        // Si alguien encoge la casilla por debajo del radio de salida, la vecindad de 3×3 deja de
+        // ser suficiente y el test de arriba se pone rojo. Esta es la razón escrita, para que el
+        // rojo se lea en un segundo en vez de en una tarde.
+        let exit = AOI_POSE_RADIUS_M * AOI_POSE_EXIT_FACTOR;
+        assert!(
+            POSE_CELL_M >= exit,
+            "casilla {POSE_CELL_M} m < radio de salida {exit} m: la vecindad de 3x3 ya no cubre              todo lo que la histéresis quiere mantener"
+        );
+    }
+
+    #[test]
+    fn the_index_saves_work_instead_of_just_moving_it() {
+        // Que sea correcto no basta: tiene que ahorrar. Se mide sobre la MISMA nube densa que usa
+        // el test de correccion —58 m de paso contra un radio de 100— que es casi el peor caso
+        // realista: ahi las casillas van llenas y la vecindad de 3x3 abarca buena parte del mundo.
+        // Con la gente de verdad repartida el ahorro es de otro orden; este umbral es el suelo, no
+        // la expectativa.
+        let pts = cloud();
+        let brute = pts.len() * (pts.len() - 1);
+        let visited = visited_by_index(&pts).len();
+        assert!(
+            visited * 4 < brute,
+            "el índice visita {visited} de {brute} pares: menos de un 4x en el caso más denso no              justifica el índice"
+        );
+    }
+}
+
+#[cfg(test)]
+mod fidelity_cap_tests {
+    use super::*;
+
+    /// Un candidato tal y como lo recoge el bucle de pares: distancia al cuadrado, posición de la
+    /// fuente e identificador.
+    fn cand(dist_sq: f32, pos: [f32; 3], id: PeerId) -> (f32, [f32; 3], PeerId) {
+        (dist_sq, pos, id)
+    }
+
+    #[test]
+    fn the_cap_keeps_the_nearest_and_drops_the_farthest() {
+        let mut bag = vec![
+            cand(900.0, [30.0, 0.0, 0.0], 7),
+            cand(25.0, [5.0, 0.0, 0.0], 3),
+            cand(400.0, [20.0, 0.0, 0.0], 9),
+            cand(100.0, [10.0, 0.0, 0.0], 1),
+        ];
+        bag.sort_unstable_by(pose_fidelity_order);
+        bag.truncate(2);
+        let kept: Vec<PeerId> = bag.iter().map(|c| c.2).collect();
+        assert_eq!(
+            kept,
+            vec![3, 1],
+            "el recorte se queda con los dos MÁS CERCANOS; lo que se va es lo lejano"
+        );
+    }
+
+    #[test]
+    fn the_order_never_depends_on_who_the_source_is() {
+        // ADR-074: el filtro decide por dónde están las cosas, jamás por qué son. Si el
+        // identificador entrara en el desempate, a igual distancia ganaría siempre el mismo tipo de
+        // fuente y el tope se convertiría en un detector de robapieles.
+        //
+        // Dos fuentes equidistantes del destinatario, una a cada lado. El orden lo fija su
+        // posición, así que intercambiarles el identificador no puede moverlo.
+        let left = [-10.0, 0.0, 0.0];
+        let right = [10.0, 0.0, 0.0];
+
+        let mut a = [cand(100.0, right, 1), cand(100.0, left, 2)];
+        let mut b = [cand(100.0, right, 2), cand(100.0, left, 1)];
+        a.sort_unstable_by(pose_fidelity_order);
+        b.sort_unstable_by(pose_fidelity_order);
+
+        let pos_a: Vec<[f32; 3]> = a.iter().map(|c| c.1).collect();
+        let pos_b: Vec<[f32; 3]> = b.iter().map(|c| c.1).collect();
+        assert_eq!(
+            pos_a, pos_b,
+            "a igual distancia manda la POSICIÓN: cambiar los identificadores no reordena nada"
+        );
+        assert_eq!(
+            pos_a[0], left,
+            "y el desempate es determinista, no arbitrario"
+        );
+
+        // Y la distancia manda sobre todo lo demás: el más cercano gana aunque su identificador sea
+        // el más alto de la bolsa.
+        let mut c = [
+            cand(900.0, [30.0, 0.0, 0.0], 1),
+            cand(4.0, [2.0, 0.0, 0.0], 999),
+        ];
+        c.sort_unstable_by(pose_fidelity_order);
+        assert_eq!(
+            c[0].2, 999,
+            "la distancia decide antes que nada; el identificador sólo rompe empates exactos"
+        );
+    }
+
+    #[test]
+    fn the_order_is_total_so_the_cut_is_reproducible() {
+        // Regla dura 13: la salida no puede depender del orden en que llegaron los candidatos.
+        // `sort_unstable` permuta equivalentes, así que el comparador tiene que distinguirlos a
+        // todos o el recorte cambiaría de una ronda a otra con la misma escena — el parpadeo que el
+        // radio y el grafo ya evitan con histéresis.
+        let base = vec![
+            cand(100.0, [10.0, 0.0, 0.0], 4),
+            cand(100.0, [0.0, 10.0, 0.0], 2),
+            cand(100.0, [0.0, 0.0, 10.0], 8),
+            cand(25.0, [5.0, 0.0, 0.0], 5),
+        ];
+        let mut forward = base.clone();
+        let mut backward = base.clone();
+        backward.reverse();
+        forward.sort_unstable_by(pose_fidelity_order);
+        backward.sort_unstable_by(pose_fidelity_order);
+        assert_eq!(
+            forward, backward,
+            "misma escena, distinto orden de entrada: el recorte tiene que salir idéntico"
+        );
+    }
+
+    #[test]
+    fn the_cap_is_above_a_full_session_so_it_cannot_bite_on_players_alone() {
+        // El tope entra deliberadamente apagado: 96 está por encima de cualquier aforo que esta
+        // sesión admita, así que ninguna partida de sólo jugadores puede tocarlo. Lo que sí puede
+        // acercarse es la población de criaturas, y por eso `MPTRACE` publica `max_fan_in` y
+        // `cap_hits` — el número bueno sale de medirlos, no de esta constante.
+        let full_session = crate::network::protocol::SessionConfig::default().max_players as usize;
+        assert!(
+            POSE_FIDELITY_CAP > full_session,
+            "tope {POSE_FIDELITY_CAP} debe superar el aforo de sesión {full_session}: si no, deja \
+             de ser un cambio sin efecto y necesita medida antes de entrar"
+        );
+    }
+}
+
+#[cfg(test)]
+mod pvs_tests {
+    use super::*;
+
+    /// Sin margen: ve lo mismo entrando que quedándose. Para los casos que no hablan de histéresis.
+    fn key(region: (i32, i32), storey: usize, space: usize, visible: &[usize]) -> PvsKey {
+        key_hyst(region, storey, space, visible, visible)
+    }
+
+    fn key_hyst(
+        region: (i32, i32),
+        storey: usize,
+        space: usize,
+        enter: &[usize],
+        stay: &[usize],
+    ) -> PvsKey {
+        PvsKey {
+            region: crate::world::wg3::world::Wg3RegionCoord {
+                x: region.0,
+                z: region.1,
+            },
+            storey,
+            space,
+            visible_enter: enter.to_vec(),
+            visible_stay: stay.to_vec(),
+        }
+    }
+
+    #[test]
+    fn a_peer_without_a_room_is_always_relayed() {
+        let somewhere = key((0, 0), 0, 3, &[3]);
+        assert!(
+            pvs_allows(None, Some(&somewhere), false),
+            "origen sin sala resuelta: no se puede afirmar nada, así que se envía"
+        );
+        assert!(
+            pvs_allows(Some(&somewhere), None, false),
+            "destino sin sala resuelta: igual"
+        );
+        assert!(pvs_allows(None, None, false), "ninguno de los dos: igual");
+    }
+
+    #[test]
+    fn across_a_region_seam_everything_is_relayed() {
+        // El grafo es POR REGIÓN y no sabe nada del otro lado de la costura. Ocultar ahí sería
+        // ocultar por ignorancia, que es exactamente el error caro.
+        let a = key((0, 0), 0, 1, &[1]);
+        let b = key((1, 0), 0, 9, &[9]);
+        assert!(pvs_allows(Some(&a), Some(&b), false));
+    }
+
+    #[test]
+    fn across_storeys_everything_is_relayed() {
+        // Un hueco de escalera comunica plantas y este grafo no lo sabe (`visibility.rs`).
+        let a = key((0, 0), 0, 1, &[1]);
+        let b = key((0, 0), 1, 1, &[1]);
+        assert!(pvs_allows(Some(&a), Some(&b), false));
+    }
+
+    #[test]
+    fn two_rooms_that_communicate_see_each_other() {
+        let a = key((0, 0), 0, 0, &[0, 1, 2]);
+        let b = key((0, 0), 0, 2, &[0, 1, 2]);
+        assert!(pvs_allows(Some(&a), Some(&b), false));
+    }
+
+    /// El único caso en el que este filtro dice que NO. Si deja de existir, el PVS no está
+    /// filtrando nada y el ahorro que mide `PVSTRACE` sería mentira.
+    #[test]
+    fn a_sealed_room_is_the_only_thing_that_gets_cut() {
+        let a = key((0, 0), 0, 0, &[0, 1]);
+        let sealed = key((0, 0), 0, 7, &[7]);
+        assert!(!pvs_allows(Some(&a), Some(&sealed), false));
+    }
+
+    /// **La histéresis, y por qué existe.** Sin ella el PVS se evalúa de cero en cada ronda, así
+    /// que un par junto a un vano cambia de «se ve» a «no se ve» varias veces por segundo; cada
+    /// reaparición deja al cliente sin historial que interpolar y se ve como un salto. Lo reportó
+    /// Joel en el primer playtest con dos jugadores.
+    ///
+    /// Es la misma forma que el radio lleva desde ADR-074 —entrar es estricto, quedarse es
+    /// generoso— y aquí la unidad no son metros sino SALTOS en el grafo.
+    #[test]
+    fn a_pair_already_relaying_survives_one_extra_hop() {
+        // La sala 9 está a un salto de más: fuera del criterio de entrada, dentro del de estancia.
+        let a = key_hyst((0, 0), 0, 0, &[0, 1], &[0, 1, 9]);
+        let borderline = key((0, 0), 0, 9, &[9]);
+
+        assert!(
+            !pvs_allows(Some(&a), Some(&borderline), false),
+            "para ENTRAR manda el criterio estricto"
+        );
+        assert!(
+            pvs_allows(Some(&a), Some(&borderline), true),
+            "quien ya estaba dentro aguanta un salto más: sin esto, parpadea"
+        );
+    }
+
+    /// Y el margen es UN salto, no una barra libre: lo que está de verdad lejos se corta aunque se
+    /// estuviera relayando. Sin esta mitad, la histéresis se convertiría en «una vez visto,
+    /// visible para siempre» y el filtro dejaría de filtrar.
+    #[test]
+    fn hysteresis_does_not_make_visibility_permanent() {
+        let a = key_hyst((0, 0), 0, 0, &[0, 1], &[0, 1, 9]);
+        let far = key((0, 0), 0, 42, &[42]);
+        assert!(!pvs_allows(Some(&a), Some(&far), true));
+    }
+
+    /// Cada uno ve desde SU sala: el corte se decide con la lista del ORIGEN, no con una relación
+    /// que se dé por simétrica sin comprobarla.
+    #[test]
+    fn visibility_is_asked_from_the_source() {
+        let seer = key((0, 0), 0, 0, &[0, 5]);
+        let seen = key((0, 0), 0, 5, &[5]);
+        assert!(pvs_allows(Some(&seer), Some(&seen), false));
+        assert!(
+            !pvs_allows(Some(&seen), Some(&seer), false),
+            "la lista del origen es la que manda, y aquí la del otro no incluye la sala 0"
+        );
+    }
+}
+
 #[cfg(test)]
 mod world_drip_tests {
     use super::*;
@@ -3441,7 +4452,7 @@ mod uplink_probe {
                 h_bytes,
             ];
             for (k, gate) in gates.iter_mut().enumerate() {
-                if gate.should_send(hashes[k], PEERS, now, ROSTER_HEARTBEAT) {
+                if gate.should_send(hashes[k], now, ROSTER_HEARTBEAT) {
                     busy_bytes += sizes[k];
                 }
             }
@@ -3589,7 +4600,7 @@ mod uplink_probe {
                 for (i, wire) in &chunk_wires {
                     // Un chunk "activo" cambia de contenido en cada ronda; el resto es idéntico.
                     let hash = if *i < churn { round as u64 + 1 } else { 0 };
-                    if gates[*i].should_send(hash, PEERS, now, ROSTER_HEARTBEAT) {
+                    if gates[*i].should_send(hash, now, ROSTER_HEARTBEAT) {
                         sent_bytes += wire;
                     }
                 }
@@ -3693,7 +4704,7 @@ mod uplink_probe {
                 let now = t0 + Duration::from_millis(round as u64 * 200);
                 for (i, wire) in &chunk_wires {
                     let hash = if *i < churn { round as u64 + 1 } else { 0 };
-                    if gates[*i].should_send(hash, PEERS, now, ROSTER_HEARTBEAT) {
+                    if gates[*i].should_send(hash, now, ROSTER_HEARTBEAT) {
                         sent_bytes += wire;
                     }
                 }

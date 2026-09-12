@@ -336,13 +336,13 @@ impl NetworkManager {
                         });
                         entry.relay_only = true;
                         let rot = entry.rotation;
-                        let anim = entry.animation.clone();
+                        let anim = entry.animation;
                         entry.update_player_state(info.position, rot, anim);
                         continue;
                     }
                     if let Some(peer) = self.peers.get_mut(&info.id) {
                         let rot = peer.rotation;
-                        let anim = peer.animation.clone();
+                        let anim = peer.animation;
                         peer.update_player_state(info.position, rot, anim);
                     } else if let Ok(addr) = info.addr.parse::<SocketAddr>() {
                         // Auditoría de heartbeat (2026-08-30): la dirección tiene que ser de
@@ -761,7 +761,7 @@ impl NetworkManager {
                 species,
             } => {
                 if let Some(peer) = self.peers.get_mut(&sender_id) {
-                    peer.update_player_state(position, rotation, animation.clone());
+                    peer.update_player_state(position, rotation, animation);
                     peer.crouch = crouch; // ADR-020: cosmetic crouch, alongside the pose
                     peer.pitch = pitch; // ADR-021: cosmetic camera pitch, alongside the pose
                     peer.equipment = equipment; // ADR-022: cosmetic clothing, alongside the pose
@@ -1233,6 +1233,13 @@ impl NetworkManager {
         // Add the peer.
         let peer = PeerConnection::new(assigned_id, player_name.clone(), from_addr);
         self.peers.insert(assigned_id, peer);
+        // ADR-141: se apunta para que los emisores le sirvan el mundo A ÉL. Antes esto lo cubría la
+        // condición `joined` del gate, que abría la puerta y retransmitía a TODOS — la tormenta que
+        // tumbaba la partida al sexto jugador. Va aquí, en el ÚNICO sitio donde el host admite a un
+        // peer de verdad: los otros `peers.insert` son fantasmas y criaturas (ADR-016/043/079), que
+        // no reciben nada y no deben pedir un mundo.
+        self.pending_full_sync
+            .insert(assigned_id, crate::network::roster::ROSTER_CHANGE_BURST);
         info!(
             "MPTRACE step=C event=host_register_peer self_id={} sender_id={} assigned_id={} peer_id={} endpoint={} peer_count={} remote_players_count=<n/a> remote_players_ids={:?}",
             self.local_id,

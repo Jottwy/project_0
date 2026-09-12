@@ -11,7 +11,7 @@
 5. [CONVENTIONS.md](CONVENTIONS.md) — convenciones C# / Rust / protocolo / git.
 
 ## Histórico
-- [SESSION-LOG.md](SESSION-LOG.md) — todo el diario anterior, verbatim. El «por qué quedó así».
+- [SESSION-LOG.md](SESSION-LOG.md) — diario anterior, verbatim.
 
 ## Arquitectura y red
 - [architecture/NETWORKING_AND_SESSION_ARCHITECTURE.md](architecture/NETWORKING_AND_SESSION_ARCHITECTURE.md) — entrada.
@@ -22,25 +22,25 @@
 - [SERVER_BROWSER.md](SERVER_BROWSER.md) — navegador por Steam; §14 primero.
 
 ## Sistemas
-- [systems/ipc-wire-schema.md](systems/ipc-wire-schema.md) — changelog del wire. Autoritativo.
-- [systems/authored-rooms.md](systems/authored-rooms.md) — salas autoradas de punta a punta.
-- [systems/perf-baseline.md](systems/perf-baseline.md) — base de rendimiento medida (backend).
-- [perf/PERF_AUDIT_v1.md](perf/PERF_AUDIT_v1.md) — auditoría del cliente (09-10): frametime/GC/VRAM, 18 técnicas.
-- [systems/vendor-patches.md](systems/vendor-patches.md) — qué perdemos con cada reimport del vendor.
+- [systems/ipc-wire-schema.md](systems/ipc-wire-schema.md) — changelog del wire. LEY.
+- [systems/authored-rooms.md](systems/authored-rooms.md) — salas autoradas, punta a punta.
+- [systems/perf-baseline.md](systems/perf-baseline.md) — rendimiento medido (backend).
+- [perf/PERF_AUDIT_v1.md](perf/PERF_AUDIT_v1.md) — cliente 09-10: frametime/GC/VRAM.
+- [systems/vendor-patches.md](systems/vendor-patches.md) — qué se pierde al reimportar el vendor.
 - [systems/reverb-mixer.md](systems/reverb-mixer.md) — reverb por zona.
-- [AUDIO-PROPAGATION-ROADMAP.md](AUDIO-PROPAGATION-ROADMAP.md) — PROPUESTO: eco a distancia y sonido que dobla esquinas.
-- [systems/damage-sync.md](systems/damage-sync.md) — hit-reaction cosmético (ADR-024).
+- [AUDIO-PROPAGATION-ROADMAP.md](AUDIO-PROPAGATION-ROADMAP.md) — PROPUESTO: eco y difracción.
+- [systems/damage-sync.md](systems/damage-sync.md) — hit-reaction (ADR-024).
 
 ## Mundo (WorldGen3)
 - [WG3-ALPHA1-ROADMAP.md](WG3-ALPHA1-ROADMAP.md) — **contrato vigente**: WG3 v1 = Alpha 1.
-- [WG3-ROADMAP.md](WG3-ROADMAP.md) — plan de WG3 y los frentes abiertos.
+- [WG3-ROADMAP.md](WG3-ROADMAP.md) — plan de WG3 y frentes abiertos.
 - [WORLDGEN3-BRIEF.md](WORLDGEN3-BRIEF.md) — resumen del sistema.
 - [VERTICALITY-ROADMAP.md](VERTICALITY-ROADMAP.md) — geometrías verticales.
 - [PLAN-PLANTAS-ALTAS.md](PLAN-PLANTAS-ALTAS.md) — poblar las plantas altas.
 - [ROOMS-ROADMAP.md](ROOMS-ROADMAP.md) — salas autoradas.
 - [LEVEL4-ROADMAP.md](LEVEL4-ROADMAP.md) — incursiones (ADR-093).
 - [STRUCTURES.md](STRUCTURES.md) — estructuras del mundo.
-- [LIGHTING-STUDY.md](LIGHTING-STUDY.md) — iluminación: estado real, causas de la oscuridad y salto a Unity 6.7.
+- [LIGHTING-STUDY.md](LIGHTING-STUDY.md) — luz: estado, causas, Unity 6.7.
 
 ## Juego y contenido
 - [GAME-LOOP-GDD.md](GAME-LOOP-GDD.md) — el loop y sus bloqueantes.

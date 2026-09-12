@@ -175,6 +175,16 @@ pub struct Wg3ServedWorld {
     solids: Vec<Wg3Solid>,
     /// ADR-129 — las anclas de atrezo. Se reparten por su posición, como los macizos por su centro.
     props: Vec<Wg3Prop>,
+    /// ADR-140 — el grafo de visibilidad por salas, LO ÚNICO que sobrevive del plan.
+    ///
+    /// `plan_region` construía el plan, se lo pasaba a `fill_building` y lo tiraba: en partida el
+    /// backend tenía geometría y no salas, así que el PVS no tenía a quién preguntar. Esto conserva
+    /// una caja y una lista de vecinos por sala —decenas de bytes— en vez del plan entero, que es
+    /// justo lo que el módulo `visibility` dejó escrito como requisito para encenderse.
+    ///
+    /// Vacío en los caminos que no planifican (`compose_region`, el oráculo de paridad), y un grafo
+    /// vacío responde «se ve» a todo: la degradación cae del lado seguro por construcción.
+    visibility: super::visibility::RegionVisibility,
 }
 
 /// Los ajustes con los que se compone una región del mundo SERVIDO.
@@ -326,6 +336,18 @@ impl Wg3ServedWorld {
             );
         }
 
+        // ADR-140 — el grafo se saca AQUÍ, que es el único sitio donde el plan todavía existe.
+        // Después de esta función `building` se tira, y con él las salas: lo que queda es
+        // geometría, y de la geometría no se puede reconstruir quién comunica con quién.
+        let visibility = super::visibility::RegionVisibility::new(
+            building
+                .storeys
+                .iter()
+                .map(super::visibility::VisibilityGraph::from_plan)
+                .collect(),
+            building.ground,
+        );
+
         Self {
             world_seed,
             placements: filled.placements,
@@ -333,7 +355,14 @@ impl Wg3ServedWorld {
             carves: filled.carves,
             solids: filled.solids,
             props: filled.props,
+            visibility,
         }
+    }
+
+    /// ADR-140 — el grafo de visibilidad de esta región. Vacío en los caminos que no planifican, y
+    /// un grafo vacío responde «se ve» a todo.
+    pub fn visibility(&self) -> &super::visibility::RegionVisibility {
+        &self.visibility
     }
 
     /// ADR-096 — compone UNA REGIÓN: acotada a su caja y sembrada en su centro.
@@ -381,6 +410,9 @@ impl Wg3ServedWorld {
             carves: composed.carves,
             // El compositor por bocas es legado y no emite macizos: ADR-105 vive en el PLAN.
             solids: Vec::new(),
+            // ADR-140 — el compositor por bocas no planifica salas, asi que no hay grafo que
+            // guardar. Vacio significa <<se ve>>, que es la direccion segura.
+            visibility: super::visibility::RegionVisibility::default(),
             props: Vec::new(),
         }
     }
@@ -412,6 +444,9 @@ impl Wg3ServedWorld {
             carves: composed.carves,
             // El compositor por bocas es legado y no emite macizos: ADR-105 vive en el PLAN.
             solids: Vec::new(),
+            // ADR-140 — el compositor por bocas no planifica salas, asi que no hay grafo que
+            // guardar. Vacio significa <<se ve>>, que es la direccion segura.
+            visibility: super::visibility::RegionVisibility::default(),
             props: Vec::new(),
         }
     }
@@ -696,13 +731,28 @@ impl Wg3ServedWorld {
 #[derive(Debug, Default)]
 pub struct Wg3WorldCache {
     world_seed: u64,
-    regions: std::collections::HashMap<Wg3RegionCoord, Wg3ServedWorld>,
+    /// El sello es el valor de `clock` en el último uso: lo que decide a quién se desaloja.
+    regions: std::collections::HashMap<Wg3RegionCoord, (u64, Wg3ServedWorld)>,
+    /// Reloj de uso, monótono. No es tiempo: sólo tiene que ordenar.
+    clock: u64,
 }
 
 /// Regiones vivas a la vez. Cada una son ~300 piezas de `Wg3Placement` (11 bytes) más el vector:
 /// unos kilobytes. El tope existe para que una sesión larga que recorra mucho mundo no acumule sin
-/// fin, no porque una región pese.
-const MAX_CACHED_REGIONS: usize = 16;
+/// fin, no porque una región pese — y por eso puede ser generoso.
+///
+/// **Era 16 con poda por vaciado, y eso salía carísimo con varios jugadores.** El comentario que lo
+/// justificaba decía que recomponer «cuesta milisegundos»: cierto con UN jugador quieto, falso en
+/// cuanto siete se reparten por el mapa y encima las criaturas preguntan por sus alrededores. El
+/// conjunto de trabajo se pasaba de 16, se tiraba ENTERO, y la ronda siguiente volvía a planificar
+/// regiones completas — `plan_region`, que es el generador de mundo, no un caché de geometría.
+///
+/// Medido con `SYNCTRACE` en el arnés de ocho instancias sin render: el reparto de población llegó
+/// a **950 ms** en un solo reconcile, contra 0,43 ms del sorteo y 0,18 de la retirada.
+///
+/// Es el mismo fallo que `MAX_CACHED_RASTERS` un nivel más abajo, y el mismo arreglo, porque la
+/// causa es la misma premisa escrita para un solo jugador.
+const MAX_CACHED_REGIONS: usize = 64;
 
 impl Wg3WorldCache {
     /// ADR-096 — la región de un chunk, componiéndola si hace falta.
@@ -721,13 +771,12 @@ impl Wg3WorldCache {
         }
 
         let region = Wg3RegionCoord::of_chunk(coord);
-        if !self.regions.contains_key(&region) {
-            // Poda tonta y a propósito: al pasar del tope se tira TODO en vez de mantener un LRU.
-            // Recomponer cuesta milisegundos, y un LRU aquí sería estado con orden que mantener —
-            // justo lo que R3 evita— a cambio de ahorrar algo que ya es barato.
-            if self.regions.len() >= MAX_CACHED_REGIONS {
-                self.regions.clear();
-            }
+        self.clock += 1;
+        if let Some((stamp, _)) = self.regions.get_mut(&region) {
+            // Un acierto es un uso. Sin re-sellarlo, el desalojo tiraría justo la región que se
+            // está consultando ahora mismo.
+            *stamp = self.clock;
+        } else {
             // ADR-100 — el mundo servido sale del PLAN. `compose_region` queda como el compositor por
             // bocas, que sigue vivo para el oráculo y para las sondas que lo miden a él.
             let world = Wg3ServedWorld::plan_region(manifest, world_seed, region);
@@ -738,8 +787,34 @@ impl Wg3WorldCache {
                 world.placements().len(),
                 world.segments().len()
             );
-            self.regions.insert(region, world);
+            self.regions.insert(region, (self.clock, world));
+            // Se desaloja DESPUÉS de insertar y de uno en uno: la región recién planificada lleva el
+            // reloj más alto, así que no puede salir aquí ni aunque el tope se quede corto. Es la
+            // propiedad que el vaciado no tenía — tirarlo todo obligaba a replanificar el conjunto
+            // entero en la ronda siguiente.
+            self.evict_least_recent();
         }
-        self.regions.get(&region).expect("se acaba de componer")
+        &self.regions.get(&region).expect("se acaba de componer").1
+    }
+
+    /// Desaloja de una en una hasta volver al tope, empezando por la que lleva más sin usarse.
+    fn evict_least_recent(&mut self) {
+        while self.regions.len() > MAX_CACHED_REGIONS {
+            let Some(oldest) = self
+                .regions
+                .iter()
+                .min_by_key(|(_, (stamp, _))| *stamp)
+                .map(|(coord, _)| *coord)
+            else {
+                break;
+            };
+            self.regions.remove(&oldest);
+        }
+    }
+
+    /// Cuántas regiones hay planificadas. Lo lee el test del desalojo: sin esto la política de poda
+    /// no es observable desde fuera, que es lo que dejó pasar el vaciado durante meses.
+    pub fn cached_region_count(&self) -> usize {
+        self.regions.len()
     }
 }

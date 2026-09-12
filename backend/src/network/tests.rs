@@ -1683,44 +1683,150 @@ async fn pose_relay_addresses_real_peers_only_but_still_relays_phantom_poses() {
     );
 }
 
-/// La otra mitad del mismo invariante, y la que faltaba: **un `relay_only` tampoco es destino,
-/// aunque no sea un phantom inyectado**.
+/// ADR-141 — quien acaba de entrar recibe el mundo DIRIGIDO, y los que ya estaban no se enteran.
 ///
-/// El test de arriba sólo cubre `spawn_phantom`, que además del centinela inerte apunta el id en
-/// `phantom_ids`. Los facelings y los vigilantes (ADR-131) entran por `insert_faceling_peer`: mismo
-/// centinela `127.0.0.1:1`, misma imposibilidad de recibir, pero NO están en ese registro. Con el
-/// filtro mirando sólo `is_phantom` se colaban como destino y el socket los rechazaba al final —
-/// medido en partida real el 10-09, `SEND_FAIL illegal_gameplay_destination ... peer_id=61002
-/// phantom=false relay_only=true`, y con ADR-140 D4 clonando además cada pose para tirarla.
+/// Es el reemplazo de `a_new_peer_forces_a_send_even_with_nothing_changed` (que vivía en
+/// `roster::tests` y comprobaba la misma garantía al nivel de la puerta, cuando abrirla significaba
+/// retransmitir a todos). La garantía de ADR-071 decisión 4 no se ha relajado: lo que cambia es que
+/// ahora se cumple sin molestar a la partida entera.
+///
+/// Se afirma sobre `newcomers`, que es lo que deciden los seis emisores, y sobre las rondas de
+/// servicio: un recién llegado tiene que sobrevivir en la lista las rondas suficientes para que le
+/// pase por delante CADA emisor, no sólo el primero.
 #[tokio::test]
-async fn a_relay_only_creature_is_never_a_pose_destination() {
+async fn a_newcomer_is_served_the_world_without_broadcasting_to_everyone() {
+    use crate::network::roster::ROSTER_CHANGE_BURST;
+
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let veteran = 2;
+    let rookie = 3;
+    let addr: SocketAddr = "127.0.0.1:9999".parse().unwrap();
+    host.peers.insert(
+        veteran,
+        PeerConnection::new(veteran, "Veterano".into(), addr),
+    );
+    host.peers
+        .insert(rookie, PeerConnection::new(rookie, "Novato".into(), addr));
+
+    assert!(
+        super::sync::newcomers(&host).is_empty(),
+        "sin nadie apuntado, ningún emisor tiene a quien servir"
+    );
+
+    host.pending_full_sync.insert(rookie, ROSTER_CHANGE_BURST);
+    assert_eq!(
+        super::sync::newcomers(&host),
+        vec![rookie],
+        "sólo el recién llegado recibe el mundo dirigido; el veterano ya lo tiene"
+    );
+
+    // La cuenta aguanta las rondas prometidas. Si se agotara antes, el recién llegado se quedaría
+    // sin los rosters de los emisores que corren después del primero.
+    for round in 1..ROSTER_CHANGE_BURST {
+        super::sync::tick_pending_full_sync(&mut host);
+        assert_eq!(
+            super::sync::newcomers(&host),
+            vec![rookie],
+            "ronda {round}: todavía le faltan emisores por servir"
+        );
+    }
+    super::sync::tick_pending_full_sync(&mut host);
+    assert!(
+        super::sync::newcomers(&host).is_empty(),
+        "y al terminar sus rondas deja de ser un recién llegado, o el ahorro no existe"
+    );
+}
+
+/// 2026-09-10 — la condición `joined` de las puertas de roster (ADR-071 decisión 4) cuenta a quien
+/// puede RECIBIR, no a quien está en `peers`.
+///
+/// Contando a las criaturas, cada nacimiento parecía un jugador nuevo y reenviaba los cinco rosters
+/// y todos los chunks a todo el mundo. En un mundo poblado eso pasa continuamente, así que ninguna
+/// puerta llegaba a cerrarse y el ahorro de ADR-071 y ADR-139 se evaporaba — sin error y sin log,
+/// solo tráfico. Un `relay_only` cuenta igual de poco: su addr es tan inerte como la del fantasma.
+#[tokio::test]
+async fn creatures_do_not_count_as_new_peers_for_the_roster_gates() {
     let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let real_id = 2;
     let addr: SocketAddr = "127.0.0.1:9999".parse().unwrap();
     host.peers
         .insert(real_id, PeerConnection::new(real_id, "Real".into(), addr));
-    // Por el camino de verdad: el mismo que usa el bucle de juego para poblar el mundo.
-    let faceling = host.insert_faceling_peer("Faceling", [10.0, 1.8, 10.0], 1);
-    let watcher = host.insert_faceling_peer("Watcher", [20.0, 1.8, 20.0], 2);
 
-    assert!(
-        !host.is_phantom(faceling) && !host.is_phantom(watcher),
-        "el caso que importa es justo el que is_phantom NO reconoce"
-    );
+    let before = super::sync::gameplay_destination_count(&host);
+    assert_eq!(before, 1, "preparación: un solo destinatario real");
 
-    let dests = super::sync::relay_destinations(&host);
+    host.spawn_phantom("Robapieles", [0.0, 1.8, 0.0], None);
+    let relay_only_id = 61_007;
+    let mut announced = PeerConnection::new(relay_only_id, "Criatura".into(), addr);
+    announced.relay_only = true;
+    host.peers.insert(relay_only_id, announced);
 
     assert_eq!(
-        dests,
-        vec![real_id],
-        "un relay_only jamás puede ser destino de poses, got {dests:?}"
+        super::sync::gameplay_destination_count(&host),
+        before,
+        "ni un fantasma ni un relay_only pueden parecer un jugador que acaba de entrar"
     );
-    // Y como con los phantoms: siguen en `peers`, así que sus poses se siguen reenviando a quien
-    // sí puede recibirlas. Quitarlos como ORIGEN sería la sobrecorrección fácil.
+    assert_eq!(
+        host.peers.len(),
+        3,
+        "y siguen en `peers`: son emisores, lo que no son es destinatarios"
+    );
+}
+
+/// 2026-09-10 — de las siete puertas de roster, la de CADÁVERES es la única con retroceso del
+/// latido, y eso vive en el `Default` de `RosterGates`. Se comprueba por COMPORTAMIENTO y no
+/// leyendo el campo: lo que importa no es que exista una bandera, es que la cadencia se separe.
+#[test]
+fn only_the_corpse_gate_backs_its_heartbeat_off() {
+    use crate::network::roster::{content_hash, RosterGate, ROSTER_CHANGE_BURST, ROSTER_HEARTBEAT};
+
+    // Deja la puerta en régimen estacionario y devuelve el hueco, en segundos, hasta la SIGUIENTE
+    // emisión por latido tras `quiet` rondas silenciosas.
+    fn gap_after(gate: &mut RosterGate, quiet: usize) -> u64 {
+        let hash = content_hash(&[7u32]);
+        let t0 = std::time::Instant::now();
+        for _ in 0..=ROSTER_CHANGE_BURST {
+            gate.should_send(hash, t0, ROSTER_HEARTBEAT);
+        }
+        let mut t = t0;
+        let mut last = t0;
+        for _ in 0..=quiet {
+            loop {
+                t += std::time::Duration::from_secs(1);
+                if gate.should_send(hash, t, ROSTER_HEARTBEAT) {
+                    last = t;
+                    break;
+                }
+            }
+        }
+        let prev = last;
+        loop {
+            t += std::time::Duration::from_secs(1);
+            if gate.should_send(hash, t, ROSTER_HEARTBEAT) {
+                return t.duration_since(prev).as_secs();
+            }
+        }
+    }
+
+    let mut gates = RosterGates::default();
+    // Se afirma la SEPARACIÓN, no un número exacto de la escalera: el valor concreto (6, 12, 24…)
+    // ya lo fijan los tests de `roster`, y clavarlo aquí solo añade un sitio más que romper al
+    // ajustar el techo.
+    let corpses = gap_after(&mut gates.corpses, 3);
     assert!(
-        host.peers.contains_key(&faceling) && host.peers.contains_key(&watcher),
-        "un relay_only sigue siendo ORIGEN de poses"
+        corpses > ROSTER_HEARTBEAT.as_secs(),
+        "la puerta de cadáveres tiene que haber estirado el latido, y salió a {corpses} s"
     );
+    assert_eq!(
+        gap_after(&mut gates.items, 3),
+        ROSTER_HEARTBEAT.as_secs(),
+        "y las demás siguen planas a 3 s"
+    );
+    assert_eq!(
+        gap_after(&mut gates.buildings, 3),
+        ROSTER_HEARTBEAT.as_secs()
+    );
+    assert_eq!(gap_after(&mut gates.peers, 3), ROSTER_HEARTBEAT.as_secs());
 }
 
 /// ADR-046 — la voz de un joiner llega al host y se atribuye al hablante SEGÚN LA CABECERA,
@@ -2171,7 +2277,7 @@ async fn far_apart_joiners_stop_receiving_each_others_poses_over_real_sockets() 
     // Dos rondas, porque el anillo exterior emite en rondas alternas (LOD): con una sola no se
     // podría distinguir "filtrado por AOI" de "esta ronda no le tocaba".
     for _ in 0..2 {
-        crate::network::sync::broadcast_peer_poses(&mut host).await;
+        crate::network::sync::broadcast_peer_poses(&mut host, None).await;
         tokio::time::sleep(Duration::from_millis(60)).await;
     }
     let a_got = drain_pose_updates(&mut a).await;
@@ -2188,13 +2294,74 @@ async fn far_apart_joiners_stop_receiving_each_others_poses_over_real_sockets() 
     // 20 m de A y su pose TIENE que empezar a llegar.
     place_peer(&mut host, 3002, [20.0, 1.8, 0.0]);
     for _ in 0..2 {
-        crate::network::sync::broadcast_peer_poses(&mut host).await;
+        crate::network::sync::broadcast_peer_poses(&mut host, None).await;
         tokio::time::sleep(Duration::from_millis(60)).await;
     }
     let a_now = drain_pose_updates(&mut a).await;
     assert!(
         a_now > 0,
         "con B a 20 m, su pose tiene que llegarle a A — si no, el filtro está cortando de más"
+    );
+}
+
+/// **Dos joiners JUNTOS y los dos LEJOS del anfitrión**, que es el caso que el test de arriba no
+/// cubre: allí la pareja estaba separada pero ambos al lado del host.
+///
+/// Importa porque es la pregunta que cualquiera se hace de este topología: si el host está en la
+/// otra punta del mapa, ¿esos dos se siguen viendo? La respuesta tiene que ser que SÍ, porque el
+/// filtro decide por la distancia ENTRE EL PAR y la posición del anfitrión no entra en la cuenta.
+/// Pero «tiene que ser» no es «se comprobó», y esto es justo lo que un índice espacial mal hecho
+/// rompería sin dar un error: bastaría con repartir las casillas respecto al host en vez de en
+/// coordenadas del mundo para que estos dos dejaran de verse a 1.500 m de distancia del origen.
+///
+/// El tráfico sigue pasando por el anfitrión —la topología es estrella, ADR-009, los joiners no se
+/// hablan entre ellos— así que esto NO prueba que la latencia sea buena, sólo que las poses llegan.
+#[tokio::test]
+async fn two_joiners_together_far_from_the_host_still_see_each_other() {
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let host_addr = loopback_addr(&host);
+    let mut a = NetworkManager::bind(0, 3101, 0, false).await.unwrap();
+    let mut b = NetworkManager::bind(0, 3102, 0, false).await.unwrap();
+
+    a.initiate_connection(host_addr).await;
+    b.initiate_connection(host_addr).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    host.process_incoming().await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    a.process_incoming().await;
+    b.process_incoming().await;
+    assert_eq!(host.peers.len(), 2, "setup: los dos joiners conectados");
+
+    // Los dos a 1.500 m del origen —muy por encima del radio del AOI, así que ninguno está «cerca
+    // del host»— y a 5 m el uno del otro.
+    place_peer(&mut host, 3101, [1500.0, 1.8, 1500.0]);
+    place_peer(&mut host, 3102, [1505.0, 1.8, 1500.0]);
+
+    for _ in 0..2 {
+        crate::network::sync::broadcast_peer_poses(&mut host, None).await;
+        tokio::time::sleep(Duration::from_millis(60)).await;
+    }
+    let a_got = drain_pose_updates(&mut a).await;
+    let b_got = drain_pose_updates(&mut b).await;
+
+    assert!(
+        a_got > 0,
+        "A tiene a B a 5 m: su pose TIENE que llegar por lejos que esté el anfitrión          (recibidos: {a_got})"
+    );
+    assert!(b_got > 0, "y simétricamente B la de A (recibidos: {b_got})");
+
+    // Control negativo, y es el que impide que este test pase por estar el filtro apagado: se
+    // separa a B 300 m de A, SIN acercar a ninguno de los dos al host. Si lo que decidiera fuese la
+    // distancia al anfitrión, esto seguiría relayando igual que antes.
+    place_peer(&mut host, 3102, [1800.0, 1.8, 1500.0]);
+    for _ in 0..2 {
+        crate::network::sync::broadcast_peer_poses(&mut host, None).await;
+        tokio::time::sleep(Duration::from_millis(60)).await;
+    }
+    let a_after = drain_pose_updates(&mut a).await;
+    assert_eq!(
+        a_after, 0,
+        "separados 300 m, el filtro tiene que cortar aunque los dos sigan igual de lejos del          anfitrión (recibidos: {a_after})"
     );
 }
 
@@ -2220,7 +2387,7 @@ async fn a_phantom_inside_the_aoi_is_relayed_like_any_player() {
     place_peer(&mut host, 4001, [0.0, 1.8, 0.0]);
 
     for _ in 0..2 {
-        crate::network::sync::broadcast_peer_poses(&mut host).await;
+        crate::network::sync::broadcast_peer_poses(&mut host, None).await;
         tokio::time::sleep(Duration::from_millis(60)).await;
     }
     assert!(
@@ -2270,7 +2437,7 @@ async fn a_relay_only_roster_entry_makes_the_phantom_visible_to_the_joiner() {
     // La pose relayada aplica sobre la entrada — incluidos los cosméticos que sella el driver.
     host.peers.get_mut(&phantom_id).unwrap().revealed = true;
     for _ in 0..2 {
-        crate::network::sync::broadcast_peer_poses(&mut host).await;
+        crate::network::sync::broadcast_peer_poses(&mut host, None).await;
         tokio::time::sleep(Duration::from_millis(60)).await;
     }
     joiner.process_incoming().await;
@@ -5945,4 +6112,44 @@ async fn an_invited_joiner_gets_the_point_through_a_real_handshake() {
         p.distance_xz(anchor)
     );
     assert_eq!(host.next_spawn_unit, 0);
+}
+
+/// La otra mitad del mismo invariante, y la que faltaba: **un `relay_only` tampoco es destino,
+/// aunque no sea un phantom inyectado**.
+///
+/// El test de arriba sólo cubre `spawn_phantom`, que además del centinela inerte apunta el id en
+/// `phantom_ids`. Los facelings y los vigilantes (ADR-131) entran por `insert_faceling_peer`: mismo
+/// centinela `127.0.0.1:1`, misma imposibilidad de recibir, pero NO están en ese registro. Con el
+/// filtro mirando sólo `is_phantom` se colaban como destino y el socket los rechazaba al final —
+/// medido en partida real el 10-09, `SEND_FAIL illegal_gameplay_destination ... peer_id=61002
+/// phantom=false relay_only=true`, y con ADR-140 D4 clonando además cada pose para tirarla.
+#[tokio::test]
+async fn a_relay_only_creature_is_never_a_pose_destination() {
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let real_id = 2;
+    let addr: SocketAddr = "127.0.0.1:9999".parse().unwrap();
+    host.peers
+        .insert(real_id, PeerConnection::new(real_id, "Real".into(), addr));
+    // Por el camino de verdad: el mismo que usa el bucle de juego para poblar el mundo.
+    let faceling = host.insert_faceling_peer("Faceling", [10.0, 1.8, 10.0], 1);
+    let watcher = host.insert_faceling_peer("Watcher", [20.0, 1.8, 20.0], 2);
+
+    assert!(
+        !host.is_phantom(faceling) && !host.is_phantom(watcher),
+        "el caso que importa es justo el que is_phantom NO reconoce"
+    );
+
+    let dests = super::sync::relay_destinations(&host);
+
+    assert_eq!(
+        dests,
+        vec![real_id],
+        "un relay_only jamás puede ser destino de poses, got {dests:?}"
+    );
+    // Y como con los phantoms: siguen en `peers`, así que sus poses se siguen reenviando a quien
+    // sí puede recibirlas. Quitarlos como ORIGEN sería la sobrecorrección fácil.
+    assert!(
+        host.peers.contains_key(&faceling) && host.peers.contains_key(&watcher),
+        "un relay_only sigue siendo ORIGEN de poses"
+    );
 }

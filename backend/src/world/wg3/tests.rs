@@ -12824,3 +12824,125 @@ fn probe_variant_spots() {
     }
     flush(&row);
 }
+
+/// **El caché de REGIONES tampoco se vacía entero.** Mismo fallo que el de rásteres, un nivel más
+/// arriba y bastante más caro: lo que se tira aquí no es geometría cacheada, es `plan_region`, o
+/// sea el generador de mundo.
+///
+/// El comentario que justificaba el vaciado decía que recomponer «cuesta milisegundos». Cierto con
+/// un jugador quieto; falso en cuanto siete se reparten y las criaturas preguntan por sus
+/// alrededores. Medido con `SYNCTRACE` en el arnés de ocho instancias sin render, el reparto de
+/// población llegó a **950 ms** en un solo reconcile, contra 0,43 ms del sorteo.
+///
+/// La propiedad es la misma y por la misma razón: **la cuenta no baja nunca**. Mirar el estado
+/// final no separa las dos políticas.
+#[test]
+fn the_region_cache_never_shrinks_when_it_overflows() {
+    use crate::world::wg3::world::Wg3WorldCache;
+
+    /// Bastantes regiones para desbordar cualquier tope razonable. Se recorre en línea recta por
+    /// coordenadas de chunk muy separadas para que cada parada caiga en una región distinta.
+    const STOPS: i32 = 80;
+    /// Salto en chunks, holgadamente mayor que una región.
+    const STRIDE: i32 = 32;
+
+    let m = real_manifest();
+    let mut worlds = Wg3WorldCache::default();
+
+    let mut high_water = 0usize;
+    for i in 0..STOPS {
+        let coord = crate::world::wg3::chunk::Wg3ChunkCoord {
+            x: i * STRIDE,
+            z: 0,
+        };
+        let _ = worlds.region_for(&m, SERVED_SEED, coord);
+
+        let now = worlds.cached_region_count();
+        assert!(
+            now >= high_water,
+            "el caché de regiones bajó de {high_water} a {now} en la parada {i}: eso es poda por \
+             vaciado, y cada región que se tira hay que volver a PLANIFICARLA"
+        );
+        high_water = now;
+    }
+
+    assert!(
+        high_water > 1,
+        "el recorrido no llegó a desbordar: {high_water} regiones retenidas"
+    );
+}
+
+/// **El caché de rásteres conserva el movimiento en curso, aunque el tope se quede corto.**
+///
+/// La poda anterior tiraba el caché ENTERO al pasar del tope, y ese tope (64) se midió contra el
+/// conjunto de trabajo de UN movimiento. Pero el caché lo comparten todas las criaturas de una
+/// especie: con la población repartida entre varios jugadores el conjunto real ronda los 300
+/// chunks, así que se vaciaba en cada ronda y la siguiente rasterizaba todo otra vez. Medido en el
+/// arnés de ocho instancias sin render, el bloque de criaturas llegó a 7 531 ms contra 16,67 de
+/// presupuesto.
+///
+/// Lo que este test fija NO es el tope —ése puede cambiar con la población— sino la propiedad que
+/// el `clear()` no tenía: **lo que se acaba de precalentar sigue ahí**. Sin ella, el caché
+/// garantiza no acertar nunca por muy grande que se haga.
+#[test]
+fn the_raster_cache_keeps_the_move_in_flight_when_it_overflows() {
+    use crate::world::wg3::collision::Wg3CollisionCache;
+    use crate::world::wg3::world::Wg3WorldCache;
+    use crate::world::Vec3;
+
+    /// Lado del chunk de WG3, en metros: el paso entre paradas para que cada una caiga en un chunk
+    /// distinto y el 3 × 3 de cada una no se solape con el de la anterior más de lo justo.
+    const CHUNK_M: f32 = 50.0;
+    /// Paradas suficientes para desbordar cualquier tope razonable: cada una mete hasta 9 rásteres.
+    const STOPS: i32 = 120;
+
+    let m = real_manifest();
+    let mut worlds = Wg3WorldCache::default();
+    let mut cache = Wg3CollisionCache::new();
+
+    let mut high_water = 0usize;
+    for i in 0..STOPS {
+        let x = i as f32 * CHUNK_M + 25.0;
+        let here = Vec3::new(x, 1.8, 25.0);
+        cache.prewarm_for_move(&mut worlds, &m, SERVED_SEED, here, here);
+
+        // **Ésta es la aserción que separa las dos políticas, y la primera versión de este test no
+        // la tenía.** Mirar sólo el estado final pasa con las DOS, porque el `clear()` ocurría al
+        // ENTRAR en `prewarm_for_move`: al salir, el 3 × 3 recién pedido estaba siempre, y la
+        // cuenta final dependía de en qué punto del ciclo se mirase.
+        //
+        // Lo que el vaciado no puede cumplir es esto: **la cuenta no baja nunca**. Desalojar de uno
+        // en uno la deja pegada al tope; vaciar la desploma a nueve cada vez que se pasa, y esa
+        // caída es exactamente el trabajo que la ronda siguiente repite. Es exacto y no depende del
+        // valor del tope, que puede cambiar con la población.
+        let now = cache.cached_raster_count();
+        assert!(
+            now >= high_water,
+            "el caché bajó de {high_water} a {now} rásteres en la parada {i}: eso es poda por \
+             vaciado, no desalojo del menos reciente"
+        );
+        high_water = now;
+    }
+
+    // Y se desbordó de verdad: si el recorrido no llega al tope, la monotonía de arriba se cumple
+    // sola y el test no prueba nada.
+    assert!(
+        high_water > 9,
+        "el recorrido no llegó a desbordar: {high_water} rásteres retenidos"
+    );
+
+    // Y el 3 × 3 de la ÚLTIMA parada sigue entero. Es lo que el resolve va a leer inmediatamente
+    // después del precalentado, así que perderlo es rasterizar dos veces el mismo chunk en el mismo
+    // paso — el coste que se midió.
+    let last_x = (STOPS - 1) as f32 * CHUNK_M + 25.0;
+    for dz in -1..=1 {
+        for dx in -1..=1 {
+            let x = last_x + dx as f32 * CHUNK_M;
+            let z = 25.0 + dz as f32 * CHUNK_M;
+            assert!(
+                cache.has_raster_at(x, z),
+                "el desalojo se llevó un chunk del movimiento en curso: ({x}, {z})"
+            );
+        }
+    }
+}

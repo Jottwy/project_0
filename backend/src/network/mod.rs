@@ -161,12 +161,16 @@ struct IncomingPacket {
 /// ADR-071: the per-roster send gates. Grouped in their own struct so a `broadcast_*` can borrow
 /// ONE gate mutably while the roster it guards is still borrowed from `NetworkManager` — with the
 /// gates inline as five fields the borrow checker would be right to complain.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct RosterGates {
     pub items: crate::network::roster::RosterGate,
     pub buildings: crate::network::roster::RosterGate,
     pub carryables: crate::network::roster::RosterGate,
     pub harvestables: crate::network::roster::RosterGate,
+    /// 2026-09-10: con retroceso del latido. Medido en la partida de 59 min, este roster emitía 989
+    /// veces —cadencia de puro latido, nada cambiaba— pero cada emisión son 22 páginas: 21.772
+    /// datagramas y el 8 % del tráfico, todo cadáveres que llevaban una hora quietos. Un cadáver
+    /// nuevo cambia el hash y sigue saliendo en el acto. Ver `STATIC_ROSTER_HEARTBEAT_CAP`.
     pub corpses: crate::network::roster::RosterGate,
     /// ADR-093 (E2): gate del broadcast de `Level4State`.
     pub level4: crate::network::roster::RosterGate,
@@ -174,6 +178,25 @@ pub struct RosterGates {
     /// lista contiene N peers y se manda a N peers—, y medido el 10-09 iba a **27,5 datagramas por
     /// segundo con UN jugador dentro**.
     pub peers: crate::network::roster::RosterGate,
+}
+
+/// `Default` a mano porque una de las siete puertas no es la de serie: la de cadáveres lleva
+/// retroceso del latido. Derivarlo y ajustarla después, en cada sitio que construya un
+/// `NetworkManager`, es cómo se pierde en un `NetworkManager::bind` nuevo sin que nada avise.
+impl Default for RosterGates {
+    fn default() -> Self {
+        Self {
+            items: Default::default(),
+            buildings: Default::default(),
+            carryables: Default::default(),
+            harvestables: Default::default(),
+            corpses: crate::network::roster::RosterGate::with_backoff(
+                crate::network::roster::STATIC_ROSTER_HEARTBEAT_CAP,
+            ),
+            level4: Default::default(),
+            peers: Default::default(),
+        }
+    }
 }
 
 /// ADR-070: the host-only simulation state of ONE falling item. Pairs with the `StpItemInfo` of
@@ -223,6 +246,20 @@ pub struct NetworkManager {
     /// justamente el gasto que este fix elimina. Clave `(x, z, layer)`, la misma tripleta con la
     /// que `WorldSyncProgress` cuenta completitud.
     pub chunk_gates: std::collections::HashMap<(i32, i32, i8), crate::network::roster::RosterGate>,
+    /// ADR-141 — peers que acaban de entrar y a los que todavía hay que servirles el mundo, con las
+    /// rondas que les quedan de servicio.
+    ///
+    /// Existe porque `RosterGate` es por ROSTER y no por destinatario: su condición `joined` sólo
+    /// sabía abrir la puerta, y abrirla significaba retransmitir a TODOS. Medido en dos playtests de
+    /// 8 instancias, cada entrada multiplicaba por seis o por diez el tráfico de chunks (de 10-20 a
+    /// 95-122 pkt/s) y al sexto jugador la ráfaga se tragaba los latidos de los demás: todos se
+    /// declaraban muertos en el mismo milisegundo.
+    ///
+    /// Rondas y no un instante límite: lo que hace falta garantizar es que al recién llegado le pase
+    /// por delante CADA emisor —los cinco rosters y los chunks—, y eso se cuenta en vueltas del
+    /// bucle, no en segundos. Con un plazo de tiempo, un bucle lento le dejaría el mundo a medias
+    /// hasta el siguiente latido, que desde ADR-139 enm. 2 puede tardar 30 s.
+    pub pending_full_sync: std::collections::HashMap<PeerId, u8>,
     /// F0.1 (enmienda ADR-073, E0): `broadcast_world_sync` (el goteo del mundo ENTERO, fiable,
     /// chunk a chunk) se disparaba directo desde cada pickup/drop legacy — 84,9 KB por goteo a
     /// CADA peer, medido. `true` marca "el mundo cambió desde el último goteo despachado"; el
@@ -242,6 +279,13 @@ pub struct NetworkManager {
     /// host y otro del cliente) pueden discrepar, y el que discrepa produce exactamente el
     /// parpadeo que la histéresis viene a evitar (ADR-074 decisión 2).
     pub aoi_pose_pairs: std::collections::HashSet<(PeerId, PeerId)>,
+    /// Pares que estaban DENTRO del cono de atención del destinatario la ronda pasada, para la
+    /// histéresis del cono (`sync::pose_in_attention_cone`).
+    ///
+    /// Vive aparte de `aoi_pose_pairs` porque son dos bandas muertas distintas sobre dos magnitudes
+    /// distintas —metros y grados— y mezclarlas haría que salir del radio borrara el estado
+    /// angular. Se queda vacío mientras el cono esté apagado (`POSE_CONE_ENABLED`).
+    pub pose_cone_pairs: std::collections::HashSet<(PeerId, PeerId)>,
     /// E1 / ADR-074 (enmienda): ronda del relay de poses, para la cadencia LOD. Los pares del
     /// anillo exterior emiten una de cada dos rondas, escalonados por paridad — ver
     /// `sync::aoi_pose_due_this_round`.
@@ -617,6 +661,8 @@ impl NetworkManager {
             world_sync_dirty: false,
             world_sync_last_sent: None,
             aoi_pose_pairs: std::collections::HashSet::with_capacity(64),
+            pose_cone_pairs: std::collections::HashSet::new(),
+            pending_full_sync: std::collections::HashMap::new(),
             pose_relay_round: 0,
             pending_events: Vec::new(),
             present_at_join: std::collections::HashSet::new(),

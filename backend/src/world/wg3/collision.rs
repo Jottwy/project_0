@@ -26,12 +26,24 @@ use super::raster::Wg3Raster;
 use super::world::Wg3WorldCache;
 use crate::world::Vec3;
 
-/// Cuántos rásteres se guardan antes de tirar el caché entero.
+/// Cuántos rásteres caben antes de empezar a desalojar.
 ///
-/// **Poda tonta a propósito, igual que la de `Wg3WorldCache`**: al pasar del tope se tira TODO en vez
-/// de mantener un LRU. Un LRU es estado con orden que mantener —lo que R3 evita— a cambio de ahorrar
-/// algo que ya es barato, y el conjunto de trabajo de un movimiento son nueve chunks.
-const MAX_CACHED_RASTERS: usize = 64;
+/// **La poda tonta original medía mal el conjunto de trabajo, y se midió.** El comentario que estaba
+/// aquí decía que el conjunto de trabajo «son nueve chunks», que es cierto para UN movimiento y falso
+/// para este caché: lo comparten todas las criaturas de una especie, y `prewarm_for_move` se llama una
+/// vez por criatura y ronda. Con la población repartida entre varios jugadores el conjunto real ronda
+/// los 300 chunks contra un tope de 64, así que se pasaba SIEMPRE y —al tirarlo entero— la ronda
+/// siguiente volvía a rasterizarlo todo. Un caché que garantiza no acertar nunca.
+///
+/// Medido con `LOOPTRACE` en el arnés de ocho instancias sin render: el bloque de criaturas llegó a
+/// **7 531 ms** en un tick de 16,67 de presupuesto, con `cre_prewarm` como partida mayor.
+///
+/// ADR-106 D3 pedía «un tope por distancia Chebyshev», copiando `SimChunkCache`; lo que se escribió
+/// fue un `clear()`. Esto vuelve al desalojo que el ADR pedía, con la única diferencia que obliga
+/// tener varios jugadores: con N criaturas repartidas no hay UN centro del que medir distancia, así
+/// que el criterio es el uso reciente, que es la generalización fiel de «conserva el conjunto de
+/// trabajo» cuando el conjunto tiene varios focos.
+const MAX_CACHED_RASTERS: usize = 256;
 
 /// Alto del cuerpo del jugador, en metros. Mismo valor que la cota a la que reporta su transform
 /// estando de pie sobre un suelo a cero (`collision::PLAYER_BASE_Y`), y por la misma razón: es lo que
@@ -49,7 +61,10 @@ const STEP_UP_M: f32 = 0.30;
 /// Los rásteres que el movimiento en curso puede leer.
 #[derive(Debug, Default)]
 pub struct Wg3CollisionCache {
-    rasters: HashMap<Wg3ChunkCoord, Wg3Raster>,
+    /// El sello es el valor de `clock` en el último uso: lo que decide a quién se desaloja.
+    rasters: HashMap<Wg3ChunkCoord, (u64, Wg3Raster)>,
+    /// Reloj de uso, monótono. No es tiempo: sólo tiene que ordenar.
+    clock: u64,
     /// ADR-109 D7 — las celdas que ocupa lo que ha CONSTRUIDO un jugador.
     ///
     /// Van aparte del ráster y no dentro: el ráster es función pura de la semilla y se cachea por
@@ -79,9 +94,6 @@ impl Wg3CollisionCache {
         from: Vec3,
         desired: Vec3,
     ) {
-        if self.rasters.len() > MAX_CACHED_RASTERS {
-            self.rasters.clear();
-        }
         for end in [from, desired] {
             let c = Wg3ChunkCoord::containing(end.x, end.z);
             for dz in -1..=1 {
@@ -90,7 +102,11 @@ impl Wg3CollisionCache {
                         x: c.x + dx,
                         z: c.z + dz,
                     };
-                    if self.rasters.contains_key(&coord) {
+                    self.clock += 1;
+                    // Un acierto también es un uso: sin re-sellarlo, el desalojo tiraría justo lo
+                    // que el movimiento en curso está leyendo.
+                    if let Some((stamp, _)) = self.rasters.get_mut(&coord) {
+                        *stamp = self.clock;
                         continue;
                     }
                     let region = regions.region_for(manifest, world_seed, coord);
@@ -105,9 +121,29 @@ impl Wg3CollisionCache {
                         &region.solids_touching_chunk(coord),
                         coord,
                     );
-                    self.rasters.insert(coord, raster);
+                    self.rasters.insert(coord, (self.clock, raster));
                 }
             }
+        }
+        self.evict_least_recent();
+    }
+
+    /// Desaloja de uno en uno hasta volver al tope, empezando por el que lleva más sin usarse.
+    ///
+    /// Se llama al FINAL del precalentado y no en medio: los dieciocho chunks de este movimiento
+    /// acaban de sellarse con el reloj más alto, así que ninguno de ellos puede salir aquí ni aunque
+    /// el tope se quede corto. Es la propiedad que el `clear()` anterior no tenía.
+    fn evict_least_recent(&mut self) {
+        while self.rasters.len() > MAX_CACHED_RASTERS {
+            let Some(oldest) = self
+                .rasters
+                .iter()
+                .min_by_key(|(_, (stamp, _))| *stamp)
+                .map(|(coord, _)| *coord)
+            else {
+                break;
+            };
+            self.rasters.remove(&oldest);
         }
     }
 
@@ -143,6 +179,18 @@ impl Wg3CollisionCache {
         self.blocked.len()
     }
 
+    /// Cuántos rásteres hay guardados. Lo lee el test del desalojo: sin esto, la política de poda
+    /// no es observable desde fuera y sólo se puede comprobar por su coste, que es justo lo que
+    /// dejó pasar el `clear()` durante meses.
+    pub fn cached_raster_count(&self) -> usize {
+        self.rasters.len()
+    }
+
+    /// ¿Está ese chunk en el caché? Misma razón que la anterior.
+    pub fn has_raster_at(&self, x: f32, z: f32) -> bool {
+        self.rasters.contains_key(&Wg3ChunkCoord::containing(x, z))
+    }
+
     /// Como `raster_at`, pero para quien está fuera del módulo: `line_of_sight` necesita preguntar
     /// por un PUNTO y no por un cuerpo, y esta es la única puerta al ráster crudo.
     pub fn raster_for(&self, x: f32, z: f32) -> Option<&Wg3Raster> {
@@ -150,7 +198,11 @@ impl Wg3CollisionCache {
     }
 
     fn raster_at(&self, x: f32, z: f32) -> Option<&Wg3Raster> {
-        self.rasters.get(&Wg3ChunkCoord::containing(x, z))
+        // El resolve es lectura pura —`&self`— así que no puede re-sellar. No hace falta: el
+        // precalentado de ESTE movimiento ya selló todo lo que el resolve va a leer.
+        self.rasters
+            .get(&Wg3ChunkCoord::containing(x, z))
+            .map(|(_, raster)| raster)
     }
 
     /// ¿Estorba algo a un cuerpo de pie aquí?
@@ -246,7 +298,7 @@ impl Wg3CollisionCache {
     ) -> ((i32, i32), (usize, usize), u16, &'static str) {
         for (x, z) in capsule_samples(pos, radius) {
             let coord = Wg3ChunkCoord::containing(x, z);
-            let Some(raster) = self.rasters.get(&coord) else {
+            let Some((_, raster)) = self.rasters.get(&coord) else {
                 return ((coord.x, coord.z), (0, 0), 0, "wg3_chunk_ausente");
             };
             if raster.blocked_standing_at(x, pos.y - PLAYER_BODY_M, z, PLAYER_BODY_M) {

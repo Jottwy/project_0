@@ -4,16 +4,16 @@
 > `docs/SESSION-LOG.md`, donde vive todo el histórico. Aquí sólo lo vigente.
 
 ## Estado
-- **WorldGen3 es el mundo servido.** Wire **63** en las dos puntas (`ipc/server.rs:38`, `WireSchema.cs:25`) — ADR-140 D4 lo subió el 10-09.
+- **WorldGen3 es el mundo servido.** Wire **64** en las dos puntas (`ipc/server.rs:38`, `WireSchema.cs:25`) — ADR-143 lo subió el 12-09.
 - **Contrato WG3 v1 = Alpha 1** (`docs/WG3-ALPHA1-ROADMAP.md`): días 1–2 hechos; 3 y 5 APARCADOS detrás de la tanda de oficinas (Joel, 06-09).
 - **Multijugador por Steam, SIN LAG** (10-09): **253,8 → 13,9 KB/s**, cola → **0**. **Build 25238618 SUBIDA con todo (wire 63), SIN rama: Joel la habilita.**
 - **El commit tiene gate** (`tools/dev/validate-scope.ps1`, hook PreToolUse): rojo = el commit no se ejecuta. Alcance por `git diff --cached`.
 - Alpha 1 itch nov 2026 · Next Fest feb 2027 · EA primavera 2027 (`docs/SCALING-ROADMAP.md:196-198`). E0 de red cerrada y medida.
 
 ## Próximo paso ÚNICO
-- **Fusionar `claude/multiplayer-lag-optimization-b5cc3b` al tronco DESDE SU SESIÓN (viva el 12-09), tras rebase sobre `6750e5b0`**: trae el PVS por
-  salas ENCENDIDO con histéresis (`ad7d3c57`, `7a3b2132`), ADR-141 (tormenta de entrada) y ADR-142, latidos que retroceden y cachés WG3 que
-  no se vacían. 14 commits propios + 19 equivalentes ya en tronco (`git cherry`); chocan 9 ficheros (`sync.rs`, `game_loop.rs`, `visibility.rs`, docs).
+- **Tramos en vez de poses para lo previsible** (ADR pendiente, bump de wire). Con 16 el relay es el 57 % de 185,6 KB/s y 9 de cada 10 parejas
+  son una CRIATURA: la que recorre un pasillo no necesita cadencia sino «de aquí a allí a esta velocidad», y el cliente interpola. **A todos por
+  igual** — ADR-074 prohíbe que el filtro distinga la fuente. PVS ya ENCENDIDO (ADR-140, `ad7d3c57`), oculta el 24,3 %.
 
 ## En curso
 - **ADR-128, mundo ×2: tercera pasada, NO commiteado.** 24 tests en rojo; `MAX_SEGMENT_M` no se toca (D3 anulado), `bounds()` en metros
@@ -95,6 +95,16 @@
 
 ## Últimas tandas
 
+### 2026-09-12 — 51.ª tanda: el relay deja de ser cuadrático, y la animación deja de ser texto (wire 64)
+- **Índice espacial** (`7972d207`): el bucle de pares era O(N²) aunque el radio rechazara a todos — preguntar cuesta igual que aceptar. Casillas
+  del radio de SALIDA (con el de entrada la histéresis se rompe en silencio). Repartidos **~310 → ~3.500** y lineal; en sala sigue 22 (muro: cable).
+- **Tope por destinatario** (`c4452964`) y **cono de atención** (`bae5ffe6`), los dos APAGADOS. El cono da **−35 %, sala 22 → 27**; no se enciende
+  hasta que el búfer del cliente mida el ritmo POR PEER (hoy mezclar 30 y 15 Hz cerca lo secaría). Un test exige que siga apagado.
+- **ADR-143, wire 64** (`47b0eccb`): animación como byte. Pose **74 → 65 B (12 % de TODAS)** y muere el `clone()` por pose. El cliente reconstruye
+  la misma cadena: `ProxyPickupHook` y los tests de EditMode pasan SIN tocarlos. Tres constantes mentían (256 KB/s, y `MPTRACE` decía **⅓** del real).
+- **Techos con veredicto**: sala **22**, emparejados **~330**, repartidos **~3.500**. El coste va con los PARES que se ven, no con los jugadores:
+  20 en diez parejas cuestan **13× menos** que 20 juntos. Corregidas dos estimaciones mías: en sala el aforo sube por la RAÍZ del ahorro, no en proporción.
+
 ### 2026-09-12 — 50.ª tanda: la suite EditMode al día — poses reales en los tests de proxies y la venda que no warpeaba
 - **`RemotePlayerManagerTests` 5 rojos → 8/8** (`07fcf69a`): mandaban `position = Vector3.zero` y el gestor lo descarta desde el 10-09 como «peer
   sin pose» (`RemotePlayerManager.cs:280`); ahora `RealPose` (3, 0, 14) y `TheLiteralOriginDoesNotSpawnAProxy` fija la guarda. Gestor intacto.
@@ -104,6 +114,16 @@
   `BandageVisual.Attach(firstPerson:)`, menú `Backrooms/Venda/Rewarp venda`, `Rewarp held items` cubre 4. 5/5. El de mundo queda para el proxy.
 - **Método**: headless desde el worktree con `Library` en junction funciona con el editor cerrado (reimporta ~1 min, deja 54 `Materials/` del super);
   `-executeMethod` para el rewarp. Pusheado el tronco `07fcf69a..31f3e897` con dos commits de la otra sesión (`d89b21a0`, `ca32d825`).
+
+### 2026-09-11 — 43.ª tanda: el colapso de 8 jugadores CERRADO, y 16 aguantan (BuildID 25257405, sin `SetLive`)
+- **Dos cachés se vaciaban ENTEROS al pasar del tope** (rásteres y REGIONES de WG3), con el mismo comentario justificándolo y la misma premisa
+  escrita para un jugador quieto. El de regiones tiraba `plan_region`, el generador. `cre_block` peor tick **4 473 → 401 ms**, bloqueos 84 → 3,
+  expulsiones 12 → 0. ADR-106 D3 ya pedía desalojo por distancia; lo escrito era `clear()`.
+- **ADR-141** y **ADR-140 ENCENDIDO** (PVS por salas, oculta el 24,3 %). 16 instancias aguantan: 185,6 KB/s, 2 bloqueos, 0 expulsiones.
+  **Nadie ha verificado EN JUEGO que el PVS no haga invisible a alguien** — el arnés no renderiza y no puede verlo.
+- **ADR-142 enm. 1: su D3 era falso** (cachear el sorteo: 0,43 ms contra 950 del reparto). El relay NO crece con N² sino con las CRIATURAS
+  (×1,56 población → ×1,54 tráfico). El arnés no era reproducible: cada instancia se restauraba donde la dejó la corrida anterior (ADR-045).
+- `LOOPTRACE`/`SYNCTRACE`/`PVSTRACE` nuevos, en `warn!` (devolver a `info!`). SIN commitear ni verificar: el filtro de la pose del anfitrión.
 
 ### 2026-09-12 — 49.ª tanda: saneamiento — el índice estancado del clon, la rama FOV fusionada y el inventario de sesiones
 - **Clon principal**: `sync.rs`, `network/tests.rs`, `STATE.md`, `SESSION-LOG.md` y `SERVER_BROWSER.md` ESTACIONADOS en la versión de `9ff790df`
@@ -115,62 +135,3 @@
 
 > **Dos sesiones en paralelo el 10-09** convergen aquí: una atacó el lag de red (42.ª–43.ª abajo, wire acabó en
 > **63** con ADR-140), la otra midió y tocó el cliente (44.ª–47.ª). Renumeradas por orden cronológico real.
-
-### 2026-09-10 — 48.ª tanda: fusión de las dos ramas y build 25238618 subida a Steam
-- **Fusionadas** `claude/unwander-performance-audit-85a655` y `migration/worldgraph-v1` (`9ff790df`). Sin choque de
-  código; sólo `STATE.md`/`SESSION-LOG.md`, resueltos renumerando por orden real. `cargo test` 1453/1453, C# 4/4.
-- **Build de Steam 25238618 SUBIDA, sin rama asignada** (sin `SetLive`, comprobado): 600 ficheros, 12 cambiados,
-  74,75 MB. Ensayo previo con exclusiones verificadas. **Falta que Joel la habilite** en Steamworks → Builds.
-- **El WIP sin commitear de Joel se respetó**: copia plana fuera de git de 16 ficheros, `reset --hard` para construir
-  limpio, y restaurado después — verificado por checksum, `git status` idéntico al de antes. Detalle en `SERVER_BROWSER.md` §16.
-
-### 2026-09-10 — 47.ª tanda: playtest real — antes/después del fix de GC, red de 4 instancias medida
-- **Fix de replicadores STP (`79bccf28`), antes/después aislado, cámara fija**: dentro del ruido (±2-4 %) porque
-  ESTE mundo de prueba tiene CERO piezas STP construidas — el ahorro escala con piezas, no con tiempo. Correcto
-  por construcción, sin evidencia empírica de ganancia todavía (falta sembrar una base poblada).
-- **4 instancias con guardado aislado: los backends SÍ conectan esta vez** (la aislación quitó la contienda con
-  la partida de Joel). BWTRACE real: **54-56 KB/s estables**, hasta 44 remotos, 0 timeouts — muy por debajo de
-  los 253,8 KB/s pre-ADR-137. **Bug encontrado, fuera de alcance**: joiners de `CONNECT_TO` (NO la vía Steam de
-  ADR-136) nacen en el origen y el AOI los deja ciegos — red válida, no jugable a 4. `PERF_AUDIT_v1.md` §6.
-
-### 2026-09-10 — 46.ª tanda: de «extremadamente lag» a 13,9 KB/s — y el techo pasa a ser N² (otra sesión, detalle en `SESSION-LOG.md`)
-- **253,8 → 13,9 KB/s (−94,5 %)**, cola **1,9 s → 0**, jitter 70 → 7 ms, enlace del 99 % al **5,4 %**. Partida real por Steam, dos redes.
-- **Medir descartó tres optimizaciones «obvias»**: `MovementReconciler` (RTT real 24 ms), LOD de entidades (0,2 % del tick) y el relay de
-  poses (8 %). El culpable era `ChunkState`, con el **92 %**, y sólo salió al desglosar el `BWTRACE` por opcode.
-- **ADR-137** (wire posicional, pose 246 → 76 B, wire 61→62), **ADR-138** (reproducción diferida con retardo adaptativo + 30 Hz),
-  **ADR-139** (el gate del chunk hashea sólo lo estable) y **ADR-140** (roster con gate, varias poses por datagrama, wire →**63**).
-- Dos bugs de Joel: el que entra nacía en **(0,0,0)**, y los contadores sumaban criaturas como jugadores. Y el arnés de playtest **nunca
-  arrancó sin clicks** pese a documentarlo. Suite 1442/1442, CompileCheck 0 ×4, 16+ commits, seis builds a Steam.
-
-### 2026-09-10 — 45.ª tanda: GRD probado y descartado; y un hallazgo sobre el guardado compartido
-- **GPU Resident Drawer (técnica 4 vía B) verificado con A/B real: DESCARTADO.** `m_GPUResidentDrawerMode: 1`
-  fuerza ~1h54 de recompilación sin caché y el `Player.log` trae `wrong cbuffer setup. Missing
-  DOTS_INSTANCING_ON variant?` — `GridWallOffset.shader` (HLSL a mano) es incompatible, GRD no lo excluye en
-  silencio. Revertido, cero huella. Solo la vía A (fundir paneles) sigue en pie como IMPLEMENTAR.
-- **Hallazgo aparte, ya corregido**: los builds de perf usaban el `ProjectSettings.asset` tal cual (mismo
-  companyName/productName que el build de Steam de Joel) → guardado en la MISMA carpeta que su partida viva.
-  Sin daño verificado (sin demolish/damage/kill), 28 ficheros basura borrados con su OK. Ahora aislado con
-  `companyName` temporal, nunca commiteado.
-
-### 2026-09-10 — 44.ª tanda: aplicada la única técnica de la auditoría sin riesgo visual (GC de los replicadores STP)
-- **`StpBuildingReplicator`/`StpItemReplicator`/`StpCarryableReplicator`.LateUpdate** dejan de allocar un `HashSet<uint>`+
-  `List<uint>` NUEVOS cada frame (`_aliveScratch`/`_staleScratch` reutilizados, `.Clear()` en vez de `new`).
-- **`AddedKey` (string+`StringBuilder` por PIEZA, por FRAME) → `AddedKeyHash` (FNV-1a, `long`, cero alloc)**: solo se
-  comparaba por igualdad, nunca se mostraba ni persistía — mismo resultado observable, cero asignación.
-- El resto de técnicas (culling por planta, fundir paneles, tope de sombras, mip streaming) cambian algo visible y
-  quedan para su propia tarea con verificación en Play, tal como dice la auditoría. CompileCheck 4/4 (sin editor).
-
-### 2026-09-10 — 43.ª tanda: la primera medición del CLIENTE — y el cuello NO es la GPU (`docs/perf/PERF_AUDIT_v1.md`)
-- **Solo análisis, cero código de producción.** Sonda `Assets/_PerfProbe/PerfProbe.cs` (dev build, `PERFPROBE=1`, borrable), 10 corridas de 60 s
-  con autopiloto por inyección del Input System. Crudos en `docs/perf/raw/`; informe y dos borradores de ADR en `docs/perf/`.
-- **CPU-bound, no GPU-bound**: GPU p50 4,9-8,0 ms contra 14-24 ms de hilo principal; 1-7 % de frames GPU-bound a 1080p (84 % solo a 4K).
-  **Subframes híbridos: DESCARTADOS para Alpha 1**, con el número que lo justifica y la condición de reapertura escrita.
-- **Lo que sí sale**: 12 587 paneles de techo sueltos (62 % de 20 147 renderers); 429 luces vivas, 297-359 en frustum de 512 y 24 caras de sombra;
-  2,02 GB de texturas con mip streaming APAGADO; 5 MB/s de basura y 107-169 GC.Collect/min; 356 ms al construir 5 chunks.
-- **Pre-Alpha, 9-13 días, sin wire ni ADR**: cull por planta → fundir paneles → LOD de remotos → allocs → mip streaming + pacing → warmup de
-  shaders, con gate cada paso. Huecos: sin equipo de gama baja (extrapolado) y **arnés de 4 instancias roto** (los joiners no entran; S3 solo host).
-
-### 2026-09-10 — 42.ª tanda: fusión de las dos sesiones paralelas del 10-09 en una sola rama
-- `claude/unwander-performance-audit-85a655` (tandas 43-47 arriba) fusionada con `migration/worldgraph-v1` (tanda 46, ADR-137→140,
-  wire 63). Sin conflicto de código — ninguna de las dos tocó los mismos ficheros de red/wire; solo `STATE.md`/`SESSION-LOG.md`
-  chocaron por editar la misma sección en paralelo, resuelto renumerando por orden cronológico real.

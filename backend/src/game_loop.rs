@@ -81,7 +81,7 @@ const SLOW_TICK_EVERY: u64 = 60;
 /// ADR-138 D1 lo subió de 20 a 30 Hz: con 2,2 KB/s medidos sobre un techo de 256 (0,86 % de uso),
 /// la resolución es lo barato. El hueco entre muestras baja de 50 a 33 ms, que es la mitad del
 /// desfase que se veía al CORRER — a 7,29 m/s, 17 ms de más son 12 cm de retraso extra.
-const NET_BROADCAST_EVERY: u64 = 2;
+pub(crate) const NET_BROADCAST_EVERY: u64 = 2;
 /// Heartbeat to peers every 1s.
 const HEARTBEAT_EVERY: u64 = 60;
 
@@ -129,6 +129,135 @@ fn note_entity_tick(elapsed: std::time::Duration) {
         100.0 * max_ms / 16.67
     );
 }
+
+/// LOOPTRACE — **de qué se compone un tick**, fase por fase.
+///
+/// `HBTRACE event=LOOP_STALL` dice que el bucle se paró y cuánto, pero no en qué. Sin eso, un
+/// bloqueo de 7 s sólo se puede atribuir por corazonada, y en la tanda anterior una corazonada ya
+/// señaló al culpable equivocado dos veces. Esto mide, no decide: no cambia una sola línea de
+/// comportamiento.
+///
+/// Las fases NO son disjuntas a propósito: `cre_block` es el bloque entero de criaturas y las
+/// `cre_*` de detalle viven DENTRO de él, igual que `ent_legacy` (lo que ENTTRACE ya publica). La
+/// suma que cierra el tick es la de las fases de primer nivel, y lo que sobra sale como
+/// `unaccounted` — que es justo el número que delata una fase sin instrumentar.
+const LOOP_PHASE_NAMES: [&str; 17] = [
+    "ipc_in",
+    "net_in",
+    "simulate",
+    "cre_block",
+    "teleport",
+    "net_send",
+    "retransmit",
+    "world_state",
+    "autosave",
+    // Detalle dentro de `cre_block` (no suman al total):
+    "ent_legacy",
+    "cre_prewarm",
+    "cre_phantom",
+    "cre_adult_sync",
+    "cre_adult_step",
+    "cre_child_sync",
+    "cre_child_step",
+    "cre_watcher",
+];
+/// Fases de primer nivel: las que sí suman. El resto son detalle anidado.
+const LOOP_PHASE_TOPLEVEL: usize = 9;
+const PH_IPC_IN: usize = 0;
+const PH_NET_IN: usize = 1;
+const PH_SIMULATE: usize = 2;
+const PH_CRE_BLOCK: usize = 3;
+const PH_TELEPORT: usize = 4;
+const PH_NET_SEND: usize = 5;
+const PH_RETRANSMIT: usize = 6;
+const PH_WORLD_STATE: usize = 7;
+const PH_AUTOSAVE: usize = 8;
+const PH_ENT_LEGACY: usize = 9;
+const PH_CRE_PREWARM: usize = 10;
+const PH_CRE_PHANTOM: usize = 11;
+const PH_CRE_ADULT_SYNC: usize = 12;
+const PH_CRE_ADULT_STEP: usize = 13;
+const PH_CRE_CHILD_SYNC: usize = 14;
+const PH_CRE_CHILD_STEP: usize = 15;
+const PH_CRE_WATCHER: usize = 16;
+
+/// Umbral de vuelco del desglose, el mismo que dispara `LOOP_STALL`: si una vuelta pasa de aquí,
+/// interesa el reparto de ESE tick y no una media que lo diluya entre miles de ticks sanos.
+const LOOP_PHASE_DUMP_MS: u128 = 250;
+
+#[derive(Default)]
+struct LoopPhases {
+    cur: [u128; LOOP_PHASE_NAMES.len()],
+    acc: [u128; LOOP_PHASE_NAMES.len()],
+    worst: [u128; LOOP_PHASE_NAMES.len()],
+    ticks: u64,
+    last_dump: Option<std::time::Instant>,
+}
+
+impl LoopPhases {
+    fn add(&mut self, phase: usize, elapsed: std::time::Duration) {
+        self.cur[phase] += elapsed.as_micros();
+    }
+
+    /// Cierra la vuelta anterior: vuelca su reparto si se pasó del presupuesto, acumula para el
+    /// resumen periódico y deja `cur` a cero para la siguiente.
+    ///
+    /// `stalled_micros` es lo que midió el propio bucle entre dos `ticker.tick()`, así que incluye
+    /// lo que NO está instrumentado — y ésa es la gracia de `unaccounted`.
+    fn close_tick(&mut self, tick: u64, stalled_micros: u128) {
+        self.ticks += 1;
+        for i in 0..self.cur.len() {
+            self.acc[i] += self.cur[i];
+            self.worst[i] = self.worst[i].max(self.cur[i]);
+        }
+
+        if stalled_micros / 1000 > LOOP_PHASE_DUMP_MS {
+            let accounted: u128 = self.cur[..LOOP_PHASE_TOPLEVEL].iter().sum();
+            let detail = self.render(&self.cur);
+            warn!(
+                "LOOPTRACE event=stalled_tick tick={} total_ms={:.1} unaccounted_ms={:.1} {}",
+                tick.saturating_sub(1),
+                stalled_micros as f64 / 1000.0,
+                stalled_micros.saturating_sub(accounted) as f64 / 1000.0,
+                detail
+            );
+        }
+
+        self.cur = [0; LOOP_PHASE_NAMES.len()];
+
+        let now = std::time::Instant::now();
+        match self.last_dump {
+            Some(t) if now.duration_since(t).as_secs() < 5 => return,
+            _ => self.last_dump = Some(now),
+        }
+        if self.ticks == 0 {
+            return;
+        }
+        let avg: Vec<u128> = self.acc.iter().map(|v| v / self.ticks as u128).collect();
+        // `warn!` por la misma razón que ENTTRACE y BWTRACE: sin `BACKROOMS_VERBOSE_LOG=1` un
+        // build sólo deja pasar WARN, y esto sólo sirve medido en la partida real.
+        warn!(
+            "LOOPTRACE event=phase_avg ticks={} budget_ms=16.67 {}",
+            self.ticks,
+            self.render(&avg)
+        );
+        warn!(
+            "LOOPTRACE event=phase_worst ticks={} {}",
+            self.ticks,
+            self.render(&self.worst)
+        );
+    }
+
+    fn render(&self, values: &[u128]) -> String {
+        LOOP_PHASE_NAMES
+            .iter()
+            .zip(values)
+            .map(|(name, v)| format!("{name}={:.2}", *v as f64 / 1000.0))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
 /// Chunk state broadcast at 5hz.
 const CHUNK_BROADCAST_EVERY: u64 = 12;
 /// ADR-029 V0 (invulnerability amendment): ticks a respawned player remains immune to PvP
@@ -1169,10 +1298,15 @@ pub async fn run(
     // pérdida real de paquetes producen exactamente el mismo síntoma.
     let mut last_tick_at = Instant::now();
     let mut worst_stall_ms: u128 = 0;
+    // LOOPTRACE: el desglose por fases de la vuelta que acaba de terminar. Se cierra arriba, antes
+    // de tocar nada, porque en ese punto `cur` todavía guarda el reparto del tick ANTERIOR — que es
+    // exactamente el que se acaba de medir como bloqueo.
+    let mut phases = LoopPhases::default();
     loop {
         ticker.tick().await;
         let stall = last_tick_at.elapsed();
         last_tick_at = Instant::now();
+        phases.close_tick(tick, stall.as_micros());
         if stall.as_millis() > 250 {
             worst_stall_ms = worst_stall_ms.max(stall.as_millis());
             warn!(
@@ -1186,6 +1320,7 @@ pub async fn run(
         }
 
         // ─── PHASE 1: RECEIVE (IPC + Network) ───
+        let t_phase = std::time::Instant::now();
         while let Ok(msg) = from_clients.try_recv() {
             match msg {
                 ClientMessage::Input(input) => {
@@ -1808,7 +1943,10 @@ pub async fn run(
         // tick; en un joiner nadie la lee.
         net.local_position = player.position.to_array();
 
+        phases.add(PH_IPC_IN, t_phase.elapsed());
+
         // Process incoming network packets.
+        let t_phase = std::time::Instant::now();
         let net_events = net.process_incoming().await;
         for event in net_events {
             handle_network_event(
@@ -1828,6 +1966,7 @@ pub async fn run(
             )
             .await;
         }
+        phases.add(PH_NET_IN, t_phase.elapsed());
 
         // ADR-045 Fase 2: resolve the per-player save file, exactly once, the first tick both
         // ingredients are available — `net.world_seed_known` (always true for a host; a joiner
@@ -2052,6 +2191,7 @@ pub async fn run(
         }
 
         // ─── PHASE 2: SIMULATE ───
+        let t_phase = std::time::Instant::now();
         // Only apply once a real input has arrived — the default PlayerInput has
         // position [0,0,0], which would otherwise drag the player to the origin
         // before the client's first packet. Track the accepted seq for the ack.
@@ -2158,7 +2298,10 @@ pub async fn run(
             );
         }
 
+        phases.add(PH_SIMULATE, t_phase.elapsed());
+
         // Entity AI at 10hz.
+        let t_phase = std::time::Instant::now();
         if tick.is_multiple_of(ENTITY_TICK_EVERY) {
             // ADR-009 §4: the host owns all authoritative world state; a joiner only predicts
             // movement. Before this guard, `tick_entities`/`tick_respawns` ran unconditionally on
@@ -2181,6 +2324,7 @@ pub async fn run(
                 let entity_tick_started = std::time::Instant::now();
                 let (damage, events) = world.tick_entities(entity_dt, player.position, player.id);
                 note_entity_tick(entity_tick_started.elapsed());
+                phases.add(PH_ENT_LEGACY, entity_tick_started.elapsed());
                 if ENTITY_DAMAGE_ENABLED && !dev_freeze_survival && damage > 0.0 {
                     player.stats.take_damage(damage);
                 }
@@ -2201,6 +2345,7 @@ pub async fn run(
                 // them, so one that just woke up gets a full tick instead of standing still for
                 // 100 ms at the edge of view — the frame a player is most likely to be looking.
                 let phantom_spawn_seed = net.world_seed;
+                let t_cre = std::time::Instant::now();
                 phantom_driver.sync_population(
                     &mut net,
                     player.position,
@@ -2222,6 +2367,8 @@ pub async fn run(
                 // propio caché por lo mismo que tiene el suyo de `grid_gen`: son tres poblaciones con
                 // radios de actividad distintos, y compartir uno haría que la poda de una vaciara el
                 // conjunto de trabajo de las otras.
+                phases.add(PH_CRE_PHANTOM, t_cre.elapsed());
+                let t_cre = std::time::Instant::now();
                 if let (Some(manifest), true) = (wg3.manifest(), wg3.is_enabled()) {
                     for (cache_slot, positions) in [
                         (
@@ -2256,7 +2403,10 @@ pub async fn run(
                     }
                 }
 
+                phases.add(PH_CRE_PREWARM, t_cre.elapsed());
+
                 let spawn_seed = net.world_seed;
+                let t_cre = std::time::Instant::now();
                 adult_driver.sync_population(
                     &mut net,
                     player.position,
@@ -2272,13 +2422,17 @@ pub async fn run(
                 );
                 // ADR-094 E1c: the adults' own blows, copied out for the same reason the
                 // robapieles' are — the driver has to be free again before the routing loop below.
+                phases.add(PH_CRE_ADULT_SYNC, t_cre.elapsed());
+                let t_cre = std::time::Instant::now();
                 let adult_attacks: Vec<_> = adult_driver
                     .step(&mut net, entity_dt, player.position)
                     .to_vec();
+                phases.add(PH_CRE_ADULT_STEP, t_cre.elapsed());
                 // ADR-094 E2a/E2b/E2c: same shape, the child packs — roam, cerco by roles, and
                 // the `Press` knockdown. The theft the same role owes (point 4) is not here: it
                 // needs `0x55/0x56` and its own wire bump.
                 let spawn_seed = net.world_seed;
+                let t_cre = std::time::Instant::now();
                 child_driver.sync_population(
                     &mut net,
                     player.position,
@@ -2292,14 +2446,18 @@ pub async fn run(
                         }
                     }),
                 );
+                phases.add(PH_CRE_CHILD_SYNC, t_cre.elapsed());
+                let t_cre = std::time::Instant::now();
                 let child_attacks: Vec<_> = child_driver
                     .step(&mut net, entity_dt, player.position, player.rotation)
                     .to_vec();
+                phases.add(PH_CRE_CHILD_STEP, t_cre.elapsed());
 
                 // ADR-131 — los vigilantes. **Sólo reconcile, y aquí se ve la especie entera**: no
                 // hay `step` que llamar porque no andan, no pegan y no hablan. Un vigilante nace en
                 // la silla que el mundo ya puso y se retira cuando nadie la tiene cerca.
                 let spawn_seed = net.world_seed;
+                let t_cre = std::time::Instant::now();
                 watcher_driver.sync_population(
                     &mut net,
                     player.position,
@@ -2312,6 +2470,8 @@ pub async fn run(
                         }
                     }),
                 );
+
+                phases.add(PH_CRE_WATCHER, t_cre.elapsed());
 
                 // ADR-094 punto 4 — the thefts those blows earned. The driver only says WHO robbed
                 // WHOM; what is actually lost is the victim's call, so this either asks over the
@@ -2678,8 +2838,11 @@ pub async fn run(
             }
         }
 
+        phases.add(PH_CRE_BLOCK, t_phase.elapsed());
+
         // Ownership is now handled per-chunk-boundary above; only teleportation
         // and other slow-tick work runs here.
+        let t_phase = std::time::Instant::now();
         if tick.is_multiple_of(SLOW_TICK_EVERY) && (net.is_host || net.peer_count() == 0) {
             let outcomes = world.tick_teleportation(tick);
             for o in &outcomes {
@@ -2692,6 +2855,8 @@ pub async fn run(
                 sync::broadcast_chunk_teleport(&net, o.old_pos, o.new_pos, o.new_seed).await;
             }
         }
+
+        phases.add(PH_TELEPORT, t_phase.elapsed());
 
         // Stats with real context from the world. ADR-016: real_peer_count so a phantom
         // doesn't inflate the host's sanity context (it still renders in the roster).
@@ -2751,6 +2916,7 @@ pub async fn run(
         }
 
         // ─── PHASE 3: NETWORK SEND ───
+        let t_phase = std::time::Instant::now();
 
         // Broadcast player position to peers at 10hz.
         if tick.is_multiple_of(NET_BROADCAST_EVERY) {
@@ -2767,7 +2933,17 @@ pub async fn run(
                 // correctly. Host-only; no-op below two peers.
                 // E1 (ADR-074): `&mut` — el relay filtra por área de interés y mantiene el estado
                 // de histéresis de los pares que está relayando.
-                sync::broadcast_peer_poses(&mut net).await;
+                // ADR-140 — y ahora también con el grafo de salas. `None` si WG3 no manda: el PVS
+                // pregunta por SALAS, y sin WG3 no hay salas que preguntar, sólo geometría.
+                let pvs =
+                    wg3.manifest()
+                        .filter(|_| wg3.is_enabled())
+                        .map(|manifest| sync::PvsCtx {
+                            worlds: &mut wg3_world,
+                            manifest,
+                            world_seed: net.world_seed,
+                        });
+                sync::broadcast_peer_poses(&mut net, pvs).await;
                 // ADR-071: `&mut` now, because each of these owns a send gate that it updates when
                 // it decides a round goes out. They still run at 10 Hz — what changed is that a
                 // roster nobody touched since the last round returns immediately.
@@ -2852,6 +3028,13 @@ pub async fn run(
         // F0.8: `&mut` — cada chunk lleva su gate de emisión (mismo mecanismo que ADR-071).
         if tick.is_multiple_of(CHUNK_BROADCAST_EVERY) {
             sync::broadcast_chunk_states(&mut net, &world, player.position).await;
+            // ADR-141: la cuenta de servicio al recién llegado baja AQUÍ, una vez por ronda y
+            // después de que hayan corrido todos los emisores, no dentro de cada uno. Si la bajara
+            // cada emisor, el primero en ejecutarse la consumiría y el que acaba de entrar se
+            // quedaría sin los otros cinco rosters hasta el siguiente latido — que desde ADR-139
+            // enm. 2 puede tardar 30 s. Va en la misma cadencia que los chunks porque es el emisor
+            // más lento de los seis: atarla a la rápida serviría menos rondas de las que promete.
+            sync::tick_pending_full_sync(&mut net);
         }
 
         // F0.1: consume el flag de world_sync coalescido en CADA tick (no solo en los de
@@ -2905,8 +3088,11 @@ pub async fn run(
             }
         }
 
+        phases.add(PH_NET_SEND, t_phase.elapsed());
+
         // Process reliable retransmits. ADR-062: agotar los reintentos desconecta al peer, así
         // que esto emite eventos por el mismo camino que el escaneo de timeouts.
+        let t_phase = std::time::Instant::now();
         if tick.is_multiple_of(ENTITY_TICK_EVERY) {
             let retransmit_events = net.process_retransmits().await;
             for event in retransmit_events {
@@ -2929,6 +3115,8 @@ pub async fn run(
             }
         }
 
+        phases.add(PH_RETRANSMIT, t_phase.elapsed());
+
         // ─── PHASE 4: SEND ───
 
         // ADR-009 §2: authoritative movement delta at 20hz for the client
@@ -2943,14 +3131,17 @@ pub async fn run(
         }
 
         // Full WorldState (stats/chunks/entities) to Unity at 10hz.
+        let t_phase = std::time::Instant::now();
         if tick.is_multiple_of(WORLD_STATE_EVERY) {
             let snapshot =
                 build_world_state(tick, &player, &mut world, &net, last_accepted_input_seq);
             let _ = to_clients.send(ServerMessage::WorldState(snapshot));
         }
+        phases.add(PH_WORLD_STATE, t_phase.elapsed());
 
         // ADR-032: host-only autosave (~3 min). The single-threaded loop makes tick-boundary
         // serialization an inherently consistent snapshot — no pause/lock needed. Skips tick 0.
+        let t_phase = std::time::Instant::now();
         if net.is_host && tick > 0 && tick.is_multiple_of(AUTOSAVE_EVERY) {
             match crate::persistence::save::save_world(
                 &save_path,
@@ -2984,6 +3175,7 @@ pub async fn run(
                 }
             }
         }
+        phases.add(PH_AUTOSAVE, t_phase.elapsed());
 
         tick = tick.wrapping_add(1);
     }
@@ -8370,7 +8562,7 @@ fn build_world_state(
             name: p.name.clone(),
             position: p.position,
             rotation: p.rotation,
-            animation: p.animation.clone(),
+            animation: p.animation,
             crouch: p.crouch,
             pitch: p.pitch,
             equipment: p.equipment,

@@ -16409,3 +16409,459 @@ la mano, de hecho lo mejor es que lo dejes todo a 0 y empieces en una posición 
   y el anular, 28,9 mm de sobra frente a 1,3. La siguiente pasada NO es de parámetros: hace falta un
   criterio de agarre que exija rodear (yemas al otro lado del eje), no sólo tocar.
 - Deuda: el pulgar entra 12,8 mm en el mango del destornillador y no está en ninguna puerta.
+## ADR-139 — enmienda 2 (2026-09-10): el latido retrocede, y `joined` cuenta destinatarios
+
+**Contexto: la primera medida en una partida REAL de Steam.** Con wire 63 subido, 59 minutos, el
+anfitrión y una persona más conectada por el túnel de Steam (ping 24 ms, `Quality 100%`,
+`Dropped 0.00%`, `Bytes buffered: 0`). El lag que abrió esta línea de trabajo está cerrado: 29,3 KB/s
+sobre 256 disponibles, frente a los 253,8 KB/s y 1,9 s de cola del principio.
+
+El reparto de los 24,2 KB/s que salen del anfitrión:
+
+| Opcode | Qué es | KB/s | % | Paquetes |
+|---|---|---|---|---|
+| 0x5A | `PlayerUpdateBatch` | 12,2 | 50 | 88.463 |
+| 0x11 | `ChunkState` | 7,7 | 32 | 48.175 |
+| 0x10 | Pose propia | 2,0 | 8 | 88.529 |
+| 0x46 | `CorpseList` | 1,9 | 8 | 21.772 |
+
+**D4 hace lo que prometía**: 503 B por lote contra 83 por pose suelta, o sea ~6 poses por datagrama.
+Esos 88.000 paquetes habrían sido más de medio millón sin agrupar. Y queda confirmado que el LOD de
+entidades era innecesario: `ENTTRACE` da `avg_ms=0,024` sobre 16,67 de presupuesto, el 0,1 %.
+
+**Decisión 1 — el latido de lo estático retrocede.** `ChunkState` no era estado cambiando: era
+geometría repitiéndose. El latido de ADR-071 son 3 s y con ~40 chunks cargados eso da 13,3
+datagramas/s; se midieron 13,5. La aritmética lo explica entero. Igual `CorpseList`: 989 emisiones
+—cadencia de puro latido— pero 22 páginas cada una.
+
+El latido existe para REPARAR una página perdida, y una pérdida es probable justo después de emitir,
+no una hora más tarde: si el receptor tenía el chunk hace un minuto, lo sigue teniendo. Así que
+`RosterGate` gana un techo OPCIONAL (`STATIC_ROSTER_HEARTBEAT_CAP`, 30 s) y dobla el latido por cada
+ronda que sale sólo por latido: 3, 6, 12, 24, 30. Cualquier cambio de contenido o peer nuevo lo
+devuelve a la base.
+
+Lo activan sólo los dos emisores medidos —chunks y cadáveres—. Los otros cuatro rosters emiten 0,28
+datagramas/s y no merecen el riesgo; hay un test que fija que siguen planos. Sin techo, el
+comportamiento es byte a byte el de antes.
+
+**Decisión 2 — `joined` cuenta DESTINATARIOS, no entradas de `peers`.** Encontrado revisando la
+decisión 1, y es lo más grave de las dos. La condición `peers > last_peers` existe porque quien
+acaba de entrar no tiene mundo, pero recibía `net.peers.len()`, que cuenta también a las criaturas y
+al robapieles: entradas con la addr inerte de ADR-079/043 que la guarda de `send.rs` rechaza y que
+no reciben nada jamás.
+
+Cada nacimiento de una criatura se leía como un jugador nuevo y reenviaba el roster entero —los
+cinco— y todos los chunks a todo el mundo. En un mundo poblado eso ocurre continuamente, así que
+ninguna puerta llegaba a cerrarse del todo: **el ahorro de ADR-071 y de la enmienda 1 se evaporaba
+sin error, sin log y sin test rojo, sólo tráfico**. `gameplay_destination_count` pregunta por el
+mismo predicado que decide el envío, igual que ya hacía `relay_destinations` — que a su vez filtraba
+fantasmas pero no `relay_only`, y por eso el relay armaba lotes para destinos que la última puerta
+iba a rechazar (`MPTRACE step=SEND_FAIL event=illegal_gameplay_destination`, una línea por segundo
+durante toda la partida).
+
+**Diagnosticado y descartado:** los 492 errores `os error 10054` del log son la consecuencia
+esperada de una desconexión. El otro jugador dejó de responder y, durante los 5,6 s que tarda el
+latido en declararlo muerto, el anfitrión siguió escribiendo a un socket cerrado. Paran solos al
+desconectarlo.
+
+**Lo que esto NO mide:** eran dos personas. El punto de ruptura por aglomeración sigue estando donde
+lo dejaron los arneses de ADR-140 D3 —entre 8 y 16 juntos— y sólo se comprueba con gente de verdad.
+Y el efecto de estas dos decisiones está probado por tests de cadencia, no medido todavía en
+partida: hace falta una sesión nueva con el backend reconstruido.
+
+Sin cambio de wire: cambia CUÁNDO se emite, no el qué. Suite: 1459 verdes, 0 rojos.
+
+---
+
+## ADR-141 — La tormenta de entrada: quien llega recibe el mundo, y los demás no tienen que enterarse (2026-09-11) — PROPUESTA (Joel: «podemos plantear e implementar el ADR»)
+
+**El hallazgo.** Dos playtests de 8 instancias murieron igual: todos los jugadores se declaran
+muertos **en el mismo milisegundo**. No degrada, colapsa.
+
+```
+T22:48:18Z  peer_id=2..8  last_seen_ms_ago≈7120  threshold_ms=5000   (8 con ventana)
+T23:39:49Z  peer_id=2..6  last_seen_ms_ago≈5310  threshold_ms=5000   (8 sin render, entradas espaciadas 12 s)
+```
+
+Espaciar las entradas doce segundos no lo evitó, así que no es una avalancha de conexiones
+simultáneas. Y no es la máquina: sin render, cada cliente gastó 15-31 s de CPU (contra 286-562 con
+ventana), quedaban 22 GB libres y la CPU al 0 %.
+
+Lo que sí se ve, midiendo `ChunkState` por ventanas de 5 s en el anfitrión:
+
+```
+t= 55s  122,4 pkt/s   <- entra un joiner
+t= 66s  102,0 pkt/s   <- entra otro
+t= 86s   95,6 pkt/s   <- entra el sexto, y caen los cinco de golpe
+t= 97s    8,5 pkt/s   <- quedan dos
+```
+
+Contra una línea base de 10-20 pkt/s. **Cada entrada multiplica por seis o por diez el tráfico de
+chunks**, y el pico de la sexta entrada se lleva por delante a todos los que ya estaban dentro: los
+latidos se pierden dentro de la ráfaga y el temporizador de 5 s vence a la vez en las dos puntas
+(el joiner 2 declaró muertos a sus peers 29 s ANTES de que el anfitrión lo declarara muerto a él —
+la pérdida es mutua, no de un lado).
+
+**La causa, y por qué estaba escondida.** `RosterGate` es **por roster, no por destinatario**. Su
+condición `joined` (ADR-071 decisión 4) existe para que quien acaba de entrar reciba el mundo, pero
+la puerta sólo sabe abrirse o cerrarse: cuando se abre, el contenido sale por **broadcast a todos**.
+Así que un jugador nuevo obliga al anfitrión a reenviar los 64 chunks y los cinco rosters **a los
+seis que ya estaban dentro y no necesitaban nada**.
+
+El coste de una entrada crece con el número de jugadores ya presentes. Con cinco dentro aguanta; al
+sexto revienta. Es el mismo error de forma que la enmienda 2 de ADR-139 —preguntarle a una
+condición por un número que no significa lo que parece— pero en el eje del destinatario en vez del
+de la cuenta.
+
+Nada de esto contradice ADR-071: la decisión 4 sigue siendo correcta, quien entra NO puede esperar
+al latido. Lo que cambia es a quién se le manda.
+
+**Decisión 1 — quien entra se apunta en una lista, y se le sirve a él.** `NetworkManager` gana
+`pending_full_sync: HashMap<PeerId, u8>`, sembrado con `ROSTER_CHANGE_BURST` rondas en el punto
+donde hoy se registra el peer (`handlers.rs`, `self.peers.insert(assigned_id, peer)`). Cada emisor,
+por ronda:
+
+  * si la puerta se abre por CAMBIO o por LATIDO → broadcast, exactamente como hoy;
+  * si no se abre pero hay peers en la lista → se arman las mismas páginas y se mandan **dirigidas**
+    sólo a ellos, con `send_unreliable_to`.
+
+El contador baja UNA vez por ronda del bucle de juego, no una por emisor: si lo decrementara cada
+emisor, el primero en correr dejaría al recién llegado sin los otros cuatro rosters.
+
+**Decisión 2 — `joined` sale de `RosterGate`.** Con la decisión 1, la condición pierde su razón de
+ser, y dejarla puesta reabriría la tormenta desde el primer sitio que volviera a pasar una cuenta de
+peers. El parámetro se retira de `should_send` en vez de dejarlo muerto: un parámetro que nadie mira
+es la forma en que esto vuelve dentro de seis meses.
+
+**Lo que NO cambia:** ni el wire, ni el formato, ni la paginación, ni el contenido. `apply_chunk_sync`
+y los ensambladores de roster siguen viendo exactamente los mismos mensajes; cambia el sobre, no la
+carta. Un peer sin actualizar no puede notar la diferencia.
+
+**Riesgo asumido y cómo se acota.** Si la lista de pendientes se vaciara antes de que un emisor
+llegue a servir al recién llegado, ese jugador vería un mundo incompleto hasta el siguiente latido
+—hasta 30 s con el techo de la enmienda 2 de ADR-139, que es mucho—. Por eso el contador es de
+rondas y no de tiempo, baja en el bucle y no en el emisor, y hay un test que fija que un peer nuevo
+recibe TODOS los rosters antes de que su cuenta llegue a cero.
+
+**Verificación:** el arnés de 8 instancias sin render, que ya reprodujo el fallo dos veces. El
+criterio es binario y no admite interpretación: los ocho siguen dentro pasados cinco minutos, y el
+pico de `ChunkState` en cada entrada se queda en la línea base en vez de multiplicarse.
+
+---
+
+## ADR-142 — Las criaturas no se sortean cada segundo: tres niveles de existencia y una población que el mundo ya tenía (2026-09-11) — PROPUESTA (Joel: «que la cantidad de criaturas no varíe, existan en el mundo… y que el cálculo aleatorio sea la primera vez que se genera el mundo»; «algo tipo que no se cargue la entidad pero esté en movimiento y a cierta distancia se spawnea»)
+
+### Contexto: lo que el anfitrión estaba haciendo con su tick
+
+ADR-141 cerró la tormenta de entrada y **no** cerró el colapso de ocho jugadores. La causa restante
+se midió con `LOOPTRACE` (commit `912e92e1`), que desglosa el tick por fases. El peor tick de la
+corrida de las 12:51, arnés de ocho instancias sin render:
+
+```
+total_ms=7540.2  unaccounted_ms=0.0
+cre_block=7531.48   net_send=7.88   world_state=0.81   ipc_in=0.00
+```
+
+`unaccounted` a cero significa que no queda ninguna fase sin instrumentar: **el bloque de criaturas
+es el 99,9 % del bloqueo**. La red, sospechosa durante dos días, pone 8 ms de 7 540.
+
+Dentro del bloque había dos culpables, y el primero ya está cerrado. `cre_prewarm` —rasterizar
+geometría de WG3 para resolver colisión— se llevaba 2 373 ms en el peor tick porque el caché de
+rásteres se vaciaba entero al pasar del tope (commit `ebd8b12a`, vuelta al desalojo que ADR-106 D3
+ya pedía). Tras ese arreglo:
+
+| | peor tick | media |
+|---|---|---|
+| `cre_prewarm` antes | 2 373,70 ms | 2,54 ms |
+| `cre_prewarm` después | 11,97 ms | 0,00 ms |
+
+Lo que queda, y es lo que este ADR ataca, son los cuatro `sync_population`:
+
+```
+cre_block=5093   cre_phantom=2017   cre_adult_sync=1157
+                 cre_child_sync=981   cre_watcher=890
+```
+
+La sesión sigue cayéndose: 32 bloqueos y 12 expulsiones por corrida, frente a 50 y 14 antes del
+caché. Mejor, no arreglado.
+
+### El hecho que cambia el diseño: el sorteo YA es determinista
+
+`world::faceling_spawn::draw_adults_into` es función pura de `(world_seed, cx, cz, axis,
+density_scale, wg3)`. La misma semilla pone los mismos adultos en el mismo chunk, siempre. **La
+población fija por semilla que pide Joel ya existe**; lo que no existe es aprovecharla.
+
+Lo que cuesta no es sortear: es **volver a sortear**. `sync_population` recorre cada chunk dentro
+del radio de activación **de cada jugador**, una vez por segundo y por especie, y rehace un cálculo
+cuyo resultado no puede haber cambiado. Con siete jugadores repartidos eso son cuatro barridos por
+segundo sobre cuatro vecindarios distintos.
+
+Y hay un segundo coste que no es CPU: al dormirse, una criatura **pierde su identidad**. Su `PeerId`
+sale de un contador, no de quién es; al despertar vuelve a nacer en el punto que dice el sorteo, no
+donde se quedó. Por eso el mundo no tiene memoria de dónde estaban las cosas.
+
+Esto corrige de paso una afirmación propia: en esta misma sesión dije que pasar la posición del
+anfitrión a `prewarm_for_move` multiplicaba el coste por criatura. Es falso — son los mismos nueve
+chunks para todas y se cachean una vez. El destrozo era la política de poda, y se midió.
+
+### D1 — Tres niveles de existencia, y sólo uno consume tick
+
+- **Dormida.** Existe sólo como semilla. Ni se guarda, ni se recorre, ni se le pregunta nada. Es el
+  estado del 99,99 % de la población, y su coste es **cero** porque nadie la itera.
+- **Ambiente.** Se evalúa **bajo demanda**, sin colisión, sin `PeerId` y sin red. Es quien responde
+  a «¿hay algo que pudiera oír esto?».
+- **Activa.** Entidad real: peer, colisión, IA, relay. Sólo cerca de alguien, con los topes de hoy
+  (`FACELING_ACTIVE_CAP` = 32, `PHANTOM_ACTIVE_CAP` = 6).
+
+La propiedad que hace esto viable es que **el nivel dormido no tiene bucle**. El mundo no tiene
+borde, así que «que existan todas» sólo es sostenible si la inmensa mayoría nunca se toca.
+
+### D2 — Una dormida se mueve sin que nadie la mueva
+
+Su posición es función cerrada del tiempo: `pos(t) = f(semilla, clave, t)`, un paseo determinista
+sobre su chunk de origen. No se actualiza: **se evalúa cuando hace falta**. Un millón de criaturas a
+100 000 m cuestan lo mismo que ninguna.
+
+Es lo que Joel pedía con «que se mueva a nivel de bits muy pequeños»; el ahorro no está en el tamaño
+del estado, está en que **no hay estado que recorrer**.
+
+### D3 — El sorteo se cachea por `(chunk, planta)`
+
+Siendo función pura, se calcula una vez y se guarda mientras el chunk siga en el conjunto de
+trabajo, con desalojo por uso reciente —la misma disciplina y por la misma razón que el caché de
+rásteres de `ebd8b12a`, no una invención nueva.
+
+Esto es lo que quita los cuatro barridos por segundo, y **es la mitad barata del ADR**: no toca ni
+persistencia ni identidad. Se puede implementar y medir sola.
+
+### D4 — La identidad sale del mundo, no de un contador
+
+Cada criatura tiene una `creature_key` derivada de `(chunk, planta, índice en el sorteo)`. El
+`PeerId` sigue siendo efímero y sigue **sin viajar por el wire** (ADR-016 §1): la clave es interna.
+
+Sin esto, D5 no puede existir —no hay a qué atar lo guardado— y despertar a «la misma» criatura es
+una frase sin significado.
+
+### D5 — Se persisten las DESVIACIONES, no la población
+
+Guardar la población entera es imposible: es infinita. Se guarda sólo lo que ya no está donde su
+sorteo dice, con su `creature_key`. Lo que nunca se tocó no ocupa un byte porque la semilla lo
+reconstruye idéntico.
+
+Campo nuevo en `SaveFile` con `#[serde(default)]`, como `sprays` y `corpses`: **un save anterior
+carga sin migración y sin `.bak`**. Es cambio de schema de guardado, y por eso este ADR existe antes
+que el código (regla dura 7).
+
+### D6 — Ascender ANCLA a celda válida
+
+Una dormida se mueve sin colisión y acabará dentro de una pared. Da igual mientras nadie la vea,
+pero al ascender hay que dejarla en un sitio andable. Eso es una consulta a WG3 **pagada una vez por
+ascenso**, no diez veces por segundo y criatura.
+
+Sin este anclaje el sistema entrega criaturas dentro de macizos, que es peor que el problema que
+resuelve.
+
+### D7 — Sin cambio de wire
+
+Mismos mensajes y mismos opcodes. Una criatura activa es un peer exactamente como hoy. `WIRE_SCHEMA_VERSION`
+se queda en **63**.
+
+### Lo que este ADR NO dice
+
+- **No promete arreglar «al cargar siempre aparece una entidad al lado».** Ese fallo no está
+  diagnosticado: `FACELING_MIN_SPAWN_DISTANCE` ya existe y ya lo debería impedir para los facelings,
+  así que probablemente sea otra especie u otro camino. Lo que este diseño quita es el **mecanismo**
+  —que al cargar se sortee población alrededor del jugador—, y eso hay que verificarlo, no
+  suponerlo.
+- **El robapieles entra con cuidado.** `cre_phantom` son 2 017 ms y es la partida mayor, pero
+  `PhantomDriver` vive dentro de los **seis invariantes intocables de ADR-038**. D3 se le puede
+  aplicar sin tocarlos; D1/D2 sobre el robapieles piden enmienda propia con sus tests delante.
+- **El sonido va aparte.** Ampliar el radio de detección se apoya en el nivel ambiente de D1, pero
+  es enmienda a la percepción y tiene su propio ADR.
+- **No se sube ningún tope de población.** Este ADR cambia cuándo se decide quién está despierto, no
+  cuántos hay.
+
+### Riesgo abierto
+
+El nivel ambiente de D1 no tiene consumidor hasta que exista el ADR del sonido. Implementarlo sin
+consumidor sería andamiaje muerto, así que **la primera tanda puede quedarse en D3 + D4**, que ya
+atacan los cuatro `sync_population` medidos.
+
+### Verificación
+
+El arnés de ocho instancias sin render, contra la línea base ya medida en la corrida de las 13:52,
+que queda escrita aquí para que la comparación no dependa de la memoria de nadie:
+
+```
+cre_block    peor 5093 ms   media 2,90 ms
+cre_phantom  peor 2017 ms
+32 bloqueos, 12 expulsiones
+```
+
+El criterio es binario: los ocho siguen dentro pasados cinco minutos y `cre_block` se queda por
+debajo del presupuesto de 16,67 ms en el peor tick, no sólo en la media.
+
+---
+
+## ADR-142 — Enmienda 1: D3 era falso, y lo que arregló el colapso fueron dos cachés que este ADR no nombraba (2026-09-11)
+
+### Qué se midió y qué dijo
+
+D3 proponía cachear el sorteo de población, «la mitad barata». Se instrumentó el reconcile por
+dentro (`SYNCTRACE`) antes de escribirlo, y el sorteo resultó no costar nada:
+
+```
+worst_storeys_ms=175.49  worst_retire_ms=0.02  worst_scan_ms=0.43  worst_populate_ms=950.13
+```
+
+`scan` es el sorteo. **Cuatro décimas de milisegundo contra novecientos cincuenta del reparto.**
+Implementar D3 tal y como está escrito habría costado una tanda y medido cero.
+
+Lo caro eran las consultas a WG3, y todas iban a parar al mismo sitio: `Wg3WorldCache`, que al
+pasar de 16 regiones **se vaciaba entero**, obligando a replanificar regiones completas —
+`plan_region`, el generador de mundo— en la ronda siguiente. El mismo fallo que
+`MAX_CACHED_RASTERS` un nivel más abajo, con el mismo comentario justificándolo y la misma premisa
+escrita para un solo jugador.
+
+Los dos se arreglaron con desalojo por uso reciente (`ebd8b12a`, `92acd74f`), y eso es lo que cerró
+el colapso de ocho jugadores que ADR-141 había dejado abierto:
+
+| | antes | después |
+|---|---|---|
+| `cre_block` peor tick | 4 473 ms | 401 ms |
+| bloqueos por corrida | 84 | 3 |
+| expulsiones | 12 | 0 |
+
+**Ninguno de los dos arreglos estaba en este ADR.** Se llegó a ellos midiendo, no planificando.
+
+### El relay NO crece con N², crece con las criaturas
+
+Este ADR y ADR-140 daban por hecho que el relay de poses crece con el cuadrado de los jugadores.
+Con la población actual es falso, y los datos lo dicen:
+
+| | criaturas | relay |
+|---|---|---|
+| 8 jugadores | 81 | 94,0 KB/s |
+| 16 jugadores | 126 | 145,3 KB/s |
+
+Criaturas ×1,56, tráfico ×1,54. El relay toma como ORÍGENES todos los peers y como destinos sólo a
+los jugadores: con 16 y 126, nueve de cada diez parejas son una criatura mandando su pose. El
+crecimiento cuadrático existe, pero está tapado por un término lineal mucho mayor.
+
+### Trampa de método: las corridas no eran comparables
+
+Cada instancia guarda su posición y se restaura donde la dejó la corrida anterior (ADR-045), así
+que dos corridas del mismo binario partían de mundos distintos. Se descubrió al ver la población de
+criaturas cambiar 10× entre corridas que se creían idénticas, con posiciones guardadas de (−23, −2)
+a (1 152, −119).
+
+El arnés borra ahora los guardados antes de empezar. **Con esa condición la línea base baja**: 185,6
+KB/s con 16 en vez de los 214–227 medidos sobre mundos sucios, y el PVS oculta el 24,3 % de las
+parejas en vez del 20,5 %. Toda comparación anterior a esto lleva ese sesgo.
+
+### Lo que sustituye a D3
+
+D3 se retira. Lo que queda vivo del ADR es D1/D2 (los tres niveles), D4 (identidad del mundo), D5
+(persistir desviaciones) y D6 (anclar al ascender), y **su justificación cambia**: ya no es ahorrar
+CPU —el bloque de criaturas está en 1,98 ms de media sobre 16,67— sino tener un mundo coherente y
+con memoria.
+
+En su lugar entra la idea de Joel, que ataca lo que sí es caro: **una criatura previsible no
+necesita cadencia, necesita un TRAMO**. En vez de una pose cada 33 ms, de dónde a dónde y a qué
+velocidad, y el cliente interpola hasta que cambie de rumbo. Cuando alguien la tiene delante, se
+vuelve a la pose fina.
+
+**Y tiene que aplicarse a TODOS, jugadores incluidos.** ADR-074 declara innegociable que el filtro
+no se comporte distinto según quién sea la fuente: el robapieles se hace pasar por un jugador, y una
+cadencia propia lo delataría igual que un radio propio. Es mensaje nuevo, así que va con bump de
+wire y ADR propio (regla dura 7).
+
+### Lo que se descartó por el camino, con su razón
+
+- **Bajar la cadencia del anillo exterior**: ADR-074 enmienda ya lo evaluó y lo rechazó — 50–100 m
+  es donde vive la fase `stalk` del robapieles, y a 500 ms entre poses se ve a saltos.
+- **Repartir simulación a los clientes con el anfitrión verificando** (Joel): verificar una
+  simulación continua cuesta lo mismo que calcularla, y para simular una criatura hay que decirle al
+  cliente dónde está — un chivato perfecto que ninguna verificación deshace. Donde sí se aplica ya
+  está aplicado: el cliente GENERA el mundo desde la semilla en vez de recibirlo.
+- **Población del mundo en vez de por jugador como optimización**: el reparto ya es por CHUNK y
+  deduplica entre jugadores, así que no cambia el número de criaturas activas. Sigue siendo buena
+  idea por diseño, no por rendimiento.
+
+---
+
+## ADR-143 — Nueve bytes para decir un bit: la animación deja de viajar como texto (2026-09-12) — PROPUESTA (Joel: «cómo se optimiza esos 9 bytes de animaciones a 1 haciendo que se vea exactamente igual»)
+
+### El problema, medido
+
+`PlayerUpdate.animation` es un `String`. Sobre MessagePack, `"walk_slow"` ocupa 10 B de una pose de
+74 (`load_tests::pose_byte_breakdown`, 12-09). Es el campo más caro de la pose con diferencia: el
+siguiente, `equipment`, cuesta 5 B, y vaciar `held_item`, `carry_*` o `pitch` no ahorra **nada**
+porque MessagePack ya mete los enteros pequeños en un byte.
+
+Eso viaja 30 veces por segundo por cada par que se ve. Y transporta seis valores: `idle`, `walk`,
+`walk_slow`, `run`, `pickup`, `interact`.
+
+**Lo que el cliente hace de verdad con ellos es distinguir uno.** El único consumidor es
+`ProxyPickupHook`, que compara `anim == "pickup"` y dispara un trigger del Animator en el flanco.
+La locomoción sale de la VELOCIDAD desde ADR-013, no de este campo. Se están pagando nueve bytes
+por pose para comunicar, en la práctica, un bit.
+
+### Decisión
+
+**D1 — El código sustituye al texto en los DOS cables.** `animation: String` pasa a `animation: u8`
+en `PacketPayload::PlayerUpdate` (backend↔backend), en `ipc::RemotePlayerState` y en
+`ipc::PlayerInput` (backend↔Unity). El mapeo a texto, si hace falta, ocurre ya dentro de C#.
+
+Se eligen los dos cables y no sólo el de red (Joel, 12-09). El de Unity es local y sus bytes no
+cuestan red, así que no entra por ahorro: entra para que **no haya dos representaciones del mismo
+dato** con una conversión en medio, que es exactamente la forma en que una de las dos se queda vieja.
+
+**D2 — Códigos estables y explícitos, nunca el orden de un `enum`.**
+
+```
+0 = idle        3 = run
+1 = walk        4 = pickup
+2 = walk_slow   5 = interact
+```
+
+Escritos a mano y no derivados de la posición en una declaración, porque reordenar la declaración no
+puede cambiar lo que significa un byte en el cable.
+
+**D3 — Un código desconocido cae en `idle`, jamás en un error.** Un peer más nuevo puede mandar un 6
+que este binario no conoce. Degradar a `idle` es cosmético y sigue la regla de ADR-020/024: lo que
+no se entiende se decodifica al valor por defecto, nunca rompe la sesión.
+
+**D4 — El resultado visual es idéntico por construcción.** El mapeo es total y biyectivo sobre los
+seis valores que existen hoy, así que `view.animationState` acaba con la misma cadena que hoy y
+`ProxyPickupHook` no se entera. La puerta es un test que recorre el mapeo en los DOS sentidos y que
+falla si algún literal del árbol no está cubierto — sin él, una ruta que produjera una cadena fuera
+de la lista se convertiría en `idle` en silencio, que es el único modo de fallo real de este cambio.
+
+### Lo que se gana, con su número
+
+- **9 B menos por pose, de 74 a 65: un 12 % de TODAS las poses**, no sólo de algunas. A diferencia
+  del cono de atención (que sólo toca lo que está a la espalda), esto se cobra en cada par.
+- **Se acaba el `clone()` por pose relayada.** El relay copia la `String` una vez por destinatario;
+  su propio comentario lo llama «cientos de `String` por segundo asignadas para nada». Un `u8` es
+  `Copy`. Eso rebaja CPU del emisor, que es el muro con la gente repartida.
+- **Se cae la necesidad de `ReadStringCached`** para este campo en el cliente.
+
+### Lo que NO se gana, y conviene tenerlo escrito
+
+En una sala el coste va con N², así que un 12 % de ahorro sube el aforo por la RAÍZ: unos 27 → 29
+jugadores combinado con el cono. **Arañar bytes en sala da poco por definición.** Lo que mueve el
+techo de verdad es cambiar la FORMA de la curva (presupuesto por destino), no su constante. Este ADR
+se justifica por el `clone()` y por aplicarse a todos los pares, no por el aforo.
+
+### Riesgos
+
+- **Regla dura 7 y el espejo de C#.** Es bump de `WIRE_SCHEMA_VERSION` y de `WireSchema.Expected`,
+  y van en el MISMO commit: subir una y no la otra no da aviso, deja el juego inarrancable.
+- **Superficie en C#.** Tocan `IPCMessages`, `RemotePlayerManager` y los tests de EditMode que hoy
+  comparan contra cadenas (`RemotePlayerManagerTests`). Es el precio elegido en D1.
+- **ADR-074 no entra aquí**: el campo no cambia de tamaño según quién sea la fuente. Todas las poses
+  pagan un byte, criaturas incluidas.
+
+---
+
