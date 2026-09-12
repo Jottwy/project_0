@@ -7203,7 +7203,7 @@ async fn stp_demolish_retires_the_piece_and_frees_its_pose_cell() {
         "a group piece must claim its pose cell on placement"
     );
 
-    process_stp_demolish(500, id, 1, &mut net);
+    process_stp_demolish(500, id, 1, Some(Vec3::from_array(position)), &mut net);
 
     assert!(placed_pieces(&net).is_empty(), "the piece must be retired");
     assert!(
@@ -7267,11 +7267,17 @@ async fn stp_demolish_dedupes_under_retransmit() {
     );
     let first = placed_pieces(&net)[0];
 
-    process_stp_demolish(900, first, 1, &mut net);
+    process_stp_demolish(900, first, 1, Some(Vec3::from_array(room)), &mut net);
     assert_eq!(placed_pieces(&net).len(), 1);
 
     // Same demolish_id again: must be dropped before it can touch the survivor.
-    process_stp_demolish(900, placed_pieces(&net)[0], 1, &mut net);
+    process_stp_demolish(
+        900,
+        placed_pieces(&net)[0],
+        1,
+        Some(Vec3::from_array(other)),
+        &mut net,
+    );
     assert_eq!(
         placed_pieces(&net).len(),
         1,
@@ -7298,7 +7304,7 @@ async fn stp_demolish_of_unknown_building_is_ignored() {
     );
 
     // Two clients cancelling the same piece in one window: the loser finds it already gone.
-    process_stp_demolish(901, 0xDEAD_BEEF, 1, &mut net);
+    process_stp_demolish(901, 0xDEAD_BEEF, 1, Some(Vec3::from_array(room)), &mut net);
 
     assert_eq!(
         placed_pieces(&net).len(),
@@ -7333,7 +7339,7 @@ async fn stp_demolish_by_a_stranger_is_denied() {
     let id = placed_pieces(&net)[0];
 
     // El peer 2 pide demoler lo del peer 1.
-    process_stp_demolish(500, id, 2, &mut net);
+    process_stp_demolish(500, id, 2, Some(Vec3::from_array(position)), &mut net);
 
     assert_eq!(
         placed_pieces(&net).len(),
@@ -7347,7 +7353,7 @@ async fn stp_demolish_by_a_stranger_is_denied() {
     );
 
     // Y el dueño sí puede, para que el test no pase por estar todo bloqueado.
-    process_stp_demolish(501, id, 1, &mut net);
+    process_stp_demolish(501, id, 1, Some(Vec3::from_array(position)), &mut net);
     assert!(placed_pieces(&net).is_empty(), "el dueño sí retira la suya");
 }
 
@@ -7382,7 +7388,13 @@ async fn stp_demolish_of_a_piece_without_owner_is_denied_to_everyone() {
         .owner_id = 0;
 
     for requester in [0u16, 1, 2] {
-        process_stp_demolish(600 + requester as u64, id, requester, &mut net);
+        process_stp_demolish(
+            600 + requester as u64,
+            id,
+            requester,
+            Some(Vec3::from_array(position)),
+            &mut net,
+        );
         assert_eq!(
             placed_pieces(&net).len(),
             1,
@@ -7426,13 +7438,91 @@ async fn stp_demolish_of_a_standalone_piece_leaves_pose_cells_alone() {
     ); // free piece: claims nothing
     let free_id = placed_pieces(&net)[1];
 
-    process_stp_demolish(902, free_id, 1, &mut net);
+    process_stp_demolish(902, free_id, 1, Some(Vec3::from_array(position)), &mut net);
 
     assert_eq!(placed_pieces(&net).len(), 1);
     assert!(
         net.occupied_stp_cells
             .contains(&stp_pose_cell(position, 0.0)),
         "the group piece still standing there must keep its cell"
+    );
+}
+
+/// **La ÚLTIMA media regla de construcción, cerrada.** Retirar era la tercera de las tres rutas y
+/// la única que seguía midiendo sólo el dueño: colocar y aportar comprobaban la distancia, demoler
+/// no, así que un cliente modificado retiraba sus propias piezas desde el otro extremo del mundo.
+/// `owner_id` limitaba el daño a lo propio y por eso el agujero era menor, no inexistente.
+///
+/// Va primero el caso legítimo, para que los dos de abajo no puedan pasar por estar todo bloqueado.
+#[tokio::test]
+async fn stp_demolish_by_the_owner_within_reach_is_accepted() {
+    let (mut net, position, id) = a_piece_owned_by_peer_1().await;
+
+    process_stp_demolish(910, id, 1, Some(Vec3::from_array(position)), &mut net);
+
+    assert!(
+        placed_pieces(&net).is_empty(),
+        "el dueño, al lado de su pieza, sí la retira"
+    );
+}
+
+/// El dueño, pero desde fuera de alcance. Se mide contra la pose que el host YA CONOCE
+/// (`authoritative_requester_pos`), nunca contra el paquete: un paquete declara la posición que le
+/// convenga. El tope es `STP_PICKUP_MAX_DISTANCE`, reutilizado a propósito — mismo brazo, misma
+/// pieza, mismo jugador que al aportar material.
+#[tokio::test]
+async fn stp_demolish_from_far_away_is_denied() {
+    let (mut net, position, id) = a_piece_owned_by_peer_1().await;
+
+    let lejos = Vec3::new(
+        position[0] + STP_PICKUP_MAX_DISTANCE + 1.0,
+        position[1],
+        position[2],
+    );
+    process_stp_demolish(911, id, 1, Some(lejos), &mut net);
+    assert_eq!(
+        placed_pieces(&net).len(),
+        1,
+        "ni el dueño retira su pieza desde fuera de alcance"
+    );
+    assert!(
+        net.occupied_stp_cells
+            .contains(&stp_pose_cell(position, 0.0)),
+        "y rechazar no libera la celda de pose: eso dejaría el hueco reclamable a medias"
+    );
+
+    // Y justo dentro del tope sí, para que el test mida el BORDE y no «todo rechazado».
+    let cerca = Vec3::new(
+        position[0] + STP_PICKUP_MAX_DISTANCE - 0.5,
+        position[1],
+        position[2],
+    );
+    process_stp_demolish(912, id, 1, Some(cerca), &mut net);
+    assert!(
+        placed_pieces(&net).is_empty(),
+        "dentro del tope, el dueño sí retira"
+    );
+}
+
+/// Sin pose no se puede medir alcance, así que no se acepta. Diverge a propósito de
+/// `pickup_within_reach`, que ante un hueco de información deja pasar: allí el hueco es una
+/// ventana de milisegundos al entrar; una pieza plantada no se mueve y quien la retira lleva rato
+/// conectado. Misma elección que `process_stp_build_add`.
+#[tokio::test]
+async fn stp_demolish_without_a_known_pose_is_denied() {
+    let (mut net, position, id) = a_piece_owned_by_peer_1().await;
+
+    process_stp_demolish(913, id, 1, None, &mut net);
+
+    assert_eq!(
+        placed_pieces(&net).len(),
+        1,
+        "aceptar sin saber dónde está quien pide deja abierto el agujero que esto cierra"
+    );
+    assert!(
+        net.occupied_stp_cells
+            .contains(&stp_pose_cell(position, 0.0)),
+        "y la celda de pose sigue ocupada"
     );
 }
 
@@ -7612,6 +7702,9 @@ async fn stp_demolish_of_the_bed_clears_the_respawn_point() {
     );
     let bed_id = placed_pieces(&net)[0];
     player.respawn_point = Some(Vec3::from_array(bed_position));
+    // El jugador de pie JUNTO a su cama: desde 2026-09-12 demoler mide el alcance contra la pose,
+    // y `Player::new` nace en el spawn, a cientos de metros de `build_room_centre`.
+    player.position = Vec3::from_array(bed_position);
 
     let action = crate::ipc::PlayerAction {
         action_type: "stp_demolish".into(),
@@ -7669,6 +7762,9 @@ async fn stp_demolish_of_another_bed_keeps_the_respawn_point() {
     );
     let doomed_id = placed_pieces(&net)[0];
     player.respawn_point = Some(Vec3::from_array(live_bed));
+    // Junto a la cama que va a retirar, o el alcance rechaza la petición y este test pasaría por
+    // no haber demolido nada.
+    player.position = Vec3::from_array(doomed_bed);
 
     let action = crate::ipc::PlayerAction {
         action_type: "stp_demolish".into(),
@@ -7696,6 +7792,10 @@ async fn stp_demolish_of_another_bed_keeps_the_respawn_point() {
         player.respawn_point,
         Some(Vec3::from_array(live_bed)),
         "a bed that is not the one the point came from must not clear it"
+    );
+    assert!(
+        placed_pieces(&net).is_empty(),
+        "y la cama SÍ se retiró: si no, el punto se conserva por no haber pasado nada"
     );
 }
 

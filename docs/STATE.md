@@ -28,8 +28,8 @@
 - **ADR-145 aprobado** (`0b662110`); D3/D7 ya en tronco vía `2eab4fc7` (carrera de índice, verificado). Falta TODO Unity: D1/D2/D4/D5/D6.
 
 ## Riesgos abiertos
-- **Autoridad del servidor: los tres agujeros CERRADOS** (`78e156e6` dueño al demoler; `ebb42911`/`bb3c7e5c` cantidad y posición contra el
-  roster; aportar material exige dueño y alcance, 5 tests). Queda UNA línea: `process_stp_demolish` valida dueño pero no distancia.
+- **Autoridad del servidor CERRADA, también la última línea** (12-09): dueño al demoler (`78e156e6`), cantidad y posición contra el roster
+  (`ebb42911`/`bb3c7e5c`), y ya las TRES rutas de construcción miden alcance y rechazan sin pose (`STP_PICKUP_MAX_DISTANCE`, 8 tests).
 - **Espejos C#↔Rust sin oráculo.** Sin `the_identity_mirror_golden_values` (B4-b), `Wg3Identity.cs` queda verde sin nada que lo
   contraste; igual el hash de `ChunkLootRoll` y los goldens de `scale`/`density`. Un oráculo JSON común es una sesión: **B5**.
 - **Steam (ADR-135 enm. 2) VERIFICADO el 09-09 con redes y cuentas distintas: el criterio físico ya se cumple.** Sin probar el relay propio

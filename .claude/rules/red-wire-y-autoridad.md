@@ -47,9 +47,14 @@ comparación con él es falsa— y sin log que lo explique después.
 Territorio: `owner_id` en la pieza + `requester_id` de la cabecera del paquete. `owner_id == 0` no
 lo demuele nadie, y es decisión de Joel, no un efecto del código.
 
-**Agujero ABIERTO a 2026-09-05:** `process_stp_build_add` (`game_loop.rs:7297`) no mira `owner_id`
-ni distancia, y `process_stp_demolish` valida dueño pero **no** distancia. Si tocas construcción,
-esto es lo primero.
+**CERRADO a 2026-09-12: las tres rutas de construcción aplican la misma regla.** Colocar, aportar
+material (`process_stp_build_add`) y retirar (`process_stp_demolish`) comprueban `owner_id`,
+rechazan sin pose (`reason=unknown_pose`) y miden el alcance con `pickup_within_reach` contra
+`STP_PICKUP_MAX_DISTANCE`, reutilizado a propósito en las tres: mismo brazo, misma pieza, mismo
+jugador. La demolición fue la última en cerrarse, y su agujero era menor pero real — `owner_id`
+limitaba el daño a lo propio, y aun así un cliente modificado retiraba sus piezas desde el otro
+extremo del mundo. Si añades un cuarto verbo de construcción, copia el patrón entero: dedup, pose,
+dueño, alcance, en ese orden.
 
 ## 5. Toda lista nueva en la cabecera de un chunk necesita paginarse
 

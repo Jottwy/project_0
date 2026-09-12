@@ -3827,7 +3827,9 @@ async fn handle_network_event(
             requester_id,
         } => {
             if net.is_host {
-                process_stp_demolish(demolish_id, building_id, requester_id, net);
+                // La pose contra la que se mide el alcance sale del roster, nunca del paquete.
+                let requester_pos = authoritative_requester_pos(net, player.position, requester_id);
+                process_stp_demolish(demolish_id, building_id, requester_id, requester_pos, net);
                 sync::broadcast_stp_buildings(net).await;
             }
         }
@@ -6305,8 +6307,14 @@ async fn handle_action(
                 // El host demoliendo desde SU propio cliente: el que pide es el jugador local, y su
                 // identidad la pone el backend, no el mensaje. Es la misma regla que en la ruta de
                 // peer —el dueño se toma de la cabecera— aplicada al único caso en el que no hay
-                // cabecera que leer.
-                process_stp_demolish(demolish_id, building_id, net.local_id, net);
+                // cabecera que leer. Y su pose la que este backend ya simula, sin pasar por la red.
+                process_stp_demolish(
+                    demolish_id,
+                    building_id,
+                    net.local_id,
+                    Some(player.position),
+                    net,
+                );
                 sync::broadcast_stp_buildings(net).await;
             } else {
                 let payload = crate::network::protocol::PacketPayload::StpDemolishRequest {
@@ -7983,10 +7991,21 @@ fn process_stp_build_add(
 ///
 /// Deduped by the client-generated `demolish_id`, mirroring `process_stp_place` /
 /// `process_stp_build_add`.
+///
+/// **La tercera puerta de construcción, cerrada del todo (2026-09-12).** El dueño ya se
+/// comprobaba; el ALCANCE no, y era la última de las tres rutas de construcción que aplicaba
+/// media regla: colocar y aportar medían la distancia y retirar no, así que un cliente modificado
+/// retiraba sus propias piezas desde el otro extremo del mundo. `owner_id` limitaba el daño a lo
+/// propio, pero la regla que las tres rutas declaran es la misma y ahora las tres la aplican.
+///
+/// El tope se REUTILIZA (`STP_PICKUP_MAX_DISTANCE`, 8 m) en vez de inventar uno de demolición, con
+/// el mismo argumento que usó `process_stp_build_add`: es el mismo brazo del mismo jugador sobre
+/// la misma pieza, y un número propio sería otro valor que mantener sin nada que lo distinga.
 fn process_stp_demolish(
     demolish_id: u64,
     building_id: u32,
     requester_id: u16,
+    requester_pos: Option<Vec3>,
     net: &mut NetworkManager,
 ) {
     if demolish_id != 0 && !net.processed_stp_demolishes.insert(demolish_id) {
@@ -7996,6 +8015,18 @@ fn process_stp_demolish(
         );
         return;
     }
+
+    // La pose es OBLIGATORIA, misma elección que en `process_stp_build_add` y al revés que en la
+    // recogida: allí el hueco de información es una ventana de milisegundos al entrar y dejar
+    // pasar es lo razonable, pero una pieza plantada no se mueve y quien la retira lleva rato
+    // conectado. Aceptar sin saber dónde está el que pide deja abierto justo este agujero.
+    let Some(requester_pos) = requester_pos else {
+        info!(
+            "MPTRACE step=BD event=stp_demolish_denied building_id={} demolish_id={} requester_id={} reason=unknown_pose ignored=true",
+            building_id, demolish_id, requester_id
+        );
+        return;
+    };
 
     let index = match net.stp_buildings.iter().position(|b| b.id == building_id) {
         Some(i) => i,
@@ -8025,6 +8056,17 @@ fn process_stp_demolish(
         info!(
             "MPTRACE step=BD event=stp_demolish_denied building_id={} demolish_id={} owner_id={} requester_id={} ignored=true",
             building_id, demolish_id, owner_id, requester_id
+        );
+        return;
+    }
+
+    // ALCANCE, contra la pose del roster y nunca contra el paquete. Va DESPUÉS del dueño a
+    // propósito, igual que en `process_stp_build_add`: el motivo más informativo para quien lee el
+    // log es el de territorio, y medir distancia contra la pieza de otro no dice nada útil.
+    if !pickup_within_reach(Some(requester_pos), net.stp_buildings[index].position) {
+        info!(
+            "MPTRACE step=BD event=stp_demolish_denied building_id={} demolish_id={} requester_id={} reason=too_far max={:.2} ignored=true",
+            building_id, demolish_id, requester_id, STP_PICKUP_MAX_DISTANCE
         );
         return;
     }
