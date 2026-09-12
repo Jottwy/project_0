@@ -1225,6 +1225,50 @@ pub fn pose_pair_phase(src: PeerId, dest: PeerId) -> u64 {
     ((src as u64).wrapping_mul(0x9E37_79B9)).wrapping_add(dest as u64) % POSE_RELAY_HZ
 }
 
+/// ADR-074 enm. 4 — presupuesto de SUBIDA del anfitrión dedicado a poses, en KB/s. Se reparte a
+/// partes iguales entre los destinatarios reales de la ronda: con más gente, cada uno recibe
+/// menos cadencia de los que tiene lejos. Tres cuartos de los 256 KB/s que el arnés usa de techo;
+/// el resto queda para rosters, chunks y voz.
+pub const HOST_POSE_BUDGET_KB_S: f32 = 192.0;
+
+/// Bytes por pose con los que se convierte el presupuesto a poses/s: la pose delgada de ADR-144
+/// (23 B) más la parte proporcional de las completas y del sobre del lote.
+pub const POSE_WIRE_BYTES_EST: f32 = 26.0;
+
+/// Dentro de esta distancia el aforo NO recorta: un tiroteo cuerpo a cuerpo en una sala llena
+/// sigue a la cadencia de la curva. Es lo que Joel pidió: «si están a 2 metros de ti se vean a
+/// 30 Hz».
+pub const POSE_BUDGET_NEAR_EXEMPT_M: f32 = 3.0;
+
+/// Cuánto puede moverse el factor de aforo de un destinatario por ronda. 0,05 por ronda a 30 Hz
+/// es pasar de 1 a 0,25 en medio segundo: rápido para que un pico no reviente el cable, lento
+/// para que no se vea como un escalón.
+pub const POSE_BUDGET_FACTOR_STEP: f32 = 0.05;
+
+/// ADR-074 enm. 4 — factor de aforo objetivo de un destinatario: 1 si lo que sus orígenes piden
+/// (suma de Hz de la curva) cabe en su parte del presupuesto, y la proporción si no. Pura.
+pub fn budget_factor_target(demand_hz: f32, share_hz: f32) -> f32 {
+    if demand_hz <= 0.0 || demand_hz <= share_hz {
+        1.0
+    } else {
+        (share_hz / demand_hz).clamp(0.0, 1.0)
+    }
+}
+
+/// ADR-074 enm. 4 — cadencia FINAL de un par: la curva por distancia, recortada por el aforo del
+/// destinatario salvo a bocajarro, y a la mitad si el origen queda a la espalda. Nunca por debajo
+/// del suelo. Pura: distancia, aforo y ángulo; jamás qué es la fuente (ADR-074 decisión 1).
+pub fn pose_pair_hz(dist_m: f32, budget_factor: f32, behind: bool) -> u64 {
+    let mut hz = pose_hz(dist_m);
+    if dist_m > POSE_BUDGET_NEAR_EXEMPT_M {
+        hz = (hz as f32 * budget_factor.clamp(0.0, 1.0)).round() as u64;
+    }
+    if behind {
+        hz /= 2;
+    }
+    hz.clamp(POSE_HZ_FLOOR, POSE_RELAY_HZ)
+}
+
 /// Lado de la casilla del índice espacial del relay, en metros.
 ///
 /// **Es el radio de SALIDA, no el de entrada, y la diferencia no es cosmética.** La histéresis del
@@ -1342,7 +1386,7 @@ pub fn half_cadence_round(src: PeerId, dest: PeerId, round: u64) -> bool {
 /// y ésta no. Un flick de ratón son 200 ms para 180°, y el anfitrión no se entera hasta que le llega
 /// tu input.
 ///
-/// # Lo que falta ANTES de bajarlo de 180
+/// # Lo que faltaba ANTES de bajarlo de 180 — CERRADO por ADR-074 enm. 3 D4 (retardo por peer)
 ///
 /// El búfer de interpolación del cliente (`RemotePlayerManager`) mide el ritmo de llegada **global,
 /// no por proxy**, y su propio suelo no puede bajar del intervalo de envío o se seca entre muestras
@@ -1350,7 +1394,7 @@ pub fn half_cadence_round(src: PeerId, dest: PeerId, round: u64) -> bool {
 /// entre medias y los de 15 caen por debajo de su suelo. Eso ya pasa hoy con el anillo exterior;
 /// encender esto lo haría pasar CERCA, que es donde se nota. El retardo tiene que ser por peer
 /// primero.
-pub const POSE_CONE_HALF_ANGLE_DEG: f32 = 180.0;
+pub const POSE_CONE_HALF_ANGLE_DEG: f32 = 100.0;
 
 /// Margen de histéresis del cono, en grados: se entra a `POSE_CONE_HALF_ANGLE_DEG` y no se sale
 /// hasta ese ángulo más este margen.
@@ -1756,6 +1800,36 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager, mut pvs: Option<PvsC
         }
     }
 
+    // ADR-074 enm. 4 — el aforo de cada destinatario, con lo que se sabía la ronda anterior: la
+    // demanda es la suma de Hz de la curva sobre sus pares vivos en el AOI, y su parte del
+    // presupuesto es la del anfitrión entre los destinatarios reales. El factor se mueve despacio
+    // hacia el objetivo. Se calcula ANTES del bucle de pares porque la cadencia de cada par depende
+    // de él, y sobre `aoi_pose_pairs` (la ronda anterior) porque los pares de ésta aún no existen.
+    let src_pos_by_id: std::collections::HashMap<PeerId, [f32; 3]> = poses.iter().copied().collect();
+    let mut demand_hz: std::collections::HashMap<PeerId, f32> =
+        std::collections::HashMap::with_capacity(dest_ids.len());
+    for (src, dest) in &net.aoi_pose_pairs {
+        if let (Some(sp), Some(dp)) = (src_pos_by_id.get(src), dest_pos.get(dest)) {
+            *demand_hz.entry(*dest).or_insert(0.0) += pose_hz(distance_sq(*sp, *dp).sqrt()) as f32;
+        }
+    }
+    let share_hz = HOST_POSE_BUDGET_KB_S * 1024.0 / POSE_WIRE_BYTES_EST / dest_ids.len().max(1) as f32;
+    let mut budget_factor: std::collections::HashMap<PeerId, f32> =
+        std::collections::HashMap::with_capacity(dest_ids.len());
+    let mut budget_min = 1.0f32;
+    for &dest_id in &dest_ids {
+        let target = budget_factor_target(demand_hz.get(&dest_id).copied().unwrap_or(0.0), share_hz);
+        let prev = net.pose_budget_factor.get(&dest_id).copied().unwrap_or(1.0);
+        let next = if target > prev {
+            (prev + POSE_BUDGET_FACTOR_STEP).min(target)
+        } else {
+            (prev - POSE_BUDGET_FACTOR_STEP).max(target)
+        };
+        budget_min = budget_min.min(next);
+        budget_factor.insert(dest_id, next);
+    }
+    net.pose_budget_factor = budget_factor;
+
     for (src_id, src_pos) in &poses {
         // Sólo la casilla propia y las ocho de alrededor: cualquier destino fuera de esas nueve
         // está más lejos que el radio de SALIDA y el filtro lo iba a rechazar seguro, así que ni se
@@ -1802,9 +1876,10 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager, mut pvs: Option<PvsC
             //
             // Comparte escalonado con el anillo exterior (`half_cadence_round`) a propósito: una
             // fuente lejana Y a la espalda se queda en media cadencia, no en un cuarto.
-            let mut due =
-                aoi_pose_due_this_round(*src_pos, *dpos, *src_id, dest_id, net.pose_relay_round);
-            if POSE_CONE_ENABLED && due {
+            // ADR-074 enm. 4: la cadencia final del par sale de la distancia (enm. 3), del aforo del
+            // destinatario y de si el origen le queda a la espalda; `due_at_hz` la reparte en rondas.
+            let mut behind = false;
+            if POSE_CONE_ENABLED {
                 let was_inside = net.pose_cone_pairs.contains(&(*src_id, dest_id));
                 let yaw = dest_yaw.get(&dest_id).copied().unwrap_or(0.0);
                 let inside = pose_in_attention_cone(
@@ -1816,10 +1891,15 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager, mut pvs: Option<PvsC
                 );
                 if inside {
                     next_cone.insert((*src_id, dest_id));
-                } else {
-                    due = half_cadence_round(*src_id, dest_id, net.pose_relay_round);
                 }
+                behind = !inside;
             }
+            let hz = pose_pair_hz(
+                distance_sq(*src_pos, *dpos).sqrt(),
+                net.pose_budget_factor.get(&dest_id).copied().unwrap_or(1.0),
+                behind,
+            );
+            let due = due_at_hz(net.pose_relay_round, hz, pose_pair_phase(*src_id, dest_id));
             if due {
                 // Candidato, todavía no emisión: el tope por destinatario se aplica más abajo,
                 // cuando la bolsa de cada uno esté entera. Igual que la cadencia, el recorte vive
@@ -2002,7 +2082,7 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager, mut pvs: Option<PvsC
         // pose), y su cociente es el ahorro real de la partida — no una estimación de sonda.
         let without_aoi = p * d - d.min(p);
         info!(
-            "MPTRACE step=R15 event=peer_pose_relay self_id={} peer_count={} real_dest_count={} relay_datagrams_per_call={} approx_per_sec={} without_aoi={} in_aoi={} aoi_radius_m={:.0} floor_hz={} max_fan_in={} cap_hits={} fidelity_cap={}",
+            "MPTRACE step=R15 event=peer_pose_relay self_id={} peer_count={} real_dest_count={} relay_datagrams_per_call={} approx_per_sec={} without_aoi={} in_aoi={} aoi_radius_m={:.0} floor_hz={} budget_min={:.2} max_fan_in={} cap_hits={} fidelity_cap={}",
             net.local_id,
             p,
             d,
@@ -2014,6 +2094,7 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager, mut pvs: Option<PvsC
             net.aoi_pose_pairs.len(),
             AOI_POSE_RADIUS_M,
             POSE_HZ_FLOOR,
+            budget_min,
             // El número que hace falta para bajar el tope con datos: cuánto recibe en una ronda el
             // destinatario que más recibe, y cuántos destinatarios llegaron a tocar el tope. Con
             // `cap_hits=0` en un playtest, el recorte no está haciendo nada y el techo de la sala
@@ -3237,6 +3318,32 @@ mod chunk_broadcast_tests {
         assert_ne!(pose_pair_phase(1, 2), pose_pair_phase(2, 1));
     }
 
+    /// ADR-074 enm. 4 — el aforo: 1 mientras la demanda cabe, y la proporción cuando no.
+    #[test]
+    fn the_budget_factor_is_one_until_demand_exceeds_the_share() {
+        assert_eq!(budget_factor_target(0.0, 100.0), 1.0);
+        assert_eq!(budget_factor_target(100.0, 100.0), 1.0);
+        assert_eq!(budget_factor_target(50.0, 100.0), 1.0);
+        assert!((budget_factor_target(400.0, 100.0) - 0.25).abs() < 1e-6);
+        assert_eq!(budget_factor_target(400.0, 0.0), 0.0);
+    }
+
+    /// ADR-074 enm. 4 — la cadencia final: a bocajarro el aforo no recorta; lejos recorta en
+    /// proporción; a la espalda va a la mitad; y nunca baja del suelo ni sube de la base.
+    #[test]
+    fn the_pair_cadence_exempts_arms_length_and_never_drops_below_the_floor() {
+        assert_eq!(pose_pair_hz(1.0, 0.1, false), pose_hz(1.0), "pegado: el aforo no toca");
+        assert_eq!(pose_pair_hz(20.0, 1.0, false), pose_hz(20.0), "sin aforo: la curva");
+        assert_eq!(pose_pair_hz(20.0, 0.5, false), (pose_hz(20.0) as f32 * 0.5).round() as u64);
+        assert_eq!(pose_pair_hz(20.0, 1.0, true), pose_hz(20.0) / 2, "a la espalda: la mitad");
+        assert_eq!(pose_pair_hz(20.0, 0.01, true), POSE_HZ_FLOOR, "el suelo manda");
+        assert_eq!(pose_pair_hz(0.0, 1.0, true), POSE_RELAY_HZ / 2);
+        for m in 0..=120 {
+            let hz = pose_pair_hz(m as f32, 0.3, m % 2 == 0);
+            assert!((POSE_HZ_FLOOR..=POSE_RELAY_HZ).contains(&hz), "a {m} m: {hz}");
+        }
+    }
+
     /// Y el invariante que la enmienda añade: la cadencia tampoco puede depender de QUÉ es la
     /// fuente. Un fantasma y un jugador a la misma distancia emiten en las mismas rondas — si
     /// alguien exceptuara a la IA "para que su acecho se vea fluido", moverse suave a 80 m sería
@@ -3855,21 +3962,20 @@ mod attention_cone_tests {
     }
 
     #[test]
-    fn the_cone_ships_disabled() {
-        // Entra apagado a propósito: el búfer de interpolación del cliente mide el ritmo GLOBAL y
-        // no por peer, y hasta que eso cambie mezclar 30 y 15 Hz CERCA produciría tirones. Ver el
-        // doc de `POSE_CONE_HALF_ANGLE_DEG`.
-        // `const` porque el valor se conoce al compilar y clippy exige que se diga: así el fallo
-        // llega al compilar, no al correr los tests, que para una puerta de este tipo es mejor.
+    fn the_cone_is_on_now_that_the_client_delays_per_peer() {
+        // Entró apagado porque el búfer de interpolación del cliente medía el ritmo GLOBAL y no por
+        // peer. ADR-074 enm. 3 D4 (`RemotePlayerManager.PushSample` / `PerPeerDelayTarget`,
+        // commit d5b94586) cerró ese prerrequisito, y la enmienda 4 lo enciende: lo que queda a la
+        // espalda va a la mitad de la cadencia que le tocaría por distancia y aforo.
         const {
             assert!(
-                !POSE_CONE_ENABLED,
-                "el cono no puede encenderse sin el retardo de interpolación por peer en Unity"
+                POSE_CONE_ENABLED,
+                "el cono está encendido desde ADR-074 enm. 4; apagarlo es decisión, no accidente"
             )
         };
         assert_eq!(
-            POSE_CONE_HALF_ANGLE_DEG, 180.0,
-            "180° = todo cuenta como delante = ni un byte de diferencia con hoy"
+            POSE_CONE_HALF_ANGLE_DEG, 100.0,
+            "200° de campo «delante» con 20° de histéresis: girar 90° no cambia la cadencia"
         );
     }
 }
