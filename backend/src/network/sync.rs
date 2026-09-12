@@ -28,13 +28,18 @@ use super::PeerId;
 
 // â”€â”€â”€ Conversion: game types â†’ sync types â”€â”€â”€
 
-/// Cuántas poses caben en un datagrama. Una `PoseWire` completa mide ≤46 B y una delgada ≤24
-/// (ADR-144, atado por test), y el techo de gameplay son 1200 B (ADR-113): 24 completas son
-/// ~1100 B con el sobre, y en la práctica casi todas van delgadas.
+/// Cuántas poses caben en un datagrama. El techo de gameplay son 1200 B (ADR-113) y la cuenta se
+/// hace con la pose en su PEOR forma, no con la típica: completa, con la velocidad de ADR-146 y
+/// cosméticos con ids hash de 5 B mide **81 B**, y el sobre del lote 56. 14 × 81 + 56 = 1190 B.
+///
+/// Hasta ADR-146 esto valía 24 con la cuenta hecha sobre una completa típica (46 B), y 24 en su
+/// peor forma ya eran ~1800 B: la primera ronda en la que 24 orígenes entraban juntos en el AOI
+/// de alguien —todos en completa— salía un lote que `send_datagram` rechazaba entero. Lo fija
+/// `pose_batch_size_tests`.
 ///
 /// Se trocea por CUENTA y no midiendo el serializado porque el tamaño de una pose es acotado y
 /// conocido: `animation` es un byte desde ADR-143.
-const MAX_POSES_PER_BATCH: usize = 24;
+const MAX_POSES_PER_BATCH: usize = 14;
 
 /// ADR-144 D3 — cada cuántas rondas va la pose completa aunque los cosméticos no hayan cambiado:
 /// la reparación contra el datagrama perdido que llevaba el cambio. 30 rondas = 1 s a 30 Hz.
@@ -1229,8 +1234,10 @@ pub fn pose_pair_phase(src: PeerId, dest: PeerId) -> u64 {
 pub const HOST_POSE_BUDGET_KB_S: f32 = 192.0;
 
 /// Bytes por pose con los que se convierte el presupuesto a poses/s: la pose delgada de ADR-144
-/// (23 B) más la parte proporcional de las completas y del sobre del lote.
-pub const POSE_WIRE_BYTES_EST: f32 = 26.0;
+/// (23 B) más la velocidad de ADR-146 D1 (~8 B en marcha) más la parte proporcional de las
+/// completas y del sobre del lote. Si baja de lo real, el aforo reparte más cadencia de la que
+/// cabe en `HOST_POSE_BUDGET_KB_S`, en silencio.
+pub const POSE_WIRE_BYTES_EST: f32 = 34.0;
 
 /// Dentro de esta distancia el aforo NO recorta: un tiroteo cuerpo a cuerpo en una sala llena
 /// sigue a la cadencia de la curva. Es lo que Joel pidió: «si están a 2 metros de ti se vean a
@@ -1991,6 +1998,8 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager, mut pvs: Option<PvsC
             fire_seq: p.fire_seq,
             melee_seq: p.melee_seq,
             vocal_seq: p.vocal_seq,
+            // ADR-146: a cero hasta que el estimador por origen exista (commit 2).
+            vel_cms: [0; 3],
             cosmetics: None,
         };
         let src_position = p.position;
@@ -5337,6 +5346,71 @@ mod uplink_probe {
             "Cómo leerlo: el porcentaje es cuánto del relay SOBREVIVE al filtro; 100 % = no ahorra \
              nada. El radio se elige por DISEÑO (el acecho del robapieles necesita verse de lejos, \
              ADR-074 decisión 1), y esta tabla dice lo que cuesta esa elección — no al revés."
+        );
+    }
+}
+
+/// ADR-146 D1 — el lote se trocea por CUENTA (`MAX_POSES_PER_BATCH`), así que esa cuenta tiene que
+/// caber en el techo de datagrama con TODAS las poses en su peor forma: completas, con velocidad y
+/// cosméticos en todo su rango. Si alguien añade un campo a `PoseWire`, esto se pone rojo antes de
+/// que `send_datagram` empiece a rechazar lotes enteros en partida, en silencio para el receptor.
+#[cfg(test)]
+mod pose_batch_size_tests {
+    use super::*;
+    use crate::network::protocol::{
+        encode_packet, PacketHeader, PacketType, PoseAnim, PoseCosmetics, SAFE_DATAGRAM_BYTES,
+    };
+
+    fn worst_pose() -> PoseWire {
+        PoseWire {
+            pos_cm: [i16::MIN, i16::MAX, i16::MIN],
+            yaw_u16: u16::MAX,
+            pitch: i8::MIN,
+            animation: PoseAnim::PICKUP,
+            flags: u8::MAX,
+            buttons: u16::MAX,
+            hit_seq: u8::MAX,
+            fire_seq: u8::MAX,
+            melee_seq: u8::MAX,
+            vocal_seq: u8::MAX,
+            vel_cms: [i16::MIN, i16::MAX, i16::MIN],
+            cosmetics: Some(PoseCosmetics {
+                equipment: [i32::MIN; 4],
+                held_item: i32::MIN,
+                carry_def: i32::MIN,
+                carry_count: u8::MAX,
+                species: u8::MAX,
+                vocal_kind: u8::MAX,
+            }),
+        }
+    }
+
+    fn encoded_batch_bytes(count: usize) -> usize {
+        let payload = PacketPayload::PlayerUpdateBatch {
+            origin_cm: [i32::MIN, i32::MAX, i32::MIN],
+            senders: vec![u16::MAX; count],
+            updates: vec![worst_pose(); count],
+        };
+        let header = PacketHeader::new(
+            PacketType::PlayerUpdateBatch as u16,
+            u16::MAX,
+            u32::MAX,
+            u32::MAX,
+        );
+        encode_packet(&header, &payload).len()
+    }
+
+    #[test]
+    fn a_full_batch_of_worst_case_poses_fits_the_datagram_ceiling() {
+        let bytes = encoded_batch_bytes(MAX_POSES_PER_BATCH);
+        let per_pose = encoded_batch_bytes(2) - encoded_batch_bytes(1);
+        println!(
+            "lote de {MAX_POSES_PER_BATCH} poses en su peor forma: {bytes} B \
+             ({per_pose} B por pose, techo {SAFE_DATAGRAM_BYTES})"
+        );
+        assert!(
+            bytes <= SAFE_DATAGRAM_BYTES,
+            "{MAX_POSES_PER_BATCH} poses = {bytes} B > {SAFE_DATAGRAM_BYTES}"
         );
     }
 }

@@ -644,6 +644,10 @@ pub struct PoseWire {
     pub fire_seq: u8,
     pub melee_seq: u8,
     pub vocal_seq: u8,
+    /// ADR-146 D1 — velocidad del origen en cm/s, estimada por el ANFITRIÓN a partir de sus
+    /// posiciones (nunca de qué es la fuente). El receptor extrapola con ella entre tramos. `i16`
+    /// llega a ±327 m/s y satura: el estimador ya lleva tope, esto sólo evita la vuelta.
+    pub vel_cms: [i16; 3],
     pub cosmetics: Option<PoseCosmetics>,
 }
 
@@ -688,6 +692,24 @@ impl PoseWire {
 
     pub fn dequantize_yaw(yaw_u16: u16) -> f32 {
         yaw_u16 as f32 / 65536.0 * 360.0
+    }
+
+    /// ADR-146 D1 — m/s → cm/s, saturando en vez de dar la vuelta.
+    pub fn quantize_vel(vel_m_s: [f32; 3]) -> [i16; 3] {
+        let mut out = [0i16; 3];
+        for i in 0..3 {
+            let cm = (vel_m_s[i] * 100.0).round() as i64;
+            out[i] = cm.clamp(i16::MIN as i64, i16::MAX as i64) as i16;
+        }
+        out
+    }
+
+    pub fn dequantize_vel(vel_cms: [i16; 3]) -> [f32; 3] {
+        [
+            vel_cms[0] as f32 / 100.0,
+            vel_cms[1] as f32 / 100.0,
+            vel_cms[2] as f32 / 100.0,
+        ]
     }
 
     /// Reconstruye el `PlayerUpdate` de siempre a partir de la pose del lote. Si la pose es
@@ -1926,11 +1948,21 @@ mod tests {
             fire_seq: 9,
             melee_seq: 4,
             vocal_seq: 6,
+            // ADR-146 D1: tres ejes distintos y no-default, uno por encima de 127 y otro negativo,
+            // para que un campo mal colocado o un eje cruzado no pase con ceros.
+            vel_cms: PoseWire::quantize_vel([-3.0, 0.12, 4.57]),
             cosmetics: Some(cosmetics),
         };
         let bytes = rmp_serde::to_vec(&full).unwrap();
         let back: PoseWire = rmp_serde::from_slice(&bytes).unwrap();
         assert_eq!(back, full);
+        assert_eq!(back.vel_cms, [-300, 12, 457]);
+        let vel = PoseWire::dequantize_vel(back.vel_cms);
+        assert!(
+            (vel[0] + 3.0).abs() < 1e-4
+                && (vel[1] - 0.12).abs() < 1e-4
+                && (vel[2] - 4.57).abs() < 1e-4
+        );
 
         let PacketPayload::PlayerUpdate {
             position,
@@ -2002,6 +2034,8 @@ mod tests {
 
     /// ADR-144 — los tamaños que justifican el ADR, atados a un test para que no se degraden en
     /// silencio: delgada ≤ 24 B, completa ≤ 46 B, contra los 72 del `PlayerUpdate`.
+    /// ADR-146 D1 — la velocidad suma ~8 B en marcha (tres `i16` por encima de 127): delgada ≤ 34 B
+    /// y completa ≤ 56 B. `POSE_WIRE_BYTES_EST` y `MAX_POSES_PER_BATCH` (sync.rs) cuelgan de esto.
     #[test]
     fn pose_wire_sizes_stay_within_the_adr_budget() {
         let wire = PoseWire {
@@ -2015,6 +2049,8 @@ mod tests {
             fire_seq: 9,
             melee_seq: 4,
             vocal_seq: 6,
+            // Peor caso realista: los tres ejes fuera del fixint de un byte.
+            vel_cms: [729, -300, 250],
             cosmetics: None,
         };
         let thin = rmp_serde::to_vec(&wire).unwrap().len();
@@ -2032,8 +2068,8 @@ mod tests {
         .unwrap()
         .len();
         println!("PoseWire: delgada={thin} B  completa={full} B");
-        assert!(thin <= 24, "delgada={thin} B");
-        assert!(full <= 46, "completa={full} B");
+        assert!(thin <= 34, "delgada={thin} B");
+        assert!(full <= 56, "completa={full} B");
     }
 
     /// ADR-144 D2 — la cuantización satura en vez de dar la vuelta, y el yaw cierra el círculo.
