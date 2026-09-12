@@ -942,3 +942,15 @@ fase 2** (enm. 5): los cinco rosters P2P (`StpItemList`, `StpBuildingList`, `Stp
 Cada peer recibe sólo las 5×5 celdas alrededor de su posición. Sólo P2P: el IPC con Unity no
 cambia. El número se bumpeó en la segunda entrega; la primera cambió el formato sin moverlo.
 `WireSchema.Expected` a 66 en el mismo commit.
+
+## v67 — ADR-146: la pose del relay lleva la velocidad (tramos) (2026-09-12)
+
+**Qué lleva.** `PoseWire` gana `vel_cms: [i16; 3]` (cm/s, saturando) antes de `cosmetics`, en
+`PlayerUpdateBatch`. El anfitrión la estima por ORIGEN a partir de sus posiciones; el backend del
+joiner guarda la base del tramo al abrir el lote y extrapola `peer.position` en cada tick, con tope
+de 1,5 s. Con el gate de tramos encendido (`TRAMO_GATE_ENABLED`, entra apagado) el anfitrión omite
+la pose que el último tramo ya predice. Pose delgada 23 → 33 B; `MAX_POSES_PER_BATCH` 24 → 14.
+
+**Sólo P2P**: el IPC con Unity no cambia (`world_state` sigue llevando `position`, ya extrapolada).
+El formato cambió en `f9a7814e` sin mover el número, como hizo ADR-144; se movió después.
+`WireSchema.Expected` a 67 en el mismo commit.
