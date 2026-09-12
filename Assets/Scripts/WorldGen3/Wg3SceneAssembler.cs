@@ -368,7 +368,8 @@ namespace BackroomsSurvival.WorldGen3
             Wg3StoreyLayers.Apply(renderer,
                 Wg3StoreyLayers.ForSurface(segment.FloorY, segment.Height));
 
-            AddColliders(go, volumes, origin);
+            // R5 — el sonido del paso, por el mismo papel que ya viste la superficie.
+            AddColliders(go, volumes, origin, Wg3StyleSurfaces.FloorFor(segment.style));
 
             if (addLight) AddSegmentLights(go, segment, lampMaterial, hum, worldSeed, cadence);
 
@@ -1586,7 +1587,16 @@ namespace BackroomsSurvival.WorldGen3
             return renderers;
         }
 
-        private static void AddColliders(GameObject root, List<Wg3Volume> volumes, Vector3 origin)
+        /// <summary>Los volúmenes que un jugador PISA, y por eso los únicos que reciben
+        /// <paramref name="floorMaterial"/> en <see cref="AddColliders"/> — R5. Una pared o un techo
+        /// con el mismo <c>PhysicsMaterial</c> que el suelo no cambia nada audible (nadie choca de
+        /// lado contra un collider lo bastante despacio para que suene) y sí complica leer qué
+        /// superficie es cada una en el inspector.</summary>
+        private static bool IsWalkable(Wg3VolumeKind kind) =>
+            kind == Wg3VolumeKind.Floor || kind == Wg3VolumeKind.Step;
+
+        private static void AddColliders(GameObject root, List<Wg3Volume> volumes, Vector3 origin,
+            PhysicsMaterial floorMaterial = null)
         {
             for (int v = 0; v < volumes.Count; v++)
             {
@@ -1594,6 +1604,8 @@ namespace BackroomsSurvival.WorldGen3
                 if (!vol.IsSolid) continue;
                 // ADR-125 — los prismas llevan collider de malla, que pone `AssembleSolid`.
                 if (vol.shape != Wg3Shape.Box) continue;
+
+                bool walkable = floorMaterial != null && IsWalkable(vol.kind);
 
                 float yaw = Mathf.Repeat(vol.yawDegrees, 90f);
                 bool axisAligned = yaw < YawEpsilon || yaw > 90f - YawEpsilon;
@@ -1606,6 +1618,7 @@ namespace BackroomsSurvival.WorldGen3
                     bool swapped = Mathf.Repeat(vol.yawDegrees, 180f) > 45f;
                     box.center = vol.center - origin;
                     box.size = swapped ? new Vector3(vol.size.z, vol.size.y, vol.size.x) : vol.size;
+                    if (walkable) box.sharedMaterial = floorMaterial;
                 }
                 else
                 {
@@ -1613,7 +1626,9 @@ namespace BackroomsSurvival.WorldGen3
                     child.transform.SetParent(root.transform, false);
                     child.transform.localPosition = vol.center - origin;
                     child.transform.localRotation = Quaternion.Euler(0f, vol.yawDegrees, 0f);
-                    child.AddComponent<BoxCollider>().size = vol.size;
+                    var box = child.AddComponent<BoxCollider>();
+                    box.size = vol.size;
+                    if (walkable) box.sharedMaterial = floorMaterial;
                 }
             }
         }
