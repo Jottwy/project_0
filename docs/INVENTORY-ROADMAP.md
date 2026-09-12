@@ -54,8 +54,11 @@ rejilla de casillas autorada **sobre ese render**.
 Sin chaqueta no hay esos cuatro bolsillos. Prendas y mochilas son la misma regla: **un objeto que se lleva puesto y
 contiene objetos**. Encaja con la escasez del loot y hace de la ropa botín. Ejemplos de maqueta: chaqueta 4, chaleco 2,
 riñonera 2, cargo 4, vaqueros 2, bota 1 (la caña); gorra, mascarilla, guantes y polo, ninguno.
-- **El cinturón no da bolsillos: da funda.** Sin cinturón la funda tiene 2 huecos; con él, 4. Crece en la barra fija
-  de abajo, no en el centro. Ocupa el slot de cintura (compite con la riñonera).
+- **La funda sale del equipo** (sustituye a «2 de base + 2 con cinturón», 2026-09-13): desnudo 0; trabilla del
+  pantalón (cargo, de trabajo) +1; cinturón de herramientas +2 (sin bolsillos, ocupa la cintura y compite con la
+  riñonera); chaleco o arnés +2; anilla lateral de la mochila de montaña +1, **solo herramientas largas y desenfundado
+  lento**. Tope 6 (teclas 1–6). Cada hueco muestra de qué prenda sale; lo que cuelga se va con la prenda (D5). Crece en la
+  barra fija de abajo, no en el centro.
 - Hoy la ropa son 4 slots cosméticos (ADR-022, `equipment:[i32;4]` en la pose). Los slots nuevos (cara, encima,
   manos, espalda, cintura) son **enmienda a ADR-022 y bump de wire**.
 
@@ -74,7 +77,7 @@ viaja un contenedor por el mundo.
   desde 14 kg, sobrecargado desde 20 kg.
 - **Reparto**: única propiedad de carga del equipo, solo en mochilas y cinturones. Multiplica los umbrales, no el
   máximo. Aditivo con **tope +25 %**. Ejemplo: montaña (+20 %) + cinturón (+5 %) ⇒ cargado desde 17,5 kg.
-- **Lista cerrada de propiedades del equipo**: huecos, reparto, protección, abrigo. Como mucho dos por prenda. Nada de
+- **Lista cerrada de propiedades del equipo**: huecos, funda, reparto, protección, abrigo. Como mucho dos por prenda. Nada de
   bonus sueltos («+10 % velocidad»). Una propiedad nueva se decide aquí, no se cuela en un objeto.
 - El cálculo de carga vive en **una función pura con test**; más adelante la puede validar el servidor.
 
@@ -232,3 +235,57 @@ Troceado:
   1P, sin red. Decide si merece la pena.
 - **C** — los demás lo ven: mensaje fiable, guardado, ADR.
 - **D** — recorte real o piezas rotas en prendas concretas, solo si el falso agujero no basta.
+
+## Pulido del reparto — rondas con Joel (2026-09-12) — DECIDIDO (aprobado sobre la maqueta v3, 2026-09-13)
+Greybox de referencia a 1920×1080: https://claude.ai/code/artifact/1d0e788e-5e30-4f44-a990-6a7d2fe049b1 ·
+comparativa del centro: https://claude.ai/code/artifact/28fb1654-d17f-4ebe-b74b-168f475ecedd
+
+Rejilla: margen seguro 48 px; Personaje 440 px fijo; Lo que llevas 920 px flexible (único desplazamiento); Alrededor
+400 px fijo; separación 32 px; barra inferior 132 px; casilla 72 px (hueco 8, mínimo 56); slot del cuerpo 80 px;
+cabecera de ventana 36 px. Sin contenedor abierto, su ventana queda como hueco atenuado: nada salta de sitio.
+
+**Centro (Lo que llevas)**
+- Reparto **B**: la mochila arriba a todo el ancho. Con la mochila de montaña hay que bajar; se aceptó a cambio de la
+  mochila a tamaño completo (se descartaron lado a lado, casillas que encogen y compartimentos por pestañas).
+- Debajo, **cada prenda con bolsillos es una fila** a todo el ancho: nombre, ocupación y tamaño máximo a la izquierda,
+  huecos en línea a la derecha. Si una prenda tiene más huecos, la fila se alarga; plegada ocupa una línea.
+- Secciones **plegables a mano** con clic en la cabecera, recordadas entre aperturas. Una sección plegada **se abre sola
+  mientras llevas cogido algo que cabe en ella** y se vuelve a plegar al soltarlo.
+- Foco: **clic en el slot del muñeco** (otro clic o «← Todo» vuelve); enseña **solo esa prenda, en grande**.
+
+**Personaje**
+- **Reutilizar la vista previa del vendor**: `CharacterPreviewUI` (cámara a RenderTexture) y
+  `CharacterPreviewRotationHandlerUI` (arrastrar gira, la rueda acerca). No se diseña una nueva.
+- 9 slots **a la altura de su parte, con línea fina** hasta ella.
+- Conmutador **Ropa | Heridas** en la cabecera de la columna.
+
+**Alrededor**
+- Objeto: **tooltip corto al pasar** (nombre y condición; `ItemTooltipUI`) **+ panel fijo abajo al seleccionar** con el detalle.
+- Acciones (usar, reparar, desmontar, tirar, dividir pila) como **botones en ese panel** (`ItemActionsUI`). El clic
+  derecho queda reservado para poner y quitar prendas.
+- Varios contenedores al alcance: **pestañas en la misma ventana**; el suelo sigue debajo.
+
+**Barra inferior**
+- **Manos = transporte**, aparte de la funda: 2 huecos para lo que no se guarda. Lo voluminoso ocupa las dos (se
+  dibuja como un bloque) y **bloquea la funda** mientras lo cargas.
+- Funda: los huecos que dé el equipo (D4), hasta 6; los que no tienes salen tachados.
+- Carga: **barra continua con kg reales y dos marcas de tramo** que se desplazan con el reparto (D6).
+
+**Sin mochila y al empezar**
+- Sin mochila puesta desaparece su sección: quedan los bolsillos de la ropa, las manos y la funda que den las prendas.
+  Desnudo = solo 2 manos.
+- **Una mochila que no llevas puesta sigue siendo contenedor**: en el suelo o dentro de otro contenedor aparece como
+  pestaña más en Alrededor («Mochila · suelo») y se puede sacar y meter sin ponérsela. En las manos va cerrada.
+- **No se aparece desnudo**: camiseta (1 bolsillo diminuto) y vaqueros (2 pequeños), sin mochila ni funda.
+
+**HUD en juego (inventario cerrado)**
+- Punto de mira; **arco de aliento bajo el punto de mira, solo mientras se gasta o recupera**; aviso de interacción.
+- **Funda compacta abajo al centro que se atenúa a los 3 s** (aparece al cambiar de herramienta o recoger).
+- **Lo recogido, arriba a la derecha**: 3 líneas como mucho, con destino («+ Venda ×2 → chaqueta», «✕ Botella: no cabe»).
+- Viñeta de urgencias sin números. El reloj de muñeca vive en el brazo 1P, no en el canvas.
+- Con `TAB` abierto el HUD de juego se oculta salvo la viñeta.
+
+**Del vendor se reutiliza** (confirmar pieza a pieza al implementar): `ItemSlotUI`, `ItemPropertyProgressBarDisplay`
+(barra de condición), `ItemWeightDisplay` / `InventoryWeightDisplayUI`, `ItemDragger` / `ItemDragHandler`,
+`ItemSelector`, `ItemTooltipUI`, `ItemActionsUI`, `HotbarUI` (funda), `StorageStationUI` (contenedor),
+`RepairStationUI`, `CraftingUI`. Todo vía hook externo o subclase fuera del ensamblado vendor, nunca editándolo.
