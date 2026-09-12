@@ -106,6 +106,67 @@ namespace BackroomsSurvival.Tests
             }
         }
 
+        /// <summary>
+        /// LOS DEDOS SON POSIBLES. Esta prueba nació de un fallo de las otras: el agarre daba huecos
+        /// de 0,0 mm y las manos salían «totalmente deformadas» (Joel), porque medir la distancia al
+        /// objeto no dice NADA de si la pose existe. Una articulación sólo flexiona hacia un lado y
+        /// hasta un tope; aquí se mide el ángulo entre falanges consecutivas y que las tres doblen
+        /// en el MISMO sentido — un dedo plegado sobre sí mismo o en zigzag sale en rojo.
+        /// </summary>
+        [Test]
+        public void LasFalangesDoblanHaciaDondePuedenYLoQuePueden()
+        {
+            foreach (var tool in Tools)
+            {
+                using var posed = new PosedInstance(tool, 0f);
+
+                foreach (var finger in Wrappers.Concat(new[] { "Thumb" }))
+                {
+                    // EL PULGAR NO ENTRA EN LA PRUEBA DE ZIGZAG, y no por conveniencia: dobla en un
+                    // plano casi perpendicular al de los otros cuatro, así que «hacia la palma» no
+                    // define su sentido de flexión. Con él dentro, un pulgar correcto salía en rojo.
+                    // El tope de doblez sí se le aplica.
+                    bool thumb = finger == "Thumb";
+                    var joints = new[] { posed.Bone($"{finger}.1.R"), posed.Bone($"{finger}.2.R"), posed.Bone($"{finger}.3.R") };
+                    Vector3 tip = posed.FingerTip($"{finger}.3.R");
+                    var bones = new[]
+                    {
+                        joints[1].position - joints[0].position,
+                        joints[2].position - joints[1].position,
+                        tip - joints[2].position,
+                    };
+
+                    for (int j = 0; j + 1 < bones.Length; j++)
+                    {
+                        float bend = Vector3.Angle(bones[j], bones[j + 1]);
+                        Assert.Less(bend, 115f,
+                            $"{tool.Name}: '{finger}' dobla {bend:0}° entre falanges — está plegado sobre sí mismo. {Bake}");
+                    }
+
+                    // EL SENTIDO SE LEE DEL HUESO, no de dónde creo yo que cae la palma. La versión
+                    // anterior sacaba la normal de la palma del −Z de `Hand.R`, y el horneado
+                    // REESCRIBE la muñeca: ese eje deja de apuntar a la palma y el signo salía al
+                    // revés en dedos que estaban perfectamente bien. Aquí se mide lo único que no
+                    // admite interpretación: en este rig los dedos flexionan sobre el −X de su
+                    // propio hueso (ADR-133 enm. 1) y el horneado parte de la NEUTRA, así que la
+                    // rotación local de cada falange ES su flexión. Hacia atrás = hiperextensión.
+                    if (thumb) continue;
+                    foreach (var joint in joints)
+                    {
+                        joint.localRotation.ToAngleAxis(out float angle, out Vector3 localAxis);
+                        if (angle > 180f) { angle = 360f - angle; localAxis = -localAxis; }
+                        if (angle < 3f) continue;
+                        float flexion = -localAxis.x * angle;
+                        Assert.Greater(flexion, -6f,
+                            $"{tool.Name}: la falange '{joint.name}' está doblada {-flexion:0}° HACIA ATRÁS " +
+                            $"— eso es hiperextensión, la mano sale como un bulto. {Bake}");
+                        Assert.Less(flexion, 110f,
+                            $"{tool.Name}: la falange '{joint.name}' flexiona {flexion:0}°, más de lo que da una mano. {Bake}");
+                    }
+                }
+            }
+        }
+
         /// <summary>El índice del bote descansa en el PULSADOR, arriba: es el dedo que aprieta.</summary>
         [Test]
         public void ElIndiceDelBoteVaSobreElPulsador()

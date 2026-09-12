@@ -8,6 +8,27 @@
 > la sesión viva, el próximo paso, lo que está en curso, lo que no se toca, la deuda conocida y
 > los riesgos abiertos. Aquí solo vive lo que ya pasó, de lo más reciente a lo más antiguo.
 
+## Trasladado de STATE.md el 2026-09-12: la 40.ª tanda, y la tanda del viewmodel del 09-09 que vino con `claude/fov-bug-animated-objects-3fe716`
+
+> La segunda se numeró 38.ª EN SU RAMA; en el tronco la 38.ª es la venda (más abajo). Texto verbatim de las dos.
+
+### 2026-09-09 — 40.ª tanda: primer playtest real de Steam — redes y cuentas distintas (ADR-135 enm. 2)
+- Joel probó con un segundo equipo en OTRA red y OTRA cuenta de Steam: conexión bidireccional, `transport=steam`. Primera vez que el
+  criterio físico de ADR-117 D9 (dos jugadores en redes distintas se juntan) se cumple de verdad — la vía Steam lo cierra, no el relay propio.
+- Dos bugs del bombeo, cazados en el mismo playtest (`4da8889e`): `Poll()` era `void` y se tragaba su excepción (203 excepciones a máxima
+  velocidad tras invalidar Steam el socket); nadie cerraba el túnel con Alt+F4 (`IsBackground`). Arreglo: `Poll()` → `bool`, `Application.quitting`.
+- Sin cambios de wire ni de las decisiones D1-D11. `SteamTunnelTests` 23/23; arnés 368/369 (1 rojo preexistente ajeno, `IgdProtocol`). CompileCheck 0×4.
+
+### 2026-09-09 — 38.ª tanda: el warp del viewmodel como regla, y las manos desde la pose neutra (ADR-077 enm. 2-5)
+- FOV de los tres objetos nuevos: `_FOV`/`_FOVEnabled` son GLOBALES y sólo alabea `LitFieldOfView*.shadergraph`. DOS materiales por
+  objeto (`X.mat` mundo, `FP_X.mat` mano) vía `BackroomsViewmodelMaterials.cs`, con el metálico de Meshy reempaquetado en `_MaskMap`.
+- Puerta `ViewmodelWarpTests.cs`. Enm. 3: el agarre se lee del donante SKINNED por bindpose. Enm. 4 (`dbfde7e3`): dedos horneados
+  sobre la malla y destornillador a UNA mano. Enm. 5: mano desde la NEUTRA, flexión con topes 90/105/75 (pulgar 50/55/60).
+- Enm. 5 también: eje de cierre ESCRITO (−X; pulgar +Z), muñeca por ángulos y el sitio del objeto BARRIDO milímetro a milímetro por
+  coste. Tres algoritmos dieron el mismo número byte a byte: la búsqueda leía como choque la falange del medio, que se hunde aposta.
+- Medido: yemas del destornillador +11,9 / −2,8 / −1,2 / +1,3 mm; del bote −0,6 / −1,4 / +7,6 y el índice en el pulsador a 9,7 cm.
+  EditMode **1421/1435** (los 12 rojos, los conocidos); CompileCheck 0 ×4. MAL: nada queda ENCERRADO, el bote cuelga de la tapa.
+
 ## Trasladado de STATE.md el 2026-09-10: la 42.ª tanda, entera
 
 ### 2026-09-10 — 42.ª tanda: de «extremadamente lag» a 13,9 KB/s — medir antes de tocar, cuatro veces seguidas

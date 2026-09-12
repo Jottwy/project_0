@@ -16331,3 +16331,81 @@ avisa de lo mismo para WG3) produce exactamente esta clase de conclusión.
 
 ---
 
+## ADR-077 — Enmienda 5: la mano parte de la NEUTRA, y dónde cae el objeto se BARRE (2026-09-09) — ACEPTADA
+
+Enmienda **CORRECTIVA**: sustituye tres decisiones de la enmienda 4 que estaban marcadas como
+VALIDADAS y que la práctica desmintió. Lo que sigue vigente de la 4: el horneado de los dedos por
+contacto, la tolerancia del medio de la falange por la flecha de la cuerda (L²/8R), el pulsador
+modelado como botón de 7 mm y la izquierda recogida en los objetos de una mano.
+
+### Por qué
+
+Joel, mirando una captura: «pero ves lo antinatural de la mano XD? están totalmente deformados». Y
+la instrucción de método, que es la que resuelve el problema: «coge todos los huesos del brazo y de
+la mano, de hecho lo mejor es que lo dejes todo a 0 y empieces en una posición neutral».
+
+### Decisión
+
+- **La pose de partida es la NEUTRA, no el «reposo».** `ApplyNeutralHand` pone identidad en la
+  muñeca y en los quince huesos de dedo antes de cada cierre. Lo que yo llamaba reposo era el puño
+  del donante: medido, la mano guardada en el prefab del destornillador es la del HACHA byte a byte
+  y la del bote la de la ANTORCHA. Cerrar encima de un puño ajeno es lo que dejaba las manos
+  deformadas, y además hacía el horneado no reproducible (`Sample` reescribe la mano entera, así que
+  hay que volver a la neutra DESPUÉS de cada muestreo). En este rig la neutra es el cero
+  goniométrico de verdad: cada falange apunta por +Y a su hijo, así que PIP y DIP salen a 0,00°. El
+  abanico de la mano no se pierde porque vive en la POSICIÓN de los metacarpianos, no en su rotación.
+- **El barrido va SÓLO en el sentido de la flexión, y con tope por articulación** (90/105/75 en los
+  cuatro que rodean, 50/55/60 en el pulgar). La enmienda 4 barría −80…+80 y elegía por contacto: eso
+  admite hiperextensión, y una falange doblada hacia el dorso es exactamente el «bulto» que Joel vio.
+  Desde la neutra la hiperextensión no está en el dominio, así que no hace falta ningún filtro que
+  pueda fallar.
+- **El eje de cierre está ESCRITO, no medido** (−X en los cuatro, +Z en el pulgar derecho, como
+  ADR-133 enm. 1). Deducirlo de «qué acerca la yema a la palma» falla en el 80 % de los dedos: con
+  las falanges a 85-100° el dedo acumula 250-310° y la yema vuelve a subir por encima de los
+  nudillos, así que el signo sale al revés. Daba +1 en 4 de 5 dedos del destornillador y −1 en 4 de
+  5 del bote.
+- **La muñeca se escribe por ángulos con nombre** sobre la neutra: extensión sobre X y desviación
+  cubital sobre Z (`WristExtensionDegrees`, `WristUlnarDegrees`), porque con `Hand.R` a identidad sus
+  ejes SON los del antebrazo.
+- **Dónde cae el eje del objeto se BARRE milímetro a milímetro sobre la normal de la palma, y gana
+  el sitio que deja las cuatro yemas dentro del margen del test.** Es el punto que costó tres
+  intentos, y los tres fallaron por lo mismo: suponer en vez de medir.
+  1. «Apartarlo hasta que nada penetre» usaba la peor penetración de las QUINCE articulaciones, y la
+     falange del medio se hunde A PROPÓSITO por la flecha de su cuerda (enm. 4). El buscador leía
+     como choque lo que el ajustador acababa de aceptar: saturaba el tope de 22 mm en todas las
+     pasadas. **Tres algoritmos distintos dieron el mismo número byte a byte**; cuando eso pasa,
+     lo que falla es la premisa, no el parámetro.
+  2. Medir sólo la yema arregló el destornillador y no el bote, porque el SENTIDO seguía escrito a
+     mano: la dirección «apartar de la palma» está tomada de los nudillos AL hueco, o sea que apunta
+     a la palma, y con ella el bote se metía 22 mm más adentro de la mano en cada pasada.
+  3. Ahora se prueban las dos direcciones y gana la de menor coste, con la penetración pesando el
+     triple que quedarse corto. El sentido es un RESULTADO de la medida.
+- **El ancla sale de los dedos**: se cierra un puño genérico al 55 % (`PreCurlFingers`) y se mide el
+  hueco que encierran las falanges medias. Ahí cae el eje de cualquier cosa agarrada, por definición.
+  La normal de la palma también se mide (de los nudillos a ese hueco) en vez de tomarla del −Z de
+  `Hand.R`, que tras reescribir la muñeca ya no apunta a la palma.
+- **Tocar es TOCAR, no «no chocar».** Bastaba con no penetrar, y a un dedo al que el objeto le queda
+  lejos no le penetra ningún ángulo: ganaba el primero del barrido, que es el cierre MÁXIMO, y el
+  dedo se cerraba del todo sobre el aire — el meñique del bote, que Joel vio antes que yo. Un dedo
+  que no llega descansa en el cierre más cerrado que NO atraviesa el objeto y, si ni eso existe
+  (el meñique es corto y una lata de 64 mm de diámetro se lo traga), en el que menos lo atraviesa.
+  El 45 % del tope que había antes era un número inventado y caía DENTRO de la chapa.
+- **El nodo del objeto tiene UN solo escritor**: el horneador. Los dos aplicadores de modelo
+  (`BackroomsScrewdriverModelApplier`, `BackroomsSprayModelSwapper`) marcan `posedByBaker` y no
+  vuelven a colocarlo. Antes lo escribían los dos y el último en correr ganaba.
+
+### Consecuencias
+
+- El test de anatomía (`LasFalangesDoblanHaciaDondePuedenYLoQuePueden`) lee la ROTACIÓN LOCAL de cada
+  falange, no la dirección de la palma. La primera versión sacaba la normal del −Z de `Hand.R` y
+  daba en rojo dedos perfectamente correctos, porque el horneado reescribe la muñeca. Con la neutra
+  como origen, la rotación local de una falange ES su flexión: se exige > −6° (nada de
+  hiperextensión) y < 110°.
+- EditMode **1421/1435**; los 12 rojos son los preexistentes conocidos, ninguno de agarre.
+- **Lo que sigue MAL, declarado con captura**: ninguno de los dos objetos queda ENCERRADO por los
+  dedos. En el bote las yemas se apoyan en la CÚPULA de la tapa —y eso cuenta como tocar, porque la
+  superficie se modela por perfil de radio—, con la lata colgando de un lado. Bajar el puño al
+  cuerpo (`FistFromTail` 0,68 → 0,55) es peor y está medido: el borde de la tapa atraviesa el corazón
+  y el anular, 28,9 mm de sobra frente a 1,3. La siguiente pasada NO es de parámetros: hace falta un
+  criterio de agarre que exija rodear (yemas al otro lado del eje), no sólo tocar.
+- Deuda: el pulgar entra 12,8 mm en el mango del destornillador y no está en ninguna puerta.

@@ -11,9 +11,9 @@
 - Alpha 1 itch nov 2026 · Next Fest feb 2027 · EA primavera 2027 (`docs/SCALING-ROADMAP.md:196-198`). E0 de red cerrada y medida.
 
 ## Próximo paso ÚNICO
-- **PVS por salas: que un jugador sólo reciba a quien PUEDE ver** (ADR pendiente). El lag ya no es el techo (enlace al 5,4 %), pero el relay de
-  poses crece N×(N−1) y el broadcast sale una copia POR PEER: 50 juntos son ~5,6 MB/s + ~690 KB/s, las dos por encima del techo; con ~8 vecinos
-  visibles, ~900 KB/s, que sí cabe. El AOI de 100 m no sabe de muros. **Medir antes con `BWTRACE`.**
+- **Fusionar `claude/multiplayer-lag-optimization-b5cc3b` al tronco DESDE SU SESIÓN (viva el 12-09), tras rebase sobre `6750e5b0`**: trae el PVS por
+  salas ENCENDIDO con histéresis (`ad7d3c57`, `7a3b2132`), ADR-141 (tormenta de entrada) y ADR-142, latidos que retroceden y cachés WG3 que
+  no se vacían. 14 commits propios + 19 equivalentes ya en tronco (`git cherry`); chocan 9 ficheros (`sync.rs`, `game_loop.rs`, `visibility.rs`, docs).
 
 ## En curso
 - **ADR-128, mundo ×2: tercera pasada, NO commiteado.** 24 tests en rojo; `MAX_SEGMENT_M` no se toca (D3 anulado), `bounds()` en metros
@@ -62,7 +62,8 @@
 - **Gate volumétrico near-spawn**: `volumetric_grid` sólo en el chunk del showcase, y sigue deshabilitado.
 - Celdas Rust de 2,5 m: la conversión celda→tile vive SÓLO en Unity (`tileX = cellX / 2`). La de WG3 mide 0,5: toda constante heredada cambia de significado.
 - `SilentHealthUIBridge` sincroniza `fillAmount` por reflexión: cambios en `HealthUI`/`Health` deben conservar los nombres.
-- **Dado por bueno por Joel (05/06-09)**: luces 2,7/3,2 con alcance 11/9 m y ambiente cálido plano; techos 300/380/1,15; `UvPerMetre` 0,5; feeder 3P 1,5/4,5.
+- **Dado por bueno por Joel (05/06-09)**: luces 2,7/3,2 con alcance 11/9 m y ambiente cálido plano; techos 300/380/1,15; `UvPerMetre` 0,5;
+  feeder 3P 1,5/4,5; `FistFromTail` del bote a 0,68 (0,55 medido y PEOR, ADR-077 enm. 5).
 - **Aplicar gráficos EN EL EDITOR ensucia** `PC_RPAsset.asset` y `QualitySettings.asset`: al acabar, dejar `High` y revertir. En build no pasa.
 
 ## Deuda declarada
@@ -90,9 +91,17 @@
 - **Audio + gráficos MEZCLADOS de idioma**: gráficos en inglés (ADR-134, decisión Joel), voz en español (ADR-046).
 - **El gate de C# miente en un worktree**: `csproj` y `Library` son del clon principal (`docs/DEV-ENVIRONMENT.md`), y el `.csproj` es una FOTO:
   tras tocar un `.asmdef` da falso rojo o falso verde hasta que Unity refresque. Menores: `MPTRACE` sin commitear en cuatro ficheros del vendor
-  STP; `TODO(balance)` de loot; doc-comments stale.
+  STP; `TODO(balance)` de loot; doc-comments stale; el agarre TOCA pero no RODEA (el bote cuelga de la tapa) y el pulgar entra 12,8 mm sin puerta.
 
 ## Últimas tandas
+
+### 2026-09-12 — 49.ª tanda: saneamiento — el índice estancado del clon, la rama FOV fusionada y el inventario de sesiones
+- **Clon principal**: `sync.rs`, `network/tests.rs`, `STATE.md`, `SESSION-LOG.md` y `SERVER_BROWSER.md` ESTACIONADOS en la versión de `9ff790df`
+  (la restauración del WIP de la 48.ª): un commit habría revertido `6750e5b0` y la 48.ª. Restaurados a HEAD; el WIP de Unity de Joel (12 ficheros) intacto.
+- **`claude/fov-bug-animated-objects-3fe716` fusionada** (ADR-077 enm. 5 `db5c1946`, 13 `.meta` huérfanos, `packages-lock`): conflicto sólo en 4 docs;
+  los dos apéndices de `DECISIONS.md` conservados (16 333 + 78 = 16 411 líneas), índice regenerado. Su tanda del 09-09 va VERBATIM a `SESSION-LOG.md`.
+- **Sin fusionar y SIN commitear**: `showcase-lighting-broken` (lámparas 3×3, relleno a 1,2 m y 0,30, 5 `.mat`, 54 carpetas `Materials/`) y
+  `wf_09042814-13d-4` (crafting sobre base del 08-27). Decisión de Joel. `J:/wg3_*`, `skeptic-boxes` y las tres wip del 03-09 no se tocan.
 
 > **Dos sesiones en paralelo el 10-09** convergen aquí: una atacó el lag de red (42.ª–43.ª abajo, wire acabó en
 > **63** con ADR-140), la otra midió y tocó el cliente (44.ª–47.ª). Renumeradas por orden cronológico real.
@@ -165,10 +174,3 @@
   invita» y «cliente invita» son el mismo código); punto desde el ROSTER (D4); `Invited` gana a `Restored`. El aviso, `PeerDiscovered` por roster.
 - **Convergencia y dos trampas**: tronco + luces por planta + ADR-077 fusionados; `DECISIONS.md` chocó dos veces y se resolvió conservando los dos
   apéndices. El `.csproj` no listaba 10 `.cs` nuevos (CompileCheck habría dado falso verde) y `rustfmt` reescribió el WIP de `wg3` (revertido).
-
-### 2026-09-09 — 40.ª tanda: primer playtest real de Steam — redes y cuentas distintas (ADR-135 enm. 2)
-- Joel probó con un segundo equipo en OTRA red y OTRA cuenta de Steam: conexión bidireccional, `transport=steam`. Primera vez que el
-  criterio físico de ADR-117 D9 (dos jugadores en redes distintas se juntan) se cumple de verdad — la vía Steam lo cierra, no el relay propio.
-- Dos bugs del bombeo, cazados en el mismo playtest (`4da8889e`): `Poll()` era `void` y se tragaba su excepción (203 excepciones a máxima
-  velocidad tras invalidar Steam el socket); nadie cerraba el túnel con Alt+F4 (`IsBackground`). Arreglo: `Poll()` → `bool`, `Application.quitting`.
-- Sin cambios de wire ni de las decisiones D1-D11. `SteamTunnelTests` 23/23; arnés 368/369 (1 rojo preexistente ajeno, `IgdProtocol`). CompileCheck 0×4.
