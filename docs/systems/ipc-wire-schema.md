@@ -932,3 +932,13 @@ cable.
 **Lado cliente.** `Wg3PropMsg` y `Wg3ChunkMsg.props` en `IPCMessages.Wg3.cs`; `Wg3SolidMsg.IsHidden`
 y `BaseStyle` sin los dos bits; `Wg3SceneAssembler.AssembleProp` y `Wg3PropCatalog`.
 `WireSchema.Expected` a 61 en el mismo commit.
+
+## v62 a v66 — en el registro de ADR, no aquí (2026-09-12)
+
+v65 es la pose delgada del relay (`PoseWire` en `PlayerUpdateBatch`, ADR-144). **v66 es ADR-074
+fase 2** (enm. 5): los cinco rosters P2P (`StpItemList`, `StpBuildingList`, `StpCarryableList`,
+`StpHarvestableList`, `CorpseList`) ganan `cell: [i32; 2]` al final, y aparece `RosterScopeEnd`
+(0x5B, `{ kind, generation, cells }`, al final del enum), que es lo único que adopta una ronda.
+Cada peer recibe sólo las 5×5 celdas alrededor de su posición. Sólo P2P: el IPC con Unity no
+cambia. El número se bumpeó en la segunda entrega; la primera cambió el formato sin moverlo.
+`WireSchema.Expected` a 66 en el mismo commit.

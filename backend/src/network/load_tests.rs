@@ -391,6 +391,50 @@ async fn roster_cost_by_where_people_are() {
         }
         println!();
     }
+
+    // El caso para el que existe el scope: un mundo MAYOR que un 5×5 (1 km × 1 km = 20×20 celdas)
+    // con el botín y la gente repartidos por todo él. En el rectángulo de arriba (~200 × 80 m) un
+    // 5×5 lo cubre casi entero y el scope no puede excluir nada.
+    println!("  --- mundo de 1 km × 1 km, botín y gente repartidos por todo ---");
+    for (items, buildings) in [(1000usize, 400usize), (4000, 1600)] {
+        for count in [8usize, 16, 32] {
+            let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+            register_synthetic_peers(&mut host, count, Spread::SameRoom);
+            fill_stp_rosters(&mut host, items, buildings);
+            for (i, it) in host.stp_items.iter_mut().enumerate() {
+                it.position = [
+                    ((i * 7919) % 1000) as f32,
+                    0.0,
+                    ((i * 104_729) % 1000) as f32,
+                ];
+            }
+            for (i, b) in host.stp_buildings.iter_mut().enumerate() {
+                b.position = [
+                    ((i * 6007) % 1000) as f32,
+                    0.0,
+                    ((i * 90_001) % 1000) as f32,
+                ];
+            }
+            let ids: Vec<PeerId> = host.peers.keys().copied().collect();
+            for (i, id) in ids.into_iter().enumerate() {
+                let k = i as f32 + 0.5;
+                let a = k * 2.399_963;
+                let r = 480.0 * (k / count as f32).sqrt();
+                if let Some(p) = host.peers.get_mut(&id) {
+                    p.position = [500.0 + a.cos() * r, 1.8, 500.0 + a.sin() * r];
+                }
+            }
+            let before = super::send::sent_bytes_total();
+            super::sync::broadcast_stp_items(&mut host).await;
+            super::sync::broadcast_stp_buildings(&mut host).await;
+            let kb = (super::send::sent_bytes_total() - before) as f64 / 1024.0;
+            println!(
+                "  {items:>4} objetos + {buildings:>4} piezas  N={count:>3}  ->  {kb:>7.1} KB en UNA ronda  ({:.1} KB por jugador)",
+                kb / count as f64
+            );
+        }
+        println!();
+    }
 }
 
 /// **Dónde se van los milisegundos**, fase por fase. Sin esto, optimizar es adivinar — y en esta

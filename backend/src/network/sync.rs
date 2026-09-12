@@ -2271,11 +2271,19 @@ async fn broadcast_roster_by_cell<T, C, M>(
     };
 
     for dest in dests {
-        // ADR-074 enm. 5, entrega 1 de 2: el scope de esta entrega es TODAS las celdas con
-        // contenido, así que cada peer sigue recibiendo exactamente lo que recibía antes. El
-        // mecanismo —celdas, cierre de ronda y reensamblado por celda— entra vivo y probado sin
-        // que cambie lo que llega; el scope de verdad (5×5) es la entrega siguiente.
-        let scope: Vec<[i32; 2]> = pages_by_cell.keys().copied().collect();
+        // ADR-074 fase 2, decisión 5 — el scope de VERDAD: las 5×5 celdas alrededor del
+        // destinatario. Aquí es donde el coste del roster deja de ser el tamaño del MUNDO y pasa a
+        // ser el tamaño de lo que ese jugador tiene cerca.
+        //
+        // C4 de la enmienda 5: un destinatario del que todavía no se conoce la pose recibe el scope
+        // de (0,0). Dura una ronda —en cuanto su pose llega, el scope es el suyo— y la alternativa,
+        // dejarlo sin cierre, le congelaría el roster.
+        //
+        // El scope va COMPLETO aunque una celda no tenga contenido: es justo lo que le dice al
+        // receptor «esta celda está vacía» en vez de «esta celda está lejos», que es la ambigüedad
+        // que la enmienda del 2026-08-15 existe para cerrar.
+        let dest_pos = net.peers.get(&dest).map(|p| p.position).unwrap_or_default();
+        let scope = roster_scope_cells(dest_pos, ROSTER_SCOPE_RADIUS_CELLS);
         for cell in &scope {
             let Some(pages) = pages_by_cell.get(cell) else {
                 continue; // celda en scope sin contenido: el cierre dirá que está vacía

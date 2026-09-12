@@ -11,25 +11,25 @@
 - Alpha 1 itch nov 2026 · Next Fest feb 2027 · EA primavera 2027 (`docs/SCALING-ROADMAP.md:196-198`). E0 de red cerrada y medida.
 
 ## Próximo paso ÚNICO
-- **Presupuesto de bytes POR DESTINATARIO** (ADR pendiente, sin wire). Lo único que cambia la FORMA de la curva en sala: hoy N², aforo medido **23**
-  (muro: el MB/s de Steam; la CPU al 20 %). Arañar bytes sube el aforo por la RAÍZ y da poco (ADR-143: 22→23; el cono daría 27); con cupo por
-  cliente el cuadrado pasa a recta, predicción **~60**. La costura ya está (`c4452964`): cambiar «los 96 de arriba» por «los que quepan en X KB/s».
+- **Tramos en vez de poses para lo previsible** (ADR pendiente, bump de wire). Con 16 el relay es el 57 % de 185,6 KB/s y 9 de cada 10 parejas
+  son una CRIATURA: la que recorre un pasillo no necesita cadencia sino «de aquí a allí a esta velocidad», y el cliente interpola. **A todos por
+  igual** — ADR-074 prohíbe que el filtro distinga la fuente. PVS ya ENCENDIDO (ADR-140, `ad7d3c57`), oculta el 24,3 %.
 
 ## En curso
-- ADR-123 y ADR-127: PROPUESTOS. **RTT en `MPTRACE step=RTT`** (Karn; 0 = sin muestra). **`a_region_is_worth_its_size` FLAKY**: rojo en suite, verde solo.
 - **ADR-128, mundo ×2: tercera pasada, NO commiteado.** 24 tests en rojo; `MAX_SEGMENT_M` no se toca (D3 anulado), `bounds()` en metros
   de MUNDO con `plan_bounds()`. **Sigue sin verificarse que lo servido salga ×2.** Parche verbatim en `docs/SESSION-LOG.md`.
 - **Contrato WG3 v1**, 5 días. Días 1 (`65d267c3`) y 2 (`c7c9dd01`, `510223b8`, ADR-129) cerrados; el día 4 de gramática lo sustituyó ADR-129
   (rampa, tabique diagonal y anti-enfilada a v2 salvo decisión). Quedan día 3 (rendimiento) y día 5 (verificación, etiqueta).
 - **Oficinas (33.ª) y B1–B4 FUSIONADOS en `migration/worldgraph-v1`** (06-09). Queda ADR-130 r2b, día 3, r3, r4, B5 (autoridad) y podar ramas (Joel).
+- ADR-123 (agacharse y conductos) PROPUESTO, pendiente de Joel. ADR-127 (rampa de techo, wire 61) propuesto para el día 4.
 - **Migración STP servidor-autoritativo**: Steps 1–2 y slice 3.1 (plumbing) hechos y verificados. Falta slice 3.2
   (capa L2 de predicción), reescribir los 8 call sites de `Inventory` y retirar `PlayerController.cs` (DEPRECATED por ADR-009).
 - ADR-014 fase 2 (borrado diferido 200 ms, reserva anti-duplicado): backend hecho, **sin playtest**. Sin ver en Play: linterna (`2d1b0118`), venda, crafteo.
-- **Loot de oficinas (Joel, 12-09): plan aprobado, SIN ADR (será ADR-145)** — detalle verbatim en `SESSION-LOG.md`; gate de escasez INTACTO.
+- **ADR-145 aprobado** (`0b662110`); D3/D7 ya en tronco vía `2eab4fc7` (carrera de índice, verificado). Falta TODO Unity: D1/D2/D4/D5/D6.
 
 ## Riesgos abiertos
-- **Autoridad del servidor: los tres agujeros CERRADOS** (`78e156e6` dueño al demoler; `ebb42911`/`bb3c7e5c` cantidad y posición contra el
-  roster; aportar material exige dueño y alcance, 5 tests). Queda UNA línea: `process_stp_demolish` valida dueño pero no distancia.
+- **Autoridad del servidor CERRADA, también la última línea** (12-09): dueño al demoler (`78e156e6`), cantidad y posición contra el roster
+  (`ebb42911`/`bb3c7e5c`), y ya las TRES rutas de construcción miden alcance y rechazan sin pose (`STP_PICKUP_MAX_DISTANCE`, 8 tests).
 - **Espejos C#↔Rust sin oráculo.** Sin `the_identity_mirror_golden_values` (B4-b), `Wg3Identity.cs` queda verde sin nada que lo
   contraste; igual el hash de `ChunkLootRoll` y los goldens de `scale`/`density`. Un oráculo JSON común es una sesión: **B5**.
 - **Steam (ADR-135 enm. 2) VERIFICADO el 09-09 con redes y cuentas distintas: el criterio físico ya se cumple.** Sin probar el relay propio
@@ -95,6 +95,10 @@
 
 ## Últimas tandas
 
+### 2026-09-12 — 53.ª tanda: el tronco con ADR-074 fase 2 fusionado, y lo que aún no estaba escrito
+- **Steam sin `SetLive`**: 25272104 (wire 64) y 25272796 (+ traza RTT). Con wire 66 la próxima pide cliente reconstruido, desde el CLON PRINCIPAL.
+- **RTT por peer en `MPTRACE step=RTT`** (Karn: nunca de un reenviado; 0 = sin muestra). **`a_region_is_worth_its_size` FLAKY**: rojo en suite, verde solo.
+
 ### 2026-09-12 — 52.ª tanda: la linterna sale de los cofres y el crafteo deja de ser mudo para el servidor (ADR-064 enm. 1)
 - **Linterna** (`2d1b0118`): no era bug, era `RestrictCacheCatalog`; entra en la pool de cofres junto al destornillador (~1/15), gate intacto.
 - **ADR-064 enm. 1** (`122140bf`): el menú de crafteo YA existía y crafteaba client-local (11 recetas vendor); la puerta es `craft_item`
@@ -106,15 +110,12 @@
 ### 2026-09-12 — 51.ª tanda: el relay deja de ser cuadrático, y la animación deja de ser texto (wire 64)
 - **Índice espacial** (`7972d207`): el bucle de pares era O(N²) aunque el radio rechazara a todos — preguntar cuesta igual que aceptar. Casillas
   del radio de SALIDA (con el de entrada la histéresis se rompe en silencio). Repartidos **~310 → ~3.500** y lineal; en sala sigue 22 (muro: cable).
-### 2026-09-12 — 51.ª tanda: el relay deja de ser cuadrático, y la animación deja de ser texto (wire 64, BuildID 25272104)
-- **SteamPipe sin `SetLive`**: **25272104** (wire 64, cliente RECONSTRUIDO: el wire vive en las DOS puntas) y **25272796** (traza de RTT, sólo
-  backend). La regla, medida: backend ⇒ exe + resubir, 2 min y 7 MB; wire ⇒ rebuild, y desde el CLON PRINCIPAL (worktree = reimport, 15 min).
-- **Índice espacial** (`7972d207`): el bucle de pares era O(N²) aunque el radio rechazara a todos. Casillas del radio de SALIDA (con el de entrada
-  la histéresis se rompe en silencio). **Techos medidos: sala 22 (cable), emparejados ~330, repartidos ~310 → ~3.500 (CPU) y ya lineal.**
 - **Tope por destinatario** (`c4452964`) y **cono de atención** (`bae5ffe6`), los dos APAGADOS. El cono da **−35 %, sala 22 → 27**; no se enciende
-  hasta que el búfer del cliente mida el ritmo POR PEER. Un test exige que siga apagado.
+  hasta que el búfer del cliente mida el ritmo POR PEER (hoy mezclar 30 y 15 Hz cerca lo secaría). Un test exige que siga apagado.
 - **ADR-143, wire 64** (`47b0eccb`): animación como byte. Pose **74 → 65 B (12 % de TODAS)** y muere el `clone()` por pose. El cliente reconstruye
-  la misma cadena y los tests de EditMode pasan SIN tocarlos. Tres constantes mentían (256 KB/s; `MPTRACE` decía **⅓** del tráfico real).
+  la misma cadena: `ProxyPickupHook` y los tests de EditMode pasan SIN tocarlos. Tres constantes mentían (256 KB/s, y `MPTRACE` decía **⅓** del real).
+- **Techos con veredicto**: sala **22**, emparejados **~330**, repartidos **~3.500**. El coste va con los PARES que se ven, no con los jugadores:
+  20 en diez parejas cuestan **13× menos** que 20 juntos. Corregidas dos estimaciones mías: en sala el aforo sube por la RAÍZ del ahorro, no en proporción.
 
 ### 2026-09-12 — 50.ª tanda: la suite EditMode al día — poses reales en los tests de proxies y la venda que no warpeaba
 - **`RemotePlayerManagerTests` 5 rojos → 8/8** (`07fcf69a`): mandaban `position = Vector3.zero` y el gestor lo descarta desde el 10-09 como «peer

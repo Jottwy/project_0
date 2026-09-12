@@ -1444,11 +1444,14 @@ async fn an_oversized_roster_now_survives_the_datagram_limit_and_arrives_whole()
     host.peers
         .insert(2, PeerConnection::new(2, "Joiner".into(), joiner_addr));
 
+    // ADR-074 fase 2: todo dentro de UNA celda junto al joiner (x, z en 0..40 m). Con scope 5×5
+    // lo que queda lejos ya no se manda, y este test prueba el reensamblado de un roster enorme,
+    // no el scope; en una sola celda además el orden del emisor se conserva entero.
     host.stp_carryables = (0..4000)
         .map(|id| protocol::StpCarryableInfo {
             id,
             def_id: 7,
-            position: [id as f32, 1.8, 0.0],
+            position: [(id % 40) as f32, 1.8, (id / 100) as f32],
             rotation: 0.0,
         })
         .collect();
@@ -1509,11 +1512,12 @@ async fn a_partially_arrived_roster_never_replaces_the_previous_one() {
 
     // El host emite un roster grande, pero solo se procesa UNA pasada: llegan paginas sueltas,
     // nunca todas.
+    // Dentro del scope del joiner (ADR-074 fase 2), igual que el test de arriba.
     host.stp_carryables = (0..2000)
         .map(|id| protocol::StpCarryableInfo {
             id,
             def_id: 7,
-            position: [id as f32, 1.8, 0.0],
+            position: [(id % 40) as f32, 1.8, (id / 50) as f32],
             rotation: 0.0,
         })
         .collect();
@@ -6278,8 +6282,9 @@ async fn a_roster_is_adopted_on_the_scope_end_and_a_gated_round_sends_nothing() 
     joiner.process_incoming().await;
     assert_eq!(host.peers.len(), 1, "setup: el joiner conectado");
 
-    // Dos objetos en celdas MUY separadas: obliga a más de una celda y a que el cierre las lleve
-    // las dos. Sin el cierre, ninguna se aplicaría.
+    // Dos objetos en celdas DISTINTAS dentro del 5×5 del joiner (que está en el origen): obliga a
+    // más de una celda y a que el cierre las lleve las dos. Sin el cierre, ninguna se aplicaría.
+    // Y un tercero a 700 m, FUERA del scope: ése no le llega nunca — es lo que la fase 2 promete.
     host.stp_items = vec![
         crate::network::protocol::StpItemInfo {
             id: 1,
@@ -6293,8 +6298,16 @@ async fn a_roster_is_adopted_on_the_scope_end_and_a_gated_round_sends_nothing() 
             id: 2,
             def_id: 11,
             count: 3,
-            position: [500.0, 1.0, -500.0],
+            position: [80.0, 1.0, -60.0],
             rotation: 90.0,
+            settling: false,
+        },
+        crate::network::protocol::StpItemInfo {
+            id: 3,
+            def_id: 12,
+            count: 1,
+            position: [500.0, 1.0, -500.0],
+            rotation: 0.0,
             settling: false,
         },
     ];
@@ -6307,7 +6320,7 @@ async fn a_roster_is_adopted_on_the_scope_end_and_a_gated_round_sends_nothing() 
     assert_eq!(
         got,
         vec![1, 2],
-        "las dos celdas se adoptan en el cierre de la ronda"
+        "las dos celdas del scope se adoptan en el cierre, y la lejana no llega"
     );
 
     // Segunda ronda SIN cambios: el gate corta y no sale absolutamente nada. Si saliera un cierre
