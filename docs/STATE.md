@@ -25,7 +25,7 @@
 - **Migración STP servidor-autoritativo**: Steps 1–2 y slice 3.1 (plumbing) hechos y verificados. Falta slice 3.2
   (capa L2 de predicción), reescribir los 8 call sites de `Inventory` y retirar `PlayerController.cs` (DEPRECATED por ADR-009).
 - ADR-014 fase 2 (borrado diferido 200 ms, reserva anti-duplicado): backend hecho, **sin playtest**. Sin ver en Play: linterna (`2d1b0118`), venda, crafteo.
-- **Loot de oficinas (Joel, 12-09): plan aprobado, SIN ADR (será ADR-145)** — detalle verbatim en `SESSION-LOG.md`; gate de escasez INTACTO.
+- **ADR-145 aprobado** (`0b662110`); D3/D7 ya en tronco vía `2eab4fc7` (carrera de índice, verificado). Falta TODO Unity: D1/D2/D4/D5/D6.
 
 ## Riesgos abiertos
 - **Autoridad del servidor: los tres agujeros CERRADOS** (`78e156e6` dueño al demoler; `ebb42911`/`bb3c7e5c` cantidad y posición contra el
