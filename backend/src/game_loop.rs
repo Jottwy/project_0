@@ -5379,53 +5379,69 @@ async fn handle_action(
                 .get("item_id")
                 .and_then(|v| v.as_i64())
                 .unwrap_or(0) as i32;
-            let amount = action
+            // `amount` = what the recipe produced (ingredients are deducted for it); `kept` = how
+            // many of those actually entered the bag — STP drops the overflow to the world when
+            // the inventory is full, and dropped units are NOT in the inventory, so only `kept`
+            // is added to the mirror. Missing `kept` (older client) means everything was kept.
+            let raw_amount = action
                 .data
                 .get("amount")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(1)
-                .clamp(1, u16::MAX as u64) as u16;
-            match crate::crafting::spec::crafting_spec(item_id) {
-                None => info!(
-                    "MPTRACE step=CRAFT event=craft_rejected reason=unknown_recipe item_id={}",
-                    item_id
-                ),
-                Some(recipe) => {
+                .and_then(|v| v.as_i64())
+                .unwrap_or(1);
+            let raw_kept = action
+                .data
+                .get("kept")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(raw_amount);
+            if !(1..=u16::MAX as i64).contains(&raw_amount) || !(0..=raw_amount).contains(&raw_kept)
+            {
+                info!(
+                    "MPTRACE step=CRAFT event=craft_rejected reason=bad_amount item_id={} amount={} kept={}",
+                    item_id, raw_amount, raw_kept
+                );
+            } else {
+                let amount = raw_amount as u16;
+                let kept = raw_kept as u16;
+                match crate::crafting::spec::crafting_spec(item_id) {
+                    None => info!(
+                        "MPTRACE step=CRAFT event=craft_rejected reason=unknown_recipe item_id={}",
+                        item_id
+                    ),
                     // Un crafteo del cliente produce `recipe.amount` unidades por ejecución; el
                     // `amount` reportado se acepta sólo si es ese (o un múltiplo exacto, por si
                     // un cliente agrupa): lo demás es forma inválida, no una receta distinta.
-                    if !amount.is_multiple_of(recipe.amount) {
-                        info!(
-                            "MPTRACE step=CRAFT event=craft_rejected reason=bad_amount item_id={} amount={} per_craft={}",
-                            item_id, amount, recipe.amount
-                        );
-                    } else {
-                        let batches = amount / recipe.amount;
-                        let short = recipe.ingredients.iter().find(|ing| {
-                            stp_inventory_count(&player.stp_inventory, ing.item_id)
-                                < ing.count as u32 * batches as u32
-                        });
+                    Some(recipe) if !amount.is_multiple_of(recipe.amount) => info!(
+                        "MPTRACE step=CRAFT event=craft_rejected reason=bad_amount item_id={} amount={} per_craft={}",
+                        item_id, amount, recipe.amount
+                    ),
+                    Some(recipe) => {
+                        // u64 a propósito: u16 × u16 roza el techo de u32 (margen de 131 070).
+                        let batches = (amount / recipe.amount) as u64;
+                        let need = |count: u16| count as u64 * batches;
+                        let short = recipe
+                            .ingredients
+                            .iter()
+                            .find(|ing| stp_inventory_count(&player.stp_inventory, ing.item_id) < need(ing.count));
                         if let Some(ing) = short {
                             info!(
                                 "MPTRACE step=CRAFT event=craft_rejected reason=insufficient item_id={} ingredient={} need={} have={}",
                                 item_id,
                                 ing.item_id,
-                                ing.count as u32 * batches as u32,
+                                need(ing.count),
                                 stp_inventory_count(&player.stp_inventory, ing.item_id)
                             );
                         } else {
                             for ing in recipe.ingredients {
-                                stp_inventory_remove(
-                                    &mut player.stp_inventory,
-                                    ing.item_id,
-                                    ing.count as u32 * batches as u32,
-                                );
+                                stp_inventory_remove(&mut player.stp_inventory, ing.item_id, need(ing.count));
                             }
-                            stp_inventory_add(&mut player.stp_inventory, item_id, amount);
+                            if kept > 0 {
+                                stp_inventory_add(&mut player.stp_inventory, item_id, kept);
+                            }
                             info!(
-                                "MPTRACE step=CRAFT event=craft_applied item_id={} amount={} stacks={}",
+                                "MPTRACE step=CRAFT event=craft_applied item_id={} amount={} kept={} stacks={}",
                                 item_id,
                                 amount,
+                                kept,
                                 player.stp_inventory.len()
                             );
                         }
@@ -6590,21 +6606,24 @@ fn pvp_weapon_spec(weapon_id: i32) -> Option<PvpWeaponSpec> {
 //
 // The mirror is a flat `Vec<CorpseStack>` as the client reported it (several stacks of the same
 // id are normal: STP splits by slot). Counting sums them; removing walks them in order and
-// drops the ones that hit zero; adding tops up the first stack of that id (props are per-stack
-// and a crafted item has none, so a fresh stack carries an empty `props`). None of this is a
-// model of the inventory — it is bookkeeping on a snapshot the next `report_inventory` replaces.
+// drops the ones that hit zero — by id ONLY, props ignored, which is exactly what STP's
+// `RemoveItemsById` does on the client (a future ingredient with durability would be consumed
+// the same way on both sides); adding tops up the first prop-less stack of that id (props are
+// per-stack and a crafted item has none, so a fresh stack carries an empty `props`). None of
+// this is a model of the inventory — it is bookkeeping on a snapshot the next `report_inventory`
+// replaces.
 
-fn stp_inventory_count(inv: &[crate::world::corpse::CorpseStack], item_id: i32) -> u32 {
+fn stp_inventory_count(inv: &[crate::world::corpse::CorpseStack], item_id: i32) -> u64 {
     inv.iter()
         .filter(|s| s.item_id == item_id)
-        .map(|s| s.quantity as u32)
+        .map(|s| s.quantity as u64)
         .sum()
 }
 
 fn stp_inventory_remove(
     inv: &mut Vec<crate::world::corpse::CorpseStack>,
     item_id: i32,
-    mut n: u32,
+    mut n: u64,
 ) {
     for s in inv.iter_mut() {
         if n == 0 {
@@ -6613,7 +6632,7 @@ fn stp_inventory_remove(
         if s.item_id != item_id {
             continue;
         }
-        let take = (s.quantity as u32).min(n);
+        let take = (s.quantity as u64).min(n);
         s.quantity -= take as u16;
         n -= take;
     }

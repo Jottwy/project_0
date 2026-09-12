@@ -1,5 +1,15 @@
 # SESSION-LOG.md — Histórico de sesiones
 
+## Trasladado de STATE.md el 2026-09-12: el plan de loot de oficinas aprobado en la 52.ª tanda (sin ADR todavía)
+
+- **Loot de oficinas, plan aprobado por Joel el 12-09, SIN ADR todavía (será ADR-145)**: los 20 kinds de atrezo de ADR-129 desmontables (retira
+  ADR-114 D10), Shelf/Rack/Cabinet/Box/Fridge también contenedores (rompe D9) y al agotarlos el loot cae en UNA bolsa con caducidad de 10 min
+  (wire nuevo), plancha de madera carriable conviviendo con el item, y el roster de harvestables sólo con props TOCADOS (enmienda D3). Gate de
+  escasez del suelo INTACTO por decisión de Joel; cero materiales nuevos. Decisiones textuales de Joel: «con las oficinas existentes pues que se
+  lootee todo […] no cambiar los materiales existentes pero sí la looteabilidad»; «cae al suelo sí […] generar una bolsa […] que en un tiempo
+  determinista desaparezca»; «ADR-064 completo primero» (hecho en la misma tanda). Riesgo que el ADR debe resolver: hoy `StpHarvestableList`
+  lleva TODOS los harvestables; con miles de props por radio de streaming se dispara el tráfico que la tanda del lag acaba de bajar.
+
 > Movido VERBATIM desde `STATE.md` el 2026-08-04. Eran 157 KB de las 283 KB que la regla dura 1
 > de `CLAUDE.md` obliga a leer al arrancar cada sesión, y ninguna de ellas describe el estado de
 > hoy. Nada se resumió, nada se reordenó: es un corte por rango de líneas.

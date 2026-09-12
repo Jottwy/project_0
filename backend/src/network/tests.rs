@@ -6154,6 +6154,113 @@ async fn a_relay_only_creature_is_never_a_pose_destination() {
     );
 }
 
+/// Lo que A recibió de `id` en esta pasada: `(held_item, equipment)` de cada `RemotePlayerUpdate`.
+async fn drain_cosmetics_from(net: &mut NetworkManager, id: PeerId) -> Vec<(i32, [i32; 4])> {
+    net.process_incoming()
+        .await
+        .iter()
+        .filter_map(|e| match e {
+            NetworkEvent::RemotePlayerUpdate {
+                id: from,
+                held_item,
+                equipment,
+                ..
+            } if *from == id => Some((*held_item, *equipment)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// **ADR-144 por sockets reales**: la primera pose hacia un destinatario va COMPLETA, las
+/// siguientes DELGADAS, y aun así el receptor sigue viendo los cosméticos; un cambio los manda de
+/// nuevo en la misma ronda; y pasadas `POSE_COSMETICS_REPAIR_ROUNDS` rondas sin cambios vuelve a
+/// ir una completa (la reparación contra el datagrama perdido).
+#[tokio::test]
+async fn thin_poses_keep_the_last_full_cosmetics_over_real_sockets() {
+    use crate::network::sync::POSE_COSMETICS_REPAIR_ROUNDS;
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let host_addr = loopback_addr(&host);
+    let mut a = NetworkManager::bind(0, 3001, 0, false).await.unwrap();
+    let mut b = NetworkManager::bind(0, 3002, 0, false).await.unwrap();
+
+    a.initiate_connection(host_addr).await;
+    b.initiate_connection(host_addr).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    host.process_incoming().await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    a.process_incoming().await;
+    b.process_incoming().await;
+    assert_eq!(host.peers.len(), 2, "setup: los dos joiners conectados");
+
+    // Pegados (medio metro): la curva de cadencia emite en TODAS las rondas, así cada ronda es
+    // observable una a una.
+    place_peer(&mut host, 3001, [0.0, 1.8, 0.0]);
+    place_peer(&mut host, 3002, [0.5, 1.8, 0.0]);
+    {
+        let b_on_host = host.peers.get_mut(&3002).unwrap();
+        b_on_host.held_item = 777;
+        b_on_host.equipment = [11, 22, 33, 44];
+    }
+
+    async fn round(host: &mut NetworkManager) {
+        crate::network::sync::broadcast_peer_poses(host, None).await;
+        tokio::time::sleep(Duration::from_millis(60)).await;
+    }
+    let mark = |host: &NetworkManager| host.pose_cosmetics_sent.get(&(3002, 3001)).copied();
+
+    // Ronda 0: par nuevo → completa.
+    round(&mut host).await;
+    let got = drain_cosmetics_from(&mut a, 3002).await;
+    assert_eq!(
+        got,
+        vec![(777, [11, 22, 33, 44])],
+        "la primera pose lleva los cosméticos"
+    );
+    let (hash0, sent0) = mark(&host).expect("el par tiene marca tras la primera completa");
+
+    // Rondas 1 y 2: delgadas (la marca no se mueve) y A sigue viendo los cosméticos, porque los
+    // rellena con los que ya tiene de B.
+    for _ in 0..2 {
+        round(&mut host).await;
+        let got = drain_cosmetics_from(&mut a, 3002).await;
+        assert_eq!(
+            got,
+            vec![(777, [11, 22, 33, 44])],
+            "una delgada conserva los cosméticos"
+        );
+        assert_eq!(
+            mark(&host),
+            Some((hash0, sent0)),
+            "sin cambios, la marca no se toca: fue delgada"
+        );
+    }
+
+    // Cambio: la siguiente ronda lleva los nuevos y la marca avanza.
+    host.peers.get_mut(&3002).unwrap().held_item = 778;
+    round(&mut host).await;
+    let got = drain_cosmetics_from(&mut a, 3002).await;
+    assert_eq!(
+        got,
+        vec![(778, [11, 22, 33, 44])],
+        "un cambio viaja en la misma ronda"
+    );
+    let (hash1, sent1) = mark(&host).unwrap();
+    assert_ne!(hash1, hash0);
+    assert!(sent1 > sent0);
+
+    // Reparación: sin cambios, al cumplirse el plazo vuelve a ir completa.
+    host.pose_relay_round = sent1 + POSE_COSMETICS_REPAIR_ROUNDS;
+    round(&mut host).await;
+    drain_cosmetics_from(&mut a, 3002).await;
+    let (hash2, sent2) = mark(&host).unwrap();
+    assert_eq!(hash2, hash1, "mismos cosméticos");
+    assert_eq!(
+        sent2,
+        sent1 + POSE_COSMETICS_REPAIR_ROUNDS,
+        "la reparación reenvía la completa"
+    );
+}
+
 /// **Karn**: el RTT NO se muestrea de un paquete reenviado.
 ///
 /// `sent_at` se estampa al encolar y `collect_retransmits` no lo reinicia, asi que el `elapsed()`

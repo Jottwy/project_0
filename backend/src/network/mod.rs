@@ -286,6 +286,19 @@ pub struct NetworkManager {
     /// distintas —metros y grados— y mezclarlas haría que salir del radio borrara el estado
     /// angular. Se queda vacío mientras el cono esté apagado (`POSE_CONE_ENABLED`).
     pub pose_cone_pairs: std::collections::HashSet<(PeerId, PeerId)>,
+    /// ADR-144 D3 — por par `(src, dest)`, el hash de los cosméticos que se mandaron por última
+    /// vez y la ronda en que fue: decide si la siguiente pose va delgada o completa. Mismo ciclo
+    /// de vida que `aoi_pose_pairs` (reemplazo entero por ronda), así un par que sale del AOI se
+    /// lleva su marca y al volver recibe una completa.
+    pub pose_cosmetics_sent: std::collections::HashMap<(PeerId, PeerId), (u64, u64)>,
+    /// ADR-144 D4 — en el RECEPTOR: los últimos cosméticos completos recibidos por cada origen
+    /// relayado, para rellenar las poses delgadas. Vive aparte de `peers` porque un joiner recibe
+    /// poses de orígenes que todavía no tiene registrados como peer (el roster llega después).
+    pub relay_cosmetics: std::collections::HashMap<PeerId, crate::network::protocol::PoseCosmetics>,
+    /// ADR-074 enm. 4 — factor de aforo por DESTINATARIO (1 = la curva tal cual, menos = todos
+    /// sus orígenes salvo los pegados bajan de cadencia en proporción). Se mueve despacio hacia su
+    /// objetivo, ronda a ronda, para que entrar o salir gente no dé un salto de cadencia.
+    pub pose_budget_factor: std::collections::HashMap<PeerId, f32>,
     /// E1 / ADR-074 (enmienda): ronda del relay de poses, para la cadencia LOD. Los pares del
     /// anillo exterior emiten una de cada dos rondas, escalonados por paridad — ver
     /// `sync::aoi_pose_due_this_round`.
@@ -662,6 +675,9 @@ impl NetworkManager {
             world_sync_last_sent: None,
             aoi_pose_pairs: std::collections::HashSet::with_capacity(64),
             pose_cone_pairs: std::collections::HashSet::new(),
+            pose_cosmetics_sent: std::collections::HashMap::new(),
+            relay_cosmetics: std::collections::HashMap::new(),
+            pose_budget_factor: std::collections::HashMap::new(),
             pending_full_sync: std::collections::HashMap::new(),
             pose_relay_round: 0,
             pending_events: Vec::new(),
@@ -1131,8 +1147,11 @@ impl NetworkManager {
             // El emisor de cada pose sale del PAYLOAD, nunca de la cabecera del lote: la cabecera
             // lleva a quien reemite (el anfitrión), y confundir los dos daría todas las poses por
             // suyas.
-            if let crate::network::protocol::PacketPayload::PlayerUpdateBatch { senders, updates } =
-                &pkt.payload
+            if let crate::network::protocol::PacketPayload::PlayerUpdateBatch {
+                origin_cm,
+                senders,
+                updates,
+            } = &pkt.payload
             {
                 // Un lote descuadrado se descarta entero: aplicar la mitad repartiría poses a
                 // nombre de quien no es.
@@ -1148,10 +1167,30 @@ impl NetworkManager {
                 }
                 let addr = pkt.addr;
                 let mut header = pkt.header;
+                // ADR-144 D4: cada pose del lote se reconstruye como el `PlayerUpdate` de siempre.
+                // Una delgada se completa con los cosméticos que ya se tienen de ese origen; si
+                // nunca llegó una completa, con los por defecto (la primera completa viene en la
+                // misma ronda, D3), igual que un peer viejo ante un campo desconocido.
+                let origin_cm = *origin_cm;
                 let entries: Vec<(u16, crate::network::protocol::PacketPayload)> = senders
                     .iter()
                     .copied()
                     .zip(updates.iter().cloned())
+                    .map(|(sender, wire)| {
+                        let fallback = match wire.cosmetics {
+                            Some(full) => {
+                                self.relay_cosmetics.insert(sender, full);
+                                full
+                            }
+                            None => self
+                                .relay_cosmetics
+                                .get(&sender)
+                                .copied()
+                                .or_else(|| self.peers.get(&sender).map(|p| p.pose_cosmetics()))
+                                .unwrap_or_default(),
+                        };
+                        (sender, wire.into_player_update(origin_cm, fallback))
+                    })
                     .collect();
                 for (sender, payload) in entries {
                     header.sender_id = sender;
@@ -1243,6 +1282,7 @@ impl NetworkManager {
 
         for id in timed_out {
             if let Some(peer) = self.peers.remove(&id) {
+                self.relay_cosmetics.remove(&id); // ADR-144: se va con el peer
                 self.purge_peer_state(id);
                 info!("Peer {} ({}) timed out", peer.name, peer.addr);
                 warn!(
@@ -1479,6 +1519,7 @@ impl NetworkManager {
             // estado indexado por PeerId + evento. Su cola diferida muere con él al salir del
             // mapa; no hace falta purgarla aparte.
             if let Some(peer) = self.peers.remove(&pid) {
+                self.relay_cosmetics.remove(&pid); // ADR-144: se va con el peer
                 self.purge_peer_state(pid);
                 warn!(
                     "Peer {} ({}) disconnected: reliable retransmit exhausted ({} reliable + {} deferred packets lost)",

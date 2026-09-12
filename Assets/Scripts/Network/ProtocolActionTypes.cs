@@ -52,6 +52,10 @@ namespace BackroomsSurvival.Net
         /// hunger/thirst/health restore by a fixed amount. Unity never applies the restore
         /// itself — StatInterpolator (ADR-009 L2) only displays what the server reports back.</summary>
         public const string ConsumeItem = "consume_item";
+        /// <summary>ADR-064 enm. 1: report a FINISHED craft (STP already did the stack maths
+        /// client-side) so the server validates the recipe against the reported inventory and
+        /// mutates its mirror. Fire-and-forget like consume_item; a rejection only leaves a trace.</summary>
+        public const string CraftItem = "craft_item";
         /// <summary>ADR-032: graceful save-on-quit. Sent by NetworkInitializer during teardown
         /// (before it force-kills the backend process) so the host persists the world immediately
         /// instead of waiting for the 3-min autosave timer. The backend saves synchronously (if

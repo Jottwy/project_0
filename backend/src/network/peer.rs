@@ -134,6 +134,19 @@ pub struct PeerConnection {
 }
 
 impl PeerConnection {
+    /// ADR-144 — lo cosmético de la pose de este peer, tal y como está ahora: lo que el relay
+    /// mete en la pose completa y lo que el receptor usa de relleno con una delgada.
+    pub fn pose_cosmetics(&self) -> super::protocol::PoseCosmetics {
+        super::protocol::PoseCosmetics {
+            equipment: self.equipment,
+            held_item: self.held_item,
+            carry_def: self.carry_def,
+            carry_count: self.carry_count,
+            species: self.species,
+            vocal_kind: self.vocal_kind,
+        }
+    }
+
     pub fn new(id: PeerId, name: String, addr: SocketAddr) -> Self {
         let now = Instant::now();
         Self {

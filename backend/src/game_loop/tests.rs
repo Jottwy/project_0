@@ -991,32 +991,50 @@ async fn craft_item_applied_mutates_the_mirror_across_stacks() {
     );
 }
 
-// Un `amount` que no es múltiplo de lo que produce la receta no es «otra receta»: se rechaza.
-// Y un múltiplo exacto (dos crafteos agrupados) consume el doble.
+// Un `amount` fuera de forma (0, negativo, > u16) o un `kept` fuera de 0..=amount se rechaza
+// con traza y sin tocar nada: no se «reinterpreta» en silencio. Y un múltiplo exacto de lo que
+// produce la receta (dos crafteos agrupados) consume el doble.
 #[tokio::test]
-async fn craft_item_amount_must_be_a_multiple_of_the_recipe_output() {
+async fn craft_item_rejects_malformed_amounts_and_accepts_exact_multiples() {
     let mut player = Player::new(1, "Host");
     player.stp_inventory = vec![stack(CLOTH_ID, 4)];
-    craft_action(
-        &mut player,
+    for bad in [
         serde_json::json!({ "item_id": BANDAGE_ID, "amount": 0 }),
-    )
-    .await;
-    // amount 0 se clampa a 1 (forma mínima válida): consume 2.
-    assert_eq!(
-        player.stp_inventory,
-        vec![stack(CLOTH_ID, 2), stack(BANDAGE_ID, 1)]
-    );
+        serde_json::json!({ "item_id": BANDAGE_ID, "amount": -1 }),
+        serde_json::json!({ "item_id": BANDAGE_ID, "amount": 70000 }),
+        serde_json::json!({ "item_id": BANDAGE_ID, "amount": 1, "kept": 2 }),
+        serde_json::json!({ "item_id": BANDAGE_ID, "amount": 1, "kept": -1 }),
+    ] {
+        craft_action(&mut player, bad).await;
+        assert_eq!(player.stp_inventory, vec![stack(CLOTH_ID, 4)]);
+    }
+    // Dos vendas de golpe: 4 telas → 0 telas, 2 vendas.
     craft_action(
         &mut player,
         serde_json::json!({ "item_id": BANDAGE_ID, "amount": 2 }),
     )
     .await;
-    // Dos vendas de golpe: 4 telas, y sólo quedaban 2 → insuficiente, sin cambios.
-    assert_eq!(
-        player.stp_inventory,
-        vec![stack(CLOTH_ID, 2), stack(BANDAGE_ID, 1)]
-    );
+    assert_eq!(player.stp_inventory, vec![stack(BANDAGE_ID, 2)]);
+}
+
+// Con la bolsa llena STP suelta el sobrante al suelo: los ingredientes se gastan por lo
+// crafteado, pero al espejo sólo entra lo que ENTRÓ en el inventario (`kept`), que puede ser 0.
+#[tokio::test]
+async fn craft_item_adds_only_the_kept_units_to_the_mirror() {
+    let mut player = Player::new(1, "Host");
+    player.stp_inventory = vec![stack(CLOTH_ID, 4)];
+    craft_action(
+        &mut player,
+        serde_json::json!({ "item_id": BANDAGE_ID, "amount": 1, "kept": 0 }),
+    )
+    .await;
+    assert_eq!(player.stp_inventory, vec![stack(CLOTH_ID, 2)]);
+    craft_action(
+        &mut player,
+        serde_json::json!({ "item_id": BANDAGE_ID, "amount": 1, "kept": 1 }),
+    )
+    .await;
+    assert_eq!(player.stp_inventory, vec![stack(BANDAGE_ID, 1)]);
 }
 
 // ADR-045 Fase 3: a Fase-3-aware client's report_inventory ALSO populates inventory_v2, in
