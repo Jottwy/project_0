@@ -17247,3 +17247,188 @@ en wire 64, hace falta build nueva.
 
 ---
 
+## ADR-145 — El atrezo de oficina se puede saquear entero: desmontable, y cinco muebles además contenedor (2026-09-12) — PROPUESTA (Joel: «tdo lo que exista en las oficinas debe ser lootealbe»)
+
+**Contexto.** Joel pide tres cosas juntas, en sus palabras: (1) «todo lo que exista en las oficinas
+debe ser lootealbe» — hoy el atrezo real de las salas (ADR-129, `Wg3Prop`, 20 tipos) es **pura
+decoración**: `Wg3SceneAssembler.AssembleProp` apaga todos los colliders del prefab a propósito
+(el macizo invisible `Wg3Solid` 0x40 es lo único que frena) y el objeto nace `HideFlags.DontSave`
+sin ningún componente de juego. (2) «repartir en armarios no de oficina... las estanterías que
+tengan comida u otros items... pero las que ya existen de props deben poder ser también
+destructibles y dropear el metal... que ya existe carriable» — los estantes/neveras/racks del
+pack de supermercado que YA aparecen en salas de servicio (`PROP_RACK`, `PROP_FRIDGE`,
+`PROP_COUNTER`, `PROP_TABLE_LONG`, `fill.rs:2790-3042`) deben abrirse como contenedor Y además
+poder destruirse con herramienta, soltando el carryable `Metal` que ya siembra `StpCarryableSpawner`
+— **sin item nuevo, sin material nuevo**. (3) «una bolsa... con items dentro que en un tiempo
+determinista desaparezca» para el loot que quedó sin sacar de un contenedor cuando su mueble se
+destruye — decisión ya tomada por Joel: 10 minutos.
+
+Esto es un ADR y no una tarea de una sesión (regla dura 7: cambia qué puede tocarse en el mundo,
+toca ADR-114 y ADR-129) por tres motivos medidos:
+
+1. **El atrezo real y el desmontable de ADR-114 son HOY dos sistemas paralelos que nunca se tocan.**
+   ADR-114 siembra sus propios tres muebles (`ChunkDismantleRoll`, 1 por chunk al 10 %) con
+   prefabs PROPIOS en `Resources/Props/Dismantle/`, ajenos al `Wg3Prop` que de verdad puebla las
+   salas. Lo que Joel pide es hacer desmontable el atrezo REAL, no subir la tasa del otro.
+2. **`Wg3Prop` no lleva id.** El mensaje (`x_cm, z_cm, y_cm, yaw_deg, kind, style` —
+   `segment.rs:201-209`) no tiene campo de identidad: dos plantas iguales generan el mismo prop en
+   la misma posición porque `fill.rs` es determinista sobre `world_seed`, y ESO es lo que hace
+   posible derivar un id sin tocar el wire (D2).
+3. **El roster de harvestables hoy manda la lista ENTERA en cuanto CUALQUIERA cambia**
+   (`roster_gate_open` hashea todo `net.stp_harvestables`): con 3 muebles de ADR-114 por partida es
+   gratis; con potencialmente miles de piezas de atrezo en el radio de streaming es la MISMA forma
+   de coste cuadrático que la 51.ª tanda acaba de bajar para las poses. Necesita su propia enmienda
+   (D8), en la misma sesión que la abre, no después.
+
+### Decisión
+
+**D1 — Qué kinds entran.** Los **18 kinds físicos** de `Wg3Prop` con prefab real: Desk(1),
+Chair(2), Cabinet(3), Shelf(4), Whiteboard(5), Trash(6), Box(7), Paper(8), Monitor(9), Clock(10),
+Phone(11), Keyboard(12), Tray(13), ChairFallen(14), TableLong(16), Counter(17), Microwave(18),
+Fridge(19), Rack(20). **Fuera, y no por decisión de balance sino porque no tienen forma física**:
+Sign(15) es un quad de decal sin malla ni tamaño en el mensaje (`sign_size_cm` vive del lado del
+cliente, ADR-129 enm. 1); CeilingTileHung(21)/LightHung(22) son geometría construida a mano por el
+cliente sin prefab (`Wg3SceneAssembler.AssembleHungDecay`). Ninguno de los tres tiene un collider
+que golpear.
+
+**D2 — Id determinista, sin wire nuevo, mismo patrón que `ChunkDismantleRoll.NetIdFor`.** Un
+`Wg3Prop` no lleva chunk (cx,cz) hasta el cliente, pero sí `x_cm, y_cm, z_cm, kind`, y `fill.rs` es
+puro sobre `world_seed`: la posición YA identifica la pieza sin ambigüedad. El id es
+`Wg3PropHarvestId(world_seed, kind, x_cm, y_cm, z_cm)`, la misma mezcla FNV-1a de 64 bits recortada
+a `u32` que ya usan `ChunkDismantleRoll`/`StpWorldContainerSpawner`, con SAL PROPIA (ninguna otra
+tabla comparte esta sal — regla del proyecto, «ni la del contenedor ni la del desmontable
+suelto»). Función PURA, sin `UnityEngine`, igual en Rust y en C#: el host la registra al instanciar
+el prop (`Wg3SceneAssembler.AssembleProp`) y el joiner la recalcula localmente para el mismo prop
+en la misma posición — **no hace falta el emparejamiento por proximidad** que sí necesitan los
+árboles/rocas heredados del vendor (esos SÍ nacen sin posición conocida de antemano por el
+servidor). Éste es un atajo real sobre el mecanismo existente, no uno nuevo.
+
+**D3 — Registro DIFERIDO en el roster: un prop intacto no existe para la red (enmienda a ADR-114
+D3).** Hoy `StpWorldPropSpawner` registra en `net.stp_harvestables` en el momento de instanciar. Con
+sólo 3 muebles por partida eso es gratis; con cientos de piezas de atrezo por radio de streaming es
+exactamente el reenvío-de-todo-por-un-cambio que la 51.ª tanda quitó de las poses. La corrección:
+el host guarda el id + la tabla de materiales en una tabla LOCAL (nueva, fuera de
+`net.stp_harvestables`) al instanciar, y **sólo inserta en `net.stp_harvestables`** —lo que de
+verdad viaja por el roster— la PRIMERA vez que `process_stp_harvest_hit` reduce su `remaining` por
+debajo de 1,0. Ausente en el roster sigue significando, exactamente como hoy, «intacto». Una vez
+insertado NO se retira al regenerar del todo (D5 de ADR-114, 15 min): quitarlo exigiría una señal
+explícita de «vuelve a full» porque el roster de hoy REEMPLAZA la lista entera y un id que
+desaparece no le dice nada al cliente — sacarlo de un roster que sólo se sustituye es agujero de
+sincronía, no optimización, y **queda fuera** (D9). El ahorro real ya está en que la inmensa
+mayoría del atrezo de un radio de streaming nunca se ha tocado.
+
+**D4 — Colisión: SE ENCIENDE el collider del prefab que hoy `AssembleProp` apaga, sólo para el
+golpe.** No se toca el macizo `Wg3Solid` (sigue siendo lo único que bloquea el movimiento, sin
+doble colisión — la razón exacta por la que hoy se apaga). El collider del prefab pasa a la capa
+`HitDetection`-only (nueva capa de físicas, o reutilizando la que ya filtra `MeleeHarvestAttack`
+en los árboles del vendor: ver capas de `HarvestableResource` existentes), invisible para
+`CharacterController`/movimiento y visible sólo para el raycast del golpe. Este es el ÚNICO cambio
+de comportamiento físico de esta ADR — todo lo demás es red y gameplay de inventario.
+
+**D5 — Un `HarvestableResourceDefinition` por CLASE de drop, no por kind (18 kinds → 5 clases,
+mismo criterio que ADR-114 con Desk/Shelf/Chair).** Cada clase declara `_requiredPower 0,5`
+(el destornillador de ADR-114 sigue siendo la única herramienta con perfil `Plant`, sin herramienta
+nueva) y cuatro golpes mínimos (`MAX_HARVEST_FRACTION_PER_HIT` sigue en el servidor, sin cambio):
+
+| Clase | Kinds | Drop (vía `itemDrops`, ADR-114 E1.1) |
+|---|---|---|
+| Madera-pequeño | Chair, ChairFallen, Trash, Box, Whiteboard, Paper, Tray | 1 × Wooden Plank |
+| Metal-pequeño | Monitor, Clock, Phone, Keyboard, Microwave | 1 × Metal Beam |
+| Mueble grande | Desk, TableLong, Counter | 2 × Wooden Plank, 1 × Metal Beam |
+| Silla con tela | (subsumida en Madera-pequeño; Cloth/Leather quedan FUERA de esta ADR — ya los da desmontar la silla de ADR-114) | — |
+| **Contenedor-metal** (D6) | Cabinet, Shelf, Fridge, Rack | `logDefId`/`logCount` = `CarryableDefinition.GetWithName("Metal")`, 2 unidades |
+
+`TODO(balance)`, como toda cifra de loot del proyecto: son puntos de partida, no medidos. La
+columna «Contenedor-metal» usa el campo `logDefId/logCount` de `NetworkHarvestableInstance` —el
+mecanismo ORIGINAL de drop de carryables (troncos de árbol), no `itemDrops`— porque Joel pide el
+carryable `Metal` que ya existe, no un item nuevo de bolsa. Un prop sólo declara UNA vía de drop
+(la sync ya elige `itemDrops` si está, si no `logDefId`; nunca las dos — `StpHarvestableSyncManager`
+líneas 299-320, sin tocar).
+
+**D6 — Enmienda a ADR-114 D9: Cabinet, Shelf, Fridge y Rack son contenedor Y desmontable.**
+Rompe literalmente «un prop es contenedor O desmontable, nunca los dos» — sólo para estos cuatro,
+sólo porque Joel lo pide para «armarios no de oficina» y estanterías con comida. El contenedor es
+el mecanismo YA EXISTENTE de cofre del mundo (`world.spawn_corpse` con `is_chest=true`,
+`owner_id=0`, ADR-028 enmienda): el host lo registra en el mismo instante que registra la tabla de
+materiales de D3, en un id DISTINTO derivado con OTRA sal (`Wg3PropChestId`, misma mezcla, misma
+posición) — dos sistemas, dos ids, una posición. El loot que sortea reutiliza el pool de
+`ChunkContainerRoll` tal cual quedó tras la 52.ª tanda (Spray Can / Screwdriver / Crank Flashlight
+más lo que ese sorteo ya reparte), sin pool nueva. **Como todo cofre del mundo, es inmortal hasta
+que se vacía** (`corpse_loot_is_empty`/despawn-on-empty ya existente) — la caducidad de 10 min
+(D7) es sólo para cuando el MUEBLE que lo sostiene se destruye antes de que lo saqueen entero.
+
+**D7 — La bolsa: el mismo cofre, con una fecha de caducidad, sin wire nuevo.** Cuando el
+desmontaje de un Cabinet/Shelf/Fridge/Rack agota su `remaining` (mismo flanco que D5), si el cofre
+de D6 en ese id SIGUE existiendo y NO está vacío, el host le pone
+`expires_at_ms = net.timestamp() + 600_000` (10 min, decidido por Joel) en vez de spawnear uno
+nuevo — MISMO `corpse_id`, mismos items, ahora con reloj. `CorpseData.expires_at_ms: Option<u32>`
+es un campo **aditivo con `#[serde(default)]`**, exactamente el precedente de `is_chest` en ADR-028
+(«un peer viejo decodifica el default, degradación cosmética, sin bump de wire»): un peer sin esta
+enmienda simplemente nunca ve expirar nada, y sigue viendo el cofre inmortal hasta vaciarlo — no
+rompe nada, no hace falta ADR de wire. Un barrido en el TICK que ya corre cada frame (`run()`,
+`game_loop.rs:1044`) — barato, del orden de decenas de entradas — retira de `world.corpses`
+cualquiera cuyo `expires_at_ms` haya pasado, **tenga o no loot todavía dentro**: a diferencia del
+despawn-on-empty normal (sólo corre tras un `take`), éste es el primer barrido por tiempo que
+tienen los cofres/cadáveres. El mueble desmontado no vuelve: sólo su contenido sin recoger tiene
+reloj.
+
+**D8 — Retorno del riesgo de D3: el roster puede seguir creciendo dentro de una partida MUY larga.**
+Aceptado a sabiendas (igual que ADR-114 D1 aceptó el trust-the-client del host): sin remove-on-regen
+(D9), el peor caso es una sesión que ha tocado literalmente cada mueble del radio visitado — improbable
+y, si ocurre, se mide y se enmienda entonces. No se resuelve especulativamente.
+
+**D9 — Qué queda FUERA.** Visual de items físicamente apoyados en la balda al estilo
+`StorageRackDisplay` (Joel lo mencionó como referencia, no como pedido de esta ADR — el contenedor
+de D6 se abre por menú como cualquier cofre, sin representación en el mundo del contenido); quitar
+del roster un harvestable ya regenerado del todo (D3); visual distinto para una bolsa caducando
+(reutiliza el modelo de cofre existente); Sign/CeilingTileHung/LightHung (D1); durabilidad del
+destornillador; ADR-128 (mundo ×2) aplicado a las posiciones de estos props — hereda lo que
+`Wg3Solid` ya resuelva, no es cambio de esta ADR; desmontar mobiliario de salas AUTORADAS
+(ADR-083/084 — sigue prohibido, ADR-114 D10 no se toca en esa parte).
+
+### Alternativas rechazadas
+
+- **(A) Subir la tasa de `ChunkDismantleRoll` en vez de tocar el atrezo real.** RECHAZADA: no es
+  lo que Joel pidió («todo lo que EXISTA» — el atrezo real, no más copias del otro sistema) y deja
+  el 100 % de las salas con muebles que no se pueden ni tocar.
+  - **(B) Emparejamiento por proximidad (el mecanismo legacy de árboles/rocas) para los props de
+  atrezo.** RECHAZADA: existe porque el vendor coloca árboles en la ESCENA sin que el servidor sepa
+  su posición de antemano. Aquí el servidor YA conoce la posición exacta (es él quien la genera):
+  un id determinista es más simple y no depende de un radio de búsqueda ni de un escaneo periódico
+  — y el escaneo (`FindObjectsByType`) NO vería estos props: nacen `DontSave` (ver
+  `unity-findobjects-ignora-dontsave`).
+- **(C) Un `HarvestableResourceDefinition` por kind (18 assets).** RECHAZADA por volumen sin
+  beneficio: ADR-114 ya fijó el precedente de agrupar por clase de drop, no por apariencia.
+- **(D) Bolsa como entidad de red nueva (roster propio).** RECHAZADA: reutilizar `world.corpses`
+  da persistencia, replicación, saqueo y despawn-on-empty SIN escribir ninguno de los cuatro; el
+  único trozo nuevo de verdad es un campo y un barrido por tiempo.
+- **(E) Quitar del roster un harvestable regenerado del todo.** Ver D3/D8: introduce una carrera de
+  sincronía (el roster de hoy reemplaza, no diferencia) sin una señal de reset — más riesgo que el
+  ahorro que compra en Alpha 1.
+
+### Riesgos
+
+- **`net.stp_harvestables` + `world.corpses` crecen dentro de una partida larga** (D8), sin tope ni
+  medición todavía — igual que ADR-114 lo dejó para sus tres muebles.
+- **Dos ids por prop** (D2 harvestable, D6 chest) en tablas host-locales separadas: un bug de sal
+  compartida por accidente colisionaría un mueble desmontable con un armario ajeno. Un test de
+  EditMode/cargo debe afirmar que las dos sales nunca coinciden para el mismo `(kind, x, y, z)`.
+- **El barrido de D7 es el primer despawn-por-tiempo de `world.corpses`**: si algún código en algún
+  sitio asume «un corpse vive hasta que se vacía», este ADR lo rompe silenciosamente para los que
+  llevan `expires_at_ms`. Grep de `world.corpses` antes de tocar el barrido.
+- **Regla dura 13 (determinismo)**: la tabla local host-side de D3/D6 es una estructura nueva —
+  debe iterarse ordenada si algo la serializa alguna vez; hoy no lo hace (vive sólo en memoria del
+  host), pero queda escrito para quien la toque después.
+
+### Orden de implementación (commits separados)
+
+1. Rust: `Wg3PropHarvestId`/`Wg3PropChestId` (funciones puras, con tests de no-colisión entre
+   ambas sales) + tabla de clases D5 + el barrido de expiración de D7 sobre `world.corpses`.
+2. Unity: encender el collider en `AssembleProp` (D4, capa nueva), registrar D3 (diferido) y D6
+   (chest) al instanciar, calcular el id localmente en el cliente (mismo algoritmo que D2).
+3. Depleción: en el flanco `remaining → 0`, drop por D5 y, si aplica, expirar el chest de D6 (D7).
+4. Tests: EditMode sobre las 5 clases (todo kind resuelve, ninguna clase mezcla `itemDrops` y
+   `logDefId`), cargo sobre las dos sales y el barrido de expiración.
+
+---
+
