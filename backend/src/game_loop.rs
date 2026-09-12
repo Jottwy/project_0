@@ -81,7 +81,7 @@ const SLOW_TICK_EVERY: u64 = 60;
 /// ADR-138 D1 lo subió de 20 a 30 Hz: con 2,2 KB/s medidos sobre un techo de 256 (0,86 % de uso),
 /// la resolución es lo barato. El hueco entre muestras baja de 50 a 33 ms, que es la mitad del
 /// desfase que se veía al CORRER — a 7,29 m/s, 17 ms de más son 12 cm de retraso extra.
-const NET_BROADCAST_EVERY: u64 = 2;
+pub(crate) const NET_BROADCAST_EVERY: u64 = 2;
 /// Heartbeat to peers every 1s.
 const HEARTBEAT_EVERY: u64 = 60;
 

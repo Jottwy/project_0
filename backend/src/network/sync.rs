@@ -1140,11 +1140,24 @@ pub const AOI_POSE_RADIUS_M: f32 = 100.0;
 pub const AOI_POSE_EXIT_FACTOR: f32 = 1.2;
 
 /// E1 / ADR-074 (enmienda 2026-08-15) — radio del anillo INTERIOR: dentro de él las poses van a
-/// la cadencia completa (10 Hz), fuera van a media (una ronda de cada dos, ~5 Hz).
+/// la cadencia completa (`POSE_RELAY_HZ`, hoy 30), fuera van a media (una ronda de cada dos,
+/// `POSE_RELAY_OUTER_HZ`, hoy 15).
 ///
 /// La mitad del radio del AOI, que con reparto uniforme deja ~25 % de los pares en el anillo
 /// interior y ~75 % en el exterior (el área crece con el cuadrado).
 pub const AOI_POSE_NEAR_RADIUS_M: f32 = AOI_POSE_RADIUS_M * 0.5;
+
+/// Rondas de relay por segundo: el bucle corre a 60 Hz y emite una de cada
+/// `NET_BROADCAST_EVERY` ticks.
+///
+/// **No se escribe a mano.** Estuvo escrito a mano —un `* 10` metido en el `MPTRACE` de abajo— y se
+/// quedó viejo cuando ADR-138 D1 subió la cadencia de 20 a 30 Hz: desde entonces ese log ha venido
+/// diciendo un TERCIO del tráfico real. Es el mismo accidente que el techo de 256 KB/s del arnés de
+/// carga, y se cierra igual: derivado en un sitio, con un test que lo ata a su origen.
+pub const POSE_RELAY_HZ: u64 = 60 / crate::game_loop::NET_BROADCAST_EVERY;
+
+/// Cadencia del anillo EXTERIOR, que va a una ronda de cada dos. Ver `aoi_pose_due_this_round`.
+pub const POSE_RELAY_OUTER_HZ: u64 = POSE_RELAY_HZ / 2;
 
 /// Lado de la casilla del índice espacial del relay, en metros.
 ///
@@ -1210,13 +1223,13 @@ fn pose_fidelity_order(
 
 /// E1 / ADR-074 (enmienda) — ¿le toca a este par emitir en esta ronda?
 ///
-/// Dentro del anillo interior, siempre. Fuera, una de cada dos rondas (~5 Hz), **escalonando por
+/// Dentro del anillo interior, siempre. Fuera, una de cada dos rondas, **escalonando por
 /// la paridad de `(src + dest)`** para que la mitad de los pares lejanos vaya en las rondas pares
 /// y la otra mitad en las impares: sin ese reparto, "media cadencia" produciría una ronda cara y
 /// otra vacía en vez de una carga plana.
 ///
-/// El anillo exterior va a 5 Hz y no a los 2 Hz que ADR-074 escribió primero porque 50–100 m es
-/// exactamente donde vive la fase `stalk` del robapieles, y a 500 ms entre poses se vería a
+/// El anillo exterior va a media cadencia y no a la quinta parte que ADR-074 escribió primero
+/// porque 50–100 m es exactamente donde vive la fase `stalk` del robapieles, y a 500 ms se vería a
 /// saltos. **No se le puede exceptuar** —una cadencia propia lo delataría igual que un radio
 /// propio— así que sube la del anillo entero. La decisión y su precio están en la enmienda.
 ///
@@ -1371,9 +1384,9 @@ pub(crate) fn spray_draft_destinations_from(
 /// peer, stamped with that peer's id via `send_unreliable_as`, reusing the exact
 /// PlayerUpdate receive path. Host-only and a no-op below two peers (a joiner's peer set
 /// is just {host}, nothing to relay; with one joiner there is no second joiner to inform).
-/// Sent at the player-update cadence (`NET_BROADCAST_EVERY`, 10 Hz).
+/// Sent at the player-update cadence (`NET_BROADCAST_EVERY`, `POSE_RELAY_HZ`).
 /// E1 / ADR-074 (fase 1): `&mut` porque el relay mantiene el estado de histéresis del AOI
-/// (`aoi_pose_pairs`). Sigue emitiendo a 10 Hz — lo que cambia es A QUIÉN, no qué ni cuándo, así
+/// (`aoi_pose_pairs`). Sigue emitiendo a `POSE_RELAY_HZ` — lo que cambia es A QUIÉN, no qué ni cuándo, así
 /// que no toca un byte del wire (mismo criterio que ADR-071 y F0.8).
 /// ADR-140 — lo que el relay necesita para preguntarle al grafo de salas.
 ///
@@ -1764,7 +1777,7 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager, mut pvs: Option<PvsC
             p,
             d,
             relayed_count,
-            relayed_count * 10,
+            relayed_count as u64 * POSE_RELAY_HZ,
             without_aoi,
             // Pares dentro del AOI, emitan o no esta ronda: su diferencia con
             // `relay_datagrams_per_call` es lo que ahorra el LOD, separado de lo que ahorra el AOI.
@@ -3525,6 +3538,28 @@ mod spatial_index_tests {
                 dropped.first()
             );
         }
+    }
+
+    #[test]
+    fn the_relay_rate_stays_tied_to_the_loop_that_produces_it() {
+        // La razón de que esta constante exista. Estaba escrita a mano como un `* 10` dentro del
+        // MPTRACE y se quedó vieja cuando ADR-138 D1 subió la cadencia de 20 a 30 Hz: el log llevaba
+        // desde entonces diciendo un tercio del tráfico real, sin que nada fallara.
+        //
+        // Ahora se deriva, y esto ata la derivación a su origen: si alguien cambia el ritmo del
+        // bucle, lo que salta es un test y no un número silenciosamente equivocado en un log que se
+        // lee durante los playtests.
+        assert_eq!(
+            POSE_RELAY_HZ * crate::game_loop::NET_BROADCAST_EVERY,
+            60,
+            "el relay emite una ronda de cada {} ticks de un bucle de 60 Hz",
+            crate::game_loop::NET_BROADCAST_EVERY
+        );
+        assert_eq!(
+            POSE_RELAY_OUTER_HZ * 2,
+            POSE_RELAY_HZ,
+            "el anillo exterior es exactamente media cadencia (`aoi_pose_due_this_round`)"
+        );
     }
 
     #[test]
