@@ -318,9 +318,11 @@ async fn loot_and_buildings_by_world_age() {
 #[tokio::test]
 #[ignore = "arnés de carga"]
 async fn pose_cadence_curve_by_spread() {
-    println!("
+    println!(
+        "
 === ADR-074 enm. 3 — cadencia por distancia: KB/s por reparto (1 s, 30 rondas) ===
-");
+"
+    );
     for spread in [
         Spread::SameRoom,
         Spread::Hall { radius_m: 50.0 },
@@ -888,6 +890,105 @@ async fn pose_byte_breakdown() {
     ] {
         let n = rmp_serde::to_vec(&payload).unwrap().len();
         println!("    {name:<22} -> -{:>2} B", n_full - n);
+    }
+    println!();
+}
+
+/// **Lo que cuesta UN par a cada distancia**, y una ZONA entera a esa distancia.
+///
+/// Responde metro a metro a «¿a 40 m cuánto me cuesta cada jugador?»: Hz reales que salen de
+/// `due_at_hz` (no los teóricos de `pose_hz`), bytes por segundo y por pose, y después una zona:
+/// un observador en el centro con 20 personas en un anillo a `d` metros, todos moviéndose.
+///
+/// El coste no depende de QUÉ hace el otro (correr, agacharse, disparar): desde ADR-143 la pose
+/// es de tamaño fijo y la animación es un byte. Depende de la distancia, y por eso este arnés
+/// sólo barre distancias.
+///
+/// `cargo test --bin backrooms_server pose_cost_by_pair_distance -- --ignored --nocapture`
+#[tokio::test]
+#[ignore = "arnés de carga: se corre a mano, no es una regresión"]
+async fn pose_cost_by_pair_distance() {
+    use super::sync::{pose_hz, AOI_POSE_RADIUS_M, POSE_RELAY_HZ};
+    const ROUNDS: u32 = 30;
+    const DISTANCES: [f32; 6] = [5.0, 10.0, 20.0, 40.0, 80.0, 160.0];
+
+    println!(
+        "\n=== Un PAR a cada distancia (1 s = {ROUNDS} rondas, AOI {AOI_POSE_RADIUS_M} m) ===\n"
+    );
+    println!("  dist    Hz curva  Hz real   B/s (ida+vuelta)   B por pose   ms/ronda");
+    for d in DISTANCES {
+        let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        for (i, x) in [0.0f32, d].into_iter().enumerate() {
+            let id = 3000 + i as PeerId;
+            let mut conn = PeerConnection::new(id, format!("bot{i}"), super::INERT_PEER_ADDR);
+            conn.update_player_state([x, 1.8, 0.0], 0.0, "idle".into());
+            host.peers.insert(id, conn);
+        }
+        let before = super::send::sent_bytes_total();
+        let started = std::time::Instant::now();
+        let mut poses = 0usize;
+        for _ in 0..ROUNDS {
+            poses += super::sync::broadcast_peer_poses(&mut host, None).await;
+        }
+        let ms = started.elapsed().as_secs_f64() * 1000.0 / ROUNDS as f64;
+        let bytes = super::send::sent_bytes_total() - before;
+        let per_pose = if poses > 0 {
+            bytes as f64 / poses as f64
+        } else {
+            0.0
+        };
+        println!(
+            "  {d:>5.0} m   {:>3}/{POSE_RELAY_HZ}   {:>5.1}    {bytes:>8} B/s        {per_pose:>5.1} B    {ms:>6.3}",
+            pose_hz(d),
+            poses as f64 / 2.0
+        );
+    }
+
+    println!("\n=== Una ZONA: observador + 20 en anillo a `d` metros, todos moviéndose ===\n");
+    println!(
+        "  dist    KB/s total   KB/s que RECIBE el observador   poses/s al observador   ms/ronda"
+    );
+    for d in DISTANCES {
+        let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let mut center = PeerConnection::new(3000, "observer".into(), super::INERT_PEER_ADDR);
+        center.update_player_state([0.0, 1.8, 0.0], 0.0, "idle".into());
+        host.peers.insert(3000, center);
+        for i in 0..20usize {
+            let a = i as f32 * std::f32::consts::TAU / 20.0;
+            let id = 3001 + i as PeerId;
+            let mut conn = PeerConnection::new(id, format!("bot{i}"), super::INERT_PEER_ADDR);
+            conn.update_player_state([a.cos() * d, 1.8, a.sin() * d], 0.0, "idle".into());
+            host.peers.insert(id, conn);
+        }
+        // Lo que recibe el observador: poses de fuentes que entran en su radio, a su Hz.
+        let recv_poses: f64 = (0..20usize)
+            .map(|_| {
+                if d < AOI_POSE_RADIUS_M {
+                    pose_hz(d) as f64
+                } else {
+                    0.0
+                }
+            })
+            .sum();
+        let before = super::send::sent_bytes_total();
+        let started = std::time::Instant::now();
+        let mut poses = 0usize;
+        for tick in 0..ROUNDS as usize {
+            step_all_peers(&mut host, tick);
+            poses += super::sync::broadcast_peer_poses(&mut host, None).await;
+        }
+        let ms = started.elapsed().as_secs_f64() * 1000.0 / ROUNDS as f64;
+        let bytes = super::send::sent_bytes_total() - before;
+        let per_pose = if poses > 0 {
+            bytes as f64 / poses as f64
+        } else {
+            0.0
+        };
+        println!(
+            "  {d:>5.0} m   {:>8.1}       {:>8.1}                       {recv_poses:>5.0}             {ms:>6.3}",
+            bytes as f64 / 1024.0,
+            recv_poses * per_pose / 1024.0
+        );
     }
     println!();
 }
