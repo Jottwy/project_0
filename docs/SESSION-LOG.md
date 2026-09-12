@@ -3369,3 +3369,13 @@ si las sondas de `J:/wg3*` valen algo o se borran. Las ramas viejas (`angry-jack
 - Barrido 27/27 con **islas 6,4 → 6,0** y nav 100 %; pisable −0,3 %. `fill` 13 → 19 ms (los pares de tramos). Suite **1407/1407**.
 - Fuera, declarado: `WEIRD_SPREAD` por profundidad (vive en la subdivisión del plan) y TODO el cliente (r2b), que pisa la rama de materiales.
 
+
+### 2026-09-09 — 41.ª tanda: la invitación te deja AL LADO de quien te invitó (ADR-136), y el aviso de quién entra
+- **VERIFICADO EN PLAY por Joel** (build 25217339, sin `SetLive`): invitación por overlay, nacer junto al invitador y el cartel de entrada. Y el
+  precio, dicho por él: «extremadamente lag» — pasa a próximo paso y a Riesgos con nombre.
+- **R0, el fallo que habría hundido todo lo demás**: `HandleLobbyEntered` usaba la sobrecarga de TRES argumentos, así que una invitación entraba
+  sin relay ni túnel de Steam mientras el navegador sí los pasaba. `LobbyJoinTarget` lee las mismas claves para las dos rutas.
+- **R1/R3 sin bump de wire** (ADR-116 D3): `platform_id`/`invited_by` con `serde(default)`; mapa identidad→peer con el host DENTRO (por eso «host
+  invita» y «cliente invita» son el mismo código); punto desde el ROSTER (D4); `Invited` gana a `Restored`. El aviso, `PeerDiscovered` por roster.
+- **Convergencia y dos trampas**: tronco + luces por planta + ADR-077 fusionados; `DECISIONS.md` chocó dos veces y se resolvió conservando los dos
+  apéndices. El `.csproj` no listaba 10 `.cs` nuevos (CompileCheck habría dado falso verde) y `rustfmt` reescribió el WIP de `wg3` (revertido).

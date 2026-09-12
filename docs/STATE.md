@@ -95,6 +95,16 @@
 
 ## Últimas tandas
 
+### 2026-09-12 — 50.ª tanda: la suite EditMode al día — poses reales en los tests de proxies y la venda que no warpeaba
+- **`RemotePlayerManagerTests` 5 rojos → 8/8** (`07fcf69a`): mandaban `position = Vector3.zero` y el gestor lo descarta desde el 10-09 como «peer
+  sin pose» (`RemotePlayerManager.cs:280`); ahora `RealPose` (3, 0, 14) y `TheLiteralOriginDoesNotSpawnAProxy` fija la guarda. Gestor intacto.
+- **Suite completa headless: 1 528 tests, 12 rojos conocidos, 2 saltados** (`cea357c1`); destapó el 13.º, `ViewmodelWarpTests`: el rollo de la venda
+  llevaba `BR_Bandage_Material` (URP/Lit) en la mano — regla 14 rota desde que nació la venda.
+- **Venda arreglada** (`31f3e897`): `BR_Bandage_FP_Material` (`LitFieldOfView`, `_SmoothnessIntensity` 0,08) para el rollo y la banda de los brazos 1P;
+  `BandageVisual.Attach(firstPerson:)`, menú `Backrooms/Venda/Rewarp venda`, `Rewarp held items` cubre 4. 5/5. El de mundo queda para el proxy.
+- **Método**: headless desde el worktree con `Library` en junction funciona con el editor cerrado (reimporta ~1 min, deja 54 `Materials/` del super);
+  `-executeMethod` para el rewarp. Pusheado el tronco `07fcf69a..31f3e897` con dos commits de la otra sesión (`d89b21a0`, `ca32d825`).
+
 ### 2026-09-12 — 49.ª tanda: saneamiento — el índice estancado del clon, la rama FOV fusionada y el inventario de sesiones
 - **Clon principal**: `sync.rs`, `network/tests.rs`, `STATE.md`, `SESSION-LOG.md` y `SERVER_BROWSER.md` ESTACIONADOS en la versión de `9ff790df`
   (la restauración del WIP de la 48.ª): un commit habría revertido `6750e5b0` y la 48.ª. Restaurados a HEAD; el WIP de Unity de Joel (12 ficheros) intacto.
@@ -164,13 +174,3 @@
 - `claude/unwander-performance-audit-85a655` (tandas 43-47 arriba) fusionada con `migration/worldgraph-v1` (tanda 46, ADR-137→140,
   wire 63). Sin conflicto de código — ninguna de las dos tocó los mismos ficheros de red/wire; solo `STATE.md`/`SESSION-LOG.md`
   chocaron por editar la misma sección en paralelo, resuelto renumerando por orden cronológico real.
-
-### 2026-09-09 — 41.ª tanda: la invitación te deja AL LADO de quien te invitó (ADR-136), y el aviso de quién entra
-- **VERIFICADO EN PLAY por Joel** (build 25217339, sin `SetLive`): invitación por overlay, nacer junto al invitador y el cartel de entrada. Y el
-  precio, dicho por él: «extremadamente lag» — pasa a próximo paso y a Riesgos con nombre.
-- **R0, el fallo que habría hundido todo lo demás**: `HandleLobbyEntered` usaba la sobrecarga de TRES argumentos, así que una invitación entraba
-  sin relay ni túnel de Steam mientras el navegador sí los pasaba. `LobbyJoinTarget` lee las mismas claves para las dos rutas.
-- **R1/R3 sin bump de wire** (ADR-116 D3): `platform_id`/`invited_by` con `serde(default)`; mapa identidad→peer con el host DENTRO (por eso «host
-  invita» y «cliente invita» son el mismo código); punto desde el ROSTER (D4); `Invited` gana a `Restored`. El aviso, `PeerDiscovered` por roster.
-- **Convergencia y dos trampas**: tronco + luces por planta + ADR-077 fusionados; `DECISIONS.md` chocó dos veces y se resolvió conservando los dos
-  apéndices. El `.csproj` no listaba 10 `.cs` nuevos (CompileCheck habría dado falso verde) y `rustfmt` reescribió el WIP de `wg3` (revertido).
