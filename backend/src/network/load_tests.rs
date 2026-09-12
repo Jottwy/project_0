@@ -49,6 +49,13 @@ enum Spread {
     SameRoom,
     /// Repartidos por el mapa, más lejos entre sí que `AOI_POSE_RADIUS_M`.
     Scattered,
+    /// N personas en corrillos de `group`, con los corrillos MUY separados entre sí (600 m, cinco
+    /// veces el lado de la casilla del índice).
+    ///
+    /// Es el caso real: la gente ni se amontona toda en una sala ni anda perfectamente sola. Va en
+    /// parejas, en tríos, en grupetes. Y es el que responde a «¿20 en diez parejas cuesta lo mismo
+    /// que 20 en una sala?».
+    Clustered { group: usize },
 }
 
 /// Registra `count` peers sintéticos en un host ya montado, sin handshake.
@@ -72,6 +79,18 @@ fn register_synthetic_peers(net: &mut NetworkManager, count: usize, spread: Spre
                 let row = (i / 8) as f32;
                 let col = (i % 8) as f32;
                 [col * 250.0, 1.8, row * 250.0]
+            }
+            // Corrillos de `group` en un corro de 3 m, y los corrillos a 600 m unos de otros para
+            // que NINGÚN par de corrillos distintos entre en el radio del otro.
+            Spread::Clustered { group } => {
+                let g = i / group.max(1);
+                let m = i % group.max(1);
+                let angle = m as f32 * 2.4;
+                [
+                    (g % 40) as f32 * 600.0 + angle.cos() * 3.0,
+                    1.8,
+                    (g / 40) as f32 * 600.0 + angle.sin() * 3.0,
+                ]
             }
         };
         conn.update_player_state(pos, 0.0, "idle".into());
@@ -514,6 +533,9 @@ async fn host_total_player_ceiling() {
         let ladder: &[usize] = match spread {
             Spread::SameRoom => &[8, 12, 16, 20, 24, 28, 32, 40, 48, 64, 96, 128],
             Spread::Scattered => &[50, 100, 200, 400, 800, 1600, 2400, 3200, 4000, 5000, 6000],
+            // Los corrillos tienen su propio arnes (`cost_by_how_people_group_up`), que separa el
+            // efecto del TAMANYO del grupo del efecto del numero total.
+            Spread::Clustered { .. } => &[],
         };
 
         println!("--- {spread:?} ---");
@@ -565,4 +587,113 @@ async fn host_total_player_ceiling() {
             (None, None) => println!("\n  Escalera vacía: nada que medir.\n"),
         }
     }
+}
+
+/// **Lo que de verdad decide el coste no es cuanta gente hay, sino con cuanta gente se ve cada
+/// uno.** Este arnes lo separa en dos preguntas.
+///
+/// Primero, a MISMO numero de jugadores, cambiar como se agrupan: 20 en diez parejas contra 20 en
+/// una sola sala. Mismo censo, coste muy distinto.
+///
+/// Despues, fijado el corrillo en parejas, subir N hasta reventar — porque si el coste va con la
+/// densidad LOCAL y no con el total, el techo de la gente emparejada deberia parecerse al de la
+/// gente sola y no al de la sala.
+///
+/// La cuenta de servilleta es `N x k`, donde k es cuanta gente tienes dentro del radio. En una sala
+/// k vale N-1 y por eso sale el cuadrado; en parejas k vale 1 y sale lineal. El cuadrado no es una
+/// propiedad del numero de jugadores, es una propiedad de la AGLOMERACION.
+///
+/// # Lo que dio (2026-09-12)
+///
+/// Veinte personas, cambiando SOLO como se agrupan:
+///
+/// ```text
+///   10 corrillos de  2  ->    60,4 KB/s
+///    5 corrillos de  4  ->   138,9 KB/s
+///    4 corrillos de  5  ->   178,1 KB/s
+///    2 corrillos de 10  ->   374,4 KB/s
+///    1 corrillo  de 20  ->   788,1 KB/s
+/// ```
+///
+/// Trece veces de diferencia con el MISMO censo. El corrillo de 20 clava el control de `SameRoom`
+/// al decimal (788,1), que es lo que valida que el reparto nuevo mide lo que dice.
+///
+/// Dividido entre pares dirigidos (N x (grupo-1)) sale casi constante: 2,07 KB/s por par en el
+/// corrillo de 20 contra 3,02 en parejas. **Las parejas salen algo MAS caras por par**, y tiene
+/// explicacion: desde ADR-140 D4 cada destinatario recibe UN datagrama con todas las poses que le
+/// tocan, asi que un destino con 19 fuentes reparte la cabecera entre 19 y uno con 1 fuente la
+/// paga entera. Amortizacion de cabecera, no un efecto del filtro.
+///
+/// Techo con todo el mundo emparejado: 320 aguanta, 340 revienta, y **el muro es el CABLE**, no la
+/// CPU. Es la diferencia con la gente del todo sola, donde los bytes son literalmente cero y el
+/// techo (~3.500) lo pone el bucle. Emparejados, cada uno relaya a su pareja, asi que los bytes
+/// existen y crecen en linea recta: 3,02 KB/s por persona, y 1024/3,02 = 339 predice el reventon
+/// exacto.
+///
+/// Los tres techos juntos, que es el resumen util:
+///
+/// ```text
+///   todos en una sala     ~22   <- cable
+///   todos emparejados    ~330   <- cable
+///   todos solos        ~3.500   <- CPU
+/// ```
+///
+/// `cargo test --bin backrooms_server cost_by_how_people_group_up -- --ignored --nocapture`
+#[tokio::test]
+#[ignore = "arnés de carga: se corre a mano, no es una regresión"]
+async fn cost_by_how_people_group_up() {
+    const ROUNDS: u32 = 30;
+
+    async fn measure(count: usize, spread: Spread) -> (f64, f64) {
+        let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        register_synthetic_peers(&mut host, count, spread);
+        let before = super::send::sent_bytes_total();
+        let started = std::time::Instant::now();
+        for tick in 0..ROUNDS as usize {
+            step_all_peers(&mut host, tick);
+            super::sync::broadcast_peer_poses(&mut host, None).await;
+        }
+        let ms = started.elapsed().as_secs_f64() * 1000.0 / ROUNDS as f64;
+        let kb = (super::send::sent_bytes_total() - before) as f64 / 1024.0;
+        (kb, ms)
+    }
+
+    println!("\n=== 1. VEINTE personas, repartidas de distintas maneras ===\n");
+    for group in [2usize, 4, 5, 10, 20] {
+        let (kb, ms) = measure(20, Spread::Clustered { group }).await;
+        let corrillos = 20 / group;
+        println!(
+            "  20 en {corrillos:>2} corrillos de {group:>2}  ->  {kb:>7.1} KB/s ({:>4.0} %)   {ms:>6.3} ms/ronda",
+            100.0 * kb / STEAM_SEND_RATE_MAX_KB_S
+        );
+    }
+    let (kb_room, ms_room) = measure(20, Spread::SameRoom).await;
+    println!(
+        "  20 en UNA sala (control)       ->  {kb_room:>7.1} KB/s ({:>4.0} %)   {ms_room:>6.3} ms/ronda",
+        100.0 * kb_room / STEAM_SEND_RATE_MAX_KB_S
+    );
+
+    println!("\n=== 2. Techo con la gente EMPAREJADA (corrillos de 2) ===\n");
+    let mut last_ok: Option<usize> = None;
+    for count in [20usize, 50, 100, 200, 260, 300, 320, 340, 360, 400] {
+        let (kb, ms) = measure(count, Spread::Clustered { group: 2 }).await;
+        println!(
+            "  N={count:>5}  ->  {kb:>8.1} KB/s ({:>5.0} %)   {ms:>7.3} ms/ronda ({:>5.1} %)",
+            100.0 * kb / STEAM_SEND_RATE_MAX_KB_S,
+            100.0 * ms / TICK_BUDGET_MS
+        );
+        if kb > STEAM_SEND_RATE_MAX_KB_S {
+            println!("\n  REVENTADO en N={count}: el muro fue el CABLE.\n");
+            return;
+        }
+        if ms > TICK_BUDGET_MS {
+            println!("\n  REVENTADO en N={count}: el muro fue la CPU del emisor.\n");
+            return;
+        }
+        last_ok = Some(count);
+    }
+    println!(
+        "\n  NO reventó: aguantó hasta N={:?}, el último escalón probado.\n",
+        last_ok.unwrap_or(0)
+    );
 }
