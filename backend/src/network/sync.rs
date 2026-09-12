@@ -17,6 +17,7 @@ use crate::world::World;
 
 use log::{info, warn};
 
+use super::protocol::PoseWire;
 use super::protocol::{
     encode_packet, AnchorInfo, ChunkSyncData, EntitySyncData, ItemSyncData, PacketHeader,
     PacketPayload, PeerInfo, SessionConfig, StabilizerInfo,
@@ -27,12 +28,26 @@ use super::PeerId;
 
 // â”€â”€â”€ Conversion: game types â†’ sync types â”€â”€â”€
 
-/// Cuántas poses caben en un datagrama. Una pose posicional mide ~76 B (ADR-137), y el techo de
-/// gameplay son 1200 B (ADR-113), así que 12 deja margen de sobra para la cabecera y el sobre.
+/// Cuántas poses caben en un datagrama. Una `PoseWire` completa mide ≤46 B y una delgada ≤24
+/// (ADR-144, atado por test), y el techo de gameplay son 1200 B (ADR-113): 24 completas son
+/// ~1100 B con el sobre, y en la práctica casi todas van delgadas.
 ///
 /// Se trocea por CUENTA y no midiendo el serializado porque el tamaño de una pose es acotado y
-/// conocido: la única parte variable es `animation`, y es una cadena corta de un catálogo cerrado.
-const MAX_POSES_PER_BATCH: usize = 12;
+/// conocido: `animation` es un byte desde ADR-143.
+const MAX_POSES_PER_BATCH: usize = 24;
+
+/// ADR-144 D3 — cada cuántas rondas va la pose completa aunque los cosméticos no hayan cambiado:
+/// la reparación contra el datagrama perdido que llevaba el cambio. 30 rondas = 1 s a 30 Hz.
+pub const POSE_COSMETICS_REPAIR_ROUNDS: u64 = 30;
+
+/// ADR-144 D3 — huella de los cosméticos para compararlos por par sin guardarlos enteros.
+fn cosmetics_hash(c: &PacketCosmetics) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    c.hash(&mut h);
+    h.finish()
+}
+type PacketCosmetics = crate::network::protocol::PoseCosmetics;
 
 /// Parte un lote en los datagramas que hagan falta, conservando el emparejamiento entre cada pose
 /// y su emisor.
@@ -42,8 +57,8 @@ const MAX_POSES_PER_BATCH: usize = 12;
 /// exactamente lo que pasaba antes al perder un datagrama suelto; la siguiente ronda las repone.
 fn split_pose_batches(
     senders: Vec<u16>,
-    updates: Vec<PacketPayload>,
-) -> Vec<(Vec<u16>, Vec<PacketPayload>)> {
+    updates: Vec<PoseWire>,
+) -> Vec<(Vec<u16>, Vec<PoseWire>)> {
     if senders.len() <= MAX_POSES_PER_BATCH {
         return vec![(senders, updates)];
     }
@@ -1863,8 +1878,14 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager, mut pvs: Option<PvsC
     // propio —2.450 llamadas al sistema por ronda con 50 juntos, medidas en 21,92 de los 25,34 ms
     // de una ronda, el 86 %—, y ahora cada destinatario recibe UN datagrama con todas las poses que
     // le tocan. El orden de recorrido sigue siendo el de `poses` (Vec), así que es determinista.
-    let mut per_dest: std::collections::HashMap<PeerId, (Vec<u16>, Vec<PacketPayload>)> =
+    let mut per_dest: std::collections::HashMap<PeerId, (Vec<u16>, Vec<PoseWire>)> =
         std::collections::HashMap::with_capacity(dest_ids.len());
+    // ADR-144 D3: la marca de cosméticos por par de ESTA ronda. Reemplazo entero, como
+    // `next_pairs`: un par que no emite esta ronda conserva su marca anterior (se copia), y uno
+    // que salió del AOI la pierde.
+    let mut next_cosmetics: std::collections::HashMap<(PeerId, PeerId), (u64, u64)> =
+        std::collections::HashMap::with_capacity(net.pose_cosmetics_sent.len().max(16));
+    let round = net.pose_relay_round;
 
     for (src_id, _) in &poses {
         // E1: si este origen no le interesa a nadie, ni se construye su pose ni se serializa.
@@ -1874,38 +1895,69 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager, mut pvs: Option<PvsC
         let Some(p) = net.peers.get(src_id) else {
             continue; // se fue entre el cálculo del AOI y el envío
         };
-        // La pose completa se arma AQUÍ, ya sabiendo que alguien la va a recibir: es el único
-        // punto donde se paga el `clone()` de la animación.
-        let payload = PacketPayload::PlayerUpdate {
-            position: p.position,
-            rotation: p.rotation,
-            animation: p.animation,
-            crouch: p.crouch,
+        // ADR-144: lo cinemático se arma UNA vez por origen; lo cosmético, y su hash, también,
+        // pero sólo viaja hacia los destinos que no lo tienen al día (D3).
+        let cosmetics = p.pose_cosmetics();
+        let hash = cosmetics_hash(&cosmetics);
+        let mut flags = 0u8;
+        if p.crouch {
+            flags |= PoseWire::FLAG_CROUCH;
+        }
+        if p.dead {
+            flags |= PoseWire::FLAG_DEAD;
+        }
+        if p.revealed {
+            flags |= PoseWire::FLAG_REVEALED;
+        }
+        if p.light_on {
+            flags |= PoseWire::FLAG_LIGHT_ON;
+        }
+        let base = PoseWire {
+            pos_cm: [0; 3], // relativo al destinatario: se rellena por destino
+            yaw_u16: PoseWire::quantize_yaw(p.rotation),
             pitch: p.pitch,
-            equipment: p.equipment,
-            held_item: p.held_item,
-            hit_seq: p.hit_seq,
-            dead: p.dead,
-            revealed: p.revealed,
-            vocal_seq: p.vocal_seq,
-            vocal_kind: p.vocal_kind,
-            light_on: p.light_on,
-            fire_seq: p.fire_seq,
+            animation: p.animation,
+            flags,
             buttons: p.buttons,
+            hit_seq: p.hit_seq,
+            fire_seq: p.fire_seq,
             melee_seq: p.melee_seq,
-            carry_def: p.carry_def,
-            carry_count: p.carry_count,
-            species: p.species,
+            vocal_seq: p.vocal_seq,
+            cosmetics: None,
         };
-        // La pose se CLONA por destinatario, que es el precio de agrupar: antes se serializaba una
-        // vez y se reenviaban los mismos bytes. Sale a cuenta con creces — un `clone` en memoria
-        // contra una llamada al sistema, que es tres órdenes de magnitud más cara.
+        let src_position = p.position;
         for &dest_id in dests {
+            let Some(dpos) = dest_pos.get(&dest_id) else {
+                continue;
+            };
+            let key = (*src_id, dest_id);
+            let last = net.pose_cosmetics_sent.get(&key).copied();
+            let full = match last {
+                Some((h, sent_round)) => {
+                    h != hash || round.wrapping_sub(sent_round) >= POSE_COSMETICS_REPAIR_ROUNDS
+                }
+                None => true,
+            };
+            next_cosmetics.insert(key, if full { (hash, round) } else { last.unwrap() });
+            let mut wire = base.clone();
+            wire.pos_cm = PoseWire::quantize_pos(src_position, PoseWire::origin_cm(*dpos));
+            if full {
+                wire.cosmetics = Some(cosmetics);
+            }
             let entry = per_dest
                 .entry(dest_id)
                 .or_insert_with(|| (Vec::new(), Vec::new()));
             entry.0.push(*src_id);
-            entry.1.push(payload.clone());
+            entry.1.push(wire);
+        }
+    }
+    // Los pares dentro del AOI que esta ronda no emitieron conservan su marca: si la perdieran,
+    // la siguiente pose iría completa sin necesidad.
+    for pair in &next_pairs {
+        if !next_cosmetics.contains_key(pair) {
+            if let Some(mark) = net.pose_cosmetics_sent.get(pair) {
+                next_cosmetics.insert(*pair, *mark);
+            }
         }
     }
 
@@ -1915,8 +1967,16 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager, mut pvs: Option<PvsC
         let Some((senders, updates)) = per_dest.remove(dest_id) else {
             continue;
         };
+        let Some(dpos) = dest_pos.get(dest_id) else {
+            continue;
+        };
+        let origin_cm = PoseWire::origin_cm(*dpos);
         for (senders, updates) in split_pose_batches(senders, updates) {
-            let payload = PacketPayload::PlayerUpdateBatch { senders, updates };
+            let payload = PacketPayload::PlayerUpdateBatch {
+                origin_cm,
+                senders,
+                updates,
+            };
             net.send_unreliable_to(*dest_id, &payload).await;
         }
     }
@@ -1925,6 +1985,7 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager, mut pvs: Option<PvsC
     // desaparecer del estado, o la histéresis lo mantendría vivo para siempre. Y los pares de un
     // peer que se fue se van con él sin necesidad de purga aparte.
     net.aoi_pose_pairs = next_pairs;
+    net.pose_cosmetics_sent = next_cosmetics;
     net.pose_cone_pairs = next_cone;
     net.pose_relay_round = net.pose_relay_round.wrapping_add(1);
 
