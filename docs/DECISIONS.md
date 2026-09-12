@@ -17541,3 +17541,141 @@ hace parpadear objetos, y que los contenedores y cadáveres de otras celdas se c
 
 ---
 
+## ADR-146 — Tramos: la pose que se puede predecir no se reenvía, con la misma regla para todos (2026-09-12) — PROPUESTA (Joel: «vamos con lo siguiente: tramos en vez de poses»; criterio elegido: «cinemático, igual para todos»)
+
+**Estado:** PROPUESTA. Cambia `PoseWire` (bump de wire 66 → 67, regla dura 7). **Enmienda dos cosas
+escritas**: el descarte de la extrapolación de ADR-138 y la lista cerrada de criterios de ADR-074
+enm. 4 D5. Plan auditado antes de redactar (auditor de arquitectura: aprobado con condiciones; las
+condiciones están incorporadas abajo como decisiones, no como notas).
+
+### Contexto, medido
+
+Con 16 jugadores el relay de poses es el **57 % de 185,6 KB/s**, y **nueve de cada diez parejas
+(origen, destino) son una criatura**: 126 criaturas inyectadas como peers (`is_phantom`) frente a 16
+destinos reales (ADR-142 enm. 1, «el relay NO crece con N², crece con las criaturas»). Una criatura
+que recorre un pasillo manda 30 poses por segundo para decir algo que cabe en una: «voy de aquí hacia
+allí a esta velocidad».
+
+La tentación obvia —que el conductor de criaturas emita su ruta (`nav_waypoints`,
+`phantom.rs:1522`)— está **prohibida**: sería un observable que sólo tienen las criaturas, y entre
+ellas camina el robapieles disfrazado de jugador. Es la misma prohibición que la línea «exceptuar al
+robapieles de la cadencia reducida está PROHIBIDO» y que `sync.rs:3341`
+(`the_filter_cannot_tell_a_phantom_from_a_player`). Joel eligió la alternativa: **un criterio que
+mira sólo la pose, y que por tanto aplica igual a un jugador que corre recto que a una criatura.**
+
+### Decisión
+
+**D1 — `PoseWire` gana la velocidad.** `vel_cms: [i16; 3]` en cm/s, posicional, **antes** de
+`cosmetics`. A `rmp_serde` le cuesta de +4 B (quieto) a ~+10 B (en marcha): la delgada pasa de ~23 a
+~33 B cuando se envía. En el MISMO commit se actualizan los tres sitios que están atados al tamaño de
+hoy y mentirían en silencio: `POSE_WIRE_BYTES_EST` (`sync.rs:1233`, reparte el presupuesto por
+destinatario de ADR-074 enm. 4 D1), el `assert!(thin <= 24)` (`protocol.rs:2035`) y el comentario de
+`sync.rs:31` sobre cuántas poses caben en un datagrama.
+
+**D2 — El anfitrión omite la pose que el último tramo ya predice.** En `broadcast_peer_poses`,
+**después** de AOI, PVS, aforo, cono y `pose_pair_hz` (que no cambian), para cada par al que le toca
+emitir esta ronda:
+
+- **Estimador por ORIGEN**, no por par: velocidad a partir de las posiciones entre rondas del relay y
+  tiempo de reloj real, suavizada. Con **tope** (`TRAMO_MAX_SPEED_M_S`, por encima de la carrera de
+  STP) y **reinicio**: un desplazamiento que implique más que el tope (teleport, desplazamiento de
+  chunk, respawn) pone la velocidad a cero e invalida los tramos de ese origen en todos sus pares, que
+  emiten completa la ronda siguiente. Sin esto, la media móvil tras un teleport satura el `i16` y el
+  receptor extrapola decenas de metros.
+- **Marca por par** `pose_tramo_sent`, con el ciclo de vida de `pose_cosmetics_sent` (reemplazo entero
+  por ronda; un par que sale del AOI se lleva su marca): posición y velocidad enviadas, yaw, pitch,
+  huella de lo discreto e **instante de envío en tiempo real**.
+- **Se omite** si a la vez: la posición real dista menos de `TRAMO_POS_TOLERANCE_M` de
+  `pos_enviada + vel_enviada·Δt`; yaw y pitch dentro de su tolerancia; flags, `buttons`, `animation`,
+  los cuatro contadores y el hash de cosméticos idénticos; y han pasado menos de `TRAMO_REPAIR` desde
+  el último envío **medido en tiempo real**, no en rondas emitidas (a 5 Hz con cono y aforo el hueco
+  entre rondas que tocan es de hasta 200 ms, y contar rondas estiraba la reparación por encima del tope
+  de extrapolación del receptor).
+- **Un par omitido no sella nada**: ni la marca de tramo ni la de cosméticos (`sync.rs:2021`) se
+  renuevan como si hubiera salido.
+- Puntos de partida, a fijar con la medida: 20 cm, 4°, dos pasos de pitch, reparación 1 s.
+- **Sin parámetro de fuente.** Test simétrico `the_tramo_gate_cannot_tell_a_phantom_from_a_player`, en
+  la línea de `sync.rs:3341` y `:3556`.
+
+**D3 — El backend del receptor extrapola; Unity no se entera.** Al abrir el lote (`mod.rs:1160`) se
+guarda por origen la base del tramo (posición, velocidad, `Instant` de llegada) en un mapa APARTE de
+`peer.position`, como `relay_cosmetics`, y se borra cuando el peer se va. En cada tick del game loop,
+antes de `build_world_state`, `peer.position = base + vel · min(transcurrido,
+TRAMO_MAX_EXTRAPOLATION)`; pasado el tope se congela. El yaw no se extrapola.
+
+- **`PeerList` no pisa un tramo vivo.** Hoy la rama de roster llama a `update_player_state` con la
+  foto del anfitrión para peers existentes y `relay_only` (`handlers.rs:340` y `:346`): con
+  extrapolación, cada roster haría retroceder el proxy a una posición vieja — tirón periódico en todos.
+  Si el origen tiene base de tramo más reciente que `TRAMO_MAX_EXTRAPOLATION`, el roster refresca todo
+  lo demás (latido, `relay_only`) y **no toca la posición**. Con test.
+- `TRAMO_MAX_EXTRAPOLATION` > peor hueco de reparación (1 s + 200 ms de cadencia mínima).
+- **Declarado, no arreglado**: la pose del ANFITRIÓN viaja por `broadcast_player_update`
+  (`sync.rs:903`), fuera del lote; no pasa por el gate ni se extrapola. Es asimétrico entre el host y
+  los demás, no entre fantasma y jugador, así que no delata a nadie.
+
+**D4 — Unity sin cambios.** `world_state` llega a 10 Hz, `PushSample` guarda sólo poses distintas y
+el retardo por peer de ADR-074 enm. 3 cubre el intervalo entre ellas; ADR-138 sigue interpolando
+entre dos muestras, que ahora son posiciones que el backend ya extrapoló. Consecuencia declarada: con
+extrapolación cada snapshot trae una posición distinta, `changeInterval` baja a ~100 ms y el retardo
+por peer se queda en el global. Es inocuo mientras la extrapolación tenga tope.
+
+**D5 — Wire 66 → 67** en `ipc/server.rs:38` y `WireSchema.cs:25`, en el mismo commit.
+
+**D6 — Interruptor `TRAMO_GATE_ENABLED`, entra APAGADO.** Con el gate apagado la velocidad viaja igual
+y el receptor extrapola igual, pero el anfitrión no omite nada: se puede medir el error de la
+predicción sin que cambie lo que se ve. Se enciende sólo con la medida de abajo, como se hizo con el
+cono (`c4452964` → ADR-074 enm. 4 D4).
+
+### Enmiendas a lo escrito
+
+- **ADR-138, «Extrapolación (dead reckoning)»**: se descartó porque «sobrepasa en los cambios bruscos
+  de dirección, que en pasillos estrechos son constantes», y dejó dicho que se evaluaría «con su
+  medida». Se reabre en esos términos: el sobrepaso está acotado por la tolerancia de D2 más
+  `velocidad · (latencia + una ronda)`, y D6 exige medirlo antes de encender.
+- **ADR-074 enm. 4 D5** («Todo por distancia, aforo y ángulo; jamás por qué es la fuente») pasa a
+  decir: **todo por distancia, aforo, ángulo y lo que la propia pose deja predecir de sí misma; jamás
+  por qué es la fuente.** La velocidad sale de la posición y de nada más.
+
+### Medida que decide el encendido
+
+1. **Arnés** (`load_tests.rs`): `step_all_peers` mueve a los peers en un círculo de 30 cm, lo contrario
+   de lo previsible, y mediría cero. Nuevo modelo de movimiento de pasillo —recto a velocidad de
+   criatura y de carrera, con giros y paradas— y KB/s con el gate apagado y encendido.
+2. **16 instancias reales** (`tools/dev/RunMultiInstancePlaytest.ps1`, guardados borrados, ADR-142
+   enm. 1) contra la base de 185,6 KB/s, y **el error de posición en el joiner separado entre humanos y
+   criaturas** (`NetIdentity.IsHuman`): media y p95.
+
+**Criterio de encendido**: ahorro de bytes neto positivo, y el error de las criaturas **no peor** que
+el de los humanos. El segundo es la condición seria: las criaturas van más rectas, omitirán más y
+sobrepasarán más en las esquinas. No viola la letra de ADR-074, pero sería exactamente un observable
+que sólo ellas tienen. Si la medida lo enseña, no se enciende y se reescribe la tolerancia antes de
+volver a medir.
+
+### Riesgos aceptados
+
+- **Pérdida del datagrama con el cambio de rumbo**: el anfitrión cree que el receptor lo tiene y sigue
+  omitiendo hasta la reparación; el receptor deriva hasta `TRAMO_REPAIR` y corrige de golpe. ADR-144
+  aceptó esa pérdida para cosméticos; aquí es posición, y por eso la reparación es de 1 s y no de 30
+  rondas contadas.
+- **Punto de equilibrio**: con ~33 B por pose enviada frente a 23, si se omite menos de ~30 % de las
+  poses de un origen, ese origen cuesta MÁS que hoy. Probable en jugadores que se mueven a tirones;
+  la medida lo separa por tipo.
+- **Consumidores de `peer.position` en el joiner** (PVS, audio, validaciones locales) verán la posición
+  extrapolada. El joiner no es autoritativo en nada de eso (ADR-030: los impactos los valida el
+  anfitrión contra su roster).
+- **Determinismo (regla 13)**: marcas y bases en `HashMap` que sólo se consultan; el orden de salida
+  sigue siendo el de `poses` (Vec).
+
+### Orden de implementación (commits separados)
+
+1. `PoseWire.vel_cms` + las tres constantes atadas al tamaño + round-trip con valores no-default.
+2. Estimador por origen (tope y reinicio) + gate por par + tests: omite en recta, emite en giro,
+   emite en parada, reinicia en teleport, reparación en tiempo real a 5 Hz con cono y aforo, un omitido
+   no sella cosméticos, simétrico fantasma/jugador. Interruptor apagado.
+3. Base de tramo en el receptor + extrapolación con tope + `PeerList` no pisa + tests.
+4. Modelo de pasillo en el arnés + KB/s apagado/encendido.
+5. Wire 67 en las dos puntas.
+6. Medida real de 16 con error por tipo + `STATE.md`; encendido sólo si cumple el criterio.
+
+---
+
