@@ -76,6 +76,7 @@ namespace BackroomsSurvival.EditorTools
 
                 ForceVisible(instance);
                 PopulateContainers(instance);
+                RenderCharacterPreview(instance);
 
                 // TMP dinámico: pide los glifos antes del render o salen cuadrados.
                 foreach (var tmp in instance.GetComponentsInChildren<TextMeshProUGUI>(true))
@@ -125,7 +126,7 @@ namespace BackroomsSurvival.EditorTools
             foreach (var kr in keepRoots)
             {
                 foreach (var t in kr.GetComponentsInChildren<Transform>(true))
-                    t.gameObject.SetActive(true);
+                    if (t.name != "KeyIcon") t.gameObject.SetActive(true); // el builder apaga los KeyIcon a propósito
                 // Sin estación abierta no hay nada que enseñar, el tooltip nace del ratón y la rueda
                 // de objetos (FPS_UI_ItemWheel, anidada en el inventario) sólo sale con su tecla.
                 foreach (var t in kr.GetComponentsInChildren<Transform>(true))
@@ -181,6 +182,29 @@ namespace BackroomsSurvival.EditorTools
                     Debug.LogWarning($"[InventarioShot] {ui.ContainerName}: {e.GetType().Name} {e.Message}");
                 }
             }
+        }
+
+        /// <summary>
+        /// El muñeco de la izquierda: el vendor lo pinta con una cámara propia sobre una RenderTexture
+        /// compartida, y sólo enciende <c>CharacterVisuals</c> al inspeccionar con un jugador vivo.
+        /// Aquí se enciende a mano y se renderiza una vez antes de capturar la UI.
+        /// </summary>
+        private static void RenderCharacterPreview(GameObject root)
+        {
+            var preview = root.GetComponentInChildren<CharacterPreviewUI>(true);
+            if (preview == null) { Debug.LogWarning("[InventarioShot] sin CharacterPreviewUI: el muñeco saldrá vacío"); return; }
+            for (var t = preview.transform; t != null; t = t.parent) t.gameObject.SetActive(true);
+            foreach (var t in preview.GetComponentsInChildren<Transform>(true)) t.gameObject.SetActive(true);
+            // Sin Play el Animator no corre y el muñeco queda en T-pose: se evalúa un frame a mano.
+            foreach (var anim in preview.GetComponentsInChildren<Animator>(true))
+            {
+                anim.enabled = true;
+                anim.Update(0f);
+                anim.Update(0.25f);
+            }
+            var cam = preview.GetComponentInChildren<Camera>(true);
+            if (cam == null || cam.targetTexture == null) { Debug.LogWarning("[InventarioShot] el preview no tiene cámara con RenderTexture"); return; }
+            cam.Render();
         }
 
         private static void RenderTo(Camera cam, string path)

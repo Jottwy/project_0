@@ -43,6 +43,8 @@ harness_down() {
   find "$ROOT/Assets/GroceryStorePropsCollection/StaticMeshes" -name "Materials.meta" -delete 2>/dev/null
   git -C "$ROOT" checkout -q -- ProjectSettings/Packages/com.unity.testtools.codecoverage/Settings.json ProjectSettings/ShaderGraphSettings.asset 2>/dev/null
   git -C "$ROOT" checkout -q -- Assets/Art/Fonts/SDF 2>/dev/null   # el atlas dinámico se rellena con cada captura: ruido
+  # La captura dibuja el muñeco del vendor: URP rellena _BaseMap en tres .mat suyos y marca la RenderTexture. No es nuestro.
+  git -C "$ROOT" checkout -q -- Assets/PolymindGames/STP/Art/Models/Characters/MaleSurvivor/Materials Assets/PolymindGames/STP/Art/Textures/STP_CharacterPreview.renderTexture 2>/dev/null
 }
 trap harness_down EXIT
 mkdir -p "$LOGDIR"

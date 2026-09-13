@@ -214,6 +214,7 @@ namespace BackroomsSurvival.EditorTools
             Paint(inv, "MiddleGroup/Inventory/Weight/WeightBarBG", theme.Tape);
             Paint(inv, "MiddleGroup/Inventory/Weight/WeightBarBG/WeightBar", theme.Ink);
 
+            Prompts(inv, theme, report);
             BuildStrap(root, theme, report);
             Relayout(inv, root, report);
         }
@@ -316,6 +317,9 @@ namespace BackroomsSurvival.EditorTools
             if (character != null)
             {
                 Stretch((RectTransform)character);
+                // El preview es una RenderTexture CUADRADA (575×575 del vendor, FOV fijo): estirarla a
+                // la columna deforma al muñeco. Se le da la columna entera y un AspectRatioFitter la
+                // mantiene 1:1 dentro (FitInParent), centrada.
                 var preview = character.Find("CharacterPreview") as RectTransform;
                 if (preview != null)
                 {
@@ -324,6 +328,9 @@ namespace BackroomsSurvival.EditorTools
                     preview.pivot = new Vector2(0.5f, 0.5f);
                     preview.offsetMin = new Vector2(96f, 0f);
                     preview.offsetMax = new Vector2(0f, -44f);
+                    var fitter = preview.GetComponent<AspectRatioFitter>() ?? preview.gameObject.AddComponent<AspectRatioFitter>();
+                    fitter.aspectMode = AspectRatioFitter.AspectMode.FitInParent;
+                    fitter.aspectRatio = 1f;
                 }
                 var containers = character.Find("Containers") as RectTransform;
                 if (containers != null)
@@ -443,7 +450,46 @@ namespace BackroomsSurvival.EditorTools
                 Retype(tmp, theme, theme.MonoBold, theme.TapeInk);
                 tmp.fontStyle |= FontStyles.UpperCase;
                 tmp.characterSpacing = 6f;
+                Fit(tmp, 9f);
             }
+        }
+
+        /// <summary>
+        /// Nuestras fuentes son más anchas que la del vendor y sus cajas no crecen: un título que
+        /// cabía ahora salta de línea y «LEFT CTRL» se monta sobre el icono. Una línea, y que el
+        /// tamaño baje hasta caber (nunca por debajo de <paramref name="min"/>).
+        /// </summary>
+        private static void Fit(TextMeshProUGUI tmp, float min)
+        {
+            tmp.enableWordWrapping = false;
+            tmp.overflowMode = TextOverflowModes.Overflow;
+            tmp.enableAutoSizing = true;
+            tmp.fontSizeMax = Mathf.Max(tmp.fontSize, min);
+            tmp.fontSizeMin = min;
+        }
+
+        /// <summary>Los avisos de tecla del vendor (FPS_UI_InputPrompt): glifo en cinta, texto que cabe.</summary>
+        private static void Prompts(Transform inv, BackroomsUiTheme theme, Report report)
+        {
+            int n = 0;
+            foreach (var t in inv.GetComponentsInChildren<Transform>(true))
+            {
+                if (t.name != "KeyTxt" && t.name != "ControlTxt") continue;
+                if (!t.TryGetComponent<TextMeshProUGUI>(out var tmp)) continue;
+                bool key = t.name == "KeyTxt";
+                Retype(tmp, theme, key ? theme.MonoBold : theme.Display, key ? theme.TapeInk : theme.Ink);
+                Fit(tmp, 10f);
+                if (key && t.parent != null && t.parent.name == "KeyBg")
+                {
+                    if (t.parent.TryGetComponent<Image>(out var bg)) SetSprite(bg, theme.DymoTape, Color.white);
+                    // Con etiqueta de tecla, el icono de ratón del vendor se pisa con el texto: la cinta
+                    // ya dice la tecla, el icono sobra.
+                    var icon = t.parent.Find("KeyIcon");
+                    if (icon != null && !string.IsNullOrWhiteSpace(tmp.text)) icon.gameObject.SetActive(false);
+                }
+                n++;
+            }
+            report.Count("avisos de tecla", n);
         }
 
         private static void Retype(TextMeshProUGUI tmp, BackroomsUiTheme theme, TMP_FontAsset font, Color color)
