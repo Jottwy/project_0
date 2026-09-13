@@ -109,6 +109,7 @@
     <Compile Include="$(Repo)\Assets\Tests\EditMode\MapMemoryTests.cs" />
     <Compile Include="$(Repo)\Assets\Tests\EditMode\MapSheetStrokesTests.cs" />
     <Compile Include="$(Repo)\Assets\Tests\EditMode\MapSheetRasterTests.cs" />
+    <Compile Include="$(Repo)\Assets\Tests\EditMode\MapRecognitionTests.cs" />
   </ItemGroup>
 
 </Project>

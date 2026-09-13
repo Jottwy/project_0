@@ -72,6 +72,14 @@ namespace BackroomsSurvival.Gameplay.Mapping
         private readonly List<EdgeEntry> _entries = new List<EdgeEntry>();
         private readonly List<long> _keys = new List<long>();
         private readonly List<PendingStroke> _pending = new List<PendingStroke>();
+        private readonly List<MapCrossing> _crossings = new List<MapCrossing>();
+        private readonly List<long> _recentKeys = new List<long>();
+
+        /// <summary>Paredes vistas hace poco por debajo de las cuales «Ubicarme» no da veredicto.</summary>
+        public const int MinRecognitionEdges = 10;
+
+        /// <summary>Distancia de la flecha al borde de la hoja, en celdas.</summary>
+        private const float ArrowInsetCells = 0.6f;
 
         private static readonly Comparison<EdgeEntry> ByLine = (a, b) =>
         {
@@ -157,6 +165,103 @@ namespace BackroomsSurvival.Gameplay.Mapping
             for (int k = 0; k < stroke.KeyCount; k++) sheet.AddEdge(_keys[stroke.KeyStart + k]);
             return true;
         }
+
+        /// <summary>
+        /// P0.3 — añade a la hoja una flecha de borde por cada zona vecina a la que el recuerdo demuestra que se
+        /// pasó andando (<see cref="MapMemory.Crossings"/>), en el borde y a la altura por donde se cruzó, o un
+        /// enlace de planta. Una por vecina. Devuelve cuántas son nuevas.
+        /// </summary>
+        public int AddLinks(MapSheet sheet, MapMemory memory)
+        {
+            if (!sheet.HasZone) return 0;
+            memory.Crossings(_crossings);
+
+            MapZone zone = sheet.Zone;
+            int cellsPerChunk = memory.CellsPerChunk;
+            int added = 0;
+            foreach (MapCrossing crossing in _crossings)
+            {
+                MapZone other;
+                if (crossing.From.Equals(zone)) other = crossing.To;
+                else if (crossing.To.Equals(zone)) other = crossing.From;
+                else continue;
+                if (sheet.HasLinkTo(other)) continue;
+
+                float max = cellsPerChunk - 0.5f;
+                float localX = Clamp(crossing.FromCellX - zone.ChunkX * cellsPerChunk + 0.5f, 0.5f, max);
+                float localZ = Clamp(crossing.FromCellZ - zone.ChunkZ * cellsPerChunk + 0.5f, 0.5f, max);
+                MapLinkSide side;
+
+                if (other.Storey != zone.Storey)
+                {
+                    side = other.Storey > zone.Storey ? MapLinkSide.StoreyUp : MapLinkSide.StoreyDown;
+                }
+                else
+                {
+                    int dx = other.ChunkX - zone.ChunkX, dz = other.ChunkZ - zone.ChunkZ;
+                    if (Math.Abs(dx) + Math.Abs(dz) != 1) continue; // por una esquina no se demuestra un borde
+                    if (dx > 0) { side = MapLinkSide.East; localX = cellsPerChunk - ArrowInsetCells; }
+                    else if (dx < 0) { side = MapLinkSide.West; localX = ArrowInsetCells; }
+                    else if (dz > 0) { side = MapLinkSide.North; localZ = cellsPerChunk - ArrowInsetCells; }
+                    else { side = MapLinkSide.South; localZ = ArrowInsetCells; }
+                }
+
+                sheet.Links.Add(new MapLink(other, side, localX, localZ));
+                added++;
+            }
+
+            return added;
+        }
+
+        /// <summary>
+        /// P0.3 — las aristas pared↔suelo de lo visto en los últimos <paramref name="maxAgeSeconds"/> en
+        /// <paramref name="zone"/>, con la misma regla que el dibujo pero INCLUYENDO lo ya dibujado. Rellena
+        /// <paramref name="keys"/> ordenadas y sin repetir.
+        /// </summary>
+        public int RecentEdges(MapZone zone, MapMemory memory, double now, double maxAgeSeconds, List<long> keys)
+        {
+            keys.Clear();
+            _floorAge.Clear();
+            memory.CellsInZone(zone, now, _cells, 1, maxAgeSeconds, includeConsumed: true);
+
+            foreach (RememberedCell cell in _cells)
+                if (cell.Kind == MapCellKind.Floor) _floorAge[CellKey(cell.X, cell.Z)] = cell.Age;
+
+            foreach (RememberedCell cell in _cells)
+            {
+                if (cell.Kind != MapCellKind.Wall) continue;
+                if (_floorAge.ContainsKey(CellKey(cell.X - 1, cell.Z))) keys.Add(EdgeKey(true, cell.X, cell.Z));
+                if (_floorAge.ContainsKey(CellKey(cell.X + 1, cell.Z))) keys.Add(EdgeKey(true, cell.X + 1, cell.Z));
+                if (_floorAge.ContainsKey(CellKey(cell.X, cell.Z - 1))) keys.Add(EdgeKey(false, cell.Z, cell.X));
+                if (_floorAge.ContainsKey(CellKey(cell.X, cell.Z + 1))) keys.Add(EdgeKey(false, cell.Z + 1, cell.X));
+            }
+
+            keys.Sort();
+            int unique = 0;
+            for (int i = 0; i < keys.Count; i++)
+                if (i == 0 || keys[i] != keys[i - 1]) keys[unique++] = keys[i];
+            keys.RemoveRange(unique, keys.Count - unique);
+            return keys.Count;
+        }
+
+        /// <summary>
+        /// P0.3 — «Ubicarme»: qué fracción de las paredes vistas en los últimos <paramref name="recentSeconds"/>
+        /// está ya DIBUJADA en la hoja. Devuelve -1 si se ha visto demasiado poco para decidir
+        /// (<see cref="MinRecognitionEdges"/>). Un chunk movido dibuja otras paredes y sale bajo sin código aparte.
+        /// </summary>
+        public float Recognize(MapSheet sheet, MapMemory memory, double now, double recentSeconds)
+        {
+            if (!sheet.HasZone) return -1f;
+            int count = RecentEdges(sheet.Zone, memory, now, recentSeconds, _recentKeys);
+            if (count < MinRecognitionEdges) return -1f;
+
+            int hits = 0;
+            foreach (long key in _recentKeys)
+                if (sheet.HasEdge(key)) hits++;
+            return hits / (float)count;
+        }
+
+        private static float Clamp(float value, float min, float max) => value < min ? min : value > max ? max : value;
 
         /// <summary>Clave estable de una arista entre celdas.</summary>
         public static long EdgeKey(bool vertical, int line, int pos) =>

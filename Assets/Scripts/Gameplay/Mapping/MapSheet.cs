@@ -39,6 +39,60 @@ namespace BackroomsSurvival.Gameplay.Mapping
         }
     }
 
+    /// <summary>Por dónde sigue la hoja: un borde del chunk o un cambio de planta.</summary>
+    public enum MapLinkSide : byte
+    {
+        North = 0,
+        East = 1,
+        South = 2,
+        West = 3,
+        StoreyUp = 4,
+        StoreyDown = 5,
+    }
+
+    /// <summary>P0.3 — flecha de borde: el recuerdo demostró que de esta zona se pasa a <see cref="To"/> por aquí.</summary>
+    public readonly struct MapLink
+    {
+        public readonly MapZone To;
+        public readonly MapLinkSide Side;
+        /// <summary>Posición de la flecha en celdas LOCALES de la zona.</summary>
+        public readonly float LocalX;
+        public readonly float LocalZ;
+
+        public MapLink(MapZone to, MapLinkSide side, float localX, float localZ)
+        {
+            To = to;
+            Side = side;
+            LocalX = localX;
+            LocalZ = localZ;
+        }
+    }
+
+    public enum MapMarkKind : byte
+    {
+        /// <summary>Te reconociste (≥ 70 %): círculo pequeño.</summary>
+        Here = 0,
+        /// <summary>Te suena (40–70 %): círculo grande discontinuo.</summary>
+        HereUnsure = 1,
+    }
+
+    /// <summary>P0.3 — marca de tinta en la hoja, en celdas locales.</summary>
+    public readonly struct MapMark
+    {
+        public readonly MapMarkKind Kind;
+        public readonly float LocalX;
+        public readonly float LocalZ;
+        public readonly uint Argb;
+
+        public MapMark(MapMarkKind kind, float localX, float localZ, uint argb)
+        {
+            Kind = kind;
+            LocalX = localX;
+            LocalZ = localZ;
+            Argb = argb;
+        }
+    }
+
     /// <summary>Todo lo dibujado de una vez con una misma herramienta.</summary>
     public sealed class MapSheetLayer
     {
@@ -65,8 +119,19 @@ namespace BackroomsSurvival.Gameplay.Mapping
         public readonly int Id;
         public readonly int Seed;
         public readonly List<MapSheetLayer> Layers = new List<MapSheetLayer>();
+        /// <summary>Flechas de borde, en orden de alta.</summary>
+        public readonly List<MapLink> Links = new List<MapLink>();
+        /// <summary>Marcas «estás aquí», en orden de alta.</summary>
+        public readonly List<MapMark> Marks = new List<MapMark>();
 
         private readonly HashSet<long> _edges = new HashSet<long>();
+
+        public bool HasLinkTo(MapZone zone)
+        {
+            foreach (MapLink link in Links)
+                if (link.To.Equals(zone)) return true;
+            return false;
+        }
 
         public MapSheet(int id, int seed)
         {

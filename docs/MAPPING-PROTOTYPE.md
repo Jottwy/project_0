@@ -278,6 +278,56 @@ dibujo a ese tamaño? ¿El temblor de lo viejo se lee como «esto no lo tengo cl
 jugador quieto también sin dibujar (el 45 % de velocidad llega con el jugador STP en P0.5); cerrar la libreta
 devuelve la mirada con `SendMessage("SetLooking")` al `Wg3TestPlayer`, sin tocar WG3.
 
+---
+
+## 4. P0.3 — Flechas de borde y «Ubicarme» (plan; Joel pidió aplicarlo, 2026-09-13)
+
+Diseño ya decidido en MAPPING-ROADMAP §3 (flechas de borde) y §3b (Ubicarme, D12 y D14: 70 % / 40 %, recuerdo
+reciente de 8 s). Sigue en `MappingPlaytest.unity`, local, sin red ni guardado.
+
+### 4.1 Qué se juega
+
+- **Flechas de borde.** Si en el recuerdo pasas andando de la zona de la hoja a otra (o cambias de planta), al
+  dibujar la hoja apunta una flecha a lápiz en el borde por donde saliste (o un peldaño si fue de planta), y guarda
+  el enlace a la zona vecina. Una por vecina.
+- **«Ubicarme».** Botón de la libreta. Compara lo que viste en los últimos 8 s con las paredes DIBUJADAS de cada
+  hoja de tu planta: ≥ 70 % → círculo pequeño «estás aquí» en esa hoja, que se abre sola; 40–70 % → círculo grande
+  discontinuo; < 40 % → «no reconoces este sitio: en tu mapa está en blanco» y botón «Coger hoja y mapear aquí».
+  Con menos de 10 paredes vistas no hay veredicto.
+
+### 4.2 Diseño
+
+1. **`MapMemory`**: cada muestra guarda la celda del JUGADOR (además de su planta); `Crossings` devuelve los pasos
+   entre zonas de muestras consecutivas. `Consume` deja de BORRAR: marca, y las consultas normales lo saltan, pero
+   el reconocimiento lo sigue viendo (si no, justo después de dibujar no te reconocerías). `CellsInZone` gana
+   `maxAgeSeconds`.
+2. **`MapSheet`**: `Links` (zona vecina, lado, posición local) y `Marks` («estás aquí» seguro o dudoso), en orden
+   de alta.
+3. **`MapSheetStrokeBuilder`**: `AddLinks(sheet, memory)` a partir de `Crossings`; `RecentEdges` extrae las aristas
+   de los últimos N segundos con la misma regla que el dibujo, sin descontar lo ya dibujado, y **`Recognize`**
+   devuelve la fracción que ya está en la hoja.
+4. **`MapSheetRaster`**: flecha (asta + punta) o peldaño a lápiz gris; círculo «estás aquí» con la tinta del boli.
+5. **`MapNotebookView`**: botón «Ubicarme», resultado y «Coger hoja y mapear aquí»; log `MAPFIX`.
+
+### 4.3 Tests
+
+| Test | Qué fija |
+|---|---|
+| `EachSampleRemembersWhereThePlayerStood` / `CrossingIntoTheNextChunkIsReported` | Celda del jugador y cruces |
+| `ConsumedCellsStillCountForRecognition` | Consumir marca, no borra |
+| `CrossingTheBorderAddsOneArrowOnThatSide` | Flecha, lado y posición; una por vecina |
+| `ChangingStoreyAddsAStairLink` | Enlace de planta |
+| `AWellDrawnSheetIsRecognised` / `ABlankZoneIsNotRecognised` | ≥ 70 % y 0 % |
+| `AMovedChunkNoLongerMatches` | Displacement sin código: otra geometría, puntuación baja |
+| `TooLittleSeenGivesNoVerdict` | < 10 paredes |
+| `ArrowsAndHereMarksArePainted` | Raster |
+
+### 4.4 Commits
+
+1. `feat(mapping): el recuerdo sabe dónde estabas y qué cruzaste` — `MapMemory` + tests.
+2. `feat(mapping): flechas de borde y reconocimiento` — `MapSheet`, builder + tests.
+3. `feat(mapping): Ubicarme en la libreta` — raster, vista, escena.
+
 ### 3.9 El libro de supervivencia de STP: modelo base para la libreta (Joel, 2026-09-13)
 
 Joel propone aprovechar el libro de crafteo/construcción que ya existe como modelo para la libreta, y más adelante
