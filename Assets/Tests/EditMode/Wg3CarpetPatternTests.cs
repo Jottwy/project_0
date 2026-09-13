@@ -95,8 +95,19 @@ namespace BackroomsSurvival.Tests
                 for (int x = 0; x < Size; x++) s += Math.Abs(Luma(_albedo, y0 * Size + x) - Luma(_albedo, y1 * Size + x));
                 return s / Size;
             }
-            double neighbourCols = (ColDiff(100, 101) + ColDiff(700, 701) + ColDiff(1500, 1501)) / 3.0;
-            double neighbourRows = (RowDiff(100, 101) + RowDiff(700, 701) + RowDiff(1500, 1501)) / 3.0;
+            // Pares IMPAR → PAR, como el del borde (2047 → 0): el grano va en bloques de 2 px, y un
+            // par dentro del mismo bloque (100 → 101) diferencia menos por construcción. Con esos
+            // pares de referencia el test daba costura (4,06 contra 3,87) donde no la hay.
+            double neighbourCols = 0, neighbourRows = 0;
+            int pairs = 0;
+            for (int k = 1; k < Size - 1; k += 128)
+            {
+                neighbourCols += ColDiff(k, k + 1);
+                neighbourRows += RowDiff(k, k + 1);
+                pairs++;
+            }
+            neighbourCols /= pairs;
+            neighbourRows /= pairs;
             Assert.LessOrEqual(ColDiff(Size - 1, 0), neighbourCols * 1.3, "costura vertical");
             Assert.LessOrEqual(RowDiff(Size - 1, 0), neighbourRows * 1.3, "costura horizontal");
         }
