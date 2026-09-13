@@ -33,7 +33,13 @@ namespace BackroomsSurvival.Gameplay.Body
         private bool _inert;
         private uint _draws;
 
-        private void Awake() => Instance = this;
+        private BackroomsGarmentPrototype _garments;
+
+        private void Awake()
+        {
+            Instance = this;
+            _garments = GetComponent<BackroomsGarmentPrototype>();
+        }
 
         private void OnDestroy()
         {
@@ -108,6 +114,17 @@ namespace BackroomsSurvival.Gameplay.Body
             var zone = args.HitPoint != Vector3.zero
                 ? BodyZoneResolver.FromLocalPoint(_player.transform.InverseTransformPoint(args.HitPoint))
                 : BodyZoneResolver.Draw(args.DamageType, (uint)Time.frameCount + ++_draws);
+            // ADR-149 enm. 1: la prenda más exterior que cubre la zona para parte del golpe (sin backend se devuelve en el
+            // mismo frame) y se rompe; la lesión se calcula sobre lo que pasa.
+            float protection = _garments != null ? _garments.Absorb(zone, amount, args.DamageType) : 0f;
+            if (protection > 0f)
+            {
+                float stopped = amount * protection;
+                _applyingBleed = true;
+                _health.RestoreHealth(stopped);
+                _applyingBleed = false;
+                amount -= stopped;
+            }
             var injury = Local.ApplyDamage(zone, amount, args.DamageType);
             if (injury != BodyInjury.None)
                 Debug.Log($"[Cuerpo] {amount:0.#} de {args.DamageType} en {BodyZones.Label(zone)}: {injury}");

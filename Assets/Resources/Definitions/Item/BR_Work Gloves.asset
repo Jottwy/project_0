@@ -15,7 +15,9 @@ MonoBehaviour:
   _id: 1565584061
   _parentGroup: {fileID: 11400000, guid: cf5dd5a63069e21458615566eb5d16e7, type: 2}
   _icon: {fileID: 21300000, guid: c8e5001c6063af147b285d0e616d964d, type: 3}
-  _description: A pair of leather work gloves.
+  _description: 'A pair of leather work gloves.
+
+    30% protection'
   _longDescription: 
   _pickup: {fileID: 1268441167, guid: d7a14c394c25c2c45ad90cb6847300c0, type: 3}
   _stackPickup: {fileID: 5039848590447293739, guid: 60f7bf66f2292d34d86470c5b3928e92, type: 3}
@@ -27,7 +29,18 @@ MonoBehaviour:
   _actions:
   - {fileID: 11400000, guid: cfea35ee23f1fda47a276a7b208543f9, type: 2}
   _properties: []
-  _data: []
+  _data:
+  - rid: 3885882211262267635
   references:
     version: 2
-    RefIds: []
+    RefIds:
+    - rid: 3885882211262267635
+      type: {class: GarmentZonesData, ns: BackroomsSurvival.Gameplay.Body, asm: BackroomsSurvival}
+      data:
+        _zones:
+        - Zone: 7
+          Protection: 0.3
+          PocketSlots: 0
+        - Zone: 8
+          Protection: 0.3
+          PocketSlots: 0

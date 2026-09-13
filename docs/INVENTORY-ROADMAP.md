@@ -441,5 +441,14 @@ tinte sobre la UI piden overlay propio o canvas en Screen Space Camera.
   `PlayerMedicalState` (R2). Vista Heridas con las 15 zonas: clic trata con venda o férula del inventario. En la escena,
   tres placas de daño (cristales → pie der. corte; golpe → antebrazo izq. fractura; caída → zona sorteada) y 2 vendas y
   2 férulas (`BR_Splint`, placeholder).
-- **Siguen:** R1 ropa por zonas y sastrería (sin wire), R2 autoridad del servidor y guardado, R3 PvP con zona, R4 visual.
+- **Enmienda 1 (Joel, 2026-09-13):** bolsillo = huecos de una zona, se tachan con cruz y coser (aguja + hilo, tela si es
+  desgarro) los devuelve al 90 %; cinta 60 % sin bolsillo. Bala, puñalada o zarpazo rompen el bolsillo SIEMPRE; lo que llevaba
+  pasa a otro hueco o cae al suelo con aviso. ANOTADO: máquina de coser que mejore mucho el arreglo. PENDIENTE de Joel: ¿un
+  guante por mano? («uno por par, da más personalidad»).
+- **R1 hecha, pendiente de Play** — `GarmentZonesData`/`GarmentState` (en memoria por instancia), `GarmentPocketRestriction`,
+  `BackroomsGarmentPrototype` (protege la prenda más exterior, vuelca bolsillos rotos y al quitarse la prenda, cose o pone
+  cinta). Contenedores `OuterPockets`/`LegsPockets` (índices 12 y 13) con secciones «BOLSILLOS · ENCIMA/PIERNAS» y cruz en
+  los huecos rotos. Chaqueta con 4 huecos, pantalón de trabajo con 2, guantes por mano; aguja e hilo propios, cinta y tela del
+  vendor. Vista Heridas: clic derecho repara.
+- **Siguen:** R2 autoridad del servidor y guardado, R3 PvP con zona, R4 visual.
 

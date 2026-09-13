@@ -187,6 +187,7 @@ namespace BackroomsSurvival.EditorTools
             var backpacks = BackroomsBackpackPrototypeCreator.EnsureAssets();
             var belts = BackroomsBackpackPrototypeCreator.EnsureBelts();
             var garments = BackroomsBackpackPrototypeCreator.EnsureGarments();
+            BackroomsBackpackPrototypeCreator.EnsureTailoring();
             if (backpacks.Length == 0) return;
 
             var player = Object.FindAnyObjectByType<Player>(FindObjectsInactive.Include);
@@ -218,6 +219,11 @@ namespace BackroomsSurvival.EditorTools
                 AssetDatabase.LoadAssetAtPath<ContainerRestriction>(BackroomsBackpackPrototypeCreator.GlovesRestrictionPath));
             EnsureContainer(list, BackroomsBackpackPrototypeCreator.FaceContainer, 1,
                 AssetDatabase.LoadAssetAtPath<ContainerRestriction>(BackroomsBackpackPrototypeCreator.FaceRestrictionPath));
+            // ADR-149 enm. 1: bolsillos de la chaqueta y del pantalón, también al final (índices 12 y 13).
+            EnsureContainer(list, BackroomsBackpackPrototypeCreator.OuterPocketsContainer, BackroomsBackpackPrototypeCreator.PocketContainerSlots,
+                AssetDatabase.LoadAssetAtPath<ContainerRestriction>(BackroomsBackpackPrototypeCreator.OuterPocketsRestrictionPath));
+            EnsureContainer(list, BackroomsBackpackPrototypeCreator.LegsPocketsContainer, BackroomsBackpackPrototypeCreator.PocketContainerSlots,
+                AssetDatabase.LoadAssetAtPath<ContainerRestriction>(BackroomsBackpackPrototypeCreator.LegsPocketsRestrictionPath));
             // D14 enm. 1: base de 9 y barra de 8 (2 manos + cinturón), capada por lo que lleves en la cintura. Override de
             // ESCENA sobre los contenedores 0 y 1 del vendor: el prefab del jugador no cambia.
             SetSlots(list, BackroomsBackpackPrototypeCreator.BaseContainer, BackroomsBackpackPrototypeCreator.BaseSlots);
@@ -286,13 +292,36 @@ namespace BackroomsSurvival.EditorTools
             so.FindProperty("_splint").objectReferenceValue = splint;
             so.ApplyModifiedPropertiesWithoutUndo();
 
-            if (GameObject.Find("HurtPads") == null)
+            // ADR-149 enm. 1: ropa por zonas y costura.
+            var tailoring = BackroomsBackpackPrototypeCreator.EnsureTailoring();
+            var cloth = AssetDatabase.LoadAssetAtPath<ItemDefinition>(BackroomsBackpackPrototypeCreator.VendorClothPath);
+            var tape = AssetDatabase.LoadAssetAtPath<ItemDefinition>(BackroomsBackpackPrototypeCreator.VendorTapePath);
+            var clothes = go.GetComponent<BackroomsGarmentPrototype>();
+            if (clothes == null) clothes = go.AddComponent<BackroomsGarmentPrototype>();
+            var gs = new SerializedObject(clothes);
+            gs.FindProperty("_needle").objectReferenceValue = tailoring.needle;
+            gs.FindProperty("_thread").objectReferenceValue = tailoring.thread;
+            gs.FindProperty("_cloth").objectReferenceValue = cloth;
+            gs.FindProperty("_tape").objectReferenceValue = tape;
+            gs.ApplyModifiedPropertiesWithoutUndo();
+            if (GameObject.Find("Tailoring") == null)
             {
-                var pads = new GameObject("HurtPads").transform;
-                HurtPad(pads, "Pad_Cristales (pie der., corte)", new Vector3(-3f, 0f, 2f), DamageType.Slash, 16f, true, new Vector3(0.12f, 0.05f, 0.2f));
-                HurtPad(pads, "Pad_Golpe (antebrazo izq., fractura)", new Vector3(0f, 0f, 2f), DamageType.Blunt, 32f, true, new Vector3(-0.3f, 0.95f, 0.2f));
-                HurtPad(pads, "Pad_Caida (zona sorteada)", new Vector3(3f, 0f, 2f), DamageType.Fall, 30f, false, Vector3.zero);
+                var tailor = new GameObject("Tailoring").transform;
+                SpawnPickup(tailoring.needle, tailor, new Vector3(6.2f, 0.3f, -1.5f));
+                SpawnPickup(tailoring.thread, tailor, new Vector3(7.0f, 0.3f, -1.5f));
+                SpawnPickup(tailoring.thread, tailor, new Vector3(7.8f, 0.3f, -1.5f));
+                SpawnPickup(cloth, tailor, new Vector3(6.2f, 0.3f, -2.6f));
+                SpawnPickup(tape, tailor, new Vector3(7.0f, 0.3f, -2.6f));
+                SpawnPickup(AssetDatabase.LoadAssetAtPath<ItemDefinition>(BackroomsBackpackPrototypeCreator.TrousersPath), tailor, new Vector3(6.2f, 0.3f, -3.7f));
             }
+
+            var padsRoot = GameObject.Find("HurtPads");
+            var pads = padsRoot != null ? padsRoot.transform : new GameObject("HurtPads").transform;
+            HurtPad(pads, "Pad_Cristales (pie der., corte)", new Vector3(-3f, 0f, 2f), DamageType.Slash, 16f, true, new Vector3(0.12f, 0.05f, 0.2f));
+            HurtPad(pads, "Pad_Golpe (antebrazo izq., fractura)", new Vector3(0f, 0f, 2f), DamageType.Blunt, 32f, true, new Vector3(-0.3f, 0.95f, 0.2f));
+            HurtPad(pads, "Pad_Caida (zona sorteada)", new Vector3(3f, 0f, 2f), DamageType.Fall, 30f, false, Vector3.zero);
+            // ADR-149 enm. 1: una bala al pecho agujerea la chaqueta y le rompe el bolsillo del pecho.
+            HurtPad(pads, "Pad_Bala (pecho, bolsillo)", new Vector3(6f, 0f, 2f), DamageType.Ballistic, 20f, true, new Vector3(0.08f, 1.3f, 0.2f));
             if (GameObject.Find("Medical") == null)
             {
                 var medical = new GameObject("Medical").transform;
@@ -307,6 +336,7 @@ namespace BackroomsSurvival.EditorTools
 
         private static void HurtPad(Transform parent, string name, Vector3 position, DamageType type, float damage, bool usePoint, Vector3 localHit)
         {
+            if (parent.Find(name) != null) return;
             var go = GameObject.CreatePrimitive(PrimitiveType.Cube);
             go.name = name;
             go.transform.SetParent(parent, false);
@@ -361,6 +391,7 @@ namespace BackroomsSurvival.EditorTools
             pickup.transform.SetParent(parent, false);
             pickup.transform.position = position;
             pickup.name = def.name;
+            if (pickup.GetComponent<ItemPickup>() == null) { Debug.LogWarning($"[InventoryTestScene] {def.name}: el pickup no es ItemPickup"); return; }
             var item = new SerializedObject(pickup.GetComponent<ItemPickup>());
             item.FindProperty("_item._value").intValue = def.Id;
             item.ApplyModifiedPropertiesWithoutUndo();

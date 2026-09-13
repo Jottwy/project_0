@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using BackroomsSurvival.Gameplay.Body;
 using PolymindGames;
 using PolymindGames.InventorySystem;
 using PolymindGames.UserInterface;
@@ -37,6 +38,19 @@ namespace BackroomsSurvival.Wearables
 
         [SerializeField]
         private TextMeshProUGUI _count;
+
+        // ADR-149 enm. 1: la misma sección sirve para los bolsillos de una prenda.
+        [SerializeField]
+        private string _label = "ESPALDA";
+
+        [SerializeField]
+        private string _emptyTitle = "SIN MOCHILA";
+
+        [SerializeField]
+        private string _emptyCount = "ponte una mochila";
+
+        private readonly Dictionary<ItemSlotUIBase, GameObject> _crosses = new();
+        private int _garmentVersion = -1;
 
         private readonly Dictionary<ItemSlotUIBase, (float start, bool appear)> _anims = new();
         private readonly List<ItemSlotUIBase> _finished = new();
@@ -87,7 +101,11 @@ namespace BackroomsSurvival.Wearables
                 worn = _owner.GetItemAtIndex(0).Item;
             WearableCapacityData capacity = null;
             worn?.Definition.TryGetDataOfType(out capacity);
-            int slots = _baseSlots + (capacity?.Slots ?? 0);
+            GarmentZonesData zones = null;
+            if (capacity == null) worn?.Definition.TryGetDataOfType(out zones);
+            var garment = zones != null ? GarmentState.Of(worn) : null;
+            int broken = garment != null ? garment.BrokenPocketSlots(zones) : 0;
+            int slots = _baseSlots + (capacity?.Slots ?? zones?.PocketSlots ?? 0);
 
             var slotsUI = _ui.ItemSlotsUI;
             if (slotsUI != null && slotsUI.Count > 0)
@@ -132,21 +150,29 @@ namespace BackroomsSurvival.Wearables
                 _placed = true;
             }
 
+            if (slotsUI != null)
+                for (int i = 0; i < slotsUI.Count; i++)
+                    SetCross(slotsUI[i], garment != null && i < slots && garment.IsPocketSlotBroken(zones, i));
+            _garmentVersion = GarmentState.Version;
+
             int used = 0;
             if (_storage != null)
                 for (int i = 0; i < Mathf.Min(slots, _storage.SlotsCount); i++)
                     if (_storage.GetItemAtIndex(i).HasItem()) used++;
 
             if (_title != null)
-                _title.text = worn != null ? $"ESPALDA · {worn.Name.ToUpperInvariant()}" : "ESPALDA · SIN MOCHILA";
+                _title.text = worn != null ? $"{_label} · {worn.Name.ToUpperInvariant()}" : $"{_label} · {_emptyTitle}";
             if (_count != null)
                 _count.text = capacity != null
                     ? $"{used}/{slots} huecos · {_storage?.Weight ?? 0f:0.#}/{capacity.MaxKg:0.#} kg"
-                    : "ponte una mochila";
+                    : zones != null && slots > 0
+                        ? $"{used}/{slots - broken} huecos" + (broken > 0 ? $" · {broken} rotos" : string.Empty)
+                        : worn != null ? "sin bolsillos" : _emptyCount;
         }
 
         private void Update()
         {
+            if (_garmentVersion != GarmentState.Version && _ui != null) Refresh();
             if (_anims.Count == 0) return;
             float now = Time.unscaledTime;
             _finished.Clear();
@@ -171,6 +197,33 @@ namespace BackroomsSurvival.Wearables
                 }
                 _anims.Remove(slot);
             }
+        }
+
+        /// <summary>Cruz sobre un hueco de bolsillo roto: el hueco sigue en su sitio, tachado, hasta que se cosa.</summary>
+        private void SetCross(ItemSlotUIBase slot, bool broken)
+        {
+            _crosses.TryGetValue(slot, out var cross);
+            if (cross == null)
+            {
+                if (!broken) return;
+                var font = slot.GetComponentInChildren<TextMeshProUGUI>(true);
+                cross = new GameObject("BR_BrokenPocket", typeof(RectTransform), typeof(TextMeshProUGUI));
+                var rt = (RectTransform)cross.transform;
+                rt.SetParent(slot.transform, false);
+                rt.anchorMin = Vector2.zero;
+                rt.anchorMax = Vector2.one;
+                rt.offsetMin = Vector2.zero;
+                rt.offsetMax = Vector2.zero;
+                var tmp = cross.GetComponent<TextMeshProUGUI>();
+                if (font != null) tmp.font = font.font;
+                tmp.text = "X";
+                tmp.fontSize = 48f;
+                tmp.alignment = TextAlignmentOptions.Center;
+                tmp.color = new Color(0.56f, 0.14f, 0.11f, 0.9f);
+                tmp.raycastTarget = false;
+                _crosses[slot] = cross;
+            }
+            if (cross.activeSelf != broken) cross.SetActive(broken);
         }
 
         /// <summary>Escalar desde el centro del hueco, no desde su esquina; la rejilla recoloca con el pivote nuevo.</summary>

@@ -498,7 +498,17 @@ namespace BackroomsSurvival.EditorTools
 
                     var pockets = Section(inventory, "BR_PocketsSection", theme, secondTop, secondH, "BASE", BackroomsBackpackPrototypeCreator.BaseSlots + " huecos", 3);
                     PlaceGrid(backpack, secondTop, secondH);
-                    BuildSections(inventory, firstTop, new[] { "bag", "pockets" }, new[] { bag, pockets }, new[] { storage, backpack }, theme);
+                    // ADR-149 enm. 1: bolsillos de lo puesto encima y en las piernas, con los huecos rotos tachados.
+                    float thirdTop = secondTop + secondH + 12f;
+                    float pocketH = SectionHeight(4);
+                    var (outerSection, outerGrid) = PocketSection(inventory, inventoryUI, backpack, theme, "BR_OuterPocketsSection", "BR_OuterPockets",
+                        BackroomsBackpackPrototypeCreator.OuterPocketsContainer, BackroomsBackpackPrototypeCreator.OuterContainer, "BOLSILLOS · ENCIMA",
+                        thirdTop, pocketH, 4);
+                    var (legsSection, legsGrid) = PocketSection(inventory, inventoryUI, backpack, theme, "BR_LegsPocketsSection", "BR_LegsPockets",
+                        BackroomsBackpackPrototypeCreator.LegsPocketsContainer, "Legs", "BOLSILLOS · PIERNAS", thirdTop + pocketH + 12f, pocketH, 6);
+                    BuildSections(inventory, firstTop, new[] { "bag", "pockets", "outer", "legs" }, new[] { bag, pockets, outerSection, legsSection },
+                        new[] { storage, backpack, outerGrid, legsGrid }, theme);
+                    report.Count("bolsillos por prenda", 2);
                     report.Count("almacén de la espalda", 1);
                 }
                 else report.Missing("Inventory/Backpack");
@@ -783,6 +793,29 @@ namespace BackroomsSurvival.EditorTools
         }
 
         /// <summary>Sección del centro (cabecera y caja; plegar llega después).</summary>
+        private static (RectTransform section, RectTransform grid) PocketSection(RectTransform inventory, InventoryUI inventoryUI,
+            RectTransform template, BackroomsUiTheme theme, string sectionName, string gridName, string container, string owner, string label,
+            float top, float height, int sibling)
+        {
+            var section = Section(inventory, sectionName, theme, top, height, label + " · SIN PRENDA", "ponte una prenda con bolsillos", sibling);
+            var grid = EnsureRect(inventory, gridName, typeof(GridLayoutGroup), typeof(ItemContainerUI), typeof(BackroomsWornSlotsUI));
+            grid.SetSiblingIndex(sibling + 1);
+            PlaceGrid(grid, top, height);
+            var ui = grid.GetComponent<ItemContainerUI>();
+            BindContainerUI(ui, container, template.GetComponent<ItemContainerUI>());
+            RegisterContainerUI(inventoryUI, ui);
+            EnsureSlots(ui, BackroomsBackpackPrototypeCreator.PocketContainerSlots, theme);
+            var so = new SerializedObject(grid.GetComponent<BackroomsWornSlotsUI>());
+            so.FindProperty("_ownerContainer").stringValue = owner;
+            so.FindProperty("_label").stringValue = label;
+            so.FindProperty("_emptyTitle").stringValue = "SIN PRENDA";
+            so.FindProperty("_emptyCount").stringValue = "ponte una prenda con bolsillos";
+            so.FindProperty("_title").objectReferenceValue = section.Find("Title").GetComponent<TextMeshProUGUI>();
+            so.FindProperty("_count").objectReferenceValue = section.Find("Count").GetComponent<TextMeshProUGUI>();
+            so.ApplyModifiedPropertiesWithoutUndo();
+            return (section, grid);
+        }
+
         private static RectTransform Section(RectTransform inventory, string name, BackroomsUiTheme theme, float y, float height,
             string title, string count, int siblingIndex)
         {
@@ -1033,7 +1066,7 @@ namespace BackroomsSurvival.EditorTools
             caption.sizeDelta = new Vector2(0f, 40f);
             caption.anchoredPosition = new Vector2(0f, 4f);
             var captionText = caption.GetComponent<TextMeshProUGUI>();
-            captionText.text = "Clic en una zona: venda o férula del inventario";
+            captionText.text = "Clic: venda o férula · clic derecho: coser o cinta";
             captionText.alignment = TextAlignmentOptions.Center;
             captionText.fontSize = 13f;
             captionText.raycastTarget = false;
