@@ -31,11 +31,18 @@ namespace BackroomsSurvival.Gameplay.Mapping
         public readonly float[] Points;
         /// <summary>Recuerdo viejo: se pinta tembloroso y discontinuo.</summary>
         public readonly bool Old;
+        /// <summary>P0.4 — pasado a limpio: grosor y tinta constantes, sin borrón.</summary>
+        public readonly bool Steady;
 
-        public MapStroke(float[] points, bool old)
+        public MapStroke(float[] points, bool old) : this(points, old, false)
+        {
+        }
+
+        public MapStroke(float[] points, bool old, bool steady)
         {
             Points = points;
             Old = old;
+            Steady = steady;
         }
     }
 
@@ -133,10 +140,14 @@ namespace BackroomsSurvival.Gameplay.Mapping
             return false;
         }
 
-        public MapSheet(int id, int seed)
+        /// <summary>P0.4 — versión pasada a limpio en la base (MAPPING-ROADMAP §7b).</summary>
+        public readonly bool Clean;
+
+        public MapSheet(int id, int seed, bool clean = false)
         {
             Id = id;
             Seed = seed;
+            Clean = clean;
         }
 
         public bool HasZone { get; private set; }
@@ -155,6 +166,14 @@ namespace BackroomsSurvival.Gameplay.Mapping
         public bool HasEdge(long key) => _edges.Contains(key);
 
         internal void AddEdge(long key) => _edges.Add(key);
+
+        /// <summary>Las aristas dibujadas, ORDENADAS (regla 13: nunca en el orden del conjunto).</summary>
+        public void CopyEdgesTo(List<long> keys)
+        {
+            keys.Clear();
+            keys.AddRange(_edges);
+            keys.Sort();
+        }
 
         public MapSheetLayer BeginLayer(MapPen pen)
         {
