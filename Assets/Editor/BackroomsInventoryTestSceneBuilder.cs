@@ -215,7 +215,9 @@ namespace BackroomsSurvival.EditorTools
             // Pieza 6: Encima, Manos (el par de guantes) y Cara, también al final.
             EnsureContainer(list, BackroomsBackpackPrototypeCreator.OuterContainer, 1,
                 AssetDatabase.LoadAssetAtPath<ContainerRestriction>(BackroomsBackpackPrototypeCreator.OuterRestrictionPath));
-            EnsureContainer(list, BackroomsBackpackPrototypeCreator.GlovesContainer, 1,
+            // Un guante por mano: el hueco del par pasa a ser el izquierdo (mismo índice); el derecho va al final.
+            RenameContainer(list, "Gloves", BackroomsBackpackPrototypeCreator.GloveLContainer);
+            EnsureContainer(list, BackroomsBackpackPrototypeCreator.GloveLContainer, 1,
                 AssetDatabase.LoadAssetAtPath<ContainerRestriction>(BackroomsBackpackPrototypeCreator.GlovesRestrictionPath));
             EnsureContainer(list, BackroomsBackpackPrototypeCreator.FaceContainer, 1,
                 AssetDatabase.LoadAssetAtPath<ContainerRestriction>(BackroomsBackpackPrototypeCreator.FaceRestrictionPath));
@@ -224,6 +226,8 @@ namespace BackroomsSurvival.EditorTools
                 AssetDatabase.LoadAssetAtPath<ContainerRestriction>(BackroomsBackpackPrototypeCreator.OuterPocketsRestrictionPath));
             EnsureContainer(list, BackroomsBackpackPrototypeCreator.LegsPocketsContainer, BackroomsBackpackPrototypeCreator.PocketContainerSlots,
                 AssetDatabase.LoadAssetAtPath<ContainerRestriction>(BackroomsBackpackPrototypeCreator.LegsPocketsRestrictionPath));
+            EnsureContainer(list, BackroomsBackpackPrototypeCreator.GloveRContainer, 1,
+                AssetDatabase.LoadAssetAtPath<ContainerRestriction>(BackroomsBackpackPrototypeCreator.GlovesRestrictionPath));
             // D14 enm. 1: base de 9 y barra de 8 (2 manos + cinturón), capada por lo que lleves en la cintura. Override de
             // ESCENA sobre los contenedores 0 y 1 del vendor: el prefab del jugador no cambia.
             SetSlots(list, BackroomsBackpackPrototypeCreator.BaseContainer, BackroomsBackpackPrototypeCreator.BaseSlots);
@@ -239,6 +243,9 @@ namespace BackroomsSurvival.EditorTools
             // D6 enm. 3: la carga frena; y lo que da cada prenda puesta.
             if (worn.GetComponent<BackroomsCarrySpeed>() == null) worn.AddComponent<BackroomsCarrySpeed>();
             if (worn.GetComponent<BackroomsWornStats>() == null) worn.AddComponent<BackroomsWornStats>();
+            var stats = new SerializedObject(worn.GetComponent<BackroomsWornStats>());
+            SetStrings(stats.FindProperty("_wornContainers"), new[] { "Head", "Torso", "Legs", "Feet", "Back", "Waist", "Outer", "GloveL", "GloveR", "Face" });
+            stats.ApplyModifiedPropertiesWithoutUndo();
 
             var root = GameObject.Find("Backpacks");
             if (root == null)
@@ -268,6 +275,14 @@ namespace BackroomsSurvival.EditorTools
                 var garmentRoot = new GameObject("Garments");
                 for (int i = 0; i < garments.Length; i++)
                     SpawnPickup(garments[i], garmentRoot.transform, new Vector3(-2.6f - i * 0.9f, 0.3f, -3.7f));
+            }
+            // Un guante por mano: un segundo guante en el suelo.
+            var glove = AssetDatabase.LoadAssetAtPath<ItemDefinition>("Assets/Resources/Definitions/Item/BR_Work Glove.asset");
+            var gloves = GameObject.Find("Garments");
+            if (glove != null && gloves != null && GameObject.Find("BR_Work Glove (2)") == null)
+            {
+                SpawnPickup(glove, gloves.transform, new Vector3(-3.5f, 0.3f, -4.8f));
+                gloves.transform.GetChild(gloves.transform.childCount - 1).name = "BR_Work Glove (2)";
             }
             Debug.Log("[InventoryTestScene] prototipo de mochilas montado");
         }
@@ -303,6 +318,7 @@ namespace BackroomsSurvival.EditorTools
             gs.FindProperty("_thread").objectReferenceValue = tailoring.thread;
             gs.FindProperty("_cloth").objectReferenceValue = cloth;
             gs.FindProperty("_tape").objectReferenceValue = tape;
+            SetStrings(gs.FindProperty("_layers"), new[] { "Outer", "Torso", "Legs", "Feet", "GloveL", "GloveR", "Head", "Face" });
             gs.ApplyModifiedPropertiesWithoutUndo();
             if (GameObject.Find("Tailoring") == null)
             {
@@ -354,6 +370,26 @@ namespace BackroomsSurvival.EditorTools
             so.FindProperty("_usePoint").boolValue = usePoint;
             so.FindProperty("_localHitPoint").vector3Value = localHit;
             so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        private static void SetStrings(SerializedProperty array, string[] values)
+        {
+            array.arraySize = values.Length;
+            for (int i = 0; i < values.Length; i++) array.GetArrayElementAtIndex(i).stringValue = values[i];
+        }
+
+        /// <summary>Renombra un contenedor conservando su índice, si todavía no existe el nombre nuevo.</summary>
+        private static void RenameContainer(SerializedProperty list, string from, string to)
+        {
+            for (int i = 0; i < list.arraySize; i++)
+                if (list.GetArrayElementAtIndex(i).FindPropertyRelative("Name").stringValue == to) return;
+            for (int i = 0; i < list.arraySize; i++)
+            {
+                var name = list.GetArrayElementAtIndex(i).FindPropertyRelative("Name");
+                if (name.stringValue != from) continue;
+                name.stringValue = to;
+                return;
+            }
         }
 
         private static SerializedProperty FindContainerEntry(SerializedProperty list, string name)

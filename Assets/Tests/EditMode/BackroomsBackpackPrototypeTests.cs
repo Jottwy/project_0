@@ -245,7 +245,8 @@ namespace BackroomsSurvival.Tests
             var pieces = new[]
             {
                 ("Outer", "BR_Work Jacket", tags + "BR_Outer Equipment.asset"),
-                ("Gloves", "BR_Work Gloves", tags + "BR_Hands Equipment.asset"),
+                ("GloveL", "BR_Work Glove", tags + "BR_Hands Equipment.asset"),
+                ("GloveR", "BR_Work Glove", tags + "BR_Hands Equipment.asset"),
                 ("Face", "BR_Dust Mask", tags + "BR_Face Equipment.asset"),
             };
             string scene = File.ReadAllText(TestScenePath);

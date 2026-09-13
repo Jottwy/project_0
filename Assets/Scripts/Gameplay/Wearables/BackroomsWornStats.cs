@@ -17,7 +17,7 @@ namespace BackroomsSurvival.Wearables
     public sealed class BackroomsWornStats : MonoBehaviour
     {
         [SerializeField]
-        private string[] _wornContainers = { "Head", "Torso", "Legs", "Feet", "Back", "Waist", "Outer", "Gloves", "Face" };
+        private string[] _wornContainers = { "Head", "Torso", "Legs", "Feet", "Back", "Waist", "Outer", "GloveL", "GloveR", "Face" };
 
         [SerializeField, Range(-50f, 0f)]
         private float _minSpeedPct = -30f;

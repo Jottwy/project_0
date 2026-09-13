@@ -8,8 +8,9 @@ namespace BackroomsSurvival.Gameplay.Body
     /// <summary>
     /// ADR-149 rebanada R0: el cuerpo por zonas en LOCAL. Escucha el daño del jugador, decide la zona
     /// (<see cref="BodyZoneResolver"/>), abre la lesión, sangra, frena por las piernas y trata con venda o férula del
-    /// inventario. Condiciones de prototipo (como ADR-147): solo lo monta <c>BR_InventoryTest</c> y se apaga con backend
-    /// conectado. No toca <c>PlayerMedicalState</c> ni los bits 7/8 de la venda por brazo: eso es de R2.
+    /// inventario. Condiciones de prototipo (como ADR-147): solo lo monta <c>BR_InventoryTest</c>. Con backend conectado
+    /// (ADR-149 R2a) deja de decidir: el cuerpo es un espejo de <c>body_state</c> y tratar manda <c>treat_zone</c>. No toca
+    /// <c>PlayerMedicalState</c> ni los bits 7/8 de la venda por brazo: eso es R2c.
     /// </summary>
     public sealed class BackroomsBodyPrototype : MonoBehaviour
     {
@@ -28,9 +29,10 @@ namespace BackroomsSurvival.Gameplay.Body
         private IHealthManager _health;
         private IMovementControllerCC _movement;
         private IInventory _inventory;
+        private readonly byte[] _serverZones = new byte[BodyZones.Count];
         private float _pendingBleed;
         private bool _applyingBleed;
-        private bool _inert;
+        private IPCClient _ipc;
         private uint _draws;
 
         private BackroomsGarmentPrototype _garments;
@@ -49,15 +51,16 @@ namespace BackroomsSurvival.Gameplay.Body
 
         private void Update()
         {
-            if (_inert) return;
-            if (IPCClient.TryGetInstance(out var ipc) && ipc.IsConnected)
+            if (_ipc == null && IPCClient.TryGetInstance(out var ipc) && ipc.IsConnected)
             {
-                _inert = true;
-                Unbind();
-                Debug.LogWarning("[Cuerpo] backend conectado: el cuerpo por zonas se apaga (prototipo ADR-149 R0).");
-                return;
+                // ADR-149 R2a: con backend manda el servidor; aquí solo se espeja.
+                _ipc = ipc;
+                _ipc.AddEventListener(OnGameEvent);
+                Local.Clear();
+                Debug.Log("[Cuerpo] backend conectado: el cuerpo pasa a espejo de body_state (ADR-149 R2a).");
             }
             if (_player == null && !TryBind()) return;
+            if (_ipc != null) return;
 
             _pendingBleed += Local.Tick(Time.deltaTime);
             if (_pendingBleed >= 1f)
@@ -88,8 +91,18 @@ namespace BackroomsSurvival.Gameplay.Body
             return true;
         }
 
+        private void OnGameEvent(GameEventMsg ev)
+        {
+            if (BodyStateMirror.TryRead(ev, _serverZones, out _, out _)) Local.ApplyRaw(_serverZones);
+        }
+
         private void Unbind()
         {
+            if (_ipc != null)
+            {
+                _ipc.RemoveEventListener(OnGameEvent);
+                _ipc = null;
+            }
             if (_health != null)
             {
                 _health.DamageReceived -= OnDamageReceived;
@@ -109,7 +122,8 @@ namespace BackroomsSurvival.Gameplay.Body
 
         private void OnDamageReceived(float damage, in DamageArgs args)
         {
-            if (_applyingBleed || _player == null) return;
+            // Con backend la lesión la decide el servidor con el report_damage que ya manda PlayerPoseTransmitter.
+            if (_applyingBleed || _player == null || _ipc != null) return;
             float amount = Mathf.Abs(damage);
             var zone = args.HitPoint != Vector3.zero
                 ? BodyZoneResolver.FromLocalPoint(_player.transform.InverseTransformPoint(args.HitPoint))
@@ -142,6 +156,11 @@ namespace BackroomsSurvival.Gameplay.Body
             var item = treatment == BodyTreatment.Splint ? _splint : _bandage;
             string what = treatment == BodyTreatment.Splint ? "una férula" : "una venda";
             if (item == null || _inventory.RemoveItemsById(item.Id, 1) < 1) return $"Necesitas {what}";
+            if (_ipc != null)
+            {
+                _ipc.SendTreatZone((int)zone, (int)treatment);
+                return treatment == BodyTreatment.Splint ? $"Férula en {BodyZones.Label(zone)}" : $"Vendado: {BodyZones.Label(zone)}";
+            }
             Local.Treat(zone, treatment);
             return treatment == BodyTreatment.Splint ? $"Férula en {BodyZones.Label(zone)}" : $"Vendado: {BodyZones.Label(zone)}";
         }

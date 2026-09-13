@@ -28,11 +28,11 @@ MonoBehaviour:
   - {fileID: 11400000, guid: cfea35ee23f1fda47a276a7b208543f9, type: 2}
   _properties: []
   _data:
-  - rid: 3885882211262267638
+  - rid: 3885882211262267720
   references:
     version: 2
     RefIds:
-    - rid: 3885882211262267638
+    - rid: 3885882211262267720
       type: {class: GarmentZonesData, ns: BackroomsSurvival.Gameplay.Body, asm: BackroomsSurvival}
       data:
         _zones:

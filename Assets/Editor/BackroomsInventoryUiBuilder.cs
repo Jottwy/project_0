@@ -441,7 +441,7 @@ namespace BackroomsSurvival.EditorTools
                 if (character.Find("Containers/HeadContainer") is Transform headSlot && headSlot.TryGetComponent<ItemContainerUI>(out var headTemplate))
                 {
                     var rightSlots = EnsureRect(character, "BR_ContainersRight", typeof(VerticalLayoutGroup));
-                    Place(rightSlots, Vector2.one, Vector2.one, new Vector2(-8f, -(top + 40f)), new Vector2(88f, 4f * 80f + 3f * 28f));
+                    Place(rightSlots, Vector2.one, Vector2.one, new Vector2(-8f, -(top + 40f)), new Vector2(88f, 5f * 80f + 4f * 28f));
                     var column = rightSlots.GetComponent<VerticalLayoutGroup>();
                     column.spacing = 28f;
                     column.childAlignment = TextAnchor.UpperCenter;
@@ -450,6 +450,16 @@ namespace BackroomsSurvival.EditorTools
                     column.childForceExpandWidth = false;
                     column.childForceExpandHeight = false;
                     InspectionOnly(rightSlots.gameObject);
+                    // Un guante por mano: el hueco del par se retira y su entrada muerta sale de la lista del vendor.
+                    if (rightSlots.Find("BR_GlovesContainer") is Transform oldGloves)
+                    {
+                        Object.DestroyImmediate(oldGloves.gameObject);
+                        var inventorySo = new SerializedObject(inventoryUI);
+                        var uis = inventorySo.FindProperty("_nonPersistentContainers");
+                        for (int i = uis.arraySize - 1; i >= 0; i--)
+                            if (uis.GetArrayElementAtIndex(i).objectReferenceValue == null) uis.DeleteArrayElementAtIndex(i);
+                        inventorySo.ApplyModifiedPropertiesWithoutUndo();
+                    }
                     for (int k = 0; k < RightSlots.Length; k++)
                     {
                         var (slotName, containerName, label) = RightSlots[k];
@@ -948,7 +958,8 @@ namespace BackroomsSurvival.EditorTools
         {
             ("BR_FaceContainer", BackroomsBackpackPrototypeCreator.FaceContainer, "Face"),
             ("BR_OuterContainer", BackroomsBackpackPrototypeCreator.OuterContainer, "Outer"),
-            ("BR_GlovesContainer", BackroomsBackpackPrototypeCreator.GlovesContainer, "Gloves"),
+            ("BR_GloveLContainer", BackroomsBackpackPrototypeCreator.GloveLContainer, "Glove L"),
+            ("BR_GloveRContainer", BackroomsBackpackPrototypeCreator.GloveRContainer, "Glove R"),
             ("BR_WaistContainer", BackroomsBackpackPrototypeCreator.WaistContainer, "Waist"),
         };
 
@@ -1147,7 +1158,8 @@ namespace BackroomsSurvival.EditorTools
             ("Containers/FeetContainer", "Feet"),
             ("BR_ContainersRight/BR_FaceContainer", "Face"),
             ("BR_ContainersRight/BR_OuterContainer", "Outer"),
-            ("BR_ContainersRight/BR_GlovesContainer", "Hands"),
+            ("BR_ContainersRight/BR_GloveLContainer", "Hands"),
+            ("BR_ContainersRight/BR_GloveRContainer", "Hands"),
             ("BR_ContainersRight/BR_WaistContainer", "Waist"),
         };
 

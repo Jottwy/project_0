@@ -26,6 +26,8 @@ namespace BackroomsSurvival.Net
         public const string StpHarvestHit = "stp_harvest_hit";
         /// <summary>ADR-025 Slice B: report REAL local damage to the authoritative backend.</summary>
         public const string ReportDamage = "report_damage";
+        /// <summary>ADR-149 R2a: tratar una zona del cuerpo (1 venda, 2 férula); el backend valida y responde con body_state.</summary>
+        public const string TreatZone = "treat_zone";
         /// <summary>ADR-025 respawn-on-demand: ask the server to respawn (honored only while dead).</summary>
         public const string RespawnRequest = "respawn_request";
         /// <summary>ADR-028 Fase B: report the death-loot snapshot (full inventory + equipment

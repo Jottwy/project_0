@@ -588,7 +588,15 @@ namespace BackroomsSurvival.Net
         {
             _hitSeq++;
             if (IPCClient.TryGetInstance(out var ipc) && ipc.IsConnected)
-                ipc.SendReportDamage(Mathf.Abs(damage), args.DamageType.ToString());
+            {
+                // ADR-149 R2a: con punto de impacto, la zona sale de la altura y el lado sobre el cuerpo; sin punto (caídas),
+                // la sortea el backend por causa.
+                var body = _motor != null ? _motor.transform : null;
+                int zone = body != null && args.HitPoint != Vector3.zero
+                    ? (int)Gameplay.Body.BodyZoneResolver.FromLocalPoint(body.InverseTransformPoint(args.HitPoint))
+                    : -1;
+                ipc.SendReportDamage(Mathf.Abs(damage), args.DamageType.ToString(), zone);
+            }
 
             // Heridas por zona: el estado médico se alimenta AQUÍ y no desde un suscriptor propio
             // porque este método ya es el único sitio del cliente que sabe de daño local REAL. Un

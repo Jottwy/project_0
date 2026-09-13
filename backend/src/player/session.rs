@@ -41,6 +41,10 @@ pub struct Player {
     /// Yaw in degrees (Unity Y-axis rotation).
     pub rotation: f32,
     pub stats: PlayerStats,
+    /// ADR-149 R2: el cuerpo por zonas, con la misma autoridad que la salud (este backend). Se guarda en
+    /// `PlayerSnapshot.body` y se limpia al reaparecer.
+    #[serde(default)]
+    pub body: crate::player::body::BodyState,
     pub inventory: Inventory,
     pub equipped_stabilizer: Option<StabilizerTier>,
     /// ADR-020: cosmetic crouch state reported by the client, relayed to peers
@@ -192,6 +196,7 @@ impl Player {
             position: Vec3::new(0.0, 1.8, 0.0), // player height 1.8 units
             rotation: 0.0,
             stats: PlayerStats::default(),
+            body: crate::player::body::BodyState::default(),
             inventory: Inventory::new(),
             equipped_stabilizer: None,
             crouch: false,

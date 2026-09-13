@@ -34,7 +34,9 @@ namespace BackroomsSurvival.EditorTools
 
         // Pieza 6: slots de equipo nuevos, un hueco cada uno. Manos = el par de guantes (pregunta abierta del roadmap).
         public const string OuterContainer = "Outer";
-        public const string GlovesContainer = "Gloves";
+        // Joel (2026-09-13): un guante por mano, para llevar dos distintos.
+        public const string GloveLContainer = "GloveL";
+        public const string GloveRContainer = "GloveR";
         public const string FaceContainer = "Face";
 
         // ADR-149 enm. 1: un contenedor de bolsillos por hueco de prenda con bolsillos (índices 12 y 13 en la escena).
@@ -122,7 +124,7 @@ namespace BackroomsSurvival.EditorTools
                 new GarmentZone(BodyZone.Chest, 0.2f, 2), new GarmentZone(BodyZone.Abdomen, 0.2f, 2),
                 new GarmentZone(BodyZone.UpperArmL, 0.2f), new GarmentZone(BodyZone.UpperArmR, 0.2f),
                 new GarmentZone(BodyZone.ForearmL, 0.2f), new GarmentZone(BodyZone.ForearmR, 0.2f)),
-            new Garment("BR_Work Gloves", "A pair of leather work gloves.", "STP_Leather", HandsTagPath, 0.2f, 0f,
+            new Garment("BR_Work Glove", "A leather work glove, for either hand.", "STP_Leather", HandsTagPath, 0.1f, 0f,
                 new GarmentZone(BodyZone.HandL, 0.3f), new GarmentZone(BodyZone.HandR, 0.3f)),
             new Garment("BR_Dust Mask", "A paper dust mask.", "STP_Cloth", FaceTagPath, 0.05f, 0f),
             new Garment("BR_Running Shoes", "Light running shoes.", "STP_Boots", FeetTagPath, 0.6f, 8f),
@@ -180,6 +182,11 @@ namespace BackroomsSurvival.EditorTools
         /// <summary>Pieza 6: tags y restricciones de Encima, Manos y Cara, y las prendas de <see cref="Garments"/>.</summary>
         public static ItemDefinition[] EnsureGarments()
         {
+            // Un guante por mano: el asset del par se renombra (mismo GUID y mismo id).
+            const string oldGloves = ItemFolder + "/BR_Work Gloves.asset";
+            if (AssetDatabase.LoadAssetAtPath<ItemDefinition>(oldGloves) != null
+                && AssetDatabase.LoadAssetAtPath<ItemDefinition>(ItemFolder + "/BR_Work Glove.asset") == null)
+                AssetDatabase.RenameAsset(oldGloves, "BR_Work Glove");
             EnsureTagRestriction(OuterRestrictionPath, EnsureTag(OuterTagPath), "Solo ropa de encima");
             EnsureTagRestriction(GlovesRestrictionPath, EnsureTag(HandsTagPath), "Solo guantes");
             EnsureTagRestriction(FaceRestrictionPath, EnsureTag(FaceTagPath), "Solo para la cara");

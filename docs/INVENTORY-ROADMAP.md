@@ -455,5 +455,11 @@ tinte sobre la UI piden overlay propio o canvas en Screen Space Camera.
   cinta). Contenedores `OuterPockets`/`LegsPockets` (índices 12 y 13) con secciones «BOLSILLOS · ENCIMA/PIERNAS» y cruz en
   los huecos rotos. Chaqueta con 4 huecos, pantalón de trabajo con 2, guantes por mano; aguja e hilo propios, cinta y tela del
   vendor. Vista Heridas: clic derecho repara.
-- **Siguen:** R2 autoridad del servidor y guardado, R3 PvP con zona, R4 visual.
+- **Enmienda 2 (Joel, 2026-09-13): un guante por mano** — huecos `GloveL`/`GloveR`, la prenda es un guante que vale para
+  cualquier mano. Aplicado en código; pendiente rehacer variante y escena fuera de Play.
+- **R2a — backend HECHO y verificado** — `backend/src/player/body.rs` con oráculo `docs/data/body-zones.json`; `report_damage`
+  con zona, heridas del robapieles/PvP/entidades, sangrado, `treat_zone`, `body_state`, `PlayerSnapshot.body`. `cargo test`
+  1562/0 y sonda IPC en Python contra el exe debug. Cliente preparado (zona en `report_damage`, espejo de `body_state` en el
+  prototipo), pendiente de aplicar fuera de Play. Siguen R2b (ropa en el servidor), R2c (la venda del juego real como
+  espejo, con prueba online de Joel), R3 PvP con zona, R4 visual.
 
