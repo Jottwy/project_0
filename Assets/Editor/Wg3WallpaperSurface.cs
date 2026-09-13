@@ -65,6 +65,10 @@ namespace BackroomsSurvival.EditorTools
             mat.SetTextureScale("_OcclusionMap", s);
             mat.SetFloat("_OcclusionStrength", 1f);
             mat.SetFloat("_Metallic", 0f);
+            // A 1, no a la suavidad del papel: con máscara URP/Lit hace `specGloss.a *= _Smoothness`
+            // (LitInput.hlsl). Con el 0,1 que traía el material el papel salía diez veces más mate
+            // que la máscara (0,009 en vez de 0,09). Joel, 13-09: arreglarlo.
+            mat.SetFloat("_Smoothness", 1f);
             mat.SetFloat("_SmoothnessTextureChannel", 0f); // 0 = alfa del mapa metálico
             // Las palabras clave las pone el inspector al asignar a mano; por script hay que
             // ponerlas, o el shader compila la variante sin mapas y no se ve ninguno.
