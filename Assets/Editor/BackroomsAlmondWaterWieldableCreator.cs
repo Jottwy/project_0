@@ -412,18 +412,23 @@ namespace BackroomsSurvival.EditorTools
                 return;
             }
 
-            var root = PrefabUtility.LoadPrefabContents(PrefabPath);
+            // INSTANCIA DE ESCENA, no `LoadPrefabContents`: medido dos veces, un `Mesh` nuevo
+            // asignado bajo `LoadPrefabContents` + `SaveAsPrefabAsset` se guardaba como
+            // `m_Mesh: {fileID: 0}` — no se embebía. La misma operación con una instancia de
+            // `InstantiatePrefab` (como `CreateWieldablePrefab`, que sí embebe el rollo de la
+            // venda) se embebe bien.
+            var instance = (GameObject)PrefabUtility.InstantiatePrefab(prefab);
             try
             {
-                if (AttachBottleMesh(root, mesh, material))
+                if (AttachBottleMesh(instance, mesh, material))
                 {
-                    PrefabUtility.SaveAsPrefabAsset(root, PrefabPath);
+                    PrefabUtility.SaveAsPrefabAsset(instance, PrefabPath);
                     Debug.Log($"[AlmondWaterWieldable] '{PrefabPath}' — modelo recolgado con el eje largo en +Y.");
                 }
             }
             finally
             {
-                PrefabUtility.UnloadPrefabContents(root);
+                Object.DestroyImmediate(instance);
             }
         }
 
