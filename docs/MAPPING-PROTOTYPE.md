@@ -269,7 +269,10 @@ dibujo a ese tamaño? ¿El temblor de lo viejo se lee como «esto no lo tengo cl
 **Ajuste de Joel tras el playtest:** la tinta se acababa demasiado pronto → `penCostPerMetre` **0,02 → 0,002**
 (un boli ≈ 500 m de pared).
 
-**Sin respuesta todavía:** ¿dibujar quieto da tensión o pesa?, ¿60 s de recuerdo y 5 m de visión bien?
+**Respuestas de Joel a las preguntas de playtest (§3.7):**
+- Dibujar quieto: **se queda**, «mola, te hace pensar mucho».
+- 60 s de recuerdo: **perfecto**.
+- 5 m de visión: **bien por ahora**; 10 m queda como candidato a revisar con feedback de más jugadores.
 
 **Desvíos del plan:** panel IMGUI en vez de uGUI (sin `EventSystem` en la escena); la libreta abierta deja al
 jugador quieto también sin dibujar (el 45 % de velocidad llega con el jugador STP en P0.5); cerrar la libreta
