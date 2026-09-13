@@ -387,4 +387,10 @@ tinte sobre la UI piden overlay propio o canvas en Screen Space Camera.
 - **Pendiente de decidir — el hueco de «Manos» en la barra inferior** (queda vacío al unificar manos y cinturón). Ideas:
   zona «Suelo» (soltar arrastrando y ver lo más cercano a 1,5 m; exige listar el suelo, el vendor no lo trae) o devolver
   ahí la carga con sus tramos marcados. Sin decidir.
+- **IDEA (Joel, 2026-09-13 noche) — enfocar una parte del cuerpo:** clic en la CABECERA de un slot (no en el objeto) acerca
+  la vista previa a esa parte (cabeza, torso, manos…). Encaja con la vista Heridas: base para el sistema de heridas por zonas
+  y para la sastrería (reparar ropa por zona, D11).
+- **Pregunta abierta — guantes por mano:** ¿un slot «Manos» para el par, o mano izquierda y derecha separadas con guantes
+  distintos? Recomendación: el par hasta que el sistema de heridas por zonas decida si la protección va por mano (la venda
+  ya es por brazo, bits 7/8 de `buttons`).
 

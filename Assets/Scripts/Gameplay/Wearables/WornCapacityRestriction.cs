@@ -17,6 +17,14 @@ namespace BackroomsSurvival.Wearables
         [SerializeField]
         private string _ownerContainer = "Back";
 
+        // D14: huecos que hay aunque no lleves nada puesto (las 2 manos de la barra).
+        [SerializeField, Range(0, 9)]
+        private int _baseSlots;
+
+        // La barra no tiene tope de kg propio: lo pone el total del inventario.
+        [SerializeField]
+        private bool _limitWeight = true;
+
         public string OwnerContainer => _ownerContainer;
 
         public static WornCapacityRestriction Create(string ownerContainer)
@@ -35,7 +43,7 @@ namespace BackroomsSurvival.Wearables
             bool stacksInto = item.IsStackable && container.ContainsItemById(item.Id);
             var (allowed, reason) = Evaluate(capacity, worn != null ? worn.Name : string.Empty, UsedSlots(container),
                 container.Weight, item.Weight, stacksInto, item.Definition.TryGetDataOfType<WearableCapacityData>(out _),
-                requestedCount);
+                requestedCount, _baseSlots, _limitWeight);
             if (allowed <= 0) RejectionReason = reason;
             return allowed;
         }
@@ -55,11 +63,18 @@ namespace BackroomsSurvival.Wearables
         /// </summary>
         public static (int allowed, string reason) Evaluate(WearableCapacityData capacity, string wornName, int usedSlots,
             float currentKg, float unitKg, bool stacksInto, bool itemIsWearable, int requested)
+            => Evaluate(capacity, wornName, usedSlots, currentKg, unitKg, stacksInto, itemIsWearable, requested, 0, true);
+
+        public static (int allowed, string reason) Evaluate(WearableCapacityData capacity, string wornName, int usedSlots,
+            float currentKg, float unitKg, bool stacksInto, bool itemIsWearable, int requested, int baseSlots, bool limitWeight)
         {
             if (requested <= 0) return (0, string.Empty);
             if (itemIsWearable) return (0, "Una mochila no cabe dentro de otra");
-            if (capacity == null || capacity.Slots <= 0) return (0, "Sin mochila puesta");
-            if (!stacksInto && usedSlots >= capacity.Slots) return (0, $"{wornName} está llena");
+            int slots = baseSlots + (capacity?.Slots ?? 0);
+            if (slots <= 0) return (0, "Sin mochila puesta");
+            if (!stacksInto && usedSlots >= slots)
+                return (0, capacity != null ? $"{wornName} está llena" : "No hay hueco libre");
+            if (!limitWeight || capacity == null) return (requested, string.Empty);
 
             const float epsilon = 0.0001f;
             float free = capacity.MaxKg - currentKg;

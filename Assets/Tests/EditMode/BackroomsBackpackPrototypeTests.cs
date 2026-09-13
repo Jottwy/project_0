@@ -118,5 +118,55 @@ namespace BackroomsSurvival.Tests
                 if (child.GetComponent<ItemSlotUIBase>() != null) n++;
             return n;
         }
+
+        [Test]
+        public void LaBarraSonDosManosMasLoQueDaElCinturon()
+        {
+            var cord = new WearableCapacityData(2, 2f, 0f);
+            Assert.AreEqual(1, WornCapacityRestriction.Evaluate(null, "", 1, 0f, 1f, false, false, 1, 2, false).allowed, "desnudo: 2 manos");
+            Assert.AreEqual(0, WornCapacityRestriction.Evaluate(null, "", 2, 0f, 1f, false, false, 1, 2, false).allowed, "manos llenas");
+            Assert.AreEqual(1, WornCapacityRestriction.Evaluate(cord, "Cordel", 3, 0f, 1f, false, false, 1, 2, false).allowed, "cinturón T1: 4");
+            Assert.AreEqual(0, WornCapacityRestriction.Evaluate(cord, "Cordel", 4, 0f, 1f, false, false, 1, 2, false).allowed);
+            Assert.AreEqual(1, WornCapacityRestriction.Evaluate(cord, "Cordel", 0, 99f, 1f, false, false, 1, 2, false).allowed,
+                "la barra no tiene tope de kg propio: lo pone el total");
+        }
+
+        [Test]
+        public void LosCinturonesSonDeCinturaYNoSeApilan()
+        {
+            var tag = AssetDatabase.LoadAssetAtPath<ItemTagDefinition>("Assets/Resources/Definitions/ItemTag/BR_Waist Equipment.asset");
+            Assert.IsNotNull(tag, "falta el tag de cintura: Backrooms/Inventory/Create Backpack Prototype");
+            int previous = 0;
+            foreach (var name in new[] { "BR_Cord Belt", "BR_Work Belt", "BR_Tool Belt" })
+            {
+                var def = AssetDatabase.LoadAssetAtPath<ItemDefinition>($"Assets/Resources/Definitions/Item/{name}.asset");
+                Assert.IsNotNull(def, $"falta {name}");
+                Assert.AreEqual(tag.Id, (int)def.Tag);
+                Assert.AreEqual(1, def.StackSize);
+                Assert.IsTrue(def.TryGetDataOfType(out WearableCapacityData capacity));
+                Assert.Greater(capacity.Slots, previous, "los tiers van de menos a más huecos");
+                Assert.LessOrEqual(2 + capacity.Slots, 8, "la barra no pasa de las 8 teclas del vendor");
+                previous = capacity.Slots;
+            }
+        }
+
+        [Test]
+        public void LaEscenaDePruebasDejaBaseDeNueveYBarraDeOcho()
+        {
+            string scene = File.ReadAllText(TestScenePath).Replace("\r\n", "\n");
+            StringAssert.Contains("value: Waist", scene, "la escena no añade el contenedor de cintura");
+            StringAssert.Contains("propertyPath: _defaultContainers.Array.data[0].MaxSlotCount\n      value: 9", scene, "base de 9");
+            StringAssert.Contains("propertyPath: _defaultContainers.Array.data[1].MaxSlotCount\n      value: 8", scene, "barra de 8");
+
+            var variant = AssetDatabase.LoadAssetAtPath<GameObject>("Assets/Prefabs/UI/BR_UI_Player.prefab");
+            bool waist = false, holster = false;
+            foreach (var ui in variant.GetComponentsInChildren<ItemContainerUI>(true))
+            {
+                waist |= ui.ContainerName == "Waist" && DirectSlots(ui.transform) == 1;
+                holster |= ui.ContainerName == "Holster" && DirectSlots(ui.transform) == 8 && ui.GetComponent<BackroomsWornSlotsUI>() != null;
+            }
+            Assert.IsTrue(waist, "sin hueco de cintura en la columna del personaje");
+            Assert.IsTrue(holster, "la barra no tiene 8 huecos creados ni su BackroomsWornSlotsUI");
+        }
     }
 }

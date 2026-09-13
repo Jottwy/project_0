@@ -27,6 +27,9 @@ MonoBehaviour:
   - {fileID: 11400000, guid: ea2dbc65362e0d749910e01dad5c310a, type: 2}
   - {fileID: 11400000, guid: c099c58f8dcb4874fa5d6b196ab58844, type: 2}
   - {fileID: 11400000, guid: 3bc835569052e3b4db90c484728c1f7f, type: 2}
+  - {fileID: 11400000, guid: a00024afc2631f8418fcfa7703280ca2, type: 2}
+  - {fileID: 11400000, guid: 0206b129820fa0a45bcf70daed9912cf, type: 2}
+  - {fileID: 11400000, guid: 0b02a4682c297e14ea703b211aa6dd2c, type: 2}
   _defaultTag:
     _value: 0
   _baseActions:

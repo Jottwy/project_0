@@ -181,6 +181,7 @@ namespace BackroomsSurvival.EditorTools
         private static void EnsureBackpackPrototype()
         {
             var backpacks = BackroomsBackpackPrototypeCreator.EnsureAssets();
+            var belts = BackroomsBackpackPrototypeCreator.EnsureBelts();
             if (backpacks.Length == 0) return;
 
             var player = Object.FindAnyObjectByType<Player>(FindObjectsInactive.Include);
@@ -203,6 +204,14 @@ namespace BackroomsSurvival.EditorTools
                 AssetDatabase.LoadAssetAtPath<ContainerRestriction>(BackroomsBackpackPrototypeCreator.BackRestrictionPath));
             EnsureContainer(list, BackroomsBackpackPrototypeCreator.BackStorageContainer, BackroomsBackpackPrototypeCreator.BackStorageSlots,
                 AssetDatabase.LoadAssetAtPath<ContainerRestriction>(BackroomsBackpackPrototypeCreator.StorageRestrictionPath));
+            EnsureContainer(list, BackroomsBackpackPrototypeCreator.WaistContainer, 1,
+                AssetDatabase.LoadAssetAtPath<ContainerRestriction>(BackroomsBackpackPrototypeCreator.WaistRestrictionPath));
+            // D14 enm. 1: base de 9 y barra de 8 (2 manos + cinturón), capada por lo que lleves en la cintura. Override de
+            // ESCENA sobre los contenedores 0 y 1 del vendor: el prefab del jugador no cambia.
+            SetSlots(list, BackroomsBackpackPrototypeCreator.BaseContainer, BackroomsBackpackPrototypeCreator.BaseSlots);
+            SetSlots(list, BackroomsBackpackPrototypeCreator.HolsterContainer, BackroomsBackpackPrototypeCreator.HolsterSlots);
+            AddRestriction(list, BackroomsBackpackPrototypeCreator.HolsterContainer,
+                AssetDatabase.LoadAssetAtPath<ContainerRestriction>(BackroomsBackpackPrototypeCreator.HolsterRestrictionPath));
             so.ApplyModifiedPropertiesWithoutUndo();
 
             if (GameObject.Find(WornStorageName) == null)
@@ -225,7 +234,53 @@ namespace BackroomsSurvival.EditorTools
                     item.ApplyModifiedPropertiesWithoutUndo();
                 }
             }
+            if (GameObject.Find("Belts") == null)
+            {
+                var beltRoot = new GameObject("Belts");
+                for (int i = 0; i < belts.Length; i++)
+                    SpawnPickup(belts[i], beltRoot.transform, new Vector3(-2.6f - i * 0.9f, 0.3f, -2.6f));
+            }
             Debug.Log("[InventoryTestScene] prototipo de mochilas montado");
+        }
+
+        private static SerializedProperty FindContainerEntry(SerializedProperty list, string name)
+        {
+            for (int i = 0; i < list.arraySize; i++)
+            {
+                var entry = list.GetArrayElementAtIndex(i);
+                if (entry.FindPropertyRelative("Name").stringValue == name) return entry;
+            }
+            Debug.LogWarning($"[InventoryTestScene] el jugador no tiene contenedor '{name}'");
+            return null;
+        }
+
+        private static void SetSlots(SerializedProperty list, string name, int slots)
+        {
+            var entry = FindContainerEntry(list, name);
+            if (entry != null) entry.FindPropertyRelative("MaxSlotCount").intValue = slots;
+        }
+
+        private static void AddRestriction(SerializedProperty list, string name, ContainerRestriction restriction)
+        {
+            var entry = FindContainerEntry(list, name);
+            if (entry == null || restriction == null) return;
+            var restrictions = entry.FindPropertyRelative("Restrictions");
+            for (int i = 0; i < restrictions.arraySize; i++)
+                if (restrictions.GetArrayElementAtIndex(i).objectReferenceValue == restriction) return;
+            restrictions.arraySize++;
+            restrictions.GetArrayElementAtIndex(restrictions.arraySize - 1).objectReferenceValue = restriction;
+        }
+
+        private static void SpawnPickup(ItemDefinition def, Transform parent, Vector3 position)
+        {
+            if (def == null || def.Pickup == null) return;
+            var pickup = (GameObject)PrefabUtility.InstantiatePrefab(def.Pickup.gameObject);
+            pickup.transform.SetParent(parent, false);
+            pickup.transform.position = position;
+            pickup.name = def.name;
+            var item = new SerializedObject(pickup.GetComponent<ItemPickup>());
+            item.FindProperty("_item._value").intValue = def.Id;
+            item.ApplyModifiedPropertiesWithoutUndo();
         }
 
         /// <summary>Añade el contenedor AL FINAL si falta (ADR-147 punto 1: los índices 0-5 no se mueven).</summary>

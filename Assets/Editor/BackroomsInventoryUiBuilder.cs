@@ -319,23 +319,35 @@ namespace BackroomsSurvival.EditorTools
                 if (preview != null)
                 {
                     if (preview.GetComponent<AspectRatioFitter>() is AspectRatioFitter fitter) Object.DestroyImmediate(fitter);
-                    Inset(preview, 92f, 8f, 0f, top + 8f);
+                    Inset(preview, 92f, 8f, 92f, top + 8f);
                     if (preview.TryGetComponent<RawImage>(out var raw))
                     {
-                        float w = (LeftWidth - 92f) / (1080f - bottom - Margin - top - 16f);
+                        float w = (LeftWidth - 184f) / (1080f - bottom - Margin - top - 16f);
                         raw.uvRect = new Rect((1f - w) * 0.5f, 0f, w, 1f);
                     }
                 }
 
-                var hands = DockBox(character, "BR_Hands", theme, 0f, 0f, HandsWidth, "MANOS");
-                for (int i = 0; i < 2; i++)
+                // D14: las manos van en la barra; la caja «Manos» aparte se retira.
+                if (character.Find("BR_Hands") is Transform oldHands) Object.DestroyImmediate(oldHands.gameObject);
+
+                // Segunda columna de slots, a la derecha del muñeco (greybox). De momento, la cintura.
+                if (character.Find("Containers/HeadContainer") is Transform headSlot && headSlot.TryGetComponent<ItemContainerUI>(out var headTemplate))
                 {
-                    var slot = EnsureRect(hands, "Slot" + i, typeof(Image));
-                    Place(slot, new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(BoxPad + i * (Cell + CellGap), -44f), new Vector2(Cell, Cell));
-                    var img = slot.GetComponent<Image>();
-                    SetSprite(img, theme.SunkenSlot, Color.white);
-                    img.raycastTarget = false;
+                    var rightSlots = EnsureRect(character, "BR_ContainersRight", typeof(VerticalLayoutGroup));
+                    Place(rightSlots, Vector2.one, Vector2.one, new Vector2(-8f, -(top + 40f)), new Vector2(88f, 4f * 80f + 3f * 28f));
+                    var column = rightSlots.GetComponent<VerticalLayoutGroup>();
+                    column.spacing = 28f;
+                    column.childAlignment = TextAnchor.UpperCenter;
+                    column.childControlWidth = false;
+                    column.childControlHeight = false;
+                    column.childForceExpandWidth = false;
+                    column.childForceExpandHeight = false;
+                    InspectionOnly(rightSlots.gameObject);
+                    var waistUi = EnsureEquipmentSlot(rightSlots, "BR_WaistContainer", BackroomsBackpackPrototypeCreator.WaistContainer, "Waist", headTemplate, theme);
+                    RegisterContainerUI(inventoryUI, waistUi);
+                    report.Count("hueco de cintura", 1);
                 }
+                else report.Missing("Containers/HeadContainer (plantilla de slot)");
 
                 BuildBodyViewToggle(character, header, preview, theme, report);
             }
@@ -356,7 +368,7 @@ namespace BackroomsSurvival.EditorTools
                     float firstTop = top + 12f;
                     float firstH = SectionHeight(BackroomsBackpackPrototypeCreator.BackStorageSlots);
                     float secondTop = firstTop + firstH + 12f;
-                    float secondH = SectionHeight(backpack.childCount);
+                    float secondH = SectionHeight(BackroomsBackpackPrototypeCreator.BaseSlots);
 
                     var bag = Section(inventory, "BR_BagSection", theme, firstTop, firstH, "ESPALDA · SIN MOCHILA", "ponte una mochila", 1);
                     var storage = EnsureRect(inventory, "BR_BackStorage", typeof(GridLayoutGroup), typeof(ItemContainerUI), typeof(BackroomsWornSlotsUI));
@@ -371,7 +383,7 @@ namespace BackroomsSurvival.EditorTools
                     slotsUi.FindProperty("_count").objectReferenceValue = bag.Find("Count").GetComponent<TextMeshProUGUI>();
                     slotsUi.ApplyModifiedPropertiesWithoutUndo();
 
-                    var pockets = Section(inventory, "BR_PocketsSection", theme, secondTop, secondH, "BOLSILLOS · PROVISIONAL", backpack.childCount + " huecos", 3);
+                    var pockets = Section(inventory, "BR_PocketsSection", theme, secondTop, secondH, "BASE", BackroomsBackpackPrototypeCreator.BaseSlots + " huecos", 3);
                     PlaceGrid(backpack, secondTop, secondH);
                     BuildSections(inventory, firstTop, new[] { "bag", "pockets" }, new[] { bag, pockets }, new[] { storage, backpack }, theme);
                     report.Count("almacén de la espalda", 1);
@@ -502,7 +514,21 @@ namespace BackroomsSurvival.EditorTools
                         if (c.GetComponent<ItemSlotUIBase>() != null) ((RectTransform)c).sizeDelta = new Vector2(Cell, Cell);
                     if (layout.Find(StrapName) is RectTransform strap) { strap.offsetMin = Vector2.zero; strap.offsetMax = Vector2.zero; }
                 }
-                DockTitle(rt, "CINTURÓN", theme);
+                DockTitle(rt, "MANOS · CINTURÓN", theme);
+                // D14 enm. 1: 8 huecos creados aquí con piel (2 manos + hasta 6 del cinturón); se ven los que da la cintura.
+                if (hotbar.GetComponentInChildren<ItemContainerUI>(true) is ItemContainerUI holsterUi)
+                {
+                    foreach (var created in EnsureSlots(holsterUi, BackroomsBackpackPrototypeCreator.HolsterSlots, theme))
+                        ((RectTransform)created.transform).sizeDelta = new Vector2(Cell, Cell);
+                    var byBelt = holsterUi.GetComponent<BackroomsWornSlotsUI>();
+                    if (byBelt == null) byBelt = holsterUi.gameObject.AddComponent<BackroomsWornSlotsUI>();
+                    var beltSlots = new SerializedObject(byBelt);
+                    beltSlots.FindProperty("_ownerContainer").stringValue = BackroomsBackpackPrototypeCreator.WaistContainer;
+                    beltSlots.FindProperty("_baseSlots").intValue = BackroomsBackpackPrototypeCreator.HandSlots;
+                    beltSlots.ApplyModifiedPropertiesWithoutUndo();
+                    report.Count("barra de manos y cinturón", 1);
+                }
+                else report.Missing("HotbarUI/ItemContainerUI");
                 // En juego, el cinturón se compacta sin rótulo; con TAB vuelve a su caja (BackroomsBeltHud).
                 var beltHud = hotbar.GetComponent<BackroomsBeltHud>();
                 if (beltHud == null) beltHud = hotbar.gameObject.AddComponent<BackroomsBeltHud>();
@@ -769,6 +795,25 @@ namespace BackroomsSurvival.EditorTools
                 created.Add(slot);
             }
             return created;
+        }
+
+        /// <summary>Slot de equipo propio con la forma de los del vendor: cinta encima y un hueco de 72 px con su contenedor.</summary>
+        private static ItemContainerUI EnsureEquipmentSlot(RectTransform column, string name, string containerName, string label,
+            ItemContainerUI template, BackroomsUiTheme theme)
+        {
+            var slotRoot = EnsureRect(column, name, typeof(ItemContainerUI));
+            slotRoot.sizeDelta = new Vector2(80f, 80f);
+            var ui = slotRoot.GetComponent<ItemContainerUI>();
+            BindContainerUI(ui, containerName, template);
+            foreach (var created in EnsureSlots(ui, 1, theme))
+                Place((RectTransform)created.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), Vector2.zero, new Vector2(Cell, Cell));
+            var tape = EnsureRect(slotRoot, "Header", typeof(Image));
+            Place(tape, new Vector2(0.5f, 1f), new Vector2(0.5f, 0f), new Vector2(0f, -5f), new Vector2(80f, 24f));
+            var text = Label(tape, "Category", label, theme.MonoBold, 15f, theme.TapeInk, TextAlignmentOptions.Center);
+            Stretch((RectTransform)text.transform);
+            Tape(tape, tape.GetComponent<Image>(), theme);
+            tape.SetAsLastSibling();
+            return ui;
         }
 
         /// <summary>Nombre del contenedor y plantilla de hueco copiada de un panel del vendor que ya funciona.</summary>

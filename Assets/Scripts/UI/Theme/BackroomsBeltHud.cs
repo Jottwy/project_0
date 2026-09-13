@@ -27,6 +27,7 @@ namespace BackroomsSurvival.UI
         private IInventoryInspectionManagerCC _inspection;
         private float _t;
         private float _target;
+        private int _lastCount = -1;
 
         protected override void OnCharacterAttached(ICharacter character)
         {
@@ -52,7 +53,9 @@ namespace BackroomsSurvival.UI
 
         private void Update()
         {
-            if (Mathf.Approximately(_t, _target)) return;
+            if (_layout == null) return;
+            bool resized = CountSlots() != _lastCount;
+            if (Mathf.Approximately(_t, _target) && !resized) return;
             _t = Mathf.MoveTowards(_t, _target, Time.unscaledDeltaTime / Mathf.Max(0.01f, _duration));
             Apply();
         }
@@ -61,7 +64,8 @@ namespace BackroomsSurvival.UI
         {
             if (_layout == null || _box == null) return;
             float eased = _t * _t * (3f - 2f * _t);
-            var (cell, top, width, height) = Measure(CountSlots(), eased, _gameCell, _inventoryCell, _gameTop, _inventoryTop, _pad, _gap);
+            _lastCount = CountSlots();
+            var (cell, top, width, height) = Measure(_lastCount, eased, _gameCell, _inventoryCell, _gameTop, _inventoryTop, _pad, _gap);
 
             foreach (Transform child in _layout.transform)
                 if (child.gameObject.activeSelf && child.GetComponent<ItemSlotUIBase>() != null)

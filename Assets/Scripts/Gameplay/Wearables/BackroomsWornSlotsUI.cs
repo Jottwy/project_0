@@ -17,6 +17,10 @@ namespace BackroomsSurvival.Wearables
         [SerializeField]
         private string _ownerContainer = "Back";
 
+        // D14: huecos que se ven sin nada puesto (las 2 manos de la barra).
+        [SerializeField, Range(0, 9)]
+        private int _baseSlots;
+
         [SerializeField]
         private TextMeshProUGUI _title;
 
@@ -67,7 +71,7 @@ namespace BackroomsSurvival.Wearables
                 worn = _owner.GetItemAtIndex(0).Item;
             WearableCapacityData capacity = null;
             worn?.Definition.TryGetDataOfType(out capacity);
-            int slots = capacity?.Slots ?? 0;
+            int slots = _baseSlots + (capacity?.Slots ?? 0);
 
             var slotsUI = _ui.ItemSlotsUI;
             if (slotsUI != null)
