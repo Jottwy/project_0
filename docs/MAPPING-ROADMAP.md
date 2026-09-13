@@ -363,6 +363,10 @@ en el autosave (enmienda de ADR-032).
   `M` libre). Abierto: libreta en `N` reasignando `FireMode`, o como pestaña del libro en `B`.
 - **D21 Mejoras de la base (propuesta de Joel, adoptada como dirección):** corcho → mesa → proyector →
   antena → tablet → reloj (§7d). Costes y números, en playtest.
+- **D23 La hoja no gira. CERRADA (Joel, 2026-09-13):** norte siempre arriba; ni gira sola con la mirada ni se gira
+  a mano. Orientarse es cosa del jugador (y de la cruceta de «Ubicarme»). Brújula y rumbo siguen fuera (§12).
+- **D24 Qué se ve (propuesta de Joel, 2026-09-13, enmienda D4).** Más lejos: ~20 m, o todo lo de delante en el
+  ángulo de la mirada. Plan y coste en MAPPING-PROTOTYPE §4.6.
 
 ## 11. Rebanadas
 

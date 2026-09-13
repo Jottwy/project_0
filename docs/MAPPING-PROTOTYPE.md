@@ -335,6 +335,58 @@ reciente de 8 s). Sigue en `MappingPlaytest.unity`, local, sin red ni guardado.
   luego desaparezca. Hecho en la vista: no es tinta ni se guarda en la hoja; roja, parpadea el primer segundo y se
   desvanece a los `crosshairSeconds` = 4 s. El círculo de tinta sigue quedando.
 - Candidato abierto (sin pedir): marcar también hacia dónde miras, porque saber el punto no dice el rumbo.
+- **La hoja no gira** (ROADMAP D23): ni sola ni a mano. Descartado.
+- Propuesta: ver más lejos, 20 m o el cono de la mirada (§4.6).
+
+### 4.6 P0.3b — Ver más lejos (plan, pendiente de Joel)
+
+Hoy: disco de 5 m, una `OverlapBox` por celda de 0,5 m y línea de visión sobre esa rejilla (0,15 ms/muestra).
+
+| Opción | Cómo | Coste estimado | Pega |
+|---|---|---|---|
+| A. Disco de 20 m | Lo de hoy con `radiusM = 20` | ~5 000 cajas + visión O(r³): **~3–5 ms cada 0,5 s**; búfer ×16 (~6 MB) | Caro, y ves lo de detrás de ti |
+| **B. Cono de rayos (recomendada)** | Disco de 5 m de hoy (lo que tienes al lado, también detrás) **+ abanico de ~90 rayos a 1,1 m de altura, 20 m, en el ángulo de la cámara** (~90°). Cada rayo: celdas hasta el impacto = suelo, la del impacto = pared | ~90 `Raycast` ≈ **0,1–0,2 ms**; ~1 500 celdas/muestra | Una mesa baja no corta el rayo; el borde de una pared lejana sale a trozos (1° a 20 m ≈ 0,35 m, cabe en una celda) |
+
+La línea de visión la da el propio rayo. `MapMemory` no cambia (recibe celdas); cambia el muestreador y sube
+`MaxCellsPerSample`. Radio y ángulo quedan en el Inspector. Test EditMode: el abanico puro (dado el impacto de cada
+rayo, qué celdas salen) sin Unity; el `Raycast` se mide en Play (`MAPMEM`). Un commit (~150 líneas).
+
+### 4.7 P0.4 — Plano `M` de la base (plan, pendiente de Joel)
+
+Diseño en ROADMAP §7b (D13, D15). Local, en `MappingPlaytest.unity`, sin guardado. Fuera: conflictos de displacement
+y plano de bolsillo (M8, después del playtest).
+
+**Qué se juega.**
+- **La base** es la zona (chunk y planta) donde apareces. `M` dentro de ella abre el plano; fuera: «sin plano
+  encima, fuera de la base `M` no abre nada» (D15).
+- **Colocación solo por lo demostrado (D13).** La zona de la base se coloca siempre; otra zona se coloca si una hoja
+  de una zona YA colocada tiene flecha hacia ella (o al revés). Lo que no conecta sale en el margen, «por colocar».
+  La posición en el tablero es la de verdad: el enlace decide SI sale, no dónde.
+- **Pasar a limpio** (botón del plano, solo en la base): la hoja abierta en la libreta se convierte en su versión
+  limpia: paredes rectas fusionadas, tinta negra fina, sin temblor, con sus flechas. Gasta un folio (contador), tinta
+  y 5 s quieto (se cancela como dibujar). Una limpia nueva de la misma zona tapa a la anterior, que se archiva.
+- **Tres capas** por zona: **nada** (blanco con trama «sin mapear»), **borrador** (la hoja de la libreta, translúcida
+  con su tinta) y **limpia** (opaca, encima). Un tablero por planta, con pestañas. La cruceta de «Ubicarme» y el
+  «estás aquí» (30 s) salen también en el plano.
+
+**Diseño.**
+1. `MapAtlas` (puro): base, limpias por zona con archivo, `Place(sheets)` en anchura desde la base por `Links` de
+   borradores y limpias, orden estable (regla 13). `CleanCopy(sheet)` genera la limpia a partir de las aristas de la
+   hoja.
+2. `MapSheetRaster`: estilo limpio (sin presión ni borrón) y `DrawAtlas` que compone losetas por capa (128 px por zona,
+   desplazable).
+3. `MapAtlasView` (IMGUI): `M`, pestañas de planta, arrastrar para mover, «Pasar a limpio»; log `MAPATLAS` con ms de
+   composición.
+4. Escena: la base se fija en el primer muestreo; campos nuevos con valor por defecto, sin regenerar si no hace falta.
+
+**Tests.** `TheBaseIsAlwaysPlaced`, `ASheetWithoutLinkIsNeverPlaced`, `APlacedLinkPlacesTheNeighbour` (y en cadena),
+`ANewCleanCoversAndArchivesTheOld`, `CleanCopyKeepsEdgesAndDropsJitter`, `PlacementOrderIsStable`,
+`CleanLayerPaintsOverDraft` (raster).
+
+**Commits (~550 líneas → tres).** `MapAtlas` + tests; raster limpio y tablero + tests; vista `M` + escena.
+
+**Preguntas de playtest.** ¿Volver a la base a ordenar el mapa apetece o molesta? ¿Ver el tablero ayuda a orientarse
+más que la hoja suelta?
 
 ### 3.9 El libro de supervivencia de STP: modelo base para la libreta (Joel, 2026-09-13)
 
