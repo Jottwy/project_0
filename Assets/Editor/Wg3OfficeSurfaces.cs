@@ -61,10 +61,13 @@ namespace BackroomsSurvival.EditorTools
 
             Texture2D carpetTex = Bake(carpet, "Wg3_OfficeCarpet.png", false);
             Texture2D carpetNm = Bake(NormalFrom(carpetH, 2.2), "Wg3_OfficeCarpet_Normal.png", true);
+            Texture2D carpetMask = Bake(MaskFrom(carpetH, 0.80, 0.03), "Wg3_OfficeCarpet_Mask.png", false, true);
             Texture2D ceilingTex = Bake(ceiling, "Wg3_OfficeCeiling.png", false);
             Texture2D ceilingNm = Bake(NormalFrom(ceilingH, 3.0), "Wg3_OfficeCeiling_Normal.png", true);
+            Texture2D ceilingMask = Bake(MaskFrom(ceilingH, 0.82, 0.04), "Wg3_OfficeCeiling_Mask.png", false, true);
             Texture2D fabricTex = Bake(fabric, "Wg3_PartitionFabric.png", false);
             Texture2D fabricNm = Bake(NormalFrom(fabricH, 2.6), "Wg3_PartitionFabric_Normal.png", true);
+            Texture2D fabricMask = Bake(MaskFrom(fabricH, 0.85, 0.05), "Wg3_PartitionFabric_Mask.png", false, true);
 
             // El tinte de cada material replica el de su base (`Wg3_Floor` 0,21/0,25/0,19,
             // `Wg3_Ceiling` 0,8/0,8/0,77, `Wg3_Structure` 0,86/0,86/0,82) en LUMINANCIA efectiva,
@@ -75,10 +78,10 @@ namespace BackroomsSurvival.EditorTools
             // gris medio. Se baja un 17 % **manteniendo la proporción entre canales**, o sea el tono
             // frío: oscurecer no es enfriar, y si se toca el ratio la moqueta deja de contrastar por
             // tono con la oliva del pasillo, que es de donde sale la distinción.
-            Write($"{MaterialFolder}/Wg3_FloorOffice.mat", carpetTex, carpetNm, CarpetScale,
-                  new Color(0.35f, 0.365f, 0.415f, 1f), 0.03f);
-            Write($"{MaterialFolder}/Wg3_CeilingOffice.mat", ceilingTex, ceilingNm, CeilingScale,
-                  new Color(0.80f, 0.80f, 0.77f, 1f), 0.04f);
+            Write($"{MaterialFolder}/Wg3_FloorOffice.mat", carpetTex, carpetNm, carpetMask, CarpetScale,
+                  new Color(0.35f, 0.365f, 0.415f, 1f));
+            Write($"{MaterialFolder}/Wg3_CeilingOffice.mat", ceilingTex, ceilingNm, ceilingMask, CeilingScale,
+                  new Color(0.80f, 0.80f, 0.77f, 1f));
             // La mampara NO copia el tinte cálido de `Wg3_Structure` (0,86/0,86/0,82), y tampoco vale
             // uno neutro: **la luz de la escena es cálida, así que un albedo gris sale caqui**. Un
             // gris de verdad hay que fabricarlo CONTRA la luz, hundiendo el rojo y subiendo el azul
@@ -87,8 +90,8 @@ namespace BackroomsSurvival.EditorTools
             //
             // La luminancia se conserva —la media sigue en 0,81—, así que esto no toca el balance de
             // luz que Joel dio por bueno: sólo gira el tono.
-            Write($"{MaterialFolder}/Wg3_Partition.mat", fabricTex, fabricNm, FabricScale,
-                  new Color(0.72f, 0.79f, 0.93f, 1f), 0.05f);
+            Write($"{MaterialFolder}/Wg3_Partition.mat", fabricTex, fabricNm, fabricMask, FabricScale,
+                  new Color(0.72f, 0.79f, 0.93f, 1f));
 
             AssetDatabase.SaveAssets();
             AssetDatabase.Refresh();
@@ -306,6 +309,35 @@ namespace BackroomsSurvival.EditorTools
             return px;
         }
 
+        /// <summary>
+        /// A3 (13-09) — la máscara URP/Lit desde el MISMO campo de alturas: R metal 0, G oclusión
+        /// (hondo = <paramref name="aoFloor"/>, alto = 1), A suavidad. La suavidad es la que antes
+        /// iba en <c>_Smoothness</c>, ahora en el alfa: con máscara URP multiplica las dos, así que
+        /// el material va a 1 (<see cref="Write"/>).
+        ///
+        /// **La oclusión no oscurece lo validado**: URP/Lit sólo la aplica a la luz INDIRECTA
+        /// (ambiente y reflejos), y el ambiente de WG3 es negro. Lo que da es el mismo juego de
+        /// palabras clave que suelo, papel y remate, o sea un solo lote del SRP Batcher.
+        /// </summary>
+        private static Color32[] MaskFrom(double[] h, double aoFloor, double smoothness)
+        {
+            double hMin = double.MaxValue, hMax = double.MinValue;
+            for (int i = 0; i < h.Length; i++)
+            {
+                if (h[i] < hMin) hMin = h[i];
+                if (h[i] > hMax) hMax = h[i];
+            }
+            double span = Math.Max(1e-6, hMax - hMin);
+            byte a = ToByte(smoothness * 255.0);
+            var px = new Color32[h.Length];
+            for (int i = 0; i < h.Length; i++)
+            {
+                double ao = aoFloor + (1.0 - aoFloor) * (h[i] - hMin) / span;
+                px[i] = new Color32(0, ToByte(ao * 255.0), 0, a);
+            }
+            return px;
+        }
+
         private static int At(int x, int y)
         {
             x = ((x % Size) + Size) % Size;
@@ -335,7 +367,7 @@ namespace BackroomsSurvival.EditorTools
                 255);
         }
 
-        private static Texture2D Bake(Color32[] pixels, string fileName, bool normalMap)
+        private static Texture2D Bake(Color32[] pixels, string fileName, bool normalMap, bool linearData = false)
         {
             var tex = new Texture2D(Size, Size, TextureFormat.RGBA32, false);
             tex.SetPixels32(pixels);
@@ -349,9 +381,10 @@ namespace BackroomsSurvival.EditorTools
             if (AssetImporter.GetAtPath(path) is TextureImporter importer)
             {
                 importer.textureType = normalMap ? TextureImporterType.NormalMap : TextureImporterType.Default;
-                importer.sRGBTexture = !normalMap;
+                importer.sRGBTexture = !normalMap && !linearData;
                 importer.wrapMode = TextureWrapMode.Repeat;
-                importer.filterMode = FilterMode.Bilinear;
+                importer.filterMode = FilterMode.Trilinear;
+                importer.anisoLevel = 8;
                 importer.mipmapEnabled = true;
                 importer.maxTextureSize = Size;
                 // BC7 por lo mismo que en `TextureGenerator`: el perfil de la placa son 24 puntos de
@@ -362,8 +395,8 @@ namespace BackroomsSurvival.EditorTools
             return AssetDatabase.LoadAssetAtPath<Texture2D>(path);
         }
 
-        private static void Write(string path, Texture2D baseMap, Texture2D normal, float scale,
-                                 Color tint, float smoothness)
+        private static void Write(string path, Texture2D baseMap, Texture2D normal, Texture2D mask,
+                                 float scale, Color tint)
         {
             var mat = AssetDatabase.LoadAssetAtPath<Material>(path);
             Shader lit = Shader.Find("Universal Render Pipeline/Lit");
@@ -392,9 +425,18 @@ namespace BackroomsSurvival.EditorTools
             // material por script hay que ponerlo, o el shader compila la variante SIN normal y el
             // material entra en otro lote del batcher que los cuatro base.
             mat.EnableKeyword("_NORMALMAP");
+            mat.SetTexture("_MetallicGlossMap", mask);
+            mat.SetTextureScale("_MetallicGlossMap", s);
+            mat.SetTexture("_OcclusionMap", mask);
+            mat.SetTextureScale("_OcclusionMap", s);
+            mat.SetFloat("_OcclusionStrength", 1f);
+            mat.SetFloat("_SmoothnessTextureChannel", 0f); // 0 = alfa del mapa metálico
+            mat.EnableKeyword("_METALLICSPECGLOSSMAP");
+            mat.EnableKeyword("_OCCLUSIONMAP");
             mat.SetColor("_BaseColor", tint);
             mat.SetColor("_Color", tint);
-            mat.SetFloat("_Smoothness", smoothness);
+            // A 1: la suavidad vive en el alfa de la máscara y URP multiplica las dos.
+            mat.SetFloat("_Smoothness", 1f);
             mat.SetFloat("_Metallic", 0f);
             EditorUtility.SetDirty(mat);
         }
