@@ -116,10 +116,6 @@ namespace BackroomsSurvival.Gameplay
             "Very Low", "Low", "Medium", "High", "Very High", "Ultra", "Custom"
         };
 
-        // Profundidad de campo APAGADA en todos (Joel, 13-09). El perfil del juego la tiene en Bokeh
-        // con foco a 10 m, así que encendida difumina todo lo que está a menos de un metro: reloj,
-        // libro, manos. El libro y el inventario traen su propio desenfoque de fondo y no pasan por
-        // aquí. Sigue en el menú para quien la quiera.
         private static readonly GraphicsPresetValues[] Table =
         {
             // Very Low - sacrifica todo menos poder jugar: escala baja + FSR, cero sombras.
@@ -136,24 +132,24 @@ namespace BackroomsSurvival.Gameplay
 
             new GraphicsPresetValues(0.85f, UpscalingMode.Fsr1, true, AntiAliasingMode.Fxaa, MsaaMode.Off,
                 true, ShadowQualityLevel.Medium, 50f, 2, true,
-                true, false, false, false,
+                true, false, true, false,
                 TextureQuality.High, AnisotropicMode.PerTexture, 1.0f),
 
             // High - espejo de PC_RPAsset tal como está commiteado. Es el defecto.
             new GraphicsPresetValues(1.00f, UpscalingMode.Off, true, AntiAliasingMode.Smaa, MsaaMode.X2,
                 true, ShadowQualityLevel.High, 50f, 4, true,
-                true, false, false, true,
+                true, false, true, true,
                 TextureQuality.Full, AnisotropicMode.PerTexture, 1.0f),
 
             new GraphicsPresetValues(1.00f, UpscalingMode.Off, true, AntiAliasingMode.Smaa, MsaaMode.X4,
                 true, ShadowQualityLevel.Ultra, 80f, 4, true,
-                true, true, false, true,
+                true, true, true, true,
                 TextureQuality.Full, AnisotropicMode.ForcedOn, 1.5f),
 
             // Ultra - supersampling por encima de 1.0; el techo de sombras es el atlas de 4096.
             new GraphicsPresetValues(1.25f, UpscalingMode.Off, true, AntiAliasingMode.Taa, MsaaMode.X8,
                 true, ShadowQualityLevel.Ultra, 120f, 4, true,
-                true, true, false, true,
+                true, true, true, true,
                 TextureQuality.Full, AnisotropicMode.ForcedOn, 2.0f)
         };
 
