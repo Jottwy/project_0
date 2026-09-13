@@ -47,6 +47,7 @@
 - [FARMING-ROADMAP.md](FARMING-ROADMAP.md) — farmeo de metal y estantería.
 - [INVENTORY-ROADMAP.md](INVENTORY-ROADMAP.md)
 - [MAPPING-ROADMAP.md](MAPPING-ROADMAP.md) — PROPUESTO: mapas en papel dibujados de memoria.
+- [MAPPING-PROTOTYPE.md](MAPPING-PROTOTYPE.md) — PLAN: prototipado P0–P2 del mapeado; P0.1 (recuerdo) detallado.
 - [FACELING-ROADMAP.md](FACELING-ROADMAP.md) — facelings.
 - [ASSET-SHOPPING-LIST.md](ASSET-SHOPPING-LIST.md) — arte por comprar.
 - [reference/asset-packs.md](reference/asset-packs.md) — packs importados y sus trampas.

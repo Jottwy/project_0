@@ -2,7 +2,7 @@
 > ley hasta que salga su ADR (M0). Calendario frente al contrato WG3 v1: lo decide Joel.
 > Segunda pasada el mismo día: **D5 cerrada** (objeto + corcho), perfil de letra generado (§8b),
 > panel de copia y volcado (§8), jerarquía de almacenaje con archivador y caja (§7), asalto a la base.
-> Maqueta jugable: artifact «Libreta del cartógrafo».
+> Maqueta jugable: artifact «Libreta del cartógrafo». Plan de prototipado: `docs/MAPPING-PROTOTYPE.md`.
 
 # MAPPING-ROADMAP.md — mapas en papel, dibujados de memoria
 
