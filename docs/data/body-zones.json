@@ -1,0 +1,293 @@
+{
+  "_doc": "ADR-149 R2: oráculo común del cuerpo por zonas. Lo leen Assets/Tests/EditMode/BodyZonesOracleTests.cs (contra BodyZones.cs/BodyState.cs) y backend/src/player/body.rs. Cambiar una cifra aquí obliga a cambiar los dos lados. Zonas: 0 Head, 1 Chest, 2 Abdomen, 3/4 UpperArmL/R, 5/6 ForearmL/R, 7/8 HandL/R, 9/10 ThighL/R, 11/12 ShinL/R, 13/14 FootL/R. Lesión: 0 None, 1 Scratch, 2 Cut, 3 Fracture.",
+  "zone_count": 15,
+  "min_wound_damage": 8.0,
+  "cut_damage": 15.0,
+  "fracture_fall_damage": 25.0,
+  "fracture_blunt_damage": 30.0,
+  "scratch_heal_seconds": 60.0,
+  "bandaged_heal_seconds": 180.0,
+  "splinted_fracture_heal_seconds": 600.0,
+  "bleed_per_second": 0.15,
+  "fracture_speed": 0.55,
+  "splinted_fracture_speed": 0.8,
+  "weights": {
+    "fall": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      5,
+      5,
+      5,
+      5,
+      20,
+      20,
+      20,
+      20
+    ],
+    "generic": [
+      8,
+      20,
+      16,
+      6,
+      6,
+      6,
+      6,
+      4,
+      4,
+      6,
+      6,
+      4,
+      4,
+      2,
+      2
+    ],
+    "phantom_hit": [
+      20,
+      30,
+      0,
+      13,
+      12,
+      13,
+      12,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ]
+  },
+  "draws": [
+    {
+      "table": "fall",
+      "seed": 0,
+      "zone": 7
+    },
+    {
+      "table": "fall",
+      "seed": 1,
+      "zone": 12
+    },
+    {
+      "table": "fall",
+      "seed": 2,
+      "zone": 8
+    },
+    {
+      "table": "fall",
+      "seed": 3,
+      "zone": 13
+    },
+    {
+      "table": "fall",
+      "seed": 7,
+      "zone": 10
+    },
+    {
+      "table": "fall",
+      "seed": 42,
+      "zone": 11
+    },
+    {
+      "table": "fall",
+      "seed": 1000,
+      "zone": 12
+    },
+    {
+      "table": "fall",
+      "seed": 65535,
+      "zone": 13
+    },
+    {
+      "table": "fall",
+      "seed": 123456789,
+      "zone": 13
+    },
+    {
+      "table": "fall",
+      "seed": 4294967295,
+      "zone": 12
+    },
+    {
+      "table": "generic",
+      "seed": 0,
+      "zone": 0
+    },
+    {
+      "table": "generic",
+      "seed": 1,
+      "zone": 4
+    },
+    {
+      "table": "generic",
+      "seed": 2,
+      "zone": 0
+    },
+    {
+      "table": "generic",
+      "seed": 3,
+      "zone": 8
+    },
+    {
+      "table": "generic",
+      "seed": 7,
+      "zone": 1
+    },
+    {
+      "table": "generic",
+      "seed": 42,
+      "zone": 1
+    },
+    {
+      "table": "generic",
+      "seed": 1000,
+      "zone": 2
+    },
+    {
+      "table": "generic",
+      "seed": 65535,
+      "zone": 7
+    },
+    {
+      "table": "generic",
+      "seed": 123456789,
+      "zone": 6
+    },
+    {
+      "table": "generic",
+      "seed": 4294967295,
+      "zone": 3
+    },
+    {
+      "table": "phantom_hit",
+      "seed": 0,
+      "zone": 0
+    },
+    {
+      "table": "phantom_hit",
+      "seed": 1,
+      "zone": 3
+    },
+    {
+      "table": "phantom_hit",
+      "seed": 2,
+      "zone": 0
+    },
+    {
+      "table": "phantom_hit",
+      "seed": 3,
+      "zone": 4
+    },
+    {
+      "table": "phantom_hit",
+      "seed": 7,
+      "zone": 0
+    },
+    {
+      "table": "phantom_hit",
+      "seed": 42,
+      "zone": 1
+    },
+    {
+      "table": "phantom_hit",
+      "seed": 1000,
+      "zone": 1
+    },
+    {
+      "table": "phantom_hit",
+      "seed": 65535,
+      "zone": 4
+    },
+    {
+      "table": "phantom_hit",
+      "seed": 123456789,
+      "zone": 4
+    },
+    {
+      "table": "phantom_hit",
+      "seed": 4294967295,
+      "zone": 1
+    }
+  ],
+  "injuries": [
+    {
+      "damage": 5,
+      "cause": "Slash",
+      "zone": 13,
+      "injury": 0
+    },
+    {
+      "damage": 8,
+      "cause": "Slash",
+      "zone": 13,
+      "injury": 1
+    },
+    {
+      "damage": 14.9,
+      "cause": "Pierce",
+      "zone": 1,
+      "injury": 1
+    },
+    {
+      "damage": 15,
+      "cause": "Pierce",
+      "zone": 1,
+      "injury": 2
+    },
+    {
+      "damage": 30,
+      "cause": "Fall",
+      "zone": 11,
+      "injury": 3
+    },
+    {
+      "damage": 30,
+      "cause": "Fall",
+      "zone": 7,
+      "injury": 2
+    },
+    {
+      "damage": 24.9,
+      "cause": "Fall",
+      "zone": 13,
+      "injury": 2
+    },
+    {
+      "damage": 35,
+      "cause": "Blunt",
+      "zone": 5,
+      "injury": 3
+    },
+    {
+      "damage": 35,
+      "cause": "Blunt",
+      "zone": 1,
+      "injury": 2
+    },
+    {
+      "damage": 50,
+      "cause": "Poison",
+      "zone": 1,
+      "injury": 0
+    },
+    {
+      "damage": 29.9,
+      "cause": "Blunt",
+      "zone": 3,
+      "injury": 2
+    },
+    {
+      "damage": 20,
+      "cause": "Undefined",
+      "zone": 0,
+      "injury": 2
+    }
+  ]
+}

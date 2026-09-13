@@ -16,6 +16,7 @@ use crate::ipc::{
 use crate::network::protocol::PacketPayload;
 use crate::network::sync;
 use crate::network::{BoundedDedupeSet, NetworkEvent, NetworkManager, PeerId, DEDUPE_CAP};
+use crate::player::body::{draw_zone, BodyState, DamageCause, Treatment, ZONE_COUNT};
 use crate::player::Player;
 use crate::utils::{world_to_chunk, ChunkPos, Vec3, CHUNK_SIZE};
 use crate::world::collision::{resolve_safe_spawn, Level0Collision};
@@ -734,6 +735,7 @@ fn apply_player_snapshot(player: &mut Player, snap: crate::persistence::save::Pl
     player.pending_respawn_point = snap.pending_respawn_point;
     player.stp_inventory = snap.stp_inventory;
     player.inventory_v2 = snap.inventory_v2;
+    player.body = BodyState::from_save(&snap.body);
 }
 
 /// A snapshot saved while dead must NOT hydrate as-is. The death belongs to a session that no
@@ -758,6 +760,7 @@ fn revive_if_dead_on_load(
         return;
     }
     player.stats = crate::player::stats::PlayerStats::on_respawn(&player.stats);
+    player.body.clear(); // ADR-149 R2: se reaparece sano
     // ADR-045 enm. 2 E2.2 — la misma resolución que `respawn_request`: sobre WG3 si manda.
     player.position = resolve_respawn_position(
         world,
@@ -1906,6 +1909,8 @@ pub async fn run(
             // TEMP DIAG (TP attribution audit; REMOVE after diagnosis): see
             // Player::last_reposition_tick doc comment.
             player.last_reposition_tick = Some(tick);
+            // ADR-149 R2: el cuerpo guardado vuelve en la misma ventana que la posición y el inventario.
+            let _ = to_clients.send(ServerMessage::Event(body_state_event(&player.body)));
             // ADR-032 amendment: restore the real STP inventory in the same deferred window,
             // AFTER the snap event (independent consumers — applier vs InventoryRestorer — so
             // order is cosmetic, but keep it deterministic). Skipped when empty: an empty
@@ -2354,6 +2359,7 @@ pub async fn run(
                 phases.add(PH_ENT_LEGACY, entity_tick_started.elapsed());
                 if ENTITY_DAMAGE_ENABLED && !dev_freeze_survival && damage > 0.0 {
                     player.stats.take_damage(damage);
+                    player.body.apply_damage(draw_zone(DamageCause::Other, tick as u32), damage, DamageCause::Other);
                 }
                 for ev in events {
                     if dev_freeze_survival && ev.event_type == "damage_taken" {
@@ -2813,6 +2819,8 @@ pub async fn run(
                         PhantomAttackKind::Hit(dmg) => {
                             if !dev_invincible {
                                 player.stats.take_damage(dmg);
+                                // ADR-149 R2: el zarpazo abre herida en brazos, pecho o cabeza (sorteo con el tick).
+                                player.body.apply_damage(draw_zone(DamageCause::PhantomHit, tick as u32), dmg, DamageCause::PhantomHit);
                             }
                             let _ = to_clients.send(ServerMessage::Event(GameEvent {
                                 event_type: "phantom_hit".into(),
@@ -2894,6 +2902,15 @@ pub async fn run(
             player.stats.hallucination_intensity = 0.0;
         } else {
             player.stats.update(dt, &ctx);
+            // ADR-149 R2: los cortes sin vendar sangran donde corre la salud; DEV_FREEZE_SURVIVAL lo para con todo lo demás.
+            let bleed = player.body.tick(dt);
+            if bleed > 0.0 && !player.stats.is_dead() {
+                player.stats.take_damage(bleed);
+            }
+        }
+        // ADR-149 R2: el cliente espeja el cuerpo; se le avisa solo cuando cambia.
+        if player.body.take_dirty() {
+            let _ = to_clients.send(ServerMessage::Event(body_state_event(&player.body)));
         }
 
         // Death → respawn on a validated safe cell (never the unsafe origin).
@@ -4493,6 +4510,8 @@ async fn handle_network_event(
                 tick,
             ) {
                 Ok(health) => {
+                    // ADR-149 R2: sin zona en la concesión hasta R3 → sorteo genérico con el id de la petición.
+                    player.body.apply_damage(draw_zone(DamageCause::Other, request_id as u32), damage, DamageCause::Other);
                     info!(
                         "MPTRACE step=PVP event=pvp_damage_applied request_id={} attacker_id={} weapon_id={} damage={:.1} health={:.2}",
                         request_id, attacker_id, weapon_id, damage, health
@@ -4742,6 +4761,8 @@ async fn handle_network_event(
                         return;
                     }
                     player.stats.take_damage(damage);
+                    // ADR-149 R2: mismo sorteo que en el host, con el id de la concesión como semilla.
+                    player.body.apply_damage(draw_zone(DamageCause::PhantomHit, request_id as u32), damage, DamageCause::PhantomHit);
                     info!(
                         "MPTRACE step=PH_ATTACK event=phantom_attack_applied kind=hit damage={damage:.1} health={:.2} request_id={request_id}",
                         player.stats.health
@@ -5284,11 +5305,29 @@ async fn handle_action(
             let cause = json_str(&action.data, "cause").unwrap_or("unknown");
             if amount > 0.0 && !env_flag_enabled("DEV_FREEZE_SURVIVAL") {
                 player.stats.take_damage(amount);
+                // ADR-149 R2: el cliente manda la zona ya resuelta; sin ella se sortea por causa con el tick.
+                let (zone, injury) = wound_from_report(&mut player.body, &action.data, amount, cause, tick);
                 info!(
-                    "MPTRACE step=DMG event=report_damage_applied amount={:.1} cause={} health={:.2}",
-                    amount, cause, player.stats.health
+                    "MPTRACE step=DMG event=report_damage_applied amount={:.1} cause={} zone={} injury={} health={:.2}",
+                    amount, cause, zone, injury, player.stats.health
                 );
             }
+        }
+        // ADR-149 R2: el cliente trata una zona con venda (1) o férula (2). Trust-the-client en el objeto gastado, como
+        // consume_item (ADR-030); aquí solo se valida que la zona admita ese tratamiento. El cambio vuelve en body_state.
+        "treat_zone" => {
+            let zone = action.data.get("zone").and_then(|v| v.as_u64()).map_or(usize::MAX, |z| z as usize);
+            let treatment = action
+                .data
+                .get("treatment")
+                .and_then(|v| v.as_u64())
+                .and_then(|t| u8::try_from(t).ok())
+                .and_then(Treatment::from_u8);
+            let applied = match treatment {
+                Some(t) if !player.stats.is_dead() => player.body.treat(zone, t),
+                _ => false,
+            };
+            info!("MPTRACE step=BODY event=treat_zone zone={} treatment={:?} applied={}", zone, treatment, applied);
         }
         // ADR-032 amendment: the client reports its CURRENT real STP inventory (InventoryReporter,
         // debounced on-change). Trust-the-client — same level as report_death_loot: no
@@ -5542,6 +5581,7 @@ async fn handle_action(
         "respawn_request" => {
             if player.stats.is_dead() {
                 player.stats = crate::player::stats::PlayerStats::on_respawn(&player.stats);
+                player.body.clear(); // ADR-149 R2: se reaparece sano
                 // ADR-029 V0 invulnerability amendment: a fresh respawn is immune to PvP
                 // damage for RESPAWN_INVULN_TICKS (tick-based, no spatial safe zone).
                 player.stats.invuln_until_tick = (tick as u32).wrapping_add(RESPAWN_INVULN_TICKS);
@@ -6968,6 +7008,30 @@ fn apply_pvp_damage_grant(
     Ok(stats.health)
 }
 
+/// ADR-149 R2 — la zona de un daño que reporta el cliente: la suya si es válida (la resolvió con hueso, altura y lado);
+/// si falta o está fuera de rango, sorteo por causa con el tick. Devuelve la zona y la lesión abierta.
+fn wound_from_report(body: &mut BodyState, data: &serde_json::Value, amount: f32, cause: &str, tick: u64) -> (usize, u8) {
+    let cause = DamageCause::from_client(cause);
+    let zone = data
+        .get("zone")
+        .and_then(|v| v.as_u64())
+        .filter(|&z| z < ZONE_COUNT as u64)
+        .map_or_else(|| draw_zone(cause, tick as u32), |z| z as usize);
+    (zone, body.apply_damage(zone, amount, cause))
+}
+
+/// ADR-149 R2 — el espejo del cuerpo para el cliente: los 15 bytes de zona, si sangra y lo que frenan las piernas.
+fn body_state_event(body: &BodyState) -> GameEvent {
+    GameEvent {
+        event_type: "body_state".into(),
+        data: serde_json::json!({
+            "zones": body.raw().to_vec(),
+            "bleeding": body.is_bleeding(),
+            "leg_speed": body.leg_speed_multiplier(),
+        }),
+    }
+}
+
 /// ADR-047 — the victim backend's own veto over a robapieles' blow, extracted so it can be tested
 /// without standing up a game loop. Sibling of `apply_pvp_damage_grant`, deliberately NOT a reuse
 /// of it: ADR-016 keeps the phantom on its own layer, and the two dedupe keys differ (the host is
@@ -7194,6 +7258,11 @@ async fn process_pvp_hit_candidate_host(
                     tick,
                 ) {
                     Ok(health) => {
+                        player.body.apply_damage(
+                            draw_zone(DamageCause::Other, candidate.request_id as u32),
+                            clamped_damage,
+                            DamageCause::Other,
+                        );
                         let _ = to_clients.send(ServerMessage::Event(GameEvent {
                             event_type: "pvp_damage_taken".into(),
                             data: serde_json::json!({

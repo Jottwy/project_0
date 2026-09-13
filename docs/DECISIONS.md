@@ -18327,3 +18327,31 @@ Ver la cuerda en Play. Si el roce de la palma a fase 0,23 se nota, subir el tope
 reposo; ambas cosas son ya un `set` + `bake`.
 
 ---
+
+### ADR-149 — Enmienda 2 (2026-09-13): un guante por mano, y R2 partida en tres (backend verificado primero)
+
+**Estado:** PROPUESTA (Joel: «uno por mano, y sigue con R2»). Responde la pregunta 8 y trocea R2. Sin bump de wire.
+
+1. **Un guante por mano** (pregunta 8). Dos huecos, `GloveL` y `GloveR`; la prenda es UN guante que vale para cualquier
+   mano y es el hueco el que decide qué mano cubre (`BackroomsGarmentPrototype.Covers`). En la escena de pruebas el hueco
+   del par se renombra a `GloveL` (conserva el índice 10) y `GloveR` se añade al final (índice 14): la tabla de índices del
+   borrador de ADR-147 enm. 2 §4 tendrá que recogerlo. El asset `BR_Work Gloves` se renombra a `BR_Work Glove` (mismo GUID
+   y mismo id).
+2. **R2 se parte en tres rebanadas**, cada una verificable sola:
+   - **R2a — cuerpo con autoridad del backend.** `backend/src/player/body.rs`, espejo exacto de `BodyZones.cs`/`BodyState.cs`
+     con oráculo común `docs/data/body-zones.json` (test de cada lado). `report_damage` acepta `zone` opcional; sin ella,
+     o fuera de rango, sorteo por causa con el tick. Abren herida por sorteo: robapieles `Hit` (tabla propia brazos, pecho y
+     cabeza; semilla tick en el host, `request_id` en el joiner), PvP (`request_id`) y entidades (tick). El sangrado corre
+     en el paso de stats y lo para `DEV_FREEZE_SURVIVAL`. Acción `treat_zone {zone, treatment}` (1 venda, 2 férula;
+     trust-the-client en el objeto gastado, como ADR-030). Evento `body_state {zones, bleeding, leg_speed}` al cambiar y en
+     la ventana de `session_restored` (`leg_speed` se añade a la tabla de impacto: el cliente no tiene que recalcularlo).
+     `PlayerSnapshot.body` con `serde(default)`; se limpia al reaparecer. Acción y evento viajan como JSON libre: sin bump
+     (precedente ADR-025). **Backend verificado** con `cargo test` (1562/0) y una sonda IPC en Python contra el exe debug
+     (corte con zona, venda, férula rechazada, caída sorteada con fractura). Cliente: `report_damage` manda la zona resuelta
+     por `PlayerPoseTransmitter` y el prototipo de la escena de pruebas espeja `body_state`.
+   - **R2b — la ropa en el servidor:** `report_protection` y mitigación en el backend (D7), estado de prenda en `props` (D9).
+   - **R2c — la venda del juego real pasa a espejo** (D6): `PlayerMedicalState` se alimenta de `body_state` y la venda manda
+     `treat_zone`. Va aparte porque cambia la venda por brazo que Joel ya validó en partida: pide su prueba online antes de
+     cerrarse.
+
+---

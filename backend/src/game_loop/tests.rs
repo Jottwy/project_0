@@ -15259,3 +15259,51 @@ async fn player_joined_marks_the_host_only_when_the_peer_is_the_host() {
     assert_eq!(joined[0].data["is_host"], false);
     assert_eq!(joined[0].data["name"], "Alguien");
 }
+
+/// ADR-149 R2 — la zona que manda el cliente manda; si falta o es basura, se sortea por causa con el tick.
+#[test]
+fn a_reported_zone_wins_and_a_missing_or_bogus_one_is_drawn() {
+    use crate::player::body::{INJURY_CUT, INJURY_FRACTURE};
+    let mut body = BodyState::default();
+    let (zone, injury) = wound_from_report(&mut body, &serde_json::json!({ "amount": 16.0, "zone": 13 }), 16.0, "Slash", 7);
+    assert_eq!((zone, injury), (13, INJURY_CUT));
+
+    let (zone, _) = wound_from_report(&mut body, &serde_json::json!({ "amount": 30.0 }), 30.0, "Fall", 42);
+    assert_eq!(zone, draw_zone(DamageCause::Fall, 42));
+    let (zone, _) = wound_from_report(&mut body, &serde_json::json!({ "zone": 99 }), 10.0, "Slash", 5);
+    assert_eq!(zone, draw_zone(DamageCause::Other, 5), "una zona fuera de rango no se cree");
+    let (_, injury) = wound_from_report(&mut body, &serde_json::json!({ "zone": 11 }), 30.0, "Fall", 1);
+    assert_eq!(injury, INJURY_FRACTURE);
+}
+
+/// ADR-149 R2 — el evento lleva las 15 zonas tal cual y lo que frenan las piernas.
+#[test]
+fn the_body_state_event_mirrors_the_fifteen_zones() {
+    let mut body = BodyState::default();
+    body.apply_damage(12, 30.0, DamageCause::Fall);
+    let event = body_state_event(&body);
+    assert_eq!(event.event_type, "body_state");
+    let zones = event.data["zones"].as_array().unwrap();
+    assert_eq!(zones.len(), ZONE_COUNT);
+    assert_eq!(zones[12].as_u64(), Some(3));
+    assert_eq!(event.data["bleeding"].as_bool(), Some(false));
+    assert!((event.data["leg_speed"].as_f64().unwrap() - 0.55).abs() < 1e-4);
+}
+
+/// ADR-149 R2 — un guardado de antes del cuerpo carga con el cuerpo sano, y uno nuevo lo conserva.
+#[test]
+fn a_snapshot_without_body_loads_healthy_and_a_new_one_keeps_it() {
+    let mut player = Player::new(1, String::from("Host"));
+    player.body.apply_damage(5, 16.0, DamageCause::Other);
+    let mut value = serde_json::to_value(crate::persistence::save::PlayerSnapshot::from_player(&player)).unwrap();
+    let kept: crate::persistence::save::PlayerSnapshot = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(kept.body.len(), 1);
+
+    value.as_object_mut().unwrap().remove("body");
+    let old: crate::persistence::save::PlayerSnapshot = serde_json::from_value(value).unwrap();
+    assert!(old.body.is_empty());
+    let mut restored = Player::new(1, String::from("Host"));
+    apply_player_snapshot(&mut restored, kept);
+    assert_eq!(restored.body.raw(), player.body.raw());
+}
+

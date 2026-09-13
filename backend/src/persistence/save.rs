@@ -56,6 +56,10 @@ pub struct PlayerSnapshot {
     /// flat `stp_inventory` instead — see the emission-site fallback in `game_loop.rs`.
     #[serde(default)]
     pub inventory_v2: Vec<InventoryStackV2>,
+    /// ADR-149 R2: solo las zonas no sanas (lesión, venda, férula y segundos de curación). `serde(default)` → un save
+    /// anterior carga con el cuerpo sano (ADR-032 punto 5).
+    #[serde(default)]
+    pub body: Vec<crate::player::body::BodyZoneSave>,
 }
 
 impl PlayerSnapshot {
@@ -73,6 +77,7 @@ impl PlayerSnapshot {
             pending_respawn_point: p.pending_respawn_point,
             stp_inventory: p.stp_inventory.clone(),
             inventory_v2: p.inventory_v2.clone(),
+            body: p.body.to_save(),
         }
     }
 }
