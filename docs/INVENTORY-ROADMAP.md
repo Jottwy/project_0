@@ -393,6 +393,13 @@ tinte sobre la UI piden overlay propio o canvas en Screen Space Camera.
 - **Pieza 4 hecha (2026-09-13, commit 4171d701)** — 2 manos + cinturón hasta 8, base de 9, slot Cintura. Probado en Play.
 - **Bug (Joel): quitarse el cinturón con cosas en sus huecos** — se desequipan a la base; si no caben, al suelo. Lo mismo al
   cambiar a un cinturón menor.
+- **Pieza 5 — máximo por equipo (D6 enm. 2)** — `BackroomsCarryWeight`: base 10 kg + `MaxKg` de lo puesto en Espalda y
+  Cintura, escrito en el `_maxWeight` privado del vendor por reflexión. Solo escena de pruebas, apagado con backend. Si el
+  máximo baja por debajo de lo que llevas, no suelta nada: solo impide coger más.
+- **PENDIENTE (Joel, 2026-09-13) — zoom por zona:** clic en la cabecera de un slot (Head…) acerca la vista previa a esa
+  parte; clic otra vez o fuera, vuelve.
+- **PENDIENTE (Joel, 2026-09-13) — pasada de pulido y suavizado:** transiciones al reordenar secciones, al plegar/abrir, al
+  abrir y cerrar el inventario y los paneles; efectos al mover objetos. Todo con curvas cortas, nada brusco.
 - **Pregunta abierta — guantes por mano:** ¿un slot «Manos» para el par, o mano izquierda y derecha separadas con guantes
   distintos? Recomendación: el par hasta que el sistema de heridas por zonas decida si la protección va por mano (la venda
   ya es por brazo, bits 7/8 de `buttons`).

@@ -177,5 +177,18 @@ namespace BackroomsSurvival.Tests
             Assert.AreEqual(8, BackroomsWornStorage.VisibleHandSlots(2, new WearableCapacityData(9, 2f, 0f), 8),
                 "nunca más huecos de los creados");
         }
+
+        [Test]
+        public void ElPesoMaximoEsLaBaseMasLoPuesto()
+        {
+            Assert.AreEqual(10f, BackroomsCarryWeight.MaxWeight(10f, new WearableCapacityData[0]), "desnudo, la base");
+            var worn = new[] { new WearableCapacityData(27, 25f, 20f), new WearableCapacityData(6, 6f, 5f) };
+            Assert.AreEqual(41f, BackroomsCarryWeight.MaxWeight(10f, worn), 0.001f, "montaña + cinturón de herramientas");
+
+            var guids = AssetDatabase.FindAssets("BackroomsCarryWeight t:MonoScript");
+            Assert.IsNotEmpty(guids, "falta el script BackroomsCarryWeight");
+            StringAssert.Contains(guids[0], File.ReadAllText(TestScenePath), "la escena de pruebas no monta BackroomsCarryWeight");
+            StringAssert.DoesNotContain(guids[0], File.ReadAllText(ShowcasePath), "STP_Showcase lleva el máximo por equipo");
+        }
     }
 }

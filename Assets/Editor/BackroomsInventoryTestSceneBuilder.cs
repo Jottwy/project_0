@@ -214,8 +214,10 @@ namespace BackroomsSurvival.EditorTools
                 AssetDatabase.LoadAssetAtPath<ContainerRestriction>(BackroomsBackpackPrototypeCreator.HolsterRestrictionPath));
             so.ApplyModifiedPropertiesWithoutUndo();
 
-            if (GameObject.Find(WornStorageName) == null)
-                new GameObject(WornStorageName, typeof(BackroomsWornStorage));
+            var worn = GameObject.Find(WornStorageName);
+            if (worn == null) worn = new GameObject(WornStorageName, typeof(BackroomsWornStorage));
+            // D6 enm. 2: el peso máximo sale del equipo.
+            if (worn.GetComponent<BackroomsCarryWeight>() == null) worn.AddComponent<BackroomsCarryWeight>();
 
             var root = GameObject.Find("Backpacks");
             if (root == null)

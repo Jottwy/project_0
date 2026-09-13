@@ -1671,6 +1671,7 @@ GameObject:
   m_Component:
   - component: {fileID: 1630207803}
   - component: {fileID: 1630207802}
+  - component: {fileID: 1630207804}
   m_Layer: 0
   m_Name: BackpackPrototype
   m_TagString: Untagged
@@ -1705,6 +1706,22 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &1630207804
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1630207801}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 9aa79228b9a2e2649a50c58ef5f06126, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  _baseKg: 10
+  _wornContainers:
+  - Back
+  - Waist
 --- !u!1 &1641481195
 GameObject:
   m_ObjectHideFlags: 0
