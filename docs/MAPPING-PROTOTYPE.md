@@ -143,3 +143,31 @@ Tras cada `.cs` nuevo: comprobar el asmdef y el `.csproj` a mano (el compile-che
 1. **Radio de visión: 5 m.**
 2. **Franja de sondeo: 0,5–1,6 m** sobre el suelo, como se propuso; lo que pase con las mesas se ve en Play.
 3. **Dónde:** lógica y tests en el worktree; sampler y Play en el clon principal.
+
+### 2.9 Resultado (2026-09-13)
+
+**Hecho, con playtest de Joel en `Assets/Scenes/MappingPlaytest.unity`:**
+- Salen paredes y **el rastro no atraviesa paredes** (Joel, en Play).
+- Coste medido en `Editor.log` (`MAPMEM`, 30 ventanas de 20 muestras): **media 0,145–0,172 ms, máximo 0,254 ms** por
+  muestra. Objetivo ≤ 0,5 ms: cumplido.
+- Disco de 5 m confirmado: en sala abierta 317 celdas visibles con 1 pared; en pasillo 96–166 con 17–21 paredes.
+- Búfer en régimen: 120 muestras (60 s).
+- GC: `gc0_collections` por ventana casi siempre 0–1, con picos de 8 y 11. Es un contador de TODO el proceso del
+  editor y no aísla al muestreador (que no asigna por muestra); el minimapa de depuración sí asigna por frame
+  (texto de `OnGUI`). **No verificado** con Profiler.
+
+**Pendiente de verificar:** caducidad a los 60 s vista en Play, cambio de planta, mesas como pared, suite EditMode
+dentro de Unity (sólo corrida en `tools/dev/headless-tests`: 8/8).
+
+**Desvíos del plan:**
+- La escena la genera un menú (`Backrooms/Mapeado/Crear escena de playtest`, `MappingPlaytestSceneCreator`) y el
+  código llegó al tronco por cherry-pick: una sesión en worktree no puede escribir en el clon principal.
+- **`Wg3Materials` no es `[Serializable]`**: `Wg3TestWorld.materials` no se guarda en ninguna escena y
+  `WorldGen3Test.unity` sale magenta. La escena de playtest lleva sus materiales en un componente propio
+  (`MappingPlaytestMaterials`: `Wg3_Floor`, `_Structure`, `_Ceiling`, `_Trim`) sin tocar WG3.
+- `probeMask` no puede inicializarse con `GridChunkBuilder.GeoMask` en la declaración del campo: su constructor
+  estático crea objetos de Unity y desde un inicializador de `MonoBehaviour` deja el tipo roto en todo el dominio.
+  Se asigna en `Awake`.
+- Menú extra de diagnóstico (`Backrooms/Mapeado/Diagnosticar pintura de playtest`) para ver qué material pinta cada renderer.
+
+**Preguntas abiertas antes de P0.2:** ¿5 m y 60 s se sienten bien jugando?
