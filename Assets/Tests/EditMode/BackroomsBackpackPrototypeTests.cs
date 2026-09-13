@@ -168,5 +168,14 @@ namespace BackroomsSurvival.Tests
             Assert.IsTrue(waist, "sin hueco de cintura en la columna del personaje");
             Assert.IsTrue(holster, "la barra no tiene 8 huecos creados ni su BackroomsWornSlotsUI");
         }
+
+        [Test]
+        public void QuitarseElCinturonDejaSoloLosHuecosDeLasManos()
+        {
+            Assert.AreEqual(2, BackroomsWornStorage.VisibleHandSlots(2, null, 8), "sin cinturón, las manos");
+            Assert.AreEqual(4, BackroomsWornStorage.VisibleHandSlots(2, new WearableCapacityData(2, 2f, 0f), 8));
+            Assert.AreEqual(8, BackroomsWornStorage.VisibleHandSlots(2, new WearableCapacityData(9, 2f, 0f), 8),
+                "nunca más huecos de los creados");
+        }
     }
 }

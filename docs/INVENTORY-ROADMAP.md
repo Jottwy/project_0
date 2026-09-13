@@ -390,6 +390,9 @@ tinte sobre la UI piden overlay propio o canvas en Screen Space Camera.
 - **IDEA (Joel, 2026-09-13 noche) — enfocar una parte del cuerpo:** clic en la CABECERA de un slot (no en el objeto) acerca
   la vista previa a esa parte (cabeza, torso, manos…). Encaja con la vista Heridas: base para el sistema de heridas por zonas
   y para la sastrería (reparar ropa por zona, D11).
+- **Pieza 4 hecha (2026-09-13, commit 4171d701)** — 2 manos + cinturón hasta 8, base de 9, slot Cintura. Probado en Play.
+- **Bug (Joel): quitarse el cinturón con cosas en sus huecos** — se desequipan a la base; si no caben, al suelo. Lo mismo al
+  cambiar a un cinturón menor.
 - **Pregunta abierta — guantes por mano:** ¿un slot «Manos» para el par, o mano izquierda y derecha separadas con guantes
   distintos? Recomendación: el par hasta que el sistema de heridas por zonas decida si la protección va por mano (la venda
   ya es por brazo, bits 7/8 de `buttons`).
