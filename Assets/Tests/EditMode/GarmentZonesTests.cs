@@ -55,6 +55,9 @@ namespace BackroomsSurvival.Tests
             Assert.IsTrue(state.IsPocketSlotBroken(data, 1));
             Assert.IsFalse(state.IsPocketSlotBroken(data, 2), "el bolsillo del abdomen sigue sano");
             Assert.IsTrue(BackroomsGarmentPrototype.IsBlocked(data, state, 4), "más allá de los bolsillos no se guarda nada");
+            Assert.IsTrue(BackroomsGarmentPrototype.Covers("GloveL", BodyZone.HandL));
+            Assert.IsFalse(BackroomsGarmentPrototype.Covers("GloveL", BodyZone.HandR), "el guante izquierdo no protege la mano derecha");
+            Assert.IsTrue(BackroomsGarmentPrototype.Covers("Outer", BodyZone.Chest));
         }
 
         [Test]

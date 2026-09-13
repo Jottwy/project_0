@@ -17,7 +17,7 @@ namespace BackroomsSurvival.Gameplay.Body
     {
         // De fuera adentro: la primera prenda que cubre la zona es la que para el golpe.
         [SerializeField]
-        private string[] _layers = { "Outer", "Torso", "Legs", "Feet", "Gloves", "Head", "Face" };
+        private string[] _layers = { "Outer", "Torso", "Legs", "Feet", "GloveL", "GloveR", "Head", "Face" };
 
         [SerializeField]
         private string[] _pocketOwners = { "Outer", "Legs" };
@@ -172,7 +172,7 @@ namespace BackroomsSurvival.Gameplay.Body
                 data = null;
                 if (worn == null || !worn.Definition.TryGetDataOfType(out data)) continue;
                 index = data.IndexOf(zone);
-                if (index < 0) continue;
+                if (index < 0 || !Covers(name, zone)) continue;
                 layer = name;
                 return true;
             }
@@ -182,6 +182,14 @@ namespace BackroomsSurvival.Gameplay.Body
             index = -1;
             return false;
         }
+
+        /// <summary>Un guante vale para cualquier mano; el hueco donde va decide cuál cubre.</summary>
+        public static bool Covers(string layer, BodyZone zone) => layer switch
+        {
+            "GloveL" => zone == BodyZone.HandL,
+            "GloveR" => zone == BodyZone.HandR,
+            _ => true,
+        };
 
         private int Count(ItemDefinition definition)
         {

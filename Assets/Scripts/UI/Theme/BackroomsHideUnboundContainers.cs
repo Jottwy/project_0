@@ -19,7 +19,7 @@ namespace BackroomsSurvival.UI
     {
         /// <summary>Los contenedores que la variante añade por los prototipos y el vendor no trae.</summary>
         public static readonly string[] PrototypeContainers =
-            { "Back", "BackStorage", "Waist", "Outer", "Gloves", "Face", "OuterPockets", "LegsPockets" };
+            { "Back", "BackStorage", "Waist", "Outer", "GloveL", "GloveR", "Face", "OuterPockets", "LegsPockets" };
 
         [SerializeField]
         private string[] _names = PrototypeContainers;
