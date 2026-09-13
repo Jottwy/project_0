@@ -134,6 +134,14 @@ namespace BackroomsSurvival.Gameplay.Body
             return speed;
         }
 
+        /// <summary>ADR-149 R2a: copia los bytes que manda el backend (espejo). Avisa solo de las zonas que cambian.</summary>
+        public void ApplyRaw(byte[] zones)
+        {
+            if (zones == null) return;
+            for (int i = 0; i < _zones.Length && i < zones.Length; i++)
+                Set((BodyZone)i, zones[i]);
+        }
+
         public void Clear()
         {
             for (int i = 0; i < _zones.Length; i++)

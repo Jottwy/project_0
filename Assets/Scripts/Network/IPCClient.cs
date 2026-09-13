@@ -1105,12 +1105,27 @@ namespace BackroomsSurvival.Net
         /// server owns the resulting death/respawn. Rides the existing Action channel
         /// (action_type is additive, data is free-form) — NO wire schema change, no bump.
         /// </summary>
-        public void SendReportDamage(float amount, string cause)
+        public void SendReportDamage(float amount, string cause, int zone = -1)
         {
-            SendActionFrame(ProtocolActionTypes.ReportDamage, 2, w =>
+            // ADR-149 R2a: la zona que el cliente resolvió (hueso, altura y lado). Sin ella (-1) el backend la sortea por causa.
+            SendActionFrame(ProtocolActionTypes.ReportDamage, zone >= 0 ? 3 : 2, w =>
             {
                 w.WriteString("amount"); w.WriteFloat(amount);
                 w.WriteString("cause"); w.WriteString(cause);
+                if (zone >= 0) { w.WriteString("zone"); w.WriteInt(zone); }
+            });
+        }
+
+        /// <summary>
+        /// ADR-149 R2a: trata una zona del cuerpo (1 venda, 2 férula). Trust-the-client en el objeto gastado, como
+        /// consume_item (ADR-030); el backend valida que la zona lo admita y contesta con body_state. Sin bump.
+        /// </summary>
+        public void SendTreatZone(int zone, int treatment)
+        {
+            SendActionFrame(ProtocolActionTypes.TreatZone, 2, w =>
+            {
+                w.WriteString("zone"); w.WriteInt(zone);
+                w.WriteString("treatment"); w.WriteInt(treatment);
             });
         }
 
