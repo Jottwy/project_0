@@ -27,8 +27,8 @@ namespace BackroomsSurvival.Gameplay.Mapping
 
         [Header("Dibujo")]
         public float maxDrawSeconds = 3f;
-        [Tooltip("Tinta que gasta un metro de pared. Con 0,02 un boli lleno da para 50 m.")]
-        public float penCostPerMetre = 0.02f;
+        [Tooltip("Tinta que gasta un metro de pared. Con 0,002 un boli lleno da para 500 m (Joel, playtest 2026-09-13: con 0,02 se acababa a los ~42 m).")]
+        public float penCostPerMetre = 0.002f;
         public float penWidthPx = 3f;
         public Color penColour = new Color(0.165f, 0.278f, 0.659f, 0.95f);
         public Color paperColour = new Color(0.945f, 0.937f, 0.898f, 1f);

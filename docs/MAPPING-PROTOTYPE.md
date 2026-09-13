@@ -266,8 +266,10 @@ dibujo a ese tamaño? ¿El temblor de lo viejo se lee como «esto no lo tengo cl
     seguro se agotó (el tramo siguiente costaba más de lo que quedaba). Un boli dio para ≈ 42 m de pared, cerca de
     los 50 de diseño (`penCostPerMetre` 0,02).
 
-**Sin respuesta todavía:** ¿dibujar quieto da tensión o pesa?, ¿60 s de recuerdo y 5 m de visión bien?, ¿la tinta
-se acaba demasiado pronto para probar (en P0.2 no hay forma de conseguir otra)?
+**Ajuste de Joel tras el playtest:** la tinta se acababa demasiado pronto → `penCostPerMetre` **0,02 → 0,002**
+(un boli ≈ 500 m de pared).
+
+**Sin respuesta todavía:** ¿dibujar quieto da tensión o pesa?, ¿60 s de recuerdo y 5 m de visión bien?
 
 **Desvíos del plan:** panel IMGUI en vez de uGUI (sin `EventSystem` en la escena); la libreta abierta deja al
 jugador quieto también sin dibujar (el 45 % de velocidad llega con el jugador STP en P0.5); cerrar la libreta
