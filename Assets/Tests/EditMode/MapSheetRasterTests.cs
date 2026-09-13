@@ -32,7 +32,8 @@ namespace BackroomsSurvival.Tests
             // Tramo horizontal en Z = 50 celdas, de X = 10 a 20: en píxeles, fila 256 y columnas 51..102.
             raster.DrawStroke(new MapStroke(new[] { 10f, 50f, 20f, 50f }, false), Ink, 4f, CellsPerChunk);
 
-            Assert.AreEqual(0x10, RedAt(raster, 77, 256), "en el centro del trazo, tinta");
+            // La carga de tinta varía a lo largo del trazo (presión), así que el centro no es el color exacto.
+            Assert.LessOrEqual(RedAt(raster, 77, 256), 0x40, "en el centro del trazo, tinta");
             Assert.AreEqual(0xF1, RedAt(raster, 77, 256 + 8), "a 8 px de un trazo de 4, papel");
             Assert.AreEqual(0xF1, RedAt(raster, 200, 256), "fuera de su largo, papel");
         }

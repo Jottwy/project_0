@@ -126,6 +126,29 @@ namespace BackroomsSurvival.Tests
         }
 
         [Test]
+        public void FreshWallsAreSketchedWithSeveralLinesButPaidOnce()
+        {
+            MapMemory memory = NewMemory();
+            Add(memory, 0.0,
+                (5, 5, MapCellKind.Floor), (5, 6, MapCellKind.Floor), (5, 7, MapCellKind.Floor), (5, 8, MapCellKind.Floor),
+                (6, 5, MapCellKind.Wall), (6, 6, MapCellKind.Wall), (6, 7, MapCellKind.Wall), (6, 8, MapCellKind.Wall));
+            MapSheet sheet = NewSheet();
+            MapPen pen = NewPen();
+            MapSheetLayer layer = sheet.BeginLayer(pen);
+
+            var builder = new MapSheetStrokeBuilder();
+            Assert.AreEqual(1, builder.Build(sheet, memory, 1.0, 20.0));
+            Assert.IsTrue(builder.Commit(sheet, layer, 0, pen, memory));
+
+            Assert.GreaterOrEqual(layer.Strokes.Count, MapSheetStrokeBuilder.FreshPasses, "a mano se repasa");
+            Assert.That(1f - pen.Ink, Is.EqualTo(4 * 0.5 * 0.05).Within(1e-5), "la tinta se cobra una vez por pared");
+
+            // Las esquinas no cierran limpias: ninguna pasada empieza exactamente en el borde de la pared.
+            foreach (MapStroke stroke in layer.Strokes)
+                Assert.AreNotEqual(5f, stroke.Points[1]);
+        }
+
+        [Test]
         public void RunningOutOfInkCutsTheStroke()
         {
             MapMemory memory = NewMemory();

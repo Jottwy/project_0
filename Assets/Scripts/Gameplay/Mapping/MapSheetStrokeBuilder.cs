@@ -51,6 +51,12 @@ namespace BackroomsSurvival.Gameplay.Mapping
         /// <summary>Probabilidad de que un tramo de recuerdo viejo no llegue al papel.</summary>
         public const float OldGapChance = 0.28f;
 
+        /// <summary>Pasadas de boli por cada pared reciente: a mano se repasa, no se traza una vez.</summary>
+        public const int FreshPasses = 2;
+
+        /// <summary>Probabilidad de una tercera pasada en paredes de 4 celdas o más.</summary>
+        public const float ThirdPassChance = 0.35f;
+
         private struct EdgeEntry
         {
             public bool Vertical;
@@ -142,7 +148,12 @@ namespace BackroomsSurvival.Gameplay.Mapping
             if (stroke.Old && Unit(ref state) < OldGapChance) return true;
 
             pen.Ink -= cost;
-            layer.Strokes.Add(new MapStroke(Jitter(stroke, sheet.Zone, memory.CellsPerChunk, ref state), stroke.Old));
+            // La tinta se cobra UNA vez por pared; las pasadas son el gesto, no más pared dibujada.
+            int passes = stroke.Old
+                ? 1
+                : FreshPasses + (stroke.LengthCells >= 4 && Unit(ref state) < ThirdPassChance ? 1 : 0);
+            for (int pass = 0; pass < passes; pass++)
+                layer.Strokes.Add(new MapStroke(Sketch(stroke, sheet.Zone, memory.CellsPerChunk, pass, ref state), stroke.Old));
             for (int k = 0; k < stroke.KeyCount; k++) sheet.AddEdge(_keys[stroke.KeyStart + k]);
             return true;
         }
@@ -173,21 +184,45 @@ namespace BackroomsSurvival.Gameplay.Mapping
             _entries.Add(new EdgeEntry { Vertical = vertical, Line = line, Pos = pos, Age = age, Key = key });
         }
 
-        private static float[] Jitter(PendingStroke stroke, MapZone zone, int cellsPerChunk, ref uint state)
+        /// <summary>
+        /// Una pasada de boli sobre la pared: la posición que se recuerda es la buena, el GESTO no es perfecto.
+        /// Temblor punto a punto, ondulación lenta de pulso, algo de torsión, extremos que se pasan o se quedan
+        /// cortos (las esquinas no cierran limpias) y, a partir de la segunda pasada, desplazada y a veces más corta.
+        /// </summary>
+        private static float[] Sketch(PendingStroke stroke, MapZone zone, int cellsPerChunk, int pass, ref uint state)
         {
-            float amplitude = stroke.Old ? 0.2f : 0.08f;
+            float jitter = stroke.Old ? 0.2f : 0.07f;
             int length = stroke.LengthCells;
-            int count = Math.Max(2, (int)Math.Ceiling(length / 1.5f) + 1);
-            float overshoot = (Unit(ref state) - 0.3f) * 0.3f;
+            int count = Math.Max(3, (int)Math.Ceiling(length / 0.75f) + 1);
+
+            float startOver = (Unit(ref state) - 0.35f) * 0.55f;
+            float endOver = (Unit(ref state) - 0.35f) * 0.55f;
+            if (pass > 0 && Unit(ref state) < 0.45f)
+            {
+                // Repasar no es volver a trazar entero: una de las puntas se queda corta.
+                float trim = length * 0.35f * Unit(ref state);
+                if (Unit(ref state) < 0.5f) startOver -= trim;
+                else endOver -= trim;
+            }
+
+            float offset = pass == 0 ? 0f : (Unit(ref state) - 0.5f) * 0.24f;
+            float tilt = (Unit(ref state) - 0.5f) * (stroke.Old ? 0.3f : 0.16f);
+            float waveAmplitude = stroke.Old ? 0.12f : 0.06f;
+            float waveFrequency = 0.35f + Unit(ref state) * 0.5f;
+            float wavePhase = Unit(ref state) * 6.2831855f;
 
             float line = stroke.Line - (stroke.Vertical ? zone.ChunkX : zone.ChunkZ) * cellsPerChunk;
             float from = stroke.From - (stroke.Vertical ? zone.ChunkZ : zone.ChunkX) * cellsPerChunk;
+            float span = Math.Max(0.2f, length + startOver + endOver);
 
             var points = new float[count * 2];
             for (int i = 0; i < count; i++)
             {
-                float along = from - overshoot + (length + 2f * overshoot) * i / (count - 1);
-                float across = line + (Unit(ref state) - 0.5f) * 2f * amplitude;
+                float u = i / (float)(count - 1);
+                float along = from - startOver + span * u;
+                float across = line + offset + tilt * (u - 0.5f) +
+                               waveAmplitude * (float)Math.Sin(wavePhase + along * waveFrequency) +
+                               (Unit(ref state) - 0.5f) * 2f * jitter;
                 points[2 * i] = stroke.Vertical ? across : along;
                 points[2 * i + 1] = stroke.Vertical ? along : across;
             }

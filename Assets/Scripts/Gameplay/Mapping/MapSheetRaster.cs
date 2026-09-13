@@ -62,6 +62,11 @@ namespace BackroomsSurvival.Gameplay.Mapping
             float spacing = Math.Max(0.5f, radius * 0.5f);
             float travelled = 0f;
 
+            // Presión de boli: el grosor y la carga de tinta cambian a lo largo del trazo. La fase sale de los
+            // propios puntos, así que el mismo trazo se pinta siempre igual sin guardar una semilla aparte.
+            float phase = (p[0] * 12.9898f + p[1] * 78.233f) % 6.2831855f;
+            bool blob = !stroke.Old;
+
             for (int i = 0; i + 3 < p.Length; i += 2)
             {
                 float x0 = p[i] * scale, y0 = p[i + 1] * scale;
@@ -72,8 +77,21 @@ namespace BackroomsSurvival.Gameplay.Mapping
                 for (int s = 0; s <= steps; s++)
                 {
                     float t = s / (float)steps;
-                    if (stroke.Old && (travelled + length * t) % (DashOnPx + DashOffPx) > DashOnPx) continue;
-                    Stamp(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t, radius, argb, alpha);
+                    float distance = travelled + length * t;
+                    if (stroke.Old && distance % (DashOnPx + DashOffPx) > DashOnPx) continue;
+
+                    float pressure = 0.5f + 0.5f * (float)Math.Sin(phase + distance * 0.21f);
+                    float drift = 0.5f + 0.5f * (float)Math.Sin(phase * 1.7f + distance * 0.047f);
+                    float stampRadius = radius * (0.78f + 0.37f * (pressure * 0.6f + drift * 0.4f));
+                    float stampAlpha = alpha * (0.82f + 0.18f * drift);
+                    if (blob)
+                    {
+                        // Donde se apoya el boli al empezar suelta algo más de tinta.
+                        stampRadius *= 1.35f;
+                        blob = false;
+                    }
+
+                    Stamp(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t, stampRadius, argb, stampAlpha);
                 }
 
                 travelled += length;
