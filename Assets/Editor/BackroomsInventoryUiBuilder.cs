@@ -7,6 +7,7 @@ using PolymindGames.UserInterface;
 using TMPro;
 using UnityEditor;
 using UnityEditor.SceneManagement;
+using BackroomsSurvival.Gameplay.Body;
 using UnityEngine;
 using UnityEngine.UI;
 
@@ -972,34 +973,22 @@ namespace BackroomsSurvival.EditorTools
             t.offsetMax = new Vector2(-BoxPad, 0f);
         }
 
-        // ─── Conmutador Ropa | Heridas (placeholder estructural, greybox 1d0e788e) ────
+        // ─── Conmutador Ropa | Heridas ────
         //
-        // Solo layout: qué se ve en el hueco del preview. Las zonas son de ejemplo (sin ADR de
-        // cuerpo por zonas todavía, roadmap «Sistemas anotados, sin empezar»); coordenadas en
-        // fracción del panel, calcadas del greybox para que la primera vista en juego case con la
-        // maqueta aprobada.
+        // ADR-149 R0: la vista Heridas son las 15 zonas del cuerpo, de frente (su izquierda a la derecha de la pantalla).
+        // Coordenadas en fracción del panel; cada casilla pinta su estado y trata con un clic.
         private const string WoundsPanelName = "BR_WoundsPanel";
-        private static readonly (string Name, float X, float Y, float W, float H)[] PlaceholderZones =
+        private const float WoundZoneW = 0.29f;
+        private const float WoundZoneH = 0.1f;
+        private static readonly (BodyZone Zone, float X, float Y)[] WoundZones =
         {
-            ("Cabeza", 0.186f, 0.110f, 0.273f, 0.102f),
-            ("Cuello", 0.186f, 0.194f, 0.273f, 0.102f),
-            ("Hombro izq.", 0.018f, 0.194f, 0.273f, 0.102f),
-            ("Hombro der.", 0.627f, 0.194f, 0.273f, 0.102f),
-            ("Brazo izq.", 0.018f, 0.306f, 0.273f, 0.102f),
-            ("Pecho", 0.186f, 0.306f, 0.273f, 0.102f),
-            ("Brazo der.", 0.627f, 0.306f, 0.273f, 0.102f),
-            ("Antebrazo izq.", 0.018f, 0.418f, 0.273f, 0.102f),
-            ("Abdomen", 0.186f, 0.418f, 0.273f, 0.102f),
-            ("Antebrazo der.", 0.627f, 0.418f, 0.273f, 0.102f),
-            ("Mano izq.", 0.018f, 0.531f, 0.273f, 0.102f),
-            ("Cadera", 0.186f, 0.531f, 0.273f, 0.102f),
-            ("Mano der.", 0.627f, 0.531f, 0.273f, 0.102f),
-            ("Muslo izq.", 0.018f, 0.643f, 0.273f, 0.102f),
-            ("Muslo der.", 0.627f, 0.643f, 0.273f, 0.102f),
-            ("Pierna izq.", 0.018f, 0.755f, 0.273f, 0.102f),
-            ("Pierna der.", 0.627f, 0.755f, 0.273f, 0.102f),
-            ("Pie izq.", 0.018f, 0.867f, 0.273f, 0.102f),
-            ("Pie der.", 0.627f, 0.867f, 0.273f, 0.102f),
+            (BodyZone.Head, 0.355f, 0.06f),
+            (BodyZone.UpperArmR, 0.03f, 0.18f), (BodyZone.Chest, 0.355f, 0.18f), (BodyZone.UpperArmL, 0.68f, 0.18f),
+            (BodyZone.ForearmR, 0.03f, 0.30f), (BodyZone.Abdomen, 0.355f, 0.30f), (BodyZone.ForearmL, 0.68f, 0.30f),
+            (BodyZone.HandR, 0.03f, 0.42f), (BodyZone.HandL, 0.68f, 0.42f),
+            (BodyZone.ThighR, 0.19f, 0.54f), (BodyZone.ThighL, 0.52f, 0.54f),
+            (BodyZone.ShinR, 0.19f, 0.66f), (BodyZone.ShinL, 0.52f, 0.66f),
+            (BodyZone.FootR, 0.19f, 0.78f), (BodyZone.FootL, 0.52f, 0.78f),
         };
 
         private static void BuildBodyViewToggle(Transform character, RectTransform header, RectTransform previewRT,
@@ -1018,51 +1007,72 @@ namespace BackroomsSurvival.EditorTools
             InspectionOnly(heridasBtn.gameObject);
 
             var wounds = character.Find(WoundsPanelName) as RectTransform;
+            // ADR-149 R0: el panel de ejemplo (sin zonas reales) se sustituye entero.
+            if (wounds != null && wounds.GetComponentInChildren<BackroomsWoundZoneUI>(true) == null)
+            {
+                Object.DestroyImmediate(wounds.gameObject);
+                wounds = null;
+            }
             if (wounds == null)
             {
                 var go = new GameObject(WoundsPanelName, typeof(RectTransform), typeof(Image));
                 wounds = (RectTransform)go.transform;
                 wounds.SetParent(character, false);
                 go.GetComponent<Image>().raycastTarget = false;
-                foreach (var z in PlaceholderZones)
-                {
-                    var zg = new GameObject(z.Name, typeof(RectTransform), typeof(Image));
-                    var zrt = (RectTransform)zg.transform;
-                    zrt.SetParent(wounds, false);
-                    zrt.anchorMin = new Vector2(z.X, 1f - z.Y - z.H);
-                    zrt.anchorMax = new Vector2(z.X + z.W, 1f - z.Y);
-                    zrt.offsetMin = Vector2.zero;
-                    zrt.offsetMax = Vector2.zero;
-                    zg.GetComponent<Image>().raycastTarget = false;
-
-                    var lbl = new GameObject("Label", typeof(RectTransform), typeof(TextMeshProUGUI));
-                    var lrt = (RectTransform)lbl.transform;
-                    lrt.SetParent(zrt, false);
-                    Stretch(lrt);
-                    var tmp = lbl.GetComponent<TextMeshProUGUI>();
-                    tmp.text = z.Name;
-                    tmp.alignment = TextAlignmentOptions.Center;
-                    tmp.fontSize = 12f;
-                    tmp.enableWordWrapping = true;
-                    tmp.raycastTarget = false;
-                }
-
-                var caption = new GameObject("Caption", typeof(RectTransform), typeof(TextMeshProUGUI));
-                var crt = (RectTransform)caption.transform;
-                crt.SetParent(wounds, false);
-                crt.anchorMin = new Vector2(0f, 0f);
-                crt.anchorMax = new Vector2(1f, 0f);
-                crt.pivot = new Vector2(0.5f, 0f);
-                crt.sizeDelta = new Vector2(0f, 40f);
-                crt.anchoredPosition = new Vector2(0f, -44f);
-                var ctmp = caption.GetComponent<TextMeshProUGUI>();
-                ctmp.text = "PLACEHOLDER — sin ADR de cuerpo por zonas";
-                ctmp.alignment = TextAlignmentOptions.Center;
-                ctmp.fontSize = 13f;
-                ctmp.raycastTarget = false;
-
-                report.Count("zonas de heridas (placeholder)", PlaceholderZones.Length);
             }
+
+            var caption = wounds.Find("Caption") as RectTransform;
+            if (caption == null)
+            {
+                caption = (RectTransform)new GameObject("Caption", typeof(RectTransform), typeof(TextMeshProUGUI)).transform;
+                caption.SetParent(wounds, false);
+            }
+            caption.anchorMin = new Vector2(0f, 0f);
+            caption.anchorMax = new Vector2(1f, 0f);
+            caption.pivot = new Vector2(0.5f, 0f);
+            caption.sizeDelta = new Vector2(0f, 40f);
+            caption.anchoredPosition = new Vector2(0f, 4f);
+            var captionText = caption.GetComponent<TextMeshProUGUI>();
+            captionText.text = "Clic en una zona: venda o férula del inventario";
+            captionText.alignment = TextAlignmentOptions.Center;
+            captionText.fontSize = 13f;
+            captionText.raycastTarget = false;
+
+            foreach (var z in WoundZones)
+            {
+                string zoneName = "Zone_" + z.Zone;
+                var zrt = wounds.Find(zoneName) as RectTransform;
+                if (zrt == null)
+                {
+                    zrt = (RectTransform)new GameObject(zoneName, typeof(RectTransform), typeof(Image), typeof(BackroomsWoundZoneUI)).transform;
+                    zrt.SetParent(wounds, false);
+                    var lbl = new GameObject("Label", typeof(RectTransform), typeof(TextMeshProUGUI));
+                    lbl.transform.SetParent(zrt, false);
+                    Stretch((RectTransform)lbl.transform);
+                }
+                zrt.anchorMin = new Vector2(z.X, 1f - z.Y - WoundZoneH);
+                zrt.anchorMax = new Vector2(z.X + WoundZoneW, 1f - z.Y);
+                zrt.offsetMin = Vector2.zero;
+                zrt.offsetMax = Vector2.zero;
+                var image = zrt.GetComponent<Image>();
+                image.raycastTarget = true;
+                var tmp = zrt.Find("Label").GetComponent<TextMeshProUGUI>();
+                tmp.text = BodyZones.Label(z.Zone);
+                tmp.alignment = TextAlignmentOptions.Center;
+                tmp.fontSize = 11f;
+                tmp.enableWordWrapping = true;
+                tmp.raycastTarget = false;
+
+                var zs = new SerializedObject(zrt.GetComponent<BackroomsWoundZoneUI>());
+                zs.FindProperty("_zone").intValue = (int)z.Zone;
+                zs.FindProperty("_fill").objectReferenceValue = image;
+                zs.FindProperty("_label").objectReferenceValue = tmp;
+                zs.FindProperty("_notice").objectReferenceValue = captionText;
+                zs.FindProperty("_healthy").colorValue = theme.Tape;
+                zs.FindProperty("_cut").colorValue = theme.TapeRed;
+                zs.ApplyModifiedPropertiesWithoutUndo();
+            }
+            report.Count("zonas de heridas", WoundZones.Length);
 
             // La columna del vendor también reparte a sus hijos: sin esto el panel queda con ancho ~0
             // y cada etiqueta sale letra a letra en vertical.

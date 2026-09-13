@@ -430,4 +430,16 @@ tinte sobre la UI piden overlay propio o canvas en Screen Space Camera.
 - **Modificadores por prenda (`WearableStatData` + `BackroomsWornStats`)** — solo cuenta lo puesto; se suman y se recortan
   a [−30 %, +20 %]. De momento solo velocidad: zapatillas de correr +8 %, botas de trabajo −3 % (hueco Feet del vendor).
 - **ANOTADO, sin hacer — barra de peso por prenda.**
+- **Descripciones con cifras (2026-09-13)** — la ficha de mochilas, cinturones y prendas añade una línea con lo que el
+  prototipo aplica de verdad (huecos, +kg de máximo, velocidad), sacada de los mismos datos (`WearableDescription`).
+- **Pestaña de stats: SIN DECIDIR (Joel: «es una decisión a pensar»).**
+
+## ADR-149 — cuerpo por zonas, heridas y sastrería (PROPUESTA, R0 autorizada por Joel el 2026-09-13)
+- **R0 hecha, pendiente de Play** — `BodyZone` (15), `BodyZoneResolver` (hueso / altura y lado / sorteo por causa con
+  semilla), `BodyState` (rasguño, corte, fractura; venda y férula; curación, sangrado 0,15 HP/s por corte abierto, piernas
+  fracturadas ×0,55 y con férula ×0,8). `BackroomsBodyPrototype` en `BR_InventoryTest`, inerte con backend; no toca
+  `PlayerMedicalState` (R2). Vista Heridas con las 15 zonas: clic trata con venda o férula del inventario. En la escena,
+  tres placas de daño (cristales → pie der. corte; golpe → antebrazo izq. fractura; caída → zona sorteada) y 2 vendas y
+  2 férulas (`BR_Splint`, placeholder).
+- **Siguen:** R1 ropa por zonas y sastrería (sin wire), R2 autoridad del servidor y guardado, R3 PvP con zona, R4 visual.
 

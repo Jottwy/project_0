@@ -308,5 +308,21 @@ namespace BackroomsSurvival.Tests
             StringAssert.Contains(guids[0], File.ReadAllText(TestScenePath), "la escena de pruebas no monta BackroomsWornStats");
             StringAssert.DoesNotContain(guids[0], File.ReadAllText(ShowcasePath), "STP_Showcase lleva los modificadores por prenda");
         }
+
+        [Test]
+        public void LaFichaDeCadaPrendaEnsenaSusCifras()
+        {
+            Assert.AreEqual("A work belt.\n+4 belt slots · +4 kg max load",
+                WearableDescription.Describe("A work belt.", "+4 belt slots", 4f, 0f));
+            Assert.AreEqual("Heavy work boots.\nSpeed -3%",
+                WearableDescription.Describe("Heavy work boots.", null, 0f, -3f));
+            Assert.AreEqual("A paper dust mask.",
+                WearableDescription.Describe("A paper dust mask.", null, 0f, 0f), "sin cifras, sin línea");
+
+            var shoes = AssetDatabase.LoadAssetAtPath<ItemDefinition>("Assets/Resources/Definitions/Item/BR_Running Shoes.asset");
+            StringAssert.Contains("Speed +8%", shoes.Description, "la ficha de las zapatillas no dice su bonus");
+            var office = AssetDatabase.LoadAssetAtPath<ItemDefinition>("Assets/Resources/Definitions/Item/BR_Office Backpack.asset");
+            StringAssert.Contains("18 slots · +15 kg max load", office.Description);
+        }
     }
 }

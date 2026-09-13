@@ -15,7 +15,8 @@ MonoBehaviour:
   _id: -259369169
   _parentGroup: {fileID: 11400000, guid: cf5dd5a63069e21458615566eb5d16e7, type: 2}
   _icon: {fileID: 21300000, guid: 80a0189fb197f1e4e8b0d40a0575346a, type: 3}
-  _description: A tool belt. Six more slots, spreads the load a little.
+  _description: "A tool belt. Spreads the load a little.\n+6 belt slots \xB7 +6 kg
+    max load"
   _longDescription: 
   _pickup: {fileID: 3625687645100833014, guid: 90324cb9f1193c14a9462234749e48b1, type: 3}
   _stackPickup: {fileID: 5039848590447293739, guid: 60f7bf66f2292d34d86470c5b3928e92, type: 3}
@@ -28,11 +29,11 @@ MonoBehaviour:
   - {fileID: 11400000, guid: cfea35ee23f1fda47a276a7b208543f9, type: 2}
   _properties: []
   _data:
-  - rid: 3885882211262267405
+  - rid: 3885882211262267541
   references:
     version: 2
     RefIds:
-    - rid: 3885882211262267405
+    - rid: 3885882211262267541
       type: {class: WearableCapacityData, ns: BackroomsSurvival.Wearables, asm: BackroomsSurvival}
       data:
         _slots: 6

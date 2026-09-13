@@ -1,4 +1,5 @@
 #if UNITY_EDITOR
+using BackroomsSurvival.Gameplay.Body;
 using BackroomsSurvival.Wearables;
 using PolymindGames;
 using PolymindGames.InventorySystem;
@@ -33,6 +34,8 @@ namespace BackroomsSurvival.EditorTools
         private const string PlayerPrefab = "Assets/PolymindGames/STP/Prefabs/Core/STP_Player.prefab";
         private const string PlayerName = "Player (prototipo mochilas)";
         private const string WornStorageName = "BackpackPrototype";
+        private const string BodyPrototypeName = "BodyPrototype";
+        private const string BandagePath = "Assets/Resources/Definitions/Item/BR_Bandage.asset";
         private const float RoomSize = 24f;
         private const float RoomHeight = 3f;
 
@@ -74,6 +77,7 @@ namespace BackroomsSurvival.EditorTools
             PointGameMode(ui);
             EnsureLootCrate();
             EnsureBackpackPrototype();
+            EnsureBodyPrototype();
             EditorSceneManager.MarkSceneDirty(scene);
             if (!exists) System.IO.Directory.CreateDirectory("Assets/Scenes");
             EditorSceneManager.SaveScene(scene, ScenePath);
@@ -260,6 +264,66 @@ namespace BackroomsSurvival.EditorTools
                     SpawnPickup(garments[i], garmentRoot.transform, new Vector3(-2.6f - i * 0.9f, 0.3f, -3.7f));
             }
             Debug.Log("[InventoryTestScene] prototipo de mochilas montado");
+        }
+
+        /// <summary>
+        /// ADR-149 R0: cuerpo por zonas en local. El prototipo con la venda y la férula, tres placas de daño delante del
+        /// spawn (cristales al pie derecho, golpe al antebrazo izquierdo, caída con zona sorteada) y vendas y férulas en el
+        /// suelo. Solo esta escena; un test lo exige.
+        /// </summary>
+        private static void EnsureBodyPrototype()
+        {
+            var splint = BackroomsBackpackPrototypeCreator.EnsureSplint();
+            var bandage = AssetDatabase.LoadAssetAtPath<ItemDefinition>(BandagePath);
+            if (bandage == null) Debug.LogWarning($"[InventoryTestScene] falta {BandagePath}");
+
+            var go = GameObject.Find(BodyPrototypeName);
+            if (go == null) go = new GameObject(BodyPrototypeName);
+            var body = go.GetComponent<BackroomsBodyPrototype>();
+            if (body == null) body = go.AddComponent<BackroomsBodyPrototype>();
+            var so = new SerializedObject(body);
+            so.FindProperty("_bandage").objectReferenceValue = bandage;
+            so.FindProperty("_splint").objectReferenceValue = splint;
+            so.ApplyModifiedPropertiesWithoutUndo();
+
+            if (GameObject.Find("HurtPads") == null)
+            {
+                var pads = new GameObject("HurtPads").transform;
+                HurtPad(pads, "Pad_Cristales (pie der., corte)", new Vector3(-3f, 0f, 2f), DamageType.Slash, 16f, true, new Vector3(0.12f, 0.05f, 0.2f));
+                HurtPad(pads, "Pad_Golpe (antebrazo izq., fractura)", new Vector3(0f, 0f, 2f), DamageType.Blunt, 32f, true, new Vector3(-0.3f, 0.95f, 0.2f));
+                HurtPad(pads, "Pad_Caida (zona sorteada)", new Vector3(3f, 0f, 2f), DamageType.Fall, 30f, false, Vector3.zero);
+            }
+            if (GameObject.Find("Medical") == null)
+            {
+                var medical = new GameObject("Medical").transform;
+                for (int i = 0; i < 2; i++)
+                {
+                    SpawnPickup(bandage, medical, new Vector3(4.5f + i * 0.8f, 0.3f, -2.6f));
+                    SpawnPickup(splint, medical, new Vector3(4.5f + i * 0.8f, 0.3f, -3.7f));
+                }
+            }
+            Debug.Log("[InventoryTestScene] cuerpo por zonas montado (ADR-149 R0)");
+        }
+
+        private static void HurtPad(Transform parent, string name, Vector3 position, DamageType type, float damage, bool usePoint, Vector3 localHit)
+        {
+            var go = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            go.name = name;
+            go.transform.SetParent(parent, false);
+            go.transform.position = position + new Vector3(0f, 0.03f, 0f);
+            go.transform.localScale = new Vector3(1.4f, 0.06f, 1.4f);
+            // Placa fina a la vista, pero el disparador sube 1,2 m para que la cápsula del jugador entre seguro.
+            var box = go.GetComponent<BoxCollider>();
+            box.isTrigger = true;
+            box.size = new Vector3(1f, 20f, 1f);
+            box.center = new Vector3(0f, 10f, 0f);
+            var pad = go.AddComponent<BackroomsHurtPad>();
+            var so = new SerializedObject(pad);
+            so.FindProperty("_damage").floatValue = damage;
+            so.FindProperty("_type").intValue = (int)type;
+            so.FindProperty("_usePoint").boolValue = usePoint;
+            so.FindProperty("_localHitPoint").vector3Value = localHit;
+            so.ApplyModifiedPropertiesWithoutUndo();
         }
 
         private static SerializedProperty FindContainerEntry(SerializedProperty list, string name)

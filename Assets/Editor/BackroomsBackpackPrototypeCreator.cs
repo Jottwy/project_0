@@ -72,17 +72,17 @@ namespace BackroomsSurvival.EditorTools
         // D2, cifras de maqueta. maxKg sin balancear.
         public static readonly Spec[] Backpacks =
         {
-            new Spec("BR_Cloth Bag", "A cloth bag. Six slots, carries badly.", 6, 0.2f, 6f, -10f),
-            new Spec("BR_Office Backpack", "An office backpack. Eighteen slots.", 18, 1.1f, 15f, 0f),
-            new Spec("BR_Hiking Backpack", "A hiking backpack. Twenty-seven slots, spreads the load.", 27, 2.4f, 25f, 20f),
+            new Spec("BR_Cloth Bag", "A cloth bag. Carries badly.", 6, 0.2f, 6f, -10f),
+            new Spec("BR_Office Backpack", "An office backpack.", 18, 1.1f, 15f, 0f),
+            new Spec("BR_Hiking Backpack", "A hiking backpack. Spreads the load.", 27, 2.4f, 25f, 20f),
         };
 
         // D14: huecos que el cinturón suma a las 2 manos (T1 → 4, T2 → 6, T3 → 8). maxKg = lo que sumará al máximo (D6 enm. 2).
         public static readonly Spec[] Belts =
         {
-            new Spec("BR_Cord Belt", "A cord tied as a belt. Two more slots.", 2, 0.1f, 2f, 0f),
-            new Spec("BR_Work Belt", "A work belt. Four more slots.", 4, 0.4f, 4f, 0f),
-            new Spec("BR_Tool Belt", "A tool belt. Six more slots, spreads the load a little.", 6, 0.9f, 6f, 5f),
+            new Spec("BR_Cord Belt", "A cord tied as a belt.", 2, 0.1f, 2f, 0f),
+            new Spec("BR_Work Belt", "A work belt.", 4, 0.4f, 4f, 0f),
+            new Spec("BR_Tool Belt", "A tool belt. Spreads the load a little.", 6, 0.9f, 6f, 5f),
         };
 
         public readonly struct Garment
@@ -104,8 +104,8 @@ namespace BackroomsSurvival.EditorTools
             new Garment("BR_Work Jacket", "A work jacket, worn over the shirt.", "STP_Shirt", OuterTagPath, 1.2f, 0f),
             new Garment("BR_Work Gloves", "A pair of leather work gloves.", "STP_Leather", HandsTagPath, 0.2f, 0f),
             new Garment("BR_Dust Mask", "A paper dust mask.", "STP_Cloth", FaceTagPath, 0.05f, 0f),
-            new Garment("BR_Running Shoes", "Light running shoes. 8% faster.", "STP_Boots", FeetTagPath, 0.6f, 8f),
-            new Garment("BR_Work Boots", "Heavy work boots. 3% slower.", "STP_Boots", FeetTagPath, 1.4f, -3f),
+            new Garment("BR_Running Shoes", "Light running shoes.", "STP_Boots", FeetTagPath, 0.6f, 8f),
+            new Garment("BR_Work Boots", "Heavy work boots.", "STP_Boots", FeetTagPath, 1.4f, -3f),
         };
 
         [MenuItem("Backrooms/Inventory/Create Backpack Prototype")]
@@ -129,7 +129,7 @@ namespace BackroomsSurvival.EditorTools
 
             var result = new ItemDefinition[Backpacks.Length];
             for (int i = 0; i < Backpacks.Length; i++)
-                result[i] = EnsureWearable(Backpacks[i], donor, donor, tag);
+                result[i] = EnsureWearable(Backpacks[i], $"{Backpacks[i].Slots} slots", donor, donor, tag);
             Debug.Log($"[Mochilas] prototipo listo: tag {tag.Id}, {result.Length} mochilas.");
             return result;
         }
@@ -148,7 +148,7 @@ namespace BackroomsSurvival.EditorTools
 
             var result = new ItemDefinition[Belts.Length];
             for (int i = 0; i < Belts.Length; i++)
-                result[i] = EnsureWearable(Belts[i], artDonor, actionDonor, tag);
+                result[i] = EnsureWearable(Belts[i], $"+{Belts[i].Slots} belt slots", artDonor, actionDonor, tag);
             Debug.Log($"[Cinturones] prototipo listo: tag {tag.Id}, {result.Length} cinturones.");
             return result;
         }
@@ -171,10 +171,22 @@ namespace BackroomsSurvival.EditorTools
                 var artDonor = AssetDatabase.LoadAssetAtPath<ItemDefinition>($"{VendorItemFolder}/{garment.ArtDonor}.asset");
                 if (tag == null || artDonor == null) { Debug.LogError($"[Prendas] faltan tag o donante de {garment.Asset}"); continue; }
                 ItemData data = garment.SpeedPct != 0f ? new WearableStatData(garment.SpeedPct) : null;
-                result[i] = EnsureDefinition(garment.Path, garment.Description, garment.Weight, artDonor, actionDonor, tag, data);
+                result[i] = EnsureDefinition(garment.Path, WearableDescription.Describe(garment.Description, null, 0f, garment.SpeedPct), garment.Weight,
+                    artDonor, actionDonor, tag, data);
             }
             Debug.Log($"[Prendas] pieza 6 lista: {result.Length} prendas.");
             return result;
+        }
+
+        public const string SplintPath = "Assets/Resources/Definitions/Item/BR_Splint.asset";
+
+        /// <summary>ADR-149 R0: la férula, placeholder con el arte del palo del vendor. Sin tag: va a la base.</summary>
+        public static ItemDefinition EnsureSplint()
+        {
+            var donor = AssetDatabase.LoadAssetAtPath<ItemDefinition>($"{VendorItemFolder}/STP_Stick.asset");
+            if (donor == null) { Debug.LogError("[Heridas] falta el donante STP_Stick"); return null; }
+            return EnsureDefinition(SplintPath, WearableDescription.Describe("A splint made of sticks and cloth.", "Treats a fracture", 0f, 0f),
+                0.4f, donor, donor, null, null);
         }
 
         private static ItemTagDefinition EnsureTag(string path)
@@ -216,8 +228,9 @@ namespace BackroomsSurvival.EditorTools
             so.ApplyModifiedPropertiesWithoutUndo();
         }
 
-        private static ItemDefinition EnsureWearable(Spec spec, ItemDefinition artDonor, ItemDefinition actionDonor, ItemTagDefinition tag)
-            => EnsureDefinition(spec.Path, spec.Description, spec.Weight, artDonor, actionDonor, tag,
+        private static ItemDefinition EnsureWearable(Spec spec, string slots, ItemDefinition artDonor, ItemDefinition actionDonor,
+            ItemTagDefinition tag)
+            => EnsureDefinition(spec.Path, WearableDescription.Describe(spec.Description, slots, spec.MaxKg, 0f), spec.Weight, artDonor, actionDonor, tag,
                 new WearableCapacityData(spec.Slots, spec.MaxKg, spec.CarryBonusPct));
 
         private static ItemDefinition EnsureDefinition(string path, string description, float weight, ItemDefinition artDonor,
@@ -243,7 +256,7 @@ namespace BackroomsSurvival.EditorTools
             to.FindProperty("_weight").floatValue = weight;
             // Invariante de la enm. 1: el vendor funde pilas comparando solo el id; una prenda nunca se apila.
             to.FindProperty("_stackSize").intValue = 1;
-            to.FindProperty("_tag._value").intValue = tag.Id;
+            to.FindProperty("_tag._value").intValue = tag != null ? tag.Id : 0;
             var data = to.FindProperty("_data");
             data.arraySize = itemData != null ? 1 : 0;
             if (itemData != null) data.GetArrayElementAtIndex(0).managedReferenceValue = itemData;
