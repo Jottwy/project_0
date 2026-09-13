@@ -308,4 +308,79 @@ mod tests {
             );
         }
     }
+
+    /// ADR-122 — el ORÁCULO de la rampa: lo único que ata `ramp_step_boxes` con
+    /// `Wg3RampGeometry.StepBoxes` (C#). Aquí se generan los casos y se comparan con
+    /// `tests/fixtures/wg3_ramp_oracle.json`; el test de EditMode `Wg3RampGeometryTests` lee el mismo
+    /// fichero. Con `WG3_WRITE_RAMP_ORACLE=1` se reescribe (sólo tras cambiar la geometría A PROPÓSITO).
+    ///
+    /// Los casos cubren los cuatro sentidos, largos que no son múltiplo de la celda (la última caja
+    /// lleva el resto), coordenadas negativas y desniveles de 12 a 100 cm.
+    #[test]
+    fn the_ramp_oracle_is_current() {
+        use serde_json::json;
+
+        let ramps = [
+            (1000, -450, 300, 320, -60, 0, 0u8, 2u8),
+            (-2375, 815, 437, 290, -48, 0, 1, 6),
+            (130, -9990, 610, 505, 332, 432, 2, 3),
+            (-50, -50, 251, 1003, -12, 0, 3, 5),
+            (4570, 11577, 2184, 3408, -60, 0, 1, 6),
+        ];
+        let cases: Vec<serde_json::Value> = ramps
+            .iter()
+            .map(|&(x, z, sx, sz, bottom, top, dir, style)| {
+                let r = Wg3Ramp {
+                    x_cm: x,
+                    z_cm: z,
+                    size_x_cm: sx,
+                    size_z_cm: sz,
+                    bottom_y_cm: bottom,
+                    top_y_cm: top,
+                    dir,
+                    style,
+                };
+                let boxes: Vec<serde_json::Value> = ramp_step_boxes(&r)
+                    .iter()
+                    .map(|b| {
+                        json!({
+                            "x_cm": b.x_cm, "z_cm": b.z_cm,
+                            "size_x_cm": b.size_x_cm, "size_z_cm": b.size_z_cm,
+                            "bottom_y_cm": b.bottom_y_cm, "top_y_cm": b.top_y_cm,
+                        })
+                    })
+                    .collect();
+                json!({
+                    "ramp": {
+                        "x_cm": r.x_cm, "z_cm": r.z_cm,
+                        "size_x_cm": r.size_x_cm, "size_z_cm": r.size_z_cm,
+                        "bottom_y_cm": r.bottom_y_cm, "top_y_cm": r.top_y_cm,
+                        "dir": r.dir, "style": r.style,
+                    },
+                    "boxes": boxes,
+                })
+            })
+            .collect();
+        let text = serde_json::to_string_pretty(&json!({ "cases": cases })).unwrap() + "\n";
+
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("wg3_ramp_oracle.json");
+        if std::env::var("WG3_WRITE_RAMP_ORACLE").is_ok() {
+            std::fs::write(&path, &text).expect("no se pudo escribir el oráculo");
+        }
+        let on_disk = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            panic!(
+                "sin oráculo en {}: {e}. Escríbelo con WG3_WRITE_RAMP_ORACLE=1",
+                path.display()
+            )
+        });
+        assert_eq!(
+            on_disk.replace("\r\n", "\n"),
+            text,
+            "la geometría de la rampa ya no es la del oráculo: si el cambio es a propósito, \
+             reescríbelo con WG3_WRITE_RAMP_ORACLE=1 y pasa Wg3RampGeometryTests en Unity"
+        );
+    }
 }

@@ -78,6 +78,11 @@ namespace BackroomsSurvival.WorldGen3
                     AddBox(verts, normals, uvs, tris[SubMeshFor(v.kind)],
                         v.center - origin, v.size, v.yawDegrees, v.center,
                         hidden, i * FacesPerBox);
+                else if (v.shape == Wg3Shape.Wedge)
+                    // ADR-122 D3 — la cuña de rampa. El centro de mundo va aparte para anclar la UV
+                    // igual que la cara de arriba de un suelo: la moqueta sigue sin corte.
+                    AddWedge(verts, normals, uvs, tris[SubMeshFor(v.kind)],
+                        v.center - origin, v.size, v.yawDegrees, v.center);
                 else if (v.shape == Wg3Shape.Arch && v.kind == Wg3VolumeKind.Casing)
                     AddArchCasing(verts, normals, uvs, tris[SubMeshFor(v.kind)],
                         v.center - origin, v.size);
@@ -263,6 +268,76 @@ namespace BackroomsSurvival.WorldGen3
         /// (octógono: sus aristas son intención). Tapas planas arriba y abajo. UV en metros como en
         /// <see cref="AddFace"/>: `u` es la longitud de arco recorrida, `v` la altura.
         /// </summary>
+        /// <summary>
+        /// ADR-122 D3 — una CUÑA: el primer volumen de WG3 que no es caja ni prisma vertical.
+        ///
+        /// En local sube hacia +z: el borde bajo en (z = −hz, y = −hy) y el alto en (z = +hz, y = +hy).
+        /// Caras: la rampa inclinada, la testa vertical del extremo alto y los dos costados
+        /// triangulares. Sin base: se apoya en el suelo. Mismo sentido de giro que
+        /// <see cref="AddFace"/> (el producto vectorial de las dos primeras aristas mira hacia fuera).
+        ///
+        /// La UV de la rampa es la PROYECCIÓN en planta anclada al mundo, la misma que lleva la cara de
+        /// arriba de un suelo (<see cref="WorldAnchor"/> con ejes derecha/adelante girados): la moqueta
+        /// continúa desde la tira de la puerta. Estira un 2 % a 1:5, que no se ve.
+        /// </summary>
+        private static void AddWedge(List<Vector3> verts, List<Vector3> normals, List<Vector2> uvs,
+            List<int> tris, Vector3 centre, Vector3 size, float yawDegrees, Vector3 worldCentre)
+        {
+            Quaternion rot = Quaternion.Euler(0f, yawDegrees, 0f);
+            float hx = size.x * 0.5f, hy = size.y * 0.5f, hz = size.z * 0.5f;
+
+            // La rampa: (−x, bajo), (+x, bajo), (+x, alto), (−x, alto).
+            {
+                var p0 = new Vector3(-hx, -hy, -hz);
+                var p1 = new Vector3(hx, -hy, -hz);
+                var p2 = new Vector3(hx, hy, hz);
+                var p3 = new Vector3(-hx, hy, hz);
+                Vector3 n = rot * new Vector3(0f, hz, -hy).normalized;
+                int b = verts.Count;
+                verts.Add(centre + rot * p0); verts.Add(centre + rot * p1);
+                verts.Add(centre + rot * p2); verts.Add(centre + rot * p3);
+                for (int i = 0; i < 4; i++) normals.Add(n);
+                Vector2 a = WorldAnchor(worldCentre + rot * p0, rot * Vector3.right, rot * Vector3.forward);
+                uvs.Add(new Vector2(a.x, a.y));
+                uvs.Add(new Vector2(a.x + size.x, a.y));
+                uvs.Add(new Vector2(a.x + size.x, a.y + size.z));
+                uvs.Add(new Vector2(a.x, a.y + size.z));
+                tris.Add(b); tris.Add(b + 2); tris.Add(b + 1);
+                tris.Add(b); tris.Add(b + 3); tris.Add(b + 2);
+            }
+
+            // La testa del extremo alto, mirando a +z: el orden de la cara +z de AddBox (u = izquierda).
+            {
+                int b = verts.Count;
+                verts.Add(centre + rot * new Vector3(hx, -hy, hz));
+                verts.Add(centre + rot * new Vector3(-hx, -hy, hz));
+                verts.Add(centre + rot * new Vector3(-hx, hy, hz));
+                verts.Add(centre + rot * new Vector3(hx, hy, hz));
+                Vector3 n = rot * Vector3.forward;
+                for (int i = 0; i < 4; i++) normals.Add(n);
+                uvs.Add(new Vector2(0f, 0f)); uvs.Add(new Vector2(size.x, 0f));
+                uvs.Add(new Vector2(size.x, size.y)); uvs.Add(new Vector2(0f, size.y));
+                tris.Add(b); tris.Add(b + 2); tris.Add(b + 1);
+                tris.Add(b); tris.Add(b + 3); tris.Add(b + 2);
+            }
+
+            // Los dos costados. Con los vértices (bajo, alto-suelo, alto-arriba), el triángulo
+            // (0, 2, 1) sale hacia +x y el (0, 1, 2) hacia −x.
+            for (int side = -1; side <= 1; side += 2)
+            {
+                float x = side * hx;
+                int b = verts.Count;
+                verts.Add(centre + rot * new Vector3(x, -hy, -hz));
+                verts.Add(centre + rot * new Vector3(x, -hy, hz));
+                verts.Add(centre + rot * new Vector3(x, hy, hz));
+                Vector3 n = rot * new Vector3(side, 0f, 0f);
+                normals.Add(n); normals.Add(n); normals.Add(n);
+                uvs.Add(new Vector2(0f, 0f)); uvs.Add(new Vector2(size.z, 0f)); uvs.Add(new Vector2(size.z, size.y));
+                if (side > 0) { tris.Add(b); tris.Add(b + 2); tris.Add(b + 1); }
+                else { tris.Add(b); tris.Add(b + 1); tris.Add(b + 2); }
+            }
+        }
+
         private static void AddPrism(List<Vector3> verts, List<Vector3> normals, List<Vector2> uvs,
             List<int> tris, Vector3 centre, Vector3 size, float yawDegrees, byte shape)
         {

@@ -625,6 +625,10 @@ namespace BackroomsSurvival.WorldGen3
             _solidRenderers += Wg3SceneAssembler.AssembleSolids(
                 chunk.solids, root.transform, EffectiveMaterials(), mine, "solid");
 
+            // ADR-122 — las RAMPAS de los hundidos: cuña de dibujo y las mismas cajas que frenan en el
+            // servidor. Por su centro, como los macizos.
+            Wg3SceneAssembler.AssembleRamps(chunk.ramps, root.transform, EffectiveMaterials(), mine, "ramp");
+
             // ADR-129 — el ATREZO, por su posición como los macizos. Los prefabs no frenan: frena
             // el macizo invisible que viaja con cada mueble.
             for (int i = 0; i < chunk.props.Count; i++)
