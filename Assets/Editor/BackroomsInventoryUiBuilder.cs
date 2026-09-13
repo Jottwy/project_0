@@ -169,6 +169,77 @@ namespace BackroomsSurvival.EditorTools
             Prompts(inv, theme, report);
             BuildStrap(root, theme, report);
             Relayout(inv, root, theme, report);
+            BuildTransitions(inv, theme, report);
+        }
+
+        /// <summary>
+        /// Pulido 3 y 4: abrir y cerrar con fundido y columnas que se deslizan; rebote al recibir un objeto, destello y
+        /// cinta roja al rechazarlo, y la carga en rojo cerca del máximo.
+        /// </summary>
+        private static void BuildTransitions(Transform inv, BackroomsUiTheme theme, Report report)
+        {
+            var transition = inv.GetComponent<BackroomsInventoryTransition>();
+            if (transition == null) transition = inv.gameObject.AddComponent<BackroomsInventoryTransition>();
+            // RightGroup es la columna Personaje (izquierda de la pantalla); LeftGroup, Alrededor (derecha).
+            var columns = new[] { "RightGroup", "MiddleGroup/Inventory", "LeftGroup" };
+            var slides = new[] { new Vector2(-28f, 0f), new Vector2(0f, -18f), new Vector2(28f, 0f) };
+            var ts = new SerializedObject(transition);
+            var columnsProp = ts.FindProperty("_columns");
+            var slidesProp = ts.FindProperty("_slides");
+            columnsProp.arraySize = columns.Length;
+            slidesProp.arraySize = slides.Length;
+            for (int i = 0; i < columns.Length; i++)
+            {
+                var column = inv.Find(columns[i]) as RectTransform;
+                if (column == null) report.Missing(columns[i]);
+                columnsProp.GetArrayElementAtIndex(i).objectReferenceValue = column;
+                slidesProp.GetArrayElementAtIndex(i).vector2Value = slides[i];
+            }
+            ts.ApplyModifiedPropertiesWithoutUndo();
+
+            var feedback = inv.GetComponent<BackroomsSlotFeedback>();
+            if (feedback == null) feedback = inv.gameObject.AddComponent<BackroomsSlotFeedback>();
+            var tag = EnsureRect(inv, "BR_RejectTag", typeof(Image), typeof(CanvasGroup));
+            IgnoreLayout(tag.gameObject);
+            tag.anchorMin = new Vector2(0.5f, 0.5f);
+            tag.anchorMax = new Vector2(0.5f, 0.5f);
+            tag.pivot = new Vector2(0.5f, 0f);
+            tag.sizeDelta = new Vector2(260f, 30f);
+            tag.SetAsLastSibling();
+            var tagText = tag.Find("Label") is Transform tagLabel
+                ? tagLabel.GetComponent<TextMeshProUGUI>()
+                : Label(tag, "Label", string.Empty, theme.MonoBold, 14f, theme.TapeInk, TextAlignmentOptions.Center);
+            Stretch((RectTransform)tagText.transform);
+            var tagImage = tag.GetComponent<Image>();
+            Tape(tag, tagImage, theme);
+            if (theme.DymoTapeRed != null) tagImage.sprite = theme.DymoTapeRed;
+            tagImage.raycastTarget = false;
+            tagText.raycastTarget = false;
+            var tagGroup = tag.GetComponent<CanvasGroup>();
+            tagGroup.alpha = 0f;
+            tagGroup.blocksRaycasts = false;
+            tagGroup.interactable = false;
+
+            var fs = new SerializedObject(feedback);
+            fs.FindProperty("_rejectTag").objectReferenceValue = tag;
+            fs.FindProperty("_rejectGroup").objectReferenceValue = tagGroup;
+            fs.FindProperty("_rejectText").objectReferenceValue = tagText;
+            fs.FindProperty("_warnColor").colorValue = Color.Lerp(theme.TapeRed, Color.white, 0.3f);
+            var weightUi = inv.GetComponentInChildren<InventoryWeightDisplayUI>(true);
+            if (weightUi != null)
+            {
+                var ws = new SerializedObject(weightUi);
+                fs.FindProperty("_loadText").objectReferenceValue = ws.FindProperty("_weightText").objectReferenceValue;
+                if (ws.FindProperty("_weightBar").objectReferenceValue is Object bar)
+                    fs.FindProperty("_loadFill").objectReferenceValue = new SerializedObject(bar).FindProperty("_fillImage").objectReferenceValue;
+                // La barra del vendor no expone su relleno en este prefab: el relleno es la Image que ya pinta Paint().
+                if (fs.FindProperty("_loadFill").objectReferenceValue == null
+                    && inv.Find("MiddleGroup/Inventory/Weight/WeightBarBG/WeightBar") is Transform fill)
+                    fs.FindProperty("_loadFill").objectReferenceValue = fill.GetComponent<Image>();
+            }
+            else report.Missing("InventoryWeightDisplayUI");
+            fs.ApplyModifiedPropertiesWithoutUndo();
+            report.Count("pulido abrir/cerrar y objetos", 1);
         }
 
         /// <summary>Fondo a pantalla completa, primer hijo del inventario para quedar debajo de todo.</summary>

@@ -142,5 +142,40 @@ namespace BackroomsSurvival.Tests
             Assert.IsFalse(fadeImage.raycastTarget, "el fundido no puede tapar clics");
             Assert.IsFalse(fadeImage.enabled, "apagado hasta tener textura: sin ella pinta un bloque blanco");
         }
+
+        [Test]
+        public void AbrirCerrarYMoverObjetosTienenRespuesta()
+        {
+            Assert.IsTrue(BackroomsInventoryTransition.IsFlip(0f, 1f), "abrir de golpe se suaviza");
+            Assert.IsTrue(BackroomsInventoryTransition.IsFlip(1f, 0f), "cerrar de golpe se suaviza");
+            Assert.IsFalse(BackroomsInventoryTransition.IsFlip(0.4f, 1f), "lo que ya se anima solo (secciones, zoom) no se toca");
+
+            Assert.AreEqual(1f, BackroomsSlotFeedback.PopScale(0f), 1e-4f);
+            Assert.AreEqual(1f, BackroomsSlotFeedback.PopScale(1f), 1e-4f, "el rebote acaba en su tamaño");
+            Assert.Greater(BackroomsSlotFeedback.PopScale(0.3f), 1.05f, "el rebote se ve");
+
+            Assert.AreEqual(0f, BackroomsSlotFeedback.LoadWarning(0.5f, 0.85f, 1f), "carga normal, sin aviso");
+            Assert.AreEqual(1f, BackroomsSlotFeedback.LoadWarning(1f, 0.85f, 0f), "en el máximo, rojo fijo");
+            Assert.That(BackroomsSlotFeedback.LoadWarning(0.9f, 0.85f, 0.5f), Is.InRange(0.3f, 0.95f), "cerca del máximo, parpadeo");
+
+            var variant = AssetDatabase.LoadAssetAtPath<GameObject>("Assets/Prefabs/UI/BR_UI_Player.prefab");
+            var transition = variant.GetComponentInChildren<BackroomsInventoryTransition>(true);
+            Assert.IsNotNull(transition, "sin BackroomsInventoryTransition");
+            var ts = new SerializedObject(transition);
+            var columns = ts.FindProperty("_columns");
+            Assert.AreEqual(3, columns.arraySize, "las tres columnas se deslizan");
+            for (int i = 0; i < columns.arraySize; i++)
+                Assert.IsNotNull(columns.GetArrayElementAtIndex(i).objectReferenceValue, $"columna {i} sin asignar");
+            Assert.AreEqual(3, ts.FindProperty("_slides").arraySize);
+
+            var feedback = variant.GetComponentInChildren<BackroomsSlotFeedback>(true);
+            Assert.IsNotNull(feedback, "sin BackroomsSlotFeedback");
+            var fs = new SerializedObject(feedback);
+            foreach (var field in new[] { "_rejectTag", "_rejectGroup", "_rejectText", "_loadText", "_loadFill" })
+                Assert.IsNotNull(fs.FindProperty(field).objectReferenceValue, $"BackroomsSlotFeedback.{field} sin asignar");
+            var tagGroup = (CanvasGroup)fs.FindProperty("_rejectGroup").objectReferenceValue;
+            Assert.AreEqual(0f, tagGroup.alpha, "la cinta de rechazo empieza oculta");
+            Assert.IsFalse(tagGroup.blocksRaycasts, "la cinta de rechazo no tapa clics");
+        }
     }
 }

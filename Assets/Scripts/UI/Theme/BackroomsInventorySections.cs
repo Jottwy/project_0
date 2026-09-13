@@ -170,25 +170,7 @@ namespace BackroomsSurvival.UI
             return SectionHeight(visible, columns, _titleHeight, layout.padding.top, layout.padding.bottom, layout.cellSize.y, layout.spacing.y);
         }
 
-        /// <summary>
-        /// La pila que se está arrastrando. El vendor la guarda en privado, pero su copia visual es un hueco con un
-        /// contenedor propio de un hueco, sin inventario, colgado del mismo padre que <see cref="ItemDragger"/>.
-        /// </summary>
-        private bool TryGetDraggedStack(out ItemStack stack)
-        {
-            stack = ItemStack.Null;
-            if (!ItemDragger.HasInstance || !ItemDragger.Instance.IsDragging) return false;
-            var parent = ItemDragger.Instance.transform.parent;
-            if (parent == null) return false;
-            parent.GetComponentsInChildren(false, _dragScan);
-            foreach (var slot in _dragScan)
-            {
-                if (!slot.HasItem || slot.Slot.Container == null || slot.Slot.Container.Inventory != null) continue;
-                stack = slot.Slot.GetStack();
-                return true;
-            }
-            return false;
-        }
+        private bool TryGetDraggedStack(out ItemStack stack) => BackroomsDragProbe.TryGetDraggedStack(_dragScan, out stack);
 
         private bool Fits(int i, ItemStack stack)
         {
