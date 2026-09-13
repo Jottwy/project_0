@@ -24,6 +24,10 @@ namespace BackroomsSurvival.EditorTools
         private const string SourcePath = "Assets/Scenes/WorldGen3Test.unity";
         private const string TargetPath = "Assets/Scenes/MappingPlaytest.unity";
         private const string RootName = "MapMemory";
+        private const string MaterialsFolder = "Assets/Materials/WorldGen3";
+
+        private static Material LoadMaterial(string name) =>
+            AssetDatabase.LoadAssetAtPath<Material>($"{MaterialsFolder}/{name}.mat");
 
         [MenuItem("Backrooms/Mapeado/Crear escena de playtest")]
         public static void Create()
@@ -45,6 +49,7 @@ namespace BackroomsSurvival.EditorTools
             try
             {
                 Transform player = null;
+                Wg3TestWorld world = null;
                 foreach (GameObject root in scene.GetRootGameObjects())
                 {
                     if (root.name == RootName)
@@ -55,13 +60,33 @@ namespace BackroomsSurvival.EditorTools
 
                     var testPlayer = root.GetComponentInChildren<Wg3TestPlayer>(true);
                     if (testPlayer != null) player = testPlayer.transform;
+                    var testWorld = root.GetComponentInChildren<Wg3TestWorld>(true);
+                    if (testWorld != null) world = testWorld;
                 }
 
-                if (player == null)
+                if (player == null || world == null)
                 {
-                    Debug.LogError($"[MappingPlaytest] {TargetPath} no tiene Wg3TestPlayer: no hay a quién seguir.");
+                    Debug.LogError($"[MappingPlaytest] {TargetPath} necesita Wg3TestPlayer y Wg3TestWorld.");
                     return;
                 }
+
+                // La escena de WG3 heredada no serializa materiales: sin ellos cada renderer queda sin
+                // material y se pinta magenta. Los mismos cuatro que cablea el prefab GridTestWorld
+                // del juego real.
+                world.materials = new Wg3Materials
+                {
+                    floor = LoadMaterial("Wg3_Floor"),
+                    structure = LoadMaterial("Wg3_Structure"),
+                    ceiling = LoadMaterial("Wg3_Ceiling"),
+                    decoration = LoadMaterial("Wg3_Trim"),
+                };
+                if (world.materials.floor == null || world.materials.structure == null ||
+                    world.materials.ceiling == null || world.materials.decoration == null)
+                {
+                    Debug.LogError($"[MappingPlaytest] Falta algún material en {MaterialsFolder}.");
+                    return;
+                }
+                EditorUtility.SetDirty(world);
 
                 var go = new GameObject(RootName);
                 SceneManager.MoveGameObjectToScene(go, scene);
