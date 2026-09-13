@@ -64,6 +64,44 @@ namespace BackroomsSurvival.Tests
         }
 
         [Test]
+        public void CleanCoversDraftAndDraftAloneIsAGhost()
+        {
+            // Z = 50,390625 celdas cae en el centro de la fila 256 con losetas de 128 px (1,28 px por celda).
+            const float Row = 50.390625f;
+            const float DraftRow = 20.390625f;
+            var atlas = new MapAtlas();
+            atlas.SetBase(new MapZone(0, 0, 0));
+
+            var clean = new MapSheet(10, 1, clean: true);
+            clean.AssignZone(new MapZone(0, 0, 0));
+            clean.Layers.Add(new MapSheetLayer(MapAtlas.CleanArgb, MapAtlas.CleanWidthPx));
+            clean.Layers[0].Strokes.Add(new MapStroke(new[] { 10f, Row, 90f, Row }, false, steady: true));
+            atlas.AddClean(clean);
+
+            var draftUnderClean = new MapSheet(1, 1);
+            draftUnderClean.AssignZone(new MapZone(0, 0, 0));
+            draftUnderClean.Layers.Add(new MapSheetLayer(Ink, 3f));
+            draftUnderClean.Layers[0].Strokes.Add(new MapStroke(new[] { 10f, DraftRow, 90f, DraftRow }, false));
+
+            var draftAlone = new MapSheet(2, 2);
+            draftAlone.AssignZone(new MapZone(1, 0, 0));
+            draftAlone.Layers.Add(new MapSheetLayer(Ink, 3f));
+            draftAlone.Layers[0].Strokes.Add(new MapStroke(new[] { 10f, Row, 90f, Row }, false));
+
+            var raster = new MapSheetRaster();
+            raster.DrawAtlas(atlas, new[] { new MapZone(0, 0, 0), new MapZone(1, 0, 0) },
+                new[] { draftUnderClean, draftAlone }, 0, 0.5f, 0.5f, 128, Paper, CellsPerChunk);
+
+            // Loseta de la base: x 192..320, y 192..320. La vecina: x 320..448.
+            Assert.LessOrEqual(RedAt(raster, 250, 256), 0x40, "la limpia, opaca");
+            Assert.AreEqual(0xF1, RedAt(raster, 250, 218), "el borrador de una zona con limpia no se ve");
+            int ghost = RedAt(raster, 384, 256);
+            Assert.Greater(ghost, 0x70, "el borrador solo, lavado");
+            Assert.Less(ghost, 0xE0, "pero se ve");
+            Assert.AreNotEqual(0xF1, RedAt(raster, 40, 40), "fuera de lo colocado, «sin mapear»");
+        }
+
+        [Test]
         public void OldStrokesAreDashed()
         {
             var raster = new MapSheetRaster();
