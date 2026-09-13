@@ -334,6 +334,31 @@ namespace BackroomsSurvival.EditorTools
                         float w = (LeftWidth - 16f) / (1080f - bottom - Margin - top - 16f);
                         backdropImage.uvRect = new Rect((1f - w) * 0.5f, 0f, w, 1f);
                         raw.color = new Color(1f, 1f, 1f, 0f);
+
+                        // Pulido: el render se funde con la caja por los bordes en vez de acabar en seco.
+                        var fade = EnsureRect(backdrop, "BR_EdgeFade", typeof(RawImage), typeof(BackroomsEdgeFade));
+                        Stretch(fade);
+                        var fadeImage = fade.GetComponent<RawImage>();
+                        fadeImage.raycastTarget = false;
+                        fadeImage.enabled = false;
+                        var fadeSo = new SerializedObject(fade.GetComponent<BackroomsEdgeFade>());
+                        fadeSo.FindProperty("_color").colorValue = theme.Ground;
+                        fadeSo.ApplyModifiedPropertiesWithoutUndo();
+
+                        // Cinta con la zona enfocada (BackroomsPreviewZoom la rellena y la funde).
+                        var zoneTag = EnsureRect(backdrop, "BR_ZoneTag", typeof(Image), typeof(CanvasGroup));
+                        Place(zoneTag, new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(0f, 20f), new Vector2(160f, 30f));
+                        var zoneText = zoneTag.Find("Label") is Transform zoneLabel
+                            ? zoneLabel.GetComponent<TextMeshProUGUI>()
+                            : Label(zoneTag, "Label", string.Empty, theme.MonoBold, 16f, theme.TapeInk, TextAlignmentOptions.Center);
+                        Stretch((RectTransform)zoneText.transform);
+                        Tape(zoneTag, zoneTag.GetComponent<Image>(), theme);
+                        zoneTag.GetComponent<Image>().raycastTarget = false;
+                        zoneText.raycastTarget = false;
+                        var tagGroup = zoneTag.GetComponent<CanvasGroup>();
+                        tagGroup.alpha = 0f;
+                        tagGroup.blocksRaycasts = false;
+                        tagGroup.interactable = false;
                     }
                 }
 
@@ -1008,6 +1033,12 @@ namespace BackroomsSurvival.EditorTools
             so.FindProperty("_camera").objectReferenceValue = vendor.FindProperty("_camera").objectReferenceValue;
             so.FindProperty("_characterVisuals").objectReferenceValue = vendor.FindProperty("_characterVisuals").objectReferenceValue;
             so.FindProperty("_rotationHandler").objectReferenceValue = root.GetComponentInChildren<CharacterPreviewRotationHandlerUI>(true);
+            if (character.Find("BR_PreviewBackdrop/BR_ZoneTag") is Transform zoneTag)
+            {
+                so.FindProperty("_zoneTag").objectReferenceValue = zoneTag.GetComponent<CanvasGroup>();
+                so.FindProperty("_zoneText").objectReferenceValue = zoneTag.GetComponentInChildren<TextMeshProUGUI>(true);
+            }
+            else report.Missing("BR_PreviewBackdrop/BR_ZoneTag");
             so.ApplyModifiedPropertiesWithoutUndo();
 
             int wired = 0;

@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Reflection;
 using PolymindGames.UserInterface;
+using TMPro;
 using UnityEngine;
 using UnityEngine.EventSystems;
 
@@ -21,13 +22,13 @@ namespace BackroomsSurvival.UI
     {
         public readonly struct Zone
         {
-            public readonly string Id;
+            public readonly string Id, Label;
             public readonly string[] Bones;
             public readonly float Facing, Lift, Span;
 
-            public Zone(string id, float facing, float lift, float span, params string[] bones)
+            public Zone(string id, string label, float facing, float lift, float span, params string[] bones)
             {
-                Id = id; Facing = facing; Lift = lift; Span = span; Bones = bones;
+                Id = id; Label = label; Facing = facing; Lift = lift; Span = span; Bones = bones;
             }
         }
 
@@ -35,13 +36,13 @@ namespace BackroomsSurvival.UI
         // que de alta. Facing = grados que gira el muñeco respecto a su frente.
         public static readonly Zone[] Zones =
         {
-            new Zone("Head", 0f, 0.06f, 0.6f, "Head"),
-            new Zone("Torso", 0f, -0.05f, 0.9f, "UpperSpine"),
-            new Zone("Back", 180f, 0f, 0.9f, "MiddleSpine"),
-            new Zone("Waist", 0f, 0f, 0.8f, "Pelvis"),
-            new Zone("Legs", 0f, 0.05f, 1.1f, "LowerLeg.L", "LowerLeg.R"),
-            new Zone("Feet", 0f, 0.1f, 0.65f, "Foot.L", "Foot.R"),
-            new Zone("Hands", 0f, 0f, 1.2f, "Hand.L", "Hand.R"),
+            new Zone("Head", "Cabeza", 0f, 0.06f, 0.6f, "Head"),
+            new Zone("Torso", "Torso", 0f, -0.05f, 0.9f, "UpperSpine"),
+            new Zone("Back", "Espalda", 180f, 0f, 0.9f, "MiddleSpine"),
+            new Zone("Waist", "Cintura", 0f, 0f, 0.8f, "Pelvis"),
+            new Zone("Legs", "Piernas", 0f, 0.05f, 1.1f, "LowerLeg.L", "LowerLeg.R"),
+            new Zone("Feet", "Pies", 0f, 0.1f, 0.65f, "Foot.L", "Foot.R"),
+            new Zone("Hands", "Manos", 0f, 0f, 1.2f, "Hand.L", "Hand.R"),
         };
 
         private static readonly FieldInfo EulerField =
@@ -60,6 +61,13 @@ namespace BackroomsSurvival.UI
 
         [SerializeField, Range(1f, 30f)]
         private float _sharpness = 8f;
+
+        // Cinta abajo con la zona enfocada; aparece y se va con la misma curva que la cámara.
+        [SerializeField]
+        private CanvasGroup _zoneTag;
+
+        [SerializeField]
+        private TextMeshProUGUI _zoneText;
 
         private readonly Dictionary<string, Transform> _bones = new();
         private readonly List<BackroomsZoneHeader> _headers = new();
@@ -126,6 +134,7 @@ namespace BackroomsSurvival.UI
         private void Select(int index)
         {
             _active = index;
+            if (index >= 0 && _zoneText != null) _zoneText.text = Zones[index].Label;
             foreach (var header in _headers)
                 if (header != null) header.SetActive(header.Zone == ActiveZone);
 
@@ -137,6 +146,7 @@ namespace BackroomsSurvival.UI
 
         private void Snap()
         {
+            if (_zoneTag != null) _zoneTag.alpha = 0f;
             if (_camera == null) return;
             if (_active >= 0) Select(-1);
             _camera.transform.localRotation = _defaultRotation;
@@ -164,6 +174,7 @@ namespace BackroomsSurvival.UI
 
             float t = 1f - Mathf.Exp(-_sharpness * Time.unscaledDeltaTime);
             DriveYaw(t);
+            if (_zoneTag != null) _zoneTag.alpha = Mathf.Lerp(_zoneTag.alpha, _active >= 0 ? 1f : 0f, t);
 
             var cam = _camera.transform;
             var targetRotation = _defaultRotation;

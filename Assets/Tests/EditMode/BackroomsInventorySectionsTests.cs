@@ -114,5 +114,33 @@ namespace BackroomsSurvival.Tests
                 Assert.AreEqual(zoom, new SerializedObject(header).FindProperty("_zoom").objectReferenceValue);
             }
         }
+
+        [Test]
+        public void ElPulidoFundeLosBordesYSuavizaLasSecciones()
+        {
+            Assert.AreEqual(1f, BackroomsEdgeFade.Edge(0f, 48f), 1e-4f, "en el borde, el color de la caja");
+            Assert.AreEqual(0f, BackroomsEdgeFade.Edge(48f, 48f), 1e-4f, "pasado el fundido, el render limpio");
+            Assert.AreEqual(0f, BackroomsEdgeFade.Edge(10f, 0f), "sin ancho no hay fundido");
+
+            float t = BackroomsInventorySections.Approach01(14f, 1f / 60f);
+            Assert.That(t, Is.InRange(0.1f, 0.35f), "un frame a 60 fps recorre una parte, no todo");
+            Assert.AreEqual(1f - (1f - t) * (1f - t), BackroomsInventorySections.Approach01(14f, 1f / 30f), 1e-4f,
+                "un frame a 30 fps recorre lo mismo que dos a 60");
+            Assert.AreEqual(100f, BackroomsInventorySections.Settle(99.8f, 100f, t, 0.5f), "cerca del destino se clava");
+            Assert.Less(BackroomsInventorySections.Settle(0f, 100f, t, 0.5f), 100f, "lejos, avanza sin saltar");
+
+            foreach (var zone in BackroomsPreviewZoom.Zones)
+                Assert.IsNotEmpty(zone.Label, $"la zona {zone.Id} no tiene rótulo");
+
+            var variant = AssetDatabase.LoadAssetAtPath<GameObject>("Assets/Prefabs/UI/BR_UI_Player.prefab");
+            var zoom = new SerializedObject(variant.GetComponentInChildren<BackroomsPreviewZoom>(true));
+            Assert.IsNotNull(zoom.FindProperty("_zoneTag").objectReferenceValue, "sin cinta con la zona enfocada");
+            Assert.IsNotNull(zoom.FindProperty("_zoneText").objectReferenceValue);
+            var fade = variant.GetComponentInChildren<BackroomsEdgeFade>(true);
+            Assert.IsNotNull(fade, "sin fundido de bordes en el preview");
+            var fadeImage = fade.GetComponent<UnityEngine.UI.RawImage>();
+            Assert.IsFalse(fadeImage.raycastTarget, "el fundido no puede tapar clics");
+            Assert.IsFalse(fadeImage.enabled, "apagado hasta tener textura: sin ella pinta un bloque blanco");
+        }
     }
 }

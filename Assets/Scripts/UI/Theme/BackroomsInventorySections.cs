@@ -14,6 +14,10 @@ namespace BackroomsSurvival.UI
     /// estado de partida ni de servidor. Coloca cada sección cada frame porque su altura depende de los huecos que se
     /// ven, y eso cambia al ponerse o quitarse una mochila. Mientras arrastras algo que cabe en una sección plegada, se
     /// abre sola y vuelve a plegarse al soltar (no se guarda).
+    ///
+    /// Pulido: posición, alto y opacidad de cada sección se acercan a su destino con una curva corta (plegar, abrir,
+    /// reordenar, mochila puesta), la rejilla se recorta a su caja mientras se pliega, y la sección que arrastras se
+    /// levanta un poco. Al abrir el inventario se colocan de golpe.
     /// </summary>
     public sealed class BackroomsInventorySections : MonoBehaviour
     {
@@ -28,6 +32,8 @@ namespace BackroomsSurvival.UI
         [SerializeField] private float _gap = 12f;
         [SerializeField] private float _sidePad = 16f;
         [SerializeField] private float _titleHeight = 34f;
+        [SerializeField, Range(1f, 40f)] private float _sharpness = 14f;
+        [SerializeField, Range(1f, 1.1f)] private float _dragLift = 1.02f;
 
         private int[] _order;
         private bool[] _folded;
@@ -36,6 +42,10 @@ namespace BackroomsSurvival.UI
         private ItemContainerUI[] _containers;
         private readonly List<ItemSlotUIBase> _dragScan = new List<ItemSlotUIBase>();
         private int _dragging = -1;
+        private float[] _top;
+        private float[] _height;
+        private float[] _alpha;
+        private bool _placed;
 
         private void Awake()
         {
@@ -45,6 +55,9 @@ namespace BackroomsSurvival.UI
             _gridGroups = new CanvasGroup[n];
             _layouts = new GridLayoutGroup[n];
             _containers = new ItemContainerUI[n];
+            _top = new float[n];
+            _height = new float[n];
+            _alpha = new float[n];
             for (int i = 0; i < n; i++)
             {
                 if (_grids[i] == null) continue;
@@ -52,8 +65,15 @@ namespace BackroomsSurvival.UI
                 _gridGroups[i] = _grids[i].GetComponent<CanvasGroup>();
                 if (_gridGroups[i] == null) _gridGroups[i] = _grids[i].gameObject.AddComponent<CanvasGroup>();
                 _layouts[i] = _grids[i].GetComponent<GridLayoutGroup>();
+                // Mientras se pliega, los huecos no se salen de su caja. Margen negativo: el marco de selección de un
+                // hueco sobresale unos píxeles y no debe recortarse con la sección abierta.
+                var mask = _grids[i].GetComponent<RectMask2D>();
+                if (mask == null) mask = _grids[i].gameObject.AddComponent<RectMask2D>();
+                mask.padding = new Vector4(-6f, -6f, -6f, -6f);
             }
         }
+
+        private void OnEnable() => _placed = false;
 
         private void LateUpdate() => Layout();
 
@@ -88,24 +108,41 @@ namespace BackroomsSurvival.UI
         private void Layout()
         {
             bool dragging = TryGetDraggedStack(out var dragged);
+            float t = _placed ? Approach01(_sharpness, Time.unscaledDeltaTime) : 1f;
             float y = _topInset;
             for (int p = 0; p < _order.Length; p++)
             {
                 int i = _order[p];
                 bool folded = _folded[i] && !(dragging && Fits(i, dragged));
                 float h = HeightOf(i, folded);
-                if (_sections[i] != null) PlaceTop(_sections[i], y, y + h);
+                _top[i] = Settle(_top[i], y, t, 0.5f);
+                _height[i] = Settle(_height[i], h, t, 0.5f);
+                float top = _top[i];
+                float bottom = top + _height[i];
+                if (_sections[i] != null) PlaceTop(_sections[i], top, bottom);
                 if (_grids[i] != null)
                 {
-                    PlaceTop(_grids[i], y + _titleHeight, y + h);
+                    PlaceTop(_grids[i], top + _titleHeight, Mathf.Max(top + _titleHeight, bottom));
                     bool open = !folded;
-                    _gridGroups[i].alpha = open ? 1f : 0f;
+                    _alpha[i] = Settle(_alpha[i], open ? 1f : 0f, t, 0.01f);
+                    _gridGroups[i].alpha = _alpha[i];
                     _gridGroups[i].blocksRaycasts = open;
                     _gridGroups[i].interactable = open;
                 }
                 if (_foldMarks[i] != null) _foldMarks[i].text = folded ? "+" : "-";
+                float lift = i == _dragging ? _dragLift : 1f;
+                Lift(_sections[i], lift, t);
+                Lift(_grids[i], lift, t);
                 y += h + _gap;
             }
+            _placed = true;
+        }
+
+        private static void Lift(RectTransform rt, float target, float t)
+        {
+            if (rt == null) return;
+            float scale = Settle(rt.localScale.x, target, t, 0.001f);
+            rt.localScale = new Vector3(scale, scale, 1f);
         }
 
         /// <summary>Posición en el orden donde cae un puntero a <paramref name="fromTop"/> px del borde de arriba.</summary>
@@ -177,6 +214,16 @@ namespace BackroomsSurvival.UI
             PlayerPrefs.SetString(OrderKey, string.Join(",", order));
             PlayerPrefs.SetString(FoldedKey, string.Join(",", folded));
             PlayerPrefs.Save();
+        }
+
+        /// <summary>Fracción del camino que se recorre en <paramref name="deltaTime"/>, igual a cualquier fps.</summary>
+        public static float Approach01(float sharpness, float deltaTime) => 1f - Mathf.Exp(-sharpness * deltaTime);
+
+        /// <summary>Acerca <paramref name="current"/> a <paramref name="target"/>; a menos de <paramref name="epsilon"/>, se clava.</summary>
+        public static float Settle(float current, float target, float t, float epsilon)
+        {
+            float next = Mathf.Lerp(current, target, t);
+            return Mathf.Abs(target - next) < epsilon ? target : next;
         }
 
         /// <summary>Alto de una sección: cabecera, relleno y las filas de huecos visibles; sin huecos, solo la cabecera.</summary>

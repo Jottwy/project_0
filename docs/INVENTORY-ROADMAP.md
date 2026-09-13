@@ -400,6 +400,11 @@ tinte sobre la UI piden overlay propio o canvas en Screen Space Camera.
   y cierra el fov de la cámara del preview hacia su hueso (cinta roja); otra vez o clic en el muñeco vuelve. Probado en Play.
   Pulido pedido por Joel: Backpack debe dar la vuelta al muñeco; el recorte en franja corta la ropa, que el render llene
   toda la caja Personaje como fondo detrás de los slots.
+- **Pulido 1 y 2 HECHOS (2026-09-13)** — preview: render a caja completa detrás de los slots, Backpack da la vuelta,
+  bordes fundidos con la caja (`BackroomsEdgeFade`) y cinta con la zona enfocada. Secciones: plegar/abrir/reordenar y
+  mochila puesta con curva corta, rejilla recortada al plegar, la arrastrada se levanta. Probado en Play. Siguen: 3 abrir
+  y cerrar TAB, 4 efectos al mover objetos (pop, rechazo en rojo, aviso de carga), 5 huecos del cinturón con fundido,
+  6 fundido cruzado en Ropa/Heridas y Alrededor/Crafteo.
 - **PENDIENTE (Joel, 2026-09-13) — pasada de pulido y suavizado:** transiciones al reordenar secciones, al plegar/abrir, al
   abrir y cerrar el inventario y los paneles; efectos al mover objetos. Todo con curvas cortas, nada brusco.
 - **Pregunta abierta — guantes por mano:** ¿un slot «Manos» para el par, o mano izquierda y derecha separadas con guantes
