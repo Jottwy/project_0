@@ -328,4 +328,40 @@ tinte sobre la UI piden overlay propio o canvas en Screen Space Camera.
 - **Escena de pruebas** (Joel, 2026-09-13): mientras dura la migración, la variante se prueba en
   `Assets/Scenes/BR_InventoryTest.unity` (`Backrooms/UI/Build Inventory Test Scene`) y **`STP_Showcase` sigue con el
   inventario del vendor**; un test lo exige. Tubería de una pasada: `bash tools/dev/InventoryUiPipeline.sh`.
+- **Rebanada 1c** (2026-09-13): `Relayout` sigue la rejilla del greybox al píxel a 1920×1080 — cabeceras de 36 px a todo
+  el ancho (PERSONAJE, LO QUE LLEVAS, ALREDEDOR) con su caja 8 px debajo hasta y=876; sección «Espalda · Mochila» con
+  casillas de 72/8; Alrededor = estación (492 px) + panel del objeto (284); barra inferior Manos (placeholder, 2 huecos) ·
+  Funda · Carga · Atajos en x 48/256/808/1564; muñeco como franja central del render (uvRect, sin estirar). Conmutador
+  **Ropa | Heridas** placeholder (`BackroomsBodyViewToggle`, 19 zonas de ejemplo, sin ADR). Trampa: los hijos del vendor
+  no se reordenan en la variante; lo nuestro que va DETRÁS se mueve con `SetSiblingIndex`. Iteración con el editor
+  abierto: la captura abre escena ADITIVA y vuelca los rects a `Builds/Captures/inventario_tab.txt`.
+  Falta del greybox: 9 slots del cuerpo con líneas (hoy 5, ADR-022), filas de bolsillos por prenda (D4), «Todo | Lista» y
+  contador de huecos en la cabecera, pestañas de contenedor y suelo, marcas de tramo en la carga (D6).
+- **Ajustes de Joel (2026-09-13)** — DECIDIDO: la columna derecha es un conmutador **ALREDEDOR | CRAFTEO** (misma
+  ventana; abrir una estación elige la vista, sin estación se respeta la última; `BackroomsAroundViewToggle`). La funda se
+  llama **Cinturón** y va **centrada en pantalla** (es la misma pieza en TAB y en juego). La **carga total** va en una línea
+  a la derecha de la cabecera de Lo que llevas («CARGA ▬ x / 40 KG»); **cada prenda tendrá su propia barra** en su fila.
+  La barra inferior queda Manos · Cinturón · Atajos.
+
+## Rondas del 2026-09-13 (tarde) — DECIDIDO por Joel
+- **D5 confirmado**: al quitarte una prenda o mochila, lo de dentro se queda dentro (estilo DayZ), no cae (Unturned).
+- **D6 enmendado — máximo por prenda**: cada prenda y mochila tiene huecos Y un máximo de kg propio que **impide** meter
+  más en ella (se ilumina en rojo con el motivo). El total del cuerpo, arriba en la cabecera, sigue sin impedir: solo frena.
+  La cabecera suma el peso de todo lo que llevas; cada fila de prenda enseña el suyo contra su máximo.
+- **Reparto confirmado**: mochilas con los mismos huecos se diferencian por el reparto (mueve los tramos), nunca
+  reduciendo kg.
+- **D13 — secciones plegables y reordenables a gusto**: cada sección (mochila, cada prenda) se pliega con clic en su
+  cabecera y se reordena arrastrándola; orden y plegado se guardan **en el PC** (preferencia de interfaz, sin servidor).
+- **Mochilas de prueba**: varios tipos (básicas y detalladas) que solo van en la espalda, con distintos huecos, máximo
+  y reparto, usando una malla existente de placeholder mientras no haya modelo.
+- Orden de trabajo: **ADR-147** (PROPUESTA: contenedores precreados al final y capados por lo equipado, contenido que viaja con la prenda) → mochilas de prueba →
+  bolsillos por prenda → secciones plegables/reordenables (necesitan varias secciones para tener sentido).
+- **Prototipo de mochilas (ADR-147 enm. 1, 2026-09-13)** — solo en `BR_InventoryTest`, sin guardado ni red: tres mochilas de
+  prueba (`BR_Cloth Bag` 6 / `BR_Office Backpack` 18 / `BR_Hiking Backpack` 27, icono y pickup de camiseta) con tag
+  «Back Equipment»; el jugador de la escena lleva `Back` y `BackStorage` al final de sus contenedores (override de escena,
+  `STP_Player` intacto); `WornCapacityRestriction` capa huecos y kg por la mochila puesta y no deja meter una mochila en otra;
+  `BackroomsWornStorage` empaqueta/desempaqueta al quitar/poner (en memoria, inerte con backend); en la variante, hueco de
+  espalda real y sección «ESPALDA · …» que enseña solo los huecos que da la mochila. Los 30 del vendor quedan como
+  «BOLSILLOS · PROVISIONAL». Tests `BackroomsBackpackPrototypeTests` (condiciones de la auditoría incluidas).
+  Pendiente: probar en Play; hueco de peso declarado (un paquete no suma kg).
 

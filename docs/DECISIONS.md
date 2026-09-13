@@ -17728,3 +17728,121 @@ sesión, misma deuda que ya arrastran la linterna, la venda y el crafteo en `STA
 
 ---
 
+
+## ADR-147 — Prendas y mochilas que contienen objetos: contenedores precreados y capados por lo equipado; el contenido viaja con la prenda (2026-09-13) — PROPUESTA (Joel: «A: precrear y capar»; «Prototipo + ADR a la vez»)
+
+**Estado:** PROPUESTA. Toca el schema de guardado y el wire (regla dura 7). Enmienda **ADR-022** (slot de espalda nuevo,
+fuera de la pose), **ADR-045** (un `InventoryStackV2` puede llevar contenido) y amplía **ADR-069** (lo que viaja fuera
+del inventario lleva, además de `props`, su contenido). Diseño de juego en `docs/INVENTORY-ROADMAP.md`: D2 (tipos de
+mochila), D4 (cada prenda da sus bolsillos), D5 (lo de dentro se va con la prenda, confirmado 2026-09-13), D6 enmendado
+(máximo de kg por prenda que **impide** guardar; el total del cuerpo solo frena), D7 (tamaño por objeto).
+
+### Contexto, verificado en código
+
+1. **El vendor no tiene mochilas ni ropa con huecos, ni alta/baja de contenedores en runtime.** `Inventory.Start` crea los
+   contenedores una sola vez desde `_defaultContainers` (`Inventory.cs:275-321`). `STP_Player` los sobrescribe a seis
+   (`STP_Player.prefab:902-990`): `[0] Backpack` 30, `[1] Holster` 6, `[2..5] Head/Torso/Legs/Feet` de 1 hueco con
+   restricción de tag. No existe tag de espalda (`ItemConstants.cs:14-19`); el hueco «Backpack» de la columna del
+   personaje no tiene contenedor propio detrás.
+2. **El contenedor del vendor ya sabe limitar.** `ItemContainer.GetAllowedCount` (`ItemContainer.cs:297-318`) aplica el
+   tope de peso y luego cada `ContainerRestriction`; `SetItemAtIndex` (colocar en un hueco concreto) pasa por el mismo
+   camino, así que ni el arrastre a un hueco se salta una restricción. `ContainerRestriction` es abstracta y se hereda
+   fuera del ensamblado del vendor (memoria `stp-no-direct-edits`).
+3. **El guardado indexa por posición.** `InventoryStackV2 { item_id, quantity, container: u8, slot: u8, props }`
+   (ADR-045 Fase 3) guarda el índice del contenedor en `Inventory.Containers`: reordenar o insertar contenedores en
+   medio rompe todo save existente en silencio.
+4. **Fuera del inventario un objeto viaja pelado.** `CorpseStack { item_id, quantity }` y `stp_drop` (ADR-069 PROPUESTA
+   añade `props`). El `ItemPickup` del vendor conserva la instancia (`ItemPickup.cs:35,57`), pero `StpItemReplicator`
+   reconstruye por `def_id`: en red, una mochila soltada llegaría vacía.
+
+### Decisión propuesta
+
+1. **Contenedores precreados al máximo, SIEMPRE AL FINAL** (índices 6+, nunca en medio: punto 3 del contexto):
+   `Back` (1 hueco, tag nuevo «Back Equipment»), `BackStorage` (27 huecos, el máximo de D2) y un contenedor de bolsillos
+   por slot de ropa que dé huecos (`TorsoPockets`, `LegsPockets`, `FeetPockets`; su tamaño máximo sale del catálogo de
+   D4 y se fija al implementar). Un save anterior sin ellos carga igual: los índices 0-5 no se mueven.
+2. **Capados por lo equipado.** Restricción propia `WornCapacityRestriction : ContainerRestriction` que lee, del objeto
+   puesto en el slot dueño, un `ItemData` propio `WearableCapacityData { slots, maxKg, carryBonusPct, maxItemSize }`.
+   Rechaza (con motivo legible, D7) si el contenedor ya ocupa `slots` huecos, si el peso superaría `maxKg` o si el objeto
+   es mayor que `maxItemSize`. Sin prenda puesta, 0 huecos. La UI solo enseña los primeros `slots` huecos.
+3. **El contenido viaja con la prenda (D5).** Quitar la prenda del slot dueño EMPAQUETA el contenido de su contenedor en
+   la instancia del objeto y lo vacía en la misma operación; ponerla lo DESEMPAQUETA. El paquete va asociado a la
+   instancia `Item`, no a `ItemProperty` (que solo guarda `double`).
+4. **Guardado y red.** `InventoryStackV2` y `CorpseStack` ganan `contents: Vec<InventoryStackV2>` con `#[serde(default)]`;
+   el drop al mundo (`stp_drop` y el item replicado) lleva el mismo campo. **Profundidad máxima 1**: una prenda con
+   contenido no entra en otra prenda; la restricción del punto 2 lo hace cumplir, no solo el guardado. Bump de
+   `WIRE_SCHEMA_VERSION` y de su espejo `WireSchema.Expected` en el mismo commit (memoria `wire-schema-csharp-mirror`).
+5. **Carga.** El total de la cabecera es `Inventory.Weight`, que ya suma todos los contenedores (puestos y
+   empaquetados no: un paquete va dentro del peso de su objeto). Tramos de D6 con el reparto sumado del equipo, tope
+   +25 %, en una función pura con test.
+
+### Abierto, se decide en el prototipo
+
+**Cómo entran los contenedores nuevos sin editar el vendor.** (a) Variante propia del jugador con `_defaultContainers`
+sobrescrito — `STP_Player.prefab` no admite `SaveAsPrefabAsset` (script perdido; memoria
+`character-component-map-vendor-assembly`: swap por GUID); o (b) componente propio que rellena `_defaultContainers`
+antes de `Inventory.Start` (`BeforeDefault3`), escribiendo un campo privado por reflexión. Se mide cuál sobrevive a un
+reimport del vendor antes de elegir.
+
+### Prototipo (sin tocar guardado ni red)
+
+En `BR_InventoryTest`: tres mochilas de prueba de D2 (bolsa de tela 6 / 0,2 kg / −10 %; oficina 18 / 1,1 kg / 0 %;
+montaña 27 / 2,4 kg / +20 %; `maxKg` sin balancear) con malla e icono de placeholder, la restricción del punto 2 y el
+empaquetado del punto 3 en memoria. **Lo de dentro NO sobrevive a reconectar ni viaja por red** hasta implementar el
+punto 4; en `STP_Showcase` y en partida real no se monta nada.
+
+### Alternativas rechazadas
+
+- **B — el contenedor vive dentro del objeto, fuera de `Inventory`.** Más limpio, pero peso total, auto-move, crafteo
+  (ADR-064), `report_inventory` (ADR-032/045) y muerte (ADR-028) dejan de verlo y habría que reengancharlos uno a uno.
+- **El contenido cae al suelo al quitarla (Unturned).** Descartado en D5: la fase 2 necesita la mochila saqueable con todo.
+- **La mochila reduce kg (Project Zomboid).** Descartado en D6: 1 kg es 1 kg; el reparto mueve tramos.
+
+### Riesgos y preguntas que hay que cerrar ANTES de implementar el punto 4
+
+1. **Muerte (ADR-028):** el cadáver lleva la mochila con su contenido (`CorpseStack.contents`); si no, se pierde o se
+   duplica al lootear.
+2. **Duplicado al empaquetar:** vaciar el contenedor y cargar el paquete es UNA operación; un fallo a mitad no puede dejar
+   copia en los dos sitios. Test explícito.
+3. **Tope de 64 stacks** de `report_inventory` (ADR-032 enm.): 27 de espalda + bolsillos + lo de siempre se acerca.
+4. **Crafteo (ADR-064):** valida contra el inventario reportado; el contenido empaquetado de una prenda que no llevas
+   puesta no cuenta como material disponible.
+
+**Qué NO toca:** la pose y el relay (ADR-022 sigue con sus 4 IDs cosméticos; ver la mochila a la espalda en 3P necesita
+su propia enmienda cuando haya modelo), worldgen, colisión ni autoridad del inventario (sigue trust-the-client,
+ADR-045).
+
+---
+
+### ADR-147 — Enmienda 1 (2026-09-13, misma tarde): auditoría de arquitectura — prototipo APROBADO CON CONDICIONES; el punto 4 NO se aprueba tal como está escrito
+
+Auditor de arquitectura sobre el borrador de arriba. Correcciones al TEXTO (el cuerpo queda como estaba, append-only):
+- **«ADR-069» es ADR-072** (`DECISIONS.md:3324`, se renumeró). `CorpseStack` ya lleva `props` con tope de 8 por pila;
+  lo pendiente de ADR-072 es su Fase 2 (`stp_drop`). El punto 4 del contexto queda desfasado en eso.
+- **ADR-022:** la cabecera dice que lo enmienda y «Qué NO toca» dice que no. Vale lo segundo: este ADR NO enmienda ADR-022.
+- **`CorpseStack.contents: Vec<InventoryStackV2>` choca con ADR-045 alternativa (F) y con ADR-072 «No se unifica»:** mete
+  `container`/`slot` en el botín. Antes de implementar el punto 4 hace falta un tipo de contenido SIN `container`
+  y declararlo como enmienda explícita de ADR-045 (F).
+- **Punto 5 es falso:** el peso de un objeto sale de su DEFINICIÓN (`Item.cs:101`) y el contenedor suma ese valor, así que una
+  mochila llena y empaquetada pesaría lo que pesa vacía (hueco de peso: una forma de cargar kg sin que cuenten). Se rehace sin
+  editar el vendor o se declara el hueco.
+
+Riesgos nuevos que el punto 4 tiene que resolver antes de subir el wire:
+1. **Tope de 64 pilas por TRUNCADO en orden** (`game_loop.rs:8784`): los contenedores 6+ son los primeros que se pierden, en
+   silencio; 30+6+4+1+27+bolsillos lo supera. El contenido empaquetado tampoco cuenta para el tope.
+2. **Restauración:** `ApplyV2` limpia y coloca por índice; desempaquetar al «ponerse» la mochila durante la restauración
+   duplicaría o pisaría. Invariante: mochila puesta ⇒ paquete vacío; y la restauración no dispara desempaquetado.
+3. **P2P serializa por posición** (`rmp_serde::to_vec`, `protocol.rs:1545`): `serde(default)` no da compatibilidad ahí, y el
+   gate de ADR-061 solo cubre cliente↔backend local. La lista de cadáveres viaja entera a 10 Hz: medir el peor caso con
+   contenido antes del bump.
+4. Huecos: soltar/recoger depende de ADR-072 Fase 2; rollback/reconcile de `CorpseLootSync` con contenido; cómo trata el
+   crafteo (ADR-064 enm. 1) el contenido anidado; invariante de `StackSize = 1` en mochilas con test (el vendor funde pilas
+   por id); arrastrar la mochila de la espalda a su propio almacén.
+
+**Condiciones del prototipo** (el prototipo arranca con ellas):
+1. Se monta con objetos propios de `BR_InventoryTest` (instancia de escena), **nada en `STP_Player.prefab`, `STP_GameMode` ni
+   arranques automáticos**; test EditMode que exija 6 contenedores en `STP_Player` y que `STP_Showcase` no lleve la instancia.
+2. **Inerte con backend conectado.**
+3-5. Las del punto 4 (arriba) antes de tocar guardado o red.
+
+---
