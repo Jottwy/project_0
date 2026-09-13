@@ -20,8 +20,8 @@ namespace BackroomsSurvival.WorldGen3
     ///
     /// <see cref="WedgeVolume"/> es un volumen de SUELO con forma <see cref="Wg3Shape.Wedge"/>: va a la
     /// submalla de suelo (la moqueta continúa desde la tira de la puerta) y <c>AddColliders</c> la
-    /// ignora por no ser caja. Se levanta <see cref="WedgeLiftM"/> para que ninguna arista de las tiras
-    /// de debajo asome. Como las cajas van al borde alto de su celda, un pie puede quedar hasta 10 cm
+    /// ignora por no ser caja. Su extremo bajo se levanta <see cref="WedgeLiftM"/> para que ninguna arista
+    /// de las tiras de debajo asome; el alto queda enrasado con la tira de la puerta. Como las cajas van al borde alto de su celda, un pie puede quedar hasta 10 cm
     /// por encima del dibujo: es el precio aceptado de colisionar con cajas y no con un plano.
     /// </remarks>
     public static class Wg3RampGeometry
@@ -101,10 +101,12 @@ namespace BackroomsSurvival.WorldGen3
         /// </summary>
         public static Wg3Volume WedgeVolume(in Wg3RampMsg r)
         {
-            float sx = r.sizeXCm / 100f, sz = r.sizeZCm / 100f, rise = RiseCm(r) / 100f;
+            // Sólo se levanta el extremo BAJO: el alto queda enrasado con la tira de la puerta. Levantarlo
+            // entero asomaba la testa 1 cm sobre esa tira, una raya negra vista desde arriba.
+            float sx = r.sizeXCm / 100f, sz = r.sizeZCm / 100f, rise = RiseCm(r) / 100f - WedgeLiftM;
             return new Wg3Volume
             {
-                center = new Vector3(r.xCm / 100f + sx * 0.5f, r.bottomYCm / 100f + rise * 0.5f + WedgeLiftM,
+                center = new Vector3(r.xCm / 100f + sx * 0.5f, r.bottomYCm / 100f + WedgeLiftM + rise * 0.5f,
                     r.zCm / 100f + sz * 0.5f),
                 size = new Vector3(AcrossCm(r) / 100f, rise, AlongCm(r) / 100f),
                 yawDegrees = (r.dir % 4) * 90f,

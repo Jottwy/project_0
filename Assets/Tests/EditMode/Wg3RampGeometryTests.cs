@@ -110,7 +110,7 @@ namespace BackroomsSurvival.Tests
                 Assert.That(b.size.x, Is.EqualTo(r.sizeXCm / 100f).Within(1e-3f), "ancho en X");
                 Assert.That(b.size.z, Is.EqualTo(r.sizeZCm / 100f).Within(1e-3f), "largo en Z");
                 Assert.That(b.min.y, Is.EqualTo(Wg3RampGeometry.WedgeLiftM).Within(1e-3f), "base 1 cm sobre el fondo");
-                Assert.That(b.max.y, Is.EqualTo(0.60f + Wg3RampGeometry.WedgeLiftM).Within(1e-3f), "arriba");
+                Assert.That(b.max.y, Is.EqualTo(0.60f).Within(1e-3f), "arriba, enrasada con la tira de la puerta");
 
                 // Normal de la rampa: hacia arriba y hacia el lado BAJO (contraria a dir).
                 Vector3 up = n[0];
