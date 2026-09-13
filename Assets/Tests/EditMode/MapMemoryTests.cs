@@ -38,10 +38,10 @@ namespace BackroomsSurvival.Tests
             memory.AddSample(time, storey, xs, zs, kinds, cells.Length);
         }
 
-        private static List<RememberedCell> Query(MapMemory memory, MapZone zone, double now)
+        private static List<RememberedCell> Query(MapMemory memory, MapZone zone, double now, int wallMargin = 0)
         {
             var results = new List<RememberedCell>();
-            memory.CellsInZone(zone, now, results);
+            memory.CellsInZone(zone, now, results, wallMargin);
             return results;
         }
 
@@ -162,6 +162,16 @@ namespace BackroomsSurvival.Tests
 
             Add(memory, 2.0, 0, (1, 1, MapCellKind.Floor));
             Assert.AreEqual(1, Query(memory, zoneA, 3.0).Count, "volver a verlo lo recuerda otra vez");
+        }
+
+        [Test]
+        public void TheWallMarginBringsOnlyTheNeighboursWalls()
+        {
+            MapMemory memory = NewMemory();
+            Add(memory, 0.0, 0, (100, 5, MapCellKind.Floor), (100, 6, MapCellKind.Wall), (101, 6, MapCellKind.Wall));
+
+            CollectionAssert.AreEqual(new[] { "100,6" }, Coordinates(Query(memory, new MapZone(0, 0, 0), 0.0, 1)),
+                "la pared a una celda del borde sí; el suelo del vecino y la pared a dos celdas, no");
         }
 
         [Test]

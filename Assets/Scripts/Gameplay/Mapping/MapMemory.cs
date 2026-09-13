@@ -131,6 +131,9 @@ namespace BackroomsSurvival.Gameplay.Mapping
         /// <summary>Muestras vivas en el búfer.</summary>
         public int SampleCount => _size;
 
+        /// <summary>Celdas por lado de chunk.</summary>
+        public int CellsPerChunk => _cellsPerChunk;
+
         public int CellOf(double metres) => (int)Math.Floor(metres / CellSizeM);
 
         public int StoreyOf(double floorY) => (int)Math.Floor(floorY / StoreyM);
@@ -179,8 +182,10 @@ namespace BackroomsSurvival.Gameplay.Mapping
         /// Lo que se recuerda de <paramref name="zone"/> en <paramref name="now"/>: una entrada por
         /// celda, con la edad y el tipo de la vez MÁS RECIENTE que se vio. Rellena
         /// <paramref name="results"/> (lo vacía antes), ordenado por Z y luego X.
+        /// Con <paramref name="wallMarginCells"/> &gt; 0 también devuelve las PAREDES hasta esa distancia fuera
+        /// del chunk: el muro de borde es del vecino y sin él la hoja quedaría abierta por los cantos.
         /// </summary>
-        public void CellsInZone(MapZone zone, double now, List<RememberedCell> results)
+        public void CellsInZone(MapZone zone, double now, List<RememberedCell> results, int wallMarginCells = 0)
         {
             results.Clear();
             _seen.Clear();
@@ -200,7 +205,10 @@ namespace BackroomsSurvival.Gameplay.Mapping
                     if (kind == ConsumedKind) continue;
                     int x = _cellX[offset + i];
                     int z = _cellZ[offset + i];
-                    if (!InZone(x, z, zone)) continue;
+                    bool inside = kind == (byte)MapCellKind.Wall
+                        ? InZoneWithMargin(x, z, zone, wallMarginCells)
+                        : InZone(x, z, zone);
+                    if (!inside) continue;
                     if (!_seen.Add(Key(x, z))) continue;
                     results.Add(new RememberedCell(x, z, (MapCellKind)kind, age));
                 }
@@ -264,6 +272,14 @@ namespace BackroomsSurvival.Gameplay.Mapping
 
         private bool InZone(int x, int z, MapZone zone) =>
             FloorDiv(x, _cellsPerChunk) == zone.ChunkX && FloorDiv(z, _cellsPerChunk) == zone.ChunkZ;
+
+        private bool InZoneWithMargin(int x, int z, MapZone zone, int margin)
+        {
+            int x0 = zone.ChunkX * _cellsPerChunk;
+            int z0 = zone.ChunkZ * _cellsPerChunk;
+            return x >= x0 - margin && x < x0 + _cellsPerChunk + margin &&
+                   z >= z0 - margin && z < z0 + _cellsPerChunk + margin;
+        }
 
         /// <summary>Recorre las celdas intermedias del segmento; la de destino no cuenta, así una pared es visible.</summary>
         private static bool HasLineOfSight(bool[] occupied, int side, int radiusCells, int dx, int dz)
