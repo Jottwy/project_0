@@ -316,6 +316,12 @@ namespace BackroomsSurvival.EditorTools
         /// con <c>SaveAsPrefabAsset</c> queda como sub-asset del prefab sin pedir <c>CreateAsset</c>.
         /// Si el import se corrige algún día y +Y ya es el eje largo, esto devuelve la malla tal
         /// cual (rotación identidad).
+        ///
+        /// CONSTRUIDA DESDE CERO CON <c>new Mesh()</c>, no con <c>Object.Instantiate(source)</c>:
+        /// la primera versión de este método instanciaba la malla del import y rotaba sus datos, y
+        /// el prefab guardado quedaba con `m_Mesh: {fileID: 0}` en el MeshFilter — la copia se
+        /// perdía al guardar en vez de embeberse como sub-asset. Un <c>Mesh</c> nuevo sí se embebe
+        /// (mismo mecanismo que un mesh procedural cualquiera).
         /// </summary>
         private static Mesh BakeMeshWithLongestAxisOnY(Mesh source)
         {
@@ -327,27 +333,31 @@ namespace BackroomsSurvival.EditorTools
             if (align == Quaternion.identity)
                 return source;
 
-            var baked = Object.Instantiate(source);
-            baked.name = source.name + "_YUp";
-
-            var vertices = baked.vertices;
+            var vertices = source.vertices;
             for (int i = 0; i < vertices.Length; i++)
                 vertices[i] = align * vertices[i];
-            baked.vertices = vertices;
 
-            var normals = baked.normals;
+            var normals = source.normals;
             for (int i = 0; i < normals.Length; i++)
                 normals[i] = align * normals[i];
-            baked.normals = normals;
 
-            var tangents = baked.tangents;
+            var tangents = source.tangents;
             for (int i = 0; i < tangents.Length; i++)
             {
                 Vector3 t = align * (Vector3)tangents[i];
                 tangents[i] = new Vector4(t.x, t.y, t.z, tangents[i].w);
             }
-            baked.tangents = tangents;
 
+            var baked = new Mesh { name = source.name + "_YUp" };
+            baked.vertices = vertices;
+            if (normals.Length > 0) baked.normals = normals;
+            if (tangents.Length > 0) baked.tangents = tangents;
+            baked.uv = source.uv;
+            baked.uv2 = source.uv2;
+            baked.colors = source.colors;
+            baked.subMeshCount = source.subMeshCount;
+            for (int s = 0; s < source.subMeshCount; s++)
+                baked.SetTriangles(source.GetTriangles(s), s);
             baked.RecalculateBounds();
             return baked;
         }
