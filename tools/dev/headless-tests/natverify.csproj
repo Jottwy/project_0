@@ -71,6 +71,11 @@
     <!-- MAPPING-PROTOTYPE P0.1: el recuerdo del jugador, puro por diseno. El muestreador que lo
          alimenta con Physics.CheckBox queda fuera. -->
     <Compile Include="$(Repo)\Assets\Scripts\Gameplay\Mapping\MapMemory.cs" />
+    <!-- P0.2: la hoja y sus trazos, puros como el recuerdo. -->
+    <Compile Include="$(Repo)\Assets\Scripts\Gameplay\Mapping\MapSheet.cs" />
+    <Compile Include="$(Repo)\Assets\Scripts\Gameplay\Mapping\MapSheetStrokeBuilder.cs" />
+    <Compile Include="$(Repo)\Assets\Scripts\Gameplay\Mapping\MapSheetRaster.cs" />
+    <Compile Include="$(Repo)\Assets\Scripts\Gameplay\Mapping\MapVisionFan.cs" />
   </ItemGroup>
 
   <!-- Los ficheros de test REALES, sin tocar. LanFallbackMetadataTests queda fuera: depende de
@@ -103,6 +108,10 @@
     <Compile Include="$(Repo)\Assets\Tests\EditMode\LobbyJoinTargetTests.cs" />
     <Compile Include="$(Repo)\Assets\Tests\EditMode\PeerIdentityEnvTests.cs" />
     <Compile Include="$(Repo)\Assets\Tests\EditMode\MapMemoryTests.cs" />
+    <Compile Include="$(Repo)\Assets\Tests\EditMode\MapSheetStrokesTests.cs" />
+    <Compile Include="$(Repo)\Assets\Tests\EditMode\MapSheetRasterTests.cs" />
+    <Compile Include="$(Repo)\Assets\Tests\EditMode\MapRecognitionTests.cs" />
+    <Compile Include="$(Repo)\Assets\Tests\EditMode\MapVisionFanTests.cs" />
   </ItemGroup>
 
 </Project>

@@ -30,6 +30,8 @@ namespace BackroomsSurvival.Wearables
 
         public string OwnerContainer => _ownerContainer;
 
+        public static bool IsSwapping => s_swapDepth > 0;
+
         public static void BeginSwap() => s_swapDepth++;
 
         public static void EndSwap() => s_swapDepth = Mathf.Max(0, s_swapDepth - 1);

@@ -47,13 +47,13 @@ namespace BackroomsSurvival.Tests
             var sections = variant.GetComponentInChildren<BackroomsInventorySections>(true);
             Assert.IsNotNull(sections, "sin BackroomsInventorySections en el centro");
             var so = new SerializedObject(sections);
-            Assert.AreEqual(2, so.FindProperty("_ids").arraySize);
+            Assert.AreEqual(4, so.FindProperty("_ids").arraySize);
             foreach (var field in new[] { "_sections", "_grids", "_foldMarks" })
                 for (int i = 0; i < 2; i++)
                     Assert.IsNotNull(so.FindProperty(field).GetArrayElementAtIndex(i).objectReferenceValue, $"{field}[{i}] sin asignar");
 
             var headers = variant.GetComponentsInChildren<BackroomsSectionHeader>(true);
-            Assert.AreEqual(2, headers.Length, "cada sección necesita su franja de cabecera");
+            Assert.AreEqual(4, headers.Length, "cada sección necesita su franja de cabecera");
             foreach (var header in headers)
                 Assert.AreEqual(sections, new SerializedObject(header).FindProperty("_owner").objectReferenceValue);
         }

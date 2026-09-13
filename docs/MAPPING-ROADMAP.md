@@ -357,8 +357,16 @@ en el autosave (enmienda de ADR-032).
 - **D18 Aliados en el mapa. CERRADA:** último avistamiento por radio tras «Ubicarme»; nunca en directo.
 - **D19 Facciones. CERRADA como dependencia:** ADR propio fuera de este roadmap antes de M10.
 - **D20 Teclas. CERRADA (propuesta de Joel):** `N` notas provisionales, `M` mapa de la base.
+- **D22 El libro de supervivencia de STP como modelo base (propuesta de Joel, 2026-09-13).** Wieldable con UI
+  World Space por secciones, input propio, profundidad de campo y sonido de página: base para la libreta y, más
+  adelante, carpeta y archivador. Detalle y teclas en MAPPING-PROTOTYPE §3.9 (`B` libro, `N` choca con `FireMode`,
+  `M` libre). Abierto: libreta en `N` reasignando `FireMode`, o como pestaña del libro en `B`.
 - **D21 Mejoras de la base (propuesta de Joel, adoptada como dirección):** corcho → mesa → proyector →
   antena → tablet → reloj (§7d). Costes y números, en playtest.
+- **D23 La hoja no gira. CERRADA (Joel, 2026-09-13):** norte siempre arriba; ni gira sola con la mirada ni se gira
+  a mano. Orientarse es cosa del jugador (y de la cruceta de «Ubicarme»). Brújula y rumbo siguen fuera (§12).
+- **D24 Qué se ve (propuesta de Joel, 2026-09-13, enmienda D4).** Más lejos: ~20 m, o todo lo de delante en el
+  ángulo de la mirada. Plan y coste en MAPPING-PROTOTYPE §4.6.
 
 ## 11. Rebanadas
 

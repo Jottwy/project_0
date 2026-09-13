@@ -38,10 +38,10 @@ namespace BackroomsSurvival.Tests
             memory.AddSample(time, storey, xs, zs, kinds, cells.Length);
         }
 
-        private static List<RememberedCell> Query(MapMemory memory, MapZone zone, double now)
+        private static List<RememberedCell> Query(MapMemory memory, MapZone zone, double now, int wallMargin = 0)
         {
             var results = new List<RememberedCell>();
-            memory.CellsInZone(zone, now, results);
+            memory.CellsInZone(zone, now, results, wallMargin);
             return results;
         }
 
@@ -162,6 +162,97 @@ namespace BackroomsSurvival.Tests
 
             Add(memory, 2.0, 0, (1, 1, MapCellKind.Floor));
             Assert.AreEqual(1, Query(memory, zoneA, 3.0).Count, "volver a verlo lo recuerda otra vez");
+        }
+
+        private static void AddAt(MapMemory memory, double time, int storey, int playerX, int playerZ)
+        {
+            memory.AddSample(time, storey, playerX, playerZ, new[] { playerX }, new[] { playerZ },
+                new[] { MapCellKind.Floor }, 1);
+        }
+
+        [Test]
+        public void CrossingIntoTheNextChunkIsReported()
+        {
+            MapMemory memory = NewMemory();
+            AddAt(memory, 0.0, 0, 98, 5);
+            AddAt(memory, 0.5, 0, 99, 5);
+            AddAt(memory, 1.0, 0, 100, 5);
+
+            var crossings = new List<MapCrossing>();
+            memory.Crossings(crossings);
+
+            Assert.AreEqual(1, crossings.Count);
+            Assert.AreEqual(new MapZone(0, 0, 0), crossings[0].From);
+            Assert.AreEqual(new MapZone(1, 0, 0), crossings[0].To);
+            Assert.AreEqual(99, crossings[0].FromCellX, "cada muestra recuerda dónde estaba el jugador");
+            Assert.AreEqual(5, crossings[0].FromCellZ);
+        }
+
+        [Test]
+        public void ATeleportIsNotACrossing()
+        {
+            MapMemory memory = NewMemory();
+            AddAt(memory, 0.0, 0, 99, 5);
+            AddAt(memory, 5.0, 0, 100, 5);
+            memory.AddSample(5.5, 0, new[] { 1 }, new[] { 1 }, new[] { MapCellKind.Floor }, 1);
+
+            var crossings = new List<MapCrossing>();
+            memory.Crossings(crossings);
+
+            CollectionAssert.IsEmpty(crossings, "cinco segundos sin muestras no demuestran que se pasara andando, y sin celda de jugador tampoco");
+        }
+
+        [Test]
+        public void ChangingStoreyIsACrossing()
+        {
+            MapMemory memory = NewMemory();
+            AddAt(memory, 0.0, 0, 10, 10);
+            AddAt(memory, 0.5, 1, 10, 10);
+
+            var crossings = new List<MapCrossing>();
+            memory.Crossings(crossings);
+
+            Assert.AreEqual(1, crossings.Count);
+            Assert.AreEqual(new MapZone(0, 0, 1), crossings[0].To);
+        }
+
+        [Test]
+        public void ConsumedCellsStillCountForRecognition()
+        {
+            MapMemory memory = NewMemory();
+            var zone = new MapZone(0, 0, 0);
+            Add(memory, 0.0, 0, (1, 1, MapCellKind.Wall));
+            memory.Consume(zone);
+
+            var results = new List<RememberedCell>();
+            memory.CellsInZone(zone, 1.0, results);
+            Assert.AreEqual(0, results.Count, "el dibujo no lo vuelve a cobrar");
+            memory.CellsInZone(zone, 1.0, results, includeConsumed: true);
+            Assert.AreEqual(1, results.Count, "el reconocimiento sí lo ve");
+            Assert.AreEqual(MapCellKind.Wall, results[0].Kind, "y con su tipo, sin la marca");
+        }
+
+        [Test]
+        public void MaxAgeKeepsOnlyTheRecentPart()
+        {
+            MapMemory memory = NewMemory();
+            Add(memory, 0.0, 0, (1, 1, MapCellKind.Floor));
+            Add(memory, 10.0, 0, (2, 2, MapCellKind.Floor));
+
+            var results = new List<RememberedCell>();
+            memory.CellsInZone(new MapZone(0, 0, 0), 12.0, results, maxAgeSeconds: 5.0);
+
+            CollectionAssert.AreEqual(new[] { "2,2" }, Coordinates(results));
+        }
+
+        [Test]
+        public void TheWallMarginBringsOnlyTheNeighboursWalls()
+        {
+            MapMemory memory = NewMemory();
+            Add(memory, 0.0, 0, (100, 5, MapCellKind.Floor), (100, 6, MapCellKind.Wall), (101, 6, MapCellKind.Wall));
+
+            CollectionAssert.AreEqual(new[] { "100,6" }, Coordinates(Query(memory, new MapZone(0, 0, 0), 0.0, 1)),
+                "la pared a una celda del borde sí; el suelo del vecino y la pared a dos celdas, no");
         }
 
         [Test]

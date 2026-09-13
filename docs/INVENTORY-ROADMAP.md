@@ -328,6 +328,11 @@ tinte sobre la UI piden overlay propio o canvas en Screen Space Camera.
 - **Escena de pruebas** (Joel, 2026-09-13): mientras dura la migración, la variante se prueba en
   `Assets/Scenes/BR_InventoryTest.unity` (`Backrooms/UI/Build Inventory Test Scene`) y **`STP_Showcase` sigue con el
   inventario del vendor**; un test lo exige. Tubería de una pasada: `bash tools/dev/InventoryUiPipeline.sh`.
+  **Sustituido el 2026-09-13 (Joel, opción A):** `STP_Showcase` lleva la INTERFAZ nueva por enganche, sin editar su YAML
+  (`BackroomsShowcasePlayerUi`, `Resources/UI/BackroomsShowcasePlayerUi.asset`: instancia `BR_UI_Player` en `sceneLoaded`
+  y el `GameMode` la adopta por `PlayerUI.Instance`). El jugador sigue siendo `STP_Player` con 6 contenedores: mochilas,
+  carga y cuerpo por zonas siguen SOLO en la escena de pruebas (ADR-147 enm. 1, ADR-149 R0). Los paneles de prototipo sin
+  contenedor se esconden (`BackroomsHideUnboundContainers`) y la barra de manos enseña los 6 huecos del vendor.
 - **Rebanada 1c** (2026-09-13): `Relayout` sigue la rejilla del greybox al píxel a 1920×1080 — cabeceras de 36 px a todo
   el ancho (PERSONAJE, LO QUE LLEVAS, ALREDEDOR) con su caja 8 px debajo hasta y=876; sección «Espalda · Mochila» con
   casillas de 72/8; Alrededor = estación (492 px) + panel del objeto (284); barra inferior Manos (placeholder, 2 huecos) ·
@@ -441,5 +446,14 @@ tinte sobre la UI piden overlay propio o canvas en Screen Space Camera.
   `PlayerMedicalState` (R2). Vista Heridas con las 15 zonas: clic trata con venda o férula del inventario. En la escena,
   tres placas de daño (cristales → pie der. corte; golpe → antebrazo izq. fractura; caída → zona sorteada) y 2 vendas y
   2 férulas (`BR_Splint`, placeholder).
-- **Siguen:** R1 ropa por zonas y sastrería (sin wire), R2 autoridad del servidor y guardado, R3 PvP con zona, R4 visual.
+- **Enmienda 1 (Joel, 2026-09-13):** bolsillo = huecos de una zona, se tachan con cruz y coser (aguja + hilo, tela si es
+  desgarro) los devuelve al 90 %; cinta 60 % sin bolsillo. Bala, puñalada o zarpazo rompen el bolsillo SIEMPRE; lo que llevaba
+  pasa a otro hueco o cae al suelo con aviso. ANOTADO: máquina de coser que mejore mucho el arreglo. PENDIENTE de Joel: ¿un
+  guante por mano? («uno por par, da más personalidad»).
+- **R1 hecha, pendiente de Play** — `GarmentZonesData`/`GarmentState` (en memoria por instancia), `GarmentPocketRestriction`,
+  `BackroomsGarmentPrototype` (protege la prenda más exterior, vuelca bolsillos rotos y al quitarse la prenda, cose o pone
+  cinta). Contenedores `OuterPockets`/`LegsPockets` (índices 12 y 13) con secciones «BOLSILLOS · ENCIMA/PIERNAS» y cruz en
+  los huecos rotos. Chaqueta con 4 huecos, pantalón de trabajo con 2, guantes por mano; aguja e hilo propios, cinta y tela del
+  vendor. Vista Heridas: clic derecho repara.
+- **Siguen:** R2 autoridad del servidor y guardado, R3 PvP con zona, R4 visual.
 

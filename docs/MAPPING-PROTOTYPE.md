@@ -171,3 +171,248 @@ dentro de Unity (sólo corrida en `tools/dev/headless-tests`: 8/8).
 - Menú extra de diagnóstico (`Backrooms/Mapeado/Diagnosticar pintura de playtest`) para ver qué material pinta cada renderer.
 
 **Preguntas abiertas antes de P0.2:** ¿5 m y 60 s se sienten bien jugando?
+
+---
+
+## 3. P0.2 — Hoja y dibujar (plan VALIDADO por Joel, 2026-09-13)
+
+### 3.1 Objetivo
+
+Con `N` se abre la libreta (panel en pantalla, sin brazos todavía). Una hoja se asigna a la zona donde se coge.
+«Dibujar» pasa al papel **lo que se recuerda de esa zona**: paredes como trazos temblorosos, lo viejo más
+tembloroso y con huecos, gastando tinta y **dejando al jugador quieto** mientras dura. Lo ya dibujado no se
+vuelve a cobrar. Se juega en `MappingPlaytest.unity`.
+
+**Fuera de alcance:** varias herramientas y papeles, marcas, notas, letra generada, flechas de borde,
+«Ubicarme», plano `M`, red, guardado, brazos 1P. Todo eso es P0.3 o posterior.
+
+### 3.2 Lo que ya existe y se reutiliza
+
+| Pieza | Dónde | Uso |
+|---|---|---|
+| Recuerdo por zona | `MapMemory.CellsInZone`, `Consume` (P0.1) | Fuente de los trazos |
+| Pintar trazos una vez en `Texture2D` | `SprayRenderer.Rasterize` (`SetPixels32` + `Apply`), lógica pura en `SprayCanvas` | Mismo patrón para la hoja |
+| Panel uGUI por código | `PoiDebugHud` (`ScreenSpaceOverlay` + `CanvasScaler` 1920×1080) | Visor de la libreta |
+| Teclas | `Keyboard.current` directo (`WristWatchHandler`, `FreeBuildMode`, `Wg3TestPlayer`); `N` libre | Tecla `N` |
+| Algoritmo de trazos | Maqueta «Libreta del cartógrafo» (`buildStrokes`: arista pared↔suelo, fusión de colineales, temblor con semilla, hueco en lo viejo) | Se porta a C# |
+
+### 3.3 Diseño — tres piezas puras y una de escena
+
+1. **`MapSheet`** (C# puro): zona, aristas ya dibujadas (`HashSet<long>`, sólo para consultar, nunca para emitir),
+   capas de trazos, tinta. **`MapSheetStrokes`** (C# puro): de `CellsInZone` a trazos.
+   - Arista = pared recordada junto a suelo recordado de la zona. Hace falta ver las paredes UNA celda fuera del
+     chunk (los muros de borde son del vecino): `CellsInZone` gana un parámetro `marginCells` (sólo paredes).
+   - Fusión de aristas colineales contiguas, **orden estable** (fila/columna ordenadas, regla 13).
+   - Frescura: edad > `memorySeconds / 3` → trazo tembloroso, discontinuo y con un 28 % de huecos.
+   - Temblor con semilla por hoja y capa: el mismo recuerdo da el mismo dibujo.
+   - Tinta: coste por metro de arista nueva; sin tinta, el trazo se corta ahí.
+2. **`MapSheetRaster`** (C# puro): búfer `Color32[]` de 512×512 con papel, trazos gruesos por sellos y
+   discontinuos para lo viejo. Testeable sin Unity (sólo `Color32`/`Mathf`, como el arnés ya admite).
+3. **`MapNotebookView`** (`MonoBehaviour`): `N` abre/cierra, libera el cursor, `RawImage` con la hoja,
+   pestañas de hoja, «Coger hoja» y «Dibujar», barra de tinta. El dibujo se anima pintando N trazos por frame
+   (≈ 3 s como mucho). **Quieto mientras dibuja:** desactiva un `Behaviour` configurable (en la escena de
+   playtest, el `Wg3TestPlayer`) sin tocar código de WG3.
+4. **Creador de escena**: añade `MapNotebookView` al objeto `MapMemory` enlazado al muestreador y al jugador.
+
+### 3.4 Tests EditMode (también en `tools/dev/headless-tests` si no tocan UnityEngine)
+
+| Test | Qué fija |
+|---|---|
+| `AWallNextToRememberedFloorBecomesAnEdge` | Arista pared↔suelo, y ninguna sin suelo al lado |
+| `BorderWallsOfTheNeighbourChunkCloseTheSheet` | `marginCells` cierra los bordes |
+| `CollinearEdgesMergeIntoOneStroke` | Fusión |
+| `DrawingTheSameMemoryTwiceCostsNothing` | Dedupe de aristas y tinta |
+| `OldMemoryDrawsShakyWithGaps` | Frescura |
+| `RunningOutOfInkCutsTheStroke` | Corte por tinta |
+| `SameMemorySameSeedSameDrawing` | Determinismo |
+| `StrokesComeOutInAStableOrder` | Orden estable |
+| `RasterPaintsTheStrokeAndNotBeyondItsWidth` | Raster |
+
+### 3.5 Commits
+
+1. `feat(mapping): trazos de hoja desde el recuerdo` — `MapMemory` (`marginCells`), `MapSheet`, `MapSheetStrokes` + tests.
+2. `feat(mapping): raster de la hoja` — `MapSheetRaster` + tests.
+3. `feat(mapping): libreta con N en la escena de playtest` — `MapNotebookView`, creador, escena regenerada.
+
+### 3.6 Hecho cuando
+
+1. Tests en verde (headless y dentro de Unity).
+2. En Play: tras andar, `N` → «Coger hoja» → «Dibujar» pinta la zona recorrida, no atraviesa paredes, lo viejo
+   sale tembloroso; dibujar dos veces seguidas no gasta más tinta; el jugador no se mueve mientras dibuja.
+3. Coste del dibujo medido y registrado en el log (`MAPSHEET strokes=… ms_build=… ms_raster=…`).
+
+### 3.7 Preguntas de playtest
+
+¿Dibujar quieto da tensión o pesa? ¿60 s de recuerdo es mucho o poco para llegar a dibujar? ¿Se entiende el
+dibujo a ese tamaño? ¿El temblor de lo viejo se lee como «esto no lo tengo claro»?
+
+### 3.8 Decisiones (cerradas por Joel, 2026-09-13)
+
+1. **Dibujar con clic** en el botón «Dibujar».
+2. **Hoja de 512×512 píxeles** para 50 m de zona (≈ 10 px por metro).
+3. **Dibujo de hasta ~3 s, quieto.**
+4. **Pulsar `N` o moverse a mitad cancela**, y lo ya trazado se queda.
+
+### 3.10 Resultado (2026-09-13)
+
+**Hecho, con playtest de Joel en `MappingPlaytest.unity`: «dibuja bien».**
+- En el tronco: `baf4cd12` trazos, `9646afc6` raster, `97edf5c9` libreta, `8f9bc6aa` escena.
+- Tests dentro de Unity: **21/21** (MapMemory 9, MapSheetStrokes 8, MapSheetRaster 3, Wg3MaterialsSerialization 1);
+  los mismos, salvo el último, también en `tools/dev/headless-tests`.
+- Log `MAPSHEET` de la prueba:
+  - Hoja 1: 10/10 trazos, `ms_build` 3,82 (primera llamada, incluye compilación en caliente), `ms_raster_max` 0,91,
+    tinta 1,00 → 0,70.
+  - Hoja 2: 10/14 trazos, `ms_build` 0,53, `ms_raster_max` 0,80, **terminó sin completar con tinta 0,17**: casi
+    seguro se agotó (el tramo siguiente costaba más de lo que quedaba). Un boli dio para ≈ 42 m de pared, cerca de
+    los 50 de diseño (`penCostPerMetre` 0,02).
+
+**Ajuste de Joel tras el playtest:** la tinta se acababa demasiado pronto → `penCostPerMetre` **0,02 → 0,002**
+(un boli ≈ 500 m de pared).
+
+**Respuestas de Joel a las preguntas de playtest (§3.7):**
+- Dibujar quieto: **se queda**, «mola, te hace pensar mucho».
+- 60 s de recuerdo: **perfecto**.
+- 5 m de visión: **bien por ahora**; 10 m queda como candidato a revisar con feedback de más jugadores.
+
+**Desvíos del plan:** panel IMGUI en vez de uGUI (sin `EventSystem` en la escena); la libreta abierta deja al
+jugador quieto también sin dibujar (el 45 % de velocidad llega con el jugador STP en P0.5); cerrar la libreta
+devuelve la mirada con `SendMessage("SetLooking")` al `Wg3TestPlayer`, sin tocar WG3.
+
+---
+
+## 4. P0.3 — Flechas de borde y «Ubicarme» (plan; Joel pidió aplicarlo, 2026-09-13)
+
+Diseño ya decidido en MAPPING-ROADMAP §3 (flechas de borde) y §3b (Ubicarme, D12 y D14: 70 % / 40 %, recuerdo
+reciente de 8 s). Sigue en `MappingPlaytest.unity`, local, sin red ni guardado.
+
+### 4.1 Qué se juega
+
+- **Flechas de borde.** Si en el recuerdo pasas andando de la zona de la hoja a otra (o cambias de planta), al
+  dibujar la hoja apunta una flecha a lápiz en el borde por donde saliste (o un peldaño si fue de planta), y guarda
+  el enlace a la zona vecina. Una por vecina.
+- **«Ubicarme».** Botón de la libreta. Compara lo que viste en los últimos 8 s con las paredes DIBUJADAS de cada
+  hoja de tu planta: ≥ 70 % → círculo pequeño «estás aquí» en esa hoja, que se abre sola; 40–70 % → círculo grande
+  discontinuo; < 40 % → «no reconoces este sitio: en tu mapa está en blanco» y botón «Coger hoja y mapear aquí».
+  Con menos de 10 paredes vistas no hay veredicto.
+
+### 4.2 Diseño
+
+1. **`MapMemory`**: cada muestra guarda la celda del JUGADOR (además de su planta); `Crossings` devuelve los pasos
+   entre zonas de muestras consecutivas. `Consume` deja de BORRAR: marca, y las consultas normales lo saltan, pero
+   el reconocimiento lo sigue viendo (si no, justo después de dibujar no te reconocerías). `CellsInZone` gana
+   `maxAgeSeconds`.
+2. **`MapSheet`**: `Links` (zona vecina, lado, posición local) y `Marks` («estás aquí» seguro o dudoso), en orden
+   de alta.
+3. **`MapSheetStrokeBuilder`**: `AddLinks(sheet, memory)` a partir de `Crossings`; `RecentEdges` extrae las aristas
+   de los últimos N segundos con la misma regla que el dibujo, sin descontar lo ya dibujado, y **`Recognize`**
+   devuelve la fracción que ya está en la hoja.
+4. **`MapSheetRaster`**: flecha (asta + punta) o peldaño a lápiz gris; círculo «estás aquí» con la tinta del boli.
+5. **`MapNotebookView`**: botón «Ubicarme», resultado y «Coger hoja y mapear aquí»; log `MAPFIX`.
+
+### 4.3 Tests
+
+| Test | Qué fija |
+|---|---|
+| `EachSampleRemembersWhereThePlayerStood` / `CrossingIntoTheNextChunkIsReported` | Celda del jugador y cruces |
+| `ConsumedCellsStillCountForRecognition` | Consumir marca, no borra |
+| `CrossingTheBorderAddsOneArrowOnThatSide` | Flecha, lado y posición; una por vecina |
+| `ChangingStoreyAddsAStairLink` | Enlace de planta |
+| `AWellDrawnSheetIsRecognised` / `ABlankZoneIsNotRecognised` | ≥ 70 % y 0 % |
+| `AMovedChunkNoLongerMatches` | Displacement sin código: otra geometría, puntuación baja |
+| `TooLittleSeenGivesNoVerdict` | < 10 paredes |
+| `ArrowsAndHereMarksArePainted` | Raster |
+
+### 4.4 Commits
+
+1. `feat(mapping): el recuerdo sabe dónde estabas y qué cruzaste` — `MapMemory` + tests.
+2. `feat(mapping): flechas de borde y reconocimiento` — `MapSheet`, builder + tests.
+3. `feat(mapping): Ubicarme en la libreta` — raster, vista, escena.
+
+### 4.5 Feedback de playtest (Joel, 2026-09-13)
+
+- Trazo a mano: «mejoró».
+- **Lo que cuesta es orientarse.** Pedido: al ubicarte, una **cruceta** encima de la hoja que marque dónde estás y
+  luego desaparezca. Hecho en la vista: no es tinta ni se guarda en la hoja; roja, parpadea el primer segundo y se
+  desvanece a los `crosshairSeconds` = 4 s. El círculo de tinta sigue quedando.
+- Candidato abierto (sin pedir): marcar también hacia dónde miras, porque saber el punto no dice el rumbo.
+- **La hoja no gira** (ROADMAP D23): ni sola ni a mano. Descartado.
+- Propuesta: ver más lejos, 20 m o el cono de la mirada (§4.6).
+
+### 4.6 P0.3b — Ver más lejos (plan, pendiente de Joel)
+
+Hoy: disco de 5 m, una `OverlapBox` por celda de 0,5 m y línea de visión sobre esa rejilla (0,15 ms/muestra).
+
+| Opción | Cómo | Coste estimado | Pega |
+|---|---|---|---|
+| A. Disco de 20 m | Lo de hoy con `radiusM = 20` | ~5 000 cajas + visión O(r³): **~3–5 ms cada 0,5 s**; búfer ×16 (~6 MB) | Caro, y ves lo de detrás de ti |
+| **B. Cono de rayos (recomendada)** | Disco de 5 m de hoy (lo que tienes al lado, también detrás) **+ abanico de ~90 rayos a 1,1 m de altura, 20 m, en el ángulo de la cámara** (~90°). Cada rayo: celdas hasta el impacto = suelo, la del impacto = pared | ~90 `Raycast` ≈ **0,1–0,2 ms**; ~1 500 celdas/muestra | Una mesa baja no corta el rayo; el borde de una pared lejana sale a trozos (1° a 20 m ≈ 0,35 m, cabe en una celda) |
+
+La línea de visión la da el propio rayo. `MapMemory` no cambia (recibe celdas); cambia el muestreador y sube
+`MaxCellsPerSample`. Radio y ángulo quedan en el Inspector. Test EditMode: el abanico puro (dado el impacto de cada
+rayo, qué celdas salen) sin Unity; el `Raycast` se mide en Play (`MAPMEM`). Un commit (~150 líneas).
+
+### 4.7 P0.4 — Plano `M` de la base (plan, pendiente de Joel)
+
+Diseño en ROADMAP §7b (D13, D15). Local, en `MappingPlaytest.unity`, sin guardado. Fuera: conflictos de displacement
+y plano de bolsillo (M8, después del playtest).
+
+**Qué se juega.**
+- **La base** es la zona (chunk y planta) donde apareces. `M` dentro de ella abre el plano; fuera: «sin plano
+  encima, fuera de la base `M` no abre nada» (D15).
+- **Colocación solo por lo demostrado (D13).** La zona de la base se coloca siempre; otra zona se coloca si una hoja
+  de una zona YA colocada tiene flecha hacia ella (o al revés). Lo que no conecta sale en el margen, «por colocar».
+  La posición en el tablero es la de verdad: el enlace decide SI sale, no dónde.
+- **Pasar a limpio** (botón del plano, solo en la base): la hoja abierta en la libreta se convierte en su versión
+  limpia: paredes rectas fusionadas, tinta negra fina, sin temblor, con sus flechas. Gasta un folio (contador), tinta
+  y 5 s quieto (se cancela como dibujar). Una limpia nueva de la misma zona tapa a la anterior, que se archiva.
+- **Tres capas** por zona: **nada** (blanco con trama «sin mapear»), **borrador** (la hoja de la libreta, translúcida
+  con su tinta) y **limpia** (opaca, encima). Un tablero por planta, con pestañas. La cruceta de «Ubicarme» y el
+  «estás aquí» (30 s) salen también en el plano.
+
+**Diseño.**
+1. `MapAtlas` (puro): base, limpias por zona con archivo, `Place(sheets)` en anchura desde la base por `Links` de
+   borradores y limpias, orden estable (regla 13). `CleanCopy(sheet)` genera la limpia a partir de las aristas de la
+   hoja.
+2. `MapSheetRaster`: estilo limpio (sin presión ni borrón) y `DrawAtlas` que compone losetas por capa (128 px por zona,
+   desplazable).
+3. `MapAtlasView` (IMGUI): `M`, pestañas de planta, arrastrar para mover, «Pasar a limpio»; log `MAPATLAS` con ms de
+   composición.
+4. Escena: la base se fija en el primer muestreo; campos nuevos con valor por defecto, sin regenerar si no hace falta.
+
+**Tests.** `TheBaseIsAlwaysPlaced`, `ASheetWithoutLinkIsNeverPlaced`, `APlacedLinkPlacesTheNeighbour` (y en cadena),
+`ANewCleanCoversAndArchivesTheOld`, `CleanCopyKeepsEdgesAndDropsJitter`, `PlacementOrderIsStable`,
+`CleanLayerPaintsOverDraft` (raster).
+
+**Commits (~550 líneas → tres).** `MapAtlas` + tests; raster limpio y tablero + tests; vista `M` + escena.
+
+**Preguntas de playtest.** ¿Volver a la base a ordenar el mapa apetece o molesta? ¿Ver el tablero ayuda a orientarse
+más que la hoja suelta?
+
+### 3.9 El libro de supervivencia de STP: modelo base para la libreta (Joel, 2026-09-13)
+
+Joel propone aprovechar el libro de crafteo/construcción que ya existe como modelo para la libreta, y más adelante
+para carpeta y archivador. Verificado en el vendor:
+
+| Pieza | Dónde | Qué da |
+|---|---|---|
+| Wieldable en las manos | `STP/Prefabs/Wieldables/STP_Wieldable_SurvivalBook.prefab` (`WieldableTool`) | Se sostiene en 1P; equipar ≈ 1,35 s, enfundar con la misma tecla |
+| Interfaz sobre el libro | `SurvivalBookUI : CharacterUIBehaviour` (`STP/Code/Runtime/UI/Building/SurvivalBook/`), prefab `STP_UI_SurvivalBook` con **dos Canvas en World Space** (menú + contenido: `Building`, `Fire`, `Shelter`, `Storage`, `Workstations`) | Páginas/secciones con selección, Escape cierra (`PushEscapeCallback`) |
+| Input propio | `FPSSurvivalBookInput` + contexto `STP/Data/Input/STP_SurvivalBook.asset`; acción `Book` | Toggle equipar/enfundar |
+| Ambiente de lectura | Perfil `STP/Data/PostProcessing/STP_SurvivalBook.asset` (profundidad de campo), audio `STP_Book_FlipPage` | Leer se siente como leer |
+| Objeto del mundo | `STP/Prefabs/Items/STP_Pickup_SurvivalBook.prefab` | Se encuentra y se recoge |
+
+**Teclas del input del vendor (`FPS_InputActions.inputactions`): `B` = libro, `N` = modo de disparo (`FireMode`),
+`M` libre.** Nuestro código no usa ni reasigna el libro.
+
+**Consecuencias para el plan:**
+- **P0.2 no cambia:** la escena de playtest usa `Wg3TestPlayer`, no el personaje STP, así que el libro no está
+  disponible allí. Se prototipa la LÓGICA (recuerdo → trazos → raster) con el panel en pantalla, que es lo que se
+  va a jugar para contestar las preguntas de §3.7. La lógica pura sirve tal cual para la versión diegética.
+- **Paso nuevo P0.5 — Libreta diegética** (tras P0.4): calcar el patrón del libro sin editar el vendor (wieldable
+  propio `BR_Wieldable_Libreta`, UI World Space sobre las páginas con la textura de `MapSheetRaster`, contexto de
+  input propio, profundidad de campo y sonido de página), en una escena con el jugador STP. **Regla 14 / ADR-077
+  enm. 2: un Canvas colgado de los brazos 1P warpea (`BR_UIWarp`)**, y el puntero sobre UI warpeada no casa: hay que
+  medirlo antes de diseñar clics sobre la hoja.
+- **Teclas (a decidir en P0.5):** `M` = mapa como «interfaz» (libre). `N` = libreta choca con `FireMode` del
+  vendor. Opciones: (a) reasignar `FireMode` en nuestra copia del mapa de input; (b) la libreta en `B` como pestaña
+  del libro («Qué sabes | Notas»), que además encaja con la fila «Libro» de INVENTORY-ROADMAP (armonía del HUD).

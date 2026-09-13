@@ -15,7 +15,7 @@ MonoBehaviour:
   _id: 383745530
   _parentGroup: {fileID: 11400000, guid: cf5dd5a63069e21458615566eb5d16e7, type: 2}
   _icon: {fileID: 21300000, guid: 091ba8bd87f510e4cb5df256c9d0614f, type: 3}
-  _description: A work jacket, worn over the shirt.
+  _description: "A work jacket, worn over the shirt.\n4 pockets \xB7 20% protection"
   _longDescription: 
   _pickup: {fileID: 4171472323112110133, guid: bbcd3282fc8354347aa12a74c880fc9e, type: 3}
   _stackPickup: {fileID: 5039848590447293739, guid: 60f7bf66f2292d34d86470c5b3928e92, type: 3}
@@ -27,7 +27,30 @@ MonoBehaviour:
   _actions:
   - {fileID: 11400000, guid: cfea35ee23f1fda47a276a7b208543f9, type: 2}
   _properties: []
-  _data: []
+  _data:
+  - rid: 3885882211262267634
   references:
     version: 2
-    RefIds: []
+    RefIds:
+    - rid: 3885882211262267634
+      type: {class: GarmentZonesData, ns: BackroomsSurvival.Gameplay.Body, asm: BackroomsSurvival}
+      data:
+        _zones:
+        - Zone: 1
+          Protection: 0.2
+          PocketSlots: 2
+        - Zone: 2
+          Protection: 0.2
+          PocketSlots: 2
+        - Zone: 3
+          Protection: 0.2
+          PocketSlots: 0
+        - Zone: 4
+          Protection: 0.2
+          PocketSlots: 0
+        - Zone: 5
+          Protection: 0.2
+          PocketSlots: 0
+        - Zone: 6
+          Protection: 0.2
+          PocketSlots: 0

@@ -24,7 +24,9 @@ namespace BackroomsSurvival.Gameplay
             //EnsureComponent<ItemRenderer>(); // items v1 desactivados: cubo placeholder sin arte propio.
             EnsureComponent<WorldInteractor>();
             //EnsureComponent<SanityEffects>();
-            EnsureComponent<TeleportationVFX>();
+            // Desactivado (Joel, 13-09): el destello y la estática de cada chunk_teleported saltaban
+            // cada pocos segundos y cansaban. ADR del telegraph ya lo descarta como overlay de cámara.
+            //EnsureComponent<TeleportationVFX>();
             EnsureComponent<MinimapRenderer>();
             EnsureComponent<PoiDebugHud>();
             // PLACEHOLDER (2026-08-15): reloj de muñeca diegético, tecla T. Aditivo — las barras

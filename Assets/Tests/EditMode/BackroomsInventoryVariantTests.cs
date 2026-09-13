@@ -49,9 +49,42 @@ namespace BackroomsSurvival.Tests
             Assert.IsTrue(File.Exists(ScenePath), $"falta '{ScenePath}': Backrooms/UI/Build Inventory Test Scene");
             string scene = File.ReadAllText(ScenePath);
             Assert.IsTrue(scene.Contains($"guid: {guid}"), "la escena de pruebas no apunta a BR_UI_Player");
-            // Mientras dura la migración, Showcase conserva el inventario del vendor (Joel, 2026-09-13).
+            // Showcase recibe la variante por el enganche, NUNCA editando su YAML: es del vendor y un reimport la pisa.
             Assert.IsFalse(File.ReadAllText(ShowcasePath).Contains($"guid: {guid}"),
-                "STP_Showcase apunta a la variante: la migración aún no ha terminado, tiene que seguir con el vendor");
+                "STP_Showcase apunta a la variante en su YAML: tiene que entrar por BackroomsShowcasePlayerUi");
+        }
+
+        [Test]
+        public void ShowcaseRecibeLaVariantePorElEnganche()
+        {
+            var hook = Resources.Load<BackroomsShowcasePlayerUi>(BackroomsShowcasePlayerUi.ResourcePath);
+            Assert.IsNotNull(hook, $"falta Resources/{BackroomsShowcasePlayerUi.ResourcePath}");
+            Assert.IsNotNull(hook.PlayerUIPrefab, "el enganche no apunta a ninguna PlayerUI");
+            Assert.AreEqual(VariantPath, AssetDatabase.GetAssetPath(hook.PlayerUIPrefab));
+
+            Assert.IsTrue(BackroomsShowcasePlayerUi.ShouldInstall("STP_Showcase", false));
+            Assert.IsFalse(BackroomsShowcasePlayerUi.ShouldInstall("STP_Showcase", true), "ya hay PlayerUI: no se duplica");
+            Assert.IsFalse(BackroomsShowcasePlayerUi.ShouldInstall("BR_InventoryTest", false), "la escena de pruebas ya la trae");
+            Assert.IsFalse(BackroomsShowcasePlayerUi.ShouldInstall("MainMenu", false));
+        }
+
+        [Test]
+        public void SinContenedorElPanelSeEscondeYLosHuecosNoSeCapan()
+        {
+            // Cada panel que la variante ata por nombre a un contenedor de prototipo tiene que estar en la lista del escondite.
+            foreach (System.Text.RegularExpressions.Match m in
+                     System.Text.RegularExpressions.Regex.Matches(File.ReadAllText(VariantPath), @"_containerName: (\w+)"))
+                CollectionAssert.Contains(BackroomsHideUnboundContainers.PrototypeContainers, m.Groups[1].Value,
+                    $"el panel '{m.Groups[1].Value}' de la variante no se escondería en STP_Showcase");
+
+            string[] names = BackroomsHideUnboundContainers.PrototypeContainers;
+            Assert.IsTrue(BackroomsHideUnboundContainers.ShouldHide("Back", names, _ => false));
+            Assert.IsFalse(BackroomsHideUnboundContainers.ShouldHide("Back", names, _ => true), "la escena de pruebas sí lo tiene");
+            Assert.IsFalse(BackroomsHideUnboundContainers.ShouldHide("Storage", names, _ => false), "Alrededor se ata a contenedores ajenos");
+            Assert.IsFalse(BackroomsHideUnboundContainers.ShouldHide("", names, _ => false));
+
+            Assert.AreEqual(6, BackroomsSurvival.Wearables.BackroomsWornSlotsUI.VisibleSlots(true, 2, 0, 6), "sin cintura: los 6 de la funda");
+            Assert.AreEqual(4, BackroomsSurvival.Wearables.BackroomsWornSlotsUI.VisibleSlots(false, 2, 2, 8), "con cintura: manos + cinturón");
         }
 
         [Test]

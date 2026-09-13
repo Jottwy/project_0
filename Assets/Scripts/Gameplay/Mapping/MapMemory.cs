@@ -37,6 +37,28 @@ namespace BackroomsSurvival.Gameplay.Mapping
         public override string ToString() => $"({ChunkX},{ChunkZ}) planta {Storey}";
     }
 
+    /// <summary>
+    /// P0.3 — el jugador pasó de una zona a otra entre dos muestras seguidas (cruzando un borde de chunk o
+    /// cambiando de planta). <see cref="FromCellX"/>/<see cref="FromCellZ"/> es la celda donde estaba justo antes.
+    /// </summary>
+    public readonly struct MapCrossing
+    {
+        public readonly MapZone From;
+        public readonly MapZone To;
+        public readonly int FromCellX;
+        public readonly int FromCellZ;
+        public readonly double Time;
+
+        public MapCrossing(MapZone from, MapZone to, int fromCellX, int fromCellZ, double time)
+        {
+            From = from;
+            To = to;
+            FromCellX = fromCellX;
+            FromCellZ = fromCellZ;
+            Time = time;
+        }
+    }
+
     /// <summary>Una celda tal como la recuerda el jugador: dónde, qué era y hace cuánto la vio por última vez.</summary>
     public readonly struct RememberedCell
     {
@@ -72,13 +94,20 @@ namespace BackroomsSurvival.Gameplay.Mapping
     /// </remarks>
     public sealed class MapMemory
     {
-        /// <summary>Marca de celda ya pasada al papel (<see cref="Consume"/>).</summary>
-        private const byte ConsumedKind = byte.MaxValue;
+        /// <summary>
+        /// Bit de celda ya pasada al papel (<see cref="Consume"/>). MARCA, no borra: el dibujo la salta para no
+        /// cobrarla dos veces, pero el reconocimiento la sigue viendo, o justo después de dibujar no te reconocerías.
+        /// </summary>
+        private const byte ConsumedFlag = 0x80;
+
+        /// <summary>Celda del jugador desconocida (muestras añadidas sin ella).</summary>
+        private const int NoPlayerCell = int.MinValue;
 
         public readonly double CellSizeM;
         public readonly double ChunkSizeM;
         public readonly double StoreyM;
         public readonly double MemorySeconds;
+        public readonly double SampleSeconds;
         public readonly int Capacity;
         public readonly int MaxCellsPerSample;
 
@@ -87,6 +116,8 @@ namespace BackroomsSurvival.Gameplay.Mapping
         // Muestra i: celdas en [i * MaxCellsPerSample, i * MaxCellsPerSample + _count[i]).
         private readonly double[] _time;
         private readonly int[] _storey;
+        private readonly int[] _playerX;
+        private readonly int[] _playerZ;
         private readonly int[] _count;
         private readonly int[] _cellX;
         private readonly int[] _cellZ;
@@ -111,6 +142,7 @@ namespace BackroomsSurvival.Gameplay.Mapping
             ChunkSizeM = chunkSizeM;
             StoreyM = storeyM;
             MemorySeconds = memorySeconds;
+            SampleSeconds = sampleSeconds;
             MaxCellsPerSample = maxCellsPerSample;
 
             _cellsPerChunk = (int)Math.Round(ChunkSizeM / CellSizeM);
@@ -122,6 +154,8 @@ namespace BackroomsSurvival.Gameplay.Mapping
 
             _time = new double[Capacity];
             _storey = new int[Capacity];
+            _playerX = new int[Capacity];
+            _playerZ = new int[Capacity];
             _count = new int[Capacity];
             _cellX = new int[Capacity * maxCellsPerSample];
             _cellZ = new int[Capacity * maxCellsPerSample];
@@ -130,6 +164,9 @@ namespace BackroomsSurvival.Gameplay.Mapping
 
         /// <summary>Muestras vivas en el búfer.</summary>
         public int SampleCount => _size;
+
+        /// <summary>Celdas por lado de chunk.</summary>
+        public int CellsPerChunk => _cellsPerChunk;
 
         public int CellOf(double metres) => (int)Math.Floor(metres / CellSizeM);
 
@@ -145,7 +182,15 @@ namespace BackroomsSurvival.Gameplay.Mapping
         /// Guarda lo visto en <paramref name="time"/>. Olvida antes lo que ya pasó de
         /// <see cref="MemorySeconds"/>.
         /// </summary>
-        public void AddSample(double time, int storey, int[] cellX, int[] cellZ, MapCellKind[] kinds, int count)
+        public void AddSample(double time, int storey, int[] cellX, int[] cellZ, MapCellKind[] kinds, int count) =>
+            AddSample(time, storey, NoPlayerCell, NoPlayerCell, cellX, cellZ, kinds, count);
+
+        /// <summary>
+        /// Como la otra, y además guarda la celda donde estaba el JUGADOR: de ahí salen los cruces entre zonas
+        /// (<see cref="Crossings"/>) y las flechas de borde de la hoja.
+        /// </summary>
+        public void AddSample(double time, int storey, int playerCellX, int playerCellZ,
+            int[] cellX, int[] cellZ, MapCellKind[] kinds, int count)
         {
             if (count < 0 || count > MaxCellsPerSample)
                 throw new ArgumentOutOfRangeException(nameof(count), $"{count} celdas; el máximo por muestra es {MaxCellsPerSample}");
@@ -155,6 +200,8 @@ namespace BackroomsSurvival.Gameplay.Mapping
             int slot = _head;
             _time[slot] = time;
             _storey[slot] = storey;
+            _playerX[slot] = playerCellX;
+            _playerZ[slot] = playerCellZ;
             _count[slot] = count;
             int offset = slot * MaxCellsPerSample;
             for (int i = 0; i < count; i++)
@@ -179,28 +226,36 @@ namespace BackroomsSurvival.Gameplay.Mapping
         /// Lo que se recuerda de <paramref name="zone"/> en <paramref name="now"/>: una entrada por
         /// celda, con la edad y el tipo de la vez MÁS RECIENTE que se vio. Rellena
         /// <paramref name="results"/> (lo vacía antes), ordenado por Z y luego X.
+        /// Con <paramref name="wallMarginCells"/> &gt; 0 también devuelve las PAREDES hasta esa distancia fuera
+        /// del chunk: el muro de borde es del vecino y sin él la hoja quedaría abierta por los cantos.
         /// </summary>
-        public void CellsInZone(MapZone zone, double now, List<RememberedCell> results)
+        public void CellsInZone(MapZone zone, double now, List<RememberedCell> results, int wallMarginCells = 0,
+            double maxAgeSeconds = double.MaxValue, bool includeConsumed = false)
         {
             results.Clear();
             _seen.Clear();
+            double maxAge = Math.Min(maxAgeSeconds, MemorySeconds);
 
             // De la más nueva a la más vieja: la primera vez que aparece una celda es la más fresca.
             for (int n = 0; n < _size; n++)
             {
                 int slot = (_head - 1 - n + Capacity) % Capacity;
                 double age = now - _time[slot];
-                if (age > MemorySeconds) break;
+                if (age > maxAge) break;
                 if (_storey[slot] != zone.Storey) continue;
 
                 int offset = slot * MaxCellsPerSample;
                 for (int i = 0; i < _count[slot]; i++)
                 {
-                    byte kind = _kind[offset + i];
-                    if (kind == ConsumedKind) continue;
+                    byte raw = _kind[offset + i];
+                    if ((raw & ConsumedFlag) != 0 && !includeConsumed) continue;
+                    byte kind = (byte)(raw & ~ConsumedFlag);
                     int x = _cellX[offset + i];
                     int z = _cellZ[offset + i];
-                    if (!InZone(x, z, zone)) continue;
+                    bool inside = kind == (byte)MapCellKind.Wall
+                        ? InZoneWithMargin(x, z, zone, wallMarginCells)
+                        : InZone(x, z, zone);
+                    if (!inside) continue;
                     if (!_seen.Add(Key(x, z))) continue;
                     results.Add(new RememberedCell(x, z, (MapCellKind)kind, age));
                 }
@@ -221,8 +276,29 @@ namespace BackroomsSurvival.Gameplay.Mapping
                 for (int i = 0; i < _count[slot]; i++)
                 {
                     if (InZone(_cellX[offset + i], _cellZ[offset + i], zone))
-                        _kind[offset + i] = ConsumedKind;
+                        _kind[offset + i] |= ConsumedFlag;
                 }
+            }
+        }
+
+        /// <summary>
+        /// Los pasos de una zona a otra entre muestras SEGUIDAS (separadas como mucho dos periodos de muestreo),
+        /// del más viejo al más nuevo. Las muestras sin celda de jugador no cuentan.
+        /// </summary>
+        public void Crossings(List<MapCrossing> results)
+        {
+            results.Clear();
+            for (int n = _size - 1; n > 0; n--)
+            {
+                int older = (_head - 1 - n + Capacity) % Capacity;
+                int newer = (_head - n + Capacity) % Capacity;
+                if (_playerX[older] == NoPlayerCell || _playerX[newer] == NoPlayerCell) continue;
+                if (_time[newer] - _time[older] > SampleSeconds * 2.0 + 1e-6) continue;
+
+                MapZone from = ZoneOfCell(_playerX[older], _playerZ[older], _storey[older]);
+                MapZone to = ZoneOfCell(_playerX[newer], _playerZ[newer], _storey[newer]);
+                if (from.Equals(to)) continue;
+                results.Add(new MapCrossing(from, to, _playerX[older], _playerZ[older], _time[newer]));
             }
         }
 
@@ -264,6 +340,14 @@ namespace BackroomsSurvival.Gameplay.Mapping
 
         private bool InZone(int x, int z, MapZone zone) =>
             FloorDiv(x, _cellsPerChunk) == zone.ChunkX && FloorDiv(z, _cellsPerChunk) == zone.ChunkZ;
+
+        private bool InZoneWithMargin(int x, int z, MapZone zone, int margin)
+        {
+            int x0 = zone.ChunkX * _cellsPerChunk;
+            int z0 = zone.ChunkZ * _cellsPerChunk;
+            return x >= x0 - margin && x < x0 + _cellsPerChunk + margin &&
+                   z >= z0 - margin && z < z0 + _cellsPerChunk + margin;
+        }
 
         /// <summary>Recorre las celdas intermedias del segmento; la de destino no cuenta, así una pared es visible.</summary>
         private static bool HasLineOfSight(bool[] occupied, int side, int radiusCells, int dx, int dz)

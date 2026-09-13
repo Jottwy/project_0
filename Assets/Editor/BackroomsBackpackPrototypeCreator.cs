@@ -1,5 +1,6 @@
 #if UNITY_EDITOR
 using System.IO;
+using BackroomsSurvival.Gameplay.Body;
 using BackroomsSurvival.Wearables;
 using PolymindGames;
 using PolymindGames.InventorySystem;
@@ -36,6 +37,11 @@ namespace BackroomsSurvival.EditorTools
         public const string GlovesContainer = "Gloves";
         public const string FaceContainer = "Face";
 
+        // ADR-149 enm. 1: un contenedor de bolsillos por hueco de prenda con bolsillos (índices 12 y 13 en la escena).
+        public const string OuterPocketsContainer = "OuterPockets";
+        public const string LegsPocketsContainer = "LegsPockets";
+        public const int PocketContainerSlots = 8;
+
         public const string TagPath = "Assets/Resources/Definitions/ItemTag/BR_Back Equipment.asset";
         public const string WaistTagPath = "Assets/Resources/Definitions/ItemTag/BR_Waist Equipment.asset";
         public const string BackRestrictionPath = "Assets/Data/Inventory/BR_Restriction_BackEquipment.asset";
@@ -51,6 +57,14 @@ namespace BackroomsSurvival.EditorTools
         // El tag de pies es el del vendor: los zapatos van en su hueco Feet. Solo se lee.
         public const string FeetTagPath = "Assets/PolymindGames/STP/Data/Resources/Definitions/ItemTag/STP_Feet Equipment.asset";
         private const string VendorItemFolder = "Assets/PolymindGames/STP/Data/Resources/Definitions/Item";
+        public const string LegsTagPath = "Assets/PolymindGames/STP/Data/Resources/Definitions/ItemTag/STP_Legs Equipment.asset";
+        public const string OuterPocketsRestrictionPath = "Assets/Data/Inventory/BR_Restriction_OuterPockets.asset";
+        public const string LegsPocketsRestrictionPath = "Assets/Data/Inventory/BR_Restriction_LegsPockets.asset";
+        public const string NeedlePath = "Assets/Resources/Definitions/Item/BR_Sewing Needle.asset";
+        public const string ThreadPath = "Assets/Resources/Definitions/Item/BR_Thread.asset";
+        public const string TrousersPath = "Assets/Resources/Definitions/Item/BR_Work Trousers.asset";
+        public const string VendorClothPath = VendorItemFolder + "/STP_Cloth.asset";
+        public const string VendorTapePath = VendorItemFolder + "/STP_Duct Tape.asset";
         private const string DonorPath = "Assets/PolymindGames/STP/Data/Resources/Definitions/Item/STP_White T-Shirt.asset";
         private const string BeltArtDonorPath = "Assets/PolymindGames/STP/Data/Resources/Definitions/Item/STP_Rope.asset";
         private const string ItemFolder = "Assets/Resources/Definitions/Item";
@@ -89,10 +103,13 @@ namespace BackroomsSurvival.EditorTools
         {
             public readonly string Asset, Description, ArtDonor, TagPath;
             public readonly float Weight, SpeedPct;
+            public readonly GarmentZone[] Zones;
 
-            public Garment(string asset, string description, string artDonor, string tagPath, float weight, float speedPct)
+            public Garment(string asset, string description, string artDonor, string tagPath, float weight, float speedPct,
+                params GarmentZone[] zones)
             {
                 Asset = asset; Description = description; ArtDonor = artDonor; TagPath = tagPath; Weight = weight; SpeedPct = speedPct;
+                Zones = zones ?? new GarmentZone[0];
             }
 
             public string Path => $"{ItemFolder}/{Asset}.asset";
@@ -101,11 +118,18 @@ namespace BackroomsSurvival.EditorTools
         // Pieza 6 y modificadores por prenda: placeholders con icono y pickup de un donante del vendor. Cifras sin balancear.
         public static readonly Garment[] Garments =
         {
-            new Garment("BR_Work Jacket", "A work jacket, worn over the shirt.", "STP_Shirt", OuterTagPath, 1.2f, 0f),
-            new Garment("BR_Work Gloves", "A pair of leather work gloves.", "STP_Leather", HandsTagPath, 0.2f, 0f),
+            new Garment("BR_Work Jacket", "A work jacket, worn over the shirt.", "STP_Shirt", OuterTagPath, 1.2f, 0f,
+                new GarmentZone(BodyZone.Chest, 0.2f, 2), new GarmentZone(BodyZone.Abdomen, 0.2f, 2),
+                new GarmentZone(BodyZone.UpperArmL, 0.2f), new GarmentZone(BodyZone.UpperArmR, 0.2f),
+                new GarmentZone(BodyZone.ForearmL, 0.2f), new GarmentZone(BodyZone.ForearmR, 0.2f)),
+            new Garment("BR_Work Gloves", "A pair of leather work gloves.", "STP_Leather", HandsTagPath, 0.2f, 0f,
+                new GarmentZone(BodyZone.HandL, 0.3f), new GarmentZone(BodyZone.HandR, 0.3f)),
             new Garment("BR_Dust Mask", "A paper dust mask.", "STP_Cloth", FaceTagPath, 0.05f, 0f),
             new Garment("BR_Running Shoes", "Light running shoes.", "STP_Boots", FeetTagPath, 0.6f, 8f),
             new Garment("BR_Work Boots", "Heavy work boots.", "STP_Boots", FeetTagPath, 1.4f, -3f),
+            new Garment("BR_Work Trousers", "Canvas work trousers.", "STP_Jeans", LegsTagPath, 0.9f, 0f,
+                new GarmentZone(BodyZone.ThighL, 0.15f, 1), new GarmentZone(BodyZone.ThighR, 0.15f, 1),
+                new GarmentZone(BodyZone.ShinL, 0.15f), new GarmentZone(BodyZone.ShinR, 0.15f)),
         };
 
         [MenuItem("Backrooms/Inventory/Create Backpack Prototype")]
@@ -170,12 +194,56 @@ namespace BackroomsSurvival.EditorTools
                 var tag = AssetDatabase.LoadAssetAtPath<ItemTagDefinition>(garment.TagPath);
                 var artDonor = AssetDatabase.LoadAssetAtPath<ItemDefinition>($"{VendorItemFolder}/{garment.ArtDonor}.asset");
                 if (tag == null || artDonor == null) { Debug.LogError($"[Prendas] faltan tag o donante de {garment.Asset}"); continue; }
-                ItemData data = garment.SpeedPct != 0f ? new WearableStatData(garment.SpeedPct) : null;
-                result[i] = EnsureDefinition(garment.Path, WearableDescription.Describe(garment.Description, null, 0f, garment.SpeedPct), garment.Weight,
+                ItemData data = garment.SpeedPct != 0f ? new WearableStatData(garment.SpeedPct)
+                    : garment.Zones.Length > 0 ? new GarmentZonesData(garment.Zones) : null;
+                result[i] = EnsureDefinition(garment.Path, WearableDescription.Describe(garment.Description, GarmentSummary(garment.Zones), 0f, garment.SpeedPct), garment.Weight,
                     artDonor, actionDonor, tag, data);
             }
             Debug.Log($"[Prendas] pieza 6 lista: {result.Length} prendas.");
             return result;
+        }
+
+        private static string GarmentSummary(GarmentZone[] zones)
+        {
+            if (zones == null || zones.Length == 0) return null;
+            int pockets = 0;
+            float protection = 0f;
+            foreach (var zone in zones)
+            {
+                pockets += zone.PocketSlots;
+                protection = Mathf.Max(protection, zone.Protection);
+            }
+            string cover = $"{Mathf.RoundToInt(protection * 100f)}% protection";
+            return pockets > 0 ? $"{pockets} pockets · {cover}" : cover;
+        }
+
+        /// <summary>ADR-149 enm. 1: aguja e hilo propios y las restricciones de los bolsillos. Cinta y tela son del vendor.</summary>
+        public static (ItemDefinition needle, ItemDefinition thread) EnsureTailoring()
+        {
+            EnsurePocketRestriction(OuterPocketsRestrictionPath, OuterContainer);
+            EnsurePocketRestriction(LegsPocketsRestrictionPath, "Legs");
+            var needleArt = AssetDatabase.LoadAssetAtPath<ItemDefinition>($"{VendorItemFolder}/STP_Metal Shard.asset");
+            var threadArt = AssetDatabase.LoadAssetAtPath<ItemDefinition>($"{VendorItemFolder}/STP_Rope.asset");
+            if (needleArt == null || threadArt == null) { Debug.LogError("[Costura] faltan los donantes"); return (null, null); }
+            var needle = EnsureDefinition(NeedlePath, WearableDescription.Describe("A sewing needle.", "Not used up", 0f, 0f),
+                0.01f, needleArt, needleArt, null, null);
+            var thread = EnsureDefinition(ThreadPath, WearableDescription.Describe("A spool of thread.", "One per repair", 0f, 0f),
+                0.05f, threadArt, threadArt, null, null, 10);
+            return (needle, thread);
+        }
+
+        private static void EnsurePocketRestriction(string path, string owner)
+        {
+            var restriction = AssetDatabase.LoadAssetAtPath<GarmentPocketRestriction>(path);
+            if (restriction == null)
+            {
+                EnsureFolder(Path.GetDirectoryName(path));
+                restriction = GarmentPocketRestriction.Create(owner);
+                AssetDatabase.CreateAsset(restriction, path);
+            }
+            var so = new SerializedObject(restriction);
+            so.FindProperty("_ownerContainer").stringValue = owner;
+            so.ApplyModifiedPropertiesWithoutUndo();
         }
 
         public const string SplintPath = "Assets/Resources/Definitions/Item/BR_Splint.asset";
@@ -234,7 +302,7 @@ namespace BackroomsSurvival.EditorTools
                 new WearableCapacityData(spec.Slots, spec.MaxKg, spec.CarryBonusPct));
 
         private static ItemDefinition EnsureDefinition(string path, string description, float weight, ItemDefinition artDonor,
-            ItemDefinition actionDonor, ItemTagDefinition tag, ItemData itemData)
+            ItemDefinition actionDonor, ItemTagDefinition tag, ItemData itemData, int stackSize = 1)
         {
             var definition = AssetDatabase.LoadAssetAtPath<ItemDefinition>(path);
             bool created = definition == null;
@@ -255,7 +323,7 @@ namespace BackroomsSurvival.EditorTools
             to.FindProperty("_description").stringValue = description;
             to.FindProperty("_weight").floatValue = weight;
             // Invariante de la enm. 1: el vendor funde pilas comparando solo el id; una prenda nunca se apila.
-            to.FindProperty("_stackSize").intValue = 1;
+            to.FindProperty("_stackSize").intValue = stackSize;
             to.FindProperty("_tag._value").intValue = tag != null ? tag.Id : 0;
             var data = to.FindProperty("_data");
             data.arraySize = itemData != null ? 1 : 0;

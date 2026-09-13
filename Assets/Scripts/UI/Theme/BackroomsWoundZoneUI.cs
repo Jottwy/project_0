@@ -47,7 +47,7 @@ namespace BackroomsSurvival.UI
 
         private void Update()
         {
-            int raw = BackroomsBodyPrototype.Local.Raw(_zone);
+            int raw = BackroomsBodyPrototype.Local.Raw(_zone) | (GarmentState.Version << 8);
             if (raw == _shown) return;
             _shown = raw;
             Paint();
@@ -70,7 +70,9 @@ namespace BackroomsSurvival.UI
             if (_label != null)
             {
                 string state = Describe(injury, body.IsBandaged(_zone), body.IsSplinted(_zone));
-                _label.text = state.Length == 0 ? BodyZones.Label(_zone) : $"{BodyZones.Label(_zone)}\n{state}";
+                string text = state.Length == 0 ? BodyZones.Label(_zone) : $"{BodyZones.Label(_zone)}\n{state}";
+                string cloth = BackroomsGarmentPrototype.Instance != null ? BackroomsGarmentPrototype.Instance.Describe(_zone) : string.Empty;
+                _label.text = cloth.Length == 0 ? text : $"{text}\n<size=85%>{cloth}</size>";
             }
         }
 
@@ -84,10 +86,16 @@ namespace BackroomsSurvival.UI
 
         public void OnPointerClick(PointerEventData eventData)
         {
-            if (eventData.button != PointerEventData.InputButton.Left) return;
-            string message = BackroomsBodyPrototype.Instance != null
-                ? BackroomsBodyPrototype.Instance.TryTreat(_zone)
-                : "Heridas: solo en la escena de pruebas";
+            string message;
+            if (eventData.button == PointerEventData.InputButton.Left)
+                message = BackroomsBodyPrototype.Instance != null
+                    ? BackroomsBodyPrototype.Instance.TryTreat(_zone)
+                    : "Heridas: solo en la escena de pruebas";
+            else if (eventData.button == PointerEventData.InputButton.Right)
+                message = BackroomsGarmentPrototype.Instance != null
+                    ? BackroomsGarmentPrototype.Instance.TryRepair(_zone)
+                    : "Ropa: solo en la escena de pruebas";
+            else return;
             if (_notice != null) _notice.text = message;
             _shown = -1;
         }

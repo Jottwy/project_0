@@ -1,0 +1,106 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: a80ed251287beef4586748727db91f7a, type: 3}
+  m_Name: BR_Wieldable_CrankFlashlight_Hands
+  m_EditorClassIdentifier: 
+  version: 1
+  wieldablePrefab: {fileID: 4889579101204757799, guid: 927675464de356842843e49cc1458a73, type: 3}
+  modelNodeName: BR_CrankFlashlightModel
+  gripMeshNodeName: Body
+  kind: 1
+  rightHand:
+    role: 4
+    alongAxis: 0.37
+    clockDegrees: -61
+    tiltDegrees: -10
+    indexTowardTip: 0
+    offsetMeters: {x: 0, y: 0, z: 0}
+    palmOffsetMeters: 0.011
+    weight: 1
+    fingers: 0
+    gripPartNodeName: 
+    gripPartAxis: {x: 0, y: 0, z: 0}
+    gripPartMinY01: 0
+    gripPartMaxY01: 1
+    referenceClipPath: 
+    referenceTime: 0
+    autoSearch: 0
+    searchAlongRange: 0.5
+    searchClockRange: 180
+    searchTiltRange: 20
+    resolved: 1
+    resolvedAlongAxis: 0.37
+    resolvedIndexTowardTip: 0
+    resolvedClockDegrees: -61
+    resolvedTiltDegrees: -10
+    resolvedPalmOffsetMeters: 0.011
+    resolvedCost: 4.5159707
+    resolvedShoulderShift: {x: 0, y: 0, z: 0}
+    resolvedPole: 1
+  leftHand:
+    role: 0
+    alongAxis: 0.36
+    clockDegrees: -151
+    tiltDegrees: -10
+    indexTowardTip: 0
+    offsetMeters: {x: 0, y: 0, z: 0}
+    palmOffsetMeters: 0
+    weight: 1
+    fingers: 0
+    gripPartNodeName: Crank
+    gripPartAxis: {x: 0, y: 0, z: 1}
+    gripPartMinY01: 0.75
+    gripPartMaxY01: 1
+    referenceClipPath: 
+    referenceTime: 0
+    autoSearch: 0
+    searchAlongRange: 0.5
+    searchClockRange: 180
+    searchTiltRange: 20
+    resolved: 1
+    resolvedAlongAxis: 0.36
+    resolvedIndexTowardTip: 0
+    resolvedClockDegrees: -151
+    resolvedTiltDegrees: -10
+    resolvedPalmOffsetMeters: 0
+    resolvedCost: 4.697193
+    resolvedShoulderShift: {x: 0.032798678, y: 0.007901662, z: 0.04343774}
+    resolvedPole: 0
+  secondaryFullWeightDistance: 0.04
+  secondaryZeroWeightDistance: 0.22
+  maxShoulderShiftMeters: 0.4
+  maxNaturalCost: 6
+  sweptPartNodeName: Crank
+  sweptPartAxis: {x: 0, y: 0, z: 1}
+  sweptClearanceMeters: 0.0095
+  sweptPartMinY01: 0.75
+  sweptPartMaxY01: 1
+  sweptPartTrialRestDegrees: 0
+  sweptPartActionClipPath: Assets/Art/Items/CrankFlashlight/Anim/BR_CrankFlashlight_Crank.anim
+  outputFolder: Assets/Art/Items/CrankFlashlight/Anim
+  baseClips:
+  - {fileID: 7400000, guid: ce2364cf6a1acde4ca61e5718c057ee8, type: 2}
+  - {fileID: 7400000, guid: 818a17fd8e0874e47a2b269034d019ea, type: 2}
+  - {fileID: 7400000, guid: a815976c89d928e46b72b5a6a2029726, type: 2}
+  - {fileID: 7400000, guid: a2a5a2c7a4ac2c84a8e6ca25e832f36d, type: 2}
+  bakedClips:
+  - {fileID: 7400000, guid: b6c8daf7fbd8f234cafa35c3f5b9dcda, type: 2}
+  - {fileID: 7400000, guid: 129a78d39c7636b4284ae50c270c504c, type: 2}
+  - {fileID: 7400000, guid: 236340b2bbfce8446a1bbcaad4db14eb, type: 2}
+  - {fileID: 7400000, guid: a3f994a59bd252746a98af341f379324, type: 2}
+  hasBaseNodeLocal: 1
+  baseNodeLocalPosition: {x: 0.011007104, y: 0.048290767, z: -0.027707038}
+  baseNodeLocalRotation: {x: 0.26151764, y: 0.20765063, z: -0.49407113, w: 0.802735}
+  lastBakeUtc: 2026-09-13T21:25:31.6127791Z
+  resolvedObjectRotationInView: {x: -0.038489163, y: 0.6534854, z: 0.7537277, w: 0.058054328}
+  hasResolvedView: 1
+  notes: "Preparado 2026-09-13 por la API (categor\xEDa flashlight)."

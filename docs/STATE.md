@@ -4,7 +4,7 @@
 > `docs/SESSION-LOG.md`, donde vive todo el histórico. Aquí sólo lo vigente.
 
 ## Estado
-- **WorldGen3 es el mundo servido.** Wire **66** en las dos puntas (`ipc/server.rs:38`, `WireSchema.cs:25`) — ADR-074 fase 2 lo subió el 12-09.
+- **WorldGen3 es el mundo servido.** Wire **67** en las dos puntas (`ipc/server.rs:38`, `WireSchema.cs:25`) — ADR-146 D5 (`d22cf334`).
 - **Contrato WG3 v1 = Alpha 1** (`docs/WG3-ALPHA1-ROADMAP.md`): días 1–2 hechos; 3 y 5 APARCADOS detrás de la tanda de oficinas (Joel, 06-09).
 - **Multijugador por Steam, SIN LAG** (10-09): **253,8 → 13,9 KB/s**, cola → **0**. **Build 25238618 SUBIDA con todo (wire 63), SIN rama: Joel la habilita.**
 - **El commit tiene gate** (`tools/dev/validate-scope.ps1`, hook PreToolUse): rojo = el commit no se ejecuta. Alcance por `git diff --cached`.
@@ -95,6 +95,26 @@
 
 ## Últimas tandas
 
+### 2026-09-13 — 55.ª tanda (paralela): el inventario nuevo también en STP_Showcase, solo la interfaz y por enganche
+- **Opción A de Joel, sin tocar el YAML del vendor** (`482b1ffd`, `5b513fd2`): `BackroomsShowcasePlayerUi` instancia `BR_UI_Player` y el `GameMode` la
+  adopta por `PlayerUI.Instance ?? SpawnPlayerUI()` (`GameMode.cs:102`). Mochilas, carga y cuerpo siguen SOLO en `BR_InventoryTest` (ADR-147 enm. 1).
+- **La opción B pide cerrar ADR-147 §4**: base 30→9 deja fuera de rango los huecos 9-29 (`InventoryRestorer.cs:318`), tope de 64 pilas, paquete sin guardar.
+- `BackroomsHideUnboundContainers` esconde 8 paneles sin contenedor, por LISTA: Alrededor también es `ItemContainerUI`. Las secciones saltan la rejilla apagada.
+- **Bug destapado**: `BackroomsWornSlotsUI` sin contenedor dueño enseñaba 2 de los 6 huecos de la funda y escondía lo de los otros 4 → `VisibleSlots`.
+- **Trampa**: Play entra SIN recargar escena (`EditorSettings.asset`, opciones = 2) y `sceneLoaded` no salta para la abierta: todo enganche de escena
+  cubre también `AfterSceneLoad`. Verificado: compile 4/4, EditMode 39/39, Play de Joel («8 paneles escondidos», se ve bien).
+- **SIN push**: el tronco va 75 commits por delante de origin, con wire 67 (`d22cf334`), ADR-146, ADR-149 R0/R1, mapping y WG3 A1-A4. Joel decide.
+
+### 2026-09-13 — 55.ª tanda: manos sobre objetos — `Tools > Interaction Authoring` y API para Claude (ADR-150 PROPUESTA)
+- **Horneado, no Animation Rigging**: perfil en espacio del objeto, IK de dos huesos + dedos acoplados, coste de naturalidad barrido.
+  API JSON (`tools/dev/HandInteraction.ps1`), puente con editor abierto, CLI headless, ventana. Guía: `docs/systems/hand-interaction.md`.
+- **Linterna a dos manos: `NO_NATURAL_GRIP`** (coste 8,7, tope 6): con la derecha centrada en 180 mm no cabe otro puño; no se forzó.
+  Ningún asset de juego cambiado; perfil sin hornear en `Assets/Data/HandInteraction/`. EditMode 23/23 con un horneado forzado, revertido.
+- **Derecha rehecha (enm. 2, rol `Regrip`)**: la muñeca de 129° pasa a antebrazo −10°, coste 4,47, pomo despejado; 24/25 verdes (1 saltado).
+  Trampa: el offset del modelo es ENTRADA de la búsqueda y Regrip lo reescribe (4,46 → 186); ahora `baseNodeLocal*` en el perfil.
+- **Izquierda en la manivela (enm. 3)**: pomo en reposo a 270° (barrido de 8), agarre desde abajo coste 4,70; la cuerda lo sigue girando y
+  deslizando la mano, peor fase coste 16 (palma rozando a 0,23). **Sin ver en Play.** Nuevo: reposo de prueba, clip de acción, dedos recogidos.
+
 ### 2026-09-12 — 54.ª tanda: techos medidos otra vez tras la fase 2 — en release la CPU no es el muro
 - **Release** (`9dc2d867`; los 2 de CPU en `f9a7814e`): sala aguanta **64** y revienta en 96 por CABLE (2 091 KB/s); emparejados ≥**400** (último
   escalón); repartidos **6 000** al 28 % del tick sin reventar, 1 600 con rosters al 47 %. N=50 juntos: **3,0 ms/ronda** (poses 2,00 + rosters 1,56).
@@ -121,44 +141,6 @@
 - **Dos trampas medidas**: `Character` mapea componentes con `baseType.Assembly.GetTypes()` (un `ICraftingManagerCC` fuera del ensamblado vendor
   revienta) → fichero AÑADIDO en territorio vendor, fila 8; y `SaveAsPrefabAsset` se niega en `STP_Player.prefab` (script perdido `13af2440…`
   preexistente) → swap por GUID en el texto. Primer espejo C#↔Rust con oráculo JSON común (patrón para B5). `cargo test` 1 502/0, EditMode 32/32.
-
-### 2026-09-12 — 51.ª tanda: el relay deja de ser cuadrático, y la animación deja de ser texto (wire 64)
-- **Índice espacial** (`7972d207`): el bucle de pares era O(N²) aunque el radio rechazara a todos — preguntar cuesta igual que aceptar. Casillas
-  del radio de SALIDA (con el de entrada la histéresis se rompe en silencio). Repartidos **~310 → ~3.500** y lineal; en sala sigue 22 (muro: cable).
-- **Tope por destinatario** (`c4452964`) y **cono de atención** (`bae5ffe6`), los dos APAGADOS. El cono da **−35 %, sala 22 → 27**; no se enciende
-  hasta que el búfer del cliente mida el ritmo POR PEER (hoy mezclar 30 y 15 Hz cerca lo secaría). Un test exige que siga apagado.
-- **ADR-143, wire 64** (`47b0eccb`): animación como byte. Pose **74 → 65 B (12 % de TODAS)** y muere el `clone()` por pose. El cliente reconstruye
-  la misma cadena: `ProxyPickupHook` y los tests de EditMode pasan SIN tocarlos. Tres constantes mentían (256 KB/s, y `MPTRACE` decía **⅓** del real).
-- **Techos con veredicto**: sala **22**, emparejados **~330**, repartidos **~3.500**. El coste va con los PARES que se ven, no con los jugadores:
-  20 en diez parejas cuestan **13× menos** que 20 juntos. Corregidas dos estimaciones mías: en sala el aforo sube por la RAÍZ del ahorro, no en proporción.
-
-### 2026-09-12 — 50.ª tanda: la suite EditMode al día — poses reales en los tests de proxies y la venda que no warpeaba
-- **`RemotePlayerManagerTests` 5 rojos → 8/8** (`07fcf69a`): mandaban `position = Vector3.zero` y el gestor lo descarta desde el 10-09 como «peer
-  sin pose» (`RemotePlayerManager.cs:280`); ahora `RealPose` (3, 0, 14) y `TheLiteralOriginDoesNotSpawnAProxy` fija la guarda. Gestor intacto.
-- **Suite completa headless: 1 528 tests, 12 rojos conocidos, 2 saltados** (`cea357c1`); destapó el 13.º, `ViewmodelWarpTests`: el rollo de la venda
-  llevaba `BR_Bandage_Material` (URP/Lit) en la mano — regla 14 rota desde que nació la venda.
-- **Venda arreglada** (`31f3e897`): `BR_Bandage_FP_Material` (`LitFieldOfView`, `_SmoothnessIntensity` 0,08) para el rollo y la banda de los brazos 1P;
-  `BandageVisual.Attach(firstPerson:)`, menú `Backrooms/Venda/Rewarp venda`, `Rewarp held items` cubre 4. 5/5. El de mundo queda para el proxy.
-- **Método**: headless desde el worktree con `Library` en junction funciona con el editor cerrado (reimporta ~1 min, deja 54 `Materials/` del super);
-  `-executeMethod` para el rewarp. Pusheado el tronco `07fcf69a..31f3e897` con dos commits de la otra sesión (`d89b21a0`, `ca32d825`).
-
-### 2026-09-11 — 43.ª tanda: el colapso de 8 jugadores CERRADO, y 16 aguantan (BuildID 25257405, sin `SetLive`)
-- **Dos cachés se vaciaban ENTEROS al pasar del tope** (rásteres y REGIONES de WG3), con el mismo comentario justificándolo y la misma premisa
-  escrita para un jugador quieto. El de regiones tiraba `plan_region`, el generador. `cre_block` peor tick **4 473 → 401 ms**, bloqueos 84 → 3,
-  expulsiones 12 → 0. ADR-106 D3 ya pedía desalojo por distancia; lo escrito era `clear()`.
-- **ADR-141** y **ADR-140 ENCENDIDO** (PVS por salas, oculta el 24,3 %). 16 instancias aguantan: 185,6 KB/s, 2 bloqueos, 0 expulsiones.
-  **Nadie ha verificado EN JUEGO que el PVS no haga invisible a alguien** — el arnés no renderiza y no puede verlo.
-- **ADR-142 enm. 1: su D3 era falso** (cachear el sorteo: 0,43 ms contra 950 del reparto). El relay NO crece con N² sino con las CRIATURAS
-  (×1,56 población → ×1,54 tráfico). El arnés no era reproducible: cada instancia se restauraba donde la dejó la corrida anterior (ADR-045).
-- `LOOPTRACE`/`SYNCTRACE`/`PVSTRACE` nuevos, en `warn!` (devolver a `info!`). SIN commitear ni verificar: el filtro de la pose del anfitrión.
-
-### 2026-09-12 — 49.ª tanda: saneamiento — el índice estancado del clon, la rama FOV fusionada y el inventario de sesiones
-- **Clon principal**: `sync.rs`, `network/tests.rs`, `STATE.md`, `SESSION-LOG.md` y `SERVER_BROWSER.md` ESTACIONADOS en la versión de `9ff790df`
-  (la restauración del WIP de la 48.ª): un commit habría revertido `6750e5b0` y la 48.ª. Restaurados a HEAD; el WIP de Unity de Joel (12 ficheros) intacto.
-- **`claude/fov-bug-animated-objects-3fe716` fusionada** (ADR-077 enm. 5 `db5c1946`, 13 `.meta` huérfanos, `packages-lock`): conflicto sólo en 4 docs;
-  los dos apéndices de `DECISIONS.md` conservados (16 333 + 78 = 16 411 líneas), índice regenerado. Su tanda del 09-09 va VERBATIM a `SESSION-LOG.md`.
-- **Sin fusionar y SIN commitear**: `showcase-lighting-broken` (lámparas 3×3, relleno a 1,2 m y 0,30, 5 `.mat`, 54 carpetas `Materials/`) y
-  `wf_09042814-13d-4` (crafting sobre base del 08-27). Decisión de Joel. `J:/wg3_*`, `skeptic-boxes` y las tres wip del 03-09 no se tocan.
 
 > **Dos sesiones en paralelo el 10-09** convergen aquí: una atacó el lag de red (42.ª–43.ª abajo, wire acabó en
 > **63** con ADR-140), la otra midió y tocó el cliente (44.ª–47.ª). Renumeradas por orden cronológico real.

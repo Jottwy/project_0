@@ -1,0 +1,104 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: a80ed251287beef4586748727db91f7a, type: 3}
+  m_Name: BR_Wieldable_Screwdriver_Hands
+  m_EditorClassIdentifier: 
+  version: 1
+  wieldablePrefab: {fileID: 7784512332790976010, guid: 0d6b471be6f7ac44db5d41c49d454875, type: 3}
+  modelNodeName: BR_ScrewdriverModel
+  gripMeshNodeName: BR_ScrewdriverModel
+  kind: 0
+  rightHand:
+    role: 4
+    alongAxis: 0.120266214
+    clockDegrees: 33.20509
+    tiltDegrees: 15
+    indexTowardTip: 1
+    offsetMeters: {x: 0, y: 0, z: 0}
+    palmOffsetMeters: 0
+    weight: 1
+    fingers: 0
+    gripPartNodeName: 
+    gripPartAxis: {x: 0, y: 0, z: 0}
+    gripPartMinY01: 0
+    gripPartMaxY01: 1
+    referenceClipPath: 
+    referenceTime: 0
+    autoSearch: 1
+    searchAlongRange: 0.5
+    searchClockRange: 180
+    searchTiltRange: 20
+    resolved: 1
+    resolvedAlongAxis: 0.120266214
+    resolvedIndexTowardTip: 1
+    resolvedClockDegrees: 33.20509
+    resolvedTiltDegrees: 15
+    resolvedPalmOffsetMeters: 0.019000001
+    resolvedCost: 2.6026452
+    resolvedShoulderShift: {x: 0, y: 0, z: 0}
+    resolvedPole: 0
+  leftHand:
+    role: 1
+    alongAxis: 0.5
+    clockDegrees: 0
+    tiltDegrees: 15
+    indexTowardTip: 1
+    offsetMeters: {x: 0, y: 0, z: 0}
+    palmOffsetMeters: 0
+    weight: 1
+    fingers: 0
+    gripPartNodeName: 
+    gripPartAxis: {x: 0, y: 0, z: 0}
+    gripPartMinY01: 0
+    gripPartMaxY01: 1
+    referenceClipPath: 
+    referenceTime: 0
+    autoSearch: 1
+    searchAlongRange: 0.25
+    searchClockRange: 180
+    searchTiltRange: 20
+    resolved: 0
+    resolvedAlongAxis: 0
+    resolvedIndexTowardTip: 1
+    resolvedClockDegrees: 0
+    resolvedTiltDegrees: 0
+    resolvedPalmOffsetMeters: 0
+    resolvedCost: 0
+    resolvedShoulderShift: {x: 0, y: 0, z: 0}
+    resolvedPole: 0
+  secondaryFullWeightDistance: 0.04
+  secondaryZeroWeightDistance: 0.22
+  maxShoulderShiftMeters: 0.12
+  maxNaturalCost: 6
+  sweptPartNodeName: 
+  sweptPartAxis: {x: 0, y: 0, z: 1}
+  sweptClearanceMeters: 0.0085
+  sweptPartMinY01: 0
+  sweptPartMaxY01: 1
+  sweptPartTrialRestDegrees: 0
+  sweptPartActionClipPath: 
+  outputFolder: Assets/Art/Items/Screwdriver/Anim
+  baseClips:
+  - {fileID: 7400000, guid: 71bcb68ea2e802946b39ed3614744232, type: 2}
+  - {fileID: 7400000, guid: ccc47b5df61edf6438934726c632ad55, type: 2}
+  - {fileID: 7400000, guid: 516a09a406da77440bab4687860fed5b, type: 2}
+  bakedClips:
+  - {fileID: 7400000, guid: 8e3f33b6275e36f4f8bd535854ab1820, type: 2}
+  - {fileID: 7400000, guid: 56473b6a77aa38a40933016ab33d779d, type: 2}
+  - {fileID: 7400000, guid: 00aee702cb93be347b78c37d208d677a, type: 2}
+  hasBaseNodeLocal: 1
+  baseNodeLocalPosition: {x: -0.0017893463, y: 0.15841477, z: -0.048958655}
+  baseNodeLocalRotation: {x: -0.16610852, y: -0.24313042, z: -0.015213881, w: 0.95554394}
+  lastBakeUtc: 2026-09-13T21:25:28.8762489Z
+  resolvedObjectRotationInView: {x: 0.48754692, y: 0.43898922, z: 0.5608586, w: 0.50499934}
+  hasResolvedView: 1
+  notes: "Preparado 2026-09-13 por la API (categor\xEDa tool)."

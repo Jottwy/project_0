@@ -33,7 +33,7 @@ namespace BackroomsSurvival.Tests
         private const string CrankLayerName = "Crank";
 
         /// <summary>Del horneador: reposo de la manivela y su eje de giro, en local del nodo Crank.</summary>
-        private static readonly Quaternion CrankRest = Quaternion.Euler(0f, 90f, 0f);
+        private static readonly Quaternion CrankRest = Quaternion.Euler(0f, 90f, 0f) * Quaternion.AngleAxis(270f, Vector3.forward);
         private static readonly Vector3 CrankSpinAxis = Vector3.forward;
 
         private static readonly string[] Fingers = { "Index", "Middle", "Ring", "Pinky" };
