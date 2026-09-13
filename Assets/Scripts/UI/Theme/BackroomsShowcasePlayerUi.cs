@@ -32,6 +32,22 @@ namespace BackroomsSurvival.UI
             SceneManager.sceneLoaded += OnSceneLoaded;
         }
 
+        /// <summary>
+        /// El proyecto entra en Play con «Reload Scene» desactivado (EditorSettings, Enter Play Mode Options = 2): la escena
+        /// que ya estaba abierta NO dispara <c>sceneLoaded</c>, y el enganche no llegaba nunca (medido en Play por Joel,
+        /// 2026-09-13). Aquí se miran las escenas ya cargadas; si <c>sceneLoaded</c> sí llegó, <c>PlayerUI.Instance</c> ya existe
+        /// y no se duplica.
+        /// </summary>
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
+        private static void InstallInLoadedScenes()
+        {
+            for (int i = 0; i < SceneManager.sceneCount; i++)
+            {
+                var scene = SceneManager.GetSceneAt(i);
+                if (scene.isLoaded) OnSceneLoaded(scene, LoadSceneMode.Additive);
+            }
+        }
+
         private static void OnSceneLoaded(Scene scene, LoadSceneMode mode)
         {
             if (!ShouldInstall(scene.name, PlayerUI.Instance != null)) return;
