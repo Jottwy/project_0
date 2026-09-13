@@ -2450,3 +2450,174 @@ fn the_open_plan_office_is_filled_with_desks_in_rows() {
         "ninguna planta abierta en la calle que rellenar"
     );
 }
+
+/// ADR-122 B2 — **las rampas existen y se andan en los dos sentidos.**
+///
+/// La rampa se añade encima de las tiras de un hundido, así que no puede quitar suelo; lo que este
+/// test fija es lo que sí puede fallar sin que el barrido lo note: que el productor no emita ninguna
+/// (la mancha mayor seguiría al 99,7 %), que emita una ilegal, o que la navegación de las criaturas no
+/// la recorra de abajo arriba o de arriba abajo por el ráster conservador.
+#[test]
+fn every_served_ramp_is_legal_and_walkable_both_ways() {
+    use super::collision::Wg3CollisionCache;
+    use super::nav;
+    use super::world::{Wg3ServedWorld, Wg3WorldCache};
+    use crate::world::Vec3;
+
+    const BODY_M: f32 = 1.8;
+    let m = real_manifest();
+    let seeds = validate::sweep_seeds(sweep_seed_count(3));
+    let mut total = 0usize;
+    let mut failures: Vec<String> = Vec::new();
+
+    for &seed in &seeds {
+        for &(rx, rz) in NEAR_REGIONS.iter() {
+            let served = Wg3ServedWorld::plan_region(&m, seed, Wg3RegionCoord { x: rx, z: rz });
+            for r in served.ramps() {
+                total += 1;
+                let problems = r.problems();
+                if !problems.is_empty() {
+                    failures.push(format!(
+                        "semilla {seed:#x} región ({rx},{rz}): {r:?} {problems:?}"
+                    ));
+                    continue;
+                }
+                // Punto bajo: dentro de la rampa, a 1,25 m de su borde bajo — el borde bajo entra en el grosor
+                // de la pared del fondo y el ráster conservador cierra esa celda. Punto alto: 75 cm más
+                // allá del borde alto, ya en la tira de la puerta.
+                let (cx, cz) = r.centre();
+                let (dx, dz) = match r.dir {
+                    0 => (0.0, 1.0),
+                    1 => (1.0, 0.0),
+                    2 => (0.0, -1.0),
+                    _ => (-1.0, 0.0),
+                };
+                let half = r.along_cm() as f32 * 0.005;
+                let low = Vec3::new(
+                    cx - dx * (half - 1.25),
+                    r.bottom_y_cm as f32 * 0.01 + BODY_M + 0.1,
+                    cz - dz * (half - 1.25),
+                );
+                let high = Vec3::new(
+                    cx + dx * (half + 0.75),
+                    r.top_y_cm as f32 * 0.01 + BODY_M,
+                    cz + dz * (half + 0.75),
+                );
+
+                // Por TRAMOS de como mucho 10 m: la búsqueda sólo mira una ventana de
+                // `nav::NAV_WINDOW_M` (30 m), y hay hundidos de 40 m. Cada tramo, en los dos sentidos.
+                let mut worlds = Wg3WorldCache::default();
+                let mut cache = Wg3CollisionCache::new();
+                cache.prewarm_for_move(&mut worlds, &m, seed, low, high);
+                let span = ((high.x - low.x).powi(2) + (high.z - low.z).powi(2)).sqrt();
+                let legs = (span / 10.0).ceil().max(1.0) as usize;
+                let mut path = Vec::new();
+                let mut broken = None;
+                for leg in 0..legs {
+                    let t0 = leg as f32 / legs as f32;
+                    let t1 = (leg + 1) as f32 / legs as f32;
+                    let at = |t: f32| {
+                        // La cota, del SUELO REAL del ráster (la caja de la rampa, o la tira), y la
+                        // columna, una PISABLE: entre tiras hay parteluces que parten las bocas anchas,
+                        // y un extremo de tramo clavado en uno es un destino imposible, no una rampa
+                        // rota. Se busca a lo ancho, perpendicular a `dir`, hasta 2 m.
+                        let (x0, z0) = (low.x + (high.x - low.x) * t, low.z + (high.z - low.z) * t);
+                        let top = r.top_y_cm as f32 * 0.01 + 0.3;
+                        for off in [0.0f32, 0.75, -0.75, 1.5, -1.5, 2.0, -2.0] {
+                            let (x, z) = (x0 - dz * off, z0 + dx * off);
+                            if let Some(floor) = cache.floor_below_m(x, z, top) {
+                                if nav::floor_at(&cache, x, z, floor).is_some() {
+                                    return Vec3::new(x, floor + BODY_M, z);
+                                }
+                            }
+                        }
+                        Vec3::new(x0, r.bottom_y_cm as f32 * 0.01 + BODY_M, z0)
+                    };
+                    let (a, b) = (at(t0), at(t1));
+                    let up = nav::find_path(&cache, a, b, &mut path).reached;
+                    let down = nav::find_path(&cache, b, a, &mut path).reached;
+                    if !up || !down {
+                        broken = Some((leg, up, down));
+                        break;
+                    }
+                }
+                if let Some((leg, up, down)) = broken {
+                    failures.push(format!(
+                        "semilla {seed:#x} región ({rx},{rz}): rampa {r:?} tramo {leg}/{legs} sube={up} baja={down}"
+                    ));
+                }
+            }
+        }
+    }
+
+    println!(
+        "[wg3-ramp] {total} rampas en {} semillas × {} regiones",
+        seeds.len(),
+        NEAR_REGIONS.len()
+    );
+    assert!(total > 0, "el productor no ha emitido ninguna rampa");
+    assert!(
+        failures.is_empty(),
+        "{} de {total} rampas fallan:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+/// Sonda (ADR-122 B2): recorre la rampa `WG3_PROBE_RAMP="seed,rx,rz,x_cm,z_cm"` cada 50 cm a lo largo
+/// de su eje, del borde bajo al alto, e imprime por punto el suelo del ráster, el techo libre, si la
+/// navegación lo acepta y las cotas que ofrece a sus cuatro vecinas.
+#[test]
+#[ignore]
+fn probe_ramp_columns() {
+    use super::collision::Wg3CollisionCache;
+    use super::nav;
+    use super::world::{Wg3ServedWorld, Wg3WorldCache};
+    use crate::world::Vec3;
+
+    let spec = std::env::var("WG3_PROBE_RAMP").expect("WG3_PROBE_RAMP=seed,rx,rz,x_cm,z_cm");
+    let parts: Vec<&str> = spec.split(',').collect();
+    let seed = u64::from_str_radix(parts[0].trim_start_matches("0x"), 16).unwrap();
+    let (rx, rz): (i32, i32) = (parts[1].parse().unwrap(), parts[2].parse().unwrap());
+    let (x_cm, z_cm): (i32, i32) = (parts[3].parse().unwrap(), parts[4].parse().unwrap());
+
+    let m = real_manifest();
+    let served = Wg3ServedWorld::plan_region(&m, seed, Wg3RegionCoord { x: rx, z: rz });
+    let r = *served
+        .ramps()
+        .iter()
+        .find(|r| r.x_cm == x_cm && r.z_cm == z_cm)
+        .expect("rampa no encontrada");
+    println!("[probe-ramp] {r:?}");
+    let (cx, cz) = r.centre();
+    let (dx, dz) = match r.dir {
+        0 => (0.0, 1.0),
+        1 => (1.0, 0.0),
+        2 => (0.0, -1.0),
+        _ => (-1.0, 0.0),
+    };
+    let half = r.along_cm() as f32 * 0.005;
+    let a = Vec3::new(cx - dx * half, 1.8, cz - dz * half);
+    let b = Vec3::new(cx + dx * (half + 1.0), 1.8, cz + dz * (half + 1.0));
+    let mut worlds = Wg3WorldCache::default();
+    let mut cache = Wg3CollisionCache::new();
+    cache.prewarm_for_move(&mut worlds, &m, seed, a, b);
+
+    let mut t = -half - 0.5;
+    while t <= half + 1.5 {
+        let (x, z) = (cx + dx * t, cz + dz * t);
+        let top = r.top_y_cm as f32 * 0.01 + 0.3;
+        let floor = cache.floor_below_m(x, z, top);
+        let head = floor.and_then(|f| cache.headroom_m(x, z, f));
+        let navf = floor.and_then(|f| nav::floor_at(&cache, x, z, f));
+        let mut next = Vec::new();
+        if let Some(f) = floor {
+            let (nx, nz) = (x + dx * 0.5, z + dz * 0.5);
+            next = nav::floors_at(&cache, nx, nz, f);
+        }
+        println!(
+            "[probe-ramp] t={t:+.2} ({x:.2},{z:.2}) suelo={floor:?} libre={head:?} nav={navf:?} siguiente={next:?}"
+        );
+        t += 0.5;
+    }
+}
