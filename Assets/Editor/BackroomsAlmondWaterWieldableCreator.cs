@@ -294,8 +294,13 @@ namespace BackroomsSurvival.EditorTools
 
             go.layer = hand.gameObject.layer;
 
+            var bakedMesh = BakeMeshWithLongestAxisOnY(mesh);
+            Debug.Log($"[AlmondWaterWieldable] DIAG bakedMesh null={bakedMesh == null} " +
+                      $"vertices={(bakedMesh != null ? bakedMesh.vertexCount : -1)} " +
+                      $"sameAsSource={bakedMesh == mesh}");
             var filter = go.AddComponent<MeshFilter>();
-            filter.sharedMesh = BakeMeshWithLongestAxisOnY(mesh);
+            filter.sharedMesh = bakedMesh;
+            Debug.Log($"[AlmondWaterWieldable] DIAG filter.sharedMesh null after assign={filter.sharedMesh == null}");
             var renderer = go.AddComponent<MeshRenderer>();
             renderer.sharedMaterial = material;
             renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
@@ -392,6 +397,16 @@ namespace BackroomsSurvival.EditorTools
         /// _tag ni el registro en el jugador. Para cuando `inspect` da `GRIP_AXIS_NOT_Y` u otro
         /// fallo de colocación de la malla sin tener que borrar y recrear todo el wieldable.
         /// </summary>
+        private static MeshFilter FindModelFilter(GameObject root)
+        {
+            foreach (var t in root.GetComponentsInChildren<Transform>(true))
+            {
+                if (t.name == ModelNodeName)
+                    return t.GetComponent<MeshFilter>();
+            }
+            return null;
+        }
+
         [MenuItem("Backrooms/Almond Water/Reparar modelo en la mano", false, 93)]
         public static void RepairModel()
         {
@@ -422,7 +437,18 @@ namespace BackroomsSurvival.EditorTools
             {
                 if (AttachBottleMesh(instance, mesh, material))
                 {
+                    var filterBeforeSave = FindModelFilter(instance);
+                    Debug.Log($"[AlmondWaterWieldable] DIAG antes de guardar: filter null={filterBeforeSave == null} " +
+                              $"sharedMesh null={(filterBeforeSave != null ? (filterBeforeSave.sharedMesh == null) : (bool?)null)}");
+
                     PrefabUtility.SaveAsPrefabAsset(instance, PrefabPath);
+                    AssetDatabase.SaveAssets();
+
+                    var savedPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(PrefabPath);
+                    var filterAfterSave = savedPrefab != null ? FindModelFilter(savedPrefab) : null;
+                    Debug.Log($"[AlmondWaterWieldable] DIAG tras guardar y recargar: filter null={filterAfterSave == null} " +
+                              $"sharedMesh null={(filterAfterSave != null ? (filterAfterSave.sharedMesh == null) : (bool?)null)}");
+
                     Debug.Log($"[AlmondWaterWieldable] '{PrefabPath}' — modelo recolgado con el eje largo en +Y.");
                 }
             }
