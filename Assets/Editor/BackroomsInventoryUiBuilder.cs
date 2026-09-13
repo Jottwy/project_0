@@ -503,6 +503,21 @@ namespace BackroomsSurvival.EditorTools
                     if (layout.Find(StrapName) is RectTransform strap) { strap.offsetMin = Vector2.zero; strap.offsetMax = Vector2.zero; }
                 }
                 DockTitle(rt, "CINTURÓN", theme);
+                // En juego, el cinturón se compacta sin rótulo; con TAB vuelve a su caja (BackroomsBeltHud).
+                var beltHud = hotbar.GetComponent<BackroomsBeltHud>();
+                if (beltHud == null) beltHud = hotbar.gameObject.AddComponent<BackroomsBeltHud>();
+                var beltTitle = rt.Find("BR_Title");
+                if (beltTitle.GetComponent<CanvasGroup>() == null) beltTitle.gameObject.AddComponent<CanvasGroup>();
+                var belt = new SerializedObject(beltHud);
+                belt.FindProperty("_box").objectReferenceValue = rt;
+                belt.FindProperty("_layout").objectReferenceValue = hotbar.transform.Find("Layout").GetComponent<HorizontalLayoutGroup>();
+                belt.FindProperty("_title").objectReferenceValue = beltTitle.GetComponent<CanvasGroup>();
+                belt.FindProperty("_selectionFrame").objectReferenceValue = hotbar.transform.Find("SelectionFrame");
+                belt.FindProperty("_inventoryCell").floatValue = Cell;
+                belt.FindProperty("_inventoryTop").floatValue = 44f;
+                belt.FindProperty("_pad").floatValue = BoxPad;
+                belt.FindProperty("_gap").floatValue = CellGap;
+                belt.ApplyModifiedPropertiesWithoutUndo();
             }
             else report.Missing("HotbarUI");
             report.Count("columnas", 3);

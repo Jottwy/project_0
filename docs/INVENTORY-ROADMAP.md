@@ -369,3 +369,22 @@ tinte sobre la UI piden overlay propio o canvas en Screen Space Camera.
   orden y plegado en PlayerPrefs (`br.inventory.sections.order`/`.folded`). Probado en Play por Joel. Pendiente: que una
   sección plegada se abra sola mientras llevas cogido algo que cabe.
 
+## Rondas del 2026-09-13 (noche) — DECIDIDO por Joel
+- **D6 enmienda 2 — el máximo sale del equipo:** base pequeña del cuerpo (maqueta 10 kg) **+ lo que suma cada prenda,
+  mochila o cinturón puestos**; la cabecera enseña ese máximo cambiando al equiparte. **Al llegar al máximo no deja coger
+  más** (lo que ya hace el vendor): se retira «el peso solo frena» de D6. Los tramos de velocidad quedan para después.
+- **D14 — manos y cinturón son una sola barra:** desnudo, **2 huecos** (mano izquierda y derecha); un **cinturón** en su
+  slot de Cintura añade huecos por tier (maqueta: T1 +2 → 4 … uno excelente hasta **9** en total, teclas 1-9). Sustituye
+  la funda de D4 (trabilla/cinturón/chaleco, tope 6) y la caja «Manos» aparte. **Desaparecen los 30 bolsillos base**:
+  sin equipo solo llevas lo que cabe en las manos; todo lo demás se desbloquea vistiéndose.
+- **Slots de equipo nuevos (prototipo):** Cintura, Encima, Manos (guantes) y Cara, además de Cabeza, Torso, Espalda,
+  Piernas y Pies. Verlos puestos en el 3D pide enmienda de ADR-022.
+- **Cinturón en juego:** al cerrar TAB, transición a un cinturón compacto con huecos más grandes y sin el rótulo.
+- **D14 enmienda 1 (misma noche) — manos aparte y un inventario base:** el vendor solo deja empuñables en la barra (la
+  encuentra por el tag Wieldable), así que las **2 manos son huecos de empuñables** que el cinturón amplía por tier (hasta
+  9, teclas 1-9), y además hay un **inventario base de ~9 huecos** para cualquier objeto (maqueta; sustituye a los 30
+  «bolsillos provisionales»). Ropa y mochilas suman huecos por encima.
+- **Pendiente de decidir — el hueco de «Manos» en la barra inferior** (queda vacío al unificar manos y cinturón). Ideas:
+  zona «Suelo» (soltar arrastrando y ver lo más cercano a 1,5 m; exige listar el suelo, el vendor no lo trae) o devolver
+  ahí la carga con sus tramos marcados. Sin decidir.
+

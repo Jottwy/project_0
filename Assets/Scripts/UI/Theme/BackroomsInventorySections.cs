@@ -1,4 +1,6 @@
 using System.Collections.Generic;
+using PolymindGames.InventorySystem;
+using PolymindGames.UserInterface;
 using TMPro;
 using UnityEngine;
 using UnityEngine.EventSystems;
@@ -10,7 +12,8 @@ namespace BackroomsSurvival.UI
     /// D13 (INVENTORY-ROADMAP, 2026-09-13): las secciones de «Lo que llevas» se pliegan con clic en su cabecera y se
     /// reordenan arrastrándola. Orden y plegado se guardan EN EL PC (PlayerPrefs): es preferencia de interfaz, no
     /// estado de partida ni de servidor. Coloca cada sección cada frame porque su altura depende de los huecos que se
-    /// ven, y eso cambia al ponerse o quitarse una mochila.
+    /// ven, y eso cambia al ponerse o quitarse una mochila. Mientras arrastras algo que cabe en una sección plegada, se
+    /// abre sola y vuelve a plegarse al soltar (no se guarda).
     /// </summary>
     public sealed class BackroomsInventorySections : MonoBehaviour
     {
@@ -30,6 +33,8 @@ namespace BackroomsSurvival.UI
         private bool[] _folded;
         private CanvasGroup[] _gridGroups;
         private GridLayoutGroup[] _layouts;
+        private ItemContainerUI[] _containers;
+        private readonly List<ItemSlotUIBase> _dragScan = new List<ItemSlotUIBase>();
         private int _dragging = -1;
 
         private void Awake()
@@ -39,9 +44,11 @@ namespace BackroomsSurvival.UI
             _folded = ParseFolded(PlayerPrefs.GetString(FoldedKey, string.Empty), _ids);
             _gridGroups = new CanvasGroup[n];
             _layouts = new GridLayoutGroup[n];
+            _containers = new ItemContainerUI[n];
             for (int i = 0; i < n; i++)
             {
                 if (_grids[i] == null) continue;
+                _containers[i] = _grids[i].GetComponent<ItemContainerUI>();
                 _gridGroups[i] = _grids[i].GetComponent<CanvasGroup>();
                 if (_gridGroups[i] == null) _gridGroups[i] = _grids[i].gameObject.AddComponent<CanvasGroup>();
                 _layouts[i] = _grids[i].GetComponent<GridLayoutGroup>();
@@ -80,21 +87,23 @@ namespace BackroomsSurvival.UI
 
         private void Layout()
         {
+            bool dragging = TryGetDraggedStack(out var dragged);
             float y = _topInset;
             for (int p = 0; p < _order.Length; p++)
             {
                 int i = _order[p];
-                float h = HeightOf(i);
+                bool folded = _folded[i] && !(dragging && Fits(i, dragged));
+                float h = HeightOf(i, folded);
                 if (_sections[i] != null) PlaceTop(_sections[i], y, y + h);
                 if (_grids[i] != null)
                 {
                     PlaceTop(_grids[i], y + _titleHeight, y + h);
-                    bool open = !_folded[i];
+                    bool open = !folded;
                     _gridGroups[i].alpha = open ? 1f : 0f;
                     _gridGroups[i].blocksRaycasts = open;
                     _gridGroups[i].interactable = open;
                 }
-                if (_foldMarks[i] != null) _foldMarks[i].text = _folded[i] ? "+" : "-";
+                if (_foldMarks[i] != null) _foldMarks[i].text = folded ? "+" : "-";
                 y += h + _gap;
             }
         }
@@ -105,16 +114,16 @@ namespace BackroomsSurvival.UI
             float y = _topInset;
             for (int p = 0; p < _order.Length; p++)
             {
-                float h = HeightOf(_order[p]);
+                float h = HeightOf(_order[p], _folded[_order[p]]);
                 if (fromTop < y + h * 0.5f) return p;
                 y += h + _gap;
             }
             return _order.Length - 1;
         }
 
-        private float HeightOf(int i)
+        private float HeightOf(int i, bool folded)
         {
-            if (_folded[i] || _grids[i] == null || _layouts[i] == null) return _titleHeight;
+            if (folded || _grids[i] == null || _layouts[i] == null) return _titleHeight;
             int visible = 0;
             foreach (Transform child in _grids[i])
                 if (child.gameObject.activeSelf) visible++;
@@ -122,6 +131,32 @@ namespace BackroomsSurvival.UI
             float inner = ((RectTransform)transform).rect.width - 2f * _sidePad - layout.padding.left - layout.padding.right;
             int columns = Mathf.Max(1, Mathf.FloorToInt((inner + layout.spacing.x) / (layout.cellSize.x + layout.spacing.x)));
             return SectionHeight(visible, columns, _titleHeight, layout.padding.top, layout.padding.bottom, layout.cellSize.y, layout.spacing.y);
+        }
+
+        /// <summary>
+        /// La pila que se está arrastrando. El vendor la guarda en privado, pero su copia visual es un hueco con un
+        /// contenedor propio de un hueco, sin inventario, colgado del mismo padre que <see cref="ItemDragger"/>.
+        /// </summary>
+        private bool TryGetDraggedStack(out ItemStack stack)
+        {
+            stack = ItemStack.Null;
+            if (!ItemDragger.HasInstance || !ItemDragger.Instance.IsDragging) return false;
+            var parent = ItemDragger.Instance.transform.parent;
+            if (parent == null) return false;
+            parent.GetComponentsInChildren(false, _dragScan);
+            foreach (var slot in _dragScan)
+            {
+                if (!slot.HasItem || slot.Slot.Container == null || slot.Slot.Container.Inventory != null) continue;
+                stack = slot.Slot.GetStack();
+                return true;
+            }
+            return false;
+        }
+
+        private bool Fits(int i, ItemStack stack)
+        {
+            var container = _containers[i] != null ? _containers[i].Container : null;
+            return container != null && container.GetAllowedCount(stack).allowedCount > 0;
         }
 
         private void PlaceTop(RectTransform rt, float top, float bottom)

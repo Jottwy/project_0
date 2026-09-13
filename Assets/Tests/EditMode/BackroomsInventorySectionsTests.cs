@@ -57,5 +57,23 @@ namespace BackroomsSurvival.Tests
             foreach (var header in headers)
                 Assert.AreEqual(sections, new SerializedObject(header).FindProperty("_owner").objectReferenceValue);
         }
+
+        [Test]
+        public void ElCinturonDeJuegoEsMasGrandeYSinRotulo()
+        {
+            var game = BackroomsBeltHud.Measure(6, 0f, 88f, 72f, 16f, 44f, 16f, 8f);
+            var inventory = BackroomsBeltHud.Measure(6, 1f, 88f, 72f, 16f, 44f, 16f, 8f);
+            Assert.AreEqual(88f, game.cell, "en juego los huecos crecen");
+            Assert.AreEqual(72f, inventory.cell, "con TAB, las casillas del greybox");
+            Assert.AreEqual(6 * 88f + 5 * 8f + 32f, game.width, "la caja se ajusta a lo que ocupan los huecos");
+            Assert.Less(game.top, inventory.top, "sin rótulo, los huecos suben");
+
+            var variant = AssetDatabase.LoadAssetAtPath<GameObject>("Assets/Prefabs/UI/BR_UI_Player.prefab");
+            var hud = variant.GetComponentInChildren<BackroomsBeltHud>(true);
+            Assert.IsNotNull(hud, "sin BackroomsBeltHud en el cinturón");
+            var so = new SerializedObject(hud);
+            foreach (var field in new[] { "_box", "_layout", "_title", "_selectionFrame" })
+                Assert.IsNotNull(so.FindProperty(field).objectReferenceValue, $"BackroomsBeltHud.{field} sin asignar");
+        }
     }
 }
