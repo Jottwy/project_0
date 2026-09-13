@@ -104,6 +104,18 @@
   EditMode **1421/1435** (los 12 rojos, los conocidos); CompileCheck 0 ×4. MAL: nada queda ENCERRADO, el bote cuelga de la tapa.
 
 >>>>>>> migration/worldgraph-v1
+## Trasladado de STATE.md el 2026-09-13: la 43.ª tanda, entera (desbordaba el tope de 20 KB al entrar la 55.ª)
+
+### 2026-09-11 — 43.ª tanda: el colapso de 8 jugadores CERRADO, y 16 aguantan (BuildID 25257405, sin `SetLive`)
+- **Dos cachés se vaciaban ENTEROS al pasar del tope** (rásteres y REGIONES de WG3), con el mismo comentario justificándolo y la misma premisa
+  escrita para un jugador quieto. El de regiones tiraba `plan_region`, el generador. `cre_block` peor tick **4 473 → 401 ms**, bloqueos 84 → 3,
+  expulsiones 12 → 0. ADR-106 D3 ya pedía desalojo por distancia; lo escrito era `clear()`.
+- **ADR-141** y **ADR-140 ENCENDIDO** (PVS por salas, oculta el 24,3 %). 16 instancias aguantan: 185,6 KB/s, 2 bloqueos, 0 expulsiones.
+  **Nadie ha verificado EN JUEGO que el PVS no haga invisible a alguien** — el arnés no renderiza y no puede verlo.
+- **ADR-142 enm. 1: su D3 era falso** (cachear el sorteo: 0,43 ms contra 950 del reparto). El relay NO crece con N² sino con las CRIATURAS
+  (×1,56 población → ×1,54 tráfico). El arnés no era reproducible: cada instancia se restauraba donde la dejó la corrida anterior (ADR-045).
+- `LOOPTRACE`/`SYNCTRACE`/`PVSTRACE` nuevos, en `warn!` (devolver a `info!`). SIN commitear ni verificar: el filtro de la pose del anfitrión.
+
 ## Trasladado de STATE.md el 2026-09-10: la 42.ª tanda, entera
 
 ### 2026-09-10 — 42.ª tanda: de «extremadamente lag» a 13,9 KB/s — medir antes de tocar, cuatro veces seguidas

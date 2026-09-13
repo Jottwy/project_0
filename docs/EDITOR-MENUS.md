@@ -34,6 +34,17 @@ no lo rescata. **Es intermitente**, así que un bake limpio no prueba nada. Ver 
 Unity serializa componentes por GUID de script, no por nombre: hay que buscar el bloque
 `MonoBehaviour` por su `m_Script` o por sus campos.
 
+## Interacción mano-objeto (`Tools/Interaction Authoring`)
+
+| Menú | Fichero |
+|---|---|
+| `Tools/Interaction Authoring` | `Editor/HandInteraction/HandInteractionWindow.cs` |
+
+La ventana es una cara de `HandInteractionApi` (inspect, prepare, preview, bake, validate, capture,
+nudge). **Hornear escribe clips del wieldable y su prefab.** La primera vez copia intactos los clips
+que usaba a `<outputFolder>/Base/`. Desde línea de comandos, y con el editor abierto o cerrado:
+`tools/dev/HandInteraction.ps1`. Guía completa en `docs/systems/hand-interaction.md`.
+
 ## Creadores de assets (`Backrooms/Create …`)
 
 Patrón **crear-si-falta**: no re-siembran un asset existente, así que re-ejecutarlos es seguro y
