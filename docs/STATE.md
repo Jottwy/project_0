@@ -100,7 +100,8 @@
   API JSON (`tools/dev/HandInteraction.ps1`), puente con editor abierto, CLI headless, ventana. Guía: `docs/systems/hand-interaction.md`.
 - **Linterna a dos manos: `NO_NATURAL_GRIP`** (coste 8,7, tope 6): con la derecha centrada en 180 mm no cabe otro puño; no se forzó.
   Ningún asset de juego cambiado; perfil sin hornear en `Assets/Data/HandInteraction/`. EditMode 23/23 con un horneado forzado, revertido.
-- **Hallazgo sin tocar**: muñeca derecha del idle de la linterna a 129° antebrazo/metacarpo (destornillador 26°), medido con `pose`.
+- **Derecha rehecha (enm. 2, rol `Regrip`)**: la muñeca de 129° pasa a antebrazo −10°, coste 4,47, pomo despejado; 24/25 verdes (1 saltado).
+  Trampa: el offset del modelo es ENTRADA de la búsqueda y Regrip lo reescribe (4,46 → 186); ahora `baseNodeLocal*` en el perfil.
 - **Izquierda en la manivela (enm. 1): rechazada dos veces**, copiando la cuerda (muñeca ~100°) y agarrando el pomo (coste 29,8, palma arriba).
   Decisión de Joel: ángulo de reposo de la manivela, forzar o dejarlo. Nuevo: rol `Reference` y pieza de agarre por mano.
 

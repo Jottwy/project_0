@@ -36,6 +36,20 @@ marcadores `HandTarget.R/L` con tag `EditorOnly` bajo la malla de agarre.
 | `Keep` (1) | No se toca: la mano del clip base tal cual. |
 | `Relaxed` (2) | Brazo del clip base y dedos en cascada relajada. |
 | `Reference` (3) | Copia la pose de esta mano de OTRO clip del mismo wieldable (`referenceClipPath`, `referenceTime`) en el espacio del objeto: mano, dedos, hombro y codo. Sirve para reutilizar un agarre ya validado, como la izquierda sobre el pomo de la manivela. |
+| `Regrip` (4) | Sólo la **portadora**: se resuelve de nuevo entera (brazo, muñeca y dedos) con la búsqueda de naturalidad, sujetando el objeto EXACTAMENTE donde ya lo llevaba cada clip. El encuadre no cambia; cambia cómo lo coge la mano. Se hornean **todos** los clips del controller (también las capas de acción, como la cuerda) y se reescribe el offset del modelo bajo la mano. |
+
+**Pieza que gira** (`sweptPartNodeName`, `sweptPartAxis`, `sweptClearanceMeters`): una pieza que rota en
+runtime, como la manivela sobre su +Z. Mientras se rehace la portadora, ninguna articulación puede entrar en su
+órbita: se castiga con el término `órbita` (restricción dura) y `validate` da `SWEPT_PART_COLLISION`.
+
+Cómo se mide la órbita: con un perfil cilíndrico de los vértices de la pieza (distancia al eje y altura sobre él). Es
+exacto para una vuelta completa y barato.
+
+`sweptPartMinY01`–`sweptPartMaxY01` limita qué tramo de la pieza cuenta, por su Y local normalizada. En la linterna es
+**0,75–1, sólo el pomo**, con `sweptClearanceMeters` 9,5 mm (17 mm al centro del pomo, el criterio de
+`TheKnobOrbitClearsTheRightHand`). El brazo va plano contra el cuerpo; lo que choca con los dedos es el pomo.
+Resultado en la linterna: la derecha rehecha agarra por encima en 0,37 del eje, antebrazo −10°, dedos rodeando
+112°, coste 4,47, pomo despejado (la muñeca de 129° del agarre anterior desaparece).
 
 **Pieza por mano.** Por defecto una mano agarra la malla de agarre del perfil (`gripMeshNodeName`, eje +Y).
 Con `gripPartNodeName` agarra otra pieza del modelo, con su propio eje (`gripPartAxis`, en local de esa pieza)
@@ -174,6 +188,25 @@ Va **sin** `-quit` (sale sola) y **sin** `-nographics` (si no, las capturas sale
   horneado de la linterna tiene la muñeca derecha a 129° entre antebrazo y metacarpo (el destornillador
   26°): no era la herramienta, era la pose. No se ha corregido; es deuda declarada.
 - **Unity headless borra `Temp/` al cerrar.** Por eso peticiones y capturas viven en `Logs/HandInteraction/`.
+- **La copia de medida se DESEMPAQUETA.** Dentro de una instancia de prefab Unity no deja cambiar el padre de un
+  hijo (sólo lo dice en el log), y `Regrip` necesita soltar el modelo de la mano. Sin desempaquetar, todos los
+  candidatos daban los mismos números byte a byte. Si vuelve a pasar, sale `NODE_DETACH_FAILED`.
+- **Una instancia nueva por captura.** Muestrear varios clips seguidos sobre la misma instancia y renderizar entre
+  medias dejaba los brazos con un skinning viejo: las capturas enseñaban la mano lejos del objeto mientras el test
+  de dedos, sobre el mismo clip, pasaba. Si una captura y un test no cuadran, **manda el test**.
+- **La órbita de lo que gira es una restricción dura con dedos reales** (+10 en cuanto un hueso entra). Como simple
+  preferencia, una mano 3 mm dentro costaba 1,0, y el pomo pasaba a 13 mm del índice en runtime. En la etapa gruesa
+  (puño genérico) es blanda, y nunca es obstáculo del ajuste de dedos: eso envenenó todos los candidatos (coste 71).
+- **Todo lo que un horneado escribe y la búsqueda lee necesita copia base.** Los clips van a `Base/`; el offset del
+  modelo bajo la portadora, que `Regrip` reescribe, va a `baseNodeLocalPosition/Rotation` (`hasBaseNodeLocal`), y
+  la búsqueda parte siempre de él. Medido antes de existir: tras hornear un `Regrip`, la misma pose pasó de coste
+  4,46 a 186 porque el objeto se colocaba con el brazo base y el offset nuevo, y cinco tiradas de ajuste persiguieron
+  un objeto que estaba en otro sitio. **Detector:** congelar la última pose buena (`autoSearch:false` con sus
+  valores resueltos) y medirla; si su coste cambió sin tocar las métricas, cambió una entrada. Al quitar el
+  `Regrip`, el siguiente `bake` devuelve el offset base al prefab, rehornea también las capas de acción y apaga
+  `hasBaseNodeLocal`. Pendiente: la pieza que gira supone escala uniforme (`lossyScale.x`).
+- **El hueco del puño no cae en el eje de un tubo gordo.** La tolerancia de `fuera-del-puño` crece con el radio
+  (`targetToleranceMm`): 30 mm en un mango de 12 mm y 43 mm en el cuerpo de 26 mm de la linterna.
 - **Cada clip horneado lleva una marca** en el `userData` de su `.meta` (`HandInteraction:baked:<guid del perfil>`).
   Si un perfil sin base intenta partir de un clip marcado —perfil borrado, revert parcial, segundo perfil sobre
   el mismo wieldable— sale `BASE_IS_BAKED` en vez de apilar IK sobre IK. Arreglo: restaurar el clip original
@@ -184,7 +217,8 @@ Va **sin** `-quit` (sale sola) y **sin** `-nographics` (si no, las capturas sale
   `BackroomsCrankFlashlightPoseBaker`) y **después** este.
 - **Rehornear el horneador propio del objeto** (p. ej. `Backrooms/Linterna/Hornear animaciones`) escribe
   sobre los clips que este perfil usa como salida. Hay que borrar `baseClips`/`bakedClips` del perfil
-  (`set -Patch '{"baseClips":[],"bakedClips":[]}'`) y volver a hornear, o la base se queda vieja.
+  (`set -Patch '{"baseClips":[],"bakedClips":[],"hasBaseNodeLocal":false}'`) y volver a hornear, o la base se
+  queda vieja.
 - **Capturas sin warp** (`_FOVEnabled = 0`): juzgan la pose, no el encuadre deformado de juego.
 - **La puerta es genérica**: `HandInteractionProfileTests` mide todo perfil horneado. Un objeto nuevo no
   necesita test propio.

@@ -18111,3 +18111,58 @@ preguntas 3, 4, 5 y 7. Sin wire ni guardado: R1 sigue solo en `BR_InventoryTest`
 Ningún asset de juego cambiado.
 
 ---
+
+## ADR-149 — Enmienda 2: la derecha rehecha — rol Regrip, órbita de la manivela y el offset del modelo como entrada (2026-09-13) — PROPUESTA (Joel: «la izquierda sale muchísimo mejor que la mano derecha… restablecer, aplicar lo aprendido… debe ser plug and play»)
+
+### Qué se añadió
+
+- **`HandRole.Regrip`** (sólo la portadora): se suelta el modelo donde lo deja cada clip base y la mano se
+  busca como una secundaria (naturalidad, dedos, órbita). El encuadre no cambia. Se hornean TODOS los clips del
+  controller (también la capa de cuerda) y se reescribe el offset del modelo bajo la mano. La copia de medida
+  se desempaqueta (`UnpackPrefabInstance`): dentro de una instancia de prefab `SetParent` no hace nada
+  (`NODE_DETACH_FAILED` si vuelve a pasar).
+- **Pieza que gira** (`sweptPartNodeName`, `sweptPartAxis`, `sweptClearanceMeters`, `sweptPartMinY01/MaxY01`):
+  perfil cilíndrico de sus vértices, exacto para la vuelta completa. Término `órbita`: veto duro con dedos
+  reales, blando en la etapa gruesa, nunca obstáculo del ajuste de dedos. `validate` da `SWEPT_PART_COLLISION`.
+  En la linterna, sólo el pomo (0,75–1) con 9,5 mm, el criterio de `TheKnobOrbitClearsTheRightHand`.
+- **`hasBaseNodeLocal` / `baseNodeLocalPosition` / `baseNodeLocalRotation`** en el perfil: el offset del modelo
+  antes del primer Regrip. La búsqueda parte siempre de él; al quitar el Regrip, `bake` lo devuelve al prefab y
+  rehornea las capas de acción. Test genérico `UnRegripHorneadoGuardaElOffsetOriginalDelModelo`.
+- **Informe**: mejor candidato por tramo del eje en la etapa gruesa y en la fina.
+
+### La trampa que costó cinco tiradas
+
+El offset del modelo bajo la mano es ENTRADA de la búsqueda (el objeto va donde el clip base + ese offset lo
+ponen), y el primer horneado con Regrip lo reescribió en el prefab. Desde ahí cada búsqueda colocaba el objeto
+con el brazo base y el offset nuevo. Medido congelando la pose buena (`autoSearch:false`): coste 4,46 antes,
+**186** después, sin tocar ninguna métrica. Las cinco tiradas intermedias (órbita dura, perfil cilíndrico,
+región del pomo, filtro grueso) ajustaban contra un objeto que estaba en otro sitio. Regla: todo lo que un
+horneado escribe y la búsqueda lee necesita copia base, como los clips en `Base/`.
+
+### Resultado medido (linterna de manivela, derecha)
+
+- 13 680 candidatos gruesos. Agarre por encima en **0,37** del eje, reloj −61°, inclinación −10°, índice hacia la
+  culata, antebrazo **−10°**, codo abajo-fuera, hombro sin mover. **Coste 4,47** (tope 6), sólo `radial`.
+- Dedos rodeando **112°** (se piden 103), sin penetración, palma a 8,9 mm. Pomo a +0,4 mm sobre la holgura.
+- La muñeca de **129°** del agarre anterior (ADR-149) desaparece; en captura, muñeca recta y manivela libre.
+- El perfil queda con la derecha fijada (`autoSearch:false`) en la pose resuelta: rehornear es determinista.
+- EditMode (`HandInteractionProfileTests`, `ToolGripTests`, `CrankFlashlightAnimationTests`,
+  `ViewmodelWarpTests`): 25 tests, 24 verdes, 0 rojos, 1 saltado (`LaManoDeReferenciaCopiaSuClip`: no hay
+  perfil horneado con Reference). `TheKnobOrbitClearsTheRightHand` en verde.
+
+### La izquierda, otra vez, con la derecha nueva
+
+Medida sobre la derecha rehecha. Ninguna pasa y la izquierda queda `Keep`.
+- **Copiando la cuerda** (`Reference`, t = 0 de `Base/BR_CrankFlashlight_Crank_Base`): coste informativo 99, muñeca
+  +55°/−78° en el tope y hombro adelantado 293 mm.
+- **Agarrando el pomo**: 9 360 candidatos, el mejor cuesta 28 (palma arriba 77°, índice sin tocar, una falange
+  dentro).
+
+El bloqueo no era la derecha: es el ángulo de reposo de la manivela, que deja el pomo pegado al costado. Sigue
+pendiente la opción 1 de la enmienda 1: rehornear la cuerda con otro `CrankLocalRotation`, que toca geometría
+validada.
+
+Assets cambiados: los cuatro clips de la linterna (encima, con marca), `Base/` con sus copias, el offset del
+modelo y `HandTarget.R` en el prefab, y el perfil.
+
+---
