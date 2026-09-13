@@ -283,7 +283,7 @@ namespace BackroomsSurvival.EditorTools
             var go = new GameObject(ModelNodeName);
             go.transform.SetParent(hand, false);
             go.transform.localPosition = Vector3.zero;
-            go.transform.localRotation = AlignLongestAxisToY(mesh);
+            go.transform.localRotation = Quaternion.identity;
 
             // Compensa la escala del hueso: la malla ya sale a tamaño real del importer (ADR-030,
             // ver BackroomsAlmondWaterCreator), y un hueso de rig con escala distinta de 1 la
@@ -295,7 +295,7 @@ namespace BackroomsSurvival.EditorTools
             go.layer = hand.gameObject.layer;
 
             var filter = go.AddComponent<MeshFilter>();
-            filter.sharedMesh = mesh;
+            filter.sharedMesh = BakeMeshWithLongestAxisOnY(mesh);
             var renderer = go.AddComponent<MeshRenderer>();
             renderer.sharedMaterial = material;
             renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
@@ -305,20 +305,51 @@ namespace BackroomsSurvival.EditorTools
         }
 
         /// <summary>
-        /// El eje largo de la botella no sale en +Y del import (medido: `inspect` dio
-        /// `axisAlignment` 0,00 — está tumbada). `Tools ▸ Interaction Authoring` mide el radio
-        /// sobre +Y (`GRIP_AXIS_NOT_Y`), así que aquí se gira el nodo para que el eje MÁS LARGO de
-        /// los bounds locales de la malla (que no cambian con la rotación del nodo: son de la
-        /// malla, no del transform) caiga en +Y. Si algún día el import se corrige y +Y ya es el
-        /// eje largo, esto da la identidad — no hace falta quitarlo.
+        /// `inspect` mide `axisAlignment` sobre <c>mesh.vertices</c> — coordenadas LOCALES DE LA
+        /// MALLA — así que girar el nodo padre no cambia nada: medido, `axisAlignment` seguía en
+        /// 0,00 después de rotar sólo el transform. La malla de Meshy sale tumbada (el eje largo
+        /// cae en el plano XZ, no en +Y), así que aquí se hornea una COPIA con los vértices y
+        /// normales rotados para que el eje más largo de sus bounds quede en +Y. No se toca la
+        /// malla ORIGINAL (la usa también el pickup de mundo, de pie a su manera): esta copia sólo
+        /// vive embebida en este prefab, igual que la gasa procedural de la venda
+        /// (<c>BandageVisual</c>) — un <c>Mesh</c> nuevo asignado a un <c>MeshFilter</c> y guardado
+        /// con <c>SaveAsPrefabAsset</c> queda como sub-asset del prefab sin pedir <c>CreateAsset</c>.
+        /// Si el import se corrige algún día y +Y ya es el eje largo, esto devuelve la malla tal
+        /// cual (rotación identidad).
         /// </summary>
-        private static Quaternion AlignLongestAxisToY(Mesh mesh)
+        private static Mesh BakeMeshWithLongestAxisOnY(Mesh source)
         {
-            var size = mesh.bounds.size;
+            var size = source.bounds.size;
             Vector3 longestLocalAxis = (size.x >= size.y && size.x >= size.z) ? Vector3.right
                 : (size.z >= size.y) ? Vector3.forward
                 : Vector3.up;
-            return Quaternion.FromToRotation(longestLocalAxis, Vector3.up);
+            var align = Quaternion.FromToRotation(longestLocalAxis, Vector3.up);
+            if (align == Quaternion.identity)
+                return source;
+
+            var baked = Object.Instantiate(source);
+            baked.name = source.name + "_YUp";
+
+            var vertices = baked.vertices;
+            for (int i = 0; i < vertices.Length; i++)
+                vertices[i] = align * vertices[i];
+            baked.vertices = vertices;
+
+            var normals = baked.normals;
+            for (int i = 0; i < normals.Length; i++)
+                normals[i] = align * normals[i];
+            baked.normals = normals;
+
+            var tangents = baked.tangents;
+            for (int i = 0; i < tangents.Length; i++)
+            {
+                Vector3 t = align * (Vector3)tangents[i];
+                tangents[i] = new Vector4(t.x, t.y, t.z, tangents[i].w);
+            }
+            baked.tangents = tangents;
+
+            baked.RecalculateBounds();
+            return baked;
         }
 
         /// <summary>Escribe un DataIdReference&lt;T&gt; cuya forma serializada es un entero _value bajo _referencedItem.</summary>
