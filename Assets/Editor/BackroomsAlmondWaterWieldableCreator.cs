@@ -283,7 +283,7 @@ namespace BackroomsSurvival.EditorTools
             var go = new GameObject(ModelNodeName);
             go.transform.SetParent(hand, false);
             go.transform.localPosition = Vector3.zero;
-            go.transform.localRotation = Quaternion.identity;
+            go.transform.localRotation = AlignLongestAxisToY(mesh);
 
             // Compensa la escala del hueso: la malla ya sale a tamaño real del importer (ADR-030,
             // ver BackroomsAlmondWaterCreator), y un hueso de rig con escala distinta de 1 la
@@ -302,6 +302,23 @@ namespace BackroomsSurvival.EditorTools
             renderer.receiveShadows = false;
 
             return true;
+        }
+
+        /// <summary>
+        /// El eje largo de la botella no sale en +Y del import (medido: `inspect` dio
+        /// `axisAlignment` 0,00 — está tumbada). `Tools ▸ Interaction Authoring` mide el radio
+        /// sobre +Y (`GRIP_AXIS_NOT_Y`), así que aquí se gira el nodo para que el eje MÁS LARGO de
+        /// los bounds locales de la malla (que no cambian con la rotación del nodo: son de la
+        /// malla, no del transform) caiga en +Y. Si algún día el import se corrige y +Y ya es el
+        /// eje largo, esto da la identidad — no hace falta quitarlo.
+        /// </summary>
+        private static Quaternion AlignLongestAxisToY(Mesh mesh)
+        {
+            var size = mesh.bounds.size;
+            Vector3 longestLocalAxis = (size.x >= size.y && size.x >= size.z) ? Vector3.right
+                : (size.z >= size.y) ? Vector3.forward
+                : Vector3.up;
+            return Quaternion.FromToRotation(longestLocalAxis, Vector3.up);
         }
 
         /// <summary>Escribe un DataIdReference&lt;T&gt; cuya forma serializada es un entero _value bajo _referencedItem.</summary>
@@ -328,6 +345,46 @@ namespace BackroomsSurvival.EditorTools
         [MenuItem("Backrooms/Almond Water/Registrar en el jugador", false, 91)]
         public static void Register()
             => SprayCanWieldableRegistrar.RegisterWieldablePrefab(PrefabPath, RootName);
+
+        /// <summary>
+        /// Reintenta SÓLO <see cref="AttachBottleMesh"/> sobre el prefab YA CREADO — no toca
+        /// _tag ni el registro en el jugador. Para cuando `inspect` da `GRIP_AXIS_NOT_Y` u otro
+        /// fallo de colocación de la malla sin tener que borrar y recrear todo el wieldable.
+        /// </summary>
+        [MenuItem("Backrooms/Almond Water/Reparar modelo en la mano", false, 93)]
+        public static void RepairModel()
+        {
+            var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(PrefabPath);
+            if (prefab == null)
+            {
+                Debug.LogError($"[AlmondWaterWieldable] No hay '{PrefabPath}'. Ejecuta antes 'Crear wieldable'.");
+                return;
+            }
+
+            var meshAsset = AssetDatabase.LoadAssetAtPath<GameObject>(BackroomsAlmondWaterCreator.MeshPath);
+            var material = AssetDatabase.LoadAssetAtPath<Material>(BackroomsAlmondWaterCreator.MaterialPath);
+            var mesh = meshAsset != null ? ResolveMesh(meshAsset) : null;
+            if (mesh == null || material == null)
+            {
+                Debug.LogError("[AlmondWaterWieldable] Falta el arte de Meshy — MeshyImports/ no viaja por git. " +
+                               "Nada reparado.");
+                return;
+            }
+
+            var root = PrefabUtility.LoadPrefabContents(PrefabPath);
+            try
+            {
+                if (AttachBottleMesh(root, mesh, material))
+                {
+                    PrefabUtility.SaveAsPrefabAsset(root, PrefabPath);
+                    Debug.Log($"[AlmondWaterWieldable] '{PrefabPath}' — modelo recolgado con el eje largo en +Y.");
+                }
+            }
+            finally
+            {
+                PrefabUtility.UnloadPrefabContents(root);
+            }
+        }
 
         /// <summary>Dar agua a mano, calcado del giver de la venda: sin loot table todavía, es la única forma de tener una.</summary>
         [MenuItem("Backrooms/Almond Water/Dar tres al jugador", false, 92)]
