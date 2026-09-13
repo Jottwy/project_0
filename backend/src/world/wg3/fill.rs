@@ -41,6 +41,7 @@ use super::plan::{
     LinkKind, PlannedSpace, RegionBuilding, RegionPlan, SpaceRole, SLAB_THICKNESS_CM,
     STOREY_HEIGHT_CM,
 };
+use super::ramp::{Wg3Ramp, RAMP_MAX_RISE_CM};
 use super::raster::CM_PER_M;
 use super::route::{self, Mouth, PlannedRoute, Rect, RouteSettings};
 use super::segment::{
@@ -8376,7 +8377,7 @@ fn fill_storey(
             continue;
         }
         let before = out.segments.len();
-        emit_space(i, space, &wanted[i], &mut out);
+        emit_space(i, space, &wanted[i], &mut out, seed);
         if out.segments.len() > before {
             out.spaces_by_segment += 1;
         } else {
@@ -9435,9 +9436,15 @@ fn footprint_cm(piece: &Wg3Piece, rotation: u8) -> (i32, i32) {
 /// **La rejilla se calcula en centímetros enteros y el último tramo se lleva el resto**, no se
 /// reparte a partes iguales en coma flotante: dos tramos hermanas tienen que tocarse exactamente o
 /// queda una junta de un milímetro que el ráster conservador convierte en pared.
-fn emit_space(index: usize, space: &PlannedSpace, wanted: &[Wanted], out: &mut FilledRegion) {
+fn emit_space(
+    index: usize,
+    space: &PlannedSpace,
+    wanted: &[Wanted],
+    out: &mut FilledRegion,
+    seed: i32,
+) {
     if space.role == SpaceRole::Stair && space.rise_cm != 0 {
-        emit_stair(index, space, wanted, out);
+        emit_stair(index, space, wanted, out, seed);
         return;
     }
     let max_cm = (MAX_SEGMENT_M * CM_PER_M) as i32;
@@ -9870,7 +9877,13 @@ fn shift_cuts(cuts: &mut [i32], wanted: &[Wanted], along_x: bool) {
 /// La tira PRIMERA está a la cota de entrada y la ÚLTIMA a `floor + rise`, así que las salas de cada
 /// lado enganchan cada una con la suya. Eso no es casualidad: el plan pone la cota del bloque A en la
 /// banda y la del bloque B en `+ rise`, y aquí se respeta el orden.
-fn emit_stair(index: usize, space: &PlannedSpace, wanted: &[Wanted], out: &mut FilledRegion) {
+fn emit_stair(
+    index: usize,
+    space: &PlannedSpace,
+    wanted: &[Wanted],
+    out: &mut FilledRegion,
+    seed: i32,
+) {
     let r = space.rect;
     let rise = space.rise_cm;
     // ADR-102 D4 — la contrahuella la pone el ESPACIO. Una terraza usa los 12 cm que cierran contra la
@@ -10030,6 +10043,11 @@ fn emit_stair(index: usize, space: &PlannedSpace, wanted: &[Wanted], out: &mut F
         }
     }
 
+    // ADR-122 D4 — consumidor 1: el hundido baja por RAMPA, encima de estas mismas tiras.
+    if let Some(ramp) = stair_ramp(space, seed, steps, across_x, from_max, across_cm) {
+        out.ramps.push(ramp);
+    }
+
     for (k, w) in wanted.iter().enumerate() {
         if placed[k] {
             continue;
@@ -10057,6 +10075,86 @@ fn emit_stair(index: usize, space: &PlannedSpace, wanted: &[Wanted], out: &mut F
             }
         }
     }
+}
+
+/// ADR-122 D4 — la mitad de los hundidos que caben a 1:5 bajan por rampa (Joel, 13-09).
+const RAMP_CHANCE: f32 = 0.5;
+const SALT_RAMP: u32 = 0xB1_11_A0_0F;
+
+/// ADR-122 D4 — la RAMPA de un hundido, **encima de sus tiras**, o `None` si le tocan peldaños.
+///
+/// # Por qué encima y no en lugar de
+///
+/// Las tiras de [`emit_stair`] ya resuelven todo lo difícil: la puerta queda a su cota, las paredes,
+/// el techo común y los vanos entre tiras. La rampa no toca nada de eso: se AÑADE, y por tanto sólo
+/// puede sumar suelo pisable, nunca quitarlo. El plan no se entera.
+///
+/// # La geometría que tapa los peldaños
+///
+/// La tira de la puerta se queda plana. La rampa arranca en el borde que comparte con la tira 1, a la
+/// cota de la puerta, y baja hasta el borde del fondo de la última tira. Con tiras iguales de huella
+/// `T` y contrahuella `r`, su superficie pasa por el borde CERCANO de cada tira `k` a la cota de la
+/// tira anterior y por el LEJANO a la de la propia `k`: siempre por encima de su suelo, que es lo que
+/// hace que ningún peldaño asome a través de la cuña. Por el fondo entra en el grosor de la pared
+/// (escondida dentro), y a lo ancho se queda entre las dos paredes.
+///
+/// # Cuándo no
+///
+/// Sólo BAJA (una escalera de planta sube 332 cm: ADR-122 D4 las prohíbe), sólo hasta
+/// [`RAMP_MAX_RISE_CM`], y sólo si la pendiente cabe en 1:5 (`Wg3Ramp::problems`). Si no, peldaños.
+fn stair_ramp(
+    space: &PlannedSpace,
+    seed: i32,
+    steps: i32,
+    across_x: bool,
+    from_max: bool,
+    across_cm: i32,
+) -> Option<Wg3Ramp> {
+    let rise = space.rise_cm;
+    if rise >= 0 || -rise > RAMP_MAX_RISE_CM || steps < 2 {
+        return None;
+    }
+    let (cx, cz) = space.rect.centre_m();
+    if super::hash::stream_at(seed, cx, cz, SALT_RAMP).next01() >= RAMP_CHANCE {
+        return None;
+    }
+    let r = space.rect;
+    // El mismo reparto que `emit_stair`: la última tira se lleva el resto.
+    let edge = |i: i32| {
+        if i == steps {
+            across_cm
+        } else {
+            (across_cm * i) / steps
+        }
+    };
+    // Entrando por el máximo, la tira de la puerta es la última del eje.
+    let (a0, a1) = if from_max {
+        (0, edge(steps - 1))
+    } else {
+        (edge(1), across_cm)
+    };
+    let side_cm = if across_x { r.depth_cm() } else { r.width_cm() };
+    let (b0, b1) = (WALL_T_CM, side_cm - WALL_T_CM);
+    if a1 <= a0 || b1 <= b0 {
+        return None;
+    }
+    let (x_cm, z_cm, size_x_cm, size_z_cm) = if across_x {
+        (r.min_x_cm + a0, r.min_z_cm + b0, a1 - a0, b1 - b0)
+    } else {
+        (r.min_x_cm + b0, r.min_z_cm + a0, b1 - b0, a1 - a0)
+    };
+    let ramp = Wg3Ramp {
+        x_cm,
+        z_cm,
+        size_x_cm,
+        size_z_cm,
+        bottom_y_cm: space.floor_y_cm + rise,
+        top_y_cm: space.floor_y_cm,
+        // Sube hacia la puerta: el lado por el que se entra.
+        dir: space.rise_from_side % 4,
+        style: style_of(space.role),
+    };
+    ramp.problems().is_empty().then_some(ramp)
 }
 
 /// Una boca que se come el lado entero: es la que hace que dos tramos hermanas sean un mismo sitio.
