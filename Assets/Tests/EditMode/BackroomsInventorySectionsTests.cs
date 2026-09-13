@@ -75,5 +75,35 @@ namespace BackroomsSurvival.Tests
             foreach (var field in new[] { "_box", "_layout", "_title", "_selectionFrame" })
                 Assert.IsNotNull(so.FindProperty(field).objectReferenceValue, $"BackroomsBeltHud.{field} sin asignar");
         }
+
+        [Test]
+        public void ElZoomPorZonaEncuadraUnHuesoQueExisteYEstaCableado()
+        {
+            float wholeBody = 2f * 5.9f * Mathf.Tan(9f * Mathf.Deg2Rad);
+            Assert.AreEqual(18f, BackroomsPreviewZoom.FovForSpan(wholeBody, 5.9f), 0.01f, "el cuerpo entero es el fov del vendor");
+            Assert.Less(BackroomsPreviewZoom.FovForSpan(0.7f, 5.9f), 18f, "la cabeza se ve más cerca");
+
+            var rig = AssetDatabase.LoadAssetAtPath<GameObject>("Assets/PolymindGames/STP/Prefabs/UI/Inventory/Preview/STP_UI_CharacterPreview.prefab");
+            Assert.IsNotNull(rig, "falta el rig del preview del vendor");
+            var names = new System.Collections.Generic.HashSet<string>();
+            foreach (var t in rig.GetComponentsInChildren<Transform>(true)) names.Add(t.name);
+            foreach (var zone in BackroomsPreviewZoom.Zones)
+                foreach (var bone in zone.Bones)
+                    Assert.IsTrue(names.Contains(bone), $"la zona {zone.Id} apunta a '{bone}', que el rig no tiene");
+
+            var variant = AssetDatabase.LoadAssetAtPath<GameObject>("Assets/Prefabs/UI/BR_UI_Player.prefab");
+            var zoom = variant.GetComponentInChildren<BackroomsPreviewZoom>(true);
+            Assert.IsNotNull(zoom, "sin BackroomsPreviewZoom en el preview");
+            var so = new SerializedObject(zoom);
+            Assert.IsNotNull(so.FindProperty("_camera").objectReferenceValue, "el zoom no tiene la cámara del vendor");
+            Assert.IsNotNull(so.FindProperty("_characterVisuals").objectReferenceValue, "el zoom no tiene CharacterVisuals");
+            var headers = variant.GetComponentsInChildren<BackroomsZoneHeader>(true);
+            Assert.AreEqual(6, headers.Length, "una cinta con zoom por slot de equipo");
+            foreach (var header in headers)
+            {
+                Assert.GreaterOrEqual(BackroomsPreviewZoom.IndexOf(header.Zone), 0, $"cinta con zona desconocida '{header.Zone}'");
+                Assert.AreEqual(zoom, new SerializedObject(header).FindProperty("_zoom").objectReferenceValue);
+            }
+        }
     }
 }

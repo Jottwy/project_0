@@ -350,6 +350,7 @@ namespace BackroomsSurvival.EditorTools
                 else report.Missing("Containers/HeadContainer (plantilla de slot)");
 
                 BuildBodyViewToggle(character, header, preview, theme, report);
+                BuildPreviewZoom(character, preview, root, theme, report);
             }
             else report.Missing("RightGroup/Character");
 
@@ -970,6 +971,53 @@ namespace BackroomsSurvival.EditorTools
 
             wounds.gameObject.SetActive(false);
             report.Count("conmutador ropa/heridas", 1);
+        }
+
+        // Zoom por zona (roadmap, idea de Joel): clic en la cinta de un slot acerca la cámara del preview a esa parte.
+        private static readonly (string Path, string Zone)[] ZoneHeaders =
+        {
+            ("Containers/HeadContainer", "Head"),
+            ("Containers/TorsoContainer", "Torso"),
+            ("Containers/BackpackContainer", "Back"),
+            ("Containers/LegsContainer", "Legs"),
+            ("Containers/FeetContainer", "Feet"),
+            ("BR_ContainersRight/BR_WaistContainer", "Waist"),
+        };
+
+        private static void BuildPreviewZoom(Transform character, RectTransform previewRT, GameObject root,
+            BackroomsUiTheme theme, Report report)
+        {
+            var previewUi = root.GetComponentInChildren<CharacterPreviewUI>(true);
+            if (previewRT == null || previewUi == null) { report.Missing("CharacterPreview o CharacterPreviewUI"); return; }
+
+            var vendor = new SerializedObject(previewUi);
+            var zoom = previewRT.GetComponent<BackroomsPreviewZoom>();
+            if (zoom == null) zoom = previewRT.gameObject.AddComponent<BackroomsPreviewZoom>();
+            var so = new SerializedObject(zoom);
+            so.FindProperty("_camera").objectReferenceValue = vendor.FindProperty("_camera").objectReferenceValue;
+            so.FindProperty("_characterVisuals").objectReferenceValue = vendor.FindProperty("_characterVisuals").objectReferenceValue;
+            so.ApplyModifiedPropertiesWithoutUndo();
+
+            int wired = 0;
+            foreach (var (path, zone) in ZoneHeaders)
+            {
+                if (!(character.Find(path + "/Header") is Transform tape) || !tape.TryGetComponent<Image>(out var image))
+                {
+                    report.Missing(path + "/Header");
+                    continue;
+                }
+                image.raycastTarget = true;
+                var zoneHeader = tape.GetComponent<BackroomsZoneHeader>();
+                if (zoneHeader == null) zoneHeader = tape.gameObject.AddComponent<BackroomsZoneHeader>();
+                var hs = new SerializedObject(zoneHeader);
+                hs.FindProperty("_zone").stringValue = zone;
+                hs.FindProperty("_zoom").objectReferenceValue = zoom;
+                hs.FindProperty("_idleSprite").objectReferenceValue = theme.DymoTape;
+                hs.FindProperty("_activeSprite").objectReferenceValue = theme.DymoTapeRed;
+                hs.ApplyModifiedPropertiesWithoutUndo();
+                wired++;
+            }
+            report.Count("cintas con zoom", wired);
         }
 
         private static Button EnsureToggleButton(RectTransform header, string name, string label, float xFromRight,

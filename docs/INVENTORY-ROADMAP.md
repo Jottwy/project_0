@@ -396,8 +396,10 @@ tinte sobre la UI piden overlay propio o canvas en Screen Space Camera.
 - **Pieza 5 — máximo por equipo (D6 enm. 2)** — `BackroomsCarryWeight`: base 10 kg + `MaxKg` de lo puesto en Espalda y
   Cintura, escrito en el `_maxWeight` privado del vendor por reflexión. Solo escena de pruebas, apagado con backend. Si el
   máximo baja por debajo de lo que llevas, no suelta nada: solo impide coger más.
-- **PENDIENTE (Joel, 2026-09-13) — zoom por zona:** clic en la cabecera de un slot (Head…) acerca la vista previa a esa
-  parte; clic otra vez o fuera, vuelve.
+- **Zoom por zona HECHO (2026-09-13)** — `BackroomsPreviewZoom` + `BackroomsZoneHeader`: clic en la cinta de un slot gira
+  y cierra el fov de la cámara del preview hacia su hueso (cinta roja); otra vez o clic en el muñeco vuelve. Probado en Play.
+  Pulido pedido por Joel: Backpack debe dar la vuelta al muñeco; el recorte en franja corta la ropa, que el render llene
+  toda la caja Personaje como fondo detrás de los slots.
 - **PENDIENTE (Joel, 2026-09-13) — pasada de pulido y suavizado:** transiciones al reordenar secciones, al plegar/abrir, al
   abrir y cerrar el inventario y los paneles; efectos al mover objetos. Todo con curvas cortas, nada brusco.
 - **Pregunta abierta — guantes por mano:** ¿un slot «Manos» para el par, o mano izquierda y derecha separadas con guantes
