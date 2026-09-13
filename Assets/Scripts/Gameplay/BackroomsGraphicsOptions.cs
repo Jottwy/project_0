@@ -67,7 +67,8 @@ namespace BackroomsSurvival.Gameplay
         private Option<bool> _motionBlur = new Option<bool>(false);
 
         [SerializeField]
-        private Option<bool> _depthOfField = new Option<bool>(true);
+        // Apagada por defecto (13-09): el perfil enfoca a 10 m y difumina lo que se lleva en la mano.
+        private Option<bool> _depthOfField = new Option<bool>(false);
 
         [SerializeField]
         private Option<bool> _chromaticAberration = new Option<bool>(true);
