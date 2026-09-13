@@ -45,6 +45,9 @@ namespace BackroomsSurvival.EditorTools
                 return;
             }
 
+            // Si ya está abierta (quien la prueba la tiene delante), se edita en el sitio y NO se cierra:
+            // cerrar la única escena cargada no está permitido.
+            bool wasOpen = SceneManager.GetSceneByPath(TargetPath).isLoaded;
             Scene scene = EditorSceneManager.OpenScene(TargetPath, OpenSceneMode.Additive);
             try
             {
@@ -70,30 +73,27 @@ namespace BackroomsSurvival.EditorTools
                     return;
                 }
 
-                // La escena de WG3 heredada no serializa materiales: sin ellos cada renderer queda sin
-                // material y se pinta magenta. Los mismos cuatro que cablea el prefab GridTestWorld
-                // del juego real.
-                world.materials = new Wg3Materials
-                {
-                    floor = LoadMaterial("Wg3_Floor"),
-                    structure = LoadMaterial("Wg3_Structure"),
-                    ceiling = LoadMaterial("Wg3_Ceiling"),
-                    decoration = LoadMaterial("Wg3_Trim"),
-                };
-                if (world.materials.floor == null || world.materials.structure == null ||
-                    world.materials.ceiling == null || world.materials.decoration == null)
-                {
-                    Debug.LogError($"[MappingPlaytest] Falta algún material en {MaterialsFolder}.");
-                    return;
-                }
-                EditorUtility.SetDirty(world);
-
                 var go = new GameObject(RootName);
                 SceneManager.MoveGameObjectToScene(go, scene);
                 var sampler = go.AddComponent<MapMemorySampler>();
                 sampler.target = player;
                 var view = go.AddComponent<MapMemoryDebugView>();
                 view.sampler = sampler;
+
+                // Wg3Materials no es [Serializable]: asignarlo aquí a Wg3TestWorld se perdería al
+                // guardar y el mundo saldría magenta. Las referencias van en MappingPlaytestMaterials,
+                // con los mismos cuatro materiales que cablea el prefab GridTestWorld del juego real.
+                var paint = go.AddComponent<MappingPlaytestMaterials>();
+                paint.world = world;
+                paint.floor = LoadMaterial("Wg3_Floor");
+                paint.structure = LoadMaterial("Wg3_Structure");
+                paint.ceiling = LoadMaterial("Wg3_Ceiling");
+                paint.decoration = LoadMaterial("Wg3_Trim");
+                if (paint.floor == null || paint.structure == null || paint.ceiling == null || paint.decoration == null)
+                {
+                    Debug.LogError($"[MappingPlaytest] Falta algún material en {MaterialsFolder}.");
+                    return;
+                }
 
                 EditorSceneManager.MarkSceneDirty(scene);
                 if (!EditorSceneManager.SaveScene(scene))
@@ -106,7 +106,7 @@ namespace BackroomsSurvival.EditorTools
             }
             finally
             {
-                EditorSceneManager.CloseScene(scene, true);
+                if (!wasOpen) EditorSceneManager.CloseScene(scene, true);
             }
         }
     }
