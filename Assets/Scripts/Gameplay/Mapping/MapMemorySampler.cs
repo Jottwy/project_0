@@ -149,7 +149,7 @@ namespace BackroomsSurvival.Gameplay.Mapping
             }
 
             int count = MapMemory.CollectVisible(_occupied, _radiusCells, originX, originZ, _cellX, _cellZ, _kinds);
-            Memory.AddSample(Time.timeAsDouble, storey, _cellX, _cellZ, _kinds, count);
+            Memory.AddSample(Time.timeAsDouble, storey, originX, originZ, _cellX, _cellZ, _kinds, count);
 
             int walls = 0;
             for (int i = 0; i < count; i++)
