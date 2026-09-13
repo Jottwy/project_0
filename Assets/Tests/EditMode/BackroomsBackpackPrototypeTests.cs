@@ -190,5 +190,16 @@ namespace BackroomsSurvival.Tests
             StringAssert.Contains(guids[0], File.ReadAllText(TestScenePath), "la escena de pruebas no monta BackroomsCarryWeight");
             StringAssert.DoesNotContain(guids[0], File.ReadAllText(ShowcasePath), "STP_Showcase lleva el máximo por equipo");
         }
+
+        [Test]
+        public void LosHuecosDelCinturonSeDespliegan()
+        {
+            Assert.AreEqual(0f, BackroomsWornSlotsUI.EaseOutBack(0f), 1e-4f);
+            Assert.AreEqual(1f, BackroomsWornSlotsUI.EaseOutBack(1f), 1e-4f, "el hueco acaba en su tamaño");
+            Assert.Greater(BackroomsWornSlotsUI.EaseOutBack(0.7f), 1f, "se pasa un poco y vuelve: se nota que se despliega");
+            Assert.AreEqual(0f, BackroomsWornSlotsUI.StaggerDelay(0, 6), "el primero sale ya");
+            Assert.Greater(BackroomsWornSlotsUI.StaggerDelay(3, 6), BackroomsWornSlotsUI.StaggerDelay(2, 6), "uno detrás de otro");
+            Assert.LessOrEqual(BackroomsWornSlotsUI.StaggerDelay(26, 27), 0.25f, "una mochila grande no tarda un segundo en abrirse");
+        }
     }
 }

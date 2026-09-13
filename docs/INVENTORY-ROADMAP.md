@@ -405,6 +405,13 @@ tinte sobre la UI piden overlay propio o canvas en Screen Space Camera.
   mochila puesta con curva corta, rejilla recortada al plegar, la arrastrada se levanta. Probado en Play. Siguen: 3 abrir
   y cerrar TAB, 4 efectos al mover objetos (pop, rechazo en rojo, aviso de carga), 5 huecos del cinturón con fundido,
   6 fundido cruzado en Ropa/Heridas y Alrededor/Crafteo.
+- **Pulido 3-6 HECHOS (2026-09-13)** — abrir/cerrar con fundido y columnas deslizándose (`BackroomsInventoryTransition`);
+  rebote al recibir objeto, destello y cinta roja con el motivo al rechazar, carga en rojo desde el 85 % (`BackroomsSlotFeedback`);
+  huecos de cinturón y mochila que se despliegan uno tras otro y caja que se estira; fundido cruzado Ropa/Heridas.
+  Probado en Play por Joel.
+- **Joel (2026-09-13) — compactar la barra al encoger:** si el cinturón se quita o baja de tier y hay objetos en huecos
+  que desaparecen, la barra se compacta de izquierda a derecha conservando el orden; lo que sobre va a la base empezando
+  por la derecha (y al suelo si no cabe).
 - **PENDIENTE (Joel, 2026-09-13) — pasada de pulido y suavizado:** transiciones al reordenar secciones, al plegar/abrir, al
   abrir y cerrar el inventario y los paneles; efectos al mover objetos. Todo con curvas cortas, nada brusco.
 - **Pregunta abierta — guantes por mano:** ¿un slot «Manos» para el par, o mano izquierda y derecha separadas con guantes

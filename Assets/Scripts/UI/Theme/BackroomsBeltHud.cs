@@ -28,6 +28,8 @@ namespace BackroomsSurvival.UI
         private float _t;
         private float _target;
         private int _lastCount = -1;
+        private float _boxWidth;
+        private bool _easeWidth;
 
         protected override void OnCharacterAttached(ICharacter character)
         {
@@ -55,7 +57,8 @@ namespace BackroomsSurvival.UI
         {
             if (_layout == null) return;
             bool resized = CountSlots() != _lastCount;
-            if (Mathf.Approximately(_t, _target) && !resized) return;
+            if (resized && _lastCount >= 0) _easeWidth = true;
+            if (Mathf.Approximately(_t, _target) && !resized && !_easeWidth) return;
             _t = Mathf.MoveTowards(_t, _target, Time.unscaledDeltaTime / Mathf.Max(0.01f, _duration));
             Apply();
         }
@@ -72,7 +75,13 @@ namespace BackroomsSurvival.UI
                     ((RectTransform)child).sizeDelta = new Vector2(cell, cell);
             _layout.padding = new RectOffset(Mathf.RoundToInt(_pad), Mathf.RoundToInt(_pad), Mathf.RoundToInt(top), Mathf.RoundToInt(_pad));
             _layout.spacing = _gap;
-            _box.sizeDelta = new Vector2(width, height);
+            // Pulido 5: al ponerse o quitarse un cinturón la caja se estira o se recoge con curva; al abrir y cerrar TAB
+            // sigue al tamaño sin retraso.
+            _boxWidth = _easeWidth
+                ? BackroomsInventorySections.Settle(_boxWidth, width, BackroomsInventorySections.Approach01(16f, Time.unscaledDeltaTime), 0.5f)
+                : width;
+            if (_boxWidth == width) _easeWidth = false;
+            _box.sizeDelta = new Vector2(_boxWidth, height);
             if (_title != null) _title.alpha = eased;
             if (_selectionFrame != null) _selectionFrame.sizeDelta = new Vector2(cell + 8f, cell + 8f);
         }
