@@ -27,9 +27,9 @@ namespace BackroomsSurvival.EditorTools
     /// de la variante — es el mismo acoplamiento que tendría hacerlo a mano en el inspector, y aquí
     /// al menos queda escrito y avisa de lo que no encuentra.
     ///
-    /// LO QUE NO HACE (rebanada 1b): reordenar las tres columnas, la cincha de la funda como
-    /// regla de carga, el papel del inspector a tamaño de columna. Aquí sólo cambia la piel de
-    /// lo que ya está donde está.
+    /// REBANADA 1b: además de la piel, <see cref="Relayout"/> mueve los tres grupos del vendor a las
+    /// columnas del greybox aprobado. Queda fuera el feedback de selección con la luz del tubo
+    /// (vive en <c>SelectableButtonFeedback</c> por referencia serializada).
     /// </summary>
     public static class BackroomsInventoryUiBuilder
     {
@@ -215,6 +215,7 @@ namespace BackroomsSurvival.EditorTools
             Paint(inv, "MiddleGroup/Inventory/Weight/WeightBarBG/WeightBar", theme.Ink);
 
             BuildStrap(root, theme, report);
+            Relayout(inv, root, report);
         }
 
         /// <summary>Fondo a pantalla completa, primer hijo del inventario para quedar debajo de todo.</summary>
@@ -277,6 +278,161 @@ namespace BackroomsSurvival.EditorTools
             SetSprite(img, theme.NylonStrap, Color.white);
             img.type = Image.Type.Tiled;
             img.raycastTarget = false;
+        }
+
+        // ─── Reparto (rebanada 1b): las tres columnas del greybox a 1920×1080 ───────
+        //
+        // El vendor reparte en tres grupos de 640 px: LeftGroup (estaciones), MiddleGroup
+        // (mochila + inspector) y RightGroup (personaje). Lo aprobado es personaje IZQUIERDA (440),
+        // lo que llevas en el CENTRO (flexible) y alrededor a la DERECHA (400): estación arriba,
+        // etiqueta del objeto abajo. Se mueven los grupos, no sus tripas: cada panel del vendor
+        // sigue intacto por dentro (animaciones, layouts, referencias) y sólo cambia su rect.
+        private const float Margin = 48f;
+        private const float DockHeight = 132f;
+        private const float LeftWidth = 440f;
+        private const float RightWidth = 400f;
+        private const float Gap = 32f;
+
+        private static void Relayout(Transform inv, GameObject root, Report report)
+        {
+            float bottom = Margin + DockHeight + 16f;
+            var left = inv.Find("RightGroup");
+            var middle = inv.Find("MiddleGroup");
+            var right = inv.Find("LeftGroup");
+            if (left == null || middle == null || right == null) { report.Missing("grupos Left/Middle/Right"); return; }
+
+            // Columnas: anclas al borde que les toca, alto estirado entre el margen y la barra inferior.
+            Column((RectTransform)left, 0f, Margin, LeftWidth, bottom);
+            Column((RectTransform)right, 1f, Margin, RightWidth, bottom);
+            var mid = (RectTransform)middle;
+            mid.anchorMin = new Vector2(0f, 0f);
+            mid.anchorMax = new Vector2(1f, 1f);
+            mid.pivot = new Vector2(0.5f, 0.5f);
+            mid.offsetMin = new Vector2(Margin + LeftWidth + Gap, bottom);
+            mid.offsetMax = new Vector2(-(Margin + RightWidth + Gap), -Margin);
+
+            // Personaje: el preview ocupa la columna; los slots de ropa, pegados a su izquierda.
+            var character = left.Find("Character");
+            if (character != null)
+            {
+                Stretch((RectTransform)character);
+                var preview = character.Find("CharacterPreview") as RectTransform;
+                if (preview != null)
+                {
+                    preview.anchorMin = new Vector2(0f, 0f);
+                    preview.anchorMax = new Vector2(1f, 1f);
+                    preview.pivot = new Vector2(0.5f, 0.5f);
+                    preview.offsetMin = new Vector2(96f, 0f);
+                    preview.offsetMax = new Vector2(0f, -44f);
+                }
+                var containers = character.Find("Containers") as RectTransform;
+                if (containers != null)
+                {
+                    containers.anchorMin = new Vector2(0f, 0.5f);
+                    containers.anchorMax = new Vector2(0f, 0.5f);
+                    containers.pivot = new Vector2(0f, 0.5f);
+                    containers.anchoredPosition = new Vector2(0f, -22f);
+                    containers.sizeDelta = new Vector2(88f, containers.sizeDelta.y);
+                }
+                var header = character.Find("Header") as RectTransform;
+                if (header != null) TopLeft(header, 0f, 0f);
+            }
+            else report.Missing("RightGroup/Character");
+
+            // Lo que llevas: la caja del inventario llena el centro; el inspector sale de ella y se
+            // va a la columna derecha, debajo de la estación.
+            var inventory = middle.Find("Inventory") as RectTransform;
+            if (inventory != null)
+            {
+                Stretch(inventory);
+                var header = inventory.Find("Header") as RectTransform;
+                if (header != null) TopLeft(header, 0f, 0f);
+                var weight = inventory.Find("Weight") as RectTransform;
+                if (weight != null)
+                {
+                    weight.anchorMin = new Vector2(1f, 1f);
+                    weight.anchorMax = new Vector2(1f, 1f);
+                    weight.pivot = new Vector2(1f, 1f);
+                    weight.anchoredPosition = new Vector2(0f, -2f);
+                }
+                var backpack = inventory.Find("Backpack") as RectTransform;
+                if (backpack != null)
+                {
+                    backpack.anchorMin = new Vector2(0f, 0f);
+                    backpack.anchorMax = new Vector2(1f, 1f);
+                    backpack.offsetMin = new Vector2(0f, 56f);
+                    backpack.offsetMax = new Vector2(0f, -52f);
+                }
+                // El inspector NO se reparenta: dentro de un prefab anidado, cambiar de padre no se
+                // puede guardar como override de la variante (Unity lo descarta sin avisar). Se queda
+                // bajo Inventory y se ancla FUERA de su rect, en la columna derecha, abajo.
+                var inspector = inventory.Find("Inspector") as RectTransform;
+                if (inspector != null)
+                {
+                    inspector.anchorMin = new Vector2(1f, 0f);
+                    inspector.anchorMax = new Vector2(1f, 0f);
+                    inspector.pivot = new Vector2(0f, 0f);
+                    inspector.anchoredPosition = new Vector2(Gap, 0f);
+                    inspector.sizeDelta = new Vector2(RightWidth, 300f);
+                    report.Count("inspector a la derecha", 1);
+                }
+                else report.Missing("Inventory/Inspector");
+            }
+            else report.Missing("MiddleGroup/Inventory");
+
+            // Alrededor: las estaciones del vendor arriba, dejando sitio al inspector abajo.
+            var workstations = right.Find("Workstations") as RectTransform;
+            if (workstations != null)
+            {
+                workstations.anchorMin = new Vector2(0f, 0f);
+                workstations.anchorMax = new Vector2(1f, 1f);
+                workstations.offsetMin = new Vector2(0f, 316f);
+                workstations.offsetMax = new Vector2(0f, -44f);
+            }
+
+            // Funda: cuelga del MiddleGroup del vendor, cuyo borde inferior queda a `bottom` px de la
+            // pantalla; para dejarla en la barra inferior se ancla a ese borde y se baja lo que sobra.
+            var hotbar = root.GetComponentInChildren<HotbarUI>(true);
+            if (hotbar != null)
+            {
+                var rt = (RectTransform)hotbar.transform;
+                rt.anchorMin = new Vector2(0.5f, 0f);
+                rt.anchorMax = new Vector2(0.5f, 0f);
+                rt.pivot = new Vector2(0.5f, 0f);
+                rt.anchoredPosition = new Vector2(0f, (Margin + 20f) - bottom);
+                // Layout estirado a la raíz, SIEMPRE: un override viejo en la variante no se deshace
+                // solo, y con Layout sin tamaño la funda se descentra y la cincha desaparece.
+                if (hotbar.transform.Find("Layout") is RectTransform layout) Stretch(layout);
+            }
+            report.Count("columnas", 3);
+        }
+
+        private static void Column(RectTransform rt, float side, float margin, float width, float bottom)
+        {
+            rt.anchorMin = new Vector2(side, 0f);
+            rt.anchorMax = new Vector2(side, 1f);
+            rt.pivot = new Vector2(side, 0.5f);
+            rt.anchoredPosition = new Vector2(side == 0f ? margin : -margin, 0f);
+            rt.sizeDelta = new Vector2(width, 0f);
+            rt.offsetMin = new Vector2(rt.offsetMin.x, bottom);
+            rt.offsetMax = new Vector2(rt.offsetMax.x, -margin);
+        }
+
+        private static void Stretch(RectTransform rt)
+        {
+            rt.anchorMin = Vector2.zero;
+            rt.anchorMax = Vector2.one;
+            rt.pivot = new Vector2(0.5f, 0.5f);
+            rt.offsetMin = Vector2.zero;
+            rt.offsetMax = Vector2.zero;
+        }
+
+        private static void TopLeft(RectTransform rt, float x, float y)
+        {
+            rt.anchorMin = new Vector2(0f, 1f);
+            rt.anchorMax = new Vector2(0f, 1f);
+            rt.pivot = new Vector2(0f, 1f);
+            rt.anchoredPosition = new Vector2(x, -y);
         }
 
         private static void Tape(Transform t, Image img, BackroomsUiTheme theme)

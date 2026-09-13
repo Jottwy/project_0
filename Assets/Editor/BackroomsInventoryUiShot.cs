@@ -104,6 +104,11 @@ namespace BackroomsSurvival.EditorTools
             // opciones, muerte, loot, mensajes...) se apagan, o la captura es una sopa de paneles.
             var inventory = root.GetComponentInChildren<InventoryUI>(true);
             var hotbar = root.GetComponentInChildren<HotbarUI>(true);
+            // Primero los nodos de primer nivel (la rueda de objetos cuelga de uno que no es Canvas),
+            // después los hijos de cada canvas: sólo sobreviven las ramas con inventario o funda.
+            foreach (Transform top in root.transform)
+                top.gameObject.SetActive(top.GetComponentInChildren<InventoryUI>(true) != null
+                                         || top.GetComponentInChildren<HotbarUI>(true) != null);
             foreach (var canvas in root.GetComponentsInChildren<Canvas>(true))
             {
                 foreach (Transform child in canvas.transform)
@@ -121,9 +126,12 @@ namespace BackroomsSurvival.EditorTools
             {
                 foreach (var t in kr.GetComponentsInChildren<Transform>(true))
                     t.gameObject.SetActive(true);
-                // Sin estación abierta no hay nada que enseñar, y el tooltip nace del ratón.
+                // Sin estación abierta no hay nada que enseñar, el tooltip nace del ratón y la rueda
+                // de objetos (FPS_UI_ItemWheel, anidada en el inventario) sólo sale con su tecla.
                 foreach (var t in kr.GetComponentsInChildren<Transform>(true))
                     if (t.name == "Workstations" || t.name == "ItemTooltip") t.gameObject.SetActive(false);
+                foreach (var wheel in kr.GetComponentsInChildren<ItemWheelUI>(true))
+                    wheel.gameObject.SetActive(false);
                 foreach (var g in kr.GetComponentsInChildren<CanvasGroup>(true))
                 {
                     g.alpha = 1f;

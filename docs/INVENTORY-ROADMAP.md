@@ -315,6 +315,13 @@ tinte sobre la UI piden overlay propio o canvas en Screen Space Camera.
   `BackroomsInventoryUiBuilder` (fondo `BR_Backdrop`, fuentes, huecos, cintas, papel del inspector, cincha de la funda,
   regla de carga) y el `GameMode` de `STP_Showcase` apuntando a ella (4 líneas de override). Captura sin Play:
   `Backrooms/UI/Capturar inventario`. **Sin ver en Play todavía.**
-- **Pendiente 1b**: las tres columnas del greybox (personaje izquierda, mochila centro, alrededor derecha), feedback de
-  selección con la luz del tubo (`SelectableButtonFeedback` del vendor, por referencia serializada), papel del inspector
-  a tamaño de columna.
+- **Rebanada 1b**: `Relayout` en el builder mueve los tres grupos del vendor a las columnas del greybox (personaje
+  440 px izquierda; mochila y carga en el centro; inspector anclado FUERA de su rect en la columna derecha, 400 px;
+  funda en la barra inferior). Dos trampas medidas: reparentar dentro de un prefab anidado NO se guarda como override
+  (Unity lo descarta sin avisar); un override viejo de la variante no se deshace al reaplicar, hay que escribir el valor.
+- **Tubería** `tools/dev/InventoryUiPipeline.sh`: compile check (con los .cs nuevos que la foto del csproj no ve) →
+  Unity headless tema + variante + captura (`BackroomsUiPipeline.RunAll`, sin `-nographics`) → tests
+  (`BackroomsUiThemeTests`, `BackroomsInventoryVariantTests`) → limpieza. Retira lockfiles huérfanos. Logs en
+  `Builds/uipipeline/` (nunca bajo `Temp/`: el headless lo borra).
+- **Pendiente**: feedback de selección con la luz del tubo (`SelectableButtonFeedback` por referencia serializada),
+  papel del inspector a la altura del greybox, ver TODO en Play (preview 3D, fondo al inspeccionar, tooltip).
