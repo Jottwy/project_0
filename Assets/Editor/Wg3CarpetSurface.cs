@@ -115,8 +115,15 @@ namespace BackroomsSurvival.EditorTools
             mat.SetFloat("_Wg3WetSmoothness", WetSmoothness);
             mat.SetFloat("_Wg3DryLighten", DryLighten);
             mat.SetFloat("_Wg3WetFlatten", WetFlatten);
+            // Los `[Toggle]` del shader vuelven a escribir la palabra clave desde su float cada vez
+            // que se valida el material: con el float a 0, se apagaría sola al abrirlo.
+            mat.SetFloat("_Wg3Stochastic", 1f);
+            mat.SetFloat("_Wg3Wetness", 1f);
             mat.EnableKeyword("_WG3_STOCHASTIC");
             mat.EnableKeyword("_WG3_WETNESS");
+            // Como URP/Lit de fábrica: el suelo es estático y no necesita su pasada de vectores de
+            // movimiento. Cambiar de shader la dejaba encendida.
+            mat.SetShaderPassEnabled("MotionVectors", false);
             EditorUtility.SetDirty(mat);
             AssetDatabase.SaveAssets();
             AssetDatabase.Refresh();
