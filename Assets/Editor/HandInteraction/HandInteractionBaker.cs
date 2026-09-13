@@ -48,6 +48,8 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
             public HandInteractionRig Rig;
             public HandSide Carrier;
             public readonly List<(AnimationClip original, AnimationClip effective)> Pairs = new();
+            /// <summary>Clips de las OTRAS capas (la cuerda): sólo se rehornean cuando la portadora se rehace.</summary>
+            public readonly List<(AnimationClip original, AnimationClip effective)> OtherLayerPairs = new();
             public AnimationClip IdleEffective;
 
             public void Dispose()
@@ -64,6 +66,11 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
                 throw new HandInteractionException("PREFAB_NOT_SET", "el perfil no apunta a ningún prefab de wieldable");
             var ctx = new Context { Profile = profile, Prefab = profile.wieldablePrefab };
             ctx.Instance = (GameObject)PrefabUtility.InstantiatePrefab(ctx.Prefab);
+            // DESEMPAQUETADA: dentro de una instancia de prefab Unity NO deja cambiar el padre de un hijo (sólo lo
+            // dice en el log), y rehacer la portadora necesita soltar el modelo de la mano. Medido: sin esto el
+            // modelo seguía en Hand.R y toda la búsqueda medía la relación mano-objeto de siempre. Esta copia es
+            // de medida; el prefab se escribe aparte con LoadPrefabContents.
+            PrefabUtility.UnpackPrefabInstance(ctx.Instance, PrefabUnpackMode.Completely, InteractionMode.AutomatedAction);
             ctx.Instance.hideFlags = HideFlags.HideAndDontSave;
             ctx.Instance.transform.SetPositionAndRotation(Vector3.zero, Quaternion.identity);
             foreach (var t in ctx.Instance.GetComponentsInChildren<Transform>(true))
@@ -72,6 +79,9 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
             try
             {
                 ctx.Rig = HandInteractionRig.Read(ctx.Instance, profile.modelNodeName, profile.gripMeshNodeName);
+                if (!string.IsNullOrEmpty(profile.sweptPartNodeName))
+                    ctx.Rig.AddSweptPart(profile.sweptPartNodeName, profile.sweptPartAxis, profile.sweptClearanceMeters,
+                        profile.sweptPartMinY01, profile.sweptPartMaxY01);
                 HandInteractionRig.MeasureCloseSigns(ctx.Rig.R);
                 HandInteractionRig.MeasureCloseSigns(ctx.Rig.L);
                 ctx.Carrier = IsDescendant(ctx.Rig.Node, ctx.Rig.R.Hand) ? ctx.Rig.R
@@ -116,8 +126,12 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
             // Orden estable: el del controller (regla 13: nada sale de iterar un HashSet).
             foreach (var original in controller.animationClips.Distinct())
             {
-                if (!baseLayerClips.Contains(original)) continue;
                 var effective = overrides.TryGetValue(original, out var ov) ? ov : original;
+                if (!baseLayerClips.Contains(original))
+                {
+                    ctx.OtherLayerPairs.Add((original, effective));
+                    continue;
+                }
                 ctx.Pairs.Add((original, effective));
                 if (ctx.IdleEffective == null && original.name.ToLowerInvariant().Contains("idle")) ctx.IdleEffective = effective;
             }
@@ -219,6 +233,9 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
         internal sealed class Solved
         {
             public HandGripSolution Right, Left;
+            /// <summary>La portadora se rehízo: el modelo cambia de offset bajo la mano y se hornean todas las capas.</summary>
+            public bool CarrierRegrip;
+            public HandGripSolution Carrier;
             public Vector3 IdleGripPosition;
             public Quaternion ObjectRotationInView;
             public string Log;
@@ -247,9 +264,13 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
             var first = ctx.Carrier ?? rig.R;
             var second = first == rig.R ? rig.L : rig.R;
             var firstSol = SolveHand(ctx, first, null, log);
+            solved.CarrierRegrip = ctx.Carrier != null && first == ctx.Carrier && p.Hand(first.Right).role == HandRole.Regrip;
+            if (solved.CarrierRegrip) solved.Carrier = firstSol;
+            // Con la portadora rehecha la segunda se mide contra la mano NUEVA (SolveCarrierRegrip la deja puesta).
             var secondSol = SolveHand(ctx, second, first, log);
             // Deja la primera puesta otra vez (la búsqueda de la segunda restaura su fotograma base).
             if (firstSol?.Fingers != null) HandInteractionRig.WriteFingers(first, firstSol.Fingers);
+            rig.ReattachNode();
 
             solved.Right = first.Right ? firstSol : secondSol;
             solved.Left = first.Right ? secondSol : firstSol;
@@ -262,8 +283,16 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
             var target = ctx.Profile.Hand(side.Right);
             // Cada mano agarra SU superficie (el pomo, el cuerpo); la portadora, siempre la principal.
             ctx.Rig.UseSurfaceFor(side == ctx.Carrier ? null : target);
+            // Una secundaria que agarra otra cosa tampoco puede entrar en la órbita de lo que gira; la que agarra
+            // la propia pieza, sí (la portadora rehecha activa la comprobación por su cuenta).
+            bool orbit = side != ctx.Carrier && ctx.Rig.HasSweptParts && target.gripPartNodeName != ctx.Profile.sweptPartNodeName;
+            if (orbit) ctx.Rig.SweptCheckEnabled = true;
             try { return SolveHandOnSurface(ctx, side, other, target, log); }
-            finally { ctx.Rig.UseMainSurface(); }
+            finally
+            {
+                if (orbit) ctx.Rig.SweptCheckEnabled = false;
+                ctx.Rig.UseMainSurface();
+            }
         }
 
         private static HandGripSolution SolveHandOnSurface(Context ctx, HandSide side, HandSide other, HandGripTarget target, StringBuilder log)
@@ -274,6 +303,11 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
                 case HandRole.Keep:
                     log.AppendLine($"mano {side.Suffix}: se conserva la del clip base.");
                     return null;
+                case HandRole.Regrip:
+                    if (side != ctx.Carrier)
+                        throw new HandInteractionException("ROLE_REGRIP_NOT_CARRIER",
+                            $"Regrip es para la mano que lleva el objeto; la {side.Suffix} no lo lleva (usar Grip)");
+                    return HandGripSolver.SolveCarrierRegrip(rig, side, target, ctx.Profile.maxShoulderShiftMeters, other, log);
                 case HandRole.Reference:
                     if (side == ctx.Carrier)
                         throw new HandInteractionException("ROLE_REFERENCE_CARRIER",
@@ -305,7 +339,25 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
                 throw new HandInteractionException("OUTPUT_FOLDER_NOT_SET", "el perfil no tiene outputFolder");
             if (write) BackroomsEditorFolders.EnsureFolder(profile.outputFolder);
 
-            var distinct = ctx.Pairs.Select(pr => pr.effective).Distinct().ToList();
+            bool regripRequested = ctx.Carrier != null && profile.Hand(ctx.Carrier.Right).role == HandRole.Regrip;
+            // El offset del modelo bajo la portadora es ENTRADA de la búsqueda, como los clips base, y un Regrip lo
+            // reescribe en el prefab. Se busca siempre con el ORIGINAL: medido, tras hornear un Regrip la misma pose
+            // (coste 4,46) pasó a costar 186 porque el objeto se colocaba con el brazo base y el offset nuevo, y cinco
+            // iteraciones de ajuste persiguieron un objeto que estaba en otro sitio.
+            Vector3 prefabNodePos = ctx.Rig.Node.localPosition;
+            Quaternion prefabNodeRot = ctx.Rig.Node.localRotation;
+            if (profile.hasBaseNodeLocal)
+            {
+                ctx.Rig.Node.localPosition = profile.baseNodeLocalPosition;
+                ctx.Rig.Node.localRotation = profile.baseNodeLocalRotation;
+            }
+            var baseLayerEffective = new HashSet<AnimationClip>(ctx.Pairs.Select(pr => pr.effective));
+            // Con la portadora rehecha también se hornean las demás capas (la cuerda), o durante la acción el objeto
+            // volvería a colgar del offset viejo; y si un Regrip anterior ya las tocó, también, para devolverlas a su
+            // base al quitarlo. Orden estable: capa base primero, en el orden del controller.
+            var distinct = ctx.Pairs.Select(pr => pr.effective)
+                .Concat(regripRequested || profile.hasBaseNodeLocal ? ctx.OtherLayerPairs.Select(pr => pr.effective) : Enumerable.Empty<AnimationClip>())
+                .Distinct().ToList();
             // Se resuelve SIN copiar: antes del primer horneado el clip efectivo ES la base. La copia se hace
             // sólo si el veredicto deja escribir (antes quedaba un Base/ huérfano tras un NO_NATURAL_GRIP).
             var bases = distinct.Select(e => BaseFor(ctx, e, false, result.warnings)).ToList();
@@ -350,7 +402,7 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
 
             var built = new List<AnimationClip>();
             for (int i = 0; i < distinct.Count; i++)
-                built.Add(BuildClip(ctx, bases[i], solved, report));
+                built.Add(BuildClip(ctx, bases[i], solved, report, secondaryToo: baseLayerEffective.Contains(distinct[i])));
 
             if (!write)
             {
@@ -360,6 +412,12 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
                 idleBuilt.SampleAnimation(ctx.Rig.Animator.gameObject, 0f);
                 ctx.Rig.Animator.localPosition = Vector3.zero;
                 ctx.Rig.Animator.localRotation = Quaternion.identity;
+                if (solved.CarrierRegrip)
+                {
+                    // El offset nuevo del modelo sólo vive en el prefab al escribir: en la previsualización se pone a mano.
+                    ctx.Rig.Node.localPosition = solved.Carrier.NodeLocalPos;
+                    ctx.Rig.Node.localRotation = solved.Carrier.NodeLocalRot;
+                }
                 posedPreview?.Invoke(ctx);
                 foreach (var c in built) Object.DestroyImmediate(c);
                 StoreResolved(profile, solved, persist: false);
@@ -385,11 +443,20 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
             foreach (var clip in baked) MarkBaked(clip, profile);
             profile.baseClips = bases.ToArray();
             profile.bakedClips = baked;
+            if (solved.CarrierRegrip && !profile.hasBaseNodeLocal)
+            {
+                profile.hasBaseNodeLocal = true;
+                profile.baseNodeLocalPosition = prefabNodePos;
+                profile.baseNodeLocalRotation = prefabNodeRot;
+            }
             EditorUtility.SetDirty(profile);
             AssetDatabase.SaveAssets();
 
             WritePrefab(ctx, remap, solved);
 
+            // Sin Regrip, WritePrefab ya devolvió el offset base y las capas de acción salieron de su base: la copia
+            // deja de hacer falta (si no, esas capas se rehornearían para siempre).
+            if (!solved.CarrierRegrip) profile.hasBaseNodeLocal = false;
             profile.lastBakeUtc = DateTime.UtcNow.ToString("o");
             StoreResolved(profile, solved, persist: true);
             EditorUtility.SetDirty(profile);
@@ -427,7 +494,7 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
         /// está cerca de su sitio del idle y vuelve al clip base a medida que se aleja: así equipar y enfundar
         /// traen y se llevan la mano con el objeto sin estirar el brazo hasta fuera de la pantalla.
         /// </summary>
-        private static AnimationClip BuildClip(Context ctx, AnimationClip source, Solved solved, StringBuilder report)
+        private static AnimationClip BuildClip(Context ctx, AnimationClip source, Solved solved, StringBuilder report, bool secondaryToo)
         {
             var rig = ctx.Rig;
             var p = ctx.Profile;
@@ -438,7 +505,7 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
             int frames = Mathf.Max(1, Mathf.RoundToInt(source.length * HandInteractionRig.FrameRate));
             var list = new List<HandFrame>(frames + 1);
             int clamps = 0;
-            float minWeight = 1f, maxWeight = 0f;
+            float minWeight = 1f, maxWeight = 0f, maxNodeDriftMm = 0f;
 
             for (int k = 0; k <= frames; k++)
             {
@@ -448,18 +515,38 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
                 float proximity = 1f - Mathf.SmoothStep(0f, 1f,
                     Mathf.InverseLerp(p.secondaryFullWeightDistance, p.secondaryZeroWeightDistance, distance));
 
-                foreach (bool right in new[] { true, false })
+                // La portadora primero: si se rehace, el modelo se suelta y se queda donde este clip lo lleva.
+                bool carrierRight = ctx.Carrier == null || ctx.Carrier.Right;
+                foreach (bool right in new[] { carrierRight, !carrierRight })
                 {
                     var side = rig.Side(right);
                     var sol = right ? solved.Right : solved.Left;
                     var target = p.Hand(right);
                     if (sol == null || target.role == HandRole.Keep) continue;
 
-                    if (target.role == HandRole.Relaxed || side == ctx.Carrier)
+                    if (solved.CarrierRegrip && side == ctx.Carrier)
                     {
-                        BlendFingers(side, sol.Fingers, target.weight);
+                        rig.DetachNode();
+                        Vector3 cShoulder = side.Upper.position, cElbow = side.Fore.position, cHand = side.Hand.position;
+                        side.Upper.position = cShoulder + sol.ShoulderShiftWorld;
+                        if (!HandInteractionRig.SolveTwoBone(side, rig.GripMesh.TransformPoint(sol.HandPosInGrip),
+                                rig.GripMesh.rotation * sol.HandRotInGrip, HandGripSolver.PoleFor(rig, side, sol.Pole, cElbow, cShoulder, cHand)))
+                            clamps++;
+                        HandInteractionRig.DistributeForearmTwist(side);
+                        HandInteractionRig.WriteFingers(side, sol.Fingers);
+                        // Si el IK es exacto, el offset del modelo bajo la mano es el mismo en todos los fotogramas.
+                        float driftMm = (side.Hand.InverseTransformPoint(rig.Node.position) - sol.NodeLocalPos).magnitude *
+                                        side.Hand.lossyScale.x * 1000f;
+                        maxNodeDriftMm = Mathf.Max(maxNodeDriftMm, driftMm);
                         continue;
                     }
+
+                    if (target.role == HandRole.Relaxed || side == ctx.Carrier)
+                    {
+                        if (secondaryToo || side == ctx.Carrier) BlendFingers(side, sol.Fingers, target.weight);
+                        continue;
+                    }
+                    if (!secondaryToo) continue; // la otra mano de una capa de acción (la cuerda) es de su horneador
 
                     float w = target.weight * proximity;
                     minWeight = Mathf.Min(minWeight, w); maxWeight = Mathf.Max(maxWeight, w);
@@ -478,10 +565,12 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
                     BlendFingers(side, sol.Fingers, w);
                 }
                 list.Add(rig.Capture(t));
+                rig.ReattachNode(); // el siguiente muestreo tiene que llevar el modelo con el offset VIEJO
             }
             if (ownsAnimationMode) AnimationMode.StopAnimationMode();
             report.AppendLine($"clip '{source.name}': {source.length:0.00} s{(loop ? ", bucle" : "")}; peso secundaria {minWeight:0.00}–{maxWeight:0.00}; " +
-                              $"alcance recortado con peso completo en {clamps} fotograma(s).");
+                              $"alcance recortado con peso completo en {clamps} fotograma(s)" +
+                              (solved.CarrierRegrip ? $"; el modelo se aparta como mucho {maxNodeDriftMm:0.0} mm de su offset nuevo." : "."));
             return rig.BuildClip(list, source.length, loop);
         }
 
@@ -527,6 +616,23 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
                         e.FindPropertyRelative("Override").objectReferenceValue = over;
                 }
                 so.ApplyModifiedPropertiesWithoutUndo();
+
+                if (solved.CarrierRegrip)
+                {
+                    // Un solo escritor del nodo (ADR-077 enm. 5): con la portadora rehecha, el offset lo pone este horneado.
+                    var node = root.GetComponentsInChildren<Transform>(true).FirstOrDefault(t => t.name == ctx.Profile.modelNodeName)
+                        ?? throw new HandInteractionException("MODEL_NODE_NOT_FOUND", "el prefab ha perdido el nodo del modelo");
+                    node.localPosition = solved.Carrier.NodeLocalPos;
+                    node.localRotation = solved.Carrier.NodeLocalRot;
+                }
+                else if (ctx.Profile.hasBaseNodeLocal)
+                {
+                    // Se quitó el Regrip: los clips vuelven a salir de su base, el offset también.
+                    var node = root.GetComponentsInChildren<Transform>(true).FirstOrDefault(t => t.name == ctx.Profile.modelNodeName)
+                        ?? throw new HandInteractionException("MODEL_NODE_NOT_FOUND", "el prefab ha perdido el nodo del modelo");
+                    node.localPosition = ctx.Profile.baseNodeLocalPosition;
+                    node.localRotation = ctx.Profile.baseNodeLocalRotation;
+                }
 
                 Transform grip = root.GetComponentsInChildren<Transform>(true)
                     .FirstOrDefault(t => t.name == (string.IsNullOrEmpty(ctx.Profile.gripMeshNodeName) ? ctx.Rig.GripMesh.name : ctx.Profile.gripMeshNodeName)

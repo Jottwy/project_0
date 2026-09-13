@@ -31,6 +31,14 @@ namespace BackroomsSurvival.Gameplay.HandInteraction
         /// equipar y enfundar, en vez de inventar otro.
         /// </summary>
         Reference = 3,
+        /// <summary>
+        /// Sólo la PORTADORA: se vuelve a resolver entera —brazo, muñeca y dedos, con la misma búsqueda de
+        /// naturalidad que una secundaria— sujetando el objeto EXACTAMENTE donde ya lo llevaba cada clip. El
+        /// encuadre (dónde está el objeto en pantalla) no cambia; cambia cómo lo coge la mano. Se aplica a
+        /// todos los clips del controller (también a las capas de acción) y reescribe el offset del modelo
+        /// bajo la mano.
+        /// </summary>
+        Regrip = 4,
     }
 
     public enum HandFingerStyle
@@ -158,6 +166,22 @@ namespace BackroomsSurvival.Gameplay.HandInteraction
         [Tooltip("Coste de naturalidad por encima del cual NO se hornea (salvo force): la mejor pose existe, pero no es natural.")]
         public float maxNaturalCost = 6f;
 
+        [Header("Pieza que gira (la manivela)")]
+        [Tooltip("Hijo del modelo que gira en runtime: ninguna mano que se resuelva de nuevo puede entrar en su órbita.")]
+        public string sweptPartNodeName;
+
+        [Tooltip("Eje de giro en local de esa pieza (la manivela gira sobre +Z).")]
+        public Vector3 sweptPartAxis = Vector3.forward;
+
+        [Tooltip("Holgura mínima entre la pieza girando y el hueso de cualquier falange, en metros (piel de un dedo).")]
+        public float sweptClearanceMeters = 0.0085f;
+
+        [Tooltip("Qué tramo de la pieza que gira cuenta, por su Y local normalizada: 0,75–1 = sólo el pomo. Con la vuelta " +
+                 "completa del BRAZO de la manivela no queda ningún agarre natural del cuerpo (medido); el criterio del " +
+                 "proyecto es el pomo (TheKnobOrbitClearsTheRightHand).")]
+        [Range(0f, 1f)] public float sweptPartMinY01;
+        [Range(0f, 1f)] public float sweptPartMaxY01 = 1f;
+
         [Header("Salida")]
         [Tooltip("Carpeta de los clips base copiados y de los que se crean nuevos.")]
         public string outputFolder;
@@ -167,6 +191,13 @@ namespace BackroomsSurvival.Gameplay.HandInteraction
 
         [Tooltip("Los clips que escribió el último horneado, en el mismo orden que baseClips.")]
         public AnimationClip[] bakedClips = Array.Empty<AnimationClip>();
+
+        [Tooltip("Offset del nodo del modelo bajo la portadora ANTES del primer Regrip. Es entrada de la búsqueda (el " +
+                 "objeto va donde el clip base + este offset lo ponen) y un Regrip lo reescribe en el prefab: sin esta copia " +
+                 "el siguiente horneado buscaría con el objeto en otro sitio.")]
+        public bool hasBaseNodeLocal;
+        public Vector3 baseNodeLocalPosition;
+        public Quaternion baseNodeLocalRotation = Quaternion.identity;
 
         [Header("Estado")]
         public string lastBakeUtc;

@@ -68,7 +68,7 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
                 var rig = ctx.Rig;
                 if (profile.bakedClips != null)
                     foreach (var bakedClip in profile.bakedClips.Where(c => c != null))
-                        if (!ctx.Pairs.Any(p => p.effective == bakedClip))
+                        if (!ctx.Pairs.Any(p => p.effective == bakedClip) && !ctx.OtherLayerPairs.Any(p => p.effective == bakedClip))
                             Issue("error", "OVERRIDE_NOT_USED", "", $"el clip horneado '{bakedClip.name}' existe pero el wieldable no lo usa",
                                 hint: "rehornear con 'bake'; si alguien cambió los overrides a mano, revisar el prefab");
 
@@ -126,6 +126,26 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
                             if (rm.handOverlapMm < 15f)
                                 Issue("error", "HANDS_OVERLAP", side.Suffix, $"{when}: las dos manos se tocan ({rm.handOverlapMm:0} mm)", rm.handOverlapMm, 15f,
                                     "la pose de referencia choca con la portadora en este clip");
+                            continue;
+                        }
+                        if (target.role == HandRole.Regrip)
+                        {
+                            if (!baked || side != ctx.Carrier) continue;
+                            var regripWork = JsonUtility.FromJson<HandGripTarget>(JsonUtility.ToJson(target));
+                            if (target.resolved) regripWork.alongAxis = target.resolvedAlongAxis;
+                            rig.SweptCheckEnabled = true;
+                            var gm = HandGripSolver.Measure(rig, side, regripWork, target.resolved ? target.resolvedClockDegrees : target.clockDegrees,
+                                false, target.resolvedShoulderShift,
+                                HandInteractionRig.TwistDegrees(Quaternion.Inverse(side.Fore.rotation) * side.Hand.rotation), rig.Side(!right),
+                                true, checkView: fraction == 0f);
+                            rig.SweptCheckEnabled = false;
+                            gm.hand = side.Suffix;
+                            if (fraction == 0f) report.hands.Add(gm);
+                            if (gm.costBreakdown.Any(c => c.StartsWith("órbita")))
+                                Issue("error", "SWEPT_PART_COLLISION", side.Suffix,
+                                    $"{when}: la mano entra en la órbita de '{profile.sweptPartNodeName}' ({gm.sweptClearanceMm:0.0} mm)", gm.sweptClearanceMm, 0f,
+                                    "rehornear; si persiste, cambiar clockDegrees para llevar la mano lejos de la pieza que gira");
+                            Judge(report, gm, target, false, when, Issue);
                             continue;
                         }
                         if (target.role != HandRole.Grip) continue;
@@ -219,8 +239,8 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
             if (m.palmGapMm > 22f)
                 issue("warning", "PALM_FAR", h, $"{when}: el nudillo más cercano queda a {m.palmGapMm:0} mm de la piel: sostiene con las yemas", m.palmGapMm, 22f,
                     "nudge direction=in, o rehornear con autoSearch");
-            if (m.targetErrorMm > 18f)
-                issue("warning", "TARGET_MISSED", h, $"{when}: el hueco del puño queda a {m.targetErrorMm:0} mm del eje en su punto", m.targetErrorMm, 18f,
+            if (m.targetErrorMm > m.targetToleranceMm + 6f)
+                issue("warning", "TARGET_MISSED", h, $"{when}: el hueco del puño queda a {m.targetErrorMm:0} mm del eje en su punto", m.targetErrorMm, m.targetToleranceMm + 6f,
                     "rehornear; si no cambia, el objetivo no es alcanzable con esa orientación");
             if (m.viewAngleDeg > 45f)
                 issue("warning", "HAND_OUT_OF_VIEW", h, $"{when}: la mano está a {m.viewAngleDeg:0}° del centro de la vista", m.viewAngleDeg, 45f,

@@ -68,6 +68,25 @@ namespace BackroomsSurvival.Tests
         }
 
         [Test]
+        public void UnRegripHorneadoGuardaElOffsetOriginalDelModelo()
+        {
+            var profiles = BakedProfiles().ToList();
+            if (profiles.Count == 0) Assert.Ignore("no hay perfiles horneados");
+            foreach (var p in profiles)
+            {
+                bool regrip = p.rightHand.role == HandRole.Regrip || p.leftHand.role == HandRole.Regrip;
+                // Sin la copia, el siguiente horneado buscaría con el brazo base y el offset que escribió este.
+                if (regrip)
+                    Assert.IsTrue(p.hasBaseNodeLocal, $"{p.name}: Regrip horneado sin baseNodeLocal: rehornear buscaría con el objeto en otro sitio");
+                if (!p.hasBaseNodeLocal || regrip) continue;
+                var node = p.wieldablePrefab.GetComponentsInChildren<Transform>(true).FirstOrDefault(t => t.name == p.modelNodeName);
+                Assert.IsNotNull(node, $"{p.name}: el prefab no tiene '{p.modelNodeName}'");
+                Assert.Less((node.localPosition - p.baseNodeLocalPosition).magnitude, 1e-4f,
+                    $"{p.name}: sin Regrip el modelo tiene que volver a su offset base. {Rebake}");
+            }
+        }
+
+        [Test]
         public void LaManoSecundariaRodeaElObjetoSinAtravesarlo()
         {
             var profiles = BakedProfiles().ToList();
@@ -80,7 +99,9 @@ namespace BackroomsSurvival.Tests
                 {
                     var target = right ? p.rightHand : p.leftHand;
                     string s = right ? "R" : "L";
-                    if (target.role != HandRole.Grip || posed.CarrierIs(s)) continue;
+                    // Una secundaria que agarra, o una portadora rehecha entera (sus dedos también son nuestros).
+                    bool measured = (target.role == HandRole.Grip && !posed.CarrierIs(s)) || target.role == HandRole.Regrip;
+                    if (!measured) continue;
 
                     foreach (var finger in Wrappers)
                     {
@@ -109,7 +130,8 @@ namespace BackroomsSurvival.Tests
                 {
                     var target = right ? p.rightHand : p.leftHand;
                     string s = right ? "R" : "L";
-                    if (target.role != HandRole.Grip || posed.CarrierIs(s)) continue;
+                    bool measured = (target.role == HandRole.Grip && !posed.CarrierIs(s)) || target.role == HandRole.Regrip;
+                    if (!measured) continue;
                     foreach (var finger in Wrappers)
                         for (int j = 1; j <= 3; j++)
                         {

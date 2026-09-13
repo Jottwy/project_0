@@ -35,7 +35,11 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
         public float wrapCoverageDeg;
         public float wrapCoverageWantedDeg;
         public float handOverlapMm;
+        /// <summary>Holgura a la órbita de las piezas que giran, ya descontada la exigida (negativo = dentro).</summary>
+        public float sweptClearanceMm;
         public float targetErrorMm;
+        /// <summary>Hasta dónde puede quedar el hueco del puño del eje sin que sea un error: crece con el radio.</summary>
+        public float targetToleranceMm = 18f;
         public float viewAngleDeg;
         public List<string> costBreakdown = new();
     }
@@ -55,6 +59,9 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
         public bool HasArmPose;
         public Vector3 HandPosInGrip;
         public Quaternion HandRotInGrip = Quaternion.identity;
+        /// <summary>Sólo Regrip: el offset nuevo del modelo bajo la mano portadora.</summary>
+        public Vector3 NodeLocalPos;
+        public Quaternion NodeLocalRot = Quaternion.identity;
         public Quaternion[][] Fingers;
         public HandGripMetrics Metrics;
     }
@@ -433,7 +440,11 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
             for (int f = 1; f < 5; f++) enclosed += (side.Fingers[f][1].position + side.Fingers[f][2].position) * 0.5f;
             enclosed /= 4f;
             m.targetErrorMm = Vector3.ProjectOnPlane(enclosed - gripPoint, rig.Axis).magnitude * 1000f;
-            if (checkFingers) Add("fuera-del-puño", Mathf.Pow(Mathf.Max(0f, m.targetErrorMm - 12f) / 10f, 2f));
+            // EL HUECO DEL PUÑO NO PUEDE CAER EN EL EJE DE UN TUBO GORDO: las falanges medias rodean la superficie y
+            // su centro queda, por pura geometría, a una fracción del radio. La tolerancia crece con él (en un mango
+            // de 12 mm, 30 mm; en el cuerpo de 26 mm de la linterna, 43 mm).
+            m.targetToleranceMm = 12f + 0.9f * (radius + HandInteractionRig.FingerSkin) * 1000f;
+            if (checkFingers) Add("fuera-del-puño", Mathf.Pow(Mathf.Max(0f, m.targetErrorMm - m.targetToleranceMm) / 10f, 2f));
 
             if (checkFingers)
             {
@@ -494,6 +505,26 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
                 float reachableDeg = fingerLength / Mathf.Max(0.005f, radius + HandInteractionRig.FingerSkin) * Mathf.Rad2Deg;
                 m.wrapCoverageWantedDeg = Mathf.Clamp(reachableDeg * 0.75f, 70f, 150f);
                 Add("no-rodea", Mathf.Max(0f, m.wrapCoverageWantedDeg - m.wrapCoverageDeg) / 25f);
+            }
+
+            // La órbita de lo que gira (la manivela): ninguna articulación dentro, en ninguna fase de la vuelta.
+            // También en la etapa gruesa, para que las semillas la tengan en cuenta. Con el perfil cilíndrico cuesta poco.
+            if (rig.SweptCheckEnabled && rig.HasSweptParts)
+            {
+                float worstSwept = float.MaxValue;
+                foreach (var p in JointPoints(side)) worstSwept = Mathf.Min(worstSwept, rig.SweptGap(p));
+                for (int f = 0; f < 5; f++)
+                    for (int j = 0; j < 2; j++)
+                        worstSwept = Mathf.Min(worstSwept, rig.SweptGap(Vector3.Lerp(side.Fingers[f][j].position, side.Fingers[f][j + 1].position, 0.5f)));
+                m.sweptClearanceMm = worstSwept * 1000f;
+                // DURA CON DEDOS REALES, BLANDA CON EL PUÑO GENÉRICO. Con dedos (etapa fina, validación) es un veto: como
+                // simple preferencia una mano 3 mm dentro costaba 1,0 y el pomo pasaba a 13 mm del índice. En la etapa
+                // gruesa los dedos son un puño al 55 % que no es el agarre final: un veto ahí tiraría semillas que la
+                // fina sí puede sacar de la órbita moviendo unos milímetros.
+                if (worstSwept < 0f)
+                    Add("órbita", checkFingers
+                        ? 10f + Mathf.Pow(-worstSwept / 0.001f, 2f)
+                        : Mathf.Pow(-worstSwept / 0.004f, 2f) * 0.5f);
             }
 
             if (other != null)
@@ -609,7 +640,11 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
                 float c = Evaluate(along, clock, tilt, 0f, pole, indexTip, false, out _, out _);
                 coarse.Add(new Candidate { Along = along, Clock = clock, Tilt = tilt, Pole = pole, IndexTip = indexTip, Cost = c });
             }
-            var top = coarse.OrderBy(c => c.Cost).Take(24).ToList();
+            var top = coarse.OrderBy(c => c.Cost).Take(40).ToList();
+            // El mejor de cada quinto del eje: si un tramo entero nunca entra en el top, se ve aquí y no hay que adivinarlo.
+            log?.AppendLine("  grueso, mejor por tramo del eje: " + string.Join(", ", coarse
+                .GroupBy(c => Mathf.Min(4, Mathf.FloorToInt(c.Along * 5f))).OrderBy(g => g.Key)
+                .Select(g => { var b = g.OrderBy(c => c.Cost).First(); return $"{b.Along:0.00}→{b.Cost:0.0}{(top.Contains(b) ? "*" : "")}"; })));
 
             // B: con dedos, refinando alrededor de los mejores. Se guarda el mejor de cada semilla para el
             // informe: si los cinco primeros fallan por lo mismo, el problema es el objeto, no la búsqueda.
@@ -620,10 +655,12 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
             {
                 Candidate seedBest = cand;
                 seedBest.Cost = float.MaxValue;
-                foreach (float along in Range(cand.Along, alongRange > 0f ? 0.025f : 0f, 0.025f, 0.03f, 0.97f, false))
+                // Más ancho que el paso grueso: una restricción dura (la órbita) puede dejar el mejor sitio justo entre
+                // dos semillas, y con ±0,025 / ±7,5° la etapa fina no llegaba a él.
+                foreach (float along in Range(cand.Along, alongRange > 0f ? 0.05f : 0f, 0.025f, 0.03f, 0.97f, false))
                 // El reloj es circular: sin límites (con min = max = 0 y sin «wrap» se descartaba TODO y la etapa B
                 // no llegaba a evaluar ni un candidato — los costes salían float.MaxValue).
-                foreach (float clock in Range(cand.Clock, clockRange > 0f ? 7.5f : 0f, 7.5f, 0f, 0f, true))
+                foreach (float clock in Range(cand.Clock, clockRange > 0f ? 15f : 0f, 7.5f, 0f, 0f, true))
                 foreach (float tilt in Range(cand.Tilt, tiltRange > 0f ? 5f : 0f, 5f, -90f, 90f, false))
                 for (float dp = -0.02f; dp <= 0.0201f; dp += 0.005f)
                 {
@@ -635,6 +672,9 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
                 seeds.Add((seedBest, seedMetrics));
                 if (seedBest.Cost < best.Cost) best = seedBest;
             }
+            log?.AppendLine("  fino, mejor por tramo del eje: " + string.Join(", ", seeds
+                .GroupBy(s => Mathf.Min(4, Mathf.FloorToInt(s.cand.Along * 5f))).OrderBy(g => g.Key)
+                .Select(g => { var b = g.OrderBy(s => s.cand.Cost).First(); return $"{b.cand.Along:0.00}→{b.cand.Cost:0.0} [{string.Join(", ", b.metrics.costBreakdown)}]"; })));
             foreach (var (c, m) in seeds.OrderBy(s => s.cand.Cost).Take(5))
                 log?.AppendLine($"  candidato: eje {c.Along:0.00}, reloj {Mathf.Repeat(c.Clock + 180f, 360f) - 180f:0}°, incl. {c.Tilt:0}°, " +
                                 $"índice→{(c.IndexTip ? "punta" : "culata")}, coste {c.Cost:0.00} [{string.Join(", ", m.costBreakdown)}]");
@@ -713,6 +753,34 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
             measured.role = HandRole.Grip;
             measured.offsetMeters = Vector3.zero;
             return measured;
+        }
+
+        /// <summary>
+        /// La PORTADORA vuelta a resolver (<see cref="HandRole.Regrip"/>): se suelta el modelo para que se quede donde el
+        /// clip base lo pone y la mano se busca igual que una secundaria (naturalidad, dedos, órbita de lo que gira).
+        /// Al salir deja la portadora YA puesta en su pose nueva y el modelo suelto, para que la otra mano se mida
+        /// contra esta; <c>Solve</c> lo vuelve a enganchar. Devuelve también el offset nuevo del modelo bajo la mano.
+        /// </summary>
+        public static HandGripSolution SolveCarrierRegrip(HandInteractionRig rig, HandSide side, HandGripTarget target,
+            float maxShoulderShift, HandSide other, StringBuilder log)
+        {
+            rig.DetachNode(); // lanza NODE_DETACH_FAILED si Unity no dejó soltarlo: sin eso la búsqueda mide aire
+            Vector3 baseShoulder = side.Upper.position, baseElbow = side.Fore.position, baseHand = side.Hand.position;
+            rig.SweptCheckEnabled = true;
+            HandGripSolution sol;
+            try { sol = SolveSecondary(rig, side, target, maxShoulderShift, other, log); }
+            finally { rig.SweptCheckEnabled = false; }
+
+            // Dejarla puesta: hombro, IK a su pose en el objeto, dedos.
+            side.Upper.position = baseShoulder + sol.ShoulderShiftWorld;
+            HandInteractionRig.SolveTwoBone(side, rig.GripMesh.TransformPoint(sol.HandPosInGrip), rig.GripMesh.rotation * sol.HandRotInGrip,
+                PoleFor(rig, side, sol.Pole, baseElbow, baseShoulder, baseHand));
+            HandInteractionRig.DistributeForearmTwist(side);
+            HandInteractionRig.WriteFingers(side, sol.Fingers);
+            sol.NodeLocalPos = side.Hand.InverseTransformPoint(rig.Node.position);
+            sol.NodeLocalRot = Quaternion.Inverse(side.Hand.rotation) * rig.Node.rotation;
+            log?.AppendLine($"mano {side.Suffix} (portadora, REHECHA): el objeto no se mueve; offset nuevo del modelo bajo la mano {sol.NodeLocalPos}.");
+            return sol;
         }
 
         /// <summary>

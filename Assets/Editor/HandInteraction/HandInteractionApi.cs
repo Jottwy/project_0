@@ -193,11 +193,19 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
                     case "preview":
                     {
                         var profile = ResolveProfile(req);
+                        // En un perfil HORNEADO lo resuelto es lo del horneado: validate y los tests miden contra eso. Una
+                        // previsualización lo pisaba y el validador medía la mano horneada contra otro objetivo.
+                        string bakedState = string.IsNullOrEmpty(profile.lastBakeUtc) ? null : JsonUtility.ToJson(profile);
                         res.bake = HandInteractionBaker.Bake(profile, write: false, ctx =>
                         {
                             if (req.capture) res.captures = HandInteractionCapture.Shoot(ctx.Rig, CaptureDir(req, profile), "preview");
                         });
-                        // Lo resuelto se guarda (sin clips): es lo que necesita 'nudge' para traducir «atrás».
+                        if (bakedState != null)
+                        {
+                            JsonUtility.FromJsonOverwrite(bakedState, profile);
+                            res.warnings.Add("PREVIEW_NOT_STORED: el perfil está horneado; lo resuelto en esta previsualización no se guarda.");
+                        }
+                        // Sin hornear, lo resuelto se guarda: es lo que necesita 'nudge' para traducir «atrás».
                         EditorUtility.SetDirty(profile);
                         AssetDatabase.SaveAssets();
                         break;
@@ -347,24 +355,28 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
 
         private static List<string> CaptureBaked(HandInteractionProfile profile, HandApiRequest req)
         {
-            using var ctx = HandInteractionBaker.Open(profile);
             string dir = CaptureDir(req, profile);
             var shots = new List<string>();
-            // Equipar y enfundar a MITAD, desde el ojo: es donde se ve si la mano secundaria llega o se va mal.
-            foreach (var (original, effective) in ctx.Pairs)
+            // UNA INSTANCIA NUEVA POR ESTADO. Muestrear equipar, enfundar e idle seguidos sobre la misma instancia y
+            // renderizar entre medias dejó los brazos con un skinning viejo: las capturas enseñaban la mano lejos
+            // del objeto con los dedos rectos mientras el test de dedos, sobre el mismo clip, pasaba (medido).
+            using (var ctx = HandInteractionBaker.Open(profile))
             {
-                string n = original.name.ToLowerInvariant();
-                string label = n.Contains("equip") ? "baked_equip50" : n.Contains("holster") ? "baked_holster50" : null;
-                if (label == null || shots.Any(s => s.EndsWith(label + ".png"))) continue;
-                effective.SampleAnimation(ctx.Rig.Animator.gameObject, effective.length * 0.5f);
+                ctx.IdleEffective.SampleAnimation(ctx.Rig.Animator.gameObject, 0f);
                 ctx.Rig.Animator.localPosition = Vector3.zero;
                 ctx.Rig.Animator.localRotation = Quaternion.identity;
-                shots.Add(HandInteractionCapture.ShootEye(ctx.Rig, dir, label));
+                shots.AddRange(HandInteractionCapture.Shoot(ctx.Rig, dir, "baked"));
             }
-            ctx.IdleEffective.SampleAnimation(ctx.Rig.Animator.gameObject, 0f);
-            ctx.Rig.Animator.localPosition = Vector3.zero;
-            ctx.Rig.Animator.localRotation = Quaternion.identity;
-            shots.InsertRange(0, HandInteractionCapture.Shoot(ctx.Rig, dir, "baked"));
+            foreach (string hint in new[] { "equip", "holster" })
+            {
+                using var ctx = HandInteractionBaker.Open(profile);
+                var pair = ctx.Pairs.FirstOrDefault(p => p.original.name.ToLowerInvariant().Contains(hint));
+                if (pair.effective == null) continue;
+                pair.effective.SampleAnimation(ctx.Rig.Animator.gameObject, pair.effective.length * 0.5f);
+                ctx.Rig.Animator.localPosition = Vector3.zero;
+                ctx.Rig.Animator.localRotation = Quaternion.identity;
+                shots.Add(HandInteractionCapture.ShootEye(ctx.Rig, dir, $"baked_{hint}50"));
+            }
             return shots;
         }
 

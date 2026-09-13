@@ -276,6 +276,113 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
             return side;
         }
 
+        // ─── Nodo del modelo y piezas que giran ──────────────────────────────────────────────────
+
+        private Transform _nodeParent;
+        private Vector3 _nodeLocalPos, _nodeLocalScale;
+        private Quaternion _nodeLocalRot;
+        public bool NodeDetached { get; private set; }
+
+        /// <summary>
+        /// Suelta el modelo de su mano conservando su pose de MUNDO: así la portadora se puede mover sin arrastrar el
+        /// objeto. <see cref="ReattachNode"/> lo devuelve con su offset ORIGINAL, que es con el que los clips base lo llevan.
+        /// </summary>
+        public void DetachNode()
+        {
+            if (NodeDetached) return;
+            _nodeParent = Node.parent;
+            _nodeLocalPos = Node.localPosition;
+            _nodeLocalRot = Node.localRotation;
+            _nodeLocalScale = Node.localScale;
+            Node.SetParent(InstanceRoot, true);
+            // Se COMPRUEBA: Unity rechaza el cambio de padre dentro de una instancia de prefab sin lanzar nada.
+            if (Node.parent != InstanceRoot)
+                throw new HandInteractionException("NODE_DETACH_FAILED",
+                    $"el modelo '{Node.name}' sigue colgando de '{Node.parent?.name}': ¿instancia de prefab sin desempaquetar?");
+            NodeDetached = true;
+        }
+
+        public void ReattachNode()
+        {
+            if (!NodeDetached) return;
+            Node.SetParent(_nodeParent, false);
+            Node.localPosition = _nodeLocalPos;
+            Node.localRotation = _nodeLocalRot;
+            Node.localScale = _nodeLocalScale;
+            NodeDetached = false;
+        }
+
+        private sealed class SweptPart
+        {
+            public HandObstacle Box;
+            public Vector3 AxisL;
+            public float Clearance;
+            /// <summary>La pieza en coordenadas cilíndricas sobre su eje: (distancia al eje, altura sobre el eje). Una
+            /// vuelta completa convierte cada vértice en un círculo, y la distancia de un punto a ese círculo sólo
+            /// depende de SU distancia al eje y SU altura: exacta en los 360° y sin barrer fases.</summary>
+            public Vector2[] Profile;
+        }
+
+        private readonly List<SweptPart> _swept = new();
+
+        /// <summary>Si está activo, <c>Measure</c> castiga cualquier articulación dentro de la órbita de las piezas que giran.</summary>
+        public bool SweptCheckEnabled;
+
+        public bool HasSweptParts => _swept.Count > 0;
+
+        public void AddSweptPart(string nodeName, Vector3 axisLocal, float clearance, float minY01 = 0f, float maxY01 = 1f)
+        {
+            var box = Parts.FirstOrDefault(p => p.Name == nodeName)
+                ?? throw new HandInteractionException("SWEPT_PART_NOT_FOUND", $"el modelo no tiene la pieza que gira '{nodeName}'");
+            var axis = axisLocal.sqrMagnitude < 1e-8f ? Vector3.forward : axisLocal.normalized;
+            var mesh = box.Transform.GetComponent<MeshFilter>().sharedMesh;
+            // LOS VÉRTICES, no la caja. Con la caja girando, la placa del brazo de la manivela era un disco macizo
+            // pegado al costado y cualquier dedo que rodease el cuerpo «chocaba»; el criterio real
+            // (`TheKnobOrbitClearsTheRightHand`) es la distancia a la pieza de verdad. Submuestreada a ~300 puntos y
+            // girada UNA vez aquí: la búsqueda sólo compara distancias.
+            // Rejilla de 1,5 mm en (r, z): miles de vértices se quedan en ~100 puntos distintos.
+            const float cell = 0.0015f;
+            var cells = new SortedDictionary<long, Vector2>();
+            float scale = Mathf.Max(1e-5f, box.Transform.lossyScale.x);
+            var bounds = mesh.bounds;
+            float yMin = Mathf.Lerp(bounds.min.y, bounds.max.y, Mathf.Clamp01(Mathf.Min(minY01, maxY01)));
+            float yMax = Mathf.Lerp(bounds.min.y, bounds.max.y, Mathf.Clamp01(Mathf.Max(minY01, maxY01)));
+            foreach (var v in mesh.vertices)
+            {
+                if (v.y < yMin - 1e-6f || v.y > yMax + 1e-6f) continue;
+                float z = Vector3.Dot(v, axis);
+                float r = (v - axis * z).magnitude;
+                long key = ((long)Mathf.RoundToInt(r * scale / cell) << 32) ^ (uint)Mathf.RoundToInt(z * scale / cell);
+                if (!cells.ContainsKey(key)) cells[key] = new Vector2(r, z);
+            }
+            _swept.Add(new SweptPart { Box = box, AxisL = axis, Clearance = clearance, Profile = cells.Values.ToArray() });
+        }
+
+        /// <summary>
+        /// La menor holgura (distancia al volumen que barre la pieza en una vuelta completa MENOS la holgura exigida) de
+        /// un punto a las piezas que giran. El pivote es el origen local de la pieza, como en runtime.
+        /// </summary>
+        public float SweptGap(Vector3 world)
+        {
+            float worst = float.MaxValue;
+            foreach (var s in _swept)
+            {
+                Vector3 local = s.Box.Transform.InverseTransformPoint(world);
+                float scale = Mathf.Max(1e-5f, s.Box.Transform.lossyScale.x);
+                float z = Vector3.Dot(local, s.AxisL);
+                float r = (local - s.AxisL * z).magnitude;
+                float best = float.MaxValue;
+                foreach (var p in s.Profile)
+                {
+                    float dr = r - p.x, dz = z - p.y;
+                    float d = dr * dr + dz * dz;
+                    if (d < best) best = d;
+                }
+                worst = Mathf.Min(worst, Mathf.Sqrt(best) * scale - s.Clearance);
+            }
+            return worst;
+        }
+
         // ─── Superficie activa ───────────────────────────────────────────────────────────────────
 
         /// <summary>
@@ -326,6 +433,9 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
                 if (o.Transform == MainSurface.T || o.Transform == Surface.T) continue;
                 gap = Mathf.Min(gap, BoxGap(o, world));
             }
+            // La órbita de lo que gira NO entra aquí: probado como obstáculo para los dedos, toda palma y falange del lado de
+            // la manivela contaba como «dentro» en cualquier agarre y la búsqueda saltaba a poses de coste 71 (medido).
+            // Se queda como coste duro en Measure.
             return gap;
         }
 
