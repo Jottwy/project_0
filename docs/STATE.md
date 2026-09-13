@@ -108,8 +108,8 @@
 ### 2026-09-13 — 55.ª tanda: manos sobre objetos — `Tools > Interaction Authoring` y API para Claude (ADR-150 PROPUESTA)
 - **Horneado, no Animation Rigging**: perfil en espacio del objeto, IK de dos huesos + dedos acoplados, coste de naturalidad barrido.
   API JSON (`tools/dev/HandInteraction.ps1`), puente con editor abierto, CLI headless, ventana. Guía: `docs/systems/hand-interaction.md`.
-- **Linterna a dos manos: `NO_NATURAL_GRIP`** (coste 8,7, tope 6): con la derecha centrada en 180 mm no cabe otro puño; no se forzó.
-  Ningún asset de juego cambiado; perfil sin hornear en `Assets/Data/HandInteraction/`. EditMode 23/23 con un horneado forzado, revertido.
+- **Enm. 4: sin tembleque y destornillador**: el antebrazo temblaba por un salto de signo de la torsión (160–178°), ahora continua +
+  test genérico; destornillador por `Regrip` sin penetraciones (coste 2,60, agarre de precisión); los `Template_Attack` no se hornean.
 - **Derecha rehecha (enm. 2, rol `Regrip`)**: la muñeca de 129° pasa a antebrazo −10°, coste 4,47, pomo despejado; 24/25 verdes (1 saltado).
   Trampa: el offset del modelo es ENTRADA de la búsqueda y Regrip lo reescribe (4,46 → 186); ahora `baseNodeLocal*` en el perfil.
 - **Izquierda en la manivela (enm. 3)**: pomo en reposo a 270° (barrido de 8), agarre desde abajo coste 4,70; la cuerda lo sigue girando y

@@ -221,6 +221,19 @@ Va **sin** `-quit` (sale sola) y **sin** `-nographics` (si no, las capturas sale
   valores resueltos) y medirla; si su coste cambió sin tocar las métricas, cambió una entrada. Al quitar el
   `Regrip`, el siguiente `bake` devuelve el offset base al prefab, rehornea también las capas de acción y apaga
   `hasBaseNodeLocal`. Pendiente: la pieza que gira supone escala uniforme (`lossyScale.x`).
+- **Un antebrazo que tiembla es un salto de signo, no ruido.** La torsión mano/antebrazo se mide en (−180°, 180°]; al
+  cruzar ±180° cambia de signo y los `ForearmTwist` dan media vuelta en un fotograma. Medido: 160° en la cuerda, 164° al
+  equipar la linterna y 178° al enfundar el destornillador, que venía de su horneador propio. Al hornear, la torsión
+  es continua dentro del clip, y `LosClipsHorneadosNoTiemblan` mide la aceleración angular por hueso (lo legítimo no
+  pasa de 35°; tope 90°). **Detector:** la segunda diferencia angular leída del `.anim`.
+- **Elegir por fotograma en pasos discretos también tiembla:** dos opciones de coste parecido alternan. Se elige, se
+  suaviza sobre el clip, se reelige cerca de lo suavizado y se suaviza otra vez, más ligero.
+- **`Regrip` prueba la pose que ya había.** La búsqueda por reloj e inclinación puede no pasar cerca: en el
+  destornillador todos sus candidatos tocaban el tope de muñeca y la pose real tenía la muñeca a −24°/8°. La pose actual
+  se empuja fuera del mango en radial y CONTRA LA PALMA (sólo en radial, la palma seguía dentro). Si el brazo no llega
+  en un clip, el hombro se adelanta; si aun así el objeto se separa más de 5 mm, `REGRIP_DRIFT`.
+- **No se hornea un clip que no anima el brazo de la portadora** (`CLIP_WITHOUT_ARM`): los `Template_Attack` del vendor
+  son plantillas casi vacías y, horneados, salían con 64–81° de brazo inventado.
 - **El hueco del puño no cae en el eje de un tubo gordo.** La tolerancia de `fuera-del-puño` crece con el radio
   (`targetToleranceMm`): 30 mm en un mango de 12 mm y 43 mm en el cuerpo de 26 mm de la linterna.
 - **Cada clip horneado lleva una marca** en el `userData` de su `.meta` (`HandInteraction:baked:<guid del perfil>`).
