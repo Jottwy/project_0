@@ -18030,3 +18030,40 @@ sin campo nuevo; de su punto 4 solo depende «lo que cae del bolsillo roto». Mu
 - **Alcance:** R0 + R1 ya son una tanda; sin loot de hilo, aguja y tela (economía de escasez) el sastre no se prueba en partida.
 
 ---
+
+### ADR-149 — Enmienda 1 (2026-09-13): decisiones de Joel para R1 — el bolsillo de una zona se tacha y se cose, la rotura no se sortea, coser pide aguja e hilo
+
+**Estado:** PROPUESTA (decisiones de Joel del 2026-09-13; R1 autorizada: «adelante con R1»). Cambia D7 y D8 y responde las
+preguntas 3, 4, 5 y 7. Sin wire ni guardado: R1 sigue solo en `BR_InventoryTest` e inerte con backend.
+
+1. **Bolsillo = los huecos de UNA zona de la prenda.** Un bolsillo roto no desaparece: sus huecos se ven tachados, con una
+   cruz, en su sitio. **Coser** la zona la deja al 90 % de su protección y **devuelve sus huecos**. La **cinta** la deja al 60 %
+   y los huecos siguen tachados (D11).
+2. **La rotura no se sortea** (sustituye «probabilidad = cobertura» de D7, pregunta 5). Una bala (`Ballistic`), una puñalada
+   (`Pierce`) o un zarpazo (`Slash`) que cae en una zona de la prenda con bolsillo **lo rompe siempre**. Golpe contundente y
+   caída no rompen tela ni bolsillo. La tela: `Pierce`/`Ballistic` → agujero (`Cut`, 40 %); `Slash` de 20 o más →
+   desgarro (`Torn`, 0 %); menos → `Cut`.
+3. **Lo que llevaba el bolsillo roto** (pregunta 4): pasa a otro hueco libre del inventario; si no hay, **cae al suelo en el
+   acto** y sale el aviso «se cayó …». Lo mismo al quitarse una prenda con los bolsillos llenos: en el prototipo se vuelca, no
+   se empaqueta (D5 es de ADR-147 enm. 2).
+4. **Coser pide aguja e hilo** (pregunta 7). La aguja no se gasta; cada arreglo gasta una unidad de hilo y, si es un
+   desgarro, una tela. Sin banco. **ANOTADO:** una máquina de coser mejorará mucho el arreglo (más rápido, más protección);
+   sin diseñar.
+5. **Guantes** (pregunta 8): Joel escribió «uno por par, da más personalidad»; queda por confirmar si quiere un guante por
+   mano. Hasta entonces, el slot del par con dos zonas (`HandL`/`HandR`) que se rompen por separado.
+6. **Cómo lo hace R1 (prototipo, sin wire ni guardado):**
+   - El estado de cada prenda vive en memoria por instancia (`GarmentState`, tabla débil por `Item`), no en `props` todavía:
+     eso es de R2. Soltar la prenda al mundo pierde su estado; declarado.
+   - Un contenedor de bolsillos por hueco de prenda con bolsillos (`OuterPockets`, `LegsPockets`), añadido al final del
+     jugador de la escena de pruebas (índices 12 y 13, el tramo que ADR-147 enm. 2 §4 reserva). Lo capa
+     `GarmentPocketRestriction` a los huecos sanos de lo puesto. Cada zona con bolsillo es un tramo fijo de índices del
+     contenedor; si algo cae en un hueco tachado, se mueve a uno sano.
+   - Solo protege y se rompe la prenda MÁS EXTERIOR que cubre la zona (orden Outer, Torso, Legs, Feet, Gloves, Head, Face).
+     Sin backend, la protección se devuelve con `RestoreHealth(daño·prot)` en el mismo frame (D7) y la lesión del cuerpo se
+     calcula sobre el daño ya mitigado.
+   - Reparar: clic derecho en la zona de la vista Heridas; cose si hay aguja e hilo (y tela si hace falta) y, si no, pone
+     cinta.
+   - Placeholders: chaqueta de trabajo (pecho y abdomen con 2 huecos cada uno, mangas), pantalón de trabajo (muslos con 1
+     hueco cada uno, espinillas), guantes (manos), aguja e hilo propios; cinta y tela del vendor.
+
+---
