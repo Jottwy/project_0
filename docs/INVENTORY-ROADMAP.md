@@ -363,5 +363,9 @@ tinte sobre la UI piden overlay propio o canvas en Screen Space Camera.
   `BackroomsWornStorage` empaqueta/desempaqueta al quitar/poner (en memoria, inerte con backend); en la variante, hueco de
   espalda real y sección «ESPALDA · …» que enseña solo los huecos que da la mochila. Los 30 del vendor quedan como
   «BOLSILLOS · PROVISIONAL». Tests `BackroomsBackpackPrototypeTests` (condiciones de la auditoría incluidas).
-  Pendiente: probar en Play; hueco de peso declarado (un paquete no suma kg).
+  Probado en Play por Joel (commit 8ed3368e). Hueco de peso declarado (un paquete no suma kg).
+- **D13 hecho (2026-09-13)** — `BackroomsInventorySections` coloca las secciones del centro cada frame (alto = huecos
+  visibles: la mochila puesta alarga o encoge la suya), clic en la cabecera pliega (`-`/`+`), arrastrarla reordena en vivo;
+  orden y plegado en PlayerPrefs (`br.inventory.sections.order`/`.folded`). Probado en Play por Joel. Pendiente: que una
+  sección plegada se abra sola mientras llevas cogido algo que cabe.
 

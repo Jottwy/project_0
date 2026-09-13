@@ -371,8 +371,9 @@ namespace BackroomsSurvival.EditorTools
                     slotsUi.FindProperty("_count").objectReferenceValue = bag.Find("Count").GetComponent<TextMeshProUGUI>();
                     slotsUi.ApplyModifiedPropertiesWithoutUndo();
 
-                    Section(inventory, "BR_PocketsSection", theme, secondTop, secondH, "BOLSILLOS · PROVISIONAL", backpack.childCount + " huecos", 3);
+                    var pockets = Section(inventory, "BR_PocketsSection", theme, secondTop, secondH, "BOLSILLOS · PROVISIONAL", backpack.childCount + " huecos", 3);
                     PlaceGrid(backpack, secondTop, secondH);
+                    BuildSections(inventory, firstTop, new[] { "bag", "pockets" }, new[] { bag, pockets }, new[] { storage, backpack }, theme);
                     report.Count("almacén de la espalda", 1);
                 }
                 else report.Missing("Inventory/Backpack");
@@ -642,10 +643,62 @@ namespace BackroomsSurvival.EditorTools
             rt.SetSiblingIndex(siblingIndex);
             SectionLabel(rt, "Title", title, theme.Display, 17f, theme.Ink, TextAlignmentOptions.MidlineLeft);
             SectionLabel(rt, "Count", count, theme.Mono, 13f, theme.InkDim, TextAlignmentOptions.MidlineRight);
+            var titleRt = (RectTransform)rt.Find("Title");
+            titleRt.offsetMin = new Vector2(BoxPad + 20f, titleRt.offsetMin.y);
+            SectionLabel(rt, "BR_Fold", "-", theme.MonoBold, 17f, theme.Fluorescent, TextAlignmentOptions.MidlineLeft);
+            Place((RectTransform)rt.Find("BR_Fold"), new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(BoxPad, 0f), new Vector2(16f, SectionTitleHeight));
             return rt;
         }
 
         private const float SectionTitleHeight = 34f;
+
+        /// <summary>
+        /// D13: el componente que coloca, pliega y reordena las secciones en juego, y una franja de cabecera clicable y
+        /// arrastrable por sección. Las posiciones de arriba quedan como estado inicial (lo que ve la captura sin Play).
+        /// </summary>
+        private static void BuildSections(RectTransform inventory, float topInset, string[] ids, RectTransform[] sections,
+            RectTransform[] grids, BackroomsUiTheme theme)
+        {
+            var component = inventory.GetComponent<BackroomsInventorySections>();
+            if (component == null) component = inventory.gameObject.AddComponent<BackroomsInventorySections>();
+            var so = new SerializedObject(component);
+            SetArray(so.FindProperty("_ids"), ids.Length, (p, i) => p.stringValue = ids[i]);
+            SetArray(so.FindProperty("_sections"), ids.Length, (p, i) => p.objectReferenceValue = sections[i]);
+            SetArray(so.FindProperty("_grids"), ids.Length, (p, i) => p.objectReferenceValue = grids[i]);
+            SetArray(so.FindProperty("_foldMarks"), ids.Length,
+                (p, i) => p.objectReferenceValue = sections[i].Find("BR_Fold").GetComponent<TextMeshProUGUI>());
+            so.FindProperty("_topInset").floatValue = topInset;
+            so.FindProperty("_gap").floatValue = 12f;
+            so.FindProperty("_sidePad").floatValue = BoxPad;
+            so.FindProperty("_titleHeight").floatValue = SectionTitleHeight;
+            so.ApplyModifiedPropertiesWithoutUndo();
+
+            for (int i = 0; i < ids.Length; i++)
+            {
+                if (grids[i].GetComponent<CanvasGroup>() == null) grids[i].gameObject.AddComponent<CanvasGroup>();
+                var hit = EnsureRect(sections[i], "BR_HeaderHit", typeof(Image), typeof(BackroomsSectionHeader));
+                hit.anchorMin = new Vector2(0f, 1f);
+                hit.anchorMax = new Vector2(1f, 1f);
+                hit.pivot = new Vector2(0.5f, 1f);
+                hit.offsetMin = new Vector2(0f, -SectionTitleHeight);
+                hit.offsetMax = Vector2.zero;
+                var img = hit.GetComponent<Image>();
+                img.sprite = null;
+                img.color = Color.clear;
+                img.raycastTarget = true;
+                hit.SetAsLastSibling();
+                var header = new SerializedObject(hit.GetComponent<BackroomsSectionHeader>());
+                header.FindProperty("_owner").objectReferenceValue = component;
+                header.FindProperty("_id").stringValue = ids[i];
+                header.ApplyModifiedPropertiesWithoutUndo();
+            }
+        }
+
+        private static void SetArray(SerializedProperty array, int size, System.Action<SerializedProperty, int> set)
+        {
+            array.arraySize = size;
+            for (int i = 0; i < size; i++) set(array.GetArrayElementAtIndex(i), i);
+        }
 
         private static float SectionHeight(int slots)
         {
