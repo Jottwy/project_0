@@ -253,6 +253,26 @@ dibujo a ese tamaño? ¿El temblor de lo viejo se lee como «esto no lo tengo cl
 3. **Dibujo de hasta ~3 s, quieto.**
 4. **Pulsar `N` o moverse a mitad cancela**, y lo ya trazado se queda.
 
+### 3.10 Resultado (2026-09-13)
+
+**Hecho, con playtest de Joel en `MappingPlaytest.unity`: «dibuja bien».**
+- En el tronco: `baf4cd12` trazos, `9646afc6` raster, `97edf5c9` libreta, `8f9bc6aa` escena.
+- Tests dentro de Unity: **21/21** (MapMemory 9, MapSheetStrokes 8, MapSheetRaster 3, Wg3MaterialsSerialization 1);
+  los mismos, salvo el último, también en `tools/dev/headless-tests`.
+- Log `MAPSHEET` de la prueba:
+  - Hoja 1: 10/10 trazos, `ms_build` 3,82 (primera llamada, incluye compilación en caliente), `ms_raster_max` 0,91,
+    tinta 1,00 → 0,70.
+  - Hoja 2: 10/14 trazos, `ms_build` 0,53, `ms_raster_max` 0,80, **terminó sin completar con tinta 0,17**: casi
+    seguro se agotó (el tramo siguiente costaba más de lo que quedaba). Un boli dio para ≈ 42 m de pared, cerca de
+    los 50 de diseño (`penCostPerMetre` 0,02).
+
+**Sin respuesta todavía:** ¿dibujar quieto da tensión o pesa?, ¿60 s de recuerdo y 5 m de visión bien?, ¿la tinta
+se acaba demasiado pronto para probar (en P0.2 no hay forma de conseguir otra)?
+
+**Desvíos del plan:** panel IMGUI en vez de uGUI (sin `EventSystem` en la escena); la libreta abierta deja al
+jugador quieto también sin dibujar (el 45 % de velocidad llega con el jugador STP en P0.5); cerrar la libreta
+devuelve la mirada con `SendMessage("SetLooking")` al `Wg3TestPlayer`, sin tocar WG3.
+
 ### 3.9 El libro de supervivencia de STP: modelo base para la libreta (Joel, 2026-09-13)
 
 Joel propone aprovechar el libro de crafteo/construcción que ya existe como modelo para la libreta, y más adelante
