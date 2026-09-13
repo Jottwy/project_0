@@ -47,7 +47,9 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
         public bool Right;
         public float Along, Clock, Tilt, PalmOffset;
         public bool IndexTowardTip = true;
+        /// <summary>0 codo del clip base, 1 abajo-fuera, 2 abajo, 3 <see cref="PoleWorld"/> (copiado de una referencia).</summary>
         public int Pole;
+        public Vector3 PoleWorld;
         public Vector3 ShoulderShiftWorld;
         /// <summary>Hay pose de brazo propia (mano secundaria que agarra). La portadora y la relajada sólo traen dedos.</summary>
         public bool HasArmPose;
@@ -326,7 +328,8 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
         /// y la validación del resultado horneado, así que un número del informe es exactamente lo que se optimizó.
         /// </summary>
         public static HandGripMetrics Measure(HandInteractionRig rig, HandSide side, HandGripTarget target, float clock,
-            bool reachClamped, Vector3 shoulderShift, float baseTwist, HandSide other, bool checkFingers, bool checkView)
+            bool reachClamped, Vector3 shoulderShift, float baseTwist, HandSide other, bool checkFingers, bool checkView,
+            bool checkBodyContact = true)
         {
             var m = new HandGripMetrics { hand = side.Suffix, role = target.role.ToString(), reachClamped = reachClamped, alongAxis = target.alongAxis };
             float cost = 0f;
@@ -361,8 +364,16 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
                 Vector3 palmDir = Vector3.ProjectOnPlane(side.Hand.TransformDirection(side.PalmNormalLocal), fore).normalized;
                 Vector3 pinkyDir = Vector3.ProjectOnPlane(side.Hand.TransformDirection(side.KnuckleLineLocal), fore);
                 pinkyDir = Vector3.ProjectOnPlane(pinkyDir, palmDir).normalized;
-                flex = Mathf.Atan2(Vector3.Dot(meta, palmDir), Vector3.Dot(meta, fore)) * Mathf.Rad2Deg;
-                ulnar = Mathf.Atan2(Vector3.Dot(meta, pinkyDir), Vector3.Dot(meta, fore)) * Mathf.Rad2Deg;
+                // DOBLEZ TOTAL y su DIRECCIÓN, no dos atan2 contra el antebrazo: con más de 90° de doblez el eje del
+                // antebrazo sale negativo en los dos y cada componente se dispara (una flexión pura de 100° leía
+                // además −97° de desviación). Se reparte el doblez real según hacia dónde apunta el metacarpo.
+                float bend = Vector3.Angle(fore, meta);
+                Vector3 across = Vector3.ProjectOnPlane(meta, fore);
+                float direction = across.sqrMagnitude > 1e-8f
+                    ? Mathf.Atan2(Vector3.Dot(across, pinkyDir), Vector3.Dot(across, palmDir))
+                    : 0f;
+                flex = bend * Mathf.Cos(direction);
+                ulnar = bend * Mathf.Sin(direction);
             }
             m.wristFlexionDeg = flex;
             m.wristDeviationDeg = ulnar;
@@ -414,7 +425,8 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
             m.palmPenetrationMm = palmPen * 1000f;
             m.palmGapMm = knuckleGap * 1000f;
             Add("palma-dentro", Mathf.Max(0f, palmPen - 0.002f) * 1000f * 1.0f);
-            Add("palma-lejos", Mathf.Pow(Mathf.Max(0f, knuckleGap - 0.012f) / 0.008f, 2f));
+            // Una mano que agarra OTRA pieza (el pomo) está lejos del cuerpo a propósito.
+            if (checkBodyContact) Add("palma-lejos", Mathf.Pow(Mathf.Max(0f, knuckleGap - 0.012f) / 0.008f, 2f));
 
             // Dónde encierra la mano respecto de su punto (el eje debería pasar por el hueco del puño).
             Vector3 enclosed = Vector3.zero;
@@ -453,10 +465,11 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
                 m.fingersOverEnd = 0;
                 for (int f = 0; f < 5; f++)
                 {
-                    Vector3 l = rig.GripMesh.InverseTransformPoint(HandInteractionRig.Tip(side, f));
-                    float beyond = Mathf.Max(l.y - rig.ProfileMaxY, rig.ProfileMinY - l.y) * rig.MeshScale;
-                    float radial = Mathf.Sqrt(l.x * l.x + l.z * l.z) * rig.MeshScale;
-                    float endRadius = rig.RadiusAtLocal(l.y > rig.ProfileMaxY ? rig.ProfileMaxY : rig.ProfileMinY) * rig.MeshScale;
+                    var surface = rig.Surface;
+                    surface.Local(HandInteractionRig.Tip(side, f), out float tl, out float rl);
+                    float beyond = Mathf.Max(tl - surface.MaxT, surface.MinT - tl) * surface.Scale;
+                    float radial = rl * surface.Scale;
+                    float endRadius = surface.RadiusAtT(tl > surface.MaxT ? surface.MaxT : surface.MinT) * surface.Scale;
                     if (beyond > 0.002f && radial < endRadius * 0.85f)
                     {
                         m.fingersOverEnd++;
@@ -694,13 +707,69 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
             knuckles /= 4f;
             Vector3 local = rig.GripMesh.InverseTransformPoint(knuckles);
             clock = Mathf.Atan2(local.x, local.z) * Mathf.Rad2Deg;
-            var measured = With(target, Mathf.InverseLerp(rig.ProfileMinY, rig.ProfileMaxY, local.y));
+            // La portadora agarra siempre la malla principal, aunque su objetivo nombre otra pieza.
+            var measured = With(target, rig.MainSurface.Along01(knuckles));
+            measured.gripPartNodeName = null;
             measured.role = HandRole.Grip;
             measured.offsetMeters = Vector3.zero;
             return measured;
         }
 
-        public static string PoleName(int pole) => pole switch { 0 => "del clip base", 1 => "abajo-fuera", _ => "abajo" };
+        /// <summary>
+        /// Una mano con rol <see cref="HandRole.Reference"/>: su pose se lee de otro clip del wieldable (la izquierda
+        /// sobre el pomo de la cuerda, en su fotograma de reposo) y se guarda en el espacio del objeto, con sus dedos,
+        /// el adelanto del hombro y la dirección del codo. Nada se busca: ese agarre ya lo resolvió y validó su
+        /// horneador. Se MIDE cómo queda reproducido por IK desde el clip base, que es lo que se va a hornear.
+        /// El rig tiene que estar en el fotograma de referencia del idle y AnimationMode abierto.
+        /// </summary>
+        public static HandGripSolution SolveFromReference(HandInteractionRig rig, HandSide side, HandGripTarget target,
+            HandSide other, StringBuilder log)
+        {
+            var clip = string.IsNullOrEmpty(target.referenceClipPath) ? null
+                : UnityEditor.AssetDatabase.LoadAssetAtPath<AnimationClip>(target.referenceClipPath);
+            if (clip == null)
+                throw new HandInteractionException("REFERENCE_CLIP_NOT_FOUND",
+                    $"mano {side.Suffix}: no hay clip de referencia en '{target.referenceClipPath}'");
+
+            var baseFrame = rig.Capture(0f);
+            Vector3 baseShoulder = side.Upper.position;
+            float baseTwist = HandInteractionRig.TwistDegrees(Quaternion.Inverse(side.Fore.rotation) * side.Hand.rotation);
+
+            float t = Mathf.Clamp(target.referenceTime, 0f, clip.length);
+            rig.Sample(clip, t);
+            var sol = new HandGripSolution
+            {
+                Right = side.Right,
+                HasArmPose = true,
+                HandPosInGrip = rig.GripMesh.InverseTransformPoint(side.Hand.position),
+                HandRotInGrip = Quaternion.Inverse(rig.GripMesh.rotation) * side.Hand.rotation,
+                Fingers = HandInteractionRig.ReadFingers(side),
+                ShoulderShiftWorld = side.Upper.position - baseShoulder,
+                Pole = 3,
+                PoleWorld = Vector3.ProjectOnPlane(side.Fore.position - side.Upper.position, side.Hand.position - side.Upper.position).normalized,
+            };
+            Vector3 referenceHandWorld = side.Hand.position;
+            rig.Apply(baseFrame);
+
+            // Reproducirla como la reproducirá el horneado: hombro adelantado, IK a la pose, dedos copiados.
+            side.Upper.position = baseShoulder + sol.ShoulderShiftWorld;
+            bool ok = HandInteractionRig.SolveTwoBone(side, rig.GripMesh.TransformPoint(sol.HandPosInGrip),
+                rig.GripMesh.rotation * sol.HandRotInGrip, sol.PoleWorld);
+            HandInteractionRig.DistributeForearmTwist(side);
+            HandInteractionRig.WriteFingers(side, sol.Fingers);
+            var metrics = Measure(rig, side, target, 0f, !ok, sol.ShoulderShiftWorld, baseTwist, other,
+                checkFingers: false, checkView: true, checkBodyContact: false);
+            metrics.targetErrorMm = (side.Hand.position - rig.GripMesh.TransformPoint(sol.HandPosInGrip)).magnitude * 1000f;
+            sol.Metrics = metrics;
+            log?.AppendLine($"mano {side.Suffix}: pose copiada de '{clip.name}' en t={t:0.00} s (mano de referencia en {referenceHandWorld}); " +
+                            $"hombro adelantado {metrics.shoulderShiftMm:0} mm, IK {(ok ? "exacto" : "RECORTADO")}, antebrazo {metrics.forearmRotationDeg:+0;-0}°, " +
+                            $"muñeca {metrics.wristFlexionDeg:+0;-0}°/{metrics.wristDeviationDeg:+0;-0}°, manos a {metrics.handOverlapMm:0} mm; " +
+                            $"coste informativo {metrics.cost:0.00} [{string.Join(", ", metrics.costBreakdown)}]");
+            rig.Apply(baseFrame);
+            return sol;
+        }
+
+        public static string PoleName(int pole) => pole switch { 0 => "del clip base", 1 => "abajo-fuera", 2 => "abajo", _ => "de la referencia" };
     }
 }
 #endif

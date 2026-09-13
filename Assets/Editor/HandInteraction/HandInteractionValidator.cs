@@ -74,6 +74,25 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
 
                 CheckWarp(rig, report);
 
+                // Las manos con rol Reference se comparan contra su clip: la pose horneada tiene que ser ESA pose.
+                var referencePoses = new Dictionary<bool, (Vector3 pos, Quaternion[][] fingers)>();
+                foreach (bool right in new[] { true, false })
+                {
+                    var target = profile.Hand(right);
+                    if (target.role != HandRole.Reference || !baked) continue;
+                    var clip = AssetDatabase.LoadAssetAtPath<AnimationClip>(target.referenceClipPath);
+                    if (clip == null)
+                    {
+                        Issue("error", "REFERENCE_CLIP_NOT_FOUND", right ? "R" : "L", $"no hay clip de referencia en '{target.referenceClipPath}'");
+                        continue;
+                    }
+                    clip.SampleAnimation(rig.Animator.gameObject, Mathf.Clamp(target.referenceTime, 0f, clip.length));
+                    rig.Animator.localPosition = Vector3.zero;
+                    rig.Animator.localRotation = Quaternion.identity;
+                    var side = rig.Side(right);
+                    referencePoses[right] = (rig.GripMesh.InverseTransformPoint(side.Hand.position), HandInteractionRig.ReadFingers(side));
+                }
+
                 foreach (float fraction in new[] { 0f, 0.5f })
                 {
                     ctx.IdleEffective.SampleAnimation(rig.Animator.gameObject, ctx.IdleEffective.length * fraction);
@@ -85,6 +104,30 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
                     {
                         var side = rig.Side(right);
                         var target = profile.Hand(right);
+                        rig.UseSurfaceFor(side == ctx.Carrier ? null : target);
+                        if (target.role == HandRole.Reference && referencePoses.TryGetValue(right, out var reference))
+                        {
+                            float driftMm = (rig.GripMesh.InverseTransformPoint(side.Hand.position) - reference.pos).magnitude *
+                                            rig.GripMesh.lossyScale.y * 1000f;
+                            float worstFinger = 0f;
+                            for (int f = 0; f < 5; f++)
+                                for (int j = 0; j < 3; j++)
+                                    worstFinger = Mathf.Max(worstFinger, Quaternion.Angle(side.Fingers[f][j].localRotation, reference.fingers[f][j]));
+                            if (fraction == 0f && (driftMm > 5f || worstFinger > 3f))
+                                Issue("error", "REFERENCE_MISMATCH", side.Suffix,
+                                    $"{when}: la mano horneada se aparta {driftMm:0.0} mm y {worstFinger:0.0}° de su pose de referencia",
+                                    driftMm, 5f, "rehornear; si persiste, subir maxShoulderShiftMeters (el brazo no llega)");
+                            var rm = HandGripSolver.Measure(rig, side, target, 0f, false, target.resolvedShoulderShift,
+                                HandInteractionRig.TwistDegrees(Quaternion.Inverse(side.Fore.rotation) * side.Hand.rotation), rig.Side(!right),
+                                checkFingers: false, checkView: fraction == 0f, checkBodyContact: false);
+                            rm.hand = side.Suffix;
+                            rm.targetErrorMm = driftMm;
+                            if (fraction == 0f) report.hands.Add(rm);
+                            if (rm.handOverlapMm < 15f)
+                                Issue("error", "HANDS_OVERLAP", side.Suffix, $"{when}: las dos manos se tocan ({rm.handOverlapMm:0} mm)", rm.handOverlapMm, 15f,
+                                    "la pose de referencia choca con la portadora en este clip");
+                            continue;
+                        }
                         if (target.role != HandRole.Grip) continue;
                         // Sin hornear, una secundaria no tiene pose: medirla daría la mano del clip base a 70 cm.
                         if (!baked && side != ctx.Carrier) continue;

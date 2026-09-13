@@ -205,7 +205,7 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
                     for (int f = 1; f < 5; f++) knuckles += ctx.Carrier.Fingers[f][0].position;
                     knuckles /= 4f;
                     Vector3 local = ctx.Rig.GripMesh.InverseTransformPoint(knuckles);
-                    ins.carrierAlong = Mathf.InverseLerp(ctx.Rig.ProfileMinY, ctx.Rig.ProfileMaxY, local.y);
+                    ins.carrierAlong = ctx.Rig.MainSurface.Along01(knuckles);
                     ins.carrierClockDeg = Mathf.Atan2(local.x, local.z) * Mathf.Rad2Deg;
                 }
                 string idlePath = AssetDatabase.GetAssetPath(ctx.IdleEffective);

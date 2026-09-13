@@ -24,6 +24,13 @@ namespace BackroomsSurvival.Gameplay.HandInteraction
         Keep = 1,
         /// <summary>Brazo del clip base, dedos relajados: una mano que no sujeta nada no va en garra.</summary>
         Relaxed = 2,
+        /// <summary>
+        /// Copia la pose de esta mano de OTRO clip del mismo wieldable (<see cref="HandGripTarget.referenceClipPath"/>
+        /// en <see cref="HandGripTarget.referenceTime"/>), en el espacio del objeto: mano, dedos, hombro y codo. Es
+        /// para reutilizar un agarre ya resuelto y validado —la izquierda sobre el pomo de la manivela— en idle,
+        /// equipar y enfundar, en vez de inventar otro.
+        /// </summary>
+        Reference = 3,
     }
 
     public enum HandFingerStyle
@@ -69,6 +76,23 @@ namespace BackroomsSurvival.Gameplay.HandInteraction
         [Range(0f, 1f)] public float weight = 1f;
 
         public HandFingerStyle fingers = HandFingerStyle.Wrap;
+
+        [Header("Pieza que agarra ESTA mano (vacío = la malla de agarre del perfil)")]
+        [Tooltip("Hijo del modelo que agarra esta mano, p. ej. 'Crank' para el pomo de la manivela.")]
+        public string gripPartNodeName;
+
+        [Tooltip("Eje del agarre en local de esa pieza (el pomo gira sobre +Z). Cero = +Y.")]
+        public Vector3 gripPartAxis;
+
+        [Tooltip("Qué tramo de la pieza se agarra, por su Y local normalizada: 0,75–1 = el cuarto de arriba (el pomo).")]
+        [Range(0f, 1f)] public float gripPartMinY01;
+        [Range(0f, 1f)] public float gripPartMaxY01 = 1f;
+
+        [Tooltip("Sólo con role = Reference: el clip del que se copia la pose de esta mano.")]
+        public string referenceClipPath;
+
+        [Tooltip("Sólo con role = Reference: en qué segundo de ese clip.")]
+        public float referenceTime;
 
         [Tooltip("Busca reloj, inclinación y separación de la palma alrededor de los valores dados, puntuando naturalidad.")]
         public bool autoSearch = true;

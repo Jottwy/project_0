@@ -241,7 +241,7 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
                 ObjectRotationInView = Quaternion.Inverse(rig.InstanceRoot.rotation) * rig.GripMesh.rotation,
             };
             log.AppendLine($"objeto: {rig.LengthMeters * 100f:0.0} cm de largo, radio medio {rig.RadiusAtAlong(0.5f) * 1000f:0} mm, " +
-                           $"{rig.Obstacles.Count} pieza(s) obstáculo; portadora {(ctx.Carrier != null ? ctx.Carrier.Suffix : "ninguna")}.");
+                           $"{rig.Parts.Count - 1} pieza(s) además de la malla de agarre; portadora {(ctx.Carrier != null ? ctx.Carrier.Suffix : "ninguna")}.");
 
             // Primero la portadora (o la derecha si no hay), después la otra: la segunda mide contra la primera.
             var first = ctx.Carrier ?? rig.R;
@@ -260,12 +260,25 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
         private static HandGripSolution SolveHand(Context ctx, HandSide side, HandSide other, StringBuilder log)
         {
             var target = ctx.Profile.Hand(side.Right);
+            // Cada mano agarra SU superficie (el pomo, el cuerpo); la portadora, siempre la principal.
+            ctx.Rig.UseSurfaceFor(side == ctx.Carrier ? null : target);
+            try { return SolveHandOnSurface(ctx, side, other, target, log); }
+            finally { ctx.Rig.UseMainSurface(); }
+        }
+
+        private static HandGripSolution SolveHandOnSurface(Context ctx, HandSide side, HandSide other, HandGripTarget target, StringBuilder log)
+        {
             var rig = ctx.Rig;
             switch (target.role)
             {
                 case HandRole.Keep:
                     log.AppendLine($"mano {side.Suffix}: se conserva la del clip base.");
                     return null;
+                case HandRole.Reference:
+                    if (side == ctx.Carrier)
+                        throw new HandInteractionException("ROLE_REFERENCE_CARRIER",
+                            $"la mano {side.Suffix} lleva el objeto: copiar su pose de otro clip lo arrastraría. Usar Keep.");
+                    return HandGripSolver.SolveFromReference(rig, side, target, other, log);
                 case HandRole.Relaxed:
                     HandGripSolver.RelaxFingers(side);
                     log.AppendLine($"mano {side.Suffix}: dedos relajados sobre el brazo del clip base.");
@@ -307,10 +320,26 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
             // en el prefab es justo lo que no se quiere; se dice por qué y qué cambiar.
             foreach (var sol in new[] { solved.Right, solved.Left })
             {
-                if (sol == null || !sol.HasArmPose || sol.Metrics.cost <= profile.maxNaturalCost) continue;
-                string msg = $"mano {(sol.Right ? "R" : "L")}: la mejor pose cuesta {sol.Metrics.cost:0.0} (tope {profile.maxNaturalCost:0.0}): " +
-                             $"{string.Join(", ", sol.Metrics.costBreakdown)}. Opciones: kind OneHand; mover la portadora con su horneador " +
-                             "para dejar sitio; o bake con force=true si se acepta tal cual.";
+                if (sol == null || !sol.HasArmPose) continue;
+                string msg;
+                if (profile.Hand(sol.Right).role == HandRole.Reference)
+                {
+                    // Una pose COPIADA ya la validó su horneador: sólo la frenan los fallos duros de reproducirla aquí
+                    // (el hombro adelantado de un rig 1P sin torso no se ve y no cuenta).
+                    var m = sol.Metrics;
+                    bool hard = m.reachClamped || m.handOverlapMm < 15f || m.targetErrorMm > 5f ||
+                                m.costBreakdown.Any(c => c.StartsWith("muñeca-tope") || c.StartsWith("antebrazo-tope"));
+                    if (!hard) continue;
+                    msg = $"mano {(sol.Right ? "R" : "L")}: la pose de referencia no se reproduce bien: alcance recortado {m.reachClamped}, " +
+                          $"manos a {m.handOverlapMm:0} mm, desvío {m.targetErrorMm:0.0} mm [{string.Join(", ", m.costBreakdown)}].";
+                }
+                else
+                {
+                    if (sol.Metrics.cost <= profile.maxNaturalCost) continue;
+                    msg = $"mano {(sol.Right ? "R" : "L")}: la mejor pose cuesta {sol.Metrics.cost:0.0} (tope {profile.maxNaturalCost:0.0}): " +
+                          $"{string.Join(", ", sol.Metrics.costBreakdown)}. Opciones: kind OneHand; mover la portadora con su horneador " +
+                          "para dejar sitio; o bake con force=true si se acepta tal cual.";
+                }
                 result.warnings.Add("NO_NATURAL_GRIP: " + msg);
                 if (write && !force)
                 {
@@ -440,7 +469,7 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
                     Quaternion baseRot = side.Hand.rotation;
                     Vector3 gripPos = rig.GripMesh.TransformPoint(sol.HandPosInGrip);
                     Quaternion gripRot = rig.GripMesh.rotation * sol.HandRotInGrip;
-                    Vector3 pole = HandGripSolver.PoleFor(rig, side, sol.Pole, baseElbow, baseShoulder, baseHand);
+                    Vector3 pole = sol.Pole == 3 ? sol.PoleWorld : HandGripSolver.PoleFor(rig, side, sol.Pole, baseElbow, baseShoulder, baseHand);
 
                     side.Upper.position = baseShoulder + sol.ShoulderShiftWorld * w;
                     if (!HandInteractionRig.SolveTwoBone(side, Vector3.Lerp(baseHand, gripPos, w), Quaternion.Slerp(baseRot, gripRot, w), pole)

@@ -70,6 +70,38 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
             return written;
         }
 
+        /// <summary>Una sola toma desde el ojo del jugador, con la pose que tenga el rig ahora (p. ej. equipar a mitad).</summary>
+        public static string ShootEye(HandInteractionRig rig, string outDir, string name)
+        {
+            Directory.CreateDirectory(outDir);
+            foreach (var smr in rig.Instance.GetComponentsInChildren<SkinnedMeshRenderer>(true))
+                smr.updateWhenOffscreen = true;
+            var rigGo = new GameObject("[HandInteractionEyeShot]") { hideFlags = HideFlags.HideAndDontSave };
+            try
+            {
+                Shader.SetGlobalFloat("_FOVEnabled", 0f);
+                Shader.SetGlobalFloat("_FOV", 55f);
+                AddLight(rigGo, "Key", 1.4f, Quaternion.Euler(35f, -35f, 0f));
+                AddLight(rigGo, "Fill", 0.5f, Quaternion.Euler(20f, 150f, 0f));
+                var camGo = new GameObject("Cam") { hideFlags = HideFlags.HideAndDontSave };
+                camGo.transform.SetParent(rigGo.transform, false);
+                var cam = camGo.AddComponent<Camera>();
+                cam.clearFlags = CameraClearFlags.SolidColor;
+                cam.backgroundColor = new Color(0.10f, 0.10f, 0.12f);
+                cam.nearClipPlane = 0.01f;
+                cam.farClipPlane = 20f;
+                cam.fieldOfView = 60f;
+                camGo.transform.SetPositionAndRotation(rig.Camera.position, rig.InstanceRoot.rotation);
+                string path = Path.Combine(outDir, name + ".png").Replace('\\', '/');
+                Render(cam, path);
+                return path;
+            }
+            finally
+            {
+                Object.DestroyImmediate(rigGo);
+            }
+        }
+
         private static void AddLight(GameObject parent, string name, float intensity, Quaternion rotation)
         {
             var go = new GameObject(name) { hideFlags = HideFlags.HideAndDontSave };

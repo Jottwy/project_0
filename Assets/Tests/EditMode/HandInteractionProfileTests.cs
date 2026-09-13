@@ -85,11 +85,11 @@ namespace BackroomsSurvival.Tests
                     foreach (var finger in Wrappers)
                     {
                         if (finger == "Index" && target.fingers == HandFingerStyle.IndexExtended) continue;
-                        float gap = posed.Gap(posed.Tip($"{finger}.3.{s}")) - FingerSkin;
+                        float gap = posed.GapFor(target, posed.Tip($"{finger}.3.{s}")) - FingerSkin;
                         if (gap < -0.006f || gap > 0.018f)
                             failures.Add($"{p.name} {s}: yema de '{finger}' a {gap * 1000f:0.0} mm de la piel (negativo = dentro)");
                     }
-                    float thumb = posed.Gap(posed.Tip($"Thumb.3.{s}")) - ThumbSkin;
+                    float thumb = posed.GapFor(target, posed.Tip($"Thumb.3.{s}")) - ThumbSkin;
                     if (thumb < -0.004f) failures.Add($"{p.name} {s}: el pulgar entra {-thumb * 1000f:0.0} mm");
                 }
             }
@@ -124,6 +124,39 @@ namespace BackroomsSurvival.Tests
                         }
                 }
             }
+            Assert.IsEmpty(failures, string.Join("\n", failures) + "\n" + Rebake);
+        }
+
+        /// <summary>
+        /// Una mano con rol Reference ES la pose de su clip de referencia (la izquierda sobre el pomo, copiada de la
+        /// cuerda): misma posición respecto del objeto y mismos dedos en el idle horneado.
+        /// </summary>
+        [Test]
+        public void LaManoDeReferenciaCopiaSuClip()
+        {
+            var profiles = BakedProfiles().Where(p => p.rightHand.role == HandRole.Reference || p.leftHand.role == HandRole.Reference).ToList();
+            if (profiles.Count == 0) Assert.Ignore("no hay perfiles horneados con una mano de referencia");
+            var failures = new List<string>();
+            foreach (var p in profiles)
+                foreach (bool right in new[] { true, false })
+                {
+                    var target = right ? p.rightHand : p.leftHand;
+                    if (target.role != HandRole.Reference) continue;
+                    string s = right ? "R" : "L";
+                    var clip = AssetDatabase.LoadAssetAtPath<AnimationClip>(target.referenceClipPath);
+                    Assert.IsNotNull(clip, $"{p.name}: falta el clip de referencia '{target.referenceClipPath}'");
+
+                    using var baked = new Posed(p);
+                    using var reference = new Posed(p, clip, target.referenceTime);
+                    float drift = (baked.HandInGrip(s) - reference.HandInGrip(s)).magnitude;
+                    if (drift > 0.006f) failures.Add($"{p.name} {s}: la mano se aparta {drift * 1000f:0.0} mm de su referencia");
+                    foreach (var f in new[] { "Thumb", "Index", "Middle", "Ring", "Pinky" })
+                        for (int j = 1; j <= 3; j++)
+                        {
+                            float angle = Quaternion.Angle(baked.Bone($"{f}.{j}.{s}").localRotation, reference.Bone($"{f}.{j}.{s}").localRotation);
+                            if (angle > 3f) failures.Add($"{p.name} {s}: '{f}.{j}' difiere {angle:0.0}° de la referencia");
+                        }
+                }
             Assert.IsEmpty(failures, string.Join("\n", failures) + "\n" + Rebake);
         }
 
@@ -167,7 +200,7 @@ namespace BackroomsSurvival.Tests
             private readonly float[] _radii = new float[36];
             private readonly Bounds _bounds;
 
-            public Posed(HandInteractionProfile p)
+            public Posed(HandInteractionProfile p, AnimationClip clip = null, float time = 0f)
             {
                 _instance = Object.Instantiate(p.wieldablePrefab);
                 _instance.hideFlags = HideFlags.HideAndDontSave;
@@ -175,10 +208,11 @@ namespace BackroomsSurvival.Tests
                 foreach (var t in _instance.GetComponentsInChildren<Transform>(true))
                     if (t.name == "ViewModel" || t.name == "Root") t.gameObject.SetActive(true);
 
-                var idle = Overrides(p.wieldablePrefab).FirstOrDefault(o => o.original.name.ToLowerInvariant().Contains("idle")).effective;
+                var idle = clip != null ? clip
+                    : Overrides(p.wieldablePrefab).FirstOrDefault(o => o.original.name.ToLowerInvariant().Contains("idle")).effective;
                 Assert.IsNotNull(idle, $"{p.name}: sin clip de idle");
                 var animator = _instance.GetComponentInChildren<Animator>(true);
-                idle.SampleAnimation(animator.gameObject, 0f);
+                idle.SampleAnimation(animator.gameObject, clip != null ? Mathf.Clamp(time, 0f, clip.length) : 0f);
                 animator.transform.localPosition = Vector3.zero;
                 animator.transform.localRotation = Quaternion.identity;
 
@@ -199,6 +233,10 @@ namespace BackroomsSurvival.Tests
                     _radii[i] = lists[i][Mathf.Clamp((int)(lists[i].Count * 0.9f), 0, lists[i].Count - 1)];
                 }
             }
+
+            /// <summary>La muñeca en el espacio de la malla de agarre, en metros.</summary>
+            public Vector3 HandInGrip(string s)
+                => Vector3.Scale(_grip.InverseTransformPoint(Bone($"Hand.{s}").position), _grip.lossyScale);
 
             public bool CarrierIs(string s)
             {
@@ -228,6 +266,57 @@ namespace BackroomsSurvival.Tests
                     for (int j = 1; j <= 3; j++) yield return Bone($"{f}.{j}.{s}").position;
                     yield return Tip($"{f}.3.{s}");
                 }
+            }
+
+            /// <summary>
+            /// Distancia a la piel de lo que agarra ESA mano: la malla principal o, si el objetivo nombra una pieza
+            /// (el pomo), el perfil de esa pieza sobre su eje y su tramo. Duplicado del editor a propósito.
+            /// </summary>
+            public float GapFor(HandGripTarget target, Vector3 world)
+            {
+                if (string.IsNullOrEmpty(target.gripPartNodeName)) return Gap(world);
+                var part = _node.GetComponentsInChildren<MeshFilter>(true).First(m => m.name == target.gripPartNodeName);
+                var mesh = part.sharedMesh;
+                var axis = target.gripPartAxis.sqrMagnitude < 1e-8f ? Vector3.up : target.gripPartAxis.normalized;
+                var b = mesh.bounds;
+                float yMin = Mathf.Lerp(b.min.y, b.max.y, Mathf.Min(target.gripPartMinY01, target.gripPartMaxY01));
+                float yMax = Mathf.Lerp(b.min.y, b.max.y, Mathf.Max(target.gripPartMinY01, target.gripPartMaxY01));
+                var region = mesh.vertices.Where(v => v.y >= yMin - 1e-6f && v.y <= yMax + 1e-6f).ToList();
+                Vector3 origin = Vector3.zero;
+                foreach (var v in region) origin += v;
+                origin /= Mathf.Max(1, region.Count);
+                origin -= axis * Vector3.Dot(origin, axis);
+                float minT = region.Min(v => Vector3.Dot(v - origin, axis)), maxT = region.Max(v => Vector3.Dot(v - origin, axis));
+                const int bins = 36;
+                var lists = Enumerable.Range(0, bins).Select(_ => new List<float>()).ToArray();
+                float span = Mathf.Max(1e-5f, maxT - minT);
+                foreach (var v in region)
+                {
+                    Vector3 d = v - origin;
+                    float tt = Vector3.Dot(d, axis);
+                    lists[Mathf.Clamp(Mathf.FloorToInt((tt - minT) / span * bins), 0, bins - 1)].Add((d - axis * tt).magnitude);
+                }
+                var radii = new float[bins];
+                for (int i = 0; i < bins; i++)
+                {
+                    if (lists[i].Count == 0) { radii[i] = i > 0 ? radii[i - 1] : 0f; continue; }
+                    lists[i].Sort();
+                    radii[i] = lists[i][Mathf.Clamp((int)(lists[i].Count * 0.9f), 0, lists[i].Count - 1)];
+                }
+                Vector3 l = part.transform.InverseTransformPoint(world) - origin;
+                float t = Vector3.Dot(l, axis), r = (l - axis * t).magnitude;
+                float fIndex = Mathf.Clamp01((Mathf.Clamp(t, minT, maxT) - minT) / span) * (bins - 1);
+                int j = Mathf.Clamp(Mathf.FloorToInt(fIndex), 0, bins - 2);
+                float radius = Mathf.Lerp(radii[j], radii[j + 1], fIndex - j);
+                float local;
+                if (t < minT || t > maxT)
+                {
+                    float beyond = t < minT ? minT - t : t - maxT;
+                    float outward = Mathf.Max(0f, r - radius);
+                    local = Mathf.Sqrt(outward * outward + beyond * beyond);
+                }
+                else local = r - radius;
+                return local * part.transform.lossyScale.y;
             }
 
             /// <summary>Distancia con signo a la piel por el perfil de radio de la malla de agarre, en metros.</summary>

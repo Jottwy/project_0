@@ -348,10 +348,24 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
         private static List<string> CaptureBaked(HandInteractionProfile profile, HandApiRequest req)
         {
             using var ctx = HandInteractionBaker.Open(profile);
+            string dir = CaptureDir(req, profile);
+            var shots = new List<string>();
+            // Equipar y enfundar a MITAD, desde el ojo: es donde se ve si la mano secundaria llega o se va mal.
+            foreach (var (original, effective) in ctx.Pairs)
+            {
+                string n = original.name.ToLowerInvariant();
+                string label = n.Contains("equip") ? "baked_equip50" : n.Contains("holster") ? "baked_holster50" : null;
+                if (label == null || shots.Any(s => s.EndsWith(label + ".png"))) continue;
+                effective.SampleAnimation(ctx.Rig.Animator.gameObject, effective.length * 0.5f);
+                ctx.Rig.Animator.localPosition = Vector3.zero;
+                ctx.Rig.Animator.localRotation = Quaternion.identity;
+                shots.Add(HandInteractionCapture.ShootEye(ctx.Rig, dir, label));
+            }
             ctx.IdleEffective.SampleAnimation(ctx.Rig.Animator.gameObject, 0f);
             ctx.Rig.Animator.localPosition = Vector3.zero;
             ctx.Rig.Animator.localRotation = Quaternion.identity;
-            return HandInteractionCapture.Shoot(ctx.Rig, CaptureDir(req, profile), "baked");
+            shots.InsertRange(0, HandInteractionCapture.Shoot(ctx.Rig, dir, "baked"));
+            return shots;
         }
 
         /// <summary>
@@ -374,11 +388,14 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
             string dir = (req.direction ?? "").ToLowerInvariant();
             float meters = req.millimeters / 1000f;
 
-            float Length()
+            // Largo y eje de la superficie que agarra ESTA mano (el pomo no se mueve por el +Y del cuerpo).
+            (float length, Vector3 axisObj) Geometry()
             {
                 using var ctx = HandInteractionBaker.Open(profile);
-                return ctx.Rig.LengthMeters;
+                ctx.Rig.UseSurfaceFor(t);
+                return (ctx.Rig.LengthMeters, ctx.Rig.GripMesh.InverseTransformDirection(ctx.Rig.Axis).normalized);
             }
+            float Length() => Geometry().length;
 
             Vector3? view = dir switch
             {
@@ -393,10 +410,11 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
                 if (!profile.hasResolvedView)
                     throw new HandInteractionException("NEED_PREVIEW", "el perfil no tiene orientación resuelta");
                 Vector3 local = Quaternion.Inverse(profile.resolvedObjectRotationInView) * view.Value * meters;
-                float length = Length();
-                t.alongAxis = Mathf.Clamp01(AlongFrom() + local.y / Mathf.Max(0.01f, length));
+                var (length, axisObj) = Geometry();
+                float alongMeters = Vector3.Dot(local, axisObj);
+                t.alongAxis = Mathf.Clamp01(AlongFrom() + alongMeters / Mathf.Max(0.005f, length));
                 t.searchAlongRange = 0f;
-                t.offsetMeters += new Vector3(local.x, 0f, local.z);
+                t.offsetMeters += local - axisObj * alongMeters;
             }
             else switch (dir)
             {

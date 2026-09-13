@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using BackroomsSurvival.Gameplay.HandInteraction;
 using UnityEditor;
 using UnityEngine;
 
@@ -9,9 +10,8 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
 {
     /// <summary>
     /// Un brazo de primera persona del rig del vendor (FP_Arms): hombro, antebrazo, mano, torsión y
-    /// quince falanges. Los signos de cierre NO se escriben a mano: <see cref="HandInteractionRig.MeasureCloseSigns"/>
-    /// los mide desde la neutra, que es donde la medida es inequívoca (ADR-077 enm. 5: con el dedo muy
-    /// cerrado la yema vuelve a subir y el signo sale al revés).
+    /// quince falanges. Los signos de cierre son los del rig (ADR-133 enm. 1) y se COMPRUEBAN en
+    /// <see cref="HandInteractionRig.MeasureCloseSigns"/>.
     /// </summary>
     internal sealed class HandSide
     {
@@ -35,7 +35,7 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
         public bool SignCheckFailed;
     }
 
-    /// <summary>Parte del modelo que no es la malla de agarre (la manivela): los dedos no pueden atravesarla.</summary>
+    /// <summary>Parte del modelo que no es la superficie activa (la manivela): los dedos no pueden atravesarla.</summary>
     internal sealed class HandObstacle
     {
         public Transform Transform;
@@ -44,9 +44,129 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
     }
 
     /// <summary>
-    /// La instancia de medida de un wieldable: esqueleto, objeto y superficie. Todo en espacio de mundo
+    /// UNA superficie que se agarra: un tramo de malla aproximado por su perfil de radio a lo largo de un eje
+    /// (percentil 90 por tramo, como los horneadores). La malla de agarre del perfil es una (eje +Y, entera);
+    /// el pomo de la manivela es otra (eje +Z de la manivela, sólo su cuarto de arriba). El «reloj» gira
+    /// alrededor del eje con 0° en <see cref="RefL"/> (el +Z local cuando el eje es +Y).
+    /// </summary>
+    internal sealed class HandGripSurface
+    {
+        public Transform T;
+        public string Name;
+        public Vector3 AxisL, RefL, OriginL;
+        public float MinT, MaxT;
+        public float[] Radius;
+
+        public float Scale => Mathf.Max(1e-5f, T.lossyScale.y);
+        public float LengthMeters => (MaxT - MinT) * Scale;
+        public Vector3 AxisWorld => T.TransformDirection(AxisL).normalized;
+
+        public static HandGripSurface Build(Transform t, Mesh mesh, Vector3 axisLocal, float minY01, float maxY01)
+        {
+            var axis = axisLocal.sqrMagnitude < 1e-8f ? Vector3.up : axisLocal.normalized;
+            var b = mesh.bounds;
+            float yMin = Mathf.Lerp(b.min.y, b.max.y, Mathf.Clamp01(Mathf.Min(minY01, maxY01)));
+            float yMax = Mathf.Lerp(b.min.y, b.max.y, Mathf.Clamp01(Mathf.Max(minY01, maxY01)));
+            var region = mesh.vertices.Where(v => v.y >= yMin - 1e-6f && v.y <= yMax + 1e-6f).ToList();
+            if (region.Count < 8)
+                throw new HandInteractionException("GRIP_PART_EMPTY", $"'{t.name}': el tramo {minY01:0.00}–{maxY01:0.00} no tiene vértices");
+
+            // Con el eje +Y y la malla entera, el eje pasa por el origen local: igual que el perfil de siempre.
+            bool legacy = axis == Vector3.up && minY01 <= 0f && maxY01 >= 1f;
+            Vector3 origin = Vector3.zero;
+            if (!legacy)
+            {
+                foreach (var v in region) origin += v;
+                origin /= region.Count;
+                origin -= axis * Vector3.Dot(origin, axis);
+            }
+            var s = new HandGripSurface
+            {
+                T = t, Name = t.name, AxisL = axis, OriginL = origin,
+                RefL = Vector3.ProjectOnPlane(Mathf.Abs(Vector3.Dot(axis, Vector3.forward)) < 0.9f ? Vector3.forward : Vector3.up, axis).normalized,
+            };
+            const int bins = 36;
+            float minT = float.MaxValue, maxT = float.MinValue;
+            foreach (var v in region)
+            {
+                float tt = Vector3.Dot(v - origin, axis);
+                minT = Mathf.Min(minT, tt);
+                maxT = Mathf.Max(maxT, tt);
+            }
+            s.MinT = minT;
+            s.MaxT = maxT;
+            var lists = new List<float>[bins];
+            for (int i = 0; i < bins; i++) lists[i] = new List<float>();
+            float span = Mathf.Max(1e-5f, maxT - minT);
+            foreach (var v in region)
+            {
+                Vector3 d = v - origin;
+                float tt = Vector3.Dot(d, axis);
+                int bin = Mathf.Clamp(Mathf.FloorToInt((tt - minT) / span * bins), 0, bins - 1);
+                lists[bin].Add((d - axis * tt).magnitude);
+            }
+            s.Radius = new float[bins];
+            for (int i = 0; i < bins; i++)
+            {
+                if (lists[i].Count == 0) { s.Radius[i] = i > 0 ? s.Radius[i - 1] : 0f; continue; }
+                lists[i].Sort();
+                s.Radius[i] = lists[i][Mathf.Clamp((int)(lists[i].Count * 0.9f), 0, lists[i].Count - 1)];
+            }
+            return s;
+        }
+
+        /// <summary>Radio LOCAL a una coordenada local del eje.</summary>
+        public float RadiusAtT(float t)
+        {
+            float span = Mathf.Max(1e-5f, MaxT - MinT);
+            float f = Mathf.Clamp01((t - MinT) / span) * (Radius.Length - 1);
+            int i = Mathf.Clamp(Mathf.FloorToInt(f), 0, Radius.Length - 2);
+            return Mathf.Lerp(Radius[i], Radius[i + 1], f - i);
+        }
+
+        public float TAt(float along01) => Mathf.Lerp(MinT, MaxT, along01);
+        public float RadiusAtAlong(float along01) => RadiusAtT(TAt(along01)) * Scale;
+        public Vector3 PointAt(float along01) => T.TransformPoint(OriginL + AxisL * TAt(along01));
+
+        public Vector3 Radial(float clockDegrees)
+            => T.TransformDirection(Quaternion.AngleAxis(clockDegrees, AxisL) * RefL).normalized;
+
+        /// <summary>Coordenadas locales de un punto de mundo: a lo largo del eje y distancia al eje.</summary>
+        public void Local(Vector3 world, out float t, out float r)
+        {
+            Vector3 d = T.InverseTransformPoint(world) - OriginL;
+            t = Vector3.Dot(d, AxisL);
+            r = (d - AxisL * t).magnitude;
+        }
+
+        public float Along01(Vector3 world)
+        {
+            Local(world, out float t, out _);
+            return Mathf.InverseLerp(MinT, MaxT, t);
+        }
+
+        /// <summary>Distancia con signo a la piel, en metros (positivo fuera).</summary>
+        public float Gap(Vector3 world)
+        {
+            Local(world, out float t, out float r);
+            float radius = RadiusAtT(Mathf.Clamp(t, MinT, MaxT));
+            float local;
+            if (t < MinT || t > MaxT)
+            {
+                float beyond = t < MinT ? MinT - t : t - MaxT;
+                float outward = Mathf.Max(0f, r - radius);
+                local = Mathf.Sqrt(outward * outward + beyond * beyond);
+            }
+            else local = r - radius;
+            return local * Scale;
+        }
+    }
+
+    /// <summary>
+    /// La instancia de medida de un wieldable: esqueleto, objeto y superficies. Todo en espacio de mundo
     /// con la raíz del prefab en el origen y sin rotar, así que «mundo» = espacio del jugador
-    /// (x derecha, y arriba, z delante) salvo por el hueso de la cámara.
+    /// (x derecha, y arriba, z delante). Las poses de mano se guardan relativas a <see cref="GripMesh"/>
+    /// (el marco del objeto); lo que se agarra en cada momento es <see cref="Surface"/>.
     /// </summary>
     internal sealed class HandInteractionRig
     {
@@ -68,13 +188,14 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
         public GameObject Instance;
         public Transform InstanceRoot, Animator, Root, Camera;
         public Transform Node, GripMesh;
-        public Mesh GripMeshAsset;
         public HandSide R, L;
         public Transform[] Skeleton;
         public string[] Paths;
-        public float[] RadiusProfile;
-        public float ProfileMinY, ProfileMaxY;
-        public readonly List<HandObstacle> Obstacles = new();
+        public readonly List<HandObstacle> Parts = new();
+        public HandGripSurface MainSurface;
+        /// <summary>La superficie que agarra la mano que se está resolviendo o midiendo.</summary>
+        public HandGripSurface Surface;
+        private readonly Dictionary<string, HandGripSurface> _partSurfaces = new();
 
         public HandSide Side(bool right) => right ? R : L;
 
@@ -116,12 +237,10 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
                 throw new HandInteractionException("GRIP_MESH_NOT_FOUND",
                     $"el nodo '{modelNodeName}' no trae la malla de agarre '{gripMeshNodeName}'");
             rig.GripMesh = grip.transform;
-            rig.GripMeshAsset = grip.sharedMesh;
             foreach (var m in meshes)
-            {
-                if (m == grip) continue;
-                rig.Obstacles.Add(new HandObstacle { Transform = m.transform, LocalBounds = m.sharedMesh.bounds, Name = m.name });
-            }
+                rig.Parts.Add(new HandObstacle { Transform = m.transform, LocalBounds = m.sharedMesh.bounds, Name = m.name });
+            rig.MainSurface = HandGripSurface.Build(grip.transform, grip.sharedMesh, Vector3.up, 0f, 1f);
+            rig.Surface = rig.MainSurface;
 
             var skeleton = new List<Transform>();
             foreach (var t in rig.Root.GetComponentsInChildren<Transform>(true))
@@ -133,8 +252,6 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
             }
             rig.Skeleton = skeleton.ToArray();
             rig.Paths = rig.Skeleton.Select(t => AnimationUtility.CalculateTransformPath(t, rig.Animator)).ToArray();
-
-            rig.ReadRadiusProfile();
             return rig;
         }
 
@@ -159,80 +276,57 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
             return side;
         }
 
-        /// <summary>Radio de la malla de agarre por tramo de su +Y (percentil 90 por bin), como los horneadores.</summary>
-        private void ReadRadiusProfile()
+        // ─── Superficie activa ───────────────────────────────────────────────────────────────────
+
+        /// <summary>
+        /// Activa la superficie que agarra <paramref name="target"/>: la malla del perfil si no nombra pieza, o esa
+        /// pieza con su eje y su tramo (el pomo). Con <c>null</c>, la principal (la portadora siempre va ahí).
+        /// </summary>
+        public void UseSurfaceFor(HandGripTarget target)
         {
-            const int bins = 36;
-            var vertices = GripMeshAsset.vertices;
-            var lists = new List<float>[bins];
-            for (int i = 0; i < bins; i++) lists[i] = new List<float>();
-            var b = GripMeshAsset.bounds;
-            ProfileMinY = b.min.y;
-            ProfileMaxY = b.max.y;
-            float span = Mathf.Max(1e-5f, b.size.y);
-            foreach (var v in vertices)
+            if (target == null || string.IsNullOrEmpty(target.gripPartNodeName)) { Surface = MainSurface; return; }
+            string key = $"{target.gripPartNodeName}|{target.gripPartAxis}|{target.gripPartMinY01}|{target.gripPartMaxY01}";
+            if (!_partSurfaces.TryGetValue(key, out var surface))
             {
-                int bin = Mathf.Clamp(Mathf.FloorToInt((v.y - b.min.y) / span * bins), 0, bins - 1);
-                lists[bin].Add(Mathf.Sqrt(v.x * v.x + v.z * v.z));
+                var part = Node.GetComponentsInChildren<MeshFilter>(true).FirstOrDefault(m => m.name == target.gripPartNodeName && m.sharedMesh != null)
+                    ?? throw new HandInteractionException("GRIP_PART_NOT_FOUND",
+                        $"el modelo '{Node.name}' no tiene la pieza '{target.gripPartNodeName}' con malla");
+                surface = HandGripSurface.Build(part.transform, part.sharedMesh, target.gripPartAxis, target.gripPartMinY01, target.gripPartMaxY01);
+                _partSurfaces[key] = surface;
             }
-            RadiusProfile = new float[bins];
-            for (int i = 0; i < bins; i++)
-            {
-                if (lists[i].Count == 0) { RadiusProfile[i] = i > 0 ? RadiusProfile[i - 1] : 0f; continue; }
-                lists[i].Sort();
-                RadiusProfile[i] = lists[i][Mathf.Clamp((int)(lists[i].Count * 0.9f), 0, lists[i].Count - 1)];
-            }
+            Surface = surface;
         }
 
-        /// <summary>Radio de la malla en metros a una altura LOCAL de la malla.</summary>
-        public float RadiusAtLocal(float y)
-        {
-            float span = Mathf.Max(1e-5f, ProfileMaxY - ProfileMinY);
-            float f = Mathf.Clamp01((y - ProfileMinY) / span) * (RadiusProfile.Length - 1);
-            int i = Mathf.Clamp(Mathf.FloorToInt(f), 0, RadiusProfile.Length - 2);
-            return Mathf.Lerp(RadiusProfile[i], RadiusProfile[i + 1], f - i);
-        }
+        public void UseMainSurface() => Surface = MainSurface;
 
-        public float MeshScale => Mathf.Max(1e-5f, GripMesh.lossyScale.y);
-        public float LengthMeters => (ProfileMaxY - ProfileMinY) * MeshScale;
+        public float LengthMeters => Surface.LengthMeters;
 
-        /// <summary>Eje del objeto en mundo (hacia la punta).</summary>
-        public Vector3 Axis => GripMesh.up;
+        /// <summary>Eje de la superficie activa, en mundo.</summary>
+        public Vector3 Axis => Surface.AxisWorld;
 
-        /// <summary>Punto del eje a la fracción <paramref name="along"/> (0 culata, 1 punta), en mundo.</summary>
-        public Vector3 AxisPoint(float along)
-            => GripMesh.TransformPoint(new Vector3(0f, Mathf.Lerp(ProfileMinY, ProfileMaxY, along), 0f));
+        /// <summary>Punto del eje a la fracción <paramref name="along"/> (0 un extremo, 1 el otro), en mundo.</summary>
+        public Vector3 AxisPoint(float along) => Surface.PointAt(along);
 
-        public float RadiusAtAlong(float along) => RadiusAtLocal(Mathf.Lerp(ProfileMinY, ProfileMaxY, along)) * MeshScale;
+        public float RadiusAtAlong(float along) => Surface.RadiusAtAlong(along);
 
-        /// <summary>Dirección radial del reloj en mundo: 0° = +Z del objeto, 90° = +X.</summary>
-        public Vector3 Radial(float clockDegrees)
-            => GripMesh.TransformDirection(Quaternion.AngleAxis(clockDegrees, Vector3.up) * Vector3.forward).normalized;
+        /// <summary>Dirección radial del reloj en mundo alrededor del eje de la superficie activa.</summary>
+        public Vector3 Radial(float clockDegrees) => Surface.Radial(clockDegrees);
 
-        /// <summary>Distancia con signo a la piel del objeto en metros (positivo fuera): perfil de radio
-        /// de la malla de agarre y cajas de las demás piezas.</summary>
+        /// <summary>
+        /// Distancia con signo a la piel del objeto en metros (positivo fuera): la superficie activa con su perfil
+        /// real y, como obstáculos, la malla principal por su perfil (si la activa es otra) y las demás piezas
+        /// por su caja. Un dedo sobre el pomo no puede atravesar ni el cuerpo ni el brazo de la manivela.
+        /// </summary>
         public float SurfaceGap(Vector3 world)
         {
-            float gap = ProfileGap(world);
-            foreach (var o in Obstacles)
-                gap = Mathf.Min(gap, BoxGap(o, world));
-            return gap;
-        }
-
-        public float ProfileGap(Vector3 world)
-        {
-            Vector3 l = GripMesh.InverseTransformPoint(world);
-            float r = Mathf.Sqrt(l.x * l.x + l.z * l.z);
-            float radius = RadiusAtLocal(Mathf.Clamp(l.y, ProfileMinY, ProfileMaxY));
-            float local;
-            if (l.y < ProfileMinY || l.y > ProfileMaxY)
+            float gap = Surface.Gap(world);
+            if (Surface != MainSurface) gap = Mathf.Min(gap, MainSurface.Gap(world));
+            foreach (var o in Parts)
             {
-                float beyond = l.y < ProfileMinY ? ProfileMinY - l.y : l.y - ProfileMaxY;
-                float outward = Mathf.Max(0f, r - radius);
-                local = Mathf.Sqrt(outward * outward + beyond * beyond);
+                if (o.Transform == MainSurface.T || o.Transform == Surface.T) continue;
+                gap = Mathf.Min(gap, BoxGap(o, world));
             }
-            else local = r - radius;
-            return local * MeshScale;
+            return gap;
         }
 
         public static float BoxGap(HandObstacle o, Vector3 world)
@@ -437,8 +531,8 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
             }
         }
 
-        /// <summary>La muñeca en ángulos con nombre: torsión sobre el antebrazo (+Y) y el columpio que queda,
-        /// partido en flexión/extensión (X) y desviación (Z).</summary>
+        /// <summary>La torsión de la mano sobre el antebrazo (+Y). Flexión y desviación NO salen de aquí: se miden
+        /// con vectores del cuerpo en <c>HandGripSolver.Measure</c>.</summary>
         public static void WristAngles(HandSide side, out float twist, out float flexion, out float deviation)
         {
             var local = Quaternion.Inverse(side.Fore.rotation) * side.Hand.rotation;
