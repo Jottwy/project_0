@@ -40,6 +40,9 @@ namespace BackroomsSurvival.Gameplay.Mapping
         [Range(0f, 1f)] public float sureThreshold = 0.7f;
         [Tooltip("Coincidencia a partir de la cual el sitio te suena.")]
         [Range(0f, 1f)] public float unsureThreshold = 0.4f;
+        [Tooltip("Segundos que dura la cruceta sobre la hoja tras ubicarte (Joel, playtest 2026-09-13).")]
+        public float crosshairSeconds = 4f;
+        public Color crosshairColour = new Color(0.85f, 0.1f, 0.1f, 1f);
 
         private readonly List<MapSheet> _sheets = new List<MapSheet>();
         private readonly MapSheetStrokeBuilder _builder = new MapSheetStrokeBuilder();
@@ -54,6 +57,12 @@ namespace BackroomsSurvival.Gameplay.Mapping
         private string _status = "";
         private bool _offerMapHere;
         private readonly List<long> _recentKeys = new List<long>();
+
+        // Cruceta de «Ubicarme»: NO es tinta, se pinta encima de la hoja y se desvanece.
+        private int _crosshairSheet = -1;
+        private float _crosshairX;
+        private float _crosshairZ;
+        private float _crosshairUntil;
 
         private bool _drawing;
         private MapSheetLayer _layer;
@@ -192,9 +201,13 @@ namespace BackroomsSurvival.Gameplay.Mapping
                 MapSheet sheet = _sheets[best];
                 bool sure = bestScore >= sureThreshold;
                 int cellsPerChunk = memory.CellsPerChunk;
-                sheet.Marks.Add(new MapMark(sure ? MapMarkKind.Here : MapMarkKind.HereUnsure,
-                    sampler.LastCellX - sheet.Zone.ChunkX * cellsPerChunk + 0.5f,
-                    sampler.LastCellZ - sheet.Zone.ChunkZ * cellsPerChunk + 0.5f, _pen.Argb));
+                float localX = sampler.LastCellX - sheet.Zone.ChunkX * cellsPerChunk + 0.5f;
+                float localZ = sampler.LastCellZ - sheet.Zone.ChunkZ * cellsPerChunk + 0.5f;
+                sheet.Marks.Add(new MapMark(sure ? MapMarkKind.Here : MapMarkKind.HereUnsure, localX, localZ, _pen.Argb));
+                _crosshairSheet = best;
+                _crosshairX = localX / cellsPerChunk;
+                _crosshairZ = localZ / cellsPerChunk;
+                _crosshairUntil = Time.unscaledTime + crosshairSeconds;
                 _current = best;
                 _dirty = true;
                 result = sure ? "seguro" : "dudoso";
@@ -337,7 +350,10 @@ namespace BackroomsSurvival.Gameplay.Mapping
 
             y += 32f;
             if (_current >= 0 && _texture != null)
+            {
                 GUI.DrawTexture(new Rect(x, y, sheetSize, sheetSize), _texture);
+                DrawCrosshair(x, y, sheetSize);
+            }
             else
                 GUI.Label(new Rect(x, y, sheetSize, 22f), "Coge una hoja en blanco para empezar.");
 
@@ -350,6 +366,33 @@ namespace BackroomsSurvival.Gameplay.Mapping
                 TakeSheet();
                 StartDrawing();
             }
+        }
+
+        /// <summary>
+        /// Cruceta de «Ubicarme» sobre la hoja: parpadea al principio para que el ojo la encuentre y se desvanece
+        /// en el último segundo. La hoja tiene Z hacia arriba y la pantalla Y hacia abajo.
+        /// </summary>
+        private void DrawCrosshair(float sheetX, float sheetY, float sheetSize)
+        {
+            float left = _crosshairUntil - Time.unscaledTime;
+            if (_crosshairSheet != _current || left <= 0f) return;
+
+            float elapsed = crosshairSeconds - left;
+            float alpha = Mathf.Clamp01(left);
+            if (elapsed < 1f && Mathf.Repeat(elapsed * 4f, 1f) > 0.6f) alpha *= 0.25f;
+
+            float cx = sheetX + _crosshairX * sheetSize;
+            float cy = sheetY + (1f - _crosshairZ) * sheetSize;
+            const float arm = 22f, gap = 5f, thick = 2f;
+
+            Color previous = GUI.color;
+            GUI.color = new Color(crosshairColour.r, crosshairColour.g, crosshairColour.b, crosshairColour.a * alpha);
+            Texture2D white = Texture2D.whiteTexture;
+            GUI.DrawTexture(new Rect(cx - arm, cy - thick * 0.5f, arm - gap, thick), white);
+            GUI.DrawTexture(new Rect(cx + gap, cy - thick * 0.5f, arm - gap, thick), white);
+            GUI.DrawTexture(new Rect(cx - thick * 0.5f, cy - arm, thick, arm - gap), white);
+            GUI.DrawTexture(new Rect(cx - thick * 0.5f, cy + gap, thick, arm - gap), white);
+            GUI.color = previous;
         }
 
         private static uint ToArgb(Color colour)

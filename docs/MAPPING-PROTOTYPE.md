@@ -328,6 +328,14 @@ reciente de 8 s). Sigue en `MappingPlaytest.unity`, local, sin red ni guardado.
 2. `feat(mapping): flechas de borde y reconocimiento` — `MapSheet`, builder + tests.
 3. `feat(mapping): Ubicarme en la libreta` — raster, vista, escena.
 
+### 4.5 Feedback de playtest (Joel, 2026-09-13)
+
+- Trazo a mano: «mejoró».
+- **Lo que cuesta es orientarse.** Pedido: al ubicarte, una **cruceta** encima de la hoja que marque dónde estás y
+  luego desaparezca. Hecho en la vista: no es tinta ni se guarda en la hoja; roja, parpadea el primer segundo y se
+  desvanece a los `crosshairSeconds` = 4 s. El círculo de tinta sigue quedando.
+- Candidato abierto (sin pedir): marcar también hacia dónde miras, porque saber el punto no dice el rumbo.
+
 ### 3.9 El libro de supervivencia de STP: modelo base para la libreta (Joel, 2026-09-13)
 
 Joel propone aprovechar el libro de crafteo/construcción que ya existe como modelo para la libreta, y más adelante
