@@ -171,3 +171,113 @@ dentro de Unity (sólo corrida en `tools/dev/headless-tests`: 8/8).
 - Menú extra de diagnóstico (`Backrooms/Mapeado/Diagnosticar pintura de playtest`) para ver qué material pinta cada renderer.
 
 **Preguntas abiertas antes de P0.2:** ¿5 m y 60 s se sienten bien jugando?
+
+---
+
+## 3. P0.2 — Hoja y dibujar (plan VALIDADO por Joel, 2026-09-13)
+
+### 3.1 Objetivo
+
+Con `N` se abre la libreta (panel en pantalla, sin brazos todavía). Una hoja se asigna a la zona donde se coge.
+«Dibujar» pasa al papel **lo que se recuerda de esa zona**: paredes como trazos temblorosos, lo viejo más
+tembloroso y con huecos, gastando tinta y **dejando al jugador quieto** mientras dura. Lo ya dibujado no se
+vuelve a cobrar. Se juega en `MappingPlaytest.unity`.
+
+**Fuera de alcance:** varias herramientas y papeles, marcas, notas, letra generada, flechas de borde,
+«Ubicarme», plano `M`, red, guardado, brazos 1P. Todo eso es P0.3 o posterior.
+
+### 3.2 Lo que ya existe y se reutiliza
+
+| Pieza | Dónde | Uso |
+|---|---|---|
+| Recuerdo por zona | `MapMemory.CellsInZone`, `Consume` (P0.1) | Fuente de los trazos |
+| Pintar trazos una vez en `Texture2D` | `SprayRenderer.Rasterize` (`SetPixels32` + `Apply`), lógica pura en `SprayCanvas` | Mismo patrón para la hoja |
+| Panel uGUI por código | `PoiDebugHud` (`ScreenSpaceOverlay` + `CanvasScaler` 1920×1080) | Visor de la libreta |
+| Teclas | `Keyboard.current` directo (`WristWatchHandler`, `FreeBuildMode`, `Wg3TestPlayer`); `N` libre | Tecla `N` |
+| Algoritmo de trazos | Maqueta «Libreta del cartógrafo» (`buildStrokes`: arista pared↔suelo, fusión de colineales, temblor con semilla, hueco en lo viejo) | Se porta a C# |
+
+### 3.3 Diseño — tres piezas puras y una de escena
+
+1. **`MapSheet`** (C# puro): zona, aristas ya dibujadas (`HashSet<long>`, sólo para consultar, nunca para emitir),
+   capas de trazos, tinta. **`MapSheetStrokes`** (C# puro): de `CellsInZone` a trazos.
+   - Arista = pared recordada junto a suelo recordado de la zona. Hace falta ver las paredes UNA celda fuera del
+     chunk (los muros de borde son del vecino): `CellsInZone` gana un parámetro `marginCells` (sólo paredes).
+   - Fusión de aristas colineales contiguas, **orden estable** (fila/columna ordenadas, regla 13).
+   - Frescura: edad > `memorySeconds / 3` → trazo tembloroso, discontinuo y con un 28 % de huecos.
+   - Temblor con semilla por hoja y capa: el mismo recuerdo da el mismo dibujo.
+   - Tinta: coste por metro de arista nueva; sin tinta, el trazo se corta ahí.
+2. **`MapSheetRaster`** (C# puro): búfer `Color32[]` de 512×512 con papel, trazos gruesos por sellos y
+   discontinuos para lo viejo. Testeable sin Unity (sólo `Color32`/`Mathf`, como el arnés ya admite).
+3. **`MapNotebookView`** (`MonoBehaviour`): `N` abre/cierra, libera el cursor, `RawImage` con la hoja,
+   pestañas de hoja, «Coger hoja» y «Dibujar», barra de tinta. El dibujo se anima pintando N trazos por frame
+   (≈ 3 s como mucho). **Quieto mientras dibuja:** desactiva un `Behaviour` configurable (en la escena de
+   playtest, el `Wg3TestPlayer`) sin tocar código de WG3.
+4. **Creador de escena**: añade `MapNotebookView` al objeto `MapMemory` enlazado al muestreador y al jugador.
+
+### 3.4 Tests EditMode (también en `tools/dev/headless-tests` si no tocan UnityEngine)
+
+| Test | Qué fija |
+|---|---|
+| `AWallNextToRememberedFloorBecomesAnEdge` | Arista pared↔suelo, y ninguna sin suelo al lado |
+| `BorderWallsOfTheNeighbourChunkCloseTheSheet` | `marginCells` cierra los bordes |
+| `CollinearEdgesMergeIntoOneStroke` | Fusión |
+| `DrawingTheSameMemoryTwiceCostsNothing` | Dedupe de aristas y tinta |
+| `OldMemoryDrawsShakyWithGaps` | Frescura |
+| `RunningOutOfInkCutsTheStroke` | Corte por tinta |
+| `SameMemorySameSeedSameDrawing` | Determinismo |
+| `StrokesComeOutInAStableOrder` | Orden estable |
+| `RasterPaintsTheStrokeAndNotBeyondItsWidth` | Raster |
+
+### 3.5 Commits
+
+1. `feat(mapping): trazos de hoja desde el recuerdo` — `MapMemory` (`marginCells`), `MapSheet`, `MapSheetStrokes` + tests.
+2. `feat(mapping): raster de la hoja` — `MapSheetRaster` + tests.
+3. `feat(mapping): libreta con N en la escena de playtest` — `MapNotebookView`, creador, escena regenerada.
+
+### 3.6 Hecho cuando
+
+1. Tests en verde (headless y dentro de Unity).
+2. En Play: tras andar, `N` → «Coger hoja» → «Dibujar» pinta la zona recorrida, no atraviesa paredes, lo viejo
+   sale tembloroso; dibujar dos veces seguidas no gasta más tinta; el jugador no se mueve mientras dibuja.
+3. Coste del dibujo medido y registrado en el log (`MAPSHEET strokes=… ms_build=… ms_raster=…`).
+
+### 3.7 Preguntas de playtest
+
+¿Dibujar quieto da tensión o pesa? ¿60 s de recuerdo es mucho o poco para llegar a dibujar? ¿Se entiende el
+dibujo a ese tamaño? ¿El temblor de lo viejo se lee como «esto no lo tengo claro»?
+
+### 3.8 Decisiones (cerradas por Joel, 2026-09-13)
+
+1. **Dibujar con clic** en el botón «Dibujar».
+2. **Hoja de 512×512 píxeles** para 50 m de zona (≈ 10 px por metro).
+3. **Dibujo de hasta ~3 s, quieto.**
+4. **Pulsar `N` o moverse a mitad cancela**, y lo ya trazado se queda.
+
+### 3.9 El libro de supervivencia de STP: modelo base para la libreta (Joel, 2026-09-13)
+
+Joel propone aprovechar el libro de crafteo/construcción que ya existe como modelo para la libreta, y más adelante
+para carpeta y archivador. Verificado en el vendor:
+
+| Pieza | Dónde | Qué da |
+|---|---|---|
+| Wieldable en las manos | `STP/Prefabs/Wieldables/STP_Wieldable_SurvivalBook.prefab` (`WieldableTool`) | Se sostiene en 1P; equipar ≈ 1,35 s, enfundar con la misma tecla |
+| Interfaz sobre el libro | `SurvivalBookUI : CharacterUIBehaviour` (`STP/Code/Runtime/UI/Building/SurvivalBook/`), prefab `STP_UI_SurvivalBook` con **dos Canvas en World Space** (menú + contenido: `Building`, `Fire`, `Shelter`, `Storage`, `Workstations`) | Páginas/secciones con selección, Escape cierra (`PushEscapeCallback`) |
+| Input propio | `FPSSurvivalBookInput` + contexto `STP/Data/Input/STP_SurvivalBook.asset`; acción `Book` | Toggle equipar/enfundar |
+| Ambiente de lectura | Perfil `STP/Data/PostProcessing/STP_SurvivalBook.asset` (profundidad de campo), audio `STP_Book_FlipPage` | Leer se siente como leer |
+| Objeto del mundo | `STP/Prefabs/Items/STP_Pickup_SurvivalBook.prefab` | Se encuentra y se recoge |
+
+**Teclas del input del vendor (`FPS_InputActions.inputactions`): `B` = libro, `N` = modo de disparo (`FireMode`),
+`M` libre.** Nuestro código no usa ni reasigna el libro.
+
+**Consecuencias para el plan:**
+- **P0.2 no cambia:** la escena de playtest usa `Wg3TestPlayer`, no el personaje STP, así que el libro no está
+  disponible allí. Se prototipa la LÓGICA (recuerdo → trazos → raster) con el panel en pantalla, que es lo que se
+  va a jugar para contestar las preguntas de §3.7. La lógica pura sirve tal cual para la versión diegética.
+- **Paso nuevo P0.5 — Libreta diegética** (tras P0.4): calcar el patrón del libro sin editar el vendor (wieldable
+  propio `BR_Wieldable_Libreta`, UI World Space sobre las páginas con la textura de `MapSheetRaster`, contexto de
+  input propio, profundidad de campo y sonido de página), en una escena con el jugador STP. **Regla 14 / ADR-077
+  enm. 2: un Canvas colgado de los brazos 1P warpea (`BR_UIWarp`)**, y el puntero sobre UI warpeada no casa: hay que
+  medirlo antes de diseñar clics sobre la hoja.
+- **Teclas (a decidir en P0.5):** `M` = mapa como «interfaz» (libre). `N` = libreta choca con `FireMode` del
+  vendor. Opciones: (a) reasignar `FireMode` en nuestra copia del mapa de input; (b) la libreta en `B` como pestaña
+  del libro («Qué sabes | Notas»), que además encaja con la fila «Libro» de INVENTORY-ROADMAP (armonía del HUD).
