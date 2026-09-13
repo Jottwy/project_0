@@ -295,12 +295,21 @@ namespace BackroomsSurvival.EditorTools
             go.layer = hand.gameObject.layer;
 
             var bakedMesh = BakeMeshWithLongestAxisOnY(mesh);
-            Debug.Log($"[AlmondWaterWieldable] DIAG bakedMesh null={bakedMesh == null} " +
-                      $"vertices={(bakedMesh != null ? bakedMesh.vertexCount : -1)} " +
-                      $"sameAsSource={bakedMesh == mesh}");
+
+            // Medido: un Mesh nuevo asignado a un MeshFilter y guardado con SaveAsPrefabAsset SOBRE
+            // UN PREFAB QUE YA EXISTE en disco se pierde (queda m_Mesh: {fileID: 0}) — el mismo
+            // Mesh, con AddObjectToAsset llamado ANTES de la primera vez que se sobreescribe el
+            // archivo, sí persiste como sub-asset del fichero de una vez para siempre. No hace
+            // falta llamarlo en cada reparación futura: una vez que el fichero YA TIENE ese Mesh
+            // como sub-asset, sobreescribirlo con SaveAsPrefabAsset lo conserva.
+            if (bakedMesh != mesh && AssetDatabase.LoadAssetAtPath<GameObject>(PrefabPath) != null &&
+                !AssetDatabase.Contains(bakedMesh))
+            {
+                AssetDatabase.AddObjectToAsset(bakedMesh, PrefabPath);
+            }
+
             var filter = go.AddComponent<MeshFilter>();
             filter.sharedMesh = bakedMesh;
-            Debug.Log($"[AlmondWaterWieldable] DIAG filter.sharedMesh null after assign={filter.sharedMesh == null}");
             var renderer = go.AddComponent<MeshRenderer>();
             renderer.sharedMaterial = material;
             renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
