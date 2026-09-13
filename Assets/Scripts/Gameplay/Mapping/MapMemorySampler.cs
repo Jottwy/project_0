@@ -9,7 +9,8 @@ namespace BackroomsSurvival.Gameplay.Mapping
     /// P0.1 de MAPPING-PROTOTYPE — alimenta <see cref="MapMemory"/> con lo que el jugador tiene
     /// alrededor. Cada <see cref="sampleSeconds"/>: una caja por celda de 0,5 m en el disco de
     /// <see cref="radiusM"/>, a la altura del cuerpo, contra la geometría; y la línea de visión se
-    /// resuelve después sobre esa rejilla, sin raycasts.
+    /// resuelve después sobre esa rejilla, sin raycasts. Más allá, P0.3b añade un abanico de rayos en el ángulo
+    /// de la mirada hasta <see cref="fanDistanceM"/> (<see cref="MapVisionFan"/>).
     /// </summary>
     /// <remarks>
     /// **El cliente no tiene el ráster de WG3** (lo calcula el servidor), así que se sondean los
@@ -33,6 +34,18 @@ namespace BackroomsSurvival.Gameplay.Mapping
         public float radiusM = 5f;
         public float memorySeconds = 60f;
         public float sampleSeconds = 0.5f;
+
+        [Header("Mirada (P0.3b, MAPPING-PROTOTYPE §4.6)")]
+        [Tooltip("Hasta dónde se ve en el ángulo de la mirada, en metros. 0 = sólo el disco cercano.")]
+        public float fanDistanceM = 20f;
+        [Tooltip("Ángulo horizontal del abanico, en grados.")]
+        public float fanAngleDeg = 90f;
+        [Tooltip("Rayos del abanico: con 90 en 90° hay uno por grado (a 20 m, 0,35 m entre rayos).")]
+        public int fanRays = 90;
+        [Tooltip("Altura de los rayos sobre el suelo, en metros (dentro de la franja de sondeo).")]
+        public float fanHeightM = 1.1f;
+        [Tooltip("Hacia dónde se mira. Vacío = Camera.main y, si no hay, el propio target.")]
+        public Transform viewSource;
 
         [Header("Sondeo")]
         [Tooltip("Franja del cuerpo que cuenta como pared, en metros sobre el suelo.")]
@@ -60,6 +73,8 @@ namespace BackroomsSurvival.Gameplay.Mapping
         private int[] _cellZ;
         private MapCellKind[] _kinds;
         private readonly Collider[] _hits = new Collider[8];
+        private readonly System.Collections.Generic.HashSet<long> _seen = new System.Collections.Generic.HashSet<long>();
+        private int _fanRays;
         private readonly System.Diagnostics.Stopwatch _watch = new System.Diagnostics.Stopwatch();
 
         private float _nextSample;
@@ -81,13 +96,15 @@ namespace BackroomsSurvival.Gameplay.Mapping
             _radiusCells = Mathf.CeilToInt(radiusM / CellSizeM);
             int side = 2 * _radiusCells + 1;
             _occupied = new bool[side * side];
-            _cellX = new int[side * side];
-            _cellZ = new int[side * side];
-            _kinds = new MapCellKind[side * side];
+            _fanRays = fanDistanceM > 0f ? Mathf.Max(0, fanRays) : 0;
+            int maxCells = side * side + _fanRays * MapVisionFan.MaxCellsPerRay(CellSizeM, fanDistanceM);
+            _cellX = new int[maxCells];
+            _cellZ = new int[maxCells];
+            _kinds = new MapCellKind[maxCells];
 
             // Las constantes del mundo, nunca números propios: si cambian allí, el recuerdo las sigue.
             Memory = new MapMemory(CellSizeM, Wg3ChunkStreamer.ChunkSize, Wg3StoreyLayers.StoreyM,
-                memorySeconds, sampleSeconds, side * side);
+                memorySeconds, sampleSeconds, maxCells);
 
             _nextLog = Time.time + logEverySeconds;
             _windowGc0 = System.GC.CollectionCount(0);
@@ -149,6 +166,7 @@ namespace BackroomsSurvival.Gameplay.Mapping
             }
 
             int count = MapMemory.CollectVisible(_occupied, _radiusCells, originX, originZ, _cellX, _cellZ, _kinds);
+            count = AddFan(position, floorY, count);
             Memory.AddSample(Time.timeAsDouble, storey, originX, originZ, _cellX, _cellZ, _kinds, count);
 
             int walls = 0;
@@ -161,6 +179,39 @@ namespace BackroomsSurvival.Gameplay.Mapping
             LastVisibleCells = count;
             LastWallCells = walls;
             HasSample = true;
+        }
+
+        /// <summary>
+        /// P0.3b — abanico de rayos en el ángulo de la mirada, detrás del disco cercano. El rayo nace dentro del
+        /// <c>CharacterController</c> del jugador y un rayo no choca con el collider del que sale.
+        /// </summary>
+        private int AddFan(Vector3 position, float floorY, int count)
+        {
+            if (_fanRays == 0) return count;
+
+            Transform view = viewSource != null ? viewSource : Camera.main != null ? Camera.main.transform : target;
+            Vector3 forward = view.forward;
+            forward.y = 0f;
+            if (forward.sqrMagnitude < 1e-6f) return count;
+            forward.Normalize();
+
+            _seen.Clear();
+            for (int i = 0; i < count; i++) _seen.Add(((long)_cellX[i] << 32) ^ (uint)_cellZ[i]);
+
+            var origin = new Vector3(position.x, floorY + fanHeightM, position.z);
+            for (int r = 0; r < _fanRays; r++)
+            {
+                float u = _fanRays == 1 ? 0.5f : r / (float)(_fanRays - 1);
+                Vector3 direction = Quaternion.AngleAxis((u - 0.5f) * fanAngleDeg, Vector3.up) * forward;
+                double hit = Physics.Raycast(origin, direction, out RaycastHit info, fanDistanceM, probeMask,
+                    QueryTriggerInteraction.Ignore)
+                    ? info.distance
+                    : -1.0;
+                count = MapVisionFan.Trace(CellSizeM, origin.x, origin.z, direction.x, direction.z, fanDistanceM, hit,
+                    _seen, _cellX, _cellZ, _kinds, count);
+            }
+
+            return count;
         }
 
         private bool IsWall(Vector3 centre, Vector3 halfExtents)
