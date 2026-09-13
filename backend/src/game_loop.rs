@@ -1442,7 +1442,8 @@ pub async fn run(
                     // horneadas: sin ellos, una pieza colocada en un espacio planificado nace
                     // sellada, y el mundo servido no puede usar contenido autorado.
                     let coord = crate::world::wg3::chunk::Wg3ChunkCoord { x: cx, z: cz };
-                    let (placements, segments, carves, solids, props) = match wg3.manifest() {
+                    let (placements, segments, carves, solids, props, ramps) = match wg3.manifest()
+                    {
                         Some(manifest) if wg3.is_enabled() => {
                             let region = wg3_world.region_for(manifest, net.world_seed, coord);
                             let placements = region
@@ -1524,9 +1525,31 @@ pub async fn run(
                                     style: p.style,
                                 })
                                 .collect();
-                            (placements, segments, carves, solids, props)
+                            // ADR-122 (wire 68) — las rampas, por su centro como los macizos.
+                            let ramps = region
+                                .ramps_owned_by_chunk(coord)
+                                .into_iter()
+                                .map(|r| crate::ipc::Wg3RampWire {
+                                    x_cm: r.x_cm,
+                                    z_cm: r.z_cm,
+                                    size_x_cm: r.size_x_cm,
+                                    size_z_cm: r.size_z_cm,
+                                    bottom_y_cm: r.bottom_y_cm,
+                                    top_y_cm: r.top_y_cm,
+                                    dir: r.dir,
+                                    style: r.style,
+                                })
+                                .collect();
+                            (placements, segments, carves, solids, props, ramps)
                         }
-                        _ => (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()),
+                        _ => (
+                            Vec::new(),
+                            Vec::new(),
+                            Vec::new(),
+                            Vec::new(),
+                            Vec::new(),
+                            Vec::new(),
+                        ),
                     };
 
                     let _ = to_clients.send(ServerMessage::Wg3Chunk(crate::ipc::Wg3ChunkView {
@@ -1537,6 +1560,7 @@ pub async fn run(
                         carves,
                         solids,
                         props,
+                        ramps,
                     }));
                 }
                 ClientMessage::RequestChunk { cx, cz, layer } => {

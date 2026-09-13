@@ -365,6 +365,24 @@ pub struct Wg3SolidWire {
     pub shape: u8,
 }
 
+/// ADR-122 (wire 68) — una RAMPA: huella, cotas de sus dos extremos, hacia dónde SUBE y aspecto.
+///
+/// Viaja la rampa y no sus cajas de colisión: las dos puntas las derivan con la misma aritmética
+/// entera (`ramp::ramp_step_boxes` y `Wg3RampGeometry.StepBoxes`), atadas por el oráculo
+/// `wg3_ramp_oracle.json`. `dir` sigue la convención de `Wg3OpeningWire::side`: 0 N (+Z), 1 E (+X),
+/// 2 S (−Z), 3 O (−X).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Wg3RampWire {
+    pub x_cm: i32,
+    pub z_cm: i32,
+    pub size_x_cm: i32,
+    pub size_z_cm: i32,
+    pub bottom_y_cm: i32,
+    pub top_y_cm: i32,
+    pub dir: u8,
+    pub style: u8,
+}
+
 /// ADR-095 — lo que WG3 entrega por chunk.
 ///
 /// Sin `layer`: con columnas de tramos (D2) la capa deja de existir como restricción, así que un
@@ -412,6 +430,12 @@ pub struct Wg3ChunkView {
     /// Como los macizos: se instancian. El cliente resuelve `kind` → prefab.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub props: Vec<Wg3PropWire>,
+
+    /// ADR-122 (wire 68) — las RAMPAS de las que este chunk es DUEÑO, por su centro, como los
+    /// macizos: el cliente monta un GameObject por chunk sin deduplicar. El ráster del servidor
+    /// usa todas las que TOCAN, por `Wg3ServedWorld::solids_touching_chunk`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ramps: Vec<Wg3RampWire>,
 }
 
 /// ADR-129 D1 (wire 61) — un ancla de atrezo: dónde y qué, no cómo.
@@ -1454,6 +1478,19 @@ mod tests {
                 kind: 1,
                 style: 3,
             }],
+            // ADR-122 (wire 68) — y la rampa. `dir` 3 y `style` 6, ninguno cero: cero es el valor al
+            // que cae el parser de C# cuando se salta una clave, y con él este test pasaría igual
+            // con la clave renombrada.
+            ramps: vec![Wg3RampWire {
+                x_cm: -730,
+                z_cm: 1_450,
+                size_x_cm: 610,
+                size_z_cm: 270,
+                bottom_y_cm: -60,
+                top_y_cm: 12,
+                dir: 3,
+                style: 6,
+            }],
         }))
         .unwrap();
 
@@ -1490,6 +1527,8 @@ mod tests {
             "props",
             "y_cm",
             "kind",
+            "ramps",
+            "dir",
         ] {
             assert!(
                 body.contains(key),
@@ -1514,6 +1553,13 @@ mod tests {
                 assert_eq!(-18, v.segments[0].floor_y_cm);
                 assert_eq!(1, v.segments[0].openings.len());
                 assert_eq!(240, v.segments[0].openings[0].width_cm);
+                // ADR-122 — la rampa vuelve entera, con el signo de su fondo y su sentido.
+                assert_eq!(1, v.ramps.len());
+                assert_eq!(-730, v.ramps[0].x_cm);
+                assert_eq!(-60, v.ramps[0].bottom_y_cm);
+                assert_eq!(12, v.ramps[0].top_y_cm);
+                assert_eq!(3, v.ramps[0].dir);
+                assert_eq!(6, v.ramps[0].style);
             }
             other => panic!("esperaba wg3_chunk, llegó {other:?}"),
         }

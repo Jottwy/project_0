@@ -270,6 +270,47 @@ namespace BackroomsSurvival.Net
         }
     }
 
+    /// <summary>
+    /// ADR-122 (wire 68) — una RAMPA. Espejo de <c>ipc::Wg3RampWire</c>.
+    ///
+    /// La huella es la de la rampa entera; <see cref="dir"/> es hacia dónde SUBE con la convención de
+    /// <c>Wg3Opening.side</c> (0 N +Z, 1 E +X, 2 S −Z, 3 O −X). Viaja la rampa y no sus cajas: las
+    /// cajas las deriva <c>Wg3RampGeometry.StepBoxes</c> con la misma aritmética entera que el
+    /// servidor, y la cuña de dibujo sale de los mismos seis números.
+    /// </summary>
+    public struct Wg3RampMsg
+    {
+        public int xCm;
+        public int zCm;
+        public int sizeXCm;
+        public int sizeZCm;
+        public int bottomYCm;
+        public int topYCm;
+        public byte dir;
+        /// <summary>Aspecto del espacio: la cuña se pinta con el suelo de ese papel.</summary>
+        public byte style;
+
+        public static Wg3RampMsg Parse(MsgPackReader r)
+        {
+            var m = new Wg3RampMsg();
+            int n = r.ReadMapHeader();
+            for (int i = 0; i < n; i++)
+            {
+                var k = r.ReadKey();
+                if (MsgPackReader.Is(k, "x_cm")) m.xCm = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "z_cm")) m.zCm = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "size_x_cm")) m.sizeXCm = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "size_z_cm")) m.sizeZCm = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "bottom_y_cm")) m.bottomYCm = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "top_y_cm")) m.topYCm = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "dir")) m.dir = (byte)r.ReadInt();
+                else if (MsgPackReader.Is(k, "style")) m.style = (byte)r.ReadInt();
+                else r.Skip();
+            }
+            return m;
+        }
+    }
+
     /// <summary>ADR-129 D1 (wire 61) — un ancla de atrezo: dónde va un mueble y cuál. El cliente
     /// resuelve <see cref="kind"/> → prefab de <c>Resources/Wg3Props</c>.</summary>
     public class Wg3PropMsg
@@ -353,6 +394,10 @@ namespace BackroomsSurvival.Net
         /// posición. Como los macizos: se instancian.</summary>
         public readonly List<Wg3PropMsg> props = new List<Wg3PropMsg>();
 
+        /// <summary>ADR-122 (wire 68) — las rampas de las que este chunk es DUEÑO, por su centro. Se
+        /// dibujan y frenan aquí; el ráster del servidor usa todas las que tocan.</summary>
+        public readonly List<Wg3RampMsg> ramps = new List<Wg3RampMsg>();
+
         public static Wg3ChunkMsg Parse(MsgPackReader r, int remainingPairs)
         {
             var m = new Wg3ChunkMsg();
@@ -385,6 +430,11 @@ namespace BackroomsSurvival.Net
                 {
                     int c = r.ReadArrayHeader();
                     for (int j = 0; j < c; j++) m.props.Add(Wg3PropMsg.Parse(r));
+                }
+                else if (MsgPackReader.Is(k, "ramps"))
+                {
+                    int c = r.ReadArrayHeader();
+                    for (int j = 0; j < c; j++) m.ramps.Add(Wg3RampMsg.Parse(r));
                 }
                 else r.Skip();
             }
