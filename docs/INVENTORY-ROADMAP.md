@@ -328,6 +328,11 @@ tinte sobre la UI piden overlay propio o canvas en Screen Space Camera.
 - **Escena de pruebas** (Joel, 2026-09-13): mientras dura la migración, la variante se prueba en
   `Assets/Scenes/BR_InventoryTest.unity` (`Backrooms/UI/Build Inventory Test Scene`) y **`STP_Showcase` sigue con el
   inventario del vendor**; un test lo exige. Tubería de una pasada: `bash tools/dev/InventoryUiPipeline.sh`.
+  **Sustituido el 2026-09-13 (Joel, opción A):** `STP_Showcase` lleva la INTERFAZ nueva por enganche, sin editar su YAML
+  (`BackroomsShowcasePlayerUi`, `Resources/UI/BackroomsShowcasePlayerUi.asset`: instancia `BR_UI_Player` en `sceneLoaded`
+  y el `GameMode` la adopta por `PlayerUI.Instance`). El jugador sigue siendo `STP_Player` con 6 contenedores: mochilas,
+  carga y cuerpo por zonas siguen SOLO en la escena de pruebas (ADR-147 enm. 1, ADR-149 R0). Los paneles de prototipo sin
+  contenedor se esconden (`BackroomsHideUnboundContainers`) y la barra de manos enseña los 6 huecos del vendor.
 - **Rebanada 1c** (2026-09-13): `Relayout` sigue la rejilla del greybox al píxel a 1920×1080 — cabeceras de 36 px a todo
   el ancho (PERSONAJE, LO QUE LLEVAS, ALREDEDOR) con su caja 8 px debajo hasta y=876; sección «Espalda · Mochila» con
   casillas de 72/8; Alrededor = estación (492 px) + panel del objeto (284); barra inferior Manos (placeholder, 2 huecos) ·

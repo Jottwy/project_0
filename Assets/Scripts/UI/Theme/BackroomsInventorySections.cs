@@ -113,6 +113,12 @@ namespace BackroomsSurvival.UI
             for (int p = 0; p < _order.Length; p++)
             {
                 int i = _order[p];
+                if (Hidden(i))
+                {
+                    // Sin contenedor detrás (BackroomsHideUnboundContainers): la sección no ocupa sitio.
+                    if (_sections[i] != null && _sections[i].gameObject.activeSelf) _sections[i].gameObject.SetActive(false);
+                    continue;
+                }
                 bool folded = _folded[i] && !(dragging && Fits(i, dragged));
                 float h = HeightOf(i, folded);
                 _top[i] = Settle(_top[i], y, t, 0.5f);
@@ -151,12 +157,15 @@ namespace BackroomsSurvival.UI
             float y = _topInset;
             for (int p = 0; p < _order.Length; p++)
             {
+                if (Hidden(_order[p])) continue;
                 float h = HeightOf(_order[p], _folded[_order[p]]);
                 if (fromTop < y + h * 0.5f) return p;
                 y += h + _gap;
             }
             return _order.Length - 1;
         }
+
+        private bool Hidden(int i) => _grids[i] != null && !_grids[i].gameObject.activeSelf;
 
         private float HeightOf(int i, bool folded)
         {

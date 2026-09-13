@@ -105,7 +105,8 @@ namespace BackroomsSurvival.Wearables
             if (capacity == null) worn?.Definition.TryGetDataOfType(out zones);
             var garment = zones != null ? GarmentState.Of(worn) : null;
             int broken = garment != null ? garment.BrokenPocketSlots(zones) : 0;
-            int slots = _baseSlots + (capacity?.Slots ?? zones?.PocketSlots ?? 0);
+            int slots = VisibleSlots(_storage != null && _owner == null, _baseSlots, capacity?.Slots ?? zones?.PocketSlots ?? 0,
+                _storage?.SlotsCount ?? 0);
 
             var slotsUI = _ui.ItemSlotsUI;
             if (slotsUI != null && slotsUI.Count > 0)
@@ -235,6 +236,14 @@ namespace BackroomsSurvival.Wearables
             rt.pivot = center;
             if (rt.parent is RectTransform parent) LayoutRebuilder.MarkLayoutForRebuild(parent);
         }
+
+        /// <summary>
+        /// Huecos que se ven. Sin contenedor dueño (<c>STP_Showcase</c>: el jugador no tiene <c>Waist</c> ni <c>Back</c>) no
+        /// hay nada que cape, así que se enseñan todos los del contenedor: si no, la barra de manos del vendor escondería 4
+        /// de sus 6 huecos con lo que lleven dentro. Pura, con test.
+        /// </summary>
+        public static int VisibleSlots(bool ownerMissing, int baseSlots, int wornSlots, int storageSlots) =>
+            ownerMissing ? storageSlots : baseSlots + wornSlots;
 
         /// <summary>Curva con un pequeño rebote al final: 0 → algo más de 1 → 1.</summary>
         public static float EaseOutBack(float u)
