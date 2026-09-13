@@ -18327,3 +18327,39 @@ Ver la cuerda en Play. Si el roce de la palma a fase 0,23 se nota, subir el tope
 reposo; ambas cosas son ya un `set` + `bake`.
 
 ---
+
+## ADR-122 — Enmienda 1: implementada y medida, wire 68, la rampa va ENCIMA de las tiras (2026-09-13) — ACEPTADA
+
+### Contexto
+
+Joel pidió implementar la rampa (fase B del encargo del 13-09) con `RAMP_CHANCE` 0,5. Lo aprobado en 2026-09-04 compartía
+bump con ADR-121 (wire 55 → 56); ADR-121 se implementó solo y el wire siguió subiendo. Esta enmienda deja constancia de lo
+construido y de las tres concreciones que el texto original no fijaba.
+
+### Lo implementado (commits del tronco 01f7c34e, 89ae397f, a6483608, ac54597b)
+
+- **D1 — wire 68, no 56.** `Wg3RampWire` y `Wg3ChunkView.ramps` (omitida vacía), espejo `Wg3RampMsg`; `WIRE_SCHEMA_VERSION` y
+  `WireSchema.Expected` 67 → 68 en el mismo commit. Reparto por CENTRO al cliente (`ramps_owned_by_chunk`); el ráster usa las que
+  TOCAN, que entran como macizos por `Wg3ServedWorld::solids_touching_chunk` sin cambiar la firma de `build_chunk_raster_full`.
+- **D2 — cajas al borde ALTO de su celda.** `ramp::ramp_step_boxes` (Rust) y `Wg3RampGeometry.StepBoxes` (C#): una caja por celda
+  de 50 cm desde el extremo bajo, toda la anchura, cota del borde alto de la celda redondeada hacia arriba, la última exactamente
+  en `top_y_cm`. Oráculo común `backend/tests/fixtures/wg3_ramp_oracle.json` (`the_ramp_oracle_is_current` lo escribe y comprueba,
+  `Wg3RampGeometryTests` lo lee). Aceptado: un pie puede quedar hasta 10 cm sobre el dibujo.
+- **D3 — la cuña es `Wg3Shape.Wedge` (5), sólo cliente, `kind = Floor`.** No `Decoration`: esa submalla pinta con el remate.
+  `AddColliders` la ignora por no ser caja. UV de la rampa = proyección en planta anclada al mundo (la moqueta continúa). +1 cm.
+- **D4 — consumidor 1 SOBRE las tiras del hundido, no en lugar de ellas.** `fill::stair_ramp`: la tira de la puerta queda plana;
+  la rampa va de su borde, a la cota de la puerta, al fondo de la última tira (entra en el grosor de la pared del fondo, queda entre
+  las laterales). La superficie pasa por el borde cercano de cada tira a la cota de la anterior: nunca por debajo de su suelo. Sólo
+  si BAJA, ≤ 100 cm y cabe en 1:5; sorteo `RAMP_CHANCE` 0,5 con `SALT_RAMP` por posición. Sólo suma suelo pisable.
+- **Consumidor 2 (vecinos a distinta cota): sin implementar.** Sigue sin productor; se decide con la gramática de tarimas (fase C).
+
+### Medido
+
+- Barrido `WG3_SWEEP_SEEDS=3` (27 regiones) antes y después, idéntico: 27/27 válidas, 182 857 cotas pisables, mancha mayor
+  99,7 %, 6,0 islas, nav 100 %.
+- 55 rampas en 3 semillas × 9 regiones, todas legales y recorridas por `nav::find_path` en los dos sentidos por tramos de 10 m
+  (`every_served_ramp_is_legal_and_walkable_both_ways`). La sonda `probe_ramp_columns` sube de −0,55 a 0,00 en saltos de 1-2 cm.
+- `world::wg3` release 202/0; EditMode filtrado 38/0 (oráculo, cuña, wire 68). Backend desplegado en `Builds/Backend`.
+- **Sin ver en Play** todavía: subir y bajar sin tirones en `WorldGen3Live`.
+
+---
