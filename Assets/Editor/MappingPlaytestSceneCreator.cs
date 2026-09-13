@@ -1,4 +1,5 @@
 #if UNITY_EDITOR
+using System.Collections.Generic;
 using BackroomsSurvival.Gameplay.Mapping;
 using BackroomsSurvival.WorldGen3;
 using UnityEditor;
@@ -28,6 +29,77 @@ namespace BackroomsSurvival.EditorTools
 
         private static Material LoadMaterial(string name) =>
             AssetDatabase.LoadAssetAtPath<Material>($"{MaterialsFolder}/{name}.mat");
+
+        /// <summary>
+        /// Escribe en el log con qué se está pintando de verdad el mundo de la escena de playtest:
+        /// si el binder está enlazado, qué tiene <c>Wg3TestWorld.materials</c> en memoria y qué
+        /// material y shader lleva cada ranura de cada renderer. Salida ordenada.
+        /// </summary>
+        [MenuItem("Backrooms/Mapeado/Diagnosticar pintura de playtest")]
+        public static void Diagnose()
+        {
+            Scene scene = SceneManager.GetSceneByPath(TargetPath);
+            bool opened = false;
+            if (!scene.isLoaded)
+            {
+                scene = EditorSceneManager.OpenScene(TargetPath, OpenSceneMode.Additive);
+                opened = true;
+            }
+
+            try
+            {
+                Wg3TestWorld world = null;
+                MappingPlaytestMaterials paint = null;
+                foreach (GameObject root in scene.GetRootGameObjects())
+                {
+                    if (world == null) world = root.GetComponentInChildren<Wg3TestWorld>(true);
+                    if (paint == null) paint = root.GetComponentInChildren<MappingPlaytestMaterials>(true);
+                }
+
+                var sb = new System.Text.StringBuilder("[MappingPlaytest] DIAG");
+                sb.Append($" escena_abierta_antes={!opened} world={world != null} binder={paint != null}");
+                sb.Append($" binder_enabled={(paint != null && paint.isActiveAndEnabled)}");
+                sb.Append($" binder.world={(paint != null && paint.world != null)} binder.world_es_este={(paint != null && paint.world == world)}");
+                if (paint != null)
+                    sb.Append($" binder.floor={Describe(paint.floor)}");
+
+                if (world != null)
+                {
+                    Wg3Materials m = world.materials;
+                    sb.Append($"\n  world.materials: {(m == null ? "NULL" : $"floor={Describe(m.floor)} structure={Describe(m.structure)} ceiling={Describe(m.ceiling)} decoration={Describe(m.decoration)}")}");
+                    sb.Append($"\n  mundo generado={world.World != null} piezas={(world.World != null ? world.World.placements.Count : 0)}");
+
+                    var counts = new SortedDictionary<string, int>();
+                    Renderer[] renderers = world.GetComponentsInChildren<Renderer>(true);
+                    int slotMismatch = 0;
+                    foreach (Renderer r in renderers)
+                    {
+                        var filter = r.GetComponent<MeshFilter>();
+                        if (filter != null && filter.sharedMesh != null && filter.sharedMesh.subMeshCount != r.sharedMaterials.Length)
+                            slotMismatch++;
+                        foreach (Material mat in r.sharedMaterials)
+                        {
+                            string key = $"{r.GetType().Name}:{Describe(mat)}";
+                            counts.TryGetValue(key, out int n);
+                            counts[key] = n + 1;
+                        }
+                    }
+
+                    sb.Append($"\n  renderers={renderers.Length} submallas_distintas_de_materiales={slotMismatch}");
+                    foreach (KeyValuePair<string, int> entry in counts)
+                        sb.Append($"\n    {entry.Value,5} × {entry.Key}");
+                }
+
+                Debug.Log(sb.ToString());
+            }
+            finally
+            {
+                if (opened) EditorSceneManager.CloseScene(scene, true);
+            }
+        }
+
+        private static string Describe(Material mat) =>
+            mat == null ? "NULL" : $"{mat.name}<{(mat.shader != null ? mat.shader.name : "sin shader")}>";
 
         [MenuItem("Backrooms/Mapeado/Crear escena de playtest")]
         public static void Create()
