@@ -75,6 +75,10 @@ Estas **sí** crean/modifican escenas. No son idempotentes en el mismo sentido.
 | `Backrooms/Diagnostics/Measure Storage Rack` | `Editor/BackroomsStorageRackProbe.cs` | solo lectura; mide el FBX crudo de `Assets/MeshyImports/metal-shelf-gamemesh_.../`, escribe `Temp/claude_rack_measure.txt` y 3 capturas |
 | `Backrooms/Diagnostics/Measure Storage Rack Result` | `Editor/BackroomsStorageRackProbe.cs` | solo lectura; renderiza el prefab YA horneado (`BR_BuildingPiece_StorageRack.prefab`) |
 | `Backrooms/Generate Textures` | `Editor/TextureGenerator.cs` | escribe texturas |
+| `Backrooms/UI/Build Theme` | `Editor/BackroomsUiThemeBuilder.cs` | D12: genera sprites 9-slice, SDF de TMP y `Resources/UI/BackroomsUiTheme.asset`; idempotente |
+| `Backrooms/UI/Build Inventory Variant` | `Editor/BackroomsInventoryUiBuilder.cs` | crea/retematiza `Prefabs/UI/BR_UI_Player.prefab` (variante de `STP_UI_Player`) y apunta el `GameMode` de `STP_Showcase` a ella |
+| `Backrooms/UI/Point GameMode at BR_UI_Player` | `Editor/BackroomsInventoryUiBuilder.cs` | solo el override de escena; relanzar tras un reimport del vendor |
+| `Backrooms/UI/Capturar inventario` | `Editor/BackroomsInventoryUiShot.cs` | `Builds/Captures/inventario_tab.png` sin Play; headless SIN `-nographics` |
 | `Tools/Backrooms/Fix Runtime Materials` | `Editor/BackroomsRuntimeMaterialInstaller.cs` | **fuera del menú `Backrooms/`**, único que cuelga de `Tools/` |
 | `Backrooms/Build/Compile and deploy backend now` | `Editor/BackendBuildPreprocessor.cs` | compila Rust y copia el exe a `Builds/Backend/` |
 | `Backrooms/Build/Inyectar ajustes de Voz en la pestaña Audio` | `Editor/VoiceOptionsTabBuilder.cs` | modifica el prefab de opciones de STP |

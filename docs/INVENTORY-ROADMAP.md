@@ -308,3 +308,13 @@ tinte sobre la UI piden overlay propio o canvas en Screen Space Camera.
 (barra de condición), `ItemWeightDisplay` / `InventoryWeightDisplayUI`, `ItemDragger` / `ItemDragHandler`,
 `ItemSelector`, `ItemTooltipUI`, `ItemActionsUI`, `HotbarUI` (funda), `StorageStationUI` (contenedor),
 `RepairStationUI`, `CraftingUI`. Todo vía hook externo o subclase fuera del ensamblado vendor, nunca editándolo.
+
+## Implementación (estado)
+- **Rebanada 0** (`116baf75`): tema, sprites y SDF. `BackroomsUiThemeTests` 4/4.
+- **Rebanada 1a**: variante `Assets/Prefabs/UI/BR_UI_Player.prefab` de `STP_UI_Player` con la piel aplicada por
+  `BackroomsInventoryUiBuilder` (fondo `BR_Backdrop`, fuentes, huecos, cintas, papel del inspector, cincha de la funda,
+  regla de carga) y el `GameMode` de `STP_Showcase` apuntando a ella (4 líneas de override). Captura sin Play:
+  `Backrooms/UI/Capturar inventario`. **Sin ver en Play todavía.**
+- **Pendiente 1b**: las tres columnas del greybox (personaje izquierda, mochila centro, alrededor derecha), feedback de
+  selección con la luz del tubo (`SelectableButtonFeedback` del vendor, por referencia serializada), papel del inspector
+  a tamaño de columna.

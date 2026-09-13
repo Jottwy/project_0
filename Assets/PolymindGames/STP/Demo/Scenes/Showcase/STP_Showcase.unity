@@ -966,6 +966,10 @@ PrefabInstance:
       value: 
       objectReference: {fileID: 8631481178080953882, guid: 4cc2ef69049dbd54299728beea90c511, type: 3}
     - target: {fileID: 125163817683932094, guid: d79e38103510cf749bedbce89e00036c, type: 3}
+      propertyPath: _playerUIPrefab
+      value: 
+      objectReference: {fileID: 1340245646186722042, guid: 1be55bdb13f878044a6f48a007e900c9, type: 3}
+    - target: {fileID: 125163817683932094, guid: d79e38103510cf749bedbce89e00036c, type: 3}
       propertyPath: _initialSpawnPoint
       value: 
       objectReference: {fileID: 1843798753}
