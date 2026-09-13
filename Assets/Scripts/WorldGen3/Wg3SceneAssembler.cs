@@ -1675,6 +1675,48 @@ namespace BackroomsSurvival.WorldGen3
         }
 
         /// <summary>
+        /// ADR-122 — monta las RAMPAS de un chunk: una cuña de dibujo en la submalla de suelo y las
+        /// cajas de colisión de <see cref="Wg3RampGeometry.StepBoxes"/>, idénticas a las del ráster
+        /// del servidor. Un GameObject por rampa; devuelve cuántas se montaron.
+        ///
+        /// Sin vanos (como los macizos) y sin luz propia: la luz es del hundido al que pertenece.
+        /// </summary>
+        public static int AssembleRamps(IReadOnlyList<BackroomsSurvival.Net.Wg3RampMsg> ramps,
+            Transform parent, Wg3Materials materials, List<Mesh> createdMeshes, string namePrefix)
+        {
+            if (parent == null || ramps == null) return 0;
+            int built = 0;
+            for (int i = 0; i < ramps.Count; i++)
+            {
+                var ramp = ramps[i];
+                if (!Wg3RampGeometry.IsValid(ramp)) continue;
+
+                var origin = new Vector3(ramp.xCm / 100f, ramp.bottomYCm / 100f, ramp.zCm / 100f);
+                var go = new GameObject(namePrefix + "_" + i.ToString("D3") + "_s" + ramp.style);
+                go.hideFlags = HideFlags.DontSave;
+                go.transform.SetParent(parent, false);
+                go.transform.position = origin;
+
+                var wedge = new List<Wg3Volume>(1) { Wg3RampGeometry.WedgeVolume(ramp) };
+                Mesh mesh = Wg3MeshBuilder.Build(wedge, origin);
+                mesh.name = "wg3_" + go.name;
+                mesh.hideFlags = HideFlags.DontSave;
+                createdMeshes?.Add(mesh);
+                go.AddComponent<MeshFilter>().sharedMesh = mesh;
+                var renderer = go.AddComponent<MeshRenderer>();
+                Material[] mats = Wg3StyleMaterials.Resolve(materials, ramp.style);
+                if (mats != null) renderer.sharedMaterials = mats;
+                float rise = Wg3RampGeometry.RiseCm(ramp) / 100f;
+                Wg3StoreyLayers.Apply(renderer, Wg3StoreyLayers.ForSurface(origin.y, rise));
+
+                AddColliders(go, Wg3RampGeometry.StepVolumes(ramp), origin,
+                    Wg3StyleSurfaces.FloorFor(ramp.style));
+                built++;
+            }
+            return built;
+        }
+
+        /// <summary>
         /// DÍA 3 DEL CONTRATO — los macizos de un chunk, en las MENOS mallas posibles.
         ///
         /// # Qué estaba mal

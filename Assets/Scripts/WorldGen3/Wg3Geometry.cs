@@ -132,6 +132,10 @@ namespace BackroomsSurvival.WorldGen3
         /// largo de la caja es la cuerda; la clave queda <c>Wg3MeshBuilder.ArchKeyM</c> bajo el
         /// remate.</summary>
         public const byte Arch = 4;
+        /// <summary>ADR-122 D3 — CUÑA de rampa: sólo cliente, nunca viaja en un macizo. En local sube
+        /// hacia +z; sin collider (<c>AddColliders</c> sólo monta cajas), frenan las cajas de
+        /// <c>Wg3RampGeometry.StepBoxes</c>.</summary>
+        public const byte Wedge = 5;
     }
 
     public struct Wg3Volume
