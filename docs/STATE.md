@@ -4,7 +4,7 @@
 > `docs/SESSION-LOG.md`, donde vive todo el histórico. Aquí sólo lo vigente.
 
 ## Estado
-- **WorldGen3 es el mundo servido.** Wire **67** en las dos puntas (`ipc/server.rs:38`, `WireSchema.cs:25`) — ADR-146 D5 (`d22cf334`).
+- **WorldGen3 es el mundo servido.** Wire **68** en las dos puntas (`ipc/server.rs:38`, `WireSchema.cs:25`) — ADR-122 enm. 1, la rampa (13-09).
 - **Contrato WG3 v1 = Alpha 1** (`docs/WG3-ALPHA1-ROADMAP.md`): días 1–2 hechos; 3 y 5 APARCADOS detrás de la tanda de oficinas (Joel, 06-09).
 - **Multijugador por Steam, SIN LAG** (10-09): **253,8 → 13,9 KB/s**, cola → **0**. **Build 25238618 SUBIDA con todo (wire 63), SIN rama: Joel la habilita.**
 - **El commit tiene gate** (`tools/dev/validate-scope.ps1`, hook PreToolUse): rojo = el commit no se ejecuta. Alcance por `git diff --cached`.
