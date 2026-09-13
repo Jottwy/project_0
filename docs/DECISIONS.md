@@ -17846,3 +17846,187 @@ Riesgos nuevos que el punto 4 tiene que resolver antes de subir el wire:
 3-5. Las del punto 4 (arriba) antes de tocar guardado o red.
 
 ---
+
+## ADR-149 — Cuerpo por zonas, heridas y sastrería: 15 zonas con la autoridad donde ya vive la salud; la ropa se rompe por zona y su estado viaja en `props` (2026-09-13) — PROPUESTA (Joel: «podemos hacer directamente el ADR-149»: R0 autorizada)
+
+**Estado:** PROPUESTA. Auditoría de arquitectura (2026-09-13): APROBADO CON CONDICIONES, ya aplicadas en este texto. Joel
+autoriza empezar por R0 (solo `BR_InventoryTest`, sin wire ni guardado); R2 y R3 esperan a que cierre las preguntas abiertas.
+Toca el **schema de guardado** (`PlayerSnapshot.body`) y, en su última rebanada, el **wire P2P** (versión vigente + 1 al
+implementar): regla dura 7. Enmienda **ADR-025** (el daño lleva zona), generaliza la venda (bits 7/8
+de **ADR-044**, `PlayerMedicalState`), se apoya en **ADR-147** (el estado viaja con la instancia) y concreta **D11** de
+`docs/INVENTORY-ROADMAP.md` (l. 188-237). NO enmienda ADR-022 (la pose no cambia) ni ADR-143/144.
+
+### Contexto, verificado en código
+
+1. **El jugador local tiene UN solo hitbox, y no es del tronco: es una cápsula de cuerpo entero.** `STP_Player` es variante de
+   `FPS_Player.prefab`, cuyo `Hitbox` lleva un `CharacterHitbox` y un `CapsuleCollider` r 0,3 / h 1,7 / centro y 0,85. El roadmap
+   (l. 204) dice «hitbox en el tronco»: corregido. Los brazos 1P viven dentro de cada wieldable y no tienen collider.
+2. **Los proxies remotos SÍ tienen hitbox por hueso.** `MTP_PlayerViewer.prefab` lleva 11 `CharacterHitbox`: `Head`, `MiddleSpine`,
+   `Pelvis`, `UpperArm.L/R`, `LowerArm.L/R`, `UpperLeg.L/R`, `LowerLeg.L/R`. `RemotePvpHitbox.Install` (`RemotePvpHitbox.cs:99-162`)
+   los sustituye y manda `PvpHitCandidate` con `hit_position` opcional (`protocol.rs:1302-1314`); **no manda el hueso**, y
+   `PvpDamageGrant` (`protocol.rs:1318-1325`) no lleva ni punto ni zona.
+3. **La salud es un escalar autoritativo del backend propio** (`PlayerStats.health`, `stats.rs:28-50`; `take_damage` `:113`). Llega
+   por cinco rutas: `report_damage` del cliente (`game_loop.rs:5257`, ADR-025), robapieles en host (`:2782`, `:2791`) y en joiner
+   (`:4646`, `:4720`; `PhantomAttackGrant { kind, damage, impulse:[f32;2] }`, `protocol.rs:1353`), PvP (`apply_pvp_damage_grant`,
+   `:6929`) y entidades (`:2332`, apagadas con `ENTITY_DAMAGE_ENABLED`). Ninguna sabe de zonas.
+4. **La venda es el único estado médico**: `PlayerMedicalState` (`Assets/Scripts/Gameplay/Medical/PlayerMedicalState.cs`). Tiene dos
+   zonas (`BodyPartSide`), tres estados (`Healthy/Wounded/Bandaged`) y `MinWoundDamage = 8` (`:56`). Además `RestrictToLeftArm = true`
+   (`:78`), es cliente-autoritativo, volátil y se alimenta SOLO de `DamageReceived` local (`PlayerPoseTransmitter.cs:587-601`). Sale
+   por `buttons` bits 7/8 (`RemoteButtons.cs:101,106`; escritura `PlayerPoseTransmitter.cs:466-468`; lectura
+   `ProxyBandageHook.cs:73-75`). **Hueco conocido** (STATE «Deuda»): el daño del servidor llega por `SetHealthSilent` sin evento,
+   así que un robapieles no abre herida.
+5. **`DamageArgs`** (`DamageArgs.cs:8-39`) trae `HitPoint`, `HitForce` y `DamageType`. Las caídas llegan con `DamageType.Fall` y punto a cero
+   (`CharacterFallDamageHandler.cs:31`): la causa se conoce en el cliente, el punto no. `DamageReceived` salta DESPUÉS de
+   restar la salud (`HealthManager.cs:107-109`).
+6. **Guardado:** `PlayerSnapshot` (`persistence/save.rs:34-59`) no tiene nada médico. `InventoryStackV2.props: Vec<{id:i32,
+   value:f64}>` (`player/session.rs:17-33`) ya persiste propiedades de instancia, con tope `MAX_PROPS_PER_STACK = 8`
+   (`world/corpse.rs:139`). El vendor ya define `ItemConstants.Durability` (`ItemConstants.cs:10`), que es D9.
+7. **Slots de Tanda A:** `Head, Torso, Legs, Feet, Back, Waist, Outer, Gloves, Face` (`BackroomsWornStats.cs:20`); vista Ropa/Heridas en
+   `BackroomsBodyViewToggle.cs`. **Wire = 67** (`ipc/server.rs:38`, `WireSchema.cs:25`; STATE dice 66).
+   `speed_modifier` se parsea en C# (`IPCMessages.Player.cs:44,59`) **sin consumidor encontrado**.
+
+**Qué falta:** zonas, saber en qué zona cae un golpe, lesiones y tratamientos, efectos, persistencia, protección de la ropa por zona
+y su rotura y reparación.
+
+### Decisión propuesta
+
+**D1 — 15 zonas, índice estable en 4 bits (`BodyZone : byte`, APPEND-ONLY).** 0 `Head` · 1 `Chest` · 2 `Abdomen` · 3/4 `UpperArmL/R` ·
+5/6 `ForearmL/R` · 7/8 `HandL/R` · 9/10 `ThighL/R` · 11/12 `ShinL/R` · 13/14 `FootL/R` · 15 reservado.
+Reconciliación: los 11 hitboxes son 11 zonas (`MiddleSpine`→`Chest`, `Pelvis`→`Abdomen`); manos y pies se suman porque `Gloves` y
+`Feet` son slots; de las 16 de PZ caen cuello e ingle (sin hueso, slot ni efecto). `Face` es prenda sobre `Head`, no zona.
+
+**D2 — Zona de un golpe: una función pura y compartida (`BodyZoneResolver`), por orden de preferencia.**
+(a) **Hueso**, cuando lo hay (PvP contra proxy): tabla nombre de collider → zona.
+(b) **Banda de altura y lado sobre la cápsula local**, cuando hay `HitPoint`: `y` y `x` locales al motor, con umbrales en una tabla
+    de datos (p. ej. `Head` > 1,50 m; brazos si |x| > 0,18). El lado sigue la regla de `ResolveSide` (`:187-212`), punto antes que
+    fuerza invertida.
+(c) **Sorteo ponderado por causa**, cuando no hay punto: caída → pies 40 / espinillas 40 / muslos 10 / manos 10; robapieles `Hit` →
+    brazos 50 / pecho 30 / cabeza 20, con el lado sacado de `impulse`. Hambre, sed y cordura no tienen zona ni abren herida.
+El sorteo es **determinista**, con semilla por ruta: daño local → tick del cliente (la zona ya resuelta viaja en `report_damage`
+y el servidor no vuelve a sortear); PvP → `request_id` del candidato; robapieles → tick del servidor. Solo abren herida los
+`kind` de `PhantomAttackGrant` que son daño: con `kind = 5` el campo `damage` son segundos de aturdimiento (`protocol.rs:2836`)
+y no abre herida. La tabla `kind` → herida se fija en R2 contra `protocol.rs`. La tabla viaja como **oráculo JSON
+común C#↔Rust** (patrón de ADR-064 enm. 1). Se descarta añadir hitboxes por hueso al jugador local (ver Alternativas).
+
+**D3 — Lesiones y tratamientos de la primera rebanada.**
+Lesión (3 bits): `None`, `Scratch` (cura sola, sin efecto), `Cut` (sangra lento), `Fracture` (efecto fuerte y no sangra). Reservados
+para después: `DeepWound`, `Burn`, `Sprain`, `Bruise`.
+Flags (1 bit cada uno): `Bandaged`, `BandageDirty`, `Splinted`, `Infected` (este último reservado).
+El daño decide la lesión: menos de `MinWoundDamage` = nada; hasta 20 = `Scratch`/`Cut`; caída de más de 25 en pies o piernas =
+`Fracture`. `TODO(balance)`.
+Tratamientos: **venda** (el item actual `BR_Bandage`, id −1114026992) para el sangrado de un `Cut` y **férula** (item nuevo) para
+quitar la mitad del efecto de `Fracture`. Sutura, desinfectante y analgésico quedan fuera de esta tanda.
+Estado por zona = **1 byte** (lesión 3 + flags 4 + 1 libre), más un temporizador de curación en el servidor.
+
+**D4 — Efectos por zona**, aplicados donde ya vive cada magnitud:
+piernas y pies → velocidad y sin correr con `Fracture` (cliente, `SpeedModifier` como `BackroomsCarrySpeed`, recorte común con
+carga y prendas en una función pura); brazos y manos → balanceo al apuntar y tiempo de herramienta (cliente); tronco → aliento
+máximo (servidor, `stamina` de ADR-009); cabeza → viñeta (cliente); sangrado → drenaje de `health` en el servidor, respetando
+`DEV_FREEZE_SURVIVAL`. No entra en la lista cerrada de D6: son efectos del cuerpo, no propiedades de prenda.
+
+**D5 — Autoridad: el cuerpo es del BACKEND PROPIO, igual que la salud (ADR-025, enfoque B).**
+`Player.body: BodyState { zones:[u8;15], timers }` lo mutan las cinco rutas del contexto 3; el cliente reporta la zona de su daño
+local (backend en localhost: sin predicción). Coste: la misma confianza que la salud. Gana: **se cierra el hueco del robapieles**,
+persistencia coherente y una sola fuente de verdad.
+
+**D6 — `PlayerMedicalState` se generaliza sin romper a sus consumidores.**
+Pasa a **espejo cliente** de `BodyState` (15 zonas, mismo evento `Changed`); `BodyPartSide` queda como adaptador `ForearmL/R` para
+que `ProxyBandageHook`, `BandageWieldable` y `BandageMedicalStateTests` sigan verdes. Bits 7/8 **conservan exactamente su significado** (ADR-044 prohíbe reusarlos): `Bandaged` en `ForearmL/R`. Una venda en
+`UpperArm` no se ve en remoto en v1; si hace falta, bit nuevo APPEND-ONLY. `RestrictToLeftArm` sigue en `true` hasta que haya animación del brazo derecho. Sin backend (escena de pruebas) muta en local.
+
+**D7 — Ropa por zonas (D11).** `ItemData` propio `GarmentZonesData`, lista de ≤ 8 zonas de prenda
+`{ bodyZone, side (L/R/ambos), protectionPct, pocketSlot (−1 si no hay) }`. Ejemplo, chaqueta de laboratorio: pecho L/R y costado L/R
+→ `Chest`/`Abdomen` con lado; manga L/R → `UpperArm` + `Forearm`. Protección base 20 %.
+- **Cálculo:** el golpe en la zona Z busca, de fuera adentro (`Outer` → `Torso`…), la primera prenda que cubre Z. El daño a la
+  salud se multiplica por `(1 − prot)` y la zona de la prenda se degrada: corte → 40 % de la base, desgarro → 0 %.
+- **Bolsillos:** la probabilidad de alcanzar el bolsillo es su cobertura autorada (D11 pregunta 3). Si lo alcanza, se rompe:
+  `WornCapacityRestriction` (ADR-147 D2) resta ese hueco y **su contenido cae al suelo**.
+- **Dónde se mitiga:** `DamageReceived` llega con la salud ya restada y el vendor no se edita, así que **con backend la
+  mitigación es SOLO del servidor**: `report_damage` lleva el daño bruto y la zona, el servidor aplica la protección que el
+  cliente declara con `report_protection` (`[u8;15]`) y la salud autoritativa corrige la local (parpadeo de un tick, aceptado).
+  Sin backend (R1, escena de pruebas) se devuelve `RestoreHealth(daño·prot)` en el mismo frame. Trust-the-client también en
+  PvP: el backend víctima mitiga con la protección que declara su cliente (riesgo aceptado, ADR-045).
+
+**D8 — Sastrería.** Son acciones de inventario sobre una zona de prenda, en el modo *Foco* del muñeco:
+- **Cinta:** −10 % (corte) / −25 % (desgarro) de cinta (D10) → `Patched`, 60 % de la base. **No devuelve el bolsillo.**
+- **Coser:** −8 % de hilo / −15 % + 1 tela, pide aguja → `Sewn`, 90 % de la base. **Devuelve el bolsillo** (pregunta 3).
+- **Condición global (D9, `Durability`):** media ponderada de las zonas; a 0 % inservible y se desmonta.
+
+**D9 — Estado de la prenda en pocos bits y DENTRO de `props`.** 4 bits por zona de prenda: 3 de estado
+(`Intact/Cut/Torn/Patched/Sewn`) y 1 de bolsillo roto. 8 zonas × 4 = 32 bits, que caben enteros en un `f64` (exacto hasta 2⁵³).
+Van en una `ItemPropertyDefinition` nueva, `GarmentZones`, más `Durability`: 2 de las 8 `props` por pila.
+El shader (rebanada R4) dibuja desde ese estado y una semilla `hash(item_instance, zona)`, sin posición de impacto (patrón ADR-143).
+
+### Impacto en wire y guardado (exacto)
+
+| Superficie | Cambio | ¿Bump? |
+|---|---|---|
+| IPC Unity→backend, `report_damage` | `data` gana `zone:u8` y `hit_local:[f32;3]`, ambos opcionales. `Action.data` es JSON libre (precedente ADR-025) | No |
+| IPC Unity→backend, acciones nuevas | `treat_zone {zone:u8, item_id:i32, treatment:u8}` y `report_protection {prot:[u8;15]}` (esta solo al cambiar lo puesto) | No |
+| IPC backend→Unity | `GameEvent "body_state" {zones:[u8;15], bleeding:bool}` al cambiar y en la ventana de `session_restored` | No |
+| P2P `PvpHitCandidate` / `PvpDamageGrant` | `+ zone:u8` (hueso del proxy). El P2P es `rmp_serde` posicional (ADR-147 enm. 1, riesgo 3): `serde(default)` no basta | **Sí, vigente + 1 al implementar**, con `WireSchema.Expected` en el mismo commit |
+| P2P `PhantomAttackGrant` | Sin cambio: el backend víctima resuelve la zona desde `kind` + `impulse` | No |
+| Pose / relay | Sin campo. **Bit 9 `Limping`** en `buttons` (APPEND-ONLY, ADR-044), opcional en R3 | No |
+| Guardado `PlayerSnapshot` | `+ #[serde(default)] body: Vec<BodyZoneSave { zone:u8, state:u8, heal_s:u16 }>`, solo zonas no sanas. Save viejo = cuerpo sano | **Schema de guardado** |
+| Guardado de prendas | Nada nuevo: `GarmentZones` y `Durability` viajan en `InventoryStackV2.props` y `CorpseStack.props` | No |
+
+**Relación con ADR-147:** el estado viaja con la instancia, así que la prenda rota lleva su rotura al suelo, al cadáver o a otro jugador
+sin campo nuevo; de su punto 4 solo depende «lo que cae del bolsillo roto». Muerte: `BodyState` vuelve a sano en `on_respawn`.
+
+### Alternativas descartadas
+
+- **16-17 zonas estilo PZ (cuello, ingle):** sin hueso, sin slot y sin efecto distinto; es ruido en el muñeco.
+- **5 zonas = `BodyPoint` del vendor** (`BodyPoint.cs:6-13`): no distingue brazos, y la venda y las mangas de D11 ya lo necesitan.
+- **Hitbox por hueso en el jugador local:** el 1P no tiene esqueleto de cuerpo (brazos por wieldable). Montar 11 colliders pegados
+  a un 3P invisible es rig nuevo, choca con `CharacterController` y no mejora la lectura sobre la banda de altura.
+- **Heridas cliente-autoritativas** (ampliar `PlayerMedicalState` tal cual): el daño del servidor nunca abre herida, y persistirlo
+  en el cliente duplica la fuente de verdad.
+- **Cuerpo en la pose o en `StatsView`:** bump por algo que cambia cada minutos; la pose está medida al byte (ADR-144).
+- **Estado de prenda como campo nuevo de `InventoryStackV2`:** `props` ya lo transporta, así que sería un cambio de schema gratuito.
+- **Sorteo puro también con punto de impacto:** tira la información de puntería del PvP y del golpe frontal.
+
+### Rebanadas (cada una se implementa y se prueba sola)
+
+- **R0 — Cuerpo local, sin wire, solo en `BR_InventoryTest`** e inerte con backend conectado (condiciones de ADR-147 enm. 1). Incluye
+  `BodyZone`, `BodyZoneResolver` (tabla en C# con goldens; el oráculo JSON común nace en R2 con el espejo Rust), estado local de
+  15 zonas (`PlayerMedicalState` no se toca hasta R2), `Scratch/Cut/Fracture`, venda y férula, efecto de piernas por
+  `SpeedModifier` y zonas pintadas en la vista Heridas. EditMode: resolver (bandas, lado, sorteo con semilla) y test de que
+  `STP_Showcase` no lo monta (el adaptador de bits 7/8 es de R2).
+- **R1 — Ropa por zonas, sin wire, en la misma escena:** `GarmentZonesData` en las tres prendas placeholder, protección, degradación,
+  bolsillo roto que resta hueco y suelta el contenido en local, y cinta y coser. Tests: empaquetado de bits, protección de fuera
+  adentro, que el hueco roto rechace y que `GarmentZones` sobreviva al tope de 8 `props`.
+- **R2 — Autoridad y guardado, sin bump:** `BodyState` en Rust (tests del resolver contra el mismo JSON), `report_damage` con zona,
+  zonas del robapieles, sangrado, `treat_zone`, `report_protection`, `body_state` y `PlayerSnapshot.body`. Cierra el hueco de STATE
+  («la venda solo la abre el daño local»). Verificación con el cliente IPC en Python (patrón de la 53.ª tanda), sin Unity.
+- **R3 — PvP con zona y cojera (wire vigente + 1):** `zone` en candidato y concesión, y bit 9 `Limping` leído por un hook de proxy.
+- **R4 — Visual de la rotura:** es la rebanada B del roadmap (falso agujero en una prenda, 3P + brazos 1P warpeados, regla 14). Que
+  los demás lo vean es rebanada C, con enmienda propia.
+
+### Preguntas abiertas para Joel (recomendación entre paréntesis)
+
+1. ¿15 zonas o las 16 de la idea? (15: cada una tiene hueso o slot detrás).
+2. ¿Heridas autoritativas del servidor y **persistidas**, aunque la venda deje de ser volátil? (Sí, en R2; R0-R1 siguen volátiles).
+3. D11-1 ¿Coser devuelve el bolsillo? (Sí, a 90 %; la cinta no).
+4. D11-2 ¿Lo que cae por el agujero va al suelo en el acto? (Sí y suena; en red depende de ADR-072 Fase 2, hasta entonces solo local).
+5. D11-3 ¿Qué decide si el golpe dio en el bolsillo? (Probabilidad = cobertura autorada del bolsillo dentro de la zona).
+6. D11-4 ¿La condición afecta a algo más que la protección? (No por ahora; el abrigo entra cuando exista temperatura).
+7. ¿Coser pide aguja (herramienta con desgaste D9) o también banco? (Aguja sí, banco no: se cose en el pasillo).
+8. ¿Guantes por mano? (El par en un slot, con 2 zonas de prenda `HandL/HandR` que se rompen por separado).
+9. ¿Fractura ya en R0, o solo cortes? (Fractura sí: es la que da cojera y hace útil la férula; sutura e infección, después).
+
+### Riesgos
+
+- **Doble ruta de salud (ADR-025 P1):** con backend solo mitiga el servidor (D7). Invariante con test: `report_damage` lleva el
+  daño BRUTO y el servidor mitiga una sola vez.
+- **Modificadores de velocidad apilados:** carga (D6 enm. 3), prendas ([−30 %, +20 %]) y heridas necesitan un orden y un recorte
+  únicos, o una fractura con zapatillas se come un bonus sin decirlo.
+- **Visual 1P:** férula y venda se reaplican en cada wieldable y warpean (ADR-077 enm. 2, `ViewmodelWarpTests`).
+- **Tope de 8 `props`:** con más de 6 propias, `GarmentZones` se pierde al truncar (`game_loop.rs:8843-8852`). Test que lo exija, en R1.
+- **Wire compartido:** otra sesión va con tramos (ADR-146), y ADR-147 enm. 2 y los borradores de habilidades y nutrición también
+  piden subirlo: el número se toma al fusionar, no al redactar.
+- **Oráculo C#↔Rust:** sin JSON común, el resolver del cliente y el del servidor divergen en silencio (riesgo abierto B5).
+- **`DEV_FREEZE_SURVIVAL`** tiene que parar también el sangrado. `invuln_until_tick` NO se amplía (ADR-029: solo PvP): una herida
+  nace de un daño que ya pasó sus propias reglas.
+- **Alcance:** R0 + R1 ya son una tanda; sin loot de hilo, aguja y tela (economía de escasez) el sastre no se prueba en partida.
+
+---
