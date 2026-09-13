@@ -406,16 +406,6 @@ namespace BackroomsSurvival.EditorTools
         /// _tag ni el registro en el jugador. Para cuando `inspect` da `GRIP_AXIS_NOT_Y` u otro
         /// fallo de colocación de la malla sin tener que borrar y recrear todo el wieldable.
         /// </summary>
-        private static MeshFilter FindModelFilter(GameObject root)
-        {
-            foreach (var t in root.GetComponentsInChildren<Transform>(true))
-            {
-                if (t.name == ModelNodeName)
-                    return t.GetComponent<MeshFilter>();
-            }
-            return null;
-        }
-
         [MenuItem("Backrooms/Almond Water/Reparar modelo en la mano", false, 93)]
         public static void RepairModel()
         {
@@ -436,28 +426,16 @@ namespace BackroomsSurvival.EditorTools
                 return;
             }
 
-            // INSTANCIA DE ESCENA, no `LoadPrefabContents`: medido dos veces, un `Mesh` nuevo
-            // asignado bajo `LoadPrefabContents` + `SaveAsPrefabAsset` se guardaba como
-            // `m_Mesh: {fileID: 0}` — no se embebía. La misma operación con una instancia de
-            // `InstantiatePrefab` (como `CreateWieldablePrefab`, que sí embebe el rollo de la
-            // venda) se embebe bien.
+            // Instancia de escena, igual que CreateWieldablePrefab: AttachBottleMesh añade el Mesh
+            // horneado al fichero con AddObjectToAsset (ver ahí el porqué) antes de este guardado,
+            // así que SaveAsPrefabAsset lo conserva.
             var instance = (GameObject)PrefabUtility.InstantiatePrefab(prefab);
             try
             {
                 if (AttachBottleMesh(instance, mesh, material))
                 {
-                    var filterBeforeSave = FindModelFilter(instance);
-                    Debug.Log($"[AlmondWaterWieldable] DIAG antes de guardar: filter null={filterBeforeSave == null} " +
-                              $"sharedMesh null={(filterBeforeSave != null ? (filterBeforeSave.sharedMesh == null) : (bool?)null)}");
-
                     PrefabUtility.SaveAsPrefabAsset(instance, PrefabPath);
                     AssetDatabase.SaveAssets();
-
-                    var savedPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(PrefabPath);
-                    var filterAfterSave = savedPrefab != null ? FindModelFilter(savedPrefab) : null;
-                    Debug.Log($"[AlmondWaterWieldable] DIAG tras guardar y recargar: filter null={filterAfterSave == null} " +
-                              $"sharedMesh null={(filterAfterSave != null ? (filterAfterSave.sharedMesh == null) : (bool?)null)}");
-
                     Debug.Log($"[AlmondWaterWieldable] '{PrefabPath}' — modelo recolgado con el eje largo en +Y.");
                 }
             }
