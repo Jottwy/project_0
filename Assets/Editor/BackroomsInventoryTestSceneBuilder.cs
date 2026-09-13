@@ -1,5 +1,7 @@
 #if UNITY_EDITOR
+using BackroomsSurvival.Wearables;
 using PolymindGames;
+using PolymindGames.InventorySystem;
 using PolymindGames.UserInterface;
 using UnityEditor;
 using UnityEditor.SceneManagement;
@@ -26,6 +28,11 @@ namespace BackroomsSurvival.EditorTools
         private const string FloorMat = "Assets/Resources/GridMaterials/GridFloor.mat";
         private const string WallMat = "Assets/Resources/GridMaterials/GridWall.mat";
         private const string CeilingMat = "Assets/Resources/GridMaterials/GridCeiling.mat";
+        private const string LootCratePrefab = "Assets/PolymindGames/STP/Prefabs/BuildingPieces/Free/STP_BuildingPIece_StorageCrate.prefab";
+        private const string LootCrateName = "LootCrate";
+        private const string PlayerPrefab = "Assets/PolymindGames/STP/Prefabs/Core/STP_Player.prefab";
+        private const string PlayerName = "Player (prototipo mochilas)";
+        private const string WornStorageName = "BackpackPrototype";
         private const float RoomSize = 24f;
         private const float RoomHeight = 3f;
 
@@ -65,6 +72,8 @@ namespace BackroomsSurvival.EditorTools
             }
 
             PointGameMode(ui);
+            EnsureLootCrate();
+            EnsureBackpackPrototype();
             EditorSceneManager.MarkSceneDirty(scene);
             if (!exists) System.IO.Directory.CreateDirectory("Assets/Scenes");
             EditorSceneManager.SaveScene(scene, ScenePath);
@@ -145,6 +154,96 @@ namespace BackroomsSurvival.EditorTools
                 go.transform.position = new Vector3(-1.2f + i * 0.8f, 0.3f, -1.5f);
                 go.transform.rotation = Quaternion.Euler(0f, i * 37f, 0f);
             }
+        }
+
+        /// <summary>
+        /// Una caja de loot del vendor (lleva <c>StorageStation</c>) a la derecha del abanico de pickups,
+        /// para probar la vista ALREDEDOR. Va fuera del <c>if (!exists)</c>: también entra en la escena ya creada.
+        /// </summary>
+        private static void EnsureLootCrate()
+        {
+            if (GameObject.Find(LootCrateName) != null) return;
+            var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(LootCratePrefab);
+            if (prefab == null) { Debug.LogWarning($"[InventoryTestScene] sin caja de loot '{LootCratePrefab}'"); return; }
+            var go = (GameObject)PrefabUtility.InstantiatePrefab(prefab);
+            go.name = LootCrateName;
+            go.transform.position = new Vector3(2.5f, 0f, -1.5f);
+            go.transform.rotation = Quaternion.Euler(0f, -90f, 0f);
+            Debug.Log("[InventoryTestScene] caja de loot añadida");
+        }
+
+        /// <summary>
+        /// Prototipo de mochilas (ADR-147 enm. 1, condición 1): TODO vive en esta escena. Un jugador instanciado
+        /// AQUÍ con los contenedores precreados añadidos como override de ESCENA (el <c>GameMode</c> usa el jugador
+        /// que ya exista antes de instanciar el suyo), el componente que empaqueta y las tres mochilas en el suelo.
+        /// <c>STP_Player.prefab</c> y <c>STP_GameMode</c> no se tocan; un test lo exige.
+        /// </summary>
+        private static void EnsureBackpackPrototype()
+        {
+            var backpacks = BackroomsBackpackPrototypeCreator.EnsureAssets();
+            if (backpacks.Length == 0) return;
+
+            var player = Object.FindAnyObjectByType<Player>(FindObjectsInactive.Include);
+            if (player == null)
+            {
+                var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(PlayerPrefab);
+                if (prefab == null) { Debug.LogError($"[InventoryTestScene] falta {PlayerPrefab}"); return; }
+                var go = (GameObject)PrefabUtility.InstantiatePrefab(prefab);
+                go.name = PlayerName;
+                var spawn = GameObject.Find("SpawnPoint");
+                if (spawn != null) go.transform.position = spawn.transform.position;
+                player = go.GetComponent<Player>();
+            }
+
+            var inventory = player.GetComponentInChildren<PolymindGames.InventorySystem.Inventory>(true);
+            if (inventory == null) { Debug.LogError("[InventoryTestScene] el jugador no tiene Inventory"); return; }
+            var so = new SerializedObject(inventory);
+            var list = so.FindProperty("_defaultContainers");
+            EnsureContainer(list, BackroomsBackpackPrototypeCreator.BackContainer, 1,
+                AssetDatabase.LoadAssetAtPath<ContainerRestriction>(BackroomsBackpackPrototypeCreator.BackRestrictionPath));
+            EnsureContainer(list, BackroomsBackpackPrototypeCreator.BackStorageContainer, BackroomsBackpackPrototypeCreator.BackStorageSlots,
+                AssetDatabase.LoadAssetAtPath<ContainerRestriction>(BackroomsBackpackPrototypeCreator.StorageRestrictionPath));
+            so.ApplyModifiedPropertiesWithoutUndo();
+
+            if (GameObject.Find(WornStorageName) == null)
+                new GameObject(WornStorageName, typeof(BackroomsWornStorage));
+
+            var root = GameObject.Find("Backpacks");
+            if (root == null)
+            {
+                root = new GameObject("Backpacks");
+                for (int i = 0; i < backpacks.Length; i++)
+                {
+                    var def = backpacks[i];
+                    if (def == null || def.Pickup == null) continue;
+                    var pickup = (GameObject)PrefabUtility.InstantiatePrefab(def.Pickup.gameObject);
+                    pickup.transform.SetParent(root.transform, false);
+                    pickup.transform.position = new Vector3(-2.6f - i * 0.9f, 0.3f, -1.5f);
+                    pickup.name = def.name;
+                    var item = new SerializedObject(pickup.GetComponent<ItemPickup>());
+                    item.FindProperty("_item._value").intValue = def.Id;
+                    item.ApplyModifiedPropertiesWithoutUndo();
+                }
+            }
+            Debug.Log("[InventoryTestScene] prototipo de mochilas montado");
+        }
+
+        /// <summary>Añade el contenedor AL FINAL si falta (ADR-147 punto 1: los índices 0-5 no se mueven).</summary>
+        private static void EnsureContainer(SerializedProperty list, string name, int slots, ContainerRestriction restriction)
+        {
+            for (int i = 0; i < list.arraySize; i++)
+                if (list.GetArrayElementAtIndex(i).FindPropertyRelative("Name").stringValue == name) return;
+            list.arraySize++;
+            var entry = list.GetArrayElementAtIndex(list.arraySize - 1);
+            entry.FindPropertyRelative("Name").stringValue = name;
+            entry.FindPropertyRelative("AllowStacking").boolValue = true;
+            entry.FindPropertyRelative("MaxSlotCount").intValue = slots;
+            entry.FindPropertyRelative("MaxWeightLimit").floatValue = 1000f;
+            var restrictions = entry.FindPropertyRelative("Restrictions");
+            restrictions.arraySize = restriction != null ? 1 : 0;
+            if (restriction != null) restrictions.GetArrayElementAtIndex(0).objectReferenceValue = restriction;
+            entry.FindPropertyRelative("PredefinedItems").arraySize = 0;
+            entry.FindPropertyRelative("LootTable").objectReferenceValue = null;
         }
 
         private static void PointGameMode(PlayerUI ui)

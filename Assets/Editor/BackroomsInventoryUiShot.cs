@@ -26,6 +26,7 @@ namespace BackroomsSurvival.EditorTools
     {
         private const string OutDir = "Builds/Captures";
         private const string OutFile = "inventario_tab.png";
+        private const string DumpFile = "inventario_tab.txt";
         private const int Width = 1920;
         private const int Height = 1080;
 
@@ -50,9 +51,15 @@ namespace BackroomsSurvival.EditorTools
                 return;
             }
 
-            if (!Application.isBatchMode && !EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo())
+            if (EditorApplication.isPlaying)
+            {
+                Debug.LogError("[InventarioShot] En Play no: sal de Play y vuelve a lanzarlo.");
                 return;
-            EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
+            }
+            // Con el editor abierto, escena ADITIVA que se cierra al acabar: la escena del usuario ni
+            // se guarda ni se sustituye. Headless no hay nada abierto que proteger.
+            var scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene,
+                Application.isBatchMode ? NewSceneMode.Single : NewSceneMode.Additive);
 
             var camGo = new GameObject("CaptureCamera", typeof(Camera));
             var cam = camGo.GetComponent<Camera>();
@@ -62,6 +69,11 @@ namespace BackroomsSurvival.EditorTools
             cam.orthographic = true;
             cam.nearClipPlane = 0.1f;
             cam.farClipPlane = 100f;
+            // Solo la capa UI: con la escena del usuario cargada al lado, su geometría no se cuela.
+            cam.cullingMask = LayerMask.GetMask("UI");
+            var rt = new RenderTexture(Width, Height, 24, RenderTextureFormat.ARGB32) { antiAliasing = 1 };
+            // La RenderTexture ANTES del layout: el CanvasScaler mide la cámara, y sin ella mide la Game view.
+            cam.targetTexture = rt;
 
             var instance = (GameObject)PrefabUtility.InstantiatePrefab(prefab);
             try
@@ -85,13 +97,18 @@ namespace BackroomsSurvival.EditorTools
 
                 Directory.CreateDirectory(OutDir);
                 string path = Path.Combine(OutDir, OutFile);
-                RenderTo(cam, path);
+                RenderTo(cam, rt, path);
+                DumpRects(instance, cam, Path.Combine(OutDir, DumpFile));
                 Debug.Log($"[InventarioShot] {path} ({Width}×{Height}).");
             }
             finally
             {
+                cam.targetTexture = null;
+                rt.Release();
+                Object.DestroyImmediate(rt);
                 Object.DestroyImmediate(instance);
                 Object.DestroyImmediate(camGo);
+                if (!Application.isBatchMode) EditorSceneManager.CloseScene(scene, true);
             }
         }
 
@@ -127,10 +144,18 @@ namespace BackroomsSurvival.EditorTools
             {
                 foreach (var t in kr.GetComponentsInChildren<Transform>(true))
                     if (t.name != "KeyIcon") t.gameObject.SetActive(true); // el builder apaga los KeyIcon a propósito
+                // La vista Heridas nace apagada (la enciende su botón); encendida taparía el muñeco.
+                foreach (var t in kr.GetComponentsInChildren<Transform>(true))
+                    if (t.name == "BR_WoundsPanel") t.gameObject.SetActive(false);
+                foreach (var btn in kr.GetComponentsInChildren<Button>(true))
+                    if (btn.name == "RopaBtn" || btn.name == "CraftBtn") btn.interactable = false;
                 // Sin estación abierta no hay nada que enseñar, el tooltip nace del ratón y la rueda
                 // de objetos (FPS_UI_ItemWheel, anidada en el inventario) sólo sale con su tecla.
                 foreach (var t in kr.GetComponentsInChildren<Transform>(true))
-                    if (t.name == "Workstations" || t.name == "ItemTooltip") t.gameObject.SetActive(false);
+                    if (t.name == "ItemTooltip") t.gameObject.SetActive(false);
+                // De las estaciones solo la de crafteo a mano, la que se ve sin estación abierta.
+                foreach (var t in kr.GetComponentsInChildren<Transform>(true))
+                    if (t.parent != null && t.parent.name == "Workstations" && t.name != "CraftingStation") t.gameObject.SetActive(false);
                 foreach (var wheel in kr.GetComponentsInChildren<ItemWheelUI>(true))
                     wheel.gameObject.SetActive(false);
                 foreach (var g in kr.GetComponentsInChildren<CanvasGroup>(true))
@@ -207,14 +232,62 @@ namespace BackroomsSurvival.EditorTools
             cam.Render();
         }
 
-        private static void RenderTo(Camera cam, string path)
+        /// <summary>
+        /// Rectángulos en píxeles de pantalla (origen arriba-izquierda, como el greybox) de todo lo
+        /// activo bajo el inventario y la funda, con lo que pinta cada nodo. Los hijos de un slot se
+        /// omiten: son 50 copias de lo mismo.
+        /// </summary>
+        private static void DumpRects(GameObject root, Camera cam, string path)
         {
-            var rt = new RenderTexture(Width, Height, 24, RenderTextureFormat.ARGB32) { antiAliasing = 1 };
+            var sb = new System.Text.StringBuilder();
+            var inv = root.GetComponentInChildren<InventoryUI>(true);
+            var hot = root.GetComponentInChildren<HotbarUI>(true);
+            if (inv != null) Dump(inv.transform as RectTransform, cam, sb, 0);
+            if (hot != null) Dump(hot.transform as RectTransform, cam, sb, 0);
+            File.WriteAllText(path, sb.ToString());
+        }
+
+        private static readonly Vector3[] Corners = new Vector3[4];
+
+        private static void Dump(RectTransform rt, Camera cam, System.Text.StringBuilder sb, int depth)
+        {
+            if (rt == null || !rt.gameObject.activeInHierarchy) return;
+            rt.GetWorldCorners(Corners);
+            Vector2 a = RectTransformUtility.WorldToScreenPoint(cam, Corners[0]);
+            Vector2 b = RectTransformUtility.WorldToScreenPoint(cam, Corners[2]);
+            var what = new System.Text.StringBuilder();
+            if (rt.TryGetComponent<Image>(out var img) && img.enabled)
+                what.Append($" img={(img.sprite ? img.sprite.name : "-")}#{ColorUtility.ToHtmlStringRGBA(img.color)}");
+            if (rt.TryGetComponent<TextMeshProUGUI>(out var tmp) && tmp.enabled)
+            {
+                string t = tmp.text.Replace("\n", " ");
+                what.Append($" txt=\"{(t.Length > 30 ? t.Substring(0, 30) : t)}\"@{tmp.fontSize:0}");
+            }
+            if (rt.TryGetComponent<LayoutGroup>(out var lg))
+            {
+                what.Append($" layout={lg.GetType().Name} pad={lg.padding.left},{lg.padding.right},{lg.padding.top},{lg.padding.bottom} align={lg.childAlignment}");
+                if (lg is GridLayoutGroup g) what.Append($" cell={g.cellSize.x:0}x{g.cellSize.y:0} sp={g.spacing.x:0},{g.spacing.y:0} {g.constraint}:{g.constraintCount}");
+                if (lg is HorizontalOrVerticalLayoutGroup h) what.Append($" sp={h.spacing:0} ctrl={h.childControlWidth},{h.childControlHeight} exp={h.childForceExpandWidth},{h.childForceExpandHeight}");
+            }
+            if (rt.TryGetComponent<RawImage>(out var raw) && raw.enabled) what.Append($" raw={(raw.texture ? raw.texture.name : "-")} uv={raw.uvRect}");
+            if (rt.TryGetComponent<ContentSizeFitter>(out var csf)) what.Append($" fitter={csf.horizontalFit},{csf.verticalFit}");
+            if (rt.TryGetComponent<AspectRatioFitter>(out var arf) && arf.enabled) what.Append($" aspect={arf.aspectMode}");
+            what.Append($" a={rt.anchorMin.x:0.##},{rt.anchorMin.y:0.##}-{rt.anchorMax.x:0.##},{rt.anchorMax.y:0.##}");
+            if (rt.TryGetComponent<LayoutElement>(out var le) && le.ignoreLayout) what.Append(" ignoreLayout");
+            if (rt.TryGetComponent<CanvasGroup>(out var cg) && cg.alpha < 0.99f) what.Append($" alpha={cg.alpha:0.##}");
+            sb.Append(' ', depth * 2).Append(rt.name)
+              .Append($" [{Mathf.RoundToInt(a.x)},{Mathf.RoundToInt(Height - b.y)} {Mathf.RoundToInt(b.x - a.x)}x{Mathf.RoundToInt(b.y - a.y)}]")
+              .Append(what).Append('\n');
+            if (rt.GetComponent<ItemSlotUIBase>() != null) return;
+            foreach (Transform c in rt) Dump(c as RectTransform, cam, sb, depth + 1);
+        }
+
+        private static void RenderTo(Camera cam, RenderTexture rt, string path)
+        {
             var previous = RenderTexture.active;
             var tex = new Texture2D(Width, Height, TextureFormat.RGB24, false);
             try
             {
-                cam.targetTexture = rt;
                 cam.Render();
                 RenderTexture.active = rt;
                 tex.ReadPixels(new Rect(0, 0, Width, Height), 0, 0);
@@ -223,11 +296,8 @@ namespace BackroomsSurvival.EditorTools
             }
             finally
             {
-                cam.targetTexture = null;
                 RenderTexture.active = previous;
                 Object.DestroyImmediate(tex);
-                rt.Release();
-                Object.DestroyImmediate(rt);
             }
         }
     }

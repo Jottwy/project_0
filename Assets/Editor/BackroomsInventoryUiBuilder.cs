@@ -1,6 +1,7 @@
 #if UNITY_EDITOR
 using System.Collections.Generic;
 using BackroomsSurvival.UI;
+using BackroomsSurvival.Wearables;
 using PolymindGames;
 using PolymindGames.UserInterface;
 using TMPro;
@@ -120,9 +121,7 @@ namespace BackroomsSurvival.EditorTools
             int slots = 0;
             foreach (var slot in inv.GetComponentsInChildren<ItemSlotUI>(true))
             {
-                if (slot.TryGetComponent<Image>(out var bg)) SetSprite(bg, theme.SunkenSlot, Color.white);
-                Paint(slot.transform, "DurabilityBG", theme.Tape);
-                Paint(slot.transform, "DurabilityBar", theme.Fluorescent);
+                SkinSlot(slot.transform, theme);
                 slots++;
             }
             report.Count("slots", slots);
@@ -169,7 +168,7 @@ namespace BackroomsSurvival.EditorTools
 
             Prompts(inv, theme, report);
             BuildStrap(root, theme, report);
-            Relayout(inv, root, report);
+            Relayout(inv, root, theme, report);
         }
 
         /// <summary>Fondo a pantalla completa, primer hijo del inventario para quedar debajo de todo.</summary>
@@ -234,28 +233,42 @@ namespace BackroomsSurvival.EditorTools
             img.raycastTarget = false;
         }
 
-        // ─── Reparto (rebanada 1b): las tres columnas del greybox a 1920×1080 ───────
+        // ─── Reparto: la rejilla del greybox 1d0e788e a 1920×1080 ─────────────────
         //
-        // El vendor reparte en tres grupos de 640 px: LeftGroup (estaciones), MiddleGroup
-        // (mochila + inspector) y RightGroup (personaje). Lo aprobado es personaje IZQUIERDA (440),
-        // lo que llevas en el CENTRO (flexible) y alrededor a la DERECHA (400): estación arriba,
-        // etiqueta del objeto abajo. Se mueven los grupos, no sus tripas: cada panel del vendor
-        // sigue intacto por dentro (animaciones, layouts, referencias) y sólo cambia su rect.
+        // El vendor reparte en tres grupos: LeftGroup (estaciones), MiddleGroup (mochila + inspector)
+        // y RightGroup (personaje). Lo aprobado: personaje IZQUIERDA (440), lo que llevas CENTRO
+        // (flexible), alrededor DERECHA (400). Cada columna es una cabecera de 36 px a todo el ancho
+        // y, 8 px debajo, su caja de contenido hasta y=876; debajo, 24 px, la barra de 132 px con
+        // Manos · Cinturón (CENTRADO en pantalla: es la misma pieza que se ve en juego) · Atajos. La carga
+        // total va en una línea en la cabecera del centro (Joel, 2026-09-13). Nada se reparenta (en un prefab anidado no se guarda): lo
+        // que tiene que salir de su grupo se ancla FUERA de su rect.
         private const float Margin = 48f;
         private const float DockHeight = 132f;
+        private const float DockGap = 24f;
         private const float LeftWidth = 440f;
         private const float RightWidth = 400f;
         private const float Gap = 32f;
+        private const float HeaderHeight = 36f;
+        private const float HeaderGap = 8f;
+        private const float InspectorHeight = 284f;
+        private const float WindowGap = 16f;
+        private const float Cell = 72f;
+        private const float CellGap = 8f;
+        private const float BoxPad = 16f;
+        private const float HandsWidth = 176f;
+        private const float HolsterWidth = 520f;
+        private const float HintsWidth = 308f;
 
-        private static void Relayout(Transform inv, GameObject root, Report report)
+        private static void Relayout(Transform inv, GameObject root, BackroomsUiTheme theme, Report report)
         {
-            float bottom = Margin + DockHeight + 16f;
+            float bottom = Margin + DockHeight + DockGap;
+            float top = HeaderHeight + HeaderGap;
             var left = inv.Find("RightGroup");
             var middle = inv.Find("MiddleGroup");
             var right = inv.Find("LeftGroup");
             if (left == null || middle == null || right == null) { report.Missing("grupos Left/Middle/Right"); return; }
+            var inventoryUI = inv.GetComponent<InventoryUI>();
 
-            // Columnas: anclas al borde que les toca, alto estirado entre el margen y la barra inferior.
             Column((RectTransform)left, 0f, Margin, LeftWidth, bottom);
             Column((RectTransform)right, 1f, Margin, RightWidth, bottom);
             var mid = (RectTransform)middle;
@@ -265,106 +278,667 @@ namespace BackroomsSurvival.EditorTools
             mid.offsetMin = new Vector2(Margin + LeftWidth + Gap, bottom);
             mid.offsetMax = new Vector2(-(Margin + RightWidth + Gap), -Margin);
 
-            // Personaje: el preview ocupa la columna; los slots de ropa, pegados a su izquierda.
+            // ── Personaje ──
             var character = left.Find("Character");
             if (character != null)
             {
                 Stretch((RectTransform)character);
-                // El preview es una RenderTexture CUADRADA (575×575 del vendor, FOV fijo): estirarla a
-                // la columna deforma al muñeco. Se le da la columna entera y un AspectRatioFitter la
-                // mantiene 1:1 dentro (FitInParent), centrada.
+                Box(character, "BR_Box", theme, top, 0f);
+                var header = character.Find("Header") as RectTransform;
+                if (header != null) { HeaderBar(header); Retitle(header, "PERSONAJE"); }
+
+                // Slots del cuerpo: columna pegada a la izquierda de la caja, primer hueco en y=132.
+                if (character.Find("Containers") is RectTransform containers)
+                {
+                    const float spacing = 28f;
+                    Place(containers, new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(8f, -(top + 40f)),
+                        new Vector2(88f, 5f * 80f + 4f * spacing));
+                    if (containers.TryGetComponent<VerticalLayoutGroup>(out var v)) v.spacing = spacing;
+
+                    // Prototipo de mochilas (ADR-147 enm. 1): el hueco «Backpack» del vendor no tenía contenedor detrás.
+                    if (containers.Find("BackpackContainer") is Transform backSlot
+                        && containers.Find("HeadContainer") is Transform head && head.TryGetComponent<ItemContainerUI>(out var headUi))
+                    {
+                        var backUi = backSlot.GetComponent<ItemContainerUI>();
+                        if (backUi == null) backUi = backSlot.gameObject.AddComponent<ItemContainerUI>();
+                        BindContainerUI(backUi, BackroomsBackpackPrototypeCreator.BackContainer, headUi);
+                        RegisterContainerUI(inventoryUI, backUi);
+                        foreach (Transform child in backSlot)
+                            if (child.name.StartsWith("STP_UI_ItemSlot") && child.GetComponent<ItemSlotUIBase>() == null)
+                                child.gameObject.SetActive(false);
+                        foreach (var created in EnsureSlots(backUi, 1, theme))
+                            Place((RectTransform)created.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), Vector2.zero, new Vector2(Cell, Cell));
+                        report.Count("hueco de espalda", 1);
+                    }
+                    else report.Missing("Containers/BackpackContainer o HeadContainer");
+                }
+
+                // El render es CUADRADO y el muñeco estrecho: se enseña la franja central a toda la altura
+                // de la caja, recortando por uvRect en vez de estirar. A la derecha de los slots.
                 var preview = character.Find("CharacterPreview") as RectTransform;
                 if (preview != null)
                 {
-                    preview.anchorMin = new Vector2(0f, 0f);
-                    preview.anchorMax = new Vector2(1f, 1f);
-                    preview.pivot = new Vector2(0.5f, 0.5f);
-                    preview.offsetMin = new Vector2(96f, 0f);
-                    preview.offsetMax = new Vector2(0f, -44f);
-                    var fitter = preview.GetComponent<AspectRatioFitter>() ?? preview.gameObject.AddComponent<AspectRatioFitter>();
-                    fitter.aspectMode = AspectRatioFitter.AspectMode.FitInParent;
-                    fitter.aspectRatio = 1f;
+                    if (preview.GetComponent<AspectRatioFitter>() is AspectRatioFitter fitter) Object.DestroyImmediate(fitter);
+                    Inset(preview, 92f, 8f, 0f, top + 8f);
+                    if (preview.TryGetComponent<RawImage>(out var raw))
+                    {
+                        float w = (LeftWidth - 92f) / (1080f - bottom - Margin - top - 16f);
+                        raw.uvRect = new Rect((1f - w) * 0.5f, 0f, w, 1f);
+                    }
                 }
-                var containers = character.Find("Containers") as RectTransform;
-                if (containers != null)
+
+                var hands = DockBox(character, "BR_Hands", theme, 0f, 0f, HandsWidth, "MANOS");
+                for (int i = 0; i < 2; i++)
                 {
-                    containers.anchorMin = new Vector2(0f, 0.5f);
-                    containers.anchorMax = new Vector2(0f, 0.5f);
-                    containers.pivot = new Vector2(0f, 0.5f);
-                    containers.anchoredPosition = new Vector2(0f, -22f);
-                    containers.sizeDelta = new Vector2(88f, containers.sizeDelta.y);
+                    var slot = EnsureRect(hands, "Slot" + i, typeof(Image));
+                    Place(slot, new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(BoxPad + i * (Cell + CellGap), -44f), new Vector2(Cell, Cell));
+                    var img = slot.GetComponent<Image>();
+                    SetSprite(img, theme.SunkenSlot, Color.white);
+                    img.raycastTarget = false;
                 }
-                var header = character.Find("Header") as RectTransform;
-                if (header != null) TopLeft(header, 0f, 0f);
+
+                BuildBodyViewToggle(character, header, preview, theme, report);
             }
             else report.Missing("RightGroup/Character");
 
-            // Lo que llevas: la caja del inventario llena el centro; el inspector sale de ella y se
-            // va a la columna derecha, debajo de la estación.
+            // ── Lo que llevas ──
             var inventory = middle.Find("Inventory") as RectTransform;
             if (inventory != null)
             {
                 Stretch(inventory);
+                if (inventory.TryGetComponent<Image>(out var invImg)) invImg.color = Color.clear;
+                Box(inventory, "BR_Box", theme, top, 0f);
                 var header = inventory.Find("Header") as RectTransform;
-                if (header != null) TopLeft(header, 0f, 0f);
-                var weight = inventory.Find("Weight") as RectTransform;
-                if (weight != null)
+                if (header != null) { HeaderBar(header); Retitle(header, "LO QUE LLEVAS"); }
+
+                if (inventory.Find("Backpack") is RectTransform backpack)
                 {
-                    weight.anchorMin = new Vector2(1f, 1f);
-                    weight.anchorMax = new Vector2(1f, 1f);
-                    weight.pivot = new Vector2(1f, 1f);
-                    weight.anchoredPosition = new Vector2(0f, -2f);
+                    float firstTop = top + 12f;
+                    float firstH = SectionHeight(BackroomsBackpackPrototypeCreator.BackStorageSlots);
+                    float secondTop = firstTop + firstH + 12f;
+                    float secondH = SectionHeight(backpack.childCount);
+
+                    var bag = Section(inventory, "BR_BagSection", theme, firstTop, firstH, "ESPALDA · SIN MOCHILA", "ponte una mochila", 1);
+                    var storage = EnsureRect(inventory, "BR_BackStorage", typeof(GridLayoutGroup), typeof(ItemContainerUI), typeof(BackroomsWornSlotsUI));
+                    storage.SetSiblingIndex(2);
+                    PlaceGrid(storage, firstTop, firstH);
+                    var storageUi = storage.GetComponent<ItemContainerUI>();
+                    BindContainerUI(storageUi, BackroomsBackpackPrototypeCreator.BackStorageContainer, backpack.GetComponent<ItemContainerUI>());
+                    RegisterContainerUI(inventoryUI, storageUi);
+                    EnsureSlots(storageUi, BackroomsBackpackPrototypeCreator.BackStorageSlots, theme);
+                    var slotsUi = new SerializedObject(storage.GetComponent<BackroomsWornSlotsUI>());
+                    slotsUi.FindProperty("_title").objectReferenceValue = bag.Find("Title").GetComponent<TextMeshProUGUI>();
+                    slotsUi.FindProperty("_count").objectReferenceValue = bag.Find("Count").GetComponent<TextMeshProUGUI>();
+                    slotsUi.ApplyModifiedPropertiesWithoutUndo();
+
+                    Section(inventory, "BR_PocketsSection", theme, secondTop, secondH, "BOLSILLOS · PROVISIONAL", backpack.childCount + " huecos", 3);
+                    PlaceGrid(backpack, secondTop, secondH);
+                    report.Count("almacén de la espalda", 1);
                 }
-                var backpack = inventory.Find("Backpack") as RectTransform;
-                if (backpack != null)
+                else report.Missing("Inventory/Backpack");
+
+                // Alrededor, abajo: el panel del objeto (inspector) sale del centro por la derecha.
+                if (inventory.Find("Inspector") is RectTransform inspector)
                 {
-                    backpack.anchorMin = new Vector2(0f, 0f);
-                    backpack.anchorMax = new Vector2(1f, 1f);
-                    backpack.offsetMin = new Vector2(0f, 56f);
-                    backpack.offsetMax = new Vector2(0f, -52f);
-                }
-                // El inspector NO se reparenta: dentro de un prefab anidado, cambiar de padre no se
-                // puede guardar como override de la variante (Unity lo descarta sin avisar). Se queda
-                // bajo Inventory y se ancla FUERA de su rect, en la columna derecha, abajo.
-                var inspector = inventory.Find("Inspector") as RectTransform;
-                if (inspector != null)
-                {
-                    inspector.anchorMin = new Vector2(1f, 0f);
-                    inspector.anchorMax = new Vector2(1f, 0f);
-                    inspector.pivot = new Vector2(0f, 0f);
-                    inspector.anchoredPosition = new Vector2(Gap, 0f);
-                    inspector.sizeDelta = new Vector2(RightWidth, 300f);
+                    Place(inspector, new Vector2(1f, 0f), new Vector2(0f, 0f), new Vector2(Gap, 0f), new Vector2(RightWidth, InspectorHeight));
                     report.Count("inspector a la derecha", 1);
                 }
                 else report.Missing("Inventory/Inspector");
+
+                // Carga: una línea a la derecha de la cabecera — «CARGA ▬▬▬ 2,5 / 40 KG». Es el total; cada
+                // prenda llevará la suya en su fila.
+                if (inventory.Find("BR_LoadBox") is RectTransform oldLoad) Object.DestroyImmediate(oldLoad.gameObject);
+                if (inventory.Find("Weight") is RectTransform weight)
+                {
+                    const float loadW = 460f, labelW = 72f, textW = 128f, pad = 12f;
+                    Place(weight, Vector2.one, Vector2.one, new Vector2(-pad, -4f), new Vector2(loadW, HeaderHeight - 8f));
+                    if (weight.TryGetComponent<Image>(out var wImg)) wImg.color = Color.clear;
+                    var loadLabel = EnsureRect(weight, "BR_LoadLabel", typeof(Image));
+                    Place(loadLabel, new Vector2(0f, 0.5f), new Vector2(0f, 0.5f), Vector2.zero, new Vector2(labelW, 24f));
+                    Stretch((RectTransform)Label(loadLabel, "Text", "CARGA", theme.MonoBold, 12f, theme.TapeInk, TextAlignmentOptions.Center).transform);
+                    Tape(loadLabel, loadLabel.GetComponent<Image>(), theme);
+                    loadLabel.SetAsFirstSibling();
+                    if (weight.Find("WeightBarBG") is RectTransform bar)
+                    {
+                        bar.anchorMin = new Vector2(0f, 0.5f);
+                        bar.anchorMax = new Vector2(1f, 0.5f);
+                        bar.pivot = new Vector2(0.5f, 0.5f);
+                        bar.sizeDelta = new Vector2(-(labelW + pad + textW + pad), 14f);
+                        bar.anchoredPosition = new Vector2((labelW - textW) * 0.5f, 0f);
+                    }
+                    if (weight.Find("WeightText") is RectTransform wText)
+                    {
+                        Place(wText, new Vector2(1f, 0.5f), new Vector2(1f, 0.5f), Vector2.zero, new Vector2(textW, HeaderHeight - 8f));
+                        if (wText.TryGetComponent<TextMeshProUGUI>(out var wTmp))
+                        {
+                            wTmp.alignment = TextAlignmentOptions.MidlineRight;
+                            wTmp.fontSize = 15f;
+                            wTmp.enableAutoSizing = false;
+                        }
+                    }
+                }
+                else report.Missing("Inventory/Weight");
+
+                // Atajos: los avisos de tecla del vendor, apilados en su caja de la barra inferior.
+                if (inventory.Find("Prompts") is RectTransform prompts)
+                {
+                    Place(prompts, new Vector2(1f, 0f), new Vector2(0f, 1f), new Vector2(Gap + RightWidth - HintsWidth, -DockGap),
+                        new Vector2(HintsWidth, DockHeight));
+                    Box(prompts, "BR_Box", theme, 0f, 0f);
+                    DockTitle(prompts, "ATAJOS", theme);
+                    if (prompts.Find("AutoMovePrompt") is RectTransform auto)
+                        Place(auto, new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(8f, -40f), auto.rect.size);
+                    if (prompts.Find("SplitStackPrompt") is RectTransform split)
+                        Place(split, new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(8f, -84f), split.rect.size);
+                    if (prompts.Find("SortBtn") is RectTransform sort)
+                        Place(sort, Vector2.one, Vector2.one, new Vector2(-BoxPad, -48f), new Vector2(100f, 32f));
+                }
+                else report.Missing("Inventory/Prompts");
             }
             else report.Missing("MiddleGroup/Inventory");
 
-            // Alrededor: las estaciones del vendor arriba, dejando sitio al inspector abajo.
-            var workstations = right.Find("Workstations") as RectTransform;
-            if (workstations != null)
+            // ── Alrededor | Crafteo ──
+            // La cabecera no lleva título: son dos pestañas, como Ropa | Heridas en el personaje.
+            var aroundHeader = EnsureRect(right, "BR_Header", typeof(Image));
+            HeaderBar(aroundHeader);
+            InspectionOnly(aroundHeader.gameObject);
+            if (aroundHeader.Find("Name") is RectTransform oldName) Object.DestroyImmediate(oldName.gameObject);
+            Tape(aroundHeader, aroundHeader.GetComponent<Image>(), theme);
+            const float aroundTabW = 124f, craftTabW = 108f, tabGap = 4f;
+            var aroundBtn = EnsureToggleButton(aroundHeader, "AroundBtn", "ALREDEDOR", -(RightWidth - 8f - aroundTabW), theme, aroundTabW);
+            var craftBtn = EnsureToggleButton(aroundHeader, "CraftBtn", "CRAFTEO",
+                -(RightWidth - 8f - aroundTabW - tabGap - craftTabW), theme, craftTabW);
+            Box(right, "BR_Box", theme, top, InspectorHeight + WindowGap);
+            if (right.Find("Workstations") is RectTransform workstations)
             {
-                workstations.anchorMin = new Vector2(0f, 0f);
-                workstations.anchorMax = new Vector2(1f, 1f);
-                workstations.offsetMin = new Vector2(0f, 316f);
-                workstations.offsetMax = new Vector2(0f, -44f);
-            }
+                Inset(workstations, 0f, InspectorHeight + WindowGap, 0f, top);
+                foreach (Transform station in workstations)
+                {
+                    if (station.name == "BR_AroundEmpty") continue;
+                    Inset((RectTransform)station, 0f, 0f, 0f, 44f);
+                    if (station.TryGetComponent<Image>(out var sImg)) sImg.color = Color.clear;
+                    StationRow(station, "CategoryName", 52f, TextAlignmentOptions.MidlineLeft);
+                    StationRow(station, "StationName", 52f, TextAlignmentOptions.MidlineRight);
+                    // La columna de categorías empieza bajo esa fila, no encima.
+                    if (station.Find("Categories") is RectTransform cats) cats.offsetMax = new Vector2(cats.offsetMax.x, -44f);
+                }
 
-            // Funda: cuelga del MiddleGroup del vendor, cuyo borde inferior queda a `bottom` px de la
-            // pantalla; para dejarla en la barra inferior se ancla a ese borde y se baja lo que sobra.
+                var empty = Label(workstations, "BR_AroundEmpty", "Nada al alcance", theme.Mono, 15f, theme.InkDim,
+                    TextAlignmentOptions.Center);
+                Inset((RectTransform)empty.transform, BoxPad, BoxPad, BoxPad, BoxPad);
+                empty.gameObject.SetActive(false);
+
+                var aroundToggle = aroundHeader.GetComponent<BackroomsAroundViewToggle>();
+                if (aroundToggle == null) aroundToggle = aroundHeader.gameObject.AddComponent<BackroomsAroundViewToggle>();
+                var so = new SerializedObject(aroundToggle);
+                so.FindProperty("_aroundButton").objectReferenceValue = aroundBtn;
+                so.FindProperty("_craftButton").objectReferenceValue = craftBtn;
+                so.FindProperty("_workstations").objectReferenceValue = workstations;
+                so.FindProperty("_emptyLabel").objectReferenceValue = empty.gameObject;
+                so.ApplyModifiedPropertiesWithoutUndo();
+                report.Count("conmutador alrededor/crafteo", 1);
+            }
+            else report.Missing("LeftGroup/Workstations");
+
+            // ── Funda ──
             var hotbar = root.GetComponentInChildren<HotbarUI>(true);
             if (hotbar != null)
             {
                 var rt = (RectTransform)hotbar.transform;
-                rt.anchorMin = new Vector2(0.5f, 0f);
-                rt.anchorMax = new Vector2(0.5f, 0f);
-                rt.pivot = new Vector2(0.5f, 0f);
-                rt.anchoredPosition = new Vector2(0f, (Margin + 20f) - bottom);
-                // Layout estirado a la raíz, SIEMPRE: un override viejo en la variante no se deshace
-                // solo, y con Layout sin tamaño la funda se descentra y la cincha desaparece.
-                if (hotbar.transform.Find("Layout") is RectTransform layout) Stretch(layout);
+                // Centro de la pantalla: el centro del grupo cae 20 px a la derecha (columnas de 440 y 400).
+                Place(rt, new Vector2(0.5f, 0f), new Vector2(0.5f, 1f), new Vector2((RightWidth - LeftWidth) * 0.5f, -DockGap),
+                    new Vector2(HolsterWidth, DockHeight));
+                if (hotbar.transform.Find("Layout") is RectTransform layout)
+                {
+                    Stretch(layout);
+                    if (layout.TryGetComponent<HorizontalLayoutGroup>(out var h))
+                    {
+                        h.padding = new RectOffset((int)BoxPad, (int)BoxPad, 44, (int)BoxPad);
+                        h.spacing = CellGap;
+                        h.childAlignment = TextAnchor.UpperLeft;
+                    }
+                    foreach (Transform c in layout)
+                        if (c.GetComponent<ItemSlotUIBase>() != null) ((RectTransform)c).sizeDelta = new Vector2(Cell, Cell);
+                    if (layout.Find(StrapName) is RectTransform strap) { strap.offsetMin = Vector2.zero; strap.offsetMax = Vector2.zero; }
+                }
+                DockTitle(rt, "CINTURÓN", theme);
             }
+            else report.Missing("HotbarUI");
             report.Count("columnas", 3);
+        }
+
+        private static void StationRow(Transform station, string name, float leftPx, TextAlignmentOptions align)
+        {
+            if (!(station.Find(name) is RectTransform rt)) return;
+            rt.anchorMin = new Vector2(0f, 1f);
+            rt.anchorMax = new Vector2(1f, 1f);
+            rt.pivot = new Vector2(0.5f, 1f);
+            rt.offsetMin = new Vector2(leftPx, -34f);
+            rt.offsetMax = new Vector2(-BoxPad, -4f);
+            if (rt.TryGetComponent<TextMeshProUGUI>(out var tmp)) tmp.alignment = align;
+        }
+
+        private static void HeaderBar(RectTransform rt)
+        {
+            rt.anchorMin = new Vector2(0f, 1f);
+            rt.anchorMax = new Vector2(1f, 1f);
+            rt.pivot = new Vector2(0.5f, 1f);
+            rt.offsetMin = new Vector2(0f, -HeaderHeight);
+            rt.offsetMax = Vector2.zero;
+        }
+
+        private static void Retitle(RectTransform header, string text)
+        {
+            if (!(header.Find("Name") is RectTransform name) || !name.TryGetComponent<TextMeshProUGUI>(out var tmp)) return;
+            tmp.text = text;
+            name.pivot = new Vector2(0f, 0.5f);
+            name.anchoredPosition = new Vector2(44f, 0f);
+            name.sizeDelta = new Vector2(360f, 0f);
+            tmp.alignment = TextAlignmentOptions.MidlineLeft;
+        }
+
+        private static RectTransform EnsureRect(Transform parent, string name, params System.Type[] components)
+        {
+            if (parent.Find(name) is RectTransform existing) return existing;
+            var types = new List<System.Type> { typeof(RectTransform) };
+            types.AddRange(components);
+            var go = new GameObject(name, types.ToArray());
+            var rt = (RectTransform)go.transform;
+            rt.SetParent(parent, false);
+            return rt;
+        }
+
+        private static void Place(RectTransform rt, Vector2 anchor, Vector2 pivot, Vector2 pos, Vector2 size)
+        {
+            rt.anchorMin = anchor;
+            rt.anchorMax = anchor;
+            rt.pivot = pivot;
+            rt.sizeDelta = size;
+            rt.anchoredPosition = pos;
+        }
+
+        private static void Inset(RectTransform rt, float leftPx, float bottomPx, float rightPx, float topPx)
+        {
+            rt.anchorMin = Vector2.zero;
+            rt.anchorMax = Vector2.one;
+            rt.pivot = new Vector2(0.5f, 0.5f);
+            rt.offsetMin = new Vector2(leftPx, bottomPx);
+            rt.offsetMax = new Vector2(-rightPx, -topPx);
+        }
+
+        /// <summary>Caja del greybox: relleno un punto sobre el suelo y borde de 2 px, detrás de todo.</summary>
+        private static RectTransform Box(Transform parent, string name, BackroomsUiTheme theme, float topInset, float bottomInset)
+        {
+            var rt = EnsureRect(parent, name, typeof(Image), typeof(Outline));
+            Inset(rt, 0f, bottomInset, 0f, topInset);
+            Panel(rt, theme, 0.06f, 0.22f);
+            IgnoreLayout(rt.gameObject);
+            InspectionOnly(rt.gameObject);
+            rt.SetAsFirstSibling();
+            return rt;
+        }
+
+        private static void Panel(RectTransform rt, BackroomsUiTheme theme, float fill, float border)
+        {
+            var img = rt.GetComponent<Image>();
+            img.sprite = null;
+            img.color = WithAlpha(Color.Lerp(theme.Ground, theme.Ink, fill), 0.96f);
+            img.raycastTarget = false;
+            var outline = rt.GetComponent<Outline>();
+            outline.effectColor = Color.Lerp(theme.Ground, theme.Ink, border);
+            outline.effectDistance = new Vector2(2f, -2f);
+            outline.useGraphicAlpha = false;
+        }
+
+        private static TextMeshProUGUI Label(Transform parent, string name, string text, TMP_FontAsset font, float size, Color color,
+            TextAlignmentOptions align)
+        {
+            var rt = EnsureRect(parent, name, typeof(TextMeshProUGUI));
+            var tmp = rt.GetComponent<TextMeshProUGUI>();
+            tmp.text = text;
+            if (font != null) tmp.font = font;
+            tmp.fontSize = size;
+            tmp.color = color;
+            tmp.alignment = align;
+            tmp.enableWordWrapping = false;
+            tmp.raycastTarget = false;
+            return tmp;
+        }
+
+        /// <summary>Caja de la barra inferior colgada del borde de abajo de <paramref name="parent"/>.</summary>
+        private static RectTransform DockBox(Transform parent, string name, BackroomsUiTheme theme, float anchorX, float x, float width, string title)
+        {
+            var rt = EnsureRect(parent, name, typeof(Image), typeof(Outline));
+            Place(rt, new Vector2(anchorX, 0f), new Vector2(0f, 1f), new Vector2(x, -DockGap), new Vector2(width, DockHeight));
+            Panel(rt, theme, 0.06f, 0.22f);
+            IgnoreLayout(rt.gameObject);
+            InspectionOnly(rt.gameObject);
+            DockTitle(rt, title, theme);
+            return rt;
+        }
+
+        private static void DockTitle(RectTransform box, string title, BackroomsUiTheme theme)
+        {
+            var tmp = Label(box, "BR_Title", title, theme.DisplayBold != null ? theme.DisplayBold : theme.Display, 17f, theme.Ink,
+                TextAlignmentOptions.TopLeft);
+            var rt = (RectTransform)tmp.transform;
+            Place(rt, new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(BoxPad, -10f), new Vector2(box.sizeDelta.x - 2f * BoxPad, 24f));
+            IgnoreLayout(rt.gameObject);
+            rt.SetAsLastSibling();
+        }
+
+        /// <summary>Sección del centro (cabecera y caja; plegar llega después).</summary>
+        private static RectTransform Section(RectTransform inventory, string name, BackroomsUiTheme theme, float y, float height,
+            string title, string count, int siblingIndex)
+        {
+            var rt = EnsureRect(inventory, name, typeof(Image), typeof(Outline));
+            rt.anchorMin = new Vector2(0f, 1f);
+            rt.anchorMax = new Vector2(1f, 1f);
+            rt.pivot = new Vector2(0.5f, 1f);
+            rt.offsetMin = new Vector2(BoxPad, -(y + height));
+            rt.offsetMax = new Vector2(-BoxPad, -y);
+            Panel(rt, theme, 0.10f, 0.28f);
+            InspectionOnly(rt.gameObject);
+            rt.SetSiblingIndex(siblingIndex);
+            SectionLabel(rt, "Title", title, theme.Display, 17f, theme.Ink, TextAlignmentOptions.MidlineLeft);
+            SectionLabel(rt, "Count", count, theme.Mono, 13f, theme.InkDim, TextAlignmentOptions.MidlineRight);
+            return rt;
+        }
+
+        private const float SectionTitleHeight = 34f;
+
+        private static float SectionHeight(int slots)
+        {
+            float inner = 920f - 4f * BoxPad;
+            int cols = Mathf.Max(1, Mathf.FloorToInt((inner + CellGap) / (Cell + CellGap)));
+            int rows = Mathf.Max(1, Mathf.CeilToInt(slots / (float)cols));
+            return SectionTitleHeight + 8f + rows * Cell + (rows - 1) * CellGap + BoxPad;
+        }
+
+        private static void PlaceGrid(RectTransform grid, float sectionTop, float sectionHeight)
+        {
+            grid.anchorMin = new Vector2(0f, 1f);
+            grid.anchorMax = new Vector2(1f, 1f);
+            grid.pivot = new Vector2(0.5f, 1f);
+            grid.offsetMin = new Vector2(BoxPad, -(sectionTop + sectionHeight));
+            grid.offsetMax = new Vector2(-BoxPad, -(sectionTop + SectionTitleHeight));
+            if (grid.TryGetComponent<GridLayoutGroup>(out var layout))
+            {
+                layout.cellSize = new Vector2(Cell, Cell);
+                layout.spacing = new Vector2(CellGap, CellGap);
+                layout.padding = new RectOffset((int)BoxPad, (int)BoxPad, 8, (int)BoxPad);
+                layout.childAlignment = TextAnchor.UpperLeft;
+            }
+        }
+
+        private static void SkinSlot(Transform slot, BackroomsUiTheme theme)
+        {
+            if (slot.TryGetComponent<Image>(out var bg)) SetSprite(bg, theme.SunkenSlot, Color.white);
+            Paint(slot, "DurabilityBG", theme.Tape);
+            Paint(slot, "DurabilityBar", theme.Fluorescent);
+            foreach (var tmp in slot.GetComponentsInChildren<TextMeshProUGUI>(true))
+                Retype(tmp, theme, MonoTextNames.Contains(tmp.name) ? theme.Mono : theme.Display, theme.Ink);
+        }
+
+        /// <summary>
+        /// Crea con la plantilla del panel los huecos que falten como hijos directos (lo que busca
+        /// <c>ItemContainerUI.GenerateSlots</c>) y les pone la piel. Devuelve solo los creados ahora.
+        /// </summary>
+        private static List<ItemSlotUIBase> EnsureSlots(ItemContainerUI ui, int count, BackroomsUiTheme theme)
+        {
+            var created = new List<ItemSlotUIBase>();
+            int existing = 0;
+            foreach (Transform child in ui.transform)
+                if (child.GetComponent<ItemSlotUIBase>() != null) existing++;
+            var template = new SerializedObject(ui).FindProperty("_slotTemplate").objectReferenceValue as ItemSlotUIBase;
+            if (template == null) return created;
+            for (int i = existing; i < count; i++)
+            {
+                var go = (GameObject)PrefabUtility.InstantiatePrefab(template.gameObject, ui.transform);
+                go.name = "BR_Slot" + i;
+                var slot = go.GetComponent<ItemSlotUIBase>();
+                SkinSlot(go.transform, theme);
+                created.Add(slot);
+            }
+            return created;
+        }
+
+        /// <summary>Nombre del contenedor y plantilla de hueco copiada de un panel del vendor que ya funciona.</summary>
+        private static void BindContainerUI(ItemContainerUI ui, string containerName, ItemContainerUI templateFrom)
+        {
+            var so = new SerializedObject(ui);
+            so.FindProperty("_containerName").stringValue = containerName;
+            if (templateFrom != null)
+                so.FindProperty("_slotTemplate").objectReferenceValue =
+                    new SerializedObject(templateFrom).FindProperty("_slotTemplate").objectReferenceValue;
+            so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        /// <summary>Los paneles de equipo del vendor se atan al abrir el inventario: van en _nonPersistentContainers.</summary>
+        private static void RegisterContainerUI(InventoryUI inventoryUI, ItemContainerUI ui)
+        {
+            if (inventoryUI == null || ui == null) return;
+            var so = new SerializedObject(inventoryUI);
+            var list = so.FindProperty("_nonPersistentContainers");
+            for (int i = 0; i < list.arraySize; i++)
+                if (list.GetArrayElementAtIndex(i).objectReferenceValue == ui) return;
+            list.arraySize++;
+            list.GetArrayElementAtIndex(list.arraySize - 1).objectReferenceValue = ui;
+            so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        private static void SectionLabel(RectTransform section, string name, string text, TMP_FontAsset font, float size, Color color,
+            TextAlignmentOptions align)
+        {
+            var t = (RectTransform)Label(section, name, text, font, size, color, align).transform;
+            t.anchorMin = new Vector2(0f, 1f);
+            t.anchorMax = new Vector2(1f, 1f);
+            t.pivot = new Vector2(0.5f, 1f);
+            t.offsetMin = new Vector2(BoxPad, -34f);
+            t.offsetMax = new Vector2(-BoxPad, 0f);
+        }
+
+        // ─── Conmutador Ropa | Heridas (placeholder estructural, greybox 1d0e788e) ────
+        //
+        // Solo layout: qué se ve en el hueco del preview. Las zonas son de ejemplo (sin ADR de
+        // cuerpo por zonas todavía, roadmap «Sistemas anotados, sin empezar»); coordenadas en
+        // fracción del panel, calcadas del greybox para que la primera vista en juego case con la
+        // maqueta aprobada.
+        private const string WoundsPanelName = "BR_WoundsPanel";
+        private static readonly (string Name, float X, float Y, float W, float H)[] PlaceholderZones =
+        {
+            ("Cabeza", 0.186f, 0.110f, 0.273f, 0.102f),
+            ("Cuello", 0.186f, 0.194f, 0.273f, 0.102f),
+            ("Hombro izq.", 0.018f, 0.194f, 0.273f, 0.102f),
+            ("Hombro der.", 0.627f, 0.194f, 0.273f, 0.102f),
+            ("Brazo izq.", 0.018f, 0.306f, 0.273f, 0.102f),
+            ("Pecho", 0.186f, 0.306f, 0.273f, 0.102f),
+            ("Brazo der.", 0.627f, 0.306f, 0.273f, 0.102f),
+            ("Antebrazo izq.", 0.018f, 0.418f, 0.273f, 0.102f),
+            ("Abdomen", 0.186f, 0.418f, 0.273f, 0.102f),
+            ("Antebrazo der.", 0.627f, 0.418f, 0.273f, 0.102f),
+            ("Mano izq.", 0.018f, 0.531f, 0.273f, 0.102f),
+            ("Cadera", 0.186f, 0.531f, 0.273f, 0.102f),
+            ("Mano der.", 0.627f, 0.531f, 0.273f, 0.102f),
+            ("Muslo izq.", 0.018f, 0.643f, 0.273f, 0.102f),
+            ("Muslo der.", 0.627f, 0.643f, 0.273f, 0.102f),
+            ("Pierna izq.", 0.018f, 0.755f, 0.273f, 0.102f),
+            ("Pierna der.", 0.627f, 0.755f, 0.273f, 0.102f),
+            ("Pie izq.", 0.018f, 0.867f, 0.273f, 0.102f),
+            ("Pie der.", 0.627f, 0.867f, 0.273f, 0.102f),
+        };
+
+        private static void BuildBodyViewToggle(Transform character, RectTransform header, RectTransform previewRT,
+            BackroomsUiTheme theme, Report report)
+        {
+            if (header == null || previewRT == null) { report.Missing("Character/Header o CharacterPreview"); return; }
+
+            // Los botones cuelgan de la COLUMNA, no de la cabecera: la cabecera del vendor lleva layout
+            // automático y los metía encima del título. Versiones viejas bajo Header se retiran.
+            foreach (var old in new[] { "RopaBtn", "HeridasBtn" })
+                if (header.Find(old) is Transform stale) Object.DestroyImmediate(stale.gameObject);
+            var column = (RectTransform)character;
+            var ropaBtn = EnsureToggleButton(column, "RopaBtn", "ROPA", -92f, theme);
+            var heridasBtn = EnsureToggleButton(column, "HeridasBtn", "HERIDAS", -8f, theme);
+            InspectionOnly(ropaBtn.gameObject);
+            InspectionOnly(heridasBtn.gameObject);
+
+            var wounds = character.Find(WoundsPanelName) as RectTransform;
+            if (wounds == null)
+            {
+                var go = new GameObject(WoundsPanelName, typeof(RectTransform), typeof(Image));
+                wounds = (RectTransform)go.transform;
+                wounds.SetParent(character, false);
+                go.GetComponent<Image>().raycastTarget = false;
+                foreach (var z in PlaceholderZones)
+                {
+                    var zg = new GameObject(z.Name, typeof(RectTransform), typeof(Image));
+                    var zrt = (RectTransform)zg.transform;
+                    zrt.SetParent(wounds, false);
+                    zrt.anchorMin = new Vector2(z.X, 1f - z.Y - z.H);
+                    zrt.anchorMax = new Vector2(z.X + z.W, 1f - z.Y);
+                    zrt.offsetMin = Vector2.zero;
+                    zrt.offsetMax = Vector2.zero;
+                    zg.GetComponent<Image>().raycastTarget = false;
+
+                    var lbl = new GameObject("Label", typeof(RectTransform), typeof(TextMeshProUGUI));
+                    var lrt = (RectTransform)lbl.transform;
+                    lrt.SetParent(zrt, false);
+                    Stretch(lrt);
+                    var tmp = lbl.GetComponent<TextMeshProUGUI>();
+                    tmp.text = z.Name;
+                    tmp.alignment = TextAlignmentOptions.Center;
+                    tmp.fontSize = 12f;
+                    tmp.enableWordWrapping = true;
+                    tmp.raycastTarget = false;
+                }
+
+                var caption = new GameObject("Caption", typeof(RectTransform), typeof(TextMeshProUGUI));
+                var crt = (RectTransform)caption.transform;
+                crt.SetParent(wounds, false);
+                crt.anchorMin = new Vector2(0f, 0f);
+                crt.anchorMax = new Vector2(1f, 0f);
+                crt.pivot = new Vector2(0.5f, 0f);
+                crt.sizeDelta = new Vector2(0f, 40f);
+                crt.anchoredPosition = new Vector2(0f, -44f);
+                var ctmp = caption.GetComponent<TextMeshProUGUI>();
+                ctmp.text = "PLACEHOLDER — sin ADR de cuerpo por zonas";
+                ctmp.alignment = TextAlignmentOptions.Center;
+                ctmp.fontSize = 13f;
+                ctmp.raycastTarget = false;
+
+                report.Count("zonas de heridas (placeholder)", PlaceholderZones.Length);
+            }
+
+            // La columna del vendor también reparte a sus hijos: sin esto el panel queda con ancho ~0
+            // y cada etiqueta sale letra a letra en vertical.
+            IgnoreLayout(wounds.gameObject);
+            InspectionOnly(wounds.gameObject);
+            // Mismo hueco que el preview del vendor (fuera de la vista Ropa, dentro de Heridas).
+            wounds.anchorMin = previewRT.anchorMin;
+            wounds.anchorMax = previewRT.anchorMax;
+            wounds.pivot = previewRT.pivot;
+            wounds.offsetMin = previewRT.offsetMin;
+            wounds.offsetMax = previewRT.offsetMax;
+            wounds.GetComponent<Image>().color = WithAlpha(theme.Ground, 0.85f);
+            foreach (var tmp in wounds.GetComponentsInChildren<TextMeshProUGUI>(true))
+                Retype(tmp, theme, theme.Mono, theme.Ink);
+            foreach (var img in wounds.GetComponentsInChildren<Image>(true))
+                if (img.gameObject != wounds.gameObject) SetSprite(img, theme.SunkenSlot, theme.Tape);
+
+            var toggle = character.GetComponent<BackroomsBodyViewToggle>();
+            if (toggle == null) toggle = character.gameObject.AddComponent<BackroomsBodyViewToggle>();
+            var so = new SerializedObject(toggle);
+            so.FindProperty("_ropaButton").objectReferenceValue = ropaBtn;
+            so.FindProperty("_heridasButton").objectReferenceValue = heridasBtn;
+            so.FindProperty("_previewRoot").objectReferenceValue = previewRT.gameObject;
+            so.FindProperty("_woundsPanel").objectReferenceValue = wounds.gameObject;
+            so.ApplyModifiedPropertiesWithoutUndo();
+
+            wounds.gameObject.SetActive(false);
+            report.Count("conmutador ropa/heridas", 1);
+        }
+
+        private static Button EnsureToggleButton(RectTransform header, string name, string label, float xFromRight,
+            BackroomsUiTheme theme, float width = 76f)
+        {
+            var existing = header.Find(name) as RectTransform;
+            GameObject go;
+            if (existing == null)
+            {
+                go = new GameObject(name, typeof(RectTransform), typeof(Image), typeof(Button));
+                var rt = (RectTransform)go.transform;
+                rt.SetParent(header, false);
+                rt.anchorMin = new Vector2(1f, 1f);
+                rt.anchorMax = new Vector2(1f, 1f);
+                rt.pivot = new Vector2(1f, 1f);
+                rt.sizeDelta = new Vector2(76f, 28f);
+                rt.anchoredPosition = new Vector2(xFromRight, -4f);
+
+                var txtGo = new GameObject("Text", typeof(RectTransform), typeof(TextMeshProUGUI));
+                var txtRt = (RectTransform)txtGo.transform;
+                txtRt.SetParent(rt, false);
+                Stretch(txtRt);
+                var tmp = txtGo.GetComponent<TextMeshProUGUI>();
+                tmp.alignment = TextAlignmentOptions.Center;
+                tmp.fontSize = 12f;
+                tmp.raycastTarget = false;
+            }
+            else go = existing.gameObject;
+            IgnoreLayout(go);
+            // Posición y tamaño SIEMPRE, no solo al crear: si no, un cambio de medida nunca llega a la variante.
+            var brt = (RectTransform)go.transform;
+            brt.anchorMin = Vector2.one;
+            brt.anchorMax = Vector2.one;
+            brt.pivot = Vector2.one;
+            brt.sizeDelta = new Vector2(width, 28f);
+            brt.anchoredPosition = new Vector2(xFromRight, -4f);
+
+            var img = go.GetComponent<Image>();
+            img.sprite = null;
+            img.color = Color.white;
+            var outline = go.GetComponent<Outline>();
+            if (outline == null) outline = go.AddComponent<Outline>();
+            outline.effectColor = Color.Lerp(theme.Ground, theme.Ink, 0.35f);
+            outline.effectDistance = new Vector2(1f, -1f);
+            var button = go.GetComponent<Button>();
+            var colors = button.colors;
+            colors.normalColor = Color.Lerp(theme.Ground, theme.Ink, 0.10f);
+            colors.highlightedColor = Color.Lerp(theme.Ground, theme.Ink, 0.22f);
+            colors.pressedColor = Color.Lerp(theme.Ground, theme.Fluorescent, 0.45f);
+            colors.selectedColor = colors.normalColor;
+            colors.disabledColor = Color.Lerp(theme.Ground, theme.Fluorescent, 0.35f);
+            colors.colorMultiplier = 1f;
+            colors.fadeDuration = 0.05f;
+            button.colors = colors;
+            var label2 = go.GetComponentInChildren<TextMeshProUGUI>(true);
+            if (label2 != null)
+            {
+                label2.text = label;
+                Retype(label2, theme, theme.MonoBold, theme.Ink);
+                label2.fontStyle |= FontStyles.UpperCase;
+            }
+            return button;
+        }
+
+        /// <summary>
+        /// Lo nuestro que cuelga fuera de los paneles del vendor no se oculta al cerrar TAB: se apaga y
+        /// enciende con la inspección. Nace apagado (la captura lo fuerza visible).
+        /// </summary>
+        private static void InspectionOnly(GameObject go)
+        {
+            if (go.GetComponent<CanvasGroup>() == null) go.AddComponent<CanvasGroup>();
+            if (go.GetComponent<BackroomsInspectionOnly>() == null) go.AddComponent<BackroomsInspectionOnly>();
+            var group = go.GetComponent<CanvasGroup>();
+            group.alpha = 0f;
+            group.blocksRaycasts = false;
+            group.interactable = false;
+        }
+
+        private static void IgnoreLayout(GameObject go)
+        {
+            var le = go.GetComponent<LayoutElement>() ?? go.AddComponent<LayoutElement>();
+            le.ignoreLayout = true;
         }
 
         private static void Column(RectTransform rt, float side, float margin, float width, float bottom)

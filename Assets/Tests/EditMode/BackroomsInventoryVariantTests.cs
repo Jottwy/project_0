@@ -88,5 +88,26 @@ namespace BackroomsSurvival.Tests
                               || tmp.font == theme.DisplayBold || tmp.font == theme.DisplayRegular,
                     $"'{tmp.name}' sigue con la fuente del vendor ({(tmp.font ? tmp.font.name : "null")})");
         }
+
+        [Test]
+        public void LosConmutadoresDeColumnaEstanCableados()
+        {
+            var v = Variant();
+            var body = v.GetComponentInChildren<BackroomsBodyViewToggle>(true);
+            Assert.IsNotNull(body, "sin conmutador Ropa | Heridas");
+            AssertWired(body, "_ropaButton", "_heridasButton", "_previewRoot", "_woundsPanel");
+            var around = v.GetComponentInChildren<BackroomsAroundViewToggle>(true);
+            Assert.IsNotNull(around, "sin conmutador Alrededor | Crafteo");
+            AssertWired(around, "_aroundButton", "_craftButton", "_workstations", "_emptyLabel");
+            Assert.IsNotNull(around.GetComponent<BackroomsInspectionOnly>(),
+                "la cabecera de Alrededor cuelga fuera de los paneles del vendor: sin esto se queda pintada al cerrar TAB");
+        }
+
+        private static void AssertWired(Object component, params string[] fields)
+        {
+            var so = new SerializedObject(component);
+            foreach (var f in fields)
+                Assert.IsNotNull(so.FindProperty(f)?.objectReferenceValue, $"{component.GetType().Name}.{f} sin asignar");
+        }
     }
 }

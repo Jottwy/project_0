@@ -1,0 +1,40 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 4213430bbd6313b4a89ea1d7e1185c38, type: 3}
+  m_Name: BR_Cloth Bag
+  m_EditorClassIdentifier: 
+  _id: -1492172175
+  _parentGroup: {fileID: 11400000, guid: cf5dd5a63069e21458615566eb5d16e7, type: 2}
+  _icon: {fileID: 21300000, guid: d304c4dd6f63e434eb5868184084a15f, type: 3}
+  _description: A cloth bag. Six slots, carries badly.
+  _longDescription: 
+  _pickup: {fileID: 1648080318101908984, guid: 4933dbb307bfe8e44824c1500e875619, type: 3}
+  _stackPickup: {fileID: 5039848590447293739, guid: 60f7bf66f2292d34d86470c5b3928e92, type: 3}
+  _weight: 0.2
+  _stackSize: 1
+  _tag:
+    _value: -1903734370
+  _rarity: {fileID: 11400000, guid: 5518a16c9a5a70d4585369c90f14f295, type: 2}
+  _actions:
+  - {fileID: 11400000, guid: cfea35ee23f1fda47a276a7b208543f9, type: 2}
+  _properties: []
+  _data:
+  - rid: 3885882207357370454
+  references:
+    version: 2
+    RefIds:
+    - rid: 3885882207357370454
+      type: {class: WearableCapacityData, ns: BackroomsSurvival.Wearables, asm: BackroomsSurvival}
+      data:
+        _slots: 6
+        _maxKg: 6
+        _carryBonusPct: -10
