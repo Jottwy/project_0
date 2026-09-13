@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using BackroomsSurvival.Wearables;
 using PolymindGames;
 using PolymindGames.InventorySystem;
 using PolymindGames.UserInterface;
@@ -18,6 +19,10 @@ namespace BackroomsSurvival.UI
     /// reatar contenedores (abrir una caja) no rebota.</item>
     /// <item>Soltar sobre un hueco que no lo admite: destello rojo en ese hueco y una cinta roja encima con el motivo
     /// que da el propio contenedor (lleno, pesa demasiado, no es de ese tipo).</item>
+    /// <item>Soltar un objeto sobre otro los INTERCAMBIA aunque la mochila o el cinturón estén llenos (Joel, 2026-09-13):
+    /// el vendor ya intercambia, pero pregunta a los contenedores con los dos objetos dentro y la capacidad por huecos
+    /// lo rechazaba. Se reintenta con su propio <c>TransferOrSwapWithSlot</c>, avisando a la restricción de que el que
+    /// sale libera su hueco; tipo, peso y anidado siguen mandando.</item>
     /// <item>La carga se pone roja y parpadea al acercarse al máximo; en el máximo, rojo fijo.</item>
     /// </list>
     /// </summary>
@@ -58,6 +63,11 @@ namespace BackroomsSurvival.UI
         private bool _wasDragging;
         private ItemStack _dragged = ItemStack.Null;
         private ItemSlotUIBase _hover;
+        private IItemContainer _emptiedContainer;
+        private int _emptiedIndex = -1;
+        private Item _emptiedItem;
+        private IItemContainer _sourceContainer;
+        private int _sourceIndex = -1;
         private float _tagShownAt = -100f;
         private Color _loadTextBase;
         private Color _loadFillBase;
@@ -92,9 +102,18 @@ namespace BackroomsSurvival.UI
                 if (slot == null || (dragRoot != null && slot.transform.IsChildOf(dragRoot))) continue;
                 var reference = slot.Slot;
                 var item = slot.HasItem ? reference.GetItem() : null;
-                if (open && item != null && _seen.TryGetValue(slot, out var seen) && item != seen.Item
-                    && seen.Container == reference.Container && seen.Index == reference.Index && slot.gameObject.activeInHierarchy)
-                    _pops[slot.transform] = now;
+                if (_seen.TryGetValue(slot, out var seen) && seen.Container == reference.Container && seen.Index == reference.Index)
+                {
+                    if (open && item != null && item != seen.Item && slot.gameObject.activeInHierarchy)
+                        _pops[slot.transform] = now;
+                    // Un hueco que se vacía este frame: si empieza un arrastre con ese objeto, es su origen.
+                    if (item == null && seen.Item != null)
+                    {
+                        _emptiedContainer = reference.Container;
+                        _emptiedIndex = reference.Index;
+                        _emptiedItem = seen.Item;
+                    }
+                }
                 _seen[slot] = new Seen { Container = reference.Container, Index = reference.Index, Item = item };
             }
 
@@ -109,6 +128,12 @@ namespace BackroomsSurvival.UI
             bool dragging = BackroomsDragProbe.TryGetDraggedStack(_dragScan, out var stack);
             if (dragging)
             {
+                if (!_wasDragging)
+                {
+                    bool fromSlot = stack.Item != null && stack.Item == _emptiedItem;
+                    _sourceContainer = fromSlot ? _emptiedContainer : null;
+                    _sourceIndex = fromSlot ? _emptiedIndex : -1;
+                }
                 _dragged = stack;
                 _hover = HoverSlot(dragRoot);
             }
@@ -117,7 +142,10 @@ namespace BackroomsSurvival.UI
                 CheckRejected(now);
                 _hover = null;
                 _dragged = ItemStack.Null;
+                _sourceContainer = null;
+                _sourceIndex = -1;
             }
+            _emptiedItem = null;
             _wasDragging = dragging;
         }
 
@@ -148,9 +176,32 @@ namespace BackroomsSurvival.UI
             if (container == null) return;
             var (allowed, reason) = container.GetAllowedCount(_dragged);
             if (allowed > 0) return;
+            if (TrySwap()) return;
 
             Flash(_hover, now);
             ShowTag((RectTransform)_hover.transform, reason, now);
+        }
+
+        /// <summary>El vendor rechazó soltar sobre un hueco ocupado: intercambiar con el hueco de origen si ambos lo admiten.</summary>
+        private bool TrySwap()
+        {
+            if (_sourceContainer == null || _sourceIndex < 0 || _sourceIndex >= _sourceContainer.SlotsCount) return false;
+            var target = _hover.Slot;
+            if (!target.HasItem()) return false;
+            var source = _sourceContainer.GetSlot(_sourceIndex);
+            if (source.Container == target.Container && source.Index == target.Index) return false;
+            // Solo si el objeto entero volvió a su hueco (no una pila partida).
+            if (source.GetItem() != _dragged.Item) return false;
+
+            WornCapacityRestriction.BeginSwap();
+            try
+            {
+                return source.TransferOrSwapWithSlot(target);
+            }
+            finally
+            {
+                WornCapacityRestriction.EndSwap();
+            }
         }
 
         private void Flash(ItemSlotUIBase slot, float now)

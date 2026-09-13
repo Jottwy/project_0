@@ -219,5 +219,23 @@ namespace BackroomsSurvival.Tests
             CollectionAssert.AreEqual(new[] { 0, 2 }, kept, "los dos primeros se quedan en las manos");
             CollectionAssert.AreEqual(new[] { 7, 5, 4 }, overflow, "lo que sobra va a la base empezando por la derecha");
         }
+
+        [Test]
+        public void IntercambiarEnUnaMochilaLlenaNoOcupaHuecoNuevo()
+        {
+            Assert.AreEqual(5, WornCapacityRestriction.EffectiveUsedSlots(6, true), "el que sale deja su hueco");
+            Assert.AreEqual(6, WornCapacityRestriction.EffectiveUsedSlots(6, false), "fuera de un intercambio cuenta todo");
+            Assert.AreEqual(0, WornCapacityRestriction.EffectiveUsedSlots(0, true));
+
+            var bag = new WearableCapacityData(6, 6f, -10f);
+            Assert.AreEqual(0, WornCapacityRestriction.Evaluate(bag, "Bolsa", 6, 1f, 0.1f, false, false, 1).allowed, "llena: no entra nada nuevo");
+            Assert.AreEqual(1, WornCapacityRestriction.Evaluate(bag, "Bolsa", WornCapacityRestriction.EffectiveUsedSlots(6, true),
+                1f, 0.1f, false, false, 1).allowed, "llena pero intercambiando: sí");
+
+            WornCapacityRestriction.BeginSwap();
+            WornCapacityRestriction.EndSwap();
+            WornCapacityRestriction.EndSwap();
+            Assert.AreEqual(6, WornCapacityRestriction.EffectiveUsedSlots(6, false), "cerrar de más no deja el modo intercambio puesto");
+        }
     }
 }

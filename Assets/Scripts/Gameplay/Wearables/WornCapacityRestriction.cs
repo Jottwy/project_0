@@ -25,7 +25,17 @@ namespace BackroomsSurvival.Wearables
         [SerializeField]
         private bool _limitWeight = true;
 
+        // Intercambio de dos huecos ya ocupados en curso (BackroomsSlotFeedback): el objeto que sale libera su hueco.
+        private static int s_swapDepth;
+
         public string OwnerContainer => _ownerContainer;
+
+        public static void BeginSwap() => s_swapDepth++;
+
+        public static void EndSwap() => s_swapDepth = Mathf.Max(0, s_swapDepth - 1);
+
+        /// <summary>Huecos que cuentan como usados: en un intercambio, uno menos (el que sale deja el suyo).</summary>
+        public static int EffectiveUsedSlots(int usedSlots, bool swapping) => swapping && usedSlots > 0 ? usedSlots - 1 : usedSlots;
 
         public static WornCapacityRestriction Create(string ownerContainer)
         {
@@ -41,7 +51,7 @@ namespace BackroomsSurvival.Wearables
             WearableCapacityData capacity = null;
             worn?.Definition.TryGetDataOfType(out capacity);
             bool stacksInto = item.IsStackable && container.ContainsItemById(item.Id);
-            var (allowed, reason) = Evaluate(capacity, worn != null ? worn.Name : string.Empty, UsedSlots(container),
+            var (allowed, reason) = Evaluate(capacity, worn != null ? worn.Name : string.Empty, EffectiveUsedSlots(UsedSlots(container), s_swapDepth > 0),
                 container.Weight, item.Weight, stacksInto, item.Definition.TryGetDataOfType<WearableCapacityData>(out _),
                 requestedCount, _baseSlots, _limitWeight);
             if (allowed <= 0) RejectionReason = reason;
