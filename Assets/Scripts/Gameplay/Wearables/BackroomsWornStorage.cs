@@ -16,8 +16,9 @@ namespace BackroomsSurvival.Wearables
     /// sobrevive a salir de Play ni viaja por red: punto 4 del ADR sin aprobar); un paquete no suma kg (hueco de peso
     /// de la enm. 1); y se apaga en cuanto hay backend conectado (condición 2), para no reportar nunca contenedores 6+.
     ///
-    /// El cinturón NO empaqueta: sus huecos son de la barra. Al quitártelo (o cambiarlo por uno menor), lo que quede en
-    /// los huecos que desaparecen se desequipa a la base y, si no cabe, cae al suelo (D14 enm. 1).
+    /// El cinturón NO empaqueta: sus huecos son de la barra. Al quitártelo (o cambiarlo por uno menor), si queda algo en
+    /// los huecos que desaparecen, la barra se COMPACTA de izquierda a derecha conservando el orden (Joel, 2026-09-13);
+    /// lo que ya no quepa va a la base empezando por la derecha y, si tampoco cabe, cae al suelo (D14 enm. 1).
     /// </summary>
     public sealed class BackroomsWornStorage : MonoBehaviour
     {
@@ -35,6 +36,8 @@ namespace BackroomsSurvival.Wearables
         private IItemContainer _waist;
         private IItemContainer _hands;
         private IItemContainer _base;
+        private readonly List<int> _kept = new();
+        private readonly List<int> _overflow = new();
         private Item _worn;
         private bool _inert;
 
@@ -108,17 +111,64 @@ namespace BackroomsSurvival.Wearables
             var worn = _waist.SlotsCount > 0 ? _waist.GetItemAtIndex(0) : ItemStack.Null;
             if (worn.HasItem()) worn.Item.Definition.TryGetDataOfType(out belt);
 
-            int visible = VisibleHandSlots(HandSlots, belt, _hands.SlotsCount);
-            for (int i = _hands.SlotsCount - 1; i >= visible; i--)
+            int count = _hands.SlotsCount;
+            int visible = VisibleHandSlots(HandSlots, belt, count);
+            var stacks = new ItemStack[count];
+            var occupied = new bool[count];
+            for (int i = 0; i < count; i++)
             {
-                var stack = _hands.GetItemAtIndex(i);
-                if (!stack.HasItem()) continue;
-                // Primero se saca: si no, el vendor lo cuenta dos veces contra el peso máximo al meterlo en la base.
-                _hands.SetItemAtIndex(i, ItemStack.Null);
-                int added = _base != null ? _base.AddItem(stack).addedCount : 0;
-                if (added < stack.Count)
-                    _inventory.DropItem(added == 0 ? stack : new ItemStack(stack.Item, stack.Count - added));
+                stacks[i] = _hands.GetItemAtIndex(i);
+                occupied[i] = stacks[i].HasItem();
             }
+            if (!Compact(occupied, visible, _kept, _overflow)) return;
+
+            // Primero se saca todo lo que se mueve: si no, el vendor lo cuenta dos veces contra el peso máximo.
+            for (int k = 0; k < _kept.Count; k++)
+                if (_kept[k] != k) _hands.SetItemAtIndex(_kept[k], ItemStack.Null);
+            foreach (int source in _overflow)
+                _hands.SetItemAtIndex(source, ItemStack.Null);
+
+            for (int k = 0; k < _kept.Count; k++)
+            {
+                if (_kept[k] == k) continue;
+                var stack = stacks[_kept[k]];
+                int placed = _hands.SetItemAtIndex(k, stack);
+                if (placed < stack.Count) Stow(new ItemStack(stack.Item, stack.Count - placed));
+            }
+            foreach (int source in _overflow)
+                Stow(stacks[source]);
+        }
+
+        /// <summary>A la base; lo que no quepa, al suelo.</summary>
+        private void Stow(ItemStack stack)
+        {
+            int added = _base != null ? _base.AddItem(stack).addedCount : 0;
+            if (added < stack.Count)
+                _inventory.DropItem(added == 0 ? stack : new ItemStack(stack.Item, stack.Count - added));
+        }
+
+        /// <summary>
+        /// La regla de la barra al encoger, pura: si hay algo en un hueco que ya no existe (índice ≥ <paramref name="visible"/>),
+        /// <paramref name="kept"/> recibe los índices de origen que se quedan, en orden, para ocupar 0, 1, 2…; y
+        /// <paramref name="overflow"/> los que sobran, de DERECHA a izquierda. Si todo cabe donde está, no se toca nada.
+        /// </summary>
+        public static bool Compact(bool[] occupied, int visible, List<int> kept, List<int> overflow)
+        {
+            kept.Clear();
+            overflow.Clear();
+            bool hidden = false;
+            for (int i = Mathf.Max(0, visible); i < occupied.Length; i++)
+                if (occupied[i]) { hidden = true; break; }
+            if (!hidden) return false;
+
+            for (int i = 0; i < occupied.Length; i++)
+            {
+                if (!occupied[i]) continue;
+                if (kept.Count < visible) kept.Add(i);
+                else overflow.Add(i);
+            }
+            overflow.Reverse();
+            return true;
         }
 
         /// <summary>Huecos de la barra que existen: las manos más lo que dé el cinturón, sin pasar de los creados.</summary>

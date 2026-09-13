@@ -201,5 +201,23 @@ namespace BackroomsSurvival.Tests
             Assert.Greater(BackroomsWornSlotsUI.StaggerDelay(3, 6), BackroomsWornSlotsUI.StaggerDelay(2, 6), "uno detrás de otro");
             Assert.LessOrEqual(BackroomsWornSlotsUI.StaggerDelay(26, 27), 0.25f, "una mochila grande no tarda un segundo en abrirse");
         }
+
+        [Test]
+        public void AlEncogerLaBarraSeCompactaYLoQueSobraSaleDesdeLaDerecha()
+        {
+            var kept = new System.Collections.Generic.List<int>();
+            var overflow = new System.Collections.Generic.List<int>();
+
+            Assert.IsFalse(BackroomsWornStorage.Compact(new[] { true, true, false, false, false, false }, 2, kept, overflow),
+                "si todo cabe donde está, no se reordena nada");
+
+            Assert.IsTrue(BackroomsWornStorage.Compact(new[] { true, false, true, false, true, false }, 4, kept, overflow));
+            CollectionAssert.AreEqual(new[] { 0, 2, 4 }, kept, "sí, no, sí, no, sí: se juntan en orden");
+            CollectionAssert.IsEmpty(overflow);
+
+            Assert.IsTrue(BackroomsWornStorage.Compact(new[] { true, false, true, false, true, true, false, true }, 2, kept, overflow));
+            CollectionAssert.AreEqual(new[] { 0, 2 }, kept, "los dos primeros se quedan en las manos");
+            CollectionAssert.AreEqual(new[] { 7, 5, 4 }, overflow, "lo que sobra va a la base empezando por la derecha");
+        }
     }
 }
