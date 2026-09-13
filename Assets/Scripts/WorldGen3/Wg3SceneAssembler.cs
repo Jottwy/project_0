@@ -5,9 +5,6 @@ using UnityEngine.Rendering.Universal;
 
 namespace BackroomsSurvival.WorldGen3
 {
-    /// <summary>Los cuatro materiales, en el orden de submalla de
-    /// <see cref="Wg3MeshBuilder.SubMesh"/>.</summary>
-    [System.Serializable]
     /// <summary>
     /// ADR-107 D3 — lo que un chunk le entrega al director del zumbido.
     ///
@@ -33,6 +30,15 @@ namespace BackroomsSurvival.WorldGen3
         public readonly List<int> storeys = new List<int>();
     }
 
+    /// <summary>Los cuatro materiales, en el orden de submalla de
+    /// <see cref="Wg3MeshBuilder.SubMesh"/>.</summary>
+    /// <remarks>
+    /// **`[Serializable]` NO se quita.** Del 08-29 al 09-13 decoró por error a <c>Wg3HumBatch</c> (se
+    /// insertó entre este atributo y la clase), y sin él <c>GridTestWorld.wg3Materials</c> no se carga:
+    /// el juego pintó WG3 con el respaldo de WG2 y <c>WorldGen3Test.unity</c> salió magenta, con los
+    /// cuatro GUID bien escritos en el prefab y en las escenas.
+    /// </remarks>
+    [System.Serializable]
     public sealed class Wg3Materials
     {
         public Material floor;
