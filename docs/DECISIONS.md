@@ -18068,7 +18068,125 @@ preguntas 3, 4, 5 y 7. Sin wire ni guardado: R1 sigue solo en `BR_InventoryTest`
 
 ---
 
-## ADR-149 — Enmienda 1: la izquierda en la manivela — rol Reference, pieza por mano, y por qué ninguna de las dos pasa (2026-09-13) — PROPUESTA (Joel: «ponle la izquierda en la manivela»)
+## ADR-150 — Manos sobre objetos: perfil en el espacio del objeto, IK horneado con coste de naturalidad y una API que Claude conduce (2026-09-13) — PROPUESTA (Joel: «prepara esta linterna para que el jugador pueda cogerla… que Claude pueda utilizar la herramienta de Editor»; «hay que naturalizarlo, hay poses antinaturales»)
+
+**Estado:** PROPUESTA. Herramienta integrada y medida sobre el prefab real; ningún asset de juego cambiado.
+
+### Contexto
+
+Cada objeto de mano nuevo costaba un horneador propio o un `Spec` en C# (ADR-133 enm. 1, ADR-077 enm. 4–5),
+afinado recompilando y mirando capturas. Joel pide tres cosas: (a) no configurar cada objeto a mano,
+(b) que Claude prepare, valide y corrija por órdenes («la mano izquierda está demasiado atrás»), y
+(c) poses naturales.
+
+Investigado antes de decidir:
+- **Animation Rigging** (1.4.x; integrado en 6.6). Funciona en Generic, pero pide un `RigBuilder` por
+  wieldable (los brazos 1P van duplicados en cada uno). El preview de editor va un fotograma tarde y es
+  frágil, convive mal con `LateUpdate` y no resuelve dedos.
+- **`OnAnimatorIK`**: sólo Humanoid, y los brazos 1P son Generic.
+- **Final IK, Auto Hand, Hurricane VR, Meta Interaction SDK**: patrón común de socket en el objeto, IK de
+  muñeca, dedos cerrados contra la superficie y pose en un asset. Se copia el patrón, no la dependencia.
+- **MCP de Unity** (CoplayDev, IvanMurzak; el de Unity AI Assistant deprecated en favor de la Unity CLI
+  experimental). Son transporte experimental. Una API estática JSON→JSON se registra en cualquiera sin
+  cambiarla.
+
+### Decisión
+
+- **D1. Se sigue HORNEANDO** (ADR-133 enm. 1): IK analítico de dos huesos y dedos resueltos en editor y
+  escritos en los clips del wieldable. Cero coste en runtime; compatible con el warp (ADR-077 enm. 2) y con
+  el balanceo procedural del vendor, que mueve brazos y objeto juntos.
+- **D2. `HandInteractionProfile`** (ScriptableObject en `BackroomsSurvival`; perfiles en
+  `Assets/Data/HandInteraction/`). Guarda:
+  - rol por mano: `Grip`, `Keep` o `Relaxed`;
+  - objetivo en el ESPACIO DEL OBJETO: punto del eje, reloj de la palma, inclinación y offsets;
+  - peso, estilo de dedos y rangos de búsqueda;
+  - lo resuelto por la búsqueda.
+
+  No depende del rig, así que servirá al cuerpo 3P.
+- **D3. Capas por fotograma**:
+  1. clip BASE, copiado intacto la primera vez para que rehornear nunca apile;
+  2. objeto donde lo lleva la mano portadora;
+  3. IK de la secundaria con peso por distancia del objeto a su sitio del idle;
+  4. dedos constantes.
+
+  Sólo la capa base del controller: las de acción siguen con su horneador. La portadora no se mueve; con
+  `Grip` sólo cambian sus dedos, y sólo si el coste baja.
+- **D4. Naturalidad MEDIDA y barrida.** Se barren eje, reloj, inclinación, orientación de la mano, codo y
+  separación de la palma. Gana el coste mínimo sobre:
+  - brazo: alcance, hombro, prono-supinación contra el cuerpo, muñeca por VECTORES (antebrazo→metacarpo) y codo;
+  - palma: dentro, lejos, objeto fuera del puño;
+  - dedos: yemas y falanges (pulgar incluido), no rodear, extremos tapados;
+  - conjunto: manos juntas, fuera de vista.
+
+  Dedos con cierre ACOPLADO (MCP, PIP y DIP a la vez) y remate de la punta.
+- **D5. Veredicto.** Si la mejor pose supera `maxNaturalCost` (6), `bake` no escribe (`NO_NATURAL_GRIP`,
+  con desglose y alternativas) salvo `force`. La herramienta no promete una pose que no existe.
+- **D6. API `HandInteractionApi`**: find, list, inspect, prepare, get, set, nudge, preview, bake, validate,
+  capture y pose, con errores de código estable y pista. Tres entradas y una implementación:
+  - `Execute(json)`;
+  - `-executeMethod …RunCli`, con el editor cerrado;
+  - puente de ficheros por petición en `Logs/HandInteraction/`, con el editor abierto.
+
+  `tools/dev/HandInteraction.ps1` elige la vía, y la ventana `Tools ▸ Interaction Authoring` va sobre la
+  misma API. `nudge` traduce direcciones de la vista del jugador al objeto y fija lo corregido.
+- **D7. Puerta genérica** `HandInteractionProfileTests`: mide todo perfil horneado sin test propio.
+
+### Resultados medidos (linterna de manivela, `BR_Wieldable_CrankFlashlight`)
+
+- **Inspección.** `inspect` detecta sin ayuda el nodo `BR_CrankFlashlightModel`, la malla de agarre `Body`
+  (180 mm, radio medio 25 mm, eje en +Y con |cos| 0,99996), el obstáculo `Crank`, la portadora `R` en 0,49
+  del eje y los 4 clips de la capa base.
+- **Dos manos: NO hay agarre natural.** La mejor pose cuesta **8,7** (tope 6): sin penetraciones, rodea
+  139°, pero la muñeca va flexionada 38°, el hombro adelantado 164 mm y las manos a 16 mm. `bake` se niega.
+  Con la portadora centrada en un cuerpo de 180 mm no caben dos puños; hacerlo pide mover la portadora con
+  su horneador.
+- **Cuatro errores de la herramienta cazados midiendo, no mirando:**
+  1. Una torsión medida contra el clip base dejaba pasar una palma arriba (81°).
+  2. La etapa fina del barrido no corría (costes `float.MaxValue` en el informe).
+  3. `EditorJsonUtility` ignora en silencio un parche plano; ahora es `PATCH_NO_EFFECT`.
+  4. Rehacer los dedos de la portadora metió el pulgar 12 mm en el cuerpo; ahora se conservan si no mejoran.
+- **Calibración con agarres existentes.** El destornillador sale con el pulgar 11,3–12,8 mm dentro y
+  rodeando 58°: exactamente la deuda que declaraba ADR-077 enm. 5. La métrica ve lo que el ojo vio.
+- **Hallazgo sobre lo ya horneado.** La muñeca derecha del idle de la linterna forma **129°** entre
+  antebrazo y metacarpo (destornillador 26°; `Hand local euler (348, 38, 130)`), medido con el comando
+  `pose`. **No se toca**: deuda para decidir.
+- **`nudge` «L atrás 10 mm».** Mueve el eje resuelto de 0,900 a 0,846 (9,7 mm hacia la culata), fija su
+  barrido, y la preview siguiente lo respeta.
+- **Coste.** Una tirada headless completa (prepare + preview con 5 capturas + bake) tarda 16–50 s con
+  Library caliente.
+- **Horneado forzado para probar la puerta, y REVERTIDO después.** Con `force` sobre la linterna:
+  - se escriben los 3 clips y el prefab;
+  - cada `.meta` lleva `userData: HandInteraction:baked:<guid del perfil>`;
+  - la captura del idle horneado es idéntica a la de la preview;
+  - `validate` da ok con un solo aviso (`WRIST_UNCOMFORTABLE`, el mismo del veredicto).
+
+  EditMode (`HandInteractionProfileTests`, `ToolGripTests`, `CrankFlashlightAnimationTests`,
+  `ViewmodelWarpTests`) da **23/23 sin saltados**: las 4 pruebas genéricas corren sobre un horneado real, y
+  las puertas de la linterna siguen verdes con sus clips reescritos.
+- **Arreglos de `revisor-diffs` antes del commit:**
+  - la marca en el clip (`BASE_IS_BAKED`): un perfil perdido o duplicado ya no puede apilar horneados;
+  - base registrada antes de escribir el prefab;
+  - `RunCli` con código de salida por el `ok` deserializado (el texto compacto nunca coincidía);
+  - lote detectado por su primera clave;
+  - puente que responde siempre;
+  - `-Headless` bloqueado con el editor abierto.
+
+  Verificado: un segundo perfil sobre el wieldable ya horneado falla con `BASE_IS_BAKED` en `bake` y en
+  `preview` (nombra el perfil que lo horneó), y un `find` con `"requests"` en el texto ya no se toma por lote.
+
+### Fuera, declarado
+
+- Mover la portadora.
+- Recoger la izquierda (sigue en `BackroomsToolPoseBaker`).
+- Cajas por las caras (`BOX_LIKE`).
+- Capas de acción.
+- Cuerpo remoto 3P.
+- `BackroomsToolPoseBaker` y `BackroomsCrankFlashlightPoseBaker` no se tocan ni se retiran aquí: retirarlos
+  exige comprobar antes que la herramienta reproduce sus agarres.
+
+---
+
+## ADR-150 — Enmienda 1: la izquierda en la manivela — rol Reference, pieza por mano, y por qué ninguna de las dos pasa (2026-09-13) — PROPUESTA (Joel: «ponle la izquierda en la manivela»)
 
 ### Qué se añadió
 
@@ -18088,7 +18206,7 @@ preguntas 3, 4, 5 y 7. Sin wire ni guardado: R1 sigue solo en `BR_InventoryTest`
 - **Copiar la izquierda del clip de cuerda (t = 0, pomo en reposo).** La reproducción es exacta (desvío
   0,0 mm, IK sin recortes, manos a 22 mm), pero ESA pose ya trae la muñeca a unos 100° y, en captura, los
   dedos deformados sobre el pomo. `NO_NATURAL_GRIP` por `muñeca-tope`. Es la segunda mano de ese horneador
-  con la muñeca extrema; la derecha del idle está a 129° (ADR-149).
+  con la muñeca extrema; la derecha del idle está a 129° (ADR-150).
 - **Agarrar el pomo con el solver** (pieza `Crank`, eje +Z, cuarto superior). 19 152 candidatos. El mejor
   cuesta **29,8**: palma arriba 81°, pellizco con índice y pulgar sin rodear, una falange 6 mm dentro y
   hombro adelantado 116 mm. En reposo el pomo queda pegado al costado del cuerpo, junto al puño derecho:
@@ -18112,7 +18230,7 @@ Ningún asset de juego cambiado.
 
 ---
 
-## ADR-149 — Enmienda 2: la derecha rehecha — rol Regrip, órbita de la manivela y el offset del modelo como entrada (2026-09-13) — PROPUESTA (Joel: «la izquierda sale muchísimo mejor que la mano derecha… restablecer, aplicar lo aprendido… debe ser plug and play»)
+## ADR-150 — Enmienda 2: la derecha rehecha — rol Regrip, órbita de la manivela y el offset del modelo como entrada (2026-09-13) — PROPUESTA (Joel: «la izquierda sale muchísimo mejor que la mano derecha… restablecer, aplicar lo aprendido… debe ser plug and play»)
 
 ### Qué se añadió
 
@@ -18144,7 +18262,7 @@ horneado escribe y la búsqueda lee necesita copia base, como los clips en `Base
 - 13 680 candidatos gruesos. Agarre por encima en **0,37** del eje, reloj −61°, inclinación −10°, índice hacia la
   culata, antebrazo **−10°**, codo abajo-fuera, hombro sin mover. **Coste 4,47** (tope 6), sólo `radial`.
 - Dedos rodeando **112°** (se piden 103), sin penetración, palma a 8,9 mm. Pomo a +0,4 mm sobre la holgura.
-- La muñeca de **129°** del agarre anterior (ADR-149) desaparece; en captura, muñeca recta y manivela libre.
+- La muñeca de **129°** del agarre anterior (ADR-150) desaparece; en captura, muñeca recta y manivela libre.
 - El perfil queda con la derecha fijada (`autoSearch:false`) en la pose resuelta: rehornear es determinista.
 - EditMode (`HandInteractionProfileTests`, `ToolGripTests`, `CrankFlashlightAnimationTests`,
   `ViewmodelWarpTests`): 25 tests, 24 verdes, 0 rojos, 1 saltado (`LaManoDeReferenciaCopiaSuClip`: no hay
@@ -18164,5 +18282,48 @@ validada.
 
 Assets cambiados: los cuatro clips de la linterna (encima, con marca), `Base/` con sus copias, el offset del
 modelo y `HandTarget.R` en el prefab, y el perfil.
+
+---
+
+## ADR-150 — Enmienda 3: la izquierda en la manivela — reposo del pomo a 270°, dedos recogidos en piezas cortas y la cuerda que sigue al pomo (2026-09-13) — PROPUESTA (Joel: «sí, prueba el nuevo ángulo de reposo de la manivela»; «arregla también la animación de cuerda»)
+
+### Numeración
+
+Este ADR se escribió como ADR-149 en su rama; al integrarlo, el tronco ya tenía otro ADR-149 («Cuerpo por zonas,
+heridas y sastrería») y el 148 está reservado por el renombrado del vendor. Pasa a **ADR-150** con sus enmiendas.
+
+### Qué se añadió
+
+- **`sweptPartTrialRestDegrees`**: gira la pieza que gira sólo en la copia de medida para barrer reposos con `set` +
+  `preview`. `bake` se niega mientras no sea 0 (`REST_TRIAL_NOT_APPLIED`).
+- **Piezas cortas**: un dedo cuyo nudillo cae fuera del tramo de la superficie se recoge y no cuenta para `yema-lejos`,
+  `no-rodea`, el hueco del puño, `TIP_FAR` ni el test genérico (sí su penetración). Un pomo se coge con pulgar, índice y
+  corazón.
+- **`sweptPartActionClipPath`**: una mano con `Grip` sobre la pieza que gira se hornea también en el clip de acción. Por
+  fotograma: la pieza a `reposo · AngleAxis(fase · 360°)` como en runtime, la mano con el centro del pomo y la orientación
+  del agarre en reposo, y elige el giro sobre el eje del pomo (±90°) y el deslizamiento hacia fuera (0–15 mm) más
+  naturales cerca del fotograma anterior —ninguno cambia el contacto de los dedos—, con el hombro adelantado lo justo.
+- **`capture`** fotografía el clip de acción a 0/90/180/270°.
+- **`CrankRestPhaseDegrees = 270`** en `BackroomsCrankFlashlightModelApplier`, con menú «Backrooms ▸ Linterna ▸ Aplicar
+  reposo de la manivela» para los dos prefabs (mano y suelo). El disco sigue con el giro de 90° en Y que dio por bueno
+  Joel; sólo cambia hacia dónde apunta el pomo en reposo. El runtime lo lee del prefab.
+
+### Resultados medidos
+
+- Copiar la izquierda del clip de cuerda del horneador propio no vale en NINGUNA fase: coste 89–115 en 8 fases, con
+  la desviación de muñeca ~−80° en todas (orientación fijada por constantes).
+- Agarre del pomo por reposo: 0° 28 · 45° 9,9 · 90° 11,9 · 135° 10,8 · 180° 25 · 225° 10,1 · **270° 8,2** · 315° 11,3.
+  Con los dedos recogidos: 270° **4,75**, 225° 7,2, 315° 7,9.
+- Horneado: izquierda en idle coste **4,70** (agarre desde abajo, antebrazo −95°, hombro 55 mm), derecha 4,52.
+- Cuerda: con la orientación fija, palma 23–28 mm dentro del cuerpo a fase 0,23–0,8 y 9 fotogramas sin alcance; con giro,
+  deslizamiento y hombro, 0 recortes y peor coste **16** (fase 0,23, la palma aún roza el cuerpo con el deslizamiento al
+  tope). En captura sigue al pomo; a 180–270° el agarre se ve en garra.
+- EditMode filtrado: 25 tests, 24 verdes, 1 saltado, 0 rojos (incluidos `WhileCrankingTheLeftHandRidesTheKnob`,
+  `TheKnobOrbitClearsTheRightHand` y `TheCrankSitsIdenticallyInHandAndOnTheGround` con el reposo nuevo).
+
+### Pendiente
+
+Ver la cuerda en Play. Si el roce de la palma a fase 0,23 se nota, subir el tope del deslizamiento o adelantar el
+reposo; ambas cosas son ya un `set` + `bake`.
 
 ---

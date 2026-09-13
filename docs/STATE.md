@@ -95,7 +95,7 @@
 
 ## Últimas tandas
 
-### 2026-09-13 — 55.ª tanda: manos sobre objetos — `Tools ▸ Interaction Authoring` y API para Claude (ADR-150 PROPUESTA)
+### 2026-09-13 — 55.ª tanda: manos sobre objetos — `Tools > Interaction Authoring` y API para Claude (ADR-150 PROPUESTA)
 - **Horneado, no Animation Rigging**: perfil en espacio del objeto, IK de dos huesos + dedos acoplados, coste de naturalidad barrido.
   API JSON (`tools/dev/HandInteraction.ps1`), puente con editor abierto, CLI headless, ventana. Guía: `docs/systems/hand-interaction.md`.
 - **Linterna a dos manos: `NO_NATURAL_GRIP`** (coste 8,7, tope 6): con la derecha centrada en 180 mm no cabe otro puño; no se forzó.

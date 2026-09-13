@@ -1,9 +1,9 @@
 # docs/INDEX.md — Índice de documentación
 
-> Mapa de DOCUMENTOS: qué fichero existe y para qué. Una línea por entrada, sin resúmenes.
+> Mapa de DOCUMENTOS: una línea por fichero, sin resúmenes.
 > El mapa de CONTRATOS es [ARCHITECTURE.md](ARCHITECTURE.md).
 
-## Fuente de verdad (en este orden al iniciar sesión)
+## Fuente de verdad (en orden, al iniciar)
 1. [STATE.md](STATE.md) — estado vivo. Tope 200 líneas / 20 KB.
 2. [ARCHITECTURE.md](ARCHITECTURE.md) — contratos y fronteras, con punteros.
 3. [DECISIONS-INDEX.md](DECISIONS-INDEX.md) — índice de los ADR. Nunca leas `DECISIONS.md` entero.
@@ -46,16 +46,16 @@
 - [GAME-LOOP-GDD.md](GAME-LOOP-GDD.md) — el loop y sus bloqueantes.
 - [FARMING-ROADMAP.md](FARMING-ROADMAP.md) — farmeo de metal y estantería.
 - [INVENTORY-ROADMAP.md](INVENTORY-ROADMAP.md)
-- [MAPPING-ROADMAP.md](MAPPING-ROADMAP.md) — PROPUESTO: mapas en papel dibujados de memoria.
-- [MAPPING-PROTOTYPE.md](MAPPING-PROTOTYPE.md) — PLAN: prototipado P0–P2 del mapeado; P0.1 (recuerdo) detallado.
+- [MAPPING-ROADMAP.md](MAPPING-ROADMAP.md) — PROPUESTO: mapas de memoria.
+- [MAPPING-PROTOTYPE.md](MAPPING-PROTOTYPE.md) — PLAN P0–P2 del mapeado.
 - [FACELING-ROADMAP.md](FACELING-ROADMAP.md) — facelings.
 - [ASSET-SHOPPING-LIST.md](ASSET-SHOPPING-LIST.md) — arte por comprar.
 - [reference/asset-packs.md](reference/asset-packs.md) — packs importados y sus trampas.
 
 ## Escalado, deuda y auditorías
 - [SCALING-ROADMAP.md](SCALING-ROADMAP.md) — E0–E5 y el calendario de hitos.
-- [DEBT-ROADMAP.md](DEBT-ROADMAP.md) — 68 ítems con plan por ítem.
-- [AUDIT-2026-08-28.md](AUDIT-2026-08-28.md) — bugs, registro vivo por append.
+- [DEBT-ROADMAP.md](DEBT-ROADMAP.md) — 68 ítems con plan.
+- [AUDIT-2026-08-28.md](AUDIT-2026-08-28.md) — bugs, registro vivo.
 
 ## Herramientas
 - [DEV-ENVIRONMENT.md](DEV-ENVIRONMENT.md) — rutas, comandos y trampas mudas.
@@ -63,7 +63,6 @@
 - [web/README.md](web/README.md) — artifacts publicados y su sincronización.
 
 ## Congelado (análisis útil, estado NO vigente)
-- [archive/](archive/) — desde 2026-09-05 TODO lo congelado vive aquí, cada fichero con cabecera
-  «CONGELADO + fecha + qué lo sucede». · [measurements/](measurements/)
+- [archive/](archive/) — lo congelado, con cabecera «CONGELADO + fecha + sucesor». · [measurements/](measurements/)
 
-> Cada roadmap lleva cabecera **VIGENTE / COMPLETADO / CONGELADO + fecha** en su primera línea.
+> Cada roadmap abre con **VIGENTE / COMPLETADO / CONGELADO + fecha**.
