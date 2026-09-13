@@ -45,7 +45,7 @@
 ## Juego y contenido
 - [GAME-LOOP-GDD.md](GAME-LOOP-GDD.md) — el loop y sus bloqueantes.
 - [FARMING-ROADMAP.md](FARMING-ROADMAP.md) — farmeo de metal y estantería.
-- [INVENTORY-ROADMAP.md](INVENTORY-ROADMAP.md) — la mochila abierta (TAB), ropa con bolsillos, y cuerpo/nutrición como idea.
+- [INVENTORY-ROADMAP.md](INVENTORY-ROADMAP.md)
 - [FACELING-ROADMAP.md](FACELING-ROADMAP.md) — facelings.
 - [ASSET-SHOPPING-LIST.md](ASSET-SHOPPING-LIST.md) — arte por comprar.
 - [reference/asset-packs.md](reference/asset-packs.md) — packs importados y sus trampas.

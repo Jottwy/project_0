@@ -20,7 +20,8 @@ namespace BackroomsSurvival.Tests
     {
         private const string VariantPath = "Assets/Prefabs/UI/BR_UI_Player.prefab";
         private const string BasePath = "Assets/PolymindGames/STP/Prefabs/UI/STP_UI_Player.prefab";
-        private const string ScenePath = "Assets/PolymindGames/STP/Demo/Scenes/Showcase/STP_Showcase.unity";
+        private const string ScenePath = "Assets/Scenes/BR_InventoryTest.unity";
+        private const string ShowcasePath = "Assets/PolymindGames/STP/Demo/Scenes/Showcase/STP_Showcase.unity";
         private const string ThemePath = "Assets/Resources/UI/BackroomsUiTheme.asset";
 
         private static GameObject Variant()
@@ -42,12 +43,15 @@ namespace BackroomsSurvival.Tests
         }
 
         [Test]
-        public void LaEscenaVivaApuntaALaVariante()
+        public void LaEscenaDePruebasApuntaALaVarianteYShowcaseSigueConElVendor()
         {
             string guid = AssetDatabase.AssetPathToGUID(VariantPath);
+            Assert.IsTrue(File.Exists(ScenePath), $"falta '{ScenePath}': Backrooms/UI/Build Inventory Test Scene");
             string scene = File.ReadAllText(ScenePath);
-            StringAssert.Contains("propertyPath: _playerUIPrefab", scene, "sin override en STP_Showcase");
-            Assert.IsTrue(scene.Contains($"guid: {guid}"), "el override no apunta a BR_UI_Player: Backrooms/UI/Point GameMode at BR_UI_Player");
+            Assert.IsTrue(scene.Contains($"guid: {guid}"), "la escena de pruebas no apunta a BR_UI_Player");
+            // Mientras dura la migración, Showcase conserva el inventario del vendor (Joel, 2026-09-13).
+            Assert.IsFalse(File.ReadAllText(ShowcasePath).Contains($"guid: {guid}"),
+                "STP_Showcase apunta a la variante: la migración aún no ha terminado, tiene que seguir con el vendor");
         }
 
         [Test]

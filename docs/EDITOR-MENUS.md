@@ -79,6 +79,8 @@ Estas **sí** crean/modifican escenas. No son idempotentes en el mismo sentido.
 | `Backrooms/UI/Build Inventory Variant` | `Editor/BackroomsInventoryUiBuilder.cs` | crea/retematiza `Prefabs/UI/BR_UI_Player.prefab` (variante de `STP_UI_Player`) y apunta el `GameMode` de `STP_Showcase` a ella |
 | `Backrooms/UI/Point GameMode at BR_UI_Player` | `Editor/BackroomsInventoryUiBuilder.cs` | solo el override de escena; relanzar tras un reimport del vendor |
 | `Backrooms/UI/Run Pipeline (theme + variant + capture)` | `Editor/BackroomsUiPipeline.cs` | los tres anteriores en un solo proceso; es lo que lanza `tools/dev/InventoryUiPipeline.sh` |
+| `Backrooms/UI/Build Inventory Test Scene` | `Editor/BackroomsInventoryTestSceneBuilder.cs` | crea `Scenes/BR_InventoryTest.unity` (sala mínima + GameMode → variante + pickups); idempotente. Showcase sigue con el vendor hasta acabar la migración |
+| `Backrooms/UI/Run Pipeline (theme + variant + capture)` | `Editor/BackroomsUiPipeline.cs` | lo que corre `tools/dev/InventoryUiPipeline.sh` en headless |
 | `Backrooms/UI/Capturar inventario` | `Editor/BackroomsInventoryUiShot.cs` | `Builds/Captures/inventario_tab.png` sin Play; headless SIN `-nographics` |
 | `Tools/Backrooms/Fix Runtime Materials` | `Editor/BackroomsRuntimeMaterialInstaller.cs` | **fuera del menú `Backrooms/`**, único que cuelga de `Tools/` |
 | `Backrooms/Build/Compile and deploy backend now` | `Editor/BackendBuildPreprocessor.cs` | compila Rust y copia el exe a `Builds/Backend/` |

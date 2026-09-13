@@ -325,3 +325,7 @@ tinte sobre la UI piden overlay propio o canvas en Screen Space Camera.
   `Builds/uipipeline/` (nunca bajo `Temp/`: el headless lo borra).
 - **Pendiente**: feedback de selección con la luz del tubo (`SelectableButtonFeedback` por referencia serializada),
   papel del inspector a la altura del greybox, ver TODO en Play (preview 3D, fondo al inspeccionar, tooltip).
+- **Escena de pruebas** (Joel, 2026-09-13): mientras dura la migración, la variante se prueba en
+  `Assets/Scenes/BR_InventoryTest.unity` (`Backrooms/UI/Build Inventory Test Scene`) y **`STP_Showcase` sigue con el
+  inventario del vendor**; un test lo exige. Tubería de una pasada: `bash tools/dev/InventoryUiPipeline.sh`.
+

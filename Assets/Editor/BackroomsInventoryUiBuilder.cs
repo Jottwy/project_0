@@ -23,7 +23,7 @@ namespace BackroomsSurvival.EditorTools
     /// base sin pisar la variante. Nada dentro de <c>Assets/PolymindGames</c> se toca.
     ///
     /// IDEMPOTENTE: relanzarlo reaplica el tema sobre la variante existente (la crea si falta) y
-    /// vuelve a apuntar el <c>GameMode</c> de la escena viva. Encuentra las piezas por NOMBRE dentro
+    /// deja la escena de pruebas (<see cref="BackroomsInventoryTestSceneBuilder"/>) apuntando a ella. Encuentra las piezas por NOMBRE dentro
     /// de la variante — es el mismo acoplamiento que tendría hacerlo a mano en el inspector, y aquí
     /// al menos queda escrito y avisa de lo que no encuentra.
     ///
@@ -36,7 +36,6 @@ namespace BackroomsSurvival.EditorTools
         public const string BasePath = "Assets/PolymindGames/STP/Prefabs/UI/STP_UI_Player.prefab";
         public const string VariantFolder = "Assets/Prefabs/UI";
         public const string VariantPath = VariantFolder + "/BR_UI_Player.prefab";
-        public const string ScenePath = "Assets/PolymindGames/STP/Demo/Scenes/Showcase/STP_Showcase.unity";
         public const string BackdropName = "BR_Backdrop";
         public const string StrapName = "BR_Strap";
 
@@ -71,56 +70,10 @@ namespace BackroomsSurvival.EditorTools
                 PrefabUtility.UnloadPrefabContents(root);
             }
 
-            PointGameModeAtVariant();
+            // La escena viva (STP_Showcase) sigue con el inventario del vendor mientras dura la
+            // migración; la variante se prueba en su escena propia.
+            BackroomsInventoryTestSceneBuilder.Build();
             AssetDatabase.SaveAssets();
-        }
-
-        /// <summary>
-        /// La escena viva hereda el prefab de UI del <c>STP_GameMode.prefab</c> del vendor; aquí se
-        /// sobreescribe SOLO ese campo en la instancia de la escena, igual que ya está sobreescrito
-        /// el prefab del jugador. Un reimport del paquete pisa la escena: relanzar el menú lo repone.
-        /// </summary>
-        [MenuItem("Backrooms/UI/Point GameMode at BR_UI_Player")]
-        public static void PointGameModeAtVariant()
-        {
-            var variant = AssetDatabase.LoadAssetAtPath<GameObject>(VariantPath);
-            var ui = variant != null ? variant.GetComponent<PlayerUI>() : null;
-            if (ui == null)
-            {
-                Debug.LogError($"[InventoryUiBuilder] '{VariantPath}' no existe o no lleva PlayerUI en la raíz.");
-                return;
-            }
-
-            if (!Application.isBatchMode && !EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo())
-                return;
-
-            var scene = EditorSceneManager.OpenScene(ScenePath, OpenSceneMode.Single);
-            var gameModes = Object.FindObjectsByType<GameMode>(FindObjectsInactive.Include, FindObjectsSortMode.None);
-            if (gameModes.Length != 1)
-            {
-                Debug.LogError($"[InventoryUiBuilder] Esperaba UN GameMode en {ScenePath}, hay {gameModes.Length}.");
-                return;
-            }
-
-            var so = new SerializedObject(gameModes[0]);
-            var prop = so.FindProperty("_playerUIPrefab");
-            if (prop == null)
-            {
-                Debug.LogError("[InventoryUiBuilder] GameMode ya no tiene '_playerUIPrefab': el vendor cambió el campo.");
-                return;
-            }
-
-            if (prop.objectReferenceValue == ui)
-            {
-                Debug.Log("[InventoryUiBuilder] GameMode ya apunta a la variante.");
-                return;
-            }
-
-            prop.objectReferenceValue = ui;
-            so.ApplyModifiedProperties();
-            EditorSceneManager.MarkSceneDirty(scene);
-            EditorSceneManager.SaveScene(scene);
-            Debug.Log($"[InventoryUiBuilder] GameMode._playerUIPrefab -> {VariantPath} en {ScenePath}.");
         }
 
         private static void EnsureVariant()
