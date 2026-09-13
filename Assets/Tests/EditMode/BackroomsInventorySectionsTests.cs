@@ -97,6 +97,15 @@ namespace BackroomsSurvival.Tests
             var so = new SerializedObject(zoom);
             Assert.IsNotNull(so.FindProperty("_camera").objectReferenceValue, "el zoom no tiene la cámara del vendor");
             Assert.IsNotNull(so.FindProperty("_characterVisuals").objectReferenceValue, "el zoom no tiene CharacterVisuals");
+            Assert.IsNotNull(so.FindProperty("_rotationHandler").objectReferenceValue, "el zoom no puede dar la vuelta al muñeco");
+            Assert.AreEqual(180f, BackroomsPreviewZoom.Zones[BackroomsPreviewZoom.IndexOf("Back")].Facing, "Backpack enseña la espalda");
+
+            var backdrop = variant.GetComponentInChildren<BackroomsBodyViewToggle>(true).transform.Find("BR_PreviewBackdrop");
+            Assert.IsNotNull(backdrop, "el render no llena la caja: falta BR_PreviewBackdrop");
+            var backdropImage = backdrop.GetComponent<UnityEngine.UI.RawImage>();
+            Assert.IsFalse(backdropImage.raycastTarget, "el fondo del render no puede tapar los clics a los slots");
+            Assert.IsNotNull(backdropImage.texture, "el fondo sin el render del preview");
+            Assert.Less(backdrop.GetSiblingIndex(), backdrop.parent.Find("Containers").GetSiblingIndex(), "el render va detrás de los slots");
             var headers = variant.GetComponentsInChildren<BackroomsZoneHeader>(true);
             Assert.AreEqual(6, headers.Length, "una cinta con zoom por slot de equipo");
             foreach (var header in headers)

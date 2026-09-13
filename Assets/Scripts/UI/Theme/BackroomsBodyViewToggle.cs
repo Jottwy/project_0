@@ -15,6 +15,7 @@ namespace BackroomsSurvival.UI
         [SerializeField] private Button _ropaButton;
         [SerializeField] private Button _heridasButton;
         [SerializeField] private GameObject _previewRoot;
+        [SerializeField] private GameObject _previewBackdrop;
         [SerializeField] private GameObject _woundsPanel;
 
         private void Awake()
@@ -32,6 +33,7 @@ namespace BackroomsSurvival.UI
         private void Apply(bool ropa)
         {
             if (_previewRoot != null) _previewRoot.SetActive(ropa);
+            if (_previewBackdrop != null) _previewBackdrop.SetActive(ropa);
             if (_woundsPanel != null) _woundsPanel.SetActive(!ropa);
             if (_ropaButton != null) _ropaButton.interactable = !ropa;
             if (_heridasButton != null) _heridasButton.interactable = ropa;

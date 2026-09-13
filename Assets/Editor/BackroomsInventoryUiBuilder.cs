@@ -313,8 +313,9 @@ namespace BackroomsSurvival.EditorTools
                     else report.Missing("Containers/BackpackContainer o HeadContainer");
                 }
 
-                // El render es CUADRADO y el muñeco estrecho: se enseña la franja central a toda la altura
-                // de la caja, recortando por uvRect en vez de estirar. A la derecha de los slots.
+                // El render es CUADRADO: se ve ENTERO detrás de los slots, llenando la caja (BR_PreviewBackdrop, pedido de
+                // Joel: la franja cortaba la ropa al hacer zoom). El RawImage del vendor, que tiene el arrastre y la rueda,
+                // queda en la franja central, transparente y encima.
                 var preview = character.Find("CharacterPreview") as RectTransform;
                 if (preview != null)
                 {
@@ -322,8 +323,17 @@ namespace BackroomsSurvival.EditorTools
                     Inset(preview, 92f, 8f, 92f, top + 8f);
                     if (preview.TryGetComponent<RawImage>(out var raw))
                     {
-                        float w = (LeftWidth - 184f) / (1080f - bottom - Margin - top - 16f);
-                        raw.uvRect = new Rect((1f - w) * 0.5f, 0f, w, 1f);
+                        var backdrop = EnsureRect(character, "BR_PreviewBackdrop", typeof(RawImage));
+                        IgnoreLayout(backdrop.gameObject);
+                        InspectionOnly(backdrop.gameObject);
+                        Inset(backdrop, 8f, 8f, 8f, top + 8f);
+                        if (character.Find("BR_Box") is Transform previewBox) backdrop.SetSiblingIndex(previewBox.GetSiblingIndex() + 1);
+                        var backdropImage = backdrop.GetComponent<RawImage>();
+                        backdropImage.texture = raw.texture;
+                        backdropImage.raycastTarget = false;
+                        float w = (LeftWidth - 16f) / (1080f - bottom - Margin - top - 16f);
+                        backdropImage.uvRect = new Rect((1f - w) * 0.5f, 0f, w, 1f);
+                        raw.color = new Color(1f, 1f, 1f, 0f);
                     }
                 }
 
@@ -966,6 +976,7 @@ namespace BackroomsSurvival.EditorTools
             so.FindProperty("_ropaButton").objectReferenceValue = ropaBtn;
             so.FindProperty("_heridasButton").objectReferenceValue = heridasBtn;
             so.FindProperty("_previewRoot").objectReferenceValue = previewRT.gameObject;
+            so.FindProperty("_previewBackdrop").objectReferenceValue = character.Find("BR_PreviewBackdrop")?.gameObject;
             so.FindProperty("_woundsPanel").objectReferenceValue = wounds.gameObject;
             so.ApplyModifiedPropertiesWithoutUndo();
 
@@ -996,6 +1007,7 @@ namespace BackroomsSurvival.EditorTools
             var so = new SerializedObject(zoom);
             so.FindProperty("_camera").objectReferenceValue = vendor.FindProperty("_camera").objectReferenceValue;
             so.FindProperty("_characterVisuals").objectReferenceValue = vendor.FindProperty("_characterVisuals").objectReferenceValue;
+            so.FindProperty("_rotationHandler").objectReferenceValue = root.GetComponentInChildren<CharacterPreviewRotationHandlerUI>(true);
             so.ApplyModifiedPropertiesWithoutUndo();
 
             int wired = 0;

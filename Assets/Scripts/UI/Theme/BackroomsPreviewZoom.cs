@@ -1,4 +1,6 @@
 using System.Collections.Generic;
+using System.Reflection;
+using PolymindGames.UserInterface;
 using UnityEngine;
 using UnityEngine.EventSystems;
 
@@ -7,11 +9,13 @@ namespace BackroomsSurvival.UI
     /// <summary>
     /// Zoom por zona del cuerpo en la vista previa del personaje (INVENTORY-ROADMAP, idea de Joel del 2026-09-13):
     /// clic en la cinta de un slot de equipo y la cámara del preview del vendor gira y cierra el campo de visión
-    /// hacia ese hueso con una curva corta. Clic otra vez en la misma cinta, o un clic sin arrastrar sobre el
-    /// muñeco, vuelve al cuerpo entero; al cerrar el inventario vuelve de golpe. Base para Heridas y sastrería.
+    /// hacia ese hueso con una curva corta. Las zonas de espalda dan además la vuelta al muñeco. Clic otra vez en la
+    /// misma cinta, o un clic sin arrastrar sobre el muñeco, vuelve al cuerpo entero y de frente; al cerrar el
+    /// inventario vuelve de golpe. Base para Heridas y sastrería.
     ///
-    /// Solo mueve la CÁMARA (rotación y fov): posición y giro del muñeco siguen siendo del
-    /// <c>CharacterPreviewRotationHandlerUI</c> del vendor, así que arrastrar y la rueda conviven con el zoom.
+    /// La cámara (rotación y fov) es nuestra. El giro del muñeco es del <c>CharacterPreviewRotationHandlerUI</c> del
+    /// vendor, que guarda sus ángulos en privado: se escriben los dos por reflexión para que arrastrar siga desde
+    /// donde quedó, y si el jugador arrastra a mitad de la vuelta, la vuelta se cancela y manda él.
     /// </summary>
     public sealed class BackroomsPreviewZoom : MonoBehaviour, IPointerClickHandler
     {
@@ -19,32 +23,40 @@ namespace BackroomsSurvival.UI
         {
             public readonly string Id;
             public readonly string[] Bones;
-            public readonly float Lift, Span;
+            public readonly float Facing, Lift, Span;
 
-            public Zone(string id, float lift, float span, params string[] bones)
+            public Zone(string id, float facing, float lift, float span, params string[] bones)
             {
-                Id = id; Lift = lift; Span = span; Bones = bones;
+                Id = id; Facing = facing; Lift = lift; Span = span; Bones = bones;
             }
         }
 
-        // Span = metros de alto que se ven. El hueco del preview enseña un tercio del ancho del render, así que el
-        // ancho visible es Span / 3: por eso el torso no se cierra tanto como la cabeza.
+        // Span = metros de alto que se ven; el render llena la caja Personaje, que es aproximadamente la mitad de ancha
+        // que de alta. Facing = grados que gira el muñeco respecto a su frente.
         public static readonly Zone[] Zones =
         {
-            new Zone("Head", 0.08f, 0.7f, "Head"),
-            new Zone("Torso", -0.05f, 1.1f, "UpperSpine"),
-            new Zone("Back", 0f, 1.1f, "MiddleSpine"),
-            new Zone("Waist", 0.02f, 0.9f, "Pelvis"),
-            new Zone("Legs", 0.05f, 1.1f, "LowerLeg.L", "LowerLeg.R"),
-            new Zone("Feet", -0.04f, 0.7f, "Foot.L", "Foot.R"),
-            new Zone("Hands", 0f, 1.2f, "Hand.L", "Hand.R"),
+            new Zone("Head", 0f, 0.06f, 0.6f, "Head"),
+            new Zone("Torso", 0f, -0.05f, 0.9f, "UpperSpine"),
+            new Zone("Back", 180f, 0f, 0.9f, "MiddleSpine"),
+            new Zone("Waist", 0f, 0f, 0.8f, "Pelvis"),
+            new Zone("Legs", 0f, 0.05f, 1.1f, "LowerLeg.L", "LowerLeg.R"),
+            new Zone("Feet", 0f, 0.1f, 0.65f, "Foot.L", "Foot.R"),
+            new Zone("Hands", 0f, 0f, 1.2f, "Hand.L", "Hand.R"),
         };
+
+        private static readonly FieldInfo EulerField =
+            typeof(CharacterPreviewRotationHandlerUI).GetField("_rootEulerAngles", BindingFlags.NonPublic | BindingFlags.Instance);
+        private static readonly FieldInfo RotationRootField =
+            typeof(CharacterPreviewRotationHandlerUI).GetField("_rotationRoot", BindingFlags.NonPublic | BindingFlags.Instance);
 
         [SerializeField]
         private Camera _camera;
 
         [SerializeField]
         private GameObject _characterVisuals;
+
+        [SerializeField]
+        private CharacterPreviewRotationHandlerUI _rotationHandler;
 
         [SerializeField, Range(1f, 30f)]
         private float _sharpness = 8f;
@@ -54,6 +66,12 @@ namespace BackroomsSurvival.UI
         private Quaternion _defaultRotation;
         private float _defaultFov;
         private int _active = -1;
+
+        private Transform _rotationRoot;
+        private float _frontYaw;
+        private bool _yawDrive;
+        private float _yawTarget;
+        private Vector3? _written;
 
         public string ActiveZone => _active >= 0 ? Zones[_active].Id : null;
 
@@ -91,9 +109,16 @@ namespace BackroomsSurvival.UI
 
         private void Awake()
         {
-            if (_camera == null) return;
-            _defaultRotation = _camera.transform.localRotation;
-            _defaultFov = _camera.fieldOfView;
+            if (_camera != null)
+            {
+                _defaultRotation = _camera.transform.localRotation;
+                _defaultFov = _camera.fieldOfView;
+            }
+            if (_rotationHandler != null && EulerField != null && RotationRootField != null)
+            {
+                _rotationRoot = RotationRootField.GetValue(_rotationHandler) as Transform;
+                if (_rotationRoot != null) _frontYaw = _rotationRoot.localEulerAngles.y;
+            }
         }
 
         private void OnDisable() => Snap();
@@ -103,6 +128,11 @@ namespace BackroomsSurvival.UI
             _active = index;
             foreach (var header in _headers)
                 if (header != null) header.SetActive(header.Zone == ActiveZone);
+
+            if (_rotationRoot == null) return;
+            _yawTarget = _frontYaw + (index >= 0 ? Zones[index].Facing : 0f);
+            _yawDrive = true;
+            _written = null;
         }
 
         private void Snap()
@@ -111,6 +141,16 @@ namespace BackroomsSurvival.UI
             if (_active >= 0) Select(-1);
             _camera.transform.localRotation = _defaultRotation;
             _camera.fieldOfView = _defaultFov;
+            _yawDrive = false;
+            if (_rotationRoot != null)
+            {
+                var euler = (Vector3)EulerField.GetValue(_rotationHandler);
+                if (Mathf.Abs(Mathf.DeltaAngle(euler.y, _frontYaw)) > 0.01f)
+                {
+                    euler.y = _frontYaw;
+                    WriteEuler(euler);
+                }
+            }
         }
 
         private void LateUpdate()
@@ -118,9 +158,12 @@ namespace BackroomsSurvival.UI
             if (_camera == null) return;
             if (_characterVisuals != null && !_characterVisuals.activeInHierarchy)
             {
-                if (_active >= 0 || _camera.fieldOfView != _defaultFov) Snap();
+                if (_active >= 0 || _yawDrive || _camera.fieldOfView != _defaultFov) Snap();
                 return;
             }
+
+            float t = 1f - Mathf.Exp(-_sharpness * Time.unscaledDeltaTime);
+            DriveYaw(t);
 
             var cam = _camera.transform;
             var targetRotation = _defaultRotation;
@@ -136,9 +179,35 @@ namespace BackroomsSurvival.UI
                 targetFov = Mathf.Min(_defaultFov, FovForSpan(Zones[_active].Span * scale, direction.magnitude));
             }
 
-            float t = 1f - Mathf.Exp(-_sharpness * Time.unscaledDeltaTime);
             cam.localRotation = Quaternion.Slerp(cam.localRotation, targetRotation, t);
             _camera.fieldOfView = Mathf.Lerp(_camera.fieldOfView, targetFov, t);
+        }
+
+        private void DriveYaw(float t)
+        {
+            if (!_yawDrive || _rotationRoot == null) return;
+            var euler = (Vector3)EulerField.GetValue(_rotationHandler);
+            // El jugador ha arrastrado a mitad de la vuelta: manda él.
+            if (_written.HasValue && euler != _written.Value)
+            {
+                _yawDrive = false;
+                return;
+            }
+            float yaw = Mathf.LerpAngle(euler.y, _yawTarget, t);
+            if (Mathf.Abs(Mathf.DeltaAngle(yaw, _yawTarget)) < 0.2f)
+            {
+                yaw = _yawTarget;
+                _yawDrive = false;
+            }
+            euler.y = yaw;
+            WriteEuler(euler);
+        }
+
+        private void WriteEuler(Vector3 euler)
+        {
+            EulerField.SetValue(_rotationHandler, euler);
+            _rotationRoot.localRotation = Quaternion.Euler(euler);
+            _written = euler;
         }
 
         private bool TryGetAim(Zone zone, out Vector3 point)
