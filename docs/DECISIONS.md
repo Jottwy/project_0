@@ -18067,3 +18067,47 @@ preguntas 3, 4, 5 y 7. Sin wire ni guardado: R1 sigue solo en `BR_InventoryTest`
      hueco cada uno, espinillas), guantes (manos), aguja e hilo propios; cinta y tela del vendor.
 
 ---
+
+## ADR-149 — Enmienda 1: la izquierda en la manivela — rol Reference, pieza por mano, y por qué ninguna de las dos pasa (2026-09-13) — PROPUESTA (Joel: «ponle la izquierda en la manivela»)
+
+### Qué se añadió
+
+- **`HandRole.Reference`**: la mano copia su pose de otro clip del mismo wieldable, en el espacio del
+  objeto (mano, dedos, hombro y codo). El veredicto sólo mira fallos duros al reproducirla (alcance, manos
+  a menos de 15 mm, desvío de más de 5 mm, muñeca o antebrazo en el tope). `validate` da
+  `REFERENCE_MISMATCH` si se aparta más de 5 mm o 3°.
+- **Pieza por mano** (`gripPartNodeName`, `gripPartAxis`, `gripPartMinY01`–`gripPartMaxY01`): cada mano
+  agarra su `HandGripSurface`, con eje y tramo propios. La malla principal y las demás piezas son
+  obstáculos. La portadora sigue en la principal y `nudge` descompone por el eje de la pieza de esa mano.
+- **Muñeca**: doblez total repartido según su dirección. Con más de 90°, los dos `atan2` contra el
+  antebrazo sacaban a la vez 100° de flexión y −97° de desviación.
+- **`capture`**: añade equipar y enfundar a mitad desde el ojo.
+
+### Resultados medidos (linterna de manivela)
+
+- **Copiar la izquierda del clip de cuerda (t = 0, pomo en reposo).** La reproducción es exacta (desvío
+  0,0 mm, IK sin recortes, manos a 22 mm), pero ESA pose ya trae la muñeca a unos 100° y, en captura, los
+  dedos deformados sobre el pomo. `NO_NATURAL_GRIP` por `muñeca-tope`. Es la segunda mano de ese horneador
+  con la muñeca extrema; la derecha del idle está a 129° (ADR-149).
+- **Agarrar el pomo con el solver** (pieza `Crank`, eje +Z, cuarto superior). 19 152 candidatos. El mejor
+  cuesta **29,8**: palma arriba 81°, pellizco con índice y pulgar sin rodear, una falange 6 mm dentro y
+  hombro adelantado 116 mm. En reposo el pomo queda pegado al costado del cuerpo, junto al puño derecho:
+  sólo se alcanza por debajo. Rechazado.
+- **En runtime**, `CrankFlashlightWieldable` devuelve la manivela a 0° al soltar (540°/s) y la capa de
+  cuerda arranca en la fase 0. Hornear la izquierda sobre el pomo en reposo sería coherente con la cuerda
+  si hubiera una pose natural. No la hay con este ángulo de reposo.
+- **EditMode** (`HandInteractionProfileTests`, `ToolGripTests`, `CrankFlashlightAnimationTests`,
+  `ViewmodelWarpTests`): 24 tests, 19 verdes, 0 rojos, 5 saltados. Los saltados son las pruebas de perfiles
+  horneados, incluida `LaManoDeReferenciaCopiaSuClip`: **no han corrido sobre un horneado real** porque los
+  dos intentos se rechazaron.
+
+### Pendiente de decisión (Joel)
+
+1. Cambiar el ángulo de reposo de la manivela (`CrankLocalRotation`) para que el pomo quede delante y
+   abajo, y rehornear la cuerda con su horneador. Toca geometría ya validada.
+2. Aceptar forzado uno de los dos rechazados.
+3. Dejar la izquierda como está fuera de la cuerda (estado actual).
+
+Ningún asset de juego cambiado.
+
+---

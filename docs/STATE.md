@@ -101,6 +101,8 @@
 - **Linterna a dos manos: `NO_NATURAL_GRIP`** (coste 8,7, tope 6): con la derecha centrada en 180 mm no cabe otro puño; no se forzó.
   Ningún asset de juego cambiado; perfil sin hornear en `Assets/Data/HandInteraction/`. EditMode 23/23 con un horneado forzado, revertido.
 - **Hallazgo sin tocar**: muñeca derecha del idle de la linterna a 129° antebrazo/metacarpo (destornillador 26°), medido con `pose`.
+- **Izquierda en la manivela (enm. 1): rechazada dos veces**, copiando la cuerda (muñeca ~100°) y agarrando el pomo (coste 29,8, palma arriba).
+  Decisión de Joel: ángulo de reposo de la manivela, forzar o dejarlo. Nuevo: rol `Reference` y pieza de agarre por mano.
 
 ### 2026-09-12 — 54.ª tanda: techos medidos otra vez tras la fase 2 — en release la CPU no es el muro
 - **Release** (`9dc2d867`; los 2 de CPU en `f9a7814e`): sala aguanta **64** y revienta en 96 por CABLE (2 091 KB/s); emparejados ≥**400** (último

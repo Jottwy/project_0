@@ -28,6 +28,37 @@ marcadores `HandTarget.R/L` con tag `EditorOnly` bajo la malla de agarre.
 - **Capas de acción propias** (la cuerda de la linterna). Cada una sigue con su horneador.
 - **Cuerpo remoto 3P.** El perfil ya está en espacio del objeto, listo para cuando se haga.
 
+## Roles de una mano
+
+| role | qué hace |
+|---|---|
+| `Grip` (0) | Agarra: IK a su objetivo en el objeto, con búsqueda por naturalidad. En la portadora sólo rehace los dedos, y sólo si mejoran. |
+| `Keep` (1) | No se toca: la mano del clip base tal cual. |
+| `Relaxed` (2) | Brazo del clip base y dedos en cascada relajada. |
+| `Reference` (3) | Copia la pose de esta mano de OTRO clip del mismo wieldable (`referenceClipPath`, `referenceTime`) en el espacio del objeto: mano, dedos, hombro y codo. Sirve para reutilizar un agarre ya validado, como la izquierda sobre el pomo de la manivela. |
+
+**Pieza por mano.** Por defecto una mano agarra la malla de agarre del perfil (`gripMeshNodeName`, eje +Y).
+Con `gripPartNodeName` agarra otra pieza del modelo, con su propio eje (`gripPartAxis`, en local de esa pieza)
+y el tramo de su Y local normalizada que cuenta (`gripPartMinY01`–`gripPartMaxY01`). Mientras agarra la pieza,
+la malla principal y las demás piezas siguen siendo obstáculos: los dedos no las atraviesan. La portadora
+agarra siempre la malla principal. Ejemplo, la izquierda sobre el pomo de la manivela (el pomo gira sobre +Z
+y es el cuarto superior del brazo):
+
+```powershell
+.\tools\dev\HandInteraction.ps1 -Command set -Profile Assets/Data/HandInteraction/BR_Wieldable_CrankFlashlight_Hands.asset -Patch '{"maxShoulderShiftMeters":0.4,"leftHand":{"role":0,"gripPartNodeName":"Crank","gripPartAxis":{"x":0,"y":0,"z":1},"gripPartMinY01":0.75,"gripPartMaxY01":1,"searchAlongRange":0.5}}' -Bake -Capture
+```
+
+Con `Reference` no se busca nada, y el veredicto sólo frena fallos duros al reproducir la pose: alcance
+recortado, manos a menos de 15 mm, desvío de más de 5 mm, muñeca o antebrazo en el tope. El hombro adelantado
+de un rig 1P sin torso no cuenta. `validate` compara la mano horneada con su referencia y da
+`REFERENCE_MISMATCH` si se aparta más de 5 mm o 3° en algún dedo.
+
+Ejemplo, la izquierda de la linterna sobre el pomo de la manivela en reposo:
+
+```powershell
+.\tools\dev\HandInteraction.ps1 -Command set -Profile Assets/Data/HandInteraction/BR_Wieldable_CrankFlashlight_Hands.asset -Patch '{"leftHand":{"role":3,"referenceClipPath":"Assets/Art/Items/CrankFlashlight/Anim/BR_CrankFlashlight_Crank.anim","referenceTime":0}}' -Bake -Capture
+```
+
 ## Naturalidad: qué se puntúa
 
 La mano secundaria barre reloj (lado de la palma), inclinación, codo y separación de la palma. Gana el
