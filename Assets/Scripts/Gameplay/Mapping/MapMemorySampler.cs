@@ -38,8 +38,8 @@ namespace BackroomsSurvival.Gameplay.Mapping
         [Tooltip("Franja del cuerpo que cuenta como pared, en metros sobre el suelo.")]
         public float probeBottomM = 0.5f;
         public float probeTopM = 1.6f;
-        [Tooltip("Contra qué se sondea. Por defecto, la geometría del mundo (GridChunkBuilder.GeoMask).")]
-        public LayerMask probeMask = GridChunkBuilder.GeoMask;
+        [Tooltip("Contra qué se sondea. Nada marcado = la geometría del mundo (GridChunkBuilder.GeoMask).")]
+        public LayerMask probeMask;
 
         [Header("Medida")]
         [Tooltip("Cada cuánto se escribe la línea MAPMEM en el log. 0 = nunca.")]
@@ -72,6 +72,12 @@ namespace BackroomsSurvival.Gameplay.Mapping
 
         private void Awake()
         {
+            // NUNCA como inicializador de campo: tocar GridChunkBuilder dispara su constructor
+            // estático, que crea objetos de Unity, y desde un inicializador de MonoBehaviour eso lanza
+            // TypeInitializationException y deja el tipo inservible para todo el dominio (medido
+            // 2026-09-13 al crear la escena de playtest).
+            if (probeMask.value == 0) probeMask = GridChunkBuilder.GeoMask;
+
             _radiusCells = Mathf.CeilToInt(radiusM / CellSizeM);
             int side = 2 * _radiusCells + 1;
             _occupied = new bool[side * side];
