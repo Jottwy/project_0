@@ -53,6 +53,7 @@ use super::junction;
 use super::manifest::Wg3Manifest;
 use super::placement::Wg3Placement;
 use super::plan;
+use super::ramp::{self, Wg3Ramp};
 use super::route;
 use super::segment::{Wg3Carve, Wg3Prop, Wg3Segment, Wg3Solid};
 
@@ -175,6 +176,9 @@ pub struct Wg3ServedWorld {
     solids: Vec<Wg3Solid>,
     /// ADR-129 — las anclas de atrezo. Se reparten por su posición, como los macizos por su centro.
     props: Vec<Wg3Prop>,
+    /// ADR-122 — las RAMPAS. Viajan como rampa (el cliente dibuja la cuña y monta sus cajas) y el
+    /// ráster las recibe como macizos, por [`Self::solids_touching_chunk`].
+    ramps: Vec<Wg3Ramp>,
     /// ADR-140 — el grafo de visibilidad por salas, LO ÚNICO que sobrevive del plan.
     ///
     /// `plan_region` construía el plan, se lo pasaba a `fill_building` y lo tiraba: en partida el
@@ -355,6 +359,7 @@ impl Wg3ServedWorld {
             carves: filled.carves,
             solids: filled.solids,
             props: filled.props,
+            ramps: filled.ramps,
             visibility,
         }
     }
@@ -414,6 +419,7 @@ impl Wg3ServedWorld {
             // guardar. Vacio significa <<se ve>>, que es la direccion segura.
             visibility: super::visibility::RegionVisibility::default(),
             props: Vec::new(),
+            ramps: Vec::new(),
         }
     }
 
@@ -448,6 +454,7 @@ impl Wg3ServedWorld {
             // guardar. Vacio significa <<se ve>>, que es la direccion segura.
             visibility: super::visibility::RegionVisibility::default(),
             props: Vec::new(),
+            ramps: Vec::new(),
         }
     }
 
@@ -635,16 +642,48 @@ impl Wg3ServedWorld {
     /// y no deduplica-- pero el raster necesita todos los que tocan, porque un pilar a caballo de la
     /// frontera bloquea a los dos lados. Romper esta asimetria da un pilar dibujado dos veces o un
     /// pilar que no colisiona por un lado, y ninguno de los dos sale en una captura.
+    ///
+    /// **ADR-122 D2 — y las cajas de colisión de las RAMPAS.** Una rampa es, para el ráster, la fila de
+    /// macizos de [`ramp::ramp_step_boxes`]; entrar por aquí es lo que hace que la vean todos los que
+    /// rasterizan (juego, validador, métricas, tests) sin tocar la firma de
+    /// `chunk::build_chunk_raster_full`. Lo que VIAJA sigue siendo la rampa, no sus cajas.
     pub fn solids_touching_chunk(&self, coord: Wg3ChunkCoord) -> Vec<Wg3Solid> {
         let (cmin_x, cmin_z, cmax_x, cmax_z) = coord.bounds();
-        self.solids
+        let touches = |(min_x, min_z, max_x, max_z): (f32, f32, f32, f32)| {
+            max_x > cmin_x && min_x < cmax_x && max_z > cmin_z && min_z < cmax_z
+        };
+        let mut out: Vec<Wg3Solid> = self
+            .solids
             .iter()
-            .filter(|s| {
-                let (min_x, min_z, max_x, max_z) = s.bounds();
-                max_x > cmin_x && min_x < cmax_x && max_z > cmin_z && min_z < cmax_z
+            .filter(|s| touches(s.bounds()))
+            .copied()
+            .collect();
+        for r in self.ramps.iter().filter(|r| touches(r.bounds())) {
+            out.extend(
+                ramp::ramp_step_boxes(r)
+                    .into_iter()
+                    .filter(|b| touches(b.bounds())),
+            );
+        }
+        out
+    }
+
+    /// ADR-122 — las rampas de las que este chunk es DUEÑO, por su centro. Es lo que viaja: el
+    /// cliente monta un GameObject por chunk y no deduplica, igual que con los macizos.
+    pub fn ramps_owned_by_chunk(&self, coord: Wg3ChunkCoord) -> Vec<Wg3Ramp> {
+        self.ramps
+            .iter()
+            .filter(|r| {
+                let (cx, cz) = r.centre();
+                Wg3ChunkCoord::containing(cx, cz) == coord
             })
             .copied()
             .collect()
+    }
+
+    /// ADR-122 — todas las rampas de la región, para validar y medir.
+    pub fn ramps(&self) -> &[Wg3Ramp] {
+        &self.ramps
     }
 
     /// ADR-105 D3 — los macizos de los que este chunk es DUENO, por su centro. Es lo que viaja.

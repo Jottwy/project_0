@@ -594,6 +594,9 @@ pub struct FilledRegion {
     /// ADR-129 — las anclas de atrezo. Aparte de los macizos porque no son geometría: son «aquí
     /// va una mesa», y la mesa la pone el cliente.
     pub props: Vec<Wg3Prop>,
+    /// ADR-122 — las RAMPAS. Aparte de los macizos porque viajan como rampa (el cliente dibuja una
+    /// cuña) aunque el ráster las reciba como cajas (`ramp::ramp_step_boxes`).
+    pub ramps: Vec<super::ramp::Wg3Ramp>,
 
     /// Espacios resueltos con una pieza del catálogo, y con tramos generados. **Los dos números
     /// juntos son la salud del catálogo frente al plan**, y hoy el primero es pequeño: ver la
@@ -643,6 +646,7 @@ impl FilledRegion {
         self.carves.extend(other.carves);
         self.solids.extend(other.solids);
         self.props.extend(other.props);
+        self.ramps.extend(other.ramps);
         self.spaces_by_piece += other.spaces_by_piece;
         self.spaces_by_segment += other.spaces_by_segment;
         self.spaces_unbuilt += other.spaces_unbuilt;
