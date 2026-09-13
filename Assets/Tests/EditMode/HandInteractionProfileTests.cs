@@ -106,6 +106,8 @@ namespace BackroomsSurvival.Tests
                     foreach (var finger in Wrappers)
                     {
                         if (finger == "Index" && target.fingers == HandFingerStyle.IndexExtended) continue;
+                        // Nudillo fuera del tramo de una pieza corta (el pomo): el dedo va recogido y no agarra.
+                        if (posed.OffPart(target, posed.Bone($"{finger}.1.{s}").position)) continue;
                         float gap = posed.GapFor(target, posed.Tip($"{finger}.3.{s}")) - FingerSkin;
                         if (gap < -0.006f || gap > 0.018f)
                             failures.Add($"{p.name} {s}: yema de '{finger}' a {gap * 1000f:0.0} mm de la piel (negativo = dentro)");
@@ -288,6 +290,28 @@ namespace BackroomsSurvival.Tests
                     for (int j = 1; j <= 3; j++) yield return Bone($"{f}.{j}.{s}").position;
                     yield return Tip($"{f}.3.{s}");
                 }
+            }
+
+            /// <summary>El nudillo cae fuera del tramo de la pieza que agarra ESA mano (más de una piel de dedo). Duplicado de
+            /// <c>HandGripSolver.FingerOffPart</c>. Con la malla principal nunca: un tubo se coge entero.</summary>
+            public bool OffPart(HandGripTarget target, Vector3 knuckle)
+            {
+                if (string.IsNullOrEmpty(target.gripPartNodeName)) return false;
+                var part = _node.GetComponentsInChildren<MeshFilter>(true).First(m => m.name == target.gripPartNodeName);
+                var mesh = part.sharedMesh;
+                var axis = target.gripPartAxis.sqrMagnitude < 1e-8f ? Vector3.up : target.gripPartAxis.normalized;
+                var b = mesh.bounds;
+                float yMin = Mathf.Lerp(b.min.y, b.max.y, Mathf.Min(target.gripPartMinY01, target.gripPartMaxY01));
+                float yMax = Mathf.Lerp(b.min.y, b.max.y, Mathf.Max(target.gripPartMinY01, target.gripPartMaxY01));
+                var region = mesh.vertices.Where(v => v.y >= yMin - 1e-6f && v.y <= yMax + 1e-6f).ToList();
+                Vector3 origin = Vector3.zero;
+                foreach (var v in region) origin += v;
+                origin /= Mathf.Max(1, region.Count);
+                origin -= axis * Vector3.Dot(origin, axis);
+                float minT = region.Min(v => Vector3.Dot(v - origin, axis)), maxT = region.Max(v => Vector3.Dot(v - origin, axis));
+                float t = Vector3.Dot(part.transform.InverseTransformPoint(knuckle) - origin, axis);
+                float margin = FingerSkin / Mathf.Max(1e-5f, part.transform.lossyScale.y);
+                return t < minT - margin || t > maxT + margin;
             }
 
             /// <summary>

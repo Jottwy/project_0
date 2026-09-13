@@ -1,5 +1,6 @@
 #if UNITY_EDITOR
 using System.IO;
+using System.Linq;
 using BackroomsSurvival.Gameplay;
 using UnityEditor;
 using UnityEngine;
@@ -101,8 +102,44 @@ namespace BackroomsSurvival.EditorTools
         /// quedaba de canto contra la carcasa, así que su normal —el eje de giro— no es la X local
         /// que asumí sino la Z. Con este giro la Z local cae sobre la X del cuerpo, perpendicular al
         /// costado, que es donde tiene que estar un eje de manivela. Ver <see cref="CrankSpinAxis"/>.
+        /// Encima, el REPOSO del brazo dentro del plano del disco (<see cref="CrankRestPhaseDegrees"/>): el disco sigue
+        /// plano contra el costado; sólo cambia hacia dónde apunta el pomo cuando nadie da cuerda.
         /// </summary>
-        internal static Quaternion CrankLocalRotation => Quaternion.Euler(0f, 90f, 0f);
+        internal static Quaternion CrankLocalRotation =>
+            Quaternion.Euler(0f, 90f, 0f) * Quaternion.AngleAxis(CrankRestPhaseDegrees, CrankSpinAxis);
+
+        /// <summary>
+        /// Hacia dónde queda el pomo en reposo, en grados sobre <see cref="CrankSpinAxis"/>. MEDIDO con
+        /// `Tools ▸ Interaction Authoring` (ADR-150 enm. 3): barriendo 8 reposos, la izquierda sólo encuentra un agarre
+        /// natural del pomo en 270° (coste 4,75; en 0° costaba 28 con la palma arriba). El runtime lo lee del prefab
+        /// (`_crankRest`) y la fase de la cuerda cuenta desde aquí.
+        /// </summary>
+        internal const float CrankRestPhaseDegrees = 270f;
+
+        [MenuItem("Backrooms/Linterna/Aplicar reposo de la manivela", false, 94)]
+        public static void ApplyCrankRest()
+        {
+            foreach (string path in new[] { WieldablePrefabPath, BackroomsCrankFlashlightPickupCreator.PrefabPath })
+            {
+                var root = PrefabUtility.LoadPrefabContents(path);
+                try
+                {
+                    var crank = root.GetComponentsInChildren<Transform>(true).FirstOrDefault(t => t.name == CrankNodeName);
+                    if (crank == null)
+                    {
+                        Debug.LogError($"[CrankFlashlightModel] '{path}' no tiene '{CrankNodeName}'.");
+                        continue;
+                    }
+                    crank.localRotation = CrankLocalRotation;
+                    PrefabUtility.SaveAsPrefabAsset(root, path);
+                    Debug.Log($"[CrankFlashlightModel] reposo de la manivela en '{path}': {CrankRestPhaseDegrees:0}° sobre su eje.");
+                }
+                finally
+                {
+                    PrefabUtility.UnloadPrefabContents(root);
+                }
+            }
+        }
 
         /// <summary>El eje de giro EN LOCAL de la manivela: la normal del disco, Z. Lo consumen el
         /// wieldable (`crankAxis`) y `ProxyCrankHook`; un cambio aquí sin tocar allí deja la

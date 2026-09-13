@@ -95,15 +95,15 @@
 
 ## Últimas tandas
 
-### 2026-09-13 — 55.ª tanda: manos sobre objetos — `Tools ▸ Interaction Authoring` y API para Claude (ADR-149 PROPUESTA)
+### 2026-09-13 — 55.ª tanda: manos sobre objetos — `Tools ▸ Interaction Authoring` y API para Claude (ADR-150 PROPUESTA)
 - **Horneado, no Animation Rigging**: perfil en espacio del objeto, IK de dos huesos + dedos acoplados, coste de naturalidad barrido.
   API JSON (`tools/dev/HandInteraction.ps1`), puente con editor abierto, CLI headless, ventana. Guía: `docs/systems/hand-interaction.md`.
 - **Linterna a dos manos: `NO_NATURAL_GRIP`** (coste 8,7, tope 6): con la derecha centrada en 180 mm no cabe otro puño; no se forzó.
   Ningún asset de juego cambiado; perfil sin hornear en `Assets/Data/HandInteraction/`. EditMode 23/23 con un horneado forzado, revertido.
 - **Derecha rehecha (enm. 2, rol `Regrip`)**: la muñeca de 129° pasa a antebrazo −10°, coste 4,47, pomo despejado; 24/25 verdes (1 saltado).
   Trampa: el offset del modelo es ENTRADA de la búsqueda y Regrip lo reescribe (4,46 → 186); ahora `baseNodeLocal*` en el perfil.
-- **Izquierda en la manivela (enm. 1): rechazada dos veces**, copiando la cuerda (muñeca ~100°) y agarrando el pomo (coste 29,8, palma arriba).
-  Decisión de Joel: ángulo de reposo de la manivela, forzar o dejarlo. Nuevo: rol `Reference` y pieza de agarre por mano.
+- **Izquierda en la manivela (enm. 3)**: pomo en reposo a 270° (barrido de 8), agarre desde abajo coste 4,70; la cuerda lo sigue girando y
+  deslizando la mano, peor fase coste 16 (palma rozando a 0,23). **Sin ver en Play.** Nuevo: reposo de prueba, clip de acción, dedos recogidos.
 
 ### 2026-09-12 — 54.ª tanda: techos medidos otra vez tras la fase 2 — en release la CPU no es el muro
 - **Release** (`9dc2d867`; los 2 de CPU en `f9a7814e`): sala aguanta **64** y revienta en 96 por CABLE (2 091 KB/s); emparejados ≥**400** (último

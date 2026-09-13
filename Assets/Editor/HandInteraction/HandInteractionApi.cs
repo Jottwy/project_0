@@ -377,6 +377,24 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
                 ctx.Rig.Animator.localRotation = Quaternion.identity;
                 shots.Add(HandInteractionCapture.ShootEye(ctx.Rig, dir, $"baked_{hint}50"));
             }
+            // El clip de acción de la pieza que gira (la cuerda), a cuatro fases y con la pieza girada como la gira el
+            // componente: sin esto la animación de dar cuerda no se ve nunca antes de Play.
+            if (!string.IsNullOrEmpty(profile.sweptPartActionClipPath))
+                foreach (float phase in new[] { 0f, 0.25f, 0.5f, 0.75f })
+                {
+                    using var ctx = HandInteractionBaker.Open(profile);
+                    var pair = ctx.OtherLayerPairs.Concat(ctx.Pairs).FirstOrDefault(p =>
+                        AssetDatabase.GetAssetPath(p.original) == profile.sweptPartActionClipPath ||
+                        AssetDatabase.GetAssetPath(p.effective) == profile.sweptPartActionClipPath);
+                    if (pair.effective == null || ctx.Rig.SweptTransform == null) break;
+                    pair.effective.SampleAnimation(ctx.Rig.Animator.gameObject, pair.effective.length * phase);
+                    ctx.Rig.Animator.localPosition = Vector3.zero;
+                    ctx.Rig.Animator.localRotation = Quaternion.identity;
+                    ctx.Rig.SweptTransform.localRotation = ctx.Rig.SweptRest * Quaternion.AngleAxis(phase * 360f, ctx.Rig.SweptAxisL);
+                    int deg = Mathf.RoundToInt(phase * 360f);
+                    shots.Add(HandInteractionCapture.ShootEye(ctx.Rig, dir, $"baked_action{deg:000}"));
+                    shots.AddRange(HandInteractionCapture.Shoot(ctx.Rig, dir, $"action{deg:000}").Where(s => s.Contains("side_left")));
+                }
             return shots;
         }
 

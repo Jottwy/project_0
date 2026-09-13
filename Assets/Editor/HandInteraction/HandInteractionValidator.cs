@@ -190,6 +190,7 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
             for (int f = 0; f < 5; f++)
             {
                 if (f == 1 && target.fingers == HandFingerStyle.IndexExtended) continue;
+                if ((m.tuckedFingerMask & (1 << f)) != 0) continue; // fuera de una pieza corta: recogido, no agarra
                 float gap = m.tipGapMm[f];
                 string name = new[] { "pulgar", "índice", "corazón", "anular", "meñique" }[f];
                 if (gap < -HandGripSolver.TipInside * 1000f - 2f)

@@ -358,8 +358,12 @@ namespace BackroomsSurvival.Tests
 
             // Y los dos con la corrección de Joel: 90° en Y, que es lo que pone el disco plano
             // contra el costado. Si alguien vuelve a Quaternion.identity en el aplicador, salta aquí.
-            Assert.Less(Quaternion.Angle(ground.localRotation, Quaternion.Euler(0f, 90f, 0f)), 0.01f,
+            // El disco (su normal, +Z) sigue donde Joel lo dejó; encima va el reposo del pomo medido con la
+            // herramienta de manos (ADR-150 enm. 3): 270° sobre ese eje.
+            Assert.Less(Vector3.Angle(ground.localRotation * Vector3.forward, Quaternion.Euler(0f, 90f, 0f) * Vector3.forward), 0.01f,
                 "la manivela del suelo ya no lleva el giro de 90° en Y que Joel dio por bueno");
+            Assert.Less(Quaternion.Angle(ground.localRotation, Quaternion.Euler(0f, 90f, 0f) * Quaternion.AngleAxis(270f, Vector3.forward)), 0.01f,
+                "la manivela del suelo no está en su reposo de 270°");
         }
 
         /// <summary>

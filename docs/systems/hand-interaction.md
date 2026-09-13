@@ -1,7 +1,7 @@
 # Interacción mano-objeto — `Tools ▸ Interaction Authoring` y su API
 
 Herramienta de editor que prepara un wieldable para que las manos de primera persona lo sujeten bien,
-sin animar a mano. Decisión en **ADR-149**. Código en `Assets/Editor/HandInteraction/`, datos en
+sin animar a mano. Decisión en **ADR-150**. Código en `Assets/Editor/HandInteraction/`, datos en
 `Assets/Scripts/Gameplay/HandInteraction/HandInteractionProfile.cs`, perfiles en `Assets/Data/HandInteraction/`.
 
 ## Qué hace (y qué no)
@@ -50,6 +50,22 @@ exacto para una vuelta completa y barato.
 `TheKnobOrbitClearsTheRightHand`). El brazo va plano contra el cuerpo; lo que choca con los dedos es el pomo.
 Resultado en la linterna: la derecha rehecha agarra por encima en 0,37 del eje, antebrazo −10°, dedos rodeando
 112°, coste 4,47, pomo despejado (la muñeca de 129° del agarre anterior desaparece).
+
+**Probar otro ángulo de reposo** (`sweptPartTrialRestDegrees`): gira la pieza que gira sobre `sweptPartAxis`
+sólo en la copia de medida. Así se barren reposos con `set` + `preview` sin tocar el modelo. `bake` se niega
+mientras no sea 0 (`REST_TRIAL_NOT_APPLIED`): el reposo real lo pone el horneador del objeto, y el perfil tiene
+que volver a 0 antes de hornear.
+
+**Seguir la pieza que gira** (`sweptPartActionClipPath`): el clip de acción cuya fase ES el ángulo de la pieza
+(la cuerda). Una mano con `Grip` sobre la pieza que gira se hornea también en ese clip. En cada fotograma la
+pieza se pone a `reposo · AngleAxis(fase · 360°)`, como la dibuja el componente en runtime. La muñeca va con
+el centro de lo que agarra y conserva la orientación del agarre natural en reposo, así que el pomo rueda
+dentro de los dedos. Hombro y codo son los de la búsqueda. El informe da el peor coste de brazo en la vuelta.
+En reposo, el idle y la fase 0 son la misma pose, y la transición no salta.
+
+**Piezas cortas.** Un dedo cuyo nudillo cae fuera del tramo de la superficie que agarra (el pomo de 2 cm, un
+gatillo) se RECOGE. No cuenta para `yema-lejos`, `no-rodea` ni el hueco del puño; su penetración sí cuenta. Un
+pomo se coge con pulgar, índice y corazón.
 
 **Pieza por mano.** Por defecto una mano agarra la malla de agarre del perfil (`gripMeshNodeName`, eje +Y).
 Con `gripPartNodeName` agarra otra pieza del modelo, con su propio eje (`gripPartAxis`, en local de esa pieza)

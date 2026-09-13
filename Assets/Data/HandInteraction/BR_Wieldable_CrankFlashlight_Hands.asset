@@ -38,43 +38,43 @@ MonoBehaviour:
     searchClockRange: 180
     searchTiltRange: 20
     resolved: 1
-    resolvedAlongAxis: 0.36500004
+    resolvedAlongAxis: 0.37
     resolvedIndexTowardTip: 0
     resolvedClockDegrees: -61
     resolvedTiltDegrees: -10
     resolvedPalmOffsetMeters: 0.011
-    resolvedCost: 4.474949
+    resolvedCost: 4.5159707
     resolvedShoulderShift: {x: 0, y: 0, z: 0}
     resolvedPole: 1
   leftHand:
-    role: 1
-    alongAxis: 0.85
-    clockDegrees: -91.084984
-    tiltDegrees: 15
-    indexTowardTip: 1
+    role: 0
+    alongAxis: 0.36
+    clockDegrees: -151
+    tiltDegrees: -10
+    indexTowardTip: 0
     offsetMeters: {x: 0, y: 0, z: 0}
     palmOffsetMeters: 0
     weight: 1
     fingers: 0
-    gripPartNodeName: 
-    gripPartAxis: {x: 0, y: 0, z: 0}
-    gripPartMinY01: 0
+    gripPartNodeName: Crank
+    gripPartAxis: {x: 0, y: 0, z: 1}
+    gripPartMinY01: 0.75
     gripPartMaxY01: 1
     referenceClipPath: 
     referenceTime: 0
-    autoSearch: 1
-    searchAlongRange: 0.45
+    autoSearch: 0
+    searchAlongRange: 0.5
     searchClockRange: 180
     searchTiltRange: 20
-    resolved: 0
-    resolvedAlongAxis: 0.95000005
+    resolved: 1
+    resolvedAlongAxis: 0.36
     resolvedIndexTowardTip: 0
-    resolvedClockDegrees: 28.915009
-    resolvedTiltDegrees: 40
-    resolvedPalmOffsetMeters: 0.007999999
-    resolvedCost: 8.698155
-    resolvedShoulderShift: {x: 0.06510315, y: 0.038440358, z: 0.14506392}
-    resolvedPole: 1
+    resolvedClockDegrees: -151
+    resolvedTiltDegrees: -10
+    resolvedPalmOffsetMeters: 0
+    resolvedCost: 4.697193
+    resolvedShoulderShift: {x: 0.032798678, y: 0.007901662, z: 0.04343774}
+    resolvedPole: 0
   secondaryFullWeightDistance: 0.04
   secondaryZeroWeightDistance: 0.22
   maxShoulderShiftMeters: 0.4
@@ -84,6 +84,8 @@ MonoBehaviour:
   sweptClearanceMeters: 0.0095
   sweptPartMinY01: 0.75
   sweptPartMaxY01: 1
+  sweptPartTrialRestDegrees: 0
+  sweptPartActionClipPath: Assets/Art/Items/CrankFlashlight/Anim/BR_CrankFlashlight_Crank.anim
   outputFolder: Assets/Art/Items/CrankFlashlight/Anim
   baseClips:
   - {fileID: 7400000, guid: ce2364cf6a1acde4ca61e5718c057ee8, type: 2}
@@ -98,7 +100,7 @@ MonoBehaviour:
   hasBaseNodeLocal: 1
   baseNodeLocalPosition: {x: 0.011007104, y: 0.048290767, z: -0.027707038}
   baseNodeLocalRotation: {x: 0.26151764, y: 0.20765063, z: -0.49407113, w: 0.802735}
-  lastBakeUtc: 2026-09-13T19:37:17.6828546Z
+  lastBakeUtc: 2026-09-13T20:36:42.2530222Z
   resolvedObjectRotationInView: {x: -0.038489163, y: 0.6534854, z: 0.7537277, w: 0.058054328}
   hasResolvedView: 1
   notes: "Preparado 2026-09-13 por la API (categor\xEDa flashlight)."

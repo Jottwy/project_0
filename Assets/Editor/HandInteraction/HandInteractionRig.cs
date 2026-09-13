@@ -330,6 +330,12 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
 
         public bool HasSweptParts => _swept.Count > 0;
 
+        /// <summary>La (primera) pieza que gira, su rotación local de reposo y su eje local: para girarla con la fase
+        /// del clip de acción al hornearlo, como la gira el componente en runtime.</summary>
+        public Transform SweptTransform { get; private set; }
+        public Quaternion SweptRest { get; private set; } = Quaternion.identity;
+        public Vector3 SweptAxisL { get; private set; } = Vector3.forward;
+
         public void AddSweptPart(string nodeName, Vector3 axisLocal, float clearance, float minY01 = 0f, float maxY01 = 1f)
         {
             var box = Parts.FirstOrDefault(p => p.Name == nodeName)
@@ -356,6 +362,12 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
                 if (!cells.ContainsKey(key)) cells[key] = new Vector2(r, z);
             }
             _swept.Add(new SweptPart { Box = box, AxisL = axis, Clearance = clearance, Profile = cells.Values.ToArray() });
+            if (SweptTransform == null)
+            {
+                SweptTransform = box.Transform;
+                SweptRest = box.Transform.localRotation;
+                SweptAxisL = axis;
+            }
         }
 
         /// <summary>

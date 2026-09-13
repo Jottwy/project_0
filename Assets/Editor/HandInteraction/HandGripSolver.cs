@@ -24,6 +24,8 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
         public float forearmRotationDeg;
         public float palmGapMm;
         public float elbowAngleDeg;
+        /// <summary>Bit f: el dedo f cae fuera de una pieza corta y va recogido (no se le pide tocar).</summary>
+        public int tuckedFingerMask;
         public float[] tipGapMm = new float[5];
         public int fingersTouching;
         /// <summary>Yemas que cruzan la cara de la punta o de la culata (tapan la lente, la boquilla…).</summary>
@@ -62,6 +64,9 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
         /// <summary>Sólo Regrip: el offset nuevo del modelo bajo la mano portadora.</summary>
         public Vector3 NodeLocalPos;
         public Quaternion NodeLocalRot = Quaternion.identity;
+        /// <summary>Para seguir una pieza que gira: su punto agarrado en reposo (espacio de la malla de agarre), el
+        /// hombro en espacio de la instancia y la dirección del codo, tal como quedaron en la búsqueda.</summary>
+        public Vector3 PartPointInGrip, ShoulderInRoot, FollowPoleWorld;
         public Quaternion[][] Fingers;
         public HandGripMetrics Metrics;
     }
@@ -306,10 +311,33 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
             HandInteractionRig.SetNeutralFingers(side);
             for (int f = 1; f < 5; f++)
             {
+                if (FingerOffPart(rig, side, f)) { TuckFinger(side, f); continue; }
                 float maxC = f == 1 && target.fingers == HandFingerStyle.IndexExtended ? 0.18f : 1f;
                 CloseFinger(rig, side, f, radius, maxC, 0);
             }
             CloseThumb(rig, side, target.fingers, radius, GripPoint(rig, target));
+        }
+
+        /// <summary>
+        /// UNA PIEZA CORTA NO SE COGE CON CUATRO DEDOS. Un dedo cuyo nudillo cae fuera del tramo de la superficie
+        /// (el pomo de 2 cm de una manivela, un gatillo) no tiene nada que rodear: se recoge y no cuenta para
+        /// tocar, rodear ni el hueco del puño; su penetración sí. Medido: sin esto, en el pomo el anular y el meñique
+        /// quedaban abiertos en garra y costaban 2,3 de «yema-lejos» más 2 de «no-rodea» en el mejor agarre.
+        /// </summary>
+        internal static bool FingerOffPart(HandInteractionRig rig, HandSide side, int f)
+        {
+            if (f == 0) return false;
+            var s = rig.Surface;
+            s.Local(side.Fingers[f][0].position, out float t, out _);
+            float margin = HandInteractionRig.FingerSkin / Mathf.Max(1e-5f, s.Scale);
+            return t < s.MinT - margin || t > s.MaxT + margin;
+        }
+
+        private static void TuckFinger(HandSide side, int f)
+        {
+            for (int j = 0; j < 3; j++)
+                side.Fingers[f][j].localRotation =
+                    Quaternion.AngleAxis(HandInteractionRig.FingerCaps[j] * 0.7f * side.FingerCloseSign, Vector3.right);
         }
 
         /// <summary>Una mano que no sujeta nada: cascada relajada, el meñique algo más cerrado que el índice.</summary>
@@ -437,8 +465,16 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
 
             // Dónde encierra la mano respecto de su punto (el eje debería pasar por el hueco del puño).
             Vector3 enclosed = Vector3.zero;
-            for (int f = 1; f < 5; f++) enclosed += (side.Fingers[f][1].position + side.Fingers[f][2].position) * 0.5f;
-            enclosed /= 4f;
+            int onPart = 0;
+            for (int f = 1; f < 5; f++)
+            {
+                if (checkFingers && FingerOffPart(rig, side, f)) continue;
+                enclosed += (side.Fingers[f][1].position + side.Fingers[f][2].position) * 0.5f;
+                onPart++;
+            }
+            if (onPart == 0)
+                for (int f = 1; f < 5; f++) { enclosed += (side.Fingers[f][1].position + side.Fingers[f][2].position) * 0.5f; onPart++; }
+            enclosed /= onPart;
             m.targetErrorMm = Vector3.ProjectOnPlane(enclosed - gripPoint, rig.Axis).magnitude * 1000f;
             // EL HUECO DEL PUÑO NO PUEDE CAER EN EL EJE DE UN TUBO GORDO: las falanges medias rodean la superficie y
             // su centro queda, por pura geometría, a una fracción del radio. La tolerancia crece con él (en un mango
@@ -463,6 +499,7 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
                     if (thumb) m.thumbPenetrationMm = pen * 1000f;
                     if (pen > worst) { worst = pen; worstJoint = side.Fingers[f][0].name; }
                     if (f == 1 && target.fingers == HandFingerStyle.IndexExtended) continue;
+                    if (FingerOffPart(rig, side, f)) { m.tuckedFingerMask |= 1 << f; continue; }
                     if (gap > TipOutside) Add($"yema-lejos-{f}", (gap - TipOutside) * 1000f * 0.15f);
                     if (gap < -TipInside) Add($"yema-dentro-{f}", (-TipInside - gap) * 1000f * 0.6f);
                 }
@@ -495,6 +532,7 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
                 for (int f = 1; f < 5; f++)
                 {
                     if (f == 1 && target.fingers == HandFingerStyle.IndexExtended) continue;
+                    if (FingerOffPart(rig, side, f)) continue;
                     Vector3 tip = HandInteractionRig.Tip(side, f);
                     Vector3 dir = Vector3.ProjectOnPlane(tip - gripPoint, rig.Axis);
                     if (dir.sqrMagnitude < 1e-8f) continue;
@@ -703,6 +741,9 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
                 Metrics = final,
             };
             sol.IndexTowardTip = best.IndexTip;
+            sol.PartPointInGrip = rig.GripMesh.InverseTransformPoint(rig.AxisPoint(best.Along));
+            sol.ShoulderInRoot = rig.InstanceRoot.InverseTransformPoint(side.Upper.position);
+            sol.FollowPoleWorld = PoleFor(rig, side, best.Pole, baseElbow, baseShoulder, baseHand);
             log?.AppendLine($"mano {side.Suffix}: {coarse.Count} candidatos gruesos; eje {sol.Along:0.00}, reloj {sol.Clock:0}°, inclinación {sol.Tilt:0}°, " +
                             $"índice hacia la {(best.IndexTip ? "punta" : "culata")}, antebrazo {final.forearmRotationDeg:+0;-0}° (+ = palma arriba), " +
                             $"palma {best.Palm * 1000f:+0.0;-0.0} mm sobre la inicial, codo {PoleName(sol.Pole)}, hombro {final.shoulderShiftMm:0} mm; " +

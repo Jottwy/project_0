@@ -182,6 +182,16 @@ namespace BackroomsSurvival.Gameplay.HandInteraction
         [Range(0f, 1f)] public float sweptPartMinY01;
         [Range(0f, 1f)] public float sweptPartMaxY01 = 1f;
 
+        [Tooltip("SÓLO PARA PROBAR: giro extra, en grados sobre sweptPartAxis, de la pieza que gira en la copia de medida. " +
+                 "Sirve para buscar un ángulo de reposo mejor sin tocar el modelo. `bake` se niega si no es 0 " +
+                 "(REST_TRIAL_NOT_APPLIED): el reposo real lo pone el horneador del objeto.")]
+        public float sweptPartTrialRestDegrees;
+
+        [Tooltip("Clip de acción cuya FASE es el ángulo de la pieza que gira (la cuerda: fase 0 = reposo, 1 = una vuelta, " +
+                 "como la dibuja el componente). Una mano con Grip sobre esa pieza la SIGUE en ese clip: la muñeca va con el " +
+                 "centro del pomo y conserva su orientación respecto del objeto, y el pomo gira dentro de los dedos.")]
+        public string sweptPartActionClipPath;
+
         [Header("Salida")]
         [Tooltip("Carpeta de los clips base copiados y de los que se crean nuevos.")]
         public string outputFolder;
