@@ -388,6 +388,25 @@ y plano de bolsillo (M8, después del playtest).
 **Preguntas de playtest.** ¿Volver a la base a ordenar el mapa apetece o molesta? ¿Ver el tablero ayuda a orientarse
 más que la hoja suelta?
 
+### 4.8 Resultado de P0.3b y P0.4 (2026-09-14, Joel validó B + P0.4)
+
+**Hecho, en el tronco:**
+- `f194e0dd` P0.3b: `MapVisionFan` (puro) + abanico en `MapMemorySampler` (`fanDistanceM` 20, `fanAngleDeg` 90,
+  `fanRays` 90, `fanHeightM` 1,1, dirección de `Camera.main`). `MaxCellsPerSample` = disco + rayos × celdas por rayo.
+- `fd36a515` `MapAtlas`: base, colocación en anchura por `Links` (en cualquiera de las dos hojas), `CleanCopy`
+  (una recta firme por tramo de pared, conserva aristas y flechas), limpia nueva tapa y archiva.
+- `6fa60437` `MapSheetRaster.DrawAtlas`: trama «sin mapear», borrador lavado 60 % hacia el papel, limpia opaca,
+  borde rojo en la base; `MapStroke.Steady`.
+- `5cfc2834` `MapAtlasView` en `M` y enganche con la libreta y la escena.
+- Tests headless de mapeado: 51/51 (`MapVisionFanTests` 4, `MapAtlasTests` 7, raster 5). **En Unity: 48/48**
+  (mapeado + `Wg3MaterialsSerialization`), 2026-09-14 01:11.
+- `3127a609` escena `MappingPlaytest.unity` regenerada con `MapAtlasView` y los campos del abanico.
+
+**Desvíos del plan:** la base se fija con la PRIMERA muestra (zona de aparición), no con un objeto; la cruceta del
+plano dura `fixSeconds` = 30 s; el borrador que se ve en una zona es la última hoja de la libreta con esa zona.
+
+**Sin verificar en Play:** coste del abanico (`MAPMEM ms_avg`), composición del tablero (`MAPATLAS paint ms`).
+
 ### 3.9 El libro de supervivencia de STP: modelo base para la libreta (Joel, 2026-09-13)
 
 Joel propone aprovechar el libro de crafteo/construcción que ya existe como modelo para la libreta, y más adelante
