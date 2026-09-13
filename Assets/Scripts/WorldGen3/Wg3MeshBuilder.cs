@@ -760,6 +760,24 @@ namespace BackroomsSurvival.WorldGen3
         public static float RepeatPeriodM => 1f / UvPerMetre;
 
         /// <summary>
+        /// Periodo al que se ENVUELVE el origen de UV de una cara (<see cref="WorldAnchor"/>). Tiene
+        /// que ser múltiplo de la repetición de TODO material que pinte WG3, no sólo de la UV unidad.
+        ///
+        /// # Qué estaba mal (13-09)
+        ///
+        /// Se envolvía a <see cref="RepeatPeriodM"/> (2 m), que sólo es congruente para una textura
+        /// a escala 1. La moqueta repite cada 4 m (escala 0,5) y la placa de oficina cada 2,4 m
+        /// (0,8333): dos cajas de suelo separadas 2 m arrancaban su UV media repetición desfasadas
+        /// y la textura SALTABA en la junta. Con el terrazo no se veía porque era ruido; con la
+        /// moqueta, Joel: «no usa el tiling».
+        ///
+        /// 12 m es el mínimo común múltiplo de 2, 4 y 2,4. Un material nuevo tiene que repetir a un
+        /// divisor de 12 m (lo comprueba <c>Wg3WorldUvTests</c> sobre los materiales reales). La UV
+        /// sigue acotada, a [0, 6) tras <see cref="UvPerMetre"/>: lejos del float que se pierde.
+        /// </summary>
+        public const float AnchorPeriodM = 12f;
+
+        /// <summary>
         /// El origen de la UV de una cara, en metros, tomado de su sitio en el MUNDO.
         ///
         /// # Qué estaba mal
@@ -786,7 +804,7 @@ namespace BackroomsSurvival.WorldGen3
         /// </summary>
         private static Vector2 WorldAnchor(Vector3 worldCorner, Vector3 axisU, Vector3 axisV)
         {
-            float p = RepeatPeriodM;
+            float p = AnchorPeriodM;
             return new Vector2(
                 Mathf.Repeat(Vector3.Dot(worldCorner, axisU), p),
                 Mathf.Repeat(Vector3.Dot(worldCorner, axisV), p));

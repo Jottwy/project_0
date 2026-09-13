@@ -99,6 +99,75 @@ namespace BackroomsSurvival.Tests
             Object.DestroyImmediate(mb);
         }
 
+        /// <summary>
+        /// LA COSTURA DE LA MOQUETA (13-09). El test de arriba compara a escala 1, donde el ancla
+        /// envuelta a 2 m cosía siempre. La moqueta va a escala 0,5 (4 m): dos cajas de suelo de 2 m
+        /// contiguas arrancaban su UV en fases que se diferenciaban en MEDIA repetición, y la textura
+        /// saltaba en la junta. Joel: «no usa el tiling». Aquí se compara a la escala del material.
+        /// </summary>
+        [TestCase(0.5f, TestName = "Moqueta, escala 0,5 (4 m)")]
+        [TestCase(0.8333333f, TestName = "Placa de oficina, escala 0,8333 (2,4 m)")]
+        [TestCase(1f, TestName = "Papel, escala 1 (2 m)")]
+        public void DosSuelosContiguos_CosenLaTexturaALaEscalaDelMaterial(float materialScale)
+        {
+            var a = Floor(new Vector3(1f, -0.05f, 0f), new Vector3(2f, 0.1f, 1f));
+            var b = Floor(new Vector3(3f, -0.05f, 0f), new Vector3(2f, 0.1f, 1f));
+            Mesh ma = Build(a, Vector3.zero);
+            Mesh mb = Build(b, Vector3.zero);
+
+            var junta = new Vector3(2f, 0f, -0.5f);
+            Vector2 ua = UvAt(ma, Vector3.zero, junta, Vector3.up) * materialScale;
+            Vector2 ub = UvAt(mb, Vector3.zero, junta, Vector3.up) * materialScale;
+            AssertSameTexel(ua, ub, $"junta de dos suelos a escala {materialScale}");
+
+            Object.DestroyImmediate(ma);
+            Object.DestroyImmediate(mb);
+        }
+
+        /// <summary>El periodo del ancla tiene que ser múltiplo de la repetición de CADA material
+        /// que pinta WG3, leído de los assets reales. Un material nuevo a una escala que no divida
+        /// el periodo reabre la costura sin que ningún otro test lo vea.</summary>
+        [Test]
+        public void ElPeriodoDelAncla_EsMultiploDeTodaRepeticionDeMaterial()
+        {
+            string[] paths =
+            {
+                "Assets/Materials/WorldGen3/Wg3_Floor.mat",
+                "Assets/Materials/WorldGen3/Wg3_Structure.mat",
+                "Assets/Materials/WorldGen3/Wg3_Ceiling.mat",
+                "Assets/Materials/WorldGen3/Wg3_Trim.mat",
+                "Assets/Resources/Wg3Materials/Wg3_FloorOffice.mat",
+                "Assets/Resources/Wg3Materials/Wg3_CeilingOffice.mat",
+                "Assets/Resources/Wg3Materials/Wg3_Partition.mat",
+            };
+            foreach (string path in paths)
+            {
+                var mat = UnityEditor.AssetDatabase.LoadAssetAtPath<Material>(path);
+                Assert.IsNotNull(mat, path);
+                foreach (string prop in new[] { "_BaseMap", "_BumpMap", "_MetallicGlossMap" })
+                {
+                    if (mat.GetTexture(prop) == null) continue;
+                    Vector2 s = mat.GetTextureScale(prop);
+                    foreach (float axis in new[] { s.x, s.y })
+                    {
+                        float repeatM = 1f / (axis * Wg3MeshBuilder.UvPerMetre);
+                        float turns = Wg3MeshBuilder.AnchorPeriodM / repeatM;
+                        Assert.That(Mathf.Abs(turns - Mathf.Round(turns)), Is.LessThan(2e-3f),
+                            $"{path} {prop}: repite cada {repeatM:0.###} m, que no divide {Wg3MeshBuilder.AnchorPeriodM} m");
+                    }
+                }
+            }
+        }
+
+        private static Wg3Volume Floor(Vector3 centre, Vector3 size) => new Wg3Volume
+        {
+            center = centre,
+            size = size,
+            yawDegrees = 0f,
+            kind = Wg3VolumeKind.Floor,
+            shape = Wg3Shape.Box,
+        };
+
         [Test]
         public void ElOrigenDeLaMalla_NoMueveLaTextura()
         {
