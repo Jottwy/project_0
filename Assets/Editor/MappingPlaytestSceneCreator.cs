@@ -151,6 +151,10 @@ namespace BackroomsSurvival.EditorTools
                 sampler.target = player;
                 var view = go.AddComponent<MapMemoryDebugView>();
                 view.sampler = sampler;
+                // P0.2: la libreta del prototipo. Con ella abierta se desactiva el jugador de prueba.
+                var notebook = go.AddComponent<MapNotebookView>();
+                notebook.sampler = sampler;
+                notebook.playerControl = player.GetComponent<Wg3TestPlayer>();
 
                 // Wg3Materials no es [Serializable]: asignarlo aquí a Wg3TestWorld se perdería al
                 // guardar y el mundo saldría magenta. Las referencias van en MappingPlaytestMaterials,
