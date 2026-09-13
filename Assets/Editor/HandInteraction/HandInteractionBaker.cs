@@ -377,6 +377,20 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
                 .Concat(regripRequested || profile.hasBaseNodeLocal || followRequested
                     ? ctx.OtherLayerPairs.Select(pr => pr.effective) : Enumerable.Empty<AnimationClip>())
                 .Distinct().ToList();
+            // UN CLIP QUE NO ANIMA EL BRAZO DE LA PORTADORA NO SE HORNEA. Los `Template_Attack` del vendor son plantillas casi
+            // vacías: horneados, el ataque salía con 64–81° de brazo inventado a partir de lo que quedara del muestreo anterior
+            // (medido en el destornillador). Se quedan con su override de siempre.
+            if (ctx.Carrier != null)
+            {
+                string[] armBones = { ctx.Carrier.Upper.name, ctx.Carrier.Fore.name, ctx.Carrier.Hand.name };
+                var skipped = distinct.Where(c => c != ctx.IdleEffective && !AnimationUtility.GetCurveBindings(c)
+                    .Any(b => armBones.Any(n => b.path.EndsWith("/" + n) || b.path == n))).ToList();
+                foreach (var c in skipped)
+                {
+                    distinct.Remove(c);
+                    result.warnings.Add($"CLIP_WITHOUT_ARM: '{c.name}' no anima el brazo de la portadora: no se hornea.");
+                }
+            }
             if (followRequested && !distinct.Any(c => IsActionClip(ctx, c)))
                 result.warnings.Add($"SWEPT_ACTION_CLIP_NOT_FOUND: ningún clip del controller es '{profile.sweptPartActionClipPath}': " +
                                     "la mano agarra la pieza en reposo pero no la sigue al girar.");
@@ -517,6 +531,9 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
         /// está cerca de su sitio del idle y vuelve al clip base a medida que se aleja: así equipar y enfundar
         /// traen y se llevan la mano con el objeto sin estirar el brazo hasta fuera de la pantalla.
         /// </summary>
+        /// <summary>Lo más que la mano que sigue la pieza se desliza por ella hacia fuera, en metros.</summary>
+        private const float MaxFollowSlide = 0.012f;
+
         /// <summary>La mano agarra la pieza que gira y el perfil nombra su clip de acción: la sigue en ese clip.</summary>
         private static bool Follows(HandInteractionProfile p, HandGripTarget t)
             => !string.IsNullOrEmpty(p.sweptPartActionClipPath) && !string.IsNullOrEmpty(p.sweptPartNodeName) &&
@@ -540,7 +557,7 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
             // horneador propio de la linterna fijaba una orientación de mano por constantes y dejaba la muñeca a ~80° de
             // desviación en TODA la vuelta (medido en 8 fases); aquí la orientación es la del agarre natural en reposo.
             bool action = actionClip && rig.SweptTransform != null;
-            float worstFollowCost = -1f, followRoll = 0f, maxFollowRoll = 0f, followSlide = 0f, maxFollowSlide = 0f;
+            float worstFollowCost = -1f, maxFollowRoll = 0f, maxFollowSlide = 0f;
             string worstFollow = "";
             // Quien abre AnimationMode lo cierra: aquí sólo si no venía abierto (Solve lo deja abierto).
             bool ownsAnimationMode = !AnimationMode.InAnimationMode();
@@ -550,14 +567,98 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
             var list = new List<HandFrame>(frames + 1);
             int clamps = 0;
             float minWeight = 1f, maxWeight = 0f, maxNodeDriftMm = 0f;
+            var carrierSol = ctx.Carrier == null ? null : ctx.Carrier.Right ? solved.Right : solved.Left;
 
-            for (int k = 0; k <= frames; k++)
+            void PoseFrame(int k, float t)
             {
-                float t = Mathf.Min(source.length, k / HandInteractionRig.FrameRate);
                 rig.Sample(source, loop && k == frames ? 0f : t);
                 if (action)
                     rig.SweptTransform.localRotation = rig.SweptRest *
                         Quaternion.AngleAxis(360f * (loop && k == frames ? 0f : t) / Mathf.Max(1e-4f, source.length), rig.SweptAxisL);
+            }
+
+            // EL GIRO Y EL DESLIZAMIENTO DE LA MANO QUE SIGUE LA PIEZA se eligen en un pase previo y se SUAVIZAN sobre la
+            // vuelta antes de aplicarlos. Elegidos fotograma a fotograma alternaban entre opciones de coste parecido: la mano
+            // giraba 10–39° por fotograma (medido en el clip de cuerda).
+            HandSide followSide = null;
+            HandGripSolution followSol = null;
+            HandGripTarget followTarget = null;
+            float[] plannedRoll = null, plannedSlide = null;
+            if (action && ctx.Carrier != null)
+            {
+                bool otherRight = !ctx.Carrier.Right;
+                followSol = otherRight ? solved.Right : solved.Left;
+                followTarget = p.Hand(otherRight);
+                if (followSol != null && followSol.HasArmPose && Follows(p, followTarget)) followSide = rig.Side(otherRight);
+            }
+            if (followSide != null)
+            {
+                plannedRoll = new float[frames + 1];
+                plannedSlide = new float[frames + 1];
+                float prevRoll = 0f, prevSlide = 0f;
+                for (int k = 0; k <= frames; k++)
+                {
+                    PoseFrame(k, Mathf.Min(source.length, k / HandInteractionRig.FrameRate));
+                    if (solved.CarrierRegrip && carrierSol != null) PoseCarrierRegrip(ctx, ctx.Carrier, carrierSol, out _, out _);
+                    var place = FollowPlacer(ctx, followSide, followSol, followTarget, !ctx.Carrier.Right);
+                    float bestScore = float.MaxValue;
+                    // Tope de 12 mm: deslizando hasta 18 mm el pomo quedaba a 21 mm del centro de los dedos cerrados
+                    // (WhileCrankingTheLeftHandRidesTheKnob exige 20).
+                    for (float roll = -90f; roll <= 90.01f; roll += 5f)
+                    for (float slide = 0f; slide <= MaxFollowSlide + 1e-4f; slide += 0.003f)
+                    {
+                        var cm = place(roll, slide);
+                        float score = cm.cost + Mathf.Pow((roll - prevRoll) / 30f, 2f) + Mathf.Pow(roll / 90f, 2f) * 0.5f +
+                                      Mathf.Pow((slide - prevSlide) / 0.006f, 2f) + slide / 0.015f * 0.3f;
+                        if (score < bestScore) { bestScore = score; plannedRoll[k] = roll; plannedSlide[k] = slide; }
+                    }
+                    prevRoll = plannedRoll[k];
+                    prevSlide = plannedSlide[k];
+                    rig.UseMainSurface();
+                    rig.ReattachNode();
+                }
+                SmoothSeries(plannedRoll, loop, 4);
+                SmoothSeries(plannedSlide, loop, 4);
+
+                // Suavizar aparta la mano de lo elegido y puede acercarla a la otra (medido: manos a ~6 mm a fase 0,67). Segundo
+                // pase: se reelige CERCA de lo suavizado, con correa corta, y se suaviza otra vez, más ligero.
+                var refinedRoll = new float[frames + 1];
+                var refinedSlide = new float[frames + 1];
+                for (int k = 0; k <= frames; k++)
+                {
+                    PoseFrame(k, Mathf.Min(source.length, k / HandInteractionRig.FrameRate));
+                    if (solved.CarrierRegrip && carrierSol != null) PoseCarrierRegrip(ctx, ctx.Carrier, carrierSol, out _, out _);
+                    var place = FollowPlacer(ctx, followSide, followSol, followTarget, !ctx.Carrier.Right);
+                    float r0 = plannedRoll[k], s0 = plannedSlide[k], bestScore = float.MaxValue;
+                    refinedRoll[k] = r0;
+                    refinedSlide[k] = s0;
+                    for (float dr = -20f; dr <= 20.01f; dr += 2.5f)
+                    for (float ds = -0.003f; ds <= 0.00301f; ds += 0.001f)
+                    {
+                        float roll = Mathf.Clamp(r0 + dr, -90f, 90f), slide = Mathf.Clamp(s0 + ds, 0f, MaxFollowSlide);
+                        var cm = place(roll, slide);
+                        float score = cm.cost + Mathf.Pow(dr / 10f, 2f) + Mathf.Pow(ds / 0.002f, 2f);
+                        if (score < bestScore) { bestScore = score; refinedRoll[k] = roll; refinedSlide[k] = slide; }
+                    }
+                    rig.UseMainSurface();
+                    rig.ReattachNode();
+                }
+                SmoothSeries(refinedRoll, loop, 2);
+                SmoothSeries(refinedSlide, loop, 2);
+                plannedRoll = refinedRoll;
+                plannedSlide = refinedSlide;
+            }
+
+            // LA TORSIÓN DEL ANTEBRAZO ES CONTINUA dentro del clip. Medida suelta en (−180°, 180°], al cruzar ±180° cambia de
+            // signo y los huesos de torsión dan media vuelta en un fotograma: medido 160° en ForearmTwist.3.L dos veces por
+            // vuelta de cuerda y 164° al equipar. La mano no se movía; el antebrazo temblaba.
+            HandInteractionRig.BeginTwistContinuity(rig.R);
+            HandInteractionRig.BeginTwistContinuity(rig.L);
+
+            for (int k = 0; k <= frames; k++)
+            {
+                float t = Mathf.Min(source.length, k / HandInteractionRig.FrameRate);
+                PoseFrame(k, t);
                 float distance = (rig.GripMesh.position - solved.IdleGripPosition).magnitude;
                 float proximity = 1f - Mathf.SmoothStep(0f, 1f,
                     Mathf.InverseLerp(p.secondaryFullWeightDistance, p.secondaryZeroWeightDistance, distance));
@@ -573,76 +674,23 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
 
                     if (solved.CarrierRegrip && side == ctx.Carrier)
                     {
-                        rig.DetachNode();
-                        Vector3 cShoulder = side.Upper.position, cElbow = side.Fore.position, cHand = side.Hand.position;
-                        side.Upper.position = cShoulder + sol.ShoulderShiftWorld;
-                        if (!HandInteractionRig.SolveTwoBone(side, rig.GripMesh.TransformPoint(sol.HandPosInGrip),
-                                rig.GripMesh.rotation * sol.HandRotInGrip, HandGripSolver.PoleFor(rig, side, sol.Pole, cElbow, cShoulder, cHand)))
-                            clamps++;
-                        HandInteractionRig.DistributeForearmTwist(side);
-                        HandInteractionRig.WriteFingers(side, sol.Fingers);
-                        // Si el IK es exacto, el offset del modelo bajo la mano es el mismo en todos los fotogramas.
-                        float driftMm = (side.Hand.InverseTransformPoint(rig.Node.position) - sol.NodeLocalPos).magnitude *
-                                        side.Hand.lossyScale.x * 1000f;
+                        if (PoseCarrierRegrip(ctx, side, sol, out bool clamped, out float driftMm) && clamped) clamps++;
                         maxNodeDriftMm = Mathf.Max(maxNodeDriftMm, driftMm);
                         continue;
                     }
 
-                    if (action && side != ctx.Carrier && sol.HasArmPose && Follows(p, target))
+                    if (side == followSide)
                     {
-                        rig.UseSurfaceFor(target);
-                        Vector3 knob = rig.AxisPoint(sol.Along);
-                        Vector3 spin = rig.Axis;
-                        Vector3 delta = knob - rig.GripMesh.TransformPoint(sol.PartPointInGrip);
-                        Vector3 restPos = rig.GripMesh.TransformPoint(sol.HandPosInGrip) + delta;
-                        Quaternion restRot = rig.GripMesh.rotation * sol.HandRotInGrip;
-                        Vector3 baseShoulderF = rig.InstanceRoot.TransformPoint(sol.ShoulderInRoot);
-                        var work = JsonUtility.FromJson<HandGripTarget>(JsonUtility.ToJson(target));
-                        work.alongAxis = sol.Along;
-
-                        // GIRAR LA MANO SOBRE EL EJE DEL POMO no cambia el contacto de los dedos (el pomo es un cilindro
-                        // sobre ese eje) y sí aparta la palma del cuerpo cuando el pomo pasa pegado a él. Con la orientación
-                        // fija de reposo, a media vuelta la palma entraba 23 mm en el cuerpo (medido). Cada fotograma elige
-                        // el giro más natural cerca del anterior, con el hombro adelantado lo justo si el brazo no llega.
-                        // Hacia FUERA del cuerpo a lo largo del eje del pomo: deslizar la mano por el pomo tampoco cambia el
-                        // contacto, y es lo único que la despega cuando el pomo pasa pegado al costado (el giro solo no
-                        // bastaba: palma 28 mm dentro a fase 0,23, medido).
-                        Vector3 outward = rig.MainSurface.Gap(knob + spin * 0.01f) >= rig.MainSurface.Gap(knob - spin * 0.01f) ? spin : -spin;
-                        HandGripMetrics Place(float roll, float slide = 0f)
-                        {
-                            var r = Quaternion.AngleAxis(roll, spin);
-                            Vector3 handTarget = knob + r * (restPos - knob) + outward * slide;
-                            Vector3 shoulder = baseShoulderF;
-                            side.Upper.position = shoulder;
-                            float reach = (side.Fore.position - side.Upper.position).magnitude + (side.Hand.position - side.Fore.position).magnitude - 0.01f;
-                            Vector3 to = handTarget - shoulder;
-                            if (to.magnitude > reach) shoulder += to.normalized * Mathf.Min(p.maxShoulderShiftMeters, to.magnitude - reach + 0.005f);
-                            side.Upper.position = shoulder;
-                            bool ok = HandInteractionRig.SolveTwoBone(side, handTarget, r * restRot, sol.FollowPoleWorld);
-                            HandInteractionRig.DistributeForearmTwist(side);
-                            HandInteractionRig.WriteFingers(side, sol.Fingers);
-                            return HandGripSolver.Measure(rig, side, work, sol.Clock, !ok, shoulder - baseShoulderF, 0f, rig.Side(!right),
-                                checkFingers: false, checkView: false, checkBodyContact: false);
-                        }
-                        float bestRoll = 0f, bestSlide = 0f, bestScore = float.MaxValue;
-                        for (float roll = -90f; roll <= 90.01f; roll += 10f)
-                        for (float slide = 0f; slide <= 0.0151f; slide += 0.003f)
-                        {
-                            var cm = Place(roll, slide);
-                            float score = cm.cost + Mathf.Pow((roll - followRoll) / 30f, 2f) + Mathf.Pow(roll / 90f, 2f) * 0.5f +
-                                          Mathf.Pow((slide - followSlide) / 0.006f, 2f) + slide / 0.015f * 0.3f;
-                            if (score < bestScore) { bestScore = score; bestRoll = roll; bestSlide = slide; }
-                        }
-                        followRoll = bestRoll;
-                        followSlide = bestSlide;
-                        maxFollowRoll = Mathf.Max(maxFollowRoll, Mathf.Abs(bestRoll));
-                        maxFollowSlide = Mathf.Max(maxFollowSlide, bestSlide);
-                        var fm = Place(bestRoll, bestSlide);
+                        var place = FollowPlacer(ctx, side, sol, target, right);
+                        float roll = plannedRoll[k], slide = plannedSlide[k];
+                        maxFollowRoll = Mathf.Max(maxFollowRoll, Mathf.Abs(roll));
+                        maxFollowSlide = Mathf.Max(maxFollowSlide, slide);
+                        var fm = place(roll, slide);
                         if (fm.reachClamped) clamps++;
                         if (fm.cost > worstFollowCost)
                         {
                             worstFollowCost = fm.cost;
-                            worstFollow = $"fase {k / (float)frames:0.00} (giro {bestRoll:+0;-0}°, fuera {bestSlide * 1000f:0} mm): [{string.Join(", ", fm.costBreakdown)}]";
+                            worstFollow = $"fase {k / (float)frames:0.00} (giro {roll:+0;-0}°, fuera {slide * 1000f:0} mm): [{string.Join(", ", fm.costBreakdown)}]";
                         }
                         rig.UseMainSurface();
                         continue;
@@ -674,6 +722,8 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
                 list.Add(rig.Capture(t));
                 rig.ReattachNode(); // el siguiente muestreo tiene que llevar el modelo con el offset VIEJO
             }
+            HandInteractionRig.EndTwistContinuity(rig.R);
+            HandInteractionRig.EndTwistContinuity(rig.L);
             if (action) rig.SweptTransform.localRotation = rig.SweptRest;
             if (ownsAnimationMode) AnimationMode.StopAnimationMode();
             if (worstFollowCost >= 0f)
@@ -683,7 +733,100 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
             report.AppendLine($"clip '{source.name}': {source.length:0.00} s{(loop ? ", bucle" : "")}; peso secundaria {minWeight:0.00}–{maxWeight:0.00}; " +
                               $"alcance recortado con peso completo en {clamps} fotograma(s)" +
                               (solved.CarrierRegrip ? $"; el modelo se aparta como mucho {maxNodeDriftMm:0.0} mm de su offset nuevo." : "."));
+            if (solved.CarrierRegrip && maxNodeDriftMm > 5f)
+                report.AppendLine($"AVISO REGRIP_DRIFT: en '{source.name}' el objeto se separa hasta {maxNodeDriftMm:0.0} mm de la mano rehecha " +
+                                  "(el brazo no llega a donde el clip lleva el objeto): subir maxShoulderShiftMeters o acercar la pose al agarre original.");
             return rig.BuildClip(list, source.length, loop);
+        }
+
+        /// <summary>La portadora rehecha en el fotograma ya muestreado: suelta el modelo y va por IK a su pose en él.
+        /// Devuelve true; <paramref name="clamped"/> dice si el brazo no llegó.</summary>
+        private static bool PoseCarrierRegrip(Context ctx, HandSide side, HandGripSolution sol, out bool clamped, out float driftMm)
+        {
+            var rig = ctx.Rig;
+            rig.DetachNode();
+            Vector3 cShoulder = side.Upper.position, cElbow = side.Fore.position, cHand = side.Hand.position;
+            Vector3 target = rig.GripMesh.TransformPoint(sol.HandPosInGrip);
+            // Con la mano nueva en otro sitio del objeto, en los clips de brazo estirado (los ataques del vendor) el hombro del
+            // clip ya no llega: el destornillador se separaba 17–19 mm de la mano en 12–31 fotogramas (medido). Se adelanta
+            // lo justo, con el mismo tope que la búsqueda.
+            Vector3 shoulder = cShoulder + sol.ShoulderShiftWorld;
+            side.Upper.position = shoulder;
+            float reach = (side.Fore.position - side.Upper.position).magnitude + (side.Hand.position - side.Fore.position).magnitude - 0.004f;
+            Vector3 to = target - shoulder;
+            if (to.magnitude > reach)
+                shoulder += to.normalized * Mathf.Min(ctx.Profile.maxShoulderShiftMeters, to.magnitude - reach + 0.002f);
+            side.Upper.position = shoulder;
+            clamped = !HandInteractionRig.SolveTwoBone(side, target,
+                rig.GripMesh.rotation * sol.HandRotInGrip, HandGripSolver.PoleFor(rig, side, sol.Pole, cElbow, cShoulder, cHand));
+            HandInteractionRig.DistributeForearmTwist(side);
+            HandInteractionRig.WriteFingers(side, sol.Fingers);
+            // Si el IK es exacto, el offset del modelo bajo la mano es el mismo en todos los fotogramas.
+            driftMm = (side.Hand.InverseTransformPoint(rig.Node.position) - sol.NodeLocalPos).magnitude * side.Hand.lossyScale.x * 1000f;
+            return true;
+        }
+
+        /// <summary>
+        /// Coloca la mano que sigue la pieza que gira, en el fotograma ya muestreado, con un giro sobre el eje del pomo y un
+        /// deslizamiento hacia fuera a lo largo de él (ninguno cambia el contacto de los dedos: el pomo es un cilindro sobre
+        /// ese eje), el hombro adelantado lo justo si no llega, y la mide. Deja activa la superficie de la pieza.
+        /// </summary>
+        private static Func<float, float, HandGripMetrics> FollowPlacer(Context ctx, HandSide side, HandGripSolution sol, HandGripTarget target, bool right)
+        {
+            var rig = ctx.Rig;
+            var p = ctx.Profile;
+            rig.UseSurfaceFor(target);
+            Vector3 knob = rig.AxisPoint(sol.Along);
+            Vector3 spin = rig.Axis;
+            Vector3 delta = knob - rig.GripMesh.TransformPoint(sol.PartPointInGrip);
+            Vector3 restPos = rig.GripMesh.TransformPoint(sol.HandPosInGrip) + delta;
+            Quaternion restRot = rig.GripMesh.rotation * sol.HandRotInGrip;
+            Vector3 baseShoulder = rig.InstanceRoot.TransformPoint(sol.ShoulderInRoot);
+            var work = JsonUtility.FromJson<HandGripTarget>(JsonUtility.ToJson(target));
+            work.alongAxis = sol.Along;
+            // Hacia FUERA del cuerpo: con el giro solo, la palma seguía 28 mm dentro a fase 0,23 (medido).
+            Vector3 outward = rig.MainSurface.Gap(knob + spin * 0.01f) >= rig.MainSurface.Gap(knob - spin * 0.01f) ? spin : -spin;
+            return (roll, slide) =>
+            {
+                var r = Quaternion.AngleAxis(roll, spin);
+                Vector3 handTarget = knob + r * (restPos - knob) + outward * slide;
+                Vector3 shoulder = baseShoulder;
+                side.Upper.position = shoulder;
+                float reach = (side.Fore.position - side.Upper.position).magnitude + (side.Hand.position - side.Fore.position).magnitude - 0.01f;
+                Vector3 to = handTarget - shoulder;
+                if (to.magnitude > reach) shoulder += to.normalized * Mathf.Min(p.maxShoulderShiftMeters, to.magnitude - reach + 0.005f);
+                side.Upper.position = shoulder;
+                bool ok = HandInteractionRig.SolveTwoBone(side, handTarget, r * restRot, sol.FollowPoleWorld);
+                HandInteractionRig.DistributeForearmTwist(side);
+                HandInteractionRig.WriteFingers(side, sol.Fingers);
+                return HandGripSolver.Measure(rig, side, work, sol.Clock, !ok, shoulder - baseShoulder, 0f, rig.Side(!right),
+                    checkFingers: false, checkView: false, checkBodyContact: false);
+            };
+        }
+
+        /// <summary>Media gaussiana (radio <paramref name="radius"/> fotogramas, sigma la mitad) de una serie por fotograma; en
+        /// bucle, circular (el último fotograma repite el primero).</summary>
+        private static void SmoothSeries(float[] v, bool loop, int radius)
+        {
+            int n = loop ? v.Length - 1 : v.Length;
+            if (n < 3 || radius < 1) return;
+            var src = (float[])v.Clone();
+            float twoSigma2 = 2f * Mathf.Pow(radius * 0.5f, 2f);
+            for (int i = 0; i < n; i++)
+            {
+                float sum = 0f, wsum = 0f;
+                for (int d = -radius; d <= radius; d++)
+                {
+                    int j = i + d;
+                    if (loop) j = ((j % n) + n) % n;
+                    else if (j < 0 || j >= n) continue;
+                    float w = Mathf.Exp(-(d * d) / twoSigma2);
+                    sum += src[j] * w;
+                    wsum += w;
+                }
+                v[i] = sum / wsum;
+            }
+            if (loop) v[n] = v[0];
         }
 
         private static void BlendFingers(HandSide side, Quaternion[][] target, float w)

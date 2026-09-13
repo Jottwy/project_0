@@ -100,7 +100,7 @@ MonoBehaviour:
   hasBaseNodeLocal: 1
   baseNodeLocalPosition: {x: 0.011007104, y: 0.048290767, z: -0.027707038}
   baseNodeLocalRotation: {x: 0.26151764, y: 0.20765063, z: -0.49407113, w: 0.802735}
-  lastBakeUtc: 2026-09-13T20:36:42.2530222Z
+  lastBakeUtc: 2026-09-13T21:25:31.6127791Z
   resolvedObjectRotationInView: {x: -0.038489163, y: 0.6534854, z: 0.7537277, w: 0.058054328}
   hasResolvedView: 1
   notes: "Preparado 2026-09-13 por la API (categor\xEDa flashlight)."

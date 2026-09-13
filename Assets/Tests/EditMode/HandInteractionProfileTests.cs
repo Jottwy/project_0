@@ -184,6 +184,53 @@ namespace BackroomsSurvival.Tests
             Assert.IsEmpty(failures, string.Join("\n", failures) + "\n" + Rebake);
         }
 
+        /// <summary>
+        /// NINGÚN HUESO DEL BRAZO TIEMBLA. La torsión del antebrazo medida en (−180°, 180°] cambiaba de signo al cruzar ±180° y
+        /// los huesos de torsión daban media vuelta en un fotograma (160° dos veces por vuelta de cuerda): la mano iba bien y el
+        /// antebrazo temblaba. Se mide la ACELERACIÓN angular (cambio del paso entre fotogramas), que separa un salto de un
+        /// movimiento rápido: lo legítimo medido no pasa de 35°.
+        /// </summary>
+        [Test]
+        public void LosClipsHorneadosNoTiemblan()
+        {
+            var profiles = BakedProfiles().ToList();
+            if (profiles.Count == 0) Assert.Ignore("no hay perfiles horneados");
+            string[] bones = { "UpperArm", "Forearm", "ForearmTwist.2", "ForearmTwist.3", "ForearmTwist.4", "Hand" };
+            var failures = new List<string>();
+            foreach (var p in profiles)
+            {
+                using var posed = new Posed(p);
+                foreach (var clip in p.bakedClips.Where(c => c != null))
+                {
+                    int n = Mathf.Max(2, Mathf.RoundToInt(clip.length * 30f));
+                    var names = new List<string>();
+                    foreach (var s in new[] { "R", "L" })
+                        foreach (var b in bones)
+                            names.Add($"{b}.{s}");
+                    var joints = names.Select(posed.Bone).ToArray();
+                    var previous = new Quaternion[joints.Length];
+                    var step = new float[joints.Length];
+                    for (int k = 0; k <= n; k++)
+                    {
+                        posed.Sample(clip, Mathf.Min(clip.length, k / 30f));
+                        for (int i = 0; i < joints.Length; i++)
+                        {
+                            var q = joints[i].localRotation;
+                            if (k > 0)
+                            {
+                                float s = Quaternion.Angle(previous[i], q);
+                                if (k > 1 && Mathf.Abs(s - step[i]) > 90f)
+                                    failures.Add($"{p.name} '{clip.name}': '{names[i]}' salta {s:0}° en el fotograma {k} (el anterior {step[i]:0}°)");
+                                step[i] = s;
+                            }
+                            previous[i] = q;
+                        }
+                    }
+                }
+            }
+            Assert.IsEmpty(failures, string.Join("\n", failures.Take(12)) + "\n" + Rebake);
+        }
+
         [Test]
         public void LasDosManosNoSePisan()
         {
@@ -235,7 +282,7 @@ namespace BackroomsSurvival.Tests
                 var idle = clip != null ? clip
                     : Overrides(p.wieldablePrefab).FirstOrDefault(o => o.original.name.ToLowerInvariant().Contains("idle")).effective;
                 Assert.IsNotNull(idle, $"{p.name}: sin clip de idle");
-                var animator = _instance.GetComponentInChildren<Animator>(true);
+                var animator = _animator = _instance.GetComponentInChildren<Animator>(true);
                 idle.SampleAnimation(animator.gameObject, clip != null ? Mathf.Clamp(time, 0f, clip.length) : 0f);
                 animator.transform.localPosition = Vector3.zero;
                 animator.transform.localRotation = Quaternion.identity;
@@ -256,6 +303,16 @@ namespace BackroomsSurvival.Tests
                     lists[i].Sort();
                     _radii[i] = lists[i][Mathf.Clamp((int)(lists[i].Count * 0.9f), 0, lists[i].Count - 1)];
                 }
+            }
+
+            private Animator _animator;
+
+            /// <summary>Vuelve a posar la instancia con otro clip y tiempo.</summary>
+            public void Sample(AnimationClip clip, float time)
+            {
+                clip.SampleAnimation(_animator.gameObject, Mathf.Clamp(time, 0f, clip.length));
+                _animator.transform.localPosition = Vector3.zero;
+                _animator.transform.localRotation = Quaternion.identity;
             }
 
             /// <summary>La muñeca en el espacio de la malla de agarre, en metros.</summary>

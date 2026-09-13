@@ -33,6 +33,11 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
         public Vector3 EnclosedLocal, KnuckleLineLocal, PalmNormalLocal;
         public float PalmDepthLocal;
         public bool SignCheckFailed;
+
+        /// <summary>Mientras se hornea un clip, la torsión repartida al antebrazo se desenvuelve contra la del fotograma
+        /// anterior (ver <see cref="HandInteractionRig.BeginTwistContinuity"/>).</summary>
+        public bool TwistContinuity;
+        public float LastTwist = float.NaN;
     }
 
     /// <summary>Parte del modelo que no es la superficie activa (la manivela): los dedos no pueden atravesarla.</summary>
@@ -642,9 +647,32 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
             return angle;
         }
 
+        /// <summary>
+        /// Desde aquí y hasta <see cref="EndTwistContinuity"/>, cada torsión repartida se toma como el equivalente (±360°) más
+        /// cercano a la anterior. Medida suelta, al cruzar ±180° cambia de signo y los huesos de torsión dan media vuelta en
+        /// un fotograma: 160° en la cuerda de la linterna y 164° al equiparla (medido). Sólo al hornear un clip; en la
+        /// búsqueda cada candidato es independiente.
+        /// </summary>
+        public static void BeginTwistContinuity(HandSide side)
+        {
+            side.TwistContinuity = true;
+            side.LastTwist = float.NaN;
+        }
+
+        public static void EndTwistContinuity(HandSide side)
+        {
+            side.TwistContinuity = false;
+            side.LastTwist = float.NaN;
+        }
+
         public static void DistributeForearmTwist(HandSide side)
         {
             float angle = TwistDegrees(Quaternion.Inverse(side.Fore.rotation) * side.Hand.rotation);
+            if (side.TwistContinuity)
+            {
+                if (!float.IsNaN(side.LastTwist)) angle += 360f * Mathf.Round((side.LastTwist - angle) / 360f);
+                side.LastTwist = angle;
+            }
             float handLength = side.Hand.localPosition.magnitude;
             foreach (var tw in side.Twist)
             {

@@ -805,11 +805,82 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
         public static HandGripSolution SolveCarrierRegrip(HandInteractionRig rig, HandSide side, HandGripTarget target,
             float maxShoulderShift, HandSide other, StringBuilder log)
         {
+            // LA POSE QUE YA HABÍA ES CANDIDATA. La búsqueda construye la orientación desde reloj e inclinación y puede no
+            // pasar cerca de ella: en el destornillador todos sus candidatos daban muñeca en el tope mientras su agarre real
+            // tiene la muñeca a −24°/8° y sólo le sobraban la palma 6,7 mm y el pulgar 11 mm dentro (medido). Se guarda antes
+            // de soltar el modelo y, tras la búsqueda, se prueba la misma orientación empujada fuera del mango.
+            var baseMeasured = MeasuredCarrierTarget(rig, side, target, out float baseClock);
+            Vector3 basePosInGrip = rig.GripMesh.InverseTransformPoint(side.Hand.position);
+            Quaternion baseRotInGrip = Quaternion.Inverse(rig.GripMesh.rotation) * side.Hand.rotation;
+            float baseTwist = HandInteractionRig.TwistDegrees(Quaternion.Inverse(side.Fore.rotation) * side.Hand.rotation);
+            var baseFrame = rig.Capture(0f);
+
             rig.DetachNode(); // lanza NODE_DETACH_FAILED si Unity no dejó soltarlo: sin eso la búsqueda mide aire
             Vector3 baseShoulder = side.Upper.position, baseElbow = side.Fore.position, baseHand = side.Hand.position;
             rig.SweptCheckEnabled = true;
             HandGripSolution sol;
-            try { sol = SolveSecondary(rig, side, target, maxShoulderShift, other, log); }
+            try
+            {
+                sol = SolveSecondary(rig, side, target, maxShoulderShift, other, log);
+
+                Vector3 basePole = PoleFor(rig, side, 0, baseElbow, baseShoulder, baseHand);
+                Vector3 handWorld0 = rig.GripMesh.TransformPoint(basePosInGrip);
+                Vector3 axisPoint = rig.MainSurface.PointAt(rig.MainSurface.Along01(handWorld0));
+                // Dos direcciones de empuje: la radial desde el eje por la muñeca y la CONTRARIA a la palma. La muñeca no está
+                // del lado de la palma: empujando sólo en radial, la palma seguía 4,7 mm dentro con 0 mm de empuje (medido).
+                Vector3 axisW = rig.MainSurface.AxisWorld;
+                Vector3 radialOut = Vector3.ProjectOnPlane(handWorld0 - axisPoint, axisW).normalized;
+                Vector3 palmOut = -Vector3.ProjectOnPlane(side.Hand.TransformDirection(side.PalmNormalLocal), axisW).normalized;
+                var pushDirs = new[] { radialOut, palmOut };
+                float bestPush = -1f;
+                Vector3 bestDir = radialOut;
+                HandGripMetrics bestSeed = null;
+                foreach (var dir in pushDirs)
+                {
+                    if (dir.sqrMagnitude < 0.5f) continue;
+                    for (float push = 0f; push <= 0.0201f; push += 0.001f)
+                    {
+                        rig.Apply(baseFrame);
+                        side.Upper.position = baseShoulder;
+                        bool ok = HandInteractionRig.SolveTwoBone(side, handWorld0 + dir * push, rig.GripMesh.rotation * baseRotInGrip, basePole);
+                        HandInteractionRig.DistributeForearmTwist(side);
+                        FitFingers(rig, side, baseMeasured);
+                        var m = Measure(rig, side, baseMeasured, baseClock, !ok, Vector3.zero, baseTwist, other, true, checkView: true);
+                        if (bestSeed == null || m.cost < bestSeed.cost) { bestSeed = m; bestPush = push; bestDir = dir; }
+                    }
+                }
+                if (bestSeed != null && bestSeed.cost < sol.Metrics.cost)
+                {
+                    rig.Apply(baseFrame);
+                    side.Upper.position = baseShoulder;
+                    HandInteractionRig.SolveTwoBone(side, handWorld0 + bestDir * bestPush, rig.GripMesh.rotation * baseRotInGrip, basePole);
+                    HandInteractionRig.DistributeForearmTwist(side);
+                    FitFingers(rig, side, baseMeasured);
+                    log?.AppendLine($"mano {side.Suffix} (portadora): su pose ACTUAL empujada {bestPush * 1000f:0} mm " +
+                                    $"({(bestDir == palmOut ? "contra la palma" : "en radial")}) fuera del mango cuesta " +
+                                    $"{bestSeed.cost:0.00} y la búsqueda {sol.Metrics.cost:0.00}: gana la actual [{string.Join(", ", bestSeed.costBreakdown)}]");
+                    sol = new HandGripSolution
+                    {
+                        Right = side.Right,
+                        Along = baseMeasured.alongAxis,
+                        Clock = baseClock,
+                        Tilt = target.tiltDegrees,
+                        PalmOffset = bestPush,
+                        IndexTowardTip = target.indexTowardTip,
+                        Pole = 0,
+                        ShoulderShiftWorld = Vector3.zero,
+                        HasArmPose = true,
+                        HandPosInGrip = rig.GripMesh.InverseTransformPoint(side.Hand.position),
+                        HandRotInGrip = Quaternion.Inverse(rig.GripMesh.rotation) * side.Hand.rotation,
+                        Fingers = HandInteractionRig.ReadFingers(side),
+                        Metrics = bestSeed,
+                        PartPointInGrip = rig.GripMesh.InverseTransformPoint(axisPoint),
+                        ShoulderInRoot = rig.InstanceRoot.InverseTransformPoint(baseShoulder),
+                        FollowPoleWorld = basePole,
+                    };
+                }
+                rig.Apply(baseFrame);
+            }
             finally { rig.SweptCheckEnabled = false; }
 
             // Dejarla puesta: hombro, IK a su pose en el objeto, dedos.
