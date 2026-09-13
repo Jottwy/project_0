@@ -319,6 +319,11 @@ MonoBehaviour:
     scaleFarBonus: 0.22
     repeatParentPenalty: 0.18
     repeatGrandparentPenalty: 0.45
+  materials:
+    floor: {fileID: 2100000, guid: 8d79e6ab2f46bbc4d910dbdc27d4ba50, type: 2}
+    structure: {fileID: 2100000, guid: d4658cf4c0dcc184bb6acbd77af89660, type: 2}
+    ceiling: {fileID: 2100000, guid: 5dfd27f4af1a9ab46bfd93347276554e, type: 2}
+    decoration: {fileID: 2100000, guid: 8821b312e1c291645bde9c97acf695dd, type: 2}
   spawnLights: 1
   lightCadence:
     offChance: 0.12
@@ -347,7 +352,7 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!1 &1178384067
+--- !u!1 &1836694445
 GameObject:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
@@ -355,10 +360,11 @@ GameObject:
   m_PrefabAsset: {fileID: 0}
   serializedVersion: 6
   m_Component:
-  - component: {fileID: 1178384071}
-  - component: {fileID: 1178384070}
-  - component: {fileID: 1178384069}
-  - component: {fileID: 1178384068}
+  - component: {fileID: 1836694450}
+  - component: {fileID: 1836694449}
+  - component: {fileID: 1836694448}
+  - component: {fileID: 1836694447}
+  - component: {fileID: 1836694446}
   m_Layer: 0
   m_Name: MapMemory
   m_TagString: Untagged
@@ -366,13 +372,13 @@ GameObject:
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
   m_IsActive: 1
---- !u!114 &1178384068
+--- !u!114 &1836694446
 MonoBehaviour:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1178384067}
+  m_GameObject: {fileID: 1836694445}
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: f3b5d7e9a1c24e6f8a0b2c4d6e8f1a47, type: 3}
@@ -383,30 +389,49 @@ MonoBehaviour:
   structure: {fileID: 2100000, guid: d4658cf4c0dcc184bb6acbd77af89660, type: 2}
   ceiling: {fileID: 2100000, guid: 5dfd27f4af1a9ab46bfd93347276554e, type: 2}
   decoration: {fileID: 2100000, guid: 8821b312e1c291645bde9c97acf695dd, type: 2}
---- !u!114 &1178384069
+--- !u!114 &1836694447
 MonoBehaviour:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1178384067}
+  m_GameObject: {fileID: 1836694445}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 6a8c0e2f4b5d4f8a9c1e3a5b7d9f1c6e, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  sampler: {fileID: 1836694449}
+  playerControl: {fileID: 639000649}
+  maxDrawSeconds: 3
+  penCostPerMetre: 0.02
+  penWidthPx: 3
+  penColour: {r: 0.165, g: 0.278, b: 0.659, a: 0.95}
+  paperColour: {r: 0.945, g: 0.937, b: 0.898, a: 1}
+--- !u!114 &1836694448
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1836694445}
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: c9f1d3b5a7e24c6d9e8f0a1b3c5d7e25, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  sampler: {fileID: 1178384070}
+  sampler: {fileID: 1836694449}
   show: 1
   viewCells: 80
   screenSize: 320
   refreshSeconds: 0.25
---- !u!114 &1178384070
+--- !u!114 &1836694449
 MonoBehaviour:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1178384067}
+  m_GameObject: {fileID: 1836694445}
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: b7e2c4a91d3f4e5a8c6b0d2e4f6a8c13, type: 3}
@@ -422,13 +447,13 @@ MonoBehaviour:
     serializedVersion: 2
     m_Bits: 0
   logEverySeconds: 10
---- !u!4 &1178384071
+--- !u!4 &1836694450
 Transform:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1178384067}
+  m_GameObject: {fileID: 1836694445}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
   m_LocalPosition: {x: 0, y: 0, z: 0}
@@ -443,4 +468,4 @@ SceneRoots:
   m_Roots:
   - {fileID: 933900998}
   - {fileID: 639000651}
-  - {fileID: 1178384071}
+  - {fileID: 1836694450}
