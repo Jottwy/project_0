@@ -74,6 +74,7 @@
     <!-- P0.2: la hoja y sus trazos, puros como el recuerdo. -->
     <Compile Include="$(Repo)\Assets\Scripts\Gameplay\Mapping\MapSheet.cs" />
     <Compile Include="$(Repo)\Assets\Scripts\Gameplay\Mapping\MapSheetStrokeBuilder.cs" />
+    <Compile Include="$(Repo)\Assets\Scripts\Gameplay\Mapping\MapSheetRaster.cs" />
   </ItemGroup>
 
   <!-- Los ficheros de test REALES, sin tocar. LanFallbackMetadataTests queda fuera: depende de
@@ -107,6 +108,7 @@
     <Compile Include="$(Repo)\Assets\Tests\EditMode\PeerIdentityEnvTests.cs" />
     <Compile Include="$(Repo)\Assets\Tests\EditMode\MapMemoryTests.cs" />
     <Compile Include="$(Repo)\Assets\Tests\EditMode\MapSheetStrokesTests.cs" />
+    <Compile Include="$(Repo)\Assets\Tests\EditMode\MapSheetRasterTests.cs" />
   </ItemGroup>
 
 </Project>
