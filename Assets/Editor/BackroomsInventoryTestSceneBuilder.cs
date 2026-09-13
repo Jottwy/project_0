@@ -182,6 +182,7 @@ namespace BackroomsSurvival.EditorTools
         {
             var backpacks = BackroomsBackpackPrototypeCreator.EnsureAssets();
             var belts = BackroomsBackpackPrototypeCreator.EnsureBelts();
+            var garments = BackroomsBackpackPrototypeCreator.EnsureGarments();
             if (backpacks.Length == 0) return;
 
             var player = Object.FindAnyObjectByType<Player>(FindObjectsInactive.Include);
@@ -206,6 +207,13 @@ namespace BackroomsSurvival.EditorTools
                 AssetDatabase.LoadAssetAtPath<ContainerRestriction>(BackroomsBackpackPrototypeCreator.StorageRestrictionPath));
             EnsureContainer(list, BackroomsBackpackPrototypeCreator.WaistContainer, 1,
                 AssetDatabase.LoadAssetAtPath<ContainerRestriction>(BackroomsBackpackPrototypeCreator.WaistRestrictionPath));
+            // Pieza 6: Encima, Manos (el par de guantes) y Cara, también al final.
+            EnsureContainer(list, BackroomsBackpackPrototypeCreator.OuterContainer, 1,
+                AssetDatabase.LoadAssetAtPath<ContainerRestriction>(BackroomsBackpackPrototypeCreator.OuterRestrictionPath));
+            EnsureContainer(list, BackroomsBackpackPrototypeCreator.GlovesContainer, 1,
+                AssetDatabase.LoadAssetAtPath<ContainerRestriction>(BackroomsBackpackPrototypeCreator.GlovesRestrictionPath));
+            EnsureContainer(list, BackroomsBackpackPrototypeCreator.FaceContainer, 1,
+                AssetDatabase.LoadAssetAtPath<ContainerRestriction>(BackroomsBackpackPrototypeCreator.FaceRestrictionPath));
             // D14 enm. 1: base de 9 y barra de 8 (2 manos + cinturón), capada por lo que lleves en la cintura. Override de
             // ESCENA sobre los contenedores 0 y 1 del vendor: el prefab del jugador no cambia.
             SetSlots(list, BackroomsBackpackPrototypeCreator.BaseContainer, BackroomsBackpackPrototypeCreator.BaseSlots);
@@ -218,6 +226,9 @@ namespace BackroomsSurvival.EditorTools
             if (worn == null) worn = new GameObject(WornStorageName, typeof(BackroomsWornStorage));
             // D6 enm. 2: el peso máximo sale del equipo.
             if (worn.GetComponent<BackroomsCarryWeight>() == null) worn.AddComponent<BackroomsCarryWeight>();
+            // D6 enm. 3: la carga frena; y lo que da cada prenda puesta.
+            if (worn.GetComponent<BackroomsCarrySpeed>() == null) worn.AddComponent<BackroomsCarrySpeed>();
+            if (worn.GetComponent<BackroomsWornStats>() == null) worn.AddComponent<BackroomsWornStats>();
 
             var root = GameObject.Find("Backpacks");
             if (root == null)
@@ -241,6 +252,12 @@ namespace BackroomsSurvival.EditorTools
                 var beltRoot = new GameObject("Belts");
                 for (int i = 0; i < belts.Length; i++)
                     SpawnPickup(belts[i], beltRoot.transform, new Vector3(-2.6f - i * 0.9f, 0.3f, -2.6f));
+            }
+            if (GameObject.Find("Garments") == null)
+            {
+                var garmentRoot = new GameObject("Garments");
+                for (int i = 0; i < garments.Length; i++)
+                    SpawnPickup(garments[i], garmentRoot.transform, new Vector3(-2.6f - i * 0.9f, 0.3f, -3.7f));
             }
             Debug.Log("[InventoryTestScene] prototipo de mochilas montado");
         }

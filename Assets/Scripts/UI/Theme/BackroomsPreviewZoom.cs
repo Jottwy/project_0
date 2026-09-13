@@ -37,6 +37,8 @@ namespace BackroomsSurvival.UI
         public static readonly Zone[] Zones =
         {
             new Zone("Head", "Cabeza", 0f, 0.06f, 0.6f, "Head"),
+            new Zone("Face", "Cara", 0f, 0.04f, 0.38f, "Head"),
+            new Zone("Outer", "Encima", 0f, -0.12f, 1.05f, "UpperSpine"),
             new Zone("Torso", "Torso", 0f, -0.05f, 0.9f, "UpperSpine"),
             new Zone("Back", "Espalda", 180f, 0f, 0.9f, "MiddleSpine"),
             new Zone("Waist", "Cintura", 0f, 0f, 0.8f, "Pelvis"),

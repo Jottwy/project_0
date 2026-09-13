@@ -107,7 +107,7 @@ namespace BackroomsSurvival.Tests
             Assert.IsNotNull(backdropImage.texture, "el fondo sin el render del preview");
             Assert.Less(backdrop.GetSiblingIndex(), backdrop.parent.Find("Containers").GetSiblingIndex(), "el render va detrás de los slots");
             var headers = variant.GetComponentsInChildren<BackroomsZoneHeader>(true);
-            Assert.AreEqual(6, headers.Length, "una cinta con zoom por slot de equipo");
+            Assert.AreEqual(9, headers.Length, "una cinta con zoom por slot de equipo (pieza 6: Cara, Encima y Manos)");
             foreach (var header in headers)
             {
                 Assert.GreaterOrEqual(BackroomsPreviewZoom.IndexOf(header.Zone), 0, $"cinta con zona desconocida '{header.Zone}'");

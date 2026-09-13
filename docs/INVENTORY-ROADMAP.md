@@ -418,3 +418,16 @@ tinte sobre la UI piden overlay propio o canvas en Screen Space Camera.
   distintos? Recomendación: el par hasta que el sistema de heridas por zonas decida si la protección va por mano (la venda
   ya es por brazo, bits 7/8 de `buttons`).
 
+## Tanda A (2026-09-13 noche) — DECIDIDO por Joel
+- **Hueco «Manos» de la barra inferior: cerrado** — se queda como está, con soltar y arrastrar a los huecos.
+- **Pieza 6 hecha, pendiente de Play** — contenedores `Outer`, `Gloves` (el par) y `Face` al final del jugador de la
+  escena de pruebas, con tags y restricciones propias; segunda columna Face · Outer · Gloves · Waist; cintas con zoom
+  (zonas Cara y Encima nuevas; Gloves enfoca las manos). Placeholders: chaqueta, guantes y mascarilla de trabajo.
+- **D6 enmienda 3 — la carga frena (`BackroomsCarrySpeed`)** — andar y correr × `1 − 0,5·(peso/máximo)²`: frena desde el
+  primer kg, apenas al principio y más pasada la mitad (25 % ≈ 97 %, 50 % = 87,5 %, 75 % ≈ 72 %, máximo = 50 %). Por el
+  `SpeedModifier` del vendor; movimiento de cliente, sin wire. Solo escena de pruebas, inerte con backend. El
+  `CarryBonusPct` de las mochilas («reparte la carga») todavía no se aplica.
+- **Modificadores por prenda (`WearableStatData` + `BackroomsWornStats`)** — solo cuenta lo puesto; se suman y se recortan
+  a [−30 %, +20 %]. De momento solo velocidad: zapatillas de correr +8 %, botas de trabajo −3 % (hueco Feet del vendor).
+- **ANOTADO, sin hacer — barra de peso por prenda.**
+

@@ -436,7 +436,7 @@ namespace BackroomsSurvival.EditorTools
                 // D14: las manos van en la barra; la caja «Manos» aparte se retira.
                 if (character.Find("BR_Hands") is Transform oldHands) Object.DestroyImmediate(oldHands.gameObject);
 
-                // Segunda columna de slots, a la derecha del muñeco (greybox). De momento, la cintura.
+                // Segunda columna de slots, a la derecha del muñeco (greybox). Pieza 6: de arriba abajo como el cuerpo.
                 if (character.Find("Containers/HeadContainer") is Transform headSlot && headSlot.TryGetComponent<ItemContainerUI>(out var headTemplate))
                 {
                     var rightSlots = EnsureRect(character, "BR_ContainersRight", typeof(VerticalLayoutGroup));
@@ -449,9 +449,14 @@ namespace BackroomsSurvival.EditorTools
                     column.childForceExpandWidth = false;
                     column.childForceExpandHeight = false;
                     InspectionOnly(rightSlots.gameObject);
-                    var waistUi = EnsureEquipmentSlot(rightSlots, "BR_WaistContainer", BackroomsBackpackPrototypeCreator.WaistContainer, "Waist", headTemplate, theme);
-                    RegisterContainerUI(inventoryUI, waistUi);
-                    report.Count("hueco de cintura", 1);
+                    for (int k = 0; k < RightSlots.Length; k++)
+                    {
+                        var (slotName, containerName, label) = RightSlots[k];
+                        var slotUi = EnsureEquipmentSlot(rightSlots, slotName, containerName, label, headTemplate, theme);
+                        slotUi.transform.SetSiblingIndex(k);
+                        RegisterContainerUI(inventoryUI, slotUi);
+                    }
+                    report.Count("huecos de la segunda columna", RightSlots.Length);
                 }
                 else report.Missing("Containers/HeadContainer (plantilla de slot)");
 
@@ -904,6 +909,15 @@ namespace BackroomsSurvival.EditorTools
             return created;
         }
 
+        // Segunda columna del personaje: objeto, contenedor y cinta.
+        private static readonly (string Name, string Container, string Label)[] RightSlots =
+        {
+            ("BR_FaceContainer", BackroomsBackpackPrototypeCreator.FaceContainer, "Face"),
+            ("BR_OuterContainer", BackroomsBackpackPrototypeCreator.OuterContainer, "Outer"),
+            ("BR_GlovesContainer", BackroomsBackpackPrototypeCreator.GlovesContainer, "Gloves"),
+            ("BR_WaistContainer", BackroomsBackpackPrototypeCreator.WaistContainer, "Waist"),
+        };
+
         /// <summary>Slot de equipo propio con la forma de los del vendor: cinta encima y un hueco de 72 px con su contenedor.</summary>
         private static ItemContainerUI EnsureEquipmentSlot(RectTransform column, string name, string containerName, string label,
             ItemContainerUI template, BackroomsUiTheme theme)
@@ -1088,6 +1102,9 @@ namespace BackroomsSurvival.EditorTools
             ("Containers/BackpackContainer", "Back"),
             ("Containers/LegsContainer", "Legs"),
             ("Containers/FeetContainer", "Feet"),
+            ("BR_ContainersRight/BR_FaceContainer", "Face"),
+            ("BR_ContainersRight/BR_OuterContainer", "Outer"),
+            ("BR_ContainersRight/BR_GlovesContainer", "Hands"),
             ("BR_ContainersRight/BR_WaistContainer", "Waist"),
         };
 

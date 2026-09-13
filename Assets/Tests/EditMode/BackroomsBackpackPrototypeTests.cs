@@ -237,5 +237,76 @@ namespace BackroomsSurvival.Tests
             WornCapacityRestriction.EndSwap();
             Assert.AreEqual(6, WornCapacityRestriction.EffectiveUsedSlots(6, false), "cerrar de más no deja el modo intercambio puesto");
         }
+
+        [Test]
+        public void LaPiezaSeisTraeEncimaManosYCara()
+        {
+            const string tags = "Assets/Resources/Definitions/ItemTag/";
+            var pieces = new[]
+            {
+                ("Outer", "BR_Work Jacket", tags + "BR_Outer Equipment.asset"),
+                ("Gloves", "BR_Work Gloves", tags + "BR_Hands Equipment.asset"),
+                ("Face", "BR_Dust Mask", tags + "BR_Face Equipment.asset"),
+            };
+            string scene = File.ReadAllText(TestScenePath);
+            var variant = AssetDatabase.LoadAssetAtPath<GameObject>("Assets/Prefabs/UI/BR_UI_Player.prefab");
+            foreach (var (container, item, tagPath) in pieces)
+            {
+                var tag = AssetDatabase.LoadAssetAtPath<ItemTagDefinition>(tagPath);
+                Assert.IsNotNull(tag, $"falta {tagPath}: Backrooms/Inventory/Create Backpack Prototype");
+                var def = AssetDatabase.LoadAssetAtPath<ItemDefinition>($"Assets/Resources/Definitions/Item/{item}.asset");
+                Assert.IsNotNull(def, $"falta {item}");
+                Assert.AreEqual(tag.Id, (int)def.Tag, $"{item} no lleva el tag de {container}");
+                Assert.AreEqual(1, def.StackSize, "una prenda nunca se apila");
+                StringAssert.Contains($"value: {container}", scene, $"la escena no añade el contenedor {container}");
+
+                bool slot = false;
+                foreach (var ui in variant.GetComponentsInChildren<ItemContainerUI>(true))
+                    slot |= ui.ContainerName == container && DirectSlots(ui.transform) == 1;
+                Assert.IsTrue(slot, $"sin hueco {container} en la columna del personaje");
+            }
+        }
+
+        [Test]
+        public void LaCargaFrenaConCurvaHastaLaMitadEnElMaximo()
+        {
+            Assert.AreEqual(1f, BackroomsCarrySpeed.Multiplier(0f, 20f, 0.5f, 2f), "sin carga, velocidad entera");
+            Assert.Less(BackroomsCarrySpeed.Multiplier(1f, 20f, 0.5f, 2f), 1f, "frena desde el primer kg");
+            Assert.Greater(BackroomsCarrySpeed.Multiplier(4f, 20f, 0.5f, 2f), 0.97f, "al principio apenas se nota");
+            Assert.AreEqual(0.875f, BackroomsCarrySpeed.Multiplier(10f, 20f, 0.5f, 2f), 1e-4f, "a la mitad");
+            Assert.AreEqual(0.5f, BackroomsCarrySpeed.Multiplier(20f, 20f, 0.5f, 2f), 1e-4f, "en el máximo, la mitad");
+            Assert.AreEqual(0.5f, BackroomsCarrySpeed.Multiplier(30f, 20f, 0.5f, 2f), 1e-4f, "por encima del máximo no frena más");
+            float firstHalf = 1f - BackroomsCarrySpeed.Multiplier(10f, 20f, 0.5f, 2f);
+            float secondHalf = BackroomsCarrySpeed.Multiplier(10f, 20f, 0.5f, 2f) - BackroomsCarrySpeed.Multiplier(20f, 20f, 0.5f, 2f);
+            Assert.Greater(secondHalf, 2f * firstHalf, "pasada la mitad aprieta mucho más");
+
+            var guids = AssetDatabase.FindAssets("BackroomsCarrySpeed t:MonoScript");
+            Assert.IsNotEmpty(guids, "falta el script BackroomsCarrySpeed");
+            StringAssert.Contains(guids[0], File.ReadAllText(TestScenePath), "la escena de pruebas no monta BackroomsCarrySpeed");
+            StringAssert.DoesNotContain(guids[0], File.ReadAllText(ShowcasePath), "STP_Showcase lleva el frenado por carga");
+        }
+
+        [Test]
+        public void LasPrendasSumanVelocidadConTope()
+        {
+            Assert.AreEqual(1f, BackroomsWornStats.SpeedMultiplier(new WearableStatData[0], -30f, 20f), "desnudo, nada");
+            Assert.AreEqual(1.05f, BackroomsWornStats.SpeedMultiplier(new[] { new WearableStatData(8f), new WearableStatData(-3f) }, -30f, 20f),
+                1e-4f, "se suman");
+            Assert.AreEqual(1.2f, BackroomsWornStats.SpeedMultiplier(new[] { new WearableStatData(15f), new WearableStatData(15f) }, -30f, 20f),
+                1e-4f, "apilar prendas no pasa del tope");
+            Assert.AreEqual(0.7f, BackroomsWornStats.SpeedMultiplier(new[] { new WearableStatData(-45f) }, -30f, 20f), 1e-4f, "ni del suelo");
+
+            var feet = AssetDatabase.LoadAssetAtPath<ItemTagDefinition>("Assets/PolymindGames/STP/Data/Resources/Definitions/ItemTag/STP_Feet Equipment.asset");
+            var shoes = AssetDatabase.LoadAssetAtPath<ItemDefinition>("Assets/Resources/Definitions/Item/BR_Running Shoes.asset");
+            Assert.IsNotNull(shoes, "faltan las zapatillas de correr");
+            Assert.AreEqual(feet.Id, (int)shoes.Tag, "las zapatillas van en el hueco de pies del vendor");
+            Assert.IsTrue(shoes.TryGetDataOfType(out WearableStatData stats));
+            Assert.Greater(stats.SpeedPct, 0f, "las zapatillas dan velocidad");
+
+            var guids = AssetDatabase.FindAssets("BackroomsWornStats t:MonoScript");
+            Assert.IsNotEmpty(guids, "falta el script BackroomsWornStats");
+            StringAssert.Contains(guids[0], File.ReadAllText(TestScenePath), "la escena de pruebas no monta BackroomsWornStats");
+            StringAssert.DoesNotContain(guids[0], File.ReadAllText(ShowcasePath), "STP_Showcase lleva los modificadores por prenda");
+        }
     }
 }

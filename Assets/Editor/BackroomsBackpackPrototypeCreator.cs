@@ -31,12 +31,26 @@ namespace BackroomsSurvival.EditorTools
         public const int HolsterSlots = 8;
         public const int BaseSlots = 9;
 
+        // Pieza 6: slots de equipo nuevos, un hueco cada uno. Manos = el par de guantes (pregunta abierta del roadmap).
+        public const string OuterContainer = "Outer";
+        public const string GlovesContainer = "Gloves";
+        public const string FaceContainer = "Face";
+
         public const string TagPath = "Assets/Resources/Definitions/ItemTag/BR_Back Equipment.asset";
         public const string WaistTagPath = "Assets/Resources/Definitions/ItemTag/BR_Waist Equipment.asset";
         public const string BackRestrictionPath = "Assets/Data/Inventory/BR_Restriction_BackEquipment.asset";
         public const string StorageRestrictionPath = "Assets/Data/Inventory/BR_Restriction_BackStorage.asset";
         public const string WaistRestrictionPath = "Assets/Data/Inventory/BR_Restriction_WaistEquipment.asset";
         public const string HolsterRestrictionPath = "Assets/Data/Inventory/BR_Restriction_HolsterByBelt.asset";
+        public const string OuterTagPath = "Assets/Resources/Definitions/ItemTag/BR_Outer Equipment.asset";
+        public const string HandsTagPath = "Assets/Resources/Definitions/ItemTag/BR_Hands Equipment.asset";
+        public const string FaceTagPath = "Assets/Resources/Definitions/ItemTag/BR_Face Equipment.asset";
+        public const string OuterRestrictionPath = "Assets/Data/Inventory/BR_Restriction_OuterEquipment.asset";
+        public const string GlovesRestrictionPath = "Assets/Data/Inventory/BR_Restriction_GlovesEquipment.asset";
+        public const string FaceRestrictionPath = "Assets/Data/Inventory/BR_Restriction_FaceEquipment.asset";
+        // El tag de pies es el del vendor: los zapatos van en su hueco Feet. Solo se lee.
+        public const string FeetTagPath = "Assets/PolymindGames/STP/Data/Resources/Definitions/ItemTag/STP_Feet Equipment.asset";
+        private const string VendorItemFolder = "Assets/PolymindGames/STP/Data/Resources/Definitions/Item";
         private const string DonorPath = "Assets/PolymindGames/STP/Data/Resources/Definitions/Item/STP_White T-Shirt.asset";
         private const string BeltArtDonorPath = "Assets/PolymindGames/STP/Data/Resources/Definitions/Item/STP_Rope.asset";
         private const string ItemFolder = "Assets/Resources/Definitions/Item";
@@ -71,11 +85,35 @@ namespace BackroomsSurvival.EditorTools
             new Spec("BR_Tool Belt", "A tool belt. Six more slots, spreads the load a little.", 6, 0.9f, 6f, 5f),
         };
 
+        public readonly struct Garment
+        {
+            public readonly string Asset, Description, ArtDonor, TagPath;
+            public readonly float Weight, SpeedPct;
+
+            public Garment(string asset, string description, string artDonor, string tagPath, float weight, float speedPct)
+            {
+                Asset = asset; Description = description; ArtDonor = artDonor; TagPath = tagPath; Weight = weight; SpeedPct = speedPct;
+            }
+
+            public string Path => $"{ItemFolder}/{Asset}.asset";
+        }
+
+        // Pieza 6 y modificadores por prenda: placeholders con icono y pickup de un donante del vendor. Cifras sin balancear.
+        public static readonly Garment[] Garments =
+        {
+            new Garment("BR_Work Jacket", "A work jacket, worn over the shirt.", "STP_Shirt", OuterTagPath, 1.2f, 0f),
+            new Garment("BR_Work Gloves", "A pair of leather work gloves.", "STP_Leather", HandsTagPath, 0.2f, 0f),
+            new Garment("BR_Dust Mask", "A paper dust mask.", "STP_Cloth", FaceTagPath, 0.05f, 0f),
+            new Garment("BR_Running Shoes", "Light running shoes. 8% faster.", "STP_Boots", FeetTagPath, 0.6f, 8f),
+            new Garment("BR_Work Boots", "Heavy work boots. 3% slower.", "STP_Boots", FeetTagPath, 1.4f, -3f),
+        };
+
         [MenuItem("Backrooms/Inventory/Create Backpack Prototype")]
         public static void CreateMenu()
         {
             EnsureAssets();
             EnsureBelts();
+            EnsureGarments();
             AssetDatabase.SaveAssets();
         }
 
@@ -112,6 +150,30 @@ namespace BackroomsSurvival.EditorTools
             for (int i = 0; i < Belts.Length; i++)
                 result[i] = EnsureWearable(Belts[i], artDonor, actionDonor, tag);
             Debug.Log($"[Cinturones] prototipo listo: tag {tag.Id}, {result.Length} cinturones.");
+            return result;
+        }
+
+        /// <summary>Pieza 6: tags y restricciones de Encima, Manos y Cara, y las prendas de <see cref="Garments"/>.</summary>
+        public static ItemDefinition[] EnsureGarments()
+        {
+            EnsureTagRestriction(OuterRestrictionPath, EnsureTag(OuterTagPath), "Solo ropa de encima");
+            EnsureTagRestriction(GlovesRestrictionPath, EnsureTag(HandsTagPath), "Solo guantes");
+            EnsureTagRestriction(FaceRestrictionPath, EnsureTag(FaceTagPath), "Solo para la cara");
+
+            var actionDonor = AssetDatabase.LoadAssetAtPath<ItemDefinition>(DonorPath);
+            if (actionDonor == null) { Debug.LogError($"[Prendas] falta el donante '{DonorPath}'"); return new ItemDefinition[0]; }
+
+            var result = new ItemDefinition[Garments.Length];
+            for (int i = 0; i < Garments.Length; i++)
+            {
+                var garment = Garments[i];
+                var tag = AssetDatabase.LoadAssetAtPath<ItemTagDefinition>(garment.TagPath);
+                var artDonor = AssetDatabase.LoadAssetAtPath<ItemDefinition>($"{VendorItemFolder}/{garment.ArtDonor}.asset");
+                if (tag == null || artDonor == null) { Debug.LogError($"[Prendas] faltan tag o donante de {garment.Asset}"); continue; }
+                ItemData data = garment.SpeedPct != 0f ? new WearableStatData(garment.SpeedPct) : null;
+                result[i] = EnsureDefinition(garment.Path, garment.Description, garment.Weight, artDonor, actionDonor, tag, data);
+            }
+            Debug.Log($"[Prendas] pieza 6 lista: {result.Length} prendas.");
             return result;
         }
 
@@ -155,13 +217,18 @@ namespace BackroomsSurvival.EditorTools
         }
 
         private static ItemDefinition EnsureWearable(Spec spec, ItemDefinition artDonor, ItemDefinition actionDonor, ItemTagDefinition tag)
+            => EnsureDefinition(spec.Path, spec.Description, spec.Weight, artDonor, actionDonor, tag,
+                new WearableCapacityData(spec.Slots, spec.MaxKg, spec.CarryBonusPct));
+
+        private static ItemDefinition EnsureDefinition(string path, string description, float weight, ItemDefinition artDonor,
+            ItemDefinition actionDonor, ItemTagDefinition tag, ItemData itemData)
         {
-            var definition = AssetDatabase.LoadAssetAtPath<ItemDefinition>(spec.Path);
+            var definition = AssetDatabase.LoadAssetAtPath<ItemDefinition>(path);
             bool created = definition == null;
             if (created)
             {
                 definition = ScriptableObject.CreateInstance<ItemDefinition>();
-                AssetDatabase.CreateAsset(definition, spec.Path);
+                AssetDatabase.CreateAsset(definition, path);
                 definition.Validate_EditorOnly(new DataDefinition.ValidationContext(false, DataDefinition.ValidationTrigger.Created));
             }
 
@@ -172,14 +239,14 @@ namespace BackroomsSurvival.EditorTools
             to.CopyFromSerializedProperty(art.FindProperty("_icon"));
             to.CopyFromSerializedProperty(art.FindProperty("_pickup"));
             to.CopyFromSerializedProperty(actions.FindProperty("_actions"));
-            to.FindProperty("_description").stringValue = spec.Description;
-            to.FindProperty("_weight").floatValue = spec.Weight;
+            to.FindProperty("_description").stringValue = description;
+            to.FindProperty("_weight").floatValue = weight;
             // Invariante de la enm. 1: el vendor funde pilas comparando solo el id; una prenda nunca se apila.
             to.FindProperty("_stackSize").intValue = 1;
             to.FindProperty("_tag._value").intValue = tag.Id;
             var data = to.FindProperty("_data");
-            data.arraySize = 1;
-            data.GetArrayElementAtIndex(0).managedReferenceValue = new WearableCapacityData(spec.Slots, spec.MaxKg, spec.CarryBonusPct);
+            data.arraySize = itemData != null ? 1 : 0;
+            if (itemData != null) data.GetArrayElementAtIndex(0).managedReferenceValue = itemData;
             to.ApplyModifiedPropertiesWithoutUndo();
 
             if (created && actionDonor.ParentGroup != null)
