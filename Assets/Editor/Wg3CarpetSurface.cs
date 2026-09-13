@@ -32,6 +32,28 @@ namespace BackroomsSurvival.EditorTools
         private const string NormalName = "Wg3_Carpet_Normal.png";
         private const string MaskName = "Wg3_Carpet_Mask.png";
 
+        private const string SurfaceShaderName = "Backrooms/WG3/Surface Lit";
+
+        // ── A4: teselado estocástico ─────────────────────────────────────────
+        /// <summary>Lado de la celda hexagonal en metros de mundo: cada vértice desplaza la
+        /// textura por su cuenta. Menor que la repetición (4 m) para que ninguna mancha se vea dos
+        /// veces en el mismo sitio relativo.</summary>
+        private const float StochasticCellM = 2.5f;
+        /// <summary>0 = corte duro entre celdas, 1 = mezcla lisa.</summary>
+        private const float StochasticBlend = 0.6f;
+
+        // ── A4: humedad de mundo (Joel, 13-09: «variedad, zonas normales y zonas con agua») ──
+        /// <summary>Tamaño típico de una zona húmeda, en metros.</summary>
+        private const float WetScaleM = 7f;
+        /// <summary>Fracción aproximada del suelo que está mojada.</summary>
+        private const float WetCoverage = 0.35f;
+        private const float WetDarken = 0.30f;
+        private const float WetSmoothness = 0.45f;
+        /// <summary>Lo seco sube un poco: sin contraste entre zonas no se leen como zonas.</summary>
+        private const float DryLighten = 0.06f;
+        /// <summary>Cuánto aplasta el pelo lo encharcado (normal hacia plano).</summary>
+        private const float WetFlatten = 0.5f;
+
         [MenuItem("Backrooms/WG3/Generate Backrooms Carpet")]
         public static void Generate()
         {
@@ -53,6 +75,12 @@ namespace BackroomsSurvival.EditorTools
             Texture2D maskTex = Bake(mask, 4, MaskName, TextureImporterType.Default, false);
 
             Color tint = TintFor(albedo);
+
+            // A4 — el shader de WG3 (URP/Lit + teselado estocástico + humedad de mundo). Si no está,
+            // se sigue con el que tenga: una moqueta que repite es peor, pero no es magenta.
+            Shader wg3Lit = Shader.Find(SurfaceShaderName);
+            if (wg3Lit != null) mat.shader = wg3Lit;
+            else Debug.LogError($"[wg3] falta el shader «{SurfaceShaderName}»: la moqueta se queda sin teselado estocástico ni humedad");
 
             var s = new Vector2(Wg3CarpetPattern.MaterialScale, Wg3CarpetPattern.MaterialScale);
             mat.SetTexture("_BaseMap", albedoTex);
@@ -77,6 +105,18 @@ namespace BackroomsSurvival.EditorTools
             mat.EnableKeyword("_NORMALMAP");
             mat.EnableKeyword("_METALLICSPECGLOSSMAP");
             mat.EnableKeyword("_OCCLUSIONMAP");
+
+            // A4 — sin repetición y con zonas secas, húmedas y encharcadas por el MUNDO.
+            mat.SetFloat("_Wg3StochasticCell", StochasticCellM);
+            mat.SetFloat("_Wg3StochasticBlend", StochasticBlend);
+            mat.SetFloat("_Wg3WetScale", WetScaleM);
+            mat.SetFloat("_Wg3WetCoverage", WetCoverage);
+            mat.SetFloat("_Wg3WetDarken", WetDarken);
+            mat.SetFloat("_Wg3WetSmoothness", WetSmoothness);
+            mat.SetFloat("_Wg3DryLighten", DryLighten);
+            mat.SetFloat("_Wg3WetFlatten", WetFlatten);
+            mat.EnableKeyword("_WG3_STOCHASTIC");
+            mat.EnableKeyword("_WG3_WETNESS");
             EditorUtility.SetDirty(mat);
             AssetDatabase.SaveAssets();
             AssetDatabase.Refresh();
