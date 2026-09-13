@@ -43,12 +43,61 @@ namespace BackroomsSurvival.Gameplay.Mapping
             }
         }
 
+        /// <summary>Lápiz gris de las flechas de borde.</summary>
+        public const uint PencilArgb = 0xFF5F5F66u;
+
         public void DrawSheet(MapSheet sheet, uint paperArgb, int cellsPerChunk)
         {
             Clear(paperArgb);
             foreach (MapSheetLayer layer in sheet.Layers)
                 foreach (MapStroke stroke in layer.Strokes)
                     DrawStroke(stroke, layer.Argb, layer.WidthPx, cellsPerChunk);
+            foreach (MapLink link in sheet.Links)
+                DrawLink(link, cellsPerChunk);
+            foreach (MapMark mark in sheet.Marks)
+                DrawMark(mark, cellsPerChunk);
+        }
+
+        /// <summary>P0.3 — flecha a lápiz hacia el borde por donde se sale, o peldaños si sube o baja de planta.</summary>
+        public void DrawLink(MapLink link, int cellsPerChunk)
+        {
+            float x = link.LocalX, z = link.LocalZ;
+            if (link.Side == MapLinkSide.StoreyUp || link.Side == MapLinkSide.StoreyDown)
+            {
+                float s = link.Side == MapLinkSide.StoreyUp ? 1f : -1f;
+                DrawStroke(new MapStroke(new[]
+                {
+                    x - 0.8f, z - 0.6f * s, x - 0.8f, z - 0.2f * s, x - 0.3f, z - 0.2f * s,
+                    x - 0.3f, z + 0.2f * s, x + 0.2f, z + 0.2f * s, x + 0.2f, z + 0.6f * s, x + 0.8f, z + 0.6f * s,
+                }, false), PencilArgb, 1.8f, cellsPerChunk);
+                return;
+            }
+
+            float ux = link.Side == MapLinkSide.East ? 1f : link.Side == MapLinkSide.West ? -1f : 0f;
+            float uz = link.Side == MapLinkSide.North ? 1f : link.Side == MapLinkSide.South ? -1f : 0f;
+            DrawStroke(new MapStroke(new[] { x - ux * 1.6f, z - uz * 1.6f, x, z }, false), PencilArgb, 1.8f, cellsPerChunk);
+            DrawStroke(new MapStroke(new[]
+            {
+                x - ux * 0.55f - uz * 0.5f, z - uz * 0.55f + ux * 0.5f, x, z,
+                x - ux * 0.55f + uz * 0.5f, z - uz * 0.55f - ux * 0.5f,
+            }, false), PencilArgb, 1.8f, cellsPerChunk);
+        }
+
+        /// <summary>P0.3 — «estás aquí»: círculo pequeño si te reconociste, grande y discontinuo si sólo te suena.</summary>
+        public void DrawMark(MapMark mark, int cellsPerChunk)
+        {
+            bool unsure = mark.Kind == MapMarkKind.HereUnsure;
+            float radius = unsure ? 2.2f : 0.5f;
+            const int segments = 20;
+            var points = new float[(segments + 1) * 2];
+            for (int i = 0; i <= segments; i++)
+            {
+                double angle = i * Math.PI * 2.0 / segments;
+                points[2 * i] = mark.LocalX + radius * (float)Math.Cos(angle);
+                points[2 * i + 1] = mark.LocalZ + radius * (float)Math.Sin(angle);
+            }
+
+            DrawStroke(new MapStroke(points, unsure), mark.Argb, 2.6f, cellsPerChunk);
         }
 
         public void DrawStroke(MapStroke stroke, uint argb, float widthPx, int cellsPerChunk)

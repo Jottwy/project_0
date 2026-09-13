@@ -33,6 +33,14 @@ namespace BackroomsSurvival.Gameplay.Mapping
         public Color penColour = new Color(0.165f, 0.278f, 0.659f, 0.95f);
         public Color paperColour = new Color(0.945f, 0.937f, 0.898f, 1f);
 
+        [Header("Ubicarme (P0.3, MAPPING-ROADMAP D14)")]
+        [Tooltip("Cuánto de lo visto hace poco se compara con las hojas, en segundos.")]
+        public float recognitionSeconds = 8f;
+        [Tooltip("Coincidencia a partir de la cual te reconoces.")]
+        [Range(0f, 1f)] public float sureThreshold = 0.7f;
+        [Tooltip("Coincidencia a partir de la cual el sitio te suena.")]
+        [Range(0f, 1f)] public float unsureThreshold = 0.4f;
+
         private readonly List<MapSheet> _sheets = new List<MapSheet>();
         private readonly MapSheetStrokeBuilder _builder = new MapSheetStrokeBuilder();
         private readonly MapSheetRaster _raster = new MapSheetRaster();
@@ -44,6 +52,8 @@ namespace BackroomsSurvival.Gameplay.Mapping
         private bool _open;
         private bool _dirty;
         private string _status = "";
+        private bool _offerMapHere;
+        private readonly List<long> _recentKeys = new List<long>();
 
         private bool _drawing;
         private MapSheetLayer _layer;
@@ -124,22 +134,104 @@ namespace BackroomsSurvival.Gameplay.Mapping
             _sheets.Add(sheet);
             _current = _sheets.Count - 1;
             _status = $"Hoja {id} en blanco.";
+            _offerMapHere = false;
             _dirty = true;
+        }
+
+        /// <summary>
+        /// P0.3 — «Ubicarme»: compara lo visto en los últimos <see cref="recognitionSeconds"/> con las paredes
+        /// dibujadas de cada hoja de tu planta y marca «estás aquí» en la que más coincida.
+        /// </summary>
+        private void Locate()
+        {
+            if (sampler == null || sampler.Memory == null || !sampler.HasSample)
+            {
+                _status = "Todavía no recuerdas nada.";
+                return;
+            }
+
+            MapMemory memory = sampler.Memory;
+            double now = Time.timeAsDouble;
+            _offerMapHere = false;
+
+            _watch.Restart();
+            int best = -1;
+            float bestScore = -1f;
+            for (int i = 0; i < _sheets.Count; i++)
+            {
+                MapSheet sheet = _sheets[i];
+                if (!sheet.HasZone || sheet.Zone.Storey != sampler.LastStorey) continue;
+                float score = _builder.Recognize(sheet, memory, now, recognitionSeconds);
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    best = i;
+                }
+            }
+            _watch.Stop();
+
+            string result;
+            if (bestScore < 0f)
+            {
+                MapZone here = memory.ZoneOfCell(sampler.LastCellX, sampler.LastCellZ, sampler.LastStorey);
+                int seen = _builder.RecentEdges(here, memory, now, recognitionSeconds, _recentKeys);
+                if (seen < MapSheetStrokeBuilder.MinRecognitionEdges)
+                {
+                    result = "poco";
+                    _status = "Has visto muy poco en los últimos segundos: mira alrededor y vuelve a intentarlo.";
+                }
+                else
+                {
+                    result = "blanco";
+                    _status = "No reconoces este sitio: en tu mapa está en blanco.";
+                    _offerMapHere = true;
+                }
+            }
+            else if (bestScore >= unsureThreshold)
+            {
+                MapSheet sheet = _sheets[best];
+                bool sure = bestScore >= sureThreshold;
+                int cellsPerChunk = memory.CellsPerChunk;
+                sheet.Marks.Add(new MapMark(sure ? MapMarkKind.Here : MapMarkKind.HereUnsure,
+                    sampler.LastCellX - sheet.Zone.ChunkX * cellsPerChunk + 0.5f,
+                    sampler.LastCellZ - sheet.Zone.ChunkZ * cellsPerChunk + 0.5f, _pen.Argb));
+                _current = best;
+                _dirty = true;
+                result = sure ? "seguro" : "dudoso";
+                _status = sure
+                    ? $"Te reconoces: coincide un {bestScore * 100f:F0} % con la hoja {sheet.Id}."
+                    : $"Te suena ({bestScore * 100f:F0} %): crees que estás por aquí, en la hoja {sheet.Id}.";
+            }
+            else
+            {
+                result = "blanco";
+                _status = $"No reconoces este sitio ({bestScore * 100f:F0} %): en tu mapa está en blanco.";
+                _offerMapHere = true;
+            }
+
+            Debug.Log($"MAPFIX result={result} score={bestScore:F3} sheet={(best >= 0 ? _sheets[best].Id : 0)} " +
+                      $"sheets={_sheets.Count} ms={_watch.Elapsed.TotalMilliseconds:F3}");
         }
 
         private void StartDrawing()
         {
             if (_current < 0 || sampler == null || sampler.Memory == null) return;
             MapSheet sheet = _sheets[_current];
+            _offerMapHere = false;
 
             _watch.Restart();
+            // P0.3 — las flechas de borde salen del mismo recuerdo que los trazos.
+            int newLinks = _builder.AddLinks(sheet, sampler.Memory);
             _drawCount = _builder.Build(sheet, sampler.Memory, Time.timeAsDouble, sampler.memorySeconds / 3.0);
             _watch.Stop();
             _buildMs = _watch.Elapsed.TotalMilliseconds;
+            if (newLinks > 0) _dirty = true;
 
             if (_drawCount == 0)
             {
-                _status = "No recuerdas nada nuevo de la zona de esta hoja.";
+                _status = newLinks > 0
+                    ? $"Nada nuevo que dibujar, pero apuntas {newLinks} salida(s) de la zona."
+                    : "No recuerdas nada nuevo de la zona de esta hoja.";
                 return;
             }
 
@@ -213,7 +305,7 @@ namespace BackroomsSurvival.Gameplay.Mapping
 
             float sheetSize = Mathf.Min(_raster.Size, Screen.height - 150f, Screen.width - 60f);
             float width = sheetSize + 28f;
-            var panel = new Rect((Screen.width - width) * 0.5f, 20f, width, sheetSize + 130f);
+            var panel = new Rect((Screen.width - width) * 0.5f, 20f, width, sheetSize + 160f);
             GUI.Box(panel, "Libreta");
 
             float x = panel.x + 14f;
@@ -231,15 +323,17 @@ namespace BackroomsSurvival.Gameplay.Mapping
             }
 
             y += 28f;
-            if (GUI.Button(new Rect(x, y, 110f, 24f), "Coger hoja")) TakeSheet();
+            if (GUI.Button(new Rect(x, y, 100f, 24f), "Coger hoja")) TakeSheet();
             GUI.enabled = !_drawing && _current >= 0;
-            if (GUI.Button(new Rect(x + 118f, y, 110f, 24f), "Dibujar")) StartDrawing();
+            if (GUI.Button(new Rect(x + 106f, y, 90f, 24f), "Dibujar")) StartDrawing();
+            GUI.enabled = !_drawing;
+            if (GUI.Button(new Rect(x + 202f, y, 90f, 24f), "Ubicarme")) Locate();
             GUI.enabled = true;
 
-            GUI.Label(new Rect(x + 240f, y + 2f, 60f, 22f), "Tinta");
-            GUI.Box(new Rect(x + 285f, y + 6f, 120f, 12f), GUIContent.none);
-            GUI.Box(new Rect(x + 285f, y + 6f, 120f * Mathf.Clamp01(_pen.Ink), 12f), GUIContent.none);
-            GUI.Label(new Rect(x + 410f, y + 2f, 60f, 22f), $"{Mathf.Clamp01(_pen.Ink) * 100f:F0} %");
+            GUI.Label(new Rect(x + 300f, y + 2f, 45f, 22f), "Tinta");
+            GUI.Box(new Rect(x + 342f, y + 6f, 100f, 12f), GUIContent.none);
+            GUI.Box(new Rect(x + 342f, y + 6f, 100f * Mathf.Clamp01(_pen.Ink), 12f), GUIContent.none);
+            GUI.Label(new Rect(x + 448f, y + 2f, 60f, 22f), $"{Mathf.Clamp01(_pen.Ink) * 100f:F0} %");
 
             y += 32f;
             if (_current >= 0 && _texture != null)
@@ -251,6 +345,11 @@ namespace BackroomsSurvival.Gameplay.Mapping
             GUI.Label(new Rect(x, y, sheetSize, 22f), _status);
             string zone = _current >= 0 ? _sheets[_current].Zone.ToString() : "—";
             GUI.Label(new Rect(x, y + 20f, sheetSize, 22f), $"N cierra · W/A/S/D o N a mitad cancelan · zona interna (depuración): {zone}");
+            if (_offerMapHere && !_drawing && GUI.Button(new Rect(x, y + 44f, 220f, 24f), "Coger hoja y mapear aquí"))
+            {
+                TakeSheet();
+                StartDrawing();
+            }
         }
 
         private static uint ToArgb(Color colour)
