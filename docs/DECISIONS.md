@@ -19153,3 +19153,13 @@ Veredicto del auditor: «OK con cambios». Esta enmienda sustituye lo que dice; 
   - Semillas con el spawn dentro de una zona y con juntas dentro de la zona.
 
 ---
+
+## ADR-155 — Aprobación, con la enmienda 1 (2026-09-14) — ACEPTADA (Joel: «apruebo, empieza por L0»)
+
+- ADR-155 aceptado con la enmienda 1 (estilo 12, techo por hoja sólo en zona, bocas múltiples con trozo mínimo de 180,
+  barrido de 300 regiones).
+- Se empieza por L0: el campo de bioma y su fracción, sin tocar el plan.
+- Piscina (ADR-152 P2): el azulejo pasa a `Tiles 1` del pack de oficina copiado como `Resources/Wg3Materials/Wg3_PoolTile`
+  (Joel); `TileWall` resultó ser un papel de chevrones y queda libre.
+
+---
