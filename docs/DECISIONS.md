@@ -19163,3 +19163,23 @@ Veredicto del auditor: «OK con cambios». Esta enmienda sustituye lo que dice; 
   (Joel); `TileWall` resultó ser un papel de chevrones y queda libre.
 
 ---
+
+## ADR-155 — Enmienda 2: lo que midió L1 antes de tocar el plan (2026-09-14) — ACEPTADA (Joel: «solo en el laberinto», «no peor que hoy»)
+
+- **Semilla de la zona = la del MUNDO** (`world::composer_seed(world_seed)`), no la de la región: con la de la región
+  cada región sortea otro campo y la zona se corta en cada borde. `RegionBuilding.zone_seed` (L1a); el test de reparto
+  corregido da **33,6 %** del suelo construido en zona (12 semillas), dentro de 30–50.
+- **Enm. 1 D2 «`segment::problems()` rechaza bocas solapadas o con trozo < 180» NO se aplica al mundo entero.** Medido
+  en 27 regiones: 50.580 lados con boca, 10.060 trozos de menos de 10 cm (esquinas legítimas) y 2.198 de 30–39; y el
+  barrido de `many_seeds_plan_and_fill_cleanly` tiene un tramo con bocas solapadas (semilla 0xc0ec04ec221b58f9, región
+  (-2,2)) que hoy se sirve bien. La regla de **trozo ≥ `OPENING_JAMB_CM` (180) y sin solapes vale sólo para los huecos
+  que abre la zona laberinto**, y la vigila su test (`maze_gaps_leave_wall_pieces_and_never_overlap`), no el validador
+  de tramos. Sonda: `probe_wall_pieces_between_openings`.
+- **Enm. 1 D6 «0/300 rotas» pasa a «no peor que hoy».** El mundo actual ya da **6/306** rotas (plantas altas
+  inalcanzables en regiones de 5–7 plantas; medias 4,0 plantas, mancha 99,5 %, 5,3 islas, nav 100 %, 57 agujeros). Las
+  mismas 6 fallan con estrados, gradas y piscinas apagados, así que no son de ADR-151/152. El laberinto no puede subir
+  de 6/306 ni romper regiones nuevas; las 6 van a una tarea aparte.
+- **El plan se enciende detrás de `MAZE_BIOME_ENABLED`** (apagado) hasta que L1d/L1e pasen sus barridos: L1c deja el
+  mundo servido idéntico.
+
+---
