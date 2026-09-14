@@ -85,6 +85,32 @@ fn many_seeds_produce_valid_regions() {
     );
 }
 
+/// Regresiones del barrido de 306 regiones: dos torres con sótanos cuya planta alta quedaba al 0 %
+/// alcanzable. `0x6e95…` (0,0): el recorte de la boca del pozo caía `ground` plantas más arriba y
+/// la pared sobre el tiro quedaba entera. `0xdccc…` (1,1): dos espolones paralelos a 3 cm cerraban la
+/// sala del pie de la escalera. Conectividad desde la mancha mayor, todos los niveles.
+#[test]
+fn tall_towers_with_basements_reach_every_storey() {
+    let m = real_manifest();
+    for (seed, (rx, rz)) in [
+        (0x6e95_78e4_c490_e152u64, (0, 0)),
+        (0xdccc_2d99_9d27_3d22, (1, 1)),
+    ] {
+        let report = validate::validate_region(
+            &m,
+            seed,
+            Wg3RegionCoord { x: rx, z: rz },
+            &ValidateOptions::default(),
+        );
+        assert!(
+            report.is_valid(),
+            "{} :: {}",
+            report.summary(),
+            report.problems().join(" | ")
+        );
+    }
+}
+
 /// El plan y el relleno solos —sin ráster— son baratos: aquí caben muchas más semillas dentro de
 /// la suite, y es donde se cazan los fallos de reparto que no dependen de la colisión.
 #[test]
@@ -491,6 +517,28 @@ fn probe_region_inside() {
                     println!("[hollow]   {row}");
                     z -= 50;
                 }
+            }
+        }
+    }
+
+    // ── macizos de un rectángulo: `WG3_PROBE_SOLIDS="x0,z0,x1,z1"` en centímetros ──────────
+    if let Ok(v) = std::env::var("WG3_PROBE_SOLIDS") {
+        let r: Vec<i32> = v.split(',').filter_map(|t| t.trim().parse().ok()).collect();
+        if let [x0, z0, x1, z1] = r[..] {
+            for s in inside.filled.solids.iter().filter(|s| {
+                s.x_cm < x1 && s.x_cm + s.size_x_cm > x0 && s.z_cm < z1 && s.z_cm + s.size_z_cm > z0
+            }) {
+                println!(
+                    "[solid] ({},{}) {}×{} y {}..{} style {:#x} shape {}",
+                    s.x_cm,
+                    s.z_cm,
+                    s.size_x_cm,
+                    s.size_z_cm,
+                    s.bottom_y_cm,
+                    s.top_y_cm,
+                    s.style,
+                    s.shape
+                );
             }
         }
     }
