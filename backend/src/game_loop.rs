@@ -782,7 +782,7 @@ fn revive_if_dead_on_load(
     }
     player.stats = crate::player::stats::PlayerStats::on_respawn(&player.stats);
     player.body.clear(); // ADR-149 R2: se reaparece sano
-    // ADR-045 enm. 2 E2.2 — la misma resolución que `respawn_request`: sobre WG3 si manda.
+                         // ADR-045 enm. 2 E2.2 — la misma resolución que `respawn_request`: sobre WG3 si manda.
     player.position = resolve_respawn_position(
         world,
         wg3,
@@ -2400,8 +2400,16 @@ pub async fn run(
                 phases.add(PH_ENT_LEGACY, entity_tick_started.elapsed());
                 if ENTITY_DAMAGE_ENABLED && !dev_freeze_survival && damage > 0.0 {
                     let zone = draw_zone(DamageCause::Other, tick as u32);
-                    let hit = apply_body_hit(&mut player.stats, &mut player.body, &player.protection, zone, damage, DamageCause::Other);
-                    let _ = to_clients.send(ServerMessage::Event(body_hit_event(&hit, "Undefined")));
+                    let hit = apply_body_hit(
+                        &mut player.stats,
+                        &mut player.body,
+                        &player.protection,
+                        zone,
+                        damage,
+                        DamageCause::Other,
+                    );
+                    let _ =
+                        to_clients.send(ServerMessage::Event(body_hit_event(&hit, "Undefined")));
                 }
                 for ev in events {
                     if dev_freeze_survival && ev.event_type == "damage_taken" {
@@ -2871,7 +2879,10 @@ pub async fn run(
                                     dmg,
                                     DamageCause::PhantomHit,
                                 );
-                                let _ = to_clients.send(ServerMessage::Event(body_hit_event(&hit, PHANTOM_HIT_CLIENT_CAUSE)));
+                                let _ = to_clients.send(ServerMessage::Event(body_hit_event(
+                                    &hit,
+                                    PHANTOM_HIT_CLIENT_CAUSE,
+                                )));
                             }
                             let _ = to_clients.send(ServerMessage::Event(GameEvent {
                                 event_type: "phantom_hit".into(),
@@ -4566,9 +4577,17 @@ async fn handle_network_event(
                 tick,
             ) {
                 Ok(health) => {
-                    let injury = player.body.apply_damage(pvp_zone, pvp_damage, DamageCause::Other);
-                    let hit = BodyHit { zone: pvp_zone, raw: damage, mitigated: pvp_damage, injury };
-                    let _ = to_clients.send(ServerMessage::Event(body_hit_event(&hit, "Undefined")));
+                    let injury = player
+                        .body
+                        .apply_damage(pvp_zone, pvp_damage, DamageCause::Other);
+                    let hit = BodyHit {
+                        zone: pvp_zone,
+                        raw: damage,
+                        mitigated: pvp_damage,
+                        injury,
+                    };
+                    let _ =
+                        to_clients.send(ServerMessage::Event(body_hit_event(&hit, "Undefined")));
                     info!(
                         "MPTRACE step=PVP event=pvp_damage_applied request_id={} attacker_id={} weapon_id={} damage={:.1} health={:.2}",
                         request_id, attacker_id, weapon_id, damage, health
@@ -4819,9 +4838,18 @@ async fn handle_network_event(
                     }
                     // ADR-149 R2: mismo sorteo que en el host, con el id de la concesión como semilla.
                     let zone = draw_zone(DamageCause::PhantomHit, request_id as u32);
-                    let hit =
-                        apply_body_hit(&mut player.stats, &mut player.body, &player.protection, zone, damage, DamageCause::PhantomHit);
-                    let _ = to_clients.send(ServerMessage::Event(body_hit_event(&hit, PHANTOM_HIT_CLIENT_CAUSE)));
+                    let hit = apply_body_hit(
+                        &mut player.stats,
+                        &mut player.body,
+                        &player.protection,
+                        zone,
+                        damage,
+                        DamageCause::PhantomHit,
+                    );
+                    let _ = to_clients.send(ServerMessage::Event(body_hit_event(
+                        &hit,
+                        PHANTOM_HIT_CLIENT_CAUSE,
+                    )));
                     info!(
                         "MPTRACE step=PH_ATTACK event=phantom_attack_applied kind=hit damage={damage:.1} health={:.2} request_id={request_id}",
                         player.stats.health
@@ -5367,7 +5395,14 @@ async fn handle_action(
                 // parte del golpe, y la salud y la lesión usan lo que pasa. El daño llega BRUTO y se mitiga una sola vez.
                 let body_cause = DamageCause::from_client(cause);
                 let zone = report_zone(&action.data, body_cause, tick);
-                let hit = apply_body_hit(&mut player.stats, &mut player.body, &player.protection, zone, amount, body_cause);
+                let hit = apply_body_hit(
+                    &mut player.stats,
+                    &mut player.body,
+                    &player.protection,
+                    zone,
+                    amount,
+                    body_cause,
+                );
                 let _ = to_clients.send(ServerMessage::Event(body_hit_event(&hit, cause)));
                 info!(
                     "MPTRACE step=DMG event=report_damage_applied amount={:.1} mitigated={:.1} cause={} zone={} injury={} health={:.2}",
@@ -5380,13 +5415,20 @@ async fn handle_action(
         "report_protection" => {
             if let Some(values) = action.data.get("prot").and_then(|v| v.as_array()) {
                 player.protection = parse_protection(values);
-                info!("MPTRACE step=BODY event=report_protection prot={:?}", player.protection);
+                info!(
+                    "MPTRACE step=BODY event=report_protection prot={:?}",
+                    player.protection
+                );
             }
         }
         // ADR-149 R2: el cliente trata una zona con venda (1) o férula (2). Trust-the-client en el objeto gastado, como
         // consume_item (ADR-030); aquí solo se valida que la zona admita ese tratamiento. El cambio vuelve en body_state.
         "treat_zone" => {
-            let zone = action.data.get("zone").and_then(|v| v.as_u64()).map_or(usize::MAX, |z| z as usize);
+            let zone = action
+                .data
+                .get("zone")
+                .and_then(|v| v.as_u64())
+                .map_or(usize::MAX, |z| z as usize);
             let treatment = action
                 .data
                 .get("treatment")
@@ -5397,7 +5439,10 @@ async fn handle_action(
                 Some(t) if !player.stats.is_dead() => player.body.treat(zone, t),
                 _ => false,
             };
-            info!("MPTRACE step=BODY event=treat_zone zone={} treatment={:?} applied={}", zone, treatment, applied);
+            info!(
+                "MPTRACE step=BODY event=treat_zone zone={} treatment={:?} applied={}",
+                zone, treatment, applied
+            );
         }
         // ADR-032 amendment: the client reports its CURRENT real STP inventory (InventoryReporter,
         // debounced on-change). Trust-the-client — same level as report_death_loot: no
@@ -5652,8 +5697,8 @@ async fn handle_action(
             if player.stats.is_dead() {
                 player.stats = crate::player::stats::PlayerStats::on_respawn(&player.stats);
                 player.body.clear(); // ADR-149 R2: se reaparece sano
-                // ADR-029 V0 invulnerability amendment: a fresh respawn is immune to PvP
-                // damage for RESPAWN_INVULN_TICKS (tick-based, no spatial safe zone).
+                                     // ADR-029 V0 invulnerability amendment: a fresh respawn is immune to PvP
+                                     // damage for RESPAWN_INVULN_TICKS (tick-based, no spatial safe zone).
                 player.stats.invuln_until_tick = (tick as u32).wrapping_add(RESPAWN_INVULN_TICKS);
                 // ADR-028: this death's corpse (if any) is sealed; re-arm the dedupe
                 // so the NEXT death can report its own loot snapshot.
@@ -7128,7 +7173,12 @@ fn apply_body_hit(
     let mitigated = mitigate(raw, protection[zone]);
     stats.take_damage(mitigated);
     let injury = body.apply_damage(zone, mitigated, cause);
-    BodyHit { zone, raw, mitigated, injury }
+    BodyHit {
+        zone,
+        raw,
+        mitigated,
+        injury,
+    }
 }
 
 /// ADR-149 R2b — aviso al cliente de cada golpe con su zona y el daño BRUTO, para que rompa la prenda que lo recibió
@@ -7380,9 +7430,18 @@ async fn process_pvp_hit_candidate_host(
                     tick,
                 ) {
                     Ok(health) => {
-                        let injury = player.body.apply_damage(pvp_zone, pvp_damage, DamageCause::Other);
-                        let hit = BodyHit { zone: pvp_zone, raw: clamped_damage, mitigated: pvp_damage, injury };
-                        let _ = to_clients.send(ServerMessage::Event(body_hit_event(&hit, "Undefined")));
+                        let injury =
+                            player
+                                .body
+                                .apply_damage(pvp_zone, pvp_damage, DamageCause::Other);
+                        let hit = BodyHit {
+                            zone: pvp_zone,
+                            raw: clamped_damage,
+                            mitigated: pvp_damage,
+                            injury,
+                        };
+                        let _ = to_clients
+                            .send(ServerMessage::Event(body_hit_event(&hit, "Undefined")));
                         let _ = to_clients.send(ServerMessage::Event(GameEvent {
                             event_type: "pvp_damage_taken".into(),
                             data: serde_json::json!({

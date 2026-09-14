@@ -19099,3 +19099,214 @@ las zonas 6-7 (los antebrazos de la chaqueta) se corrompía en inventario, guard
 lee `float64`; el backend ya las guardaba en `f64`.
 
 ---
+
+## ADR-155 — El bioma LABERINTO: megazonas de Level 0 clásico que conviven con el plan de salas y pasillos (2026-09-14) — PROPUESTA (Joel pidió «megachunks laberínticos como los backrooms originales» el 14-09; código sólo tras su aprobación)
+
+### Contexto
+
+- Joel, 14-09: «en vez de tanto pasillo… megachunks de una vez que sean más laberínticas como los backrooms originales…
+  que exista también lo que hay ahora, todo junto con reglas correctas, tal vez por biomas, pero que vivan todos».
+- Respuestas de Joel: **Level 0 clásico** (planta enorme de moqueta, paredes sueltas y tabiques a trozos, muchos cruces
+  y bucles, techo bajo con fluorescentes, **alturas algo alternadas**); **~40 %** del mundo; **reaprovechar los
+  materiales de ahora amarilleándolos, sin tirar nada**; va **antes** que espiral, rampas largas y abismo; se sigue con
+  excepciones en `WG3-ALPHA1-ROADMAP.md`.
+- Lo que hay: `fill::Character::Maze` (fill.rs:172) ya existe, pero sólo **rellena** salas (tabiques, `grid_maze`,
+  techo 300) donde el ruido de `character_at` cae; el **plan** (`plan_region`: BSP + pasillos tallados en los primeros
+  cortes + enrutador) es el mismo en todo el mundo.
+- ADR-124: quitar pasillos tocando constantes rompe el enrutador (enlaces entre espacios que no se tocan). Este ADR no lo
+  intenta: dentro de la zona **no hay pasillos que enrutar**, sólo espacios que se tocan.
+- Tope de tramo generado: 25 m (`segment::MAX_SEGMENT_M`); raster de 50 cm.
+
+### D1 — La zona: un campo de bioma que el PLAN lee antes de cortar
+
+- `biome_at(seed, x, z)`: ruido de **baja frecuencia** (celda del orden de 150–250 m, varias salas por zona), umbral
+  calibrado para que la zona cubra **≈ 40 % del suelo construido** en el barrido. Determinista, sin `HashMap`.
+- Lo lee `plan_region` **antes** de subdividir: cada rectángulo del BSP sabe si su centro cae en zona laberinto.
+- Fuera de la zona, el plan de hoy sin tocar un número. Dentro, D2.
+- Quedan fuera de la zona, siempre: las torres (ADR-130), los pozos de escalera y sus rellanos, y las bocas de región
+  (juntas, 4/4): el plan las reserva como hoy y la zona las rodea.
+
+### D2 — Dentro de la zona: sin pasillos, hojas pegadas y muchas bocas
+
+- **Sin tallado de pasillos** en los cortes que caen dentro de la zona: el BSP sigue cortando hasta hojas de 10–25 m
+  (respetando el tope de tramo) y las hojas se quedan pegadas unas a otras.
+- **Enlaces por adyacencia**: toda pared compartida entre dos hojas de la zona lleva **varias bocas anchas** (2–4 m cada
+  una, un tramo de pared entre ellas). Así la pared de 25 m se lee como tabique a trozos y la zona como una planta
+  continua; los bucles salen solos porque cada hoja toca a varias.
+- **Borde de zona**: cada lado que toca el plan normal lleva **al menos dos** enlaces a los espacios o pasillos de fuera,
+  para que la zona no quede colgada de una sola puerta.
+- El enrutador sólo ve enlaces entre espacios que se tocan (lo que ADR-124 dijo que sí sabe hacer).
+
+### D3 — El relleno: carácter forzado, techo bajo y alterno, fluorescentes
+
+- Todo espacio de la zona usa `Character::Maze` **por zona**, no por el ruido de `character_at`: tabiques sueltos,
+  `grid_maze`, muros bajos (lo que ya existe, sin cambiar sus knobs).
+- **Techo bajo y alterno**: `ceiling_clear_cm` por hoja sorteado en {240, 260, 280, 300}. Las juntas de altura entre hojas
+  vecinas se resuelven como hoy entre espacios de techo distinto (faldón).
+- Luminarias con la cadencia regular de siempre (`Wg3LightCadence`): cuadrícula de fluorescentes.
+- **Todo lo demás vive dentro**: estrados, gradas, piscinas, pozos y atrezo siguen sorteándose en la zona con sus reglas;
+  lo que no quepa con techo bajo (gradas altas, estrados de 120) se cae solo por sus propias reglas de altura libre.
+
+### D4 — El aspecto: los materiales de hoy, amarilleados
+
+- Los espacios de la zona salen con **estilo nuevo `MAZE_STYLE` = 10** (valor nuevo en un byte que ya viaja: sin bump,
+  como el 9 de la piscina). El cliente lo tiñe sobre los **cuatro materiales base de siempre** (papel, moqueta, techo,
+  decoración) hacia el amarillo sucio de Level 0: moqueta húmeda más oscura, papel amarillo mostaza, placa de techo
+  crema. Sin texturas nuevas; mejorar los materiales base se permite si beneficia a todo.
+- Regla de `Wg3StyleMaterials`: se separa por **tono**, no por brillo (el amarillo por encima del azul es un orden de
+  canales que ninguna lámpara fabrica).
+
+### D5 — Sin wire, sin chunk, sin guardado
+
+- Plan y relleno cambian dentro del servidor; salen `Wg3Segment`, `Wg3Solid` y `Wg3Carve` como hoy. Estilo 10 cae al
+  tinte por defecto en un cliente viejo. Sin bump de `WIRE_SCHEMA_VERSION`.
+- Cambia el mundo servido de WG3 entero (el plan): se mide antes y después y los tests calibrados sobre regiones de
+  referencia (agujeros, pozos, planta abierta) se revisan a la vista, no se relajan por detrás (lección de ADR-124 D3).
+
+### D6 — Puerta de tests y medida
+
+- Barrido de 27 regiones antes y después: 27/27 válidas, mancha mayor ≥ 99,5 %, islas no peores que 6,0 de media, nav
+  100 %, juntas 4/4.
+- `maze_zone_covers_about_forty_percent`: fracción de suelo construido en zona entre 30 y 50 % sobre 12 semillas.
+- `maze_zone_is_connected_and_loopy`: dentro de cada zona, grafo de hojas conexo y con **bucles** (enlaces ≥ hojas);
+  cada lado de borde con ≥ 2 enlaces.
+- Conectividad desde el spawn (regla dura 13) en regiones con zona.
+- Los tests de estrados, gradas y piscina siguen en verde con la zona puesta.
+
+### Rebanadas (cada una en verde, ≤ 300 líneas de diff)
+
+- **L0** medida: `biome_at` y su fracción en el barrido, **sin cambiar el plan** (sólo el test de reparto).
+- **L1** plan: dentro de la zona, sin pasillos y enlaces por adyacencia con varias bocas; test de conexión y bucles.
+- **L2** relleno: carácter forzado, techo alterno, estilo 10.
+- **L3** cliente: tinte amarillo del estilo 10.
+- **L4** Play: capturas y paseo; enmienda de estado.
+
+### Lo que NO decide
+
+- Escaleras en espiral, rampas largas entre plantas, rampas deslizantes y el abismo (ADR-153): siguen en cola, después.
+- Salas «infinitas» (naves muy largas con niebla): posible variante de la zona, en su propia enmienda.
+- Sonido de zumbido de fluorescente y humedad.
+
+---
+
+## ADR-155 — Enmienda 1: revisión de la auditoría de arquitectura antes de aprobar (2026-09-14) — PROPUESTA
+
+Veredicto del auditor: «OK con cambios». Esta enmienda sustituye lo que dice; lo demás de ADR-155 queda.
+
+- **D4 — estilo 12, no 10.** ADR-153 D1/D4 (aceptado) ya reservó 10 (`ABYSS_STYLE`) y 11 (`ABYSS_LIGHT_STYLE`). El
+  laberinto usa **`MAZE_STYLE` = 12**. Y **no se aplica a todo espacio de la zona**: el estilo codifica el papel
+  (`style_of`), y ADR-105 enm. 19 (moqueta y falso techo con `style == 0`) y `Wg3LightCadence.IsDarkOffice` lo leen.
+  Dentro de la zona, los espacios de papel **oficina, escalera y pozo conservan su estilo** (conviven como hoy); el 12
+  va sólo a los papeles genéricos (nave, servicio, callejón, pasillo que quede). Test C#: `Wg3StyleMaterials` tiñe el 12 y
+  `IsDarkOffice` no lo toma por despacho.
+- **D3 — enmienda explícita a ADR-105 enm. 14 D2**: el tope de 240 del carácter laberinto pasa, **sólo dentro de la
+  zona**, a un techo por hoja sorteado en {240, 260, 280, 300}. Fuera de la zona, el carácter laberinto sigue en 240.
+- **D1 — escala y pozos.**
+  - La región mide 150 m, así que la zona se decide **por rectángulo de los primeros cortes del BSP** (región, mitad o
+    cuarto) y una megazona son de una a varias regiones contiguas, no «varias salas».
+  - Metros en unidades de PLAN (= mundo mientras ADR-128 no esté en el código).
+  - Los pozos de escalera **se excavan después del plan como hoy** (`dig_wells`): la zona no los reserva ni los rodea;
+    el test mide pozos y plantas por región con zona.
+- **D2 — enlaces y bocas.**
+  - `adjacencies()` guarda un enlace por pareja (plan.rs:4176): se añade un **enlace de adyacencia múltiple**, sólo para
+    parejas dentro de la zona.
+  - **Trozo de pared mínimo entre bocas y en la esquina ≥ `OPENING_JAMB_CM`** (180), y `segment::problems()` pasa a
+    **rechazar bocas solapadas o con trozo menor**: por debajo de ~100 cm el ráster convierte el trozo en una celda
+    maciza o lo borra.
+  - Los enlaces de borde con el plan normal se asignan **antes** que las bocas múltiples, para que `tap_mouth`
+    (route.rs:971) encuentre lado libre; un bolsillo de la zona sin enlace a junta no se vacía en silencio: falla el test.
+  - **Regla de parada**: dentro de la zona, `TARGET_AREA_M2` propio para hojas de 10–25 m (declarado, medido con las dos
+    cuentas de la regla de tamaños).
+- **D6 — medidas que se añaden.**
+  - Barrido de **300 regiones** con los listones de ADR-124 D4 (3,2 plantas, 8 agujeros de referencia, **0/300 rotas**),
+    además de las 27.
+  - `openings_dropped == 0` (fill.rs:10291).
+  - Test de trozo de pared mínimo y bocas sin solape.
+  - Pozos y plantas por región con zona frente a sin zona.
+  - `a_hole_drops_you_a_whole_storey` revisado a la vista, no relajado.
+  - Semillas con el spawn dentro de una zona y con juntas dentro de la zona.
+
+---
+
+## ADR-155 — Aprobación, con la enmienda 1 (2026-09-14) — ACEPTADA (Joel: «apruebo, empieza por L0»)
+
+- ADR-155 aceptado con la enmienda 1 (estilo 12, techo por hoja sólo en zona, bocas múltiples con trozo mínimo de 180,
+  barrido de 300 regiones).
+- Se empieza por L0: el campo de bioma y su fracción, sin tocar el plan.
+- Piscina (ADR-152 P2): el azulejo pasa a `Tiles 1` del pack de oficina copiado como `Resources/Wg3Materials/Wg3_PoolTile`
+  (Joel); `TileWall` resultó ser un papel de chevrones y queda libre.
+
+---
+
+## ADR-155 — Enmienda 2: lo que midió L1 antes de tocar el plan (2026-09-14) — ACEPTADA (Joel: «solo en el laberinto», «no peor que hoy»)
+
+- **Semilla de la zona = la del MUNDO** (`world::composer_seed(world_seed)`), no la de la región: con la de la región
+  cada región sortea otro campo y la zona se corta en cada borde. `RegionBuilding.zone_seed` (L1a); el test de reparto
+  corregido da **33,6 %** del suelo construido en zona (12 semillas), dentro de 30–50.
+- **Enm. 1 D2 «`segment::problems()` rechaza bocas solapadas o con trozo < 180» NO se aplica al mundo entero.** Medido
+  en 27 regiones: 50.580 lados con boca, 10.060 trozos de menos de 10 cm (esquinas legítimas) y 2.198 de 30–39; y el
+  barrido de `many_seeds_plan_and_fill_cleanly` tiene un tramo con bocas solapadas (semilla 0xc0ec04ec221b58f9, región
+  (-2,2)) que hoy se sirve bien. La regla de **trozo ≥ `OPENING_JAMB_CM` (180) y sin solapes vale sólo para los huecos
+  que abre la zona laberinto**, y la vigila su test (`maze_gaps_leave_wall_pieces_and_never_overlap`), no el validador
+  de tramos. Sonda: `probe_wall_pieces_between_openings`.
+- **Enm. 1 D6 «0/300 rotas» pasa a «no peor que hoy».** El mundo actual ya da **6/306** rotas (plantas altas
+  inalcanzables en regiones de 5–7 plantas; medias 4,0 plantas, mancha 99,5 %, 5,3 islas, nav 100 %, 57 agujeros). Las
+  mismas 6 fallan con estrados, gradas y piscinas apagados, así que no son de ADR-151/152. El laberinto no puede subir
+  de 6/306 ni romper regiones nuevas; las 6 van a una tarea aparte.
+- **El plan se enciende detrás de `MAZE_BIOME_ENABLED`** (apagado) hasta que L1d/L1e pasen sus barridos: L1c deja el
+  mundo servido idéntico.
+
+---
+
+## ADR-155 — Enmienda 3: L1e con el laberinto encendido en local (2026-09-14) — ACEPTADA (Joel: «vaciarlos si ≤2 salas», «facelings después de L2»)
+
+- **Un hueco `Gap` nunca baja del vano mínimo de 240** (`RegionPlan::problems`): en pared corta, 240 centrado con jamba o
+  ningún hueco. Antes salían de 212–218 cm y el plan se rechazaba (≈ 65 veces en 27 regiones).
+- **Las pasadas de rescate (3, 3b y 4) ya no se saltan las parejas de la zona**; sólo las que ya quedaron unidas por
+  huecos. Sin esto, dos hojas del laberinto con pared demasiado corta para un hueco quedaban sin puerta.
+- **Un pozo de escalera puede tragarse un hueco sobrante** si la pareja conserva otro (`gaps_survive`); dos pozos no
+  pueden llevarse entre los dos todos los huecos de una pareja. Sin esto la región (0,0) no levantaba plantas: 739
+  candidatas muertas por puerta, 0 escaleras.
+- **Corrige la enm. 1 D2: los bolsillos de 1–2 salas del laberinto se vacían** como en el resto del plan. Mandados al
+  enrutador, en 3 de 300 regiones no salía ruta (`[fill] enlaces del plan sin construir`). Los de 3 o más siguen yendo.
+- **Tests ajustados a decisiones ya tomadas, no a fallos:** `the_void_is_deliberate_and_bounded` exime la cota del 99,5 %
+  si más de la mitad de lo construido es laberinto (L1c lo excluye del vacío); `on_the_upper_storey_wg3_does_not_freeze_you`
+  no mide encima de un pozo que llega a esa planta; `built_pieces_block_wg3_navigation` busca un tramo cuya recta de
+  control esté libre (en (0,0) caía sobre un pilar de hall).
+- **Medido encendido:** 211/212 tests WG3 (queda `probe_faceling_draw_under_wg3`, 101 fuera de [54, 90]: se recalibra
+  **después de L2**, cuando esas salas pasen a estilo 12); 27 regiones con 4,1 plantas, mancha 99,7 %, 5,6 islas, nav
+  100 %, zona 33,1 %. **Barrido de 306: 12 rotas frente a 6 de hoy** (15 × plantas altas alcanzadas < 50 %, 3 × mancha
+  mayor corta): no pasa «no peor que hoy», así que `MAZE_BIOME_ENABLED` sigue **apagado** (apagado: 212/212 y 6/306,
+  mundo idéntico). Lo siguiente de L1e es el alcance de las plantas altas dentro del laberinto.
+
+---
+
+## ADR-105 — Enmienda 22: separación mínima entre divisiones de un mismo espacio (2026-09-14) — IMPLEMENTADA, pendiente del visto bueno de Joel
+
+**Contexto.** `many_seeds_produce_valid_regions` con `WG3_SWEEP_SEEDS=34` (306 regiones) fallaba 6/306, todas torres
+altas con sótanos, con «planta N: sólo 0 de X cotas pisables se alcanzan». Dos causas:
+
+1. **Bug, no regla** (ADR-130 + VERTICALITY-ROADMAP D1): `fill::well_mouth_carves` calculaba la cota de la boca con el
+   índice absoluto `(storey_below + 1) * STOREY_HEIGHT_CM`. Con `ground > 0` el recorte caía `ground` plantas más arriba
+   y la pared de la planta de llegada que cruza el tiro quedaba entera. Corregido restando `ground`. Arregla 5 de las 6.
+2. **La regla de esta enmienda.** Las divisiones de un espacio sólo se rechazaban si SE PISABAN (`mine.overlaps`). Dos
+   espolones de paredes opuestas nacían paralelos a 3 cm y solapados 5 m: cada uno deja su hueco y juntos cierran la
+   sala entera. Medido en `0xdccc2d999d273d22` (1,1): el hall del pie de la escalera 5→6 partido a lo largo, la planta 6
+   al 0 %.
+
+**Decisión.** Una división nueva no puede quedar a menos de `PARTITION_SPACING_CM` (= `MIN_GENERATED_WIDTH_CM`, 200 cm,
+la anchura mínima que el generador llama andable) de otra del mismo espacio: se compara su huella inflada con las ya
+puestas. Una sola constante en `fill.rs`; sin wire ni formato de chunk. Cambia el mundo generado (menos divisiones), es
+determinista.
+
+**Medido.**
+- Divisiones (`partitions_land_where_the_grammar_says`, 3 semillas): 7 872 → 7 771 (−1,3 %); mamparas 2 639 → 2 602,
+  medios muros 172 → 160, colgadas 135 → 124.
+- 306 regiones: 306/306 válidas (antes 300/306); mancha mayor 99,5 → 99,7 %, islas 5,3 → 5,1, 4,0 plantas, nav 100 %.
+- 27 regiones: 27/27; con sólo el arreglo 1, 6,0 islas; con los dos, 5,8. Mancha mayor 99,7 %.
+
+**Tests.** `well_mouth_carves_start_at_the_arrival_floor_with_basements` (la boca contra la cota del PLAN, 19 edificios
+con sótanos) y `tall_towers_with_basements_reach_every_storey` (conectividad de las dos regiones del barrido). La sonda
+`probe_region_inside` acepta `WG3_PROBE_SOLIDS="x0,z0,x1,z1"`.
+
+---

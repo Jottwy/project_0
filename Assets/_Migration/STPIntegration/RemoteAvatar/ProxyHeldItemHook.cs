@@ -171,6 +171,67 @@ namespace BackroomsSurvival.Migration.STPIntegration
             _handL != null && _upperArmL != null && _lowerArmL != null && _indexKnuckleL != null
             && _middleKnuckleL != null && _pinkyKnuckleL != null && _thumbBaseL != null;
 
+        // ─── Libro abierto (bit BookOpen, 2026-09-14) ────────────────────────────────────────────────────
+        // El libro de supervivencia no pasa por la funda y no llega como heldItem: llega como bit. Mientras está abierto
+        // el objeto de la funda se ESCONDE (no se destruye: al cerrar vuelve sin reconstruirse) y el vecino sujeta con
+        // las dos manos el libro abierto que hornea ProxyOpenBookBuilder.
+        private const string OpenBookResource = "ProxyOpenBook";
+        private static GameObject _openBookPrefab;
+        private static bool _openBookLoaded;
+        private static ProxyBookHold.Cover _bookCover;
+        private GameObject _book;
+        private bool _bookOpen, _hasBookChoice;
+        private int _buttons;
+        private bool _dead;
+        private readonly BookHand _bookRight = new BookHand();
+        private readonly BookHand _bookLeft = new BookHand();
+        // Hasta ±70° de giro de los dedos y más abajo y más adentro en la tapa: la mano puede llegar desde DEBAJO del
+        // libro. Con ±45° y cerca del canto la primera captura sacó los antebrazos horizontales (14-09).
+        // ±90°: los dedos a lo alto de la página, para que no crucen el lomo (vista de frente a las tapas, 14-09).
+        private static readonly float[] BookSpreadCandidates = { -90f, -70f, -45f, -20f, 0f, 20f, 45f, 70f, 90f };
+        private static readonly float[] BookAlongCandidates = { -0.10f, -0.06f, -0.02f };
+        private static readonly float[] BookInsetCandidates = { 0.03f, 0.06f, 0.09f };
+
+        // Los dedos van detrás de la tapa ABIERTOS lo justo para no atravesarla y el pulgar se cierra hasta apoyarse en la
+        // página (ProxyBookHold.OpenBehindPlane / ReachWithTip).
+        private sealed class BookHand
+        {
+            public float Spread, Along, Inset;
+            public int Pole;
+            // Giro del pulgar resuelto al elegir la mano y reaplicado cada fotograma (barrer la rejilla cada fotograma sobra).
+            public bool ThumbSolved;
+            public float ThumbA, ThumbB;
+        }
+
+        // Se vuelven a elegir las manos cuando los hombros suben o bajan esto respecto del cuerpo (agacharse con el libro
+        // abierto): la elección de pie, reaplicada agachado, dejaba la mano derecha sobre la página (captura 14-09).
+        private const float BookRechooseMetres = 0.15f;
+        private float _bookChoiceShoulderHeight;
+
+        /// <summary>Coste de naturalidad de cada brazo con el libro abierto. Lo lee el arnés.</summary>
+        public float LastBookRightCost { get; private set; }
+        public float LastBookLeftCost { get; private set; }
+
+        /// <summary>Metros entre los nudillos de cada mano y su sitio detrás de la tapa. Lo lee el arnés.</summary>
+        public float LastBookMissRight { get; private set; }
+        public float LastBookMissLeft { get; private set; }
+
+        /// <summary>Lo más adelantado de los dedos de cada mano respecto de la tapa (m; negativo = todos detrás). Lo lee el arnés:
+        /// en una captura no se distingue «detrás de la tapa» de «sobre la página».</summary>
+        public float LastBookFrontRight { get; private set; }
+        public float LastBookFrontLeft { get; private set; }
+
+        /// <summary>Lo más metido en el libro de muñeca, base del pulgar y nudillos (m; negativo = fuera). Lo lee el arnés.</summary>
+        public float LastBookPierceRight { get; private set; }
+        public float LastBookPierceLeft { get; private set; }
+
+        /// <summary>Metros entre la yema de cada pulgar y su sitio sobre la página. Lo lee el arnés.</summary>
+        public float LastBookThumbMissRight { get; private set; }
+        public float LastBookThumbMissLeft { get; private set; }
+
+        /// <summary>El libro abierto mientras se pinta; si no, null. Lo lee el arnés.</summary>
+        public Transform OpenBook => _bookOpen ? _book.transform : null;
+
         private void Awake()
         {
             var bones = BuildBoneMap();
@@ -225,6 +286,27 @@ namespace BackroomsSurvival.Migration.STPIntegration
             ClearInstance();
             _applied = Unset;
             _category = "";
+            if (_book != null)
+                _book.SetActive(false);
+            _bookOpen = false;
+            _hasBookChoice = false;
+            _buttons = 0;
+            _dead = false;
+            ClearBookReadouts();
+        }
+
+        private void ClearBookReadouts()
+        {
+            LastBookRightCost = 0f;
+            LastBookLeftCost = 0f;
+            LastBookMissRight = 0f;
+            LastBookMissLeft = 0f;
+            LastBookFrontRight = 0f;
+            LastBookFrontLeft = 0f;
+            LastBookPierceRight = 0f;
+            LastBookPierceLeft = 0f;
+            LastBookThumbMissRight = 0f;
+            LastBookThumbMissLeft = 0f;
         }
 
         // Change-detect the held id; (re)build the model + resolve its category on change.
@@ -242,12 +324,16 @@ namespace BackroomsSurvival.Migration.STPIntegration
             if (_carryHook != null && _carryHook.IsCarrying)
             {
                 ClearInstance();
+                SetBookOpen(false);
                 _category = "";
                 _applied = Unset;
                 return;
             }
 
-            if (!TryResolveHeld(out int id) || id == _applied)
+            if (!TryResolveHeld(out int id))
+                return;
+            SetBookOpen(RemoteButtons.Has(_buttons, RemoteButtons.BookOpen) && !_dead);
+            if (id == _applied)
                 return;
 
             ClearInstance();
@@ -258,6 +344,9 @@ namespace BackroomsSurvival.Migration.STPIntegration
                 if (def != null && def.ParentGroup != null)
                     _category = def.ParentGroup.Name; // de-prefixed: "Melee"/"Firearms"/"Tools"
                 _instance = BuildHeldModel(def);
+                // Cambiar de objeto con el libro abierto: el nuevo sale ya escondido y aparece al cerrarlo.
+                if (_instance != null && _bookOpen)
+                    _instance.SetActive(false);
             }
             _applied = id;
         }
@@ -267,6 +356,12 @@ namespace BackroomsSurvival.Migration.STPIntegration
         // locomotion clip drives the hand naturally).
         private void LateUpdate()
         {
+            if (_bookOpen)
+            {
+                ApplyBookHold();
+                return;
+            }
+
             if (_instance == null)
                 return;
 
@@ -428,13 +523,14 @@ namespace BackroomsSurvival.Migration.STPIntegration
         /// <summary>
         /// Paso 2 de la linterna: dónde está la lente del objeto medido ESTE fotograma (el +Y de su cuerpo) y
         /// hacia dónde apunta. Falso si lo que hay en la mano no es de los medidos, y entonces ProxyLightHook se
-        /// queda con su luz de antorcha. Hay que leerlo después del LateUpdate de este hook.
+        /// queda con su luz de antorcha. También falso con el objeto escondido por el libro abierto.
+        /// Hay que leerlo después del LateUpdate de este hook.
         /// </summary>
         public bool TryGetBeam(out Vector3 position, out Quaternion rotation)
         {
             position = default;
             rotation = Quaternion.identity;
-            if (!_measured || _instance == null || !HasHandRig)
+            if (!_measured || _instance == null || !_instance.activeSelf || !HasHandRig)
                 return false;
 
             var t = _instance.transform;
@@ -693,6 +789,269 @@ namespace BackroomsSurvival.Migration.STPIntegration
             }
         }
 
+        // ─── Libro abierto ────────────────────────────────────────────────────────────────────────────────
+
+        private void SetBookOpen(bool open)
+        {
+            if (open && _book == null)
+                _book = BuildOpenBook();
+            open &= _book != null;
+            if (open != _bookOpen)
+            {
+                _hasBookChoice = false;
+                ClearBookReadouts();
+            }
+            _bookOpen = open;
+            if (_book != null && _book.activeSelf != open)
+                _book.SetActive(open);
+            if (_instance != null && _instance.activeSelf == open)
+                _instance.SetActive(!open);
+        }
+
+        private GameObject BuildOpenBook()
+        {
+            if (!HasHandRig || !HasLeftRig)
+                return null;
+            if (!_openBookLoaded)
+            {
+                _openBookLoaded = true;
+                _openBookPrefab = Resources.Load<GameObject>(OpenBookResource);
+                MeasureOpenBook(_openBookPrefab);
+            }
+            if (_openBookPrefab == null)
+                return null; // sin el prefab horneado el vecino sigue con lo de la funda, que es lo que hacía
+
+            // Colgado del pecho, el padre común de los dos brazos: si el cabeceo lo dobla después de este hook, libro y
+            // brazos se mueven juntos y las manos no se despegan de las tapas.
+            Transform parent = CommonAncestor(_upperArm, _upperArmL);
+            var go = Instantiate(_openBookPrefab, parent != null ? parent : transform, false);
+            ProxyRigUtil.SetLayerRecursive(go, _hand.gameObject.layer);
+            go.SetActive(false);
+            return go;
+        }
+
+        /// <summary>
+        /// La tapa de atrás del libro horneado, donde van las manos. Abierto en V, la caja entera no la dice: se mide
+        /// sobre los vértices (una vez por proceso). Sin malla legible, tapa plana en el fondo de la caja.
+        /// </summary>
+        private static void MeasureOpenBook(GameObject prefab)
+        {
+            var filter = prefab != null ? prefab.GetComponent<MeshFilter>() : null;
+            var mesh = filter != null ? filter.sharedMesh : null;
+            if (mesh == null)
+                return;
+            _bookCover = mesh.isReadable
+                ? ProxyBookHold.MeasureCover(mesh.vertices)
+                : new ProxyBookHold.Cover
+                {
+                    HalfWidth = mesh.bounds.extents.x, HalfHeight = mesh.bounds.extents.y, BackZAtSpine = mesh.bounds.min.z,
+                };
+        }
+
+        private static Transform CommonAncestor(Transform a, Transform b)
+        {
+            if (a == null || b == null)
+                return null;
+            for (var p = a.parent; p != null; p = p.parent)
+                if (b.IsChildOf(p))
+                    return p;
+            return null;
+        }
+
+        /// <summary>
+        /// Libro delante del pecho y cada mano detrás de su tapa. Las manos se eligen por naturalidad UNA vez al abrir —
+        /// el libro va fijo al cuerpo, no sigue al cabeceo— y cada fotograma se reaplica la elección sobre la pose que
+        /// deja el Animator, así que el libro acompaña al andar.
+        /// </summary>
+        private void ApplyBookHold()
+        {
+            Transform root = transform;
+            ProxyBookHold.BookPose(_upperArmL.position, _upperArm.position, root.forward, root.up,
+                out Vector3 centre, out Quaternion rotation);
+            _book.transform.SetPositionAndRotation(centre, rotation);
+
+            float shoulderHeight = Vector3.Dot((_upperArmL.position + _upperArm.position) * 0.5f - root.position, root.up);
+            if (!_hasBookChoice || Mathf.Abs(shoulderHeight - _bookChoiceShoulderHeight) > BookRechooseMetres)
+            {
+                ChooseBookHand(_bookRight, true, centre, rotation);
+                ChooseBookHand(_bookLeft, false, centre, rotation);
+                _bookChoiceShoulderHeight = shoulderHeight;
+                _hasBookChoice = true;
+            }
+
+            LastBookRightCost = PoseBookArm(true, _bookRight, centre, rotation, out float missRight, out float pierceRight);
+            LastBookLeftCost = PoseBookArm(false, _bookLeft, centre, rotation, out float missLeft, out float pierceLeft);
+            LastBookMissRight = missRight;
+            LastBookMissLeft = missLeft;
+            LastBookPierceRight = pierceRight;
+            LastBookPierceLeft = pierceLeft;
+            LastBookFrontRight = CurlBookFingers(true, _bookRight, centre, rotation);
+            LastBookFrontLeft = CurlBookFingers(false, _bookLeft, centre, rotation);
+        }
+
+        private void ChooseBookHand(BookHand hand, bool right, Vector3 centre, Quaternion rotation)
+        {
+            Transform upper = right ? _upperArm : _upperArmL;
+            Transform lower = right ? _lowerArm : _lowerArmL;
+            Transform end = right ? _hand : _handL;
+            Quaternion upperRest = upper.localRotation, lowerRest = lower.localRotation, endRest = end.localRotation;
+
+            var trial = new BookHand();
+            float best = float.MaxValue;
+            foreach (float spread in BookSpreadCandidates)
+            foreach (float along in BookAlongCandidates)
+            foreach (float inset in BookInsetCandidates)
+            for (int pole = 0; pole < PoleCount; pole++)
+            {
+                upper.localRotation = upperRest;
+                lower.localRotation = lowerRest;
+                end.localRotation = endRest;
+                trial.Spread = spread;
+                trial.Along = along;
+                trial.Inset = inset;
+                trial.Pole = pole;
+                float cost = PoseBookArm(right, trial, centre, rotation, out _, out _) + 0.1f * Sq(spread / 45f);
+                if (cost >= best)
+                    continue;
+                best = cost;
+                hand.Spread = spread;
+                hand.Along = along;
+                hand.Inset = inset;
+                hand.Pole = pole;
+            }
+            upper.localRotation = upperRest;
+            lower.localRotation = lowerRest;
+            end.localRotation = endRest;
+            hand.ThumbSolved = false;
+        }
+
+        /// <summary>
+        /// Una mano en su canto: nudillos detrás de la tapa, palma contra ella y dedos hacia el lomo. La línea de nudillos
+        /// sale de la lateralidad MEDIDA de esa mano. Muñeca por IK, mano girada a su sitio y media torsión al antebrazo,
+        /// igual que la linterna. Coste = naturalidad + no llegar.
+        /// </summary>
+        private float PoseBookArm(bool right, BookHand hand, Vector3 centre, Quaternion rotation, out float miss, out float pierce)
+        {
+            Transform root = transform;
+            Transform upper = right ? _upperArm : _upperArmL;
+            Transform lower = right ? _lowerArm : _lowerArmL;
+            Transform end = right ? _hand : _handL;
+            Transform middle = right ? _middleKnuckle : _middleKnuckleL;
+
+            Vector3 side = ProxyBookHold.SideAxis(rotation, root.right, right);
+            var grip = ProxyBookHold.Grip(centre, rotation, side, _bookCover, hand.Inset, hand.Along, hand.Spread);
+
+            var frame = right ? Frame() : FrameL();
+            Vector3 knuckleAxis = ProxyBookHold.KnuckleAxis(grip.Fingers, grip.Palm, ProxyBookHold.Chirality(frame));
+            Quaternion wanted = Quaternion.LookRotation(knuckleAxis, grip.Palm);
+            Quaternion delta = wanted * Quaternion.Inverse(Quaternion.LookRotation(frame.KnuckleAxis, frame.PalmNormal));
+            Vector3 wristTarget = grip.Knuckles - delta * (frame.KnuckleCentre - end.position);
+
+            float armLength = Vector3.Distance(upper.position, lower.position) + Vector3.Distance(lower.position, end.position);
+            Vector3 shoulder = upper.position;
+            Vector3 pole = right ? PoleDirection(hand.Pole) : PoleDirectionL(hand.Pole);
+            ProxyGripSolver.TwoBoneIk(upper, lower, end, wristTarget, shoulder + pole * armLength);
+
+            frame = right ? Frame() : FrameL();
+            Vector3 untwisted = frame.PalmNormal;
+            end.rotation = wanted * Quaternion.Inverse(Quaternion.LookRotation(frame.KnuckleAxis, frame.PalmNormal)) * end.rotation;
+            frame = right ? Frame() : FrameL();
+            ProxyArmNaturalness.ShareForearmTwist(lower, end, frame.PalmNormal, untwisted);
+
+            var measure = ProxyArmNaturalness.Take(shoulder, lower.position, end.position, middle.position,
+                frame.PalmNormal, frame.KnuckleAxis, root.right, root.up, right);
+            miss = Vector3.Distance(frame.KnuckleCentre, grip.Knuckles);
+            // Nada de la mano dentro del libro: ni la muñeca, ni la base del pulgar, ni los nudillos, ni la CARNE de la palma
+            // (agachado asomaba por la página, 14-09). Los dedos los abre CurlBookFingers y el pulgar rodea el canto por fuera.
+            Vector3 palmFlesh = (end.position + frame.KnuckleCentre) * 0.5f + frame.PalmNormal * ProxyBookHold.PalmFleshMetres;
+            pierce = Mathf.Max(
+                Mathf.Max(ProxyBookHold.PierceDepth(end.position, centre, rotation, _bookCover),
+                    ProxyBookHold.PierceDepth((right ? _thumbBase : _thumbBaseL).position, centre, rotation, _bookCover)),
+                Mathf.Max(ProxyBookHold.PierceDepth((right ? _indexKnuckle : _indexKnuckleL).position, centre, rotation, _bookCover),
+                    ProxyBookHold.PierceDepth((right ? _pinkyKnuckle : _pinkyKnuckleL).position, centre, rotation, _bookCover)));
+            pierce = Mathf.Max(pierce, ProxyBookHold.PierceDepth(palmFlesh, centre, rotation, _bookCover));
+            // La eminencia del pulgar, el bulto más grueso de la palma: asomaba por el canto de la página (vista de frente
+            // a las páginas, 14-09). El pulgar tiene que rodear el canto desde FUERA del libro.
+            Vector3 thenar = (right ? _thumbBase : _thumbBaseL).position + frame.PalmNormal * ProxyBookHold.PalmFleshMetres;
+            pierce = Mathf.Max(pierce, ProxyBookHold.PierceDepth(thenar, centre, rotation, _bookCover));
+
+            // Yema estimada: los dedos, ya abiertos, van por la tapa en la dirección del agarre.
+            var middle3 = (right ? _curlChains : _curlChainsL)[1];
+            float fingerLength = FingerLength(middle3);
+            float spine = ProxyBookHold.SpineCost(grip.Knuckles + grip.Fingers * fingerLength, centre, side);
+
+            return ProxyArmNaturalness.Cost(measure) + 4f * Sq(miss / 0.02f)
+                + ProxyBookHold.ElbowCost(shoulder, lower.position, end.position, root.right, root.up, right)
+                + Sq(Mathf.Max(0f, pierce + ProxyGripSolver.SkinMetres) / 0.01f)
+                + spine;
+        }
+
+        // Largo del dedo estirado: suma de falanges y la yema estimada. El clip lo trae doblado, así que la recta nudillo-yema
+        // se quedaría corta.
+        private static float FingerLength(Transform[] chain)
+        {
+            if (chain == null || chain.Length < 2 || chain[0] == null || chain[chain.Length - 1] == null || chain[chain.Length - 2] == null)
+                return 0.09f;
+            float length = 0f;
+            for (int i = 1; i < chain.Length; i++)
+                if (chain[i] != null && chain[i - 1] != null)
+                    length += Vector3.Distance(chain[i - 1].position, chain[i].position);
+            return length + Vector3.Distance(chain[chain.Length - 1].position, ProxyGripSolver.Tip(chain));
+        }
+
+        /// <summary>
+        /// Dedos detrás de la tapa y pulgar hacia la página. La apertura se resuelve CADA fotograma sobre la pose del
+        /// Animator: resuelta una vez de pie y reaplicada agachado, el clip de agachado cierra más los dedos y volvían a
+        /// atravesar la tapa. Devuelve lo más adelantado de los dedos respecto de la tapa (m).
+        /// </summary>
+        private float CurlBookFingers(bool right, BookHand hand, Vector3 centre, Quaternion rotation)
+        {
+            var chains = right ? _curlChains : _curlChainsL;
+            var thumb = right ? _thumbChain : _thumbChainL;
+            var frame = right ? Frame() : FrameL();
+            Vector3 side = ProxyBookHold.SideAxis(rotation, transform.right, right);
+            var grip = ProxyBookHold.Grip(centre, rotation, side, _bookCover, hand.Inset, hand.Along, hand.Spread);
+            Vector3 cover = grip.Knuckles + grip.Palm * ProxyBookHold.KnuckleBehindMetres;
+
+            float front = float.MinValue;
+            for (int i = 0; i < chains.Length; i++)
+            {
+                ProxyBookHold.OpenBehindPlane(chains[i], frame.KnuckleAxis, cover, grip.Palm, ProxyBookHold.FingerClearance);
+                front = Mathf.Max(front, ProxyBookHold.MaxInFront(chains[i], cover, grip.Palm));
+            }
+            // El pulgar rodea el canto y se apoya EN la página: su yema, a ThumbInset del canto de fuera y a la altura de la
+            // base del pulgar, una piel por delante de las páginas.
+            Vector3 toReader = rotation * Vector3.forward;
+            Vector3 pageUp = rotation * Vector3.up;
+            float thumbX = _bookCover.HalfWidth - ProxyBookHold.ThumbInsetMetres;
+            float thumbAlong = Mathf.Clamp(Vector3.Dot((right ? _thumbBase : _thumbBaseL).position - centre, pageUp),
+                0.02f - _bookCover.HalfHeight, _bookCover.HalfHeight - 0.02f);
+            Vector3 thumbTarget = centre + side * thumbX + pageUp * thumbAlong
+                + toReader * (_bookCover.FrontZAtSpine + _bookCover.FrontSlope * thumbX + ProxyBookHold.ThumbAbovePageMetres);
+            if (!hand.ThumbSolved)
+            {
+                var bookCover = _bookCover;
+                Vector3 pivot = thumb[0].position;
+                ProxyBookHold.ReachWithTip(thumb, frame.FingerAxis, frame.KnuckleAxis, thumbTarget, ProxyBookHold.MaxThumbDegrees,
+                    ProxyBookHold.ThumbStepDegrees, out hand.ThumbA, out hand.ThumbB,
+                    () => ProxyBookHold.ThumbInsideCost(thumb, centre, rotation, bookCover)
+                        + ProxyBookHold.PageUpCost(ProxyGripSolver.Tip(thumb) - pivot, rotation));
+                hand.ThumbSolved = true;
+            }
+            else
+            {
+                // MISMA reaplicación que ReachWithTip usa al resolver (los dos ejes SOLO en la base): con el Curl
+                // progresivo de antes, el pulgar se retorcía en tornillo en cuanto pasaba de este fotograma al
+                // siguiente, aunque la búsqueda inicial ya hubiera encontrado el ángulo bueno (Joel, 14-09).
+                ProxyBookHold.ApplyRigidReach(thumb, frame.FingerAxis, frame.KnuckleAxis, hand.ThumbA, hand.ThumbB);
+            }
+            if (right)
+                LastBookThumbMissRight = Vector3.Distance(ProxyGripSolver.Tip(thumb), thumbTarget);
+            else
+                LastBookThumbMissLeft = Vector3.Distance(ProxyGripSolver.Tip(thumb), thumbTarget);
+            return front;
+        }
+
         private ProxyGripSolver.HandFrame FrameL() => ProxyGripSolver.Frame(
             _handL.position, _indexKnuckleL.position, _middleKnuckleL.position, _pinkyKnuckleL.position, _thumbBaseL.position);
 
@@ -755,6 +1114,8 @@ namespace BackroomsSurvival.Migration.STPIntegration
 
             heldItem = view.heldItem;
             _pitch = view.pitch;
+            _buttons = view.buttons;
+            _dead = view.dead;
             return true;
         }
     }

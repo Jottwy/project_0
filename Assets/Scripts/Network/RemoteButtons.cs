@@ -105,6 +105,18 @@ namespace BackroomsSurvival.Net
         /// que se excluyen en el origen.</summary>
         public const int BandagedArmRight = 1 << 8;
 
+        /// <summary>
+        /// Este peer tiene el LIBRO de supervivencia abierto (la libreta de mapas va dentro, B o N). Décimo bit.
+        ///
+        /// Hacía falta porque el libro NO pasa por la funda: es un wieldable suelto del vendor sin item detrás, así
+        /// que `heldItem` seguía diciendo lo que hubiera en la funda y el vecino veía un rifle en la mano de alguien
+        /// que estaba leyendo (arnés de poses, 2026-09-14). Con el bit, el avatar remoto esconde ese objeto y enseña
+        /// el libro abierto.
+        ///
+        /// NIVEL y no contador: leer dura. Cero coste de wire; un cliente viejo lo ignora y dibuja lo de siempre.
+        /// </summary>
+        public const int BookOpen = 1 << 9;
+
         public static bool Has(int buttons, int bit) => (buttons & bit) != 0;
     }
 }
