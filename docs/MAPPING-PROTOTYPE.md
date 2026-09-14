@@ -409,6 +409,74 @@ plano dura `fixSeconds` = 30 s; el borrador que se ve en una zona es la última 
 
 **Playtest de Joel (2026-09-14):** «está funcionando espectacular». Ver lejos y plano M validados tal cual.
 
+## 5. P0.5 — La libreta dentro del libro de supervivencia (plan, pendiente de Joel)
+
+Decidido (Joel, 2026-09-14): **opción B de §3.9**, pestaña «Notas» del libro en `B`. `N` y la escena de playtest
+se quedan como banco de pruebas; `M` y el plano siguen solo en `MappingPlaytest` (en el juego no hay «base» todavía).
+
+### 5.1 Lo verificado en el vendor (2026-09-14)
+
+- `SurvivalBookUI` (`STP/Code/Runtime/UI/Building/SurvivalBook/SurvivalBookUI.cs`) no tiene lista de secciones: un
+  `SelectableGroupBase` en el Canvas `Menu` y un Canvas de contenido (`Content` → `BuildingContent`, `FireContent`,
+  `ShelterContent`, `WorkstationsContent`, `StorageContent`). Cada pestaña es un `SelectableButton` cuyos eventos
+  persistentes hacen `SetActive` sobre su panel.
+- Un `SelectableButton` se registra SOLO en `Awake` si su padre tiene el grupo: una pestaña creada en runtime bajo
+  `Menu` entra en el grupo sin tocar el vendor. Aviso de cambio: `SelectableGroupBase.SelectedChanged`.
+- El libro abre y cierra con `WieldableTool.EquippingStarted` / `HolsteringStarted` (públicos).
+- El libro va dentro de `STP_Player.prefab`; el jugador real vive en `STP_Showcase.unity` (con `GridTestWorld`),
+  que arranca con la sesión y el backend (~90 s).
+- `STP_Player` no lleva `CharacterController` en la raíz del YAML: el resto de nuestro código lo busca por
+  `CharacterControllerMotor`.
+
+### 5.2 Diseño
+
+1. **`MapNotebook` (lógica, sin IMGUI).** Se extrae de `MapNotebookView` todo lo que no es pintar: hojas, boli,
+   «Coger hoja», dibujo animado paso a paso, cancelar, «Ubicarme», cruceta y última ubicación. Recibe el tiempo
+   por parámetro. `MapNotebookView` (IMGUI, `N`) y `MapAtlasView` pasan a usarlo: **mismo comportamiento que hoy**.
+2. **`MapNotebookBookTab` (uGUI en el libro, nuestro ensamblado).** Cuando aparece un `SurvivalBookUI` del jugador
+   local, crea en runtime:
+   - una pestaña «Notas» bajo `Menu`, copiando el aspecto de una hermana (sin sus eventos), que entra sola en el grupo;
+   - un panel `NotesContent` bajo `Content` con la hoja (`RawImage` de la textura de `MapSheetRaster`), fila de
+     hojas, «Coger hoja», «Dibujar», «Ubicarme», tinta y estado. Los materiales se copian de un `Image` hermano
+     (si el libro usa `BR_UIWarp`, la hoja también: regla 14).
+   - Al seleccionar «Notas» se ocultan los demás paneles; al seleccionar otra, se oculta el nuestro.
+   - Enfundar el libro (`HolsteringStarted`) cancela un dibujo a medias igual que moverse.
+3. **`MappingRuntimeBootstrap`.** `RuntimeInitializeOnLoadMethod(AfterSceneLoad)` (y `sceneLoaded`, por la trampa de
+   Play sin recarga): en escenas con jugador STP crea un objeto con `MapMemorySampler` (target = transform de
+   `CharacterControllerMotor`) y `MapNotebook`, y engancha la pestaña cuando el libro existe (reintento cada 2 s).
+   **Detrás de un interruptor** (`MappingPrototypeSettings.enabledInGame`, por defecto activo solo en el editor),
+   para no meter un prototipo en builds.
+
+### 5.3 Riesgos a medir antes de dar por buena la pestaña
+
+- **Puntero sobre la UI del libro.** Los botones del vendor ya se clican; los nuestros deben usar el mismo raycaster
+  y capa (`ViewModel`, 10). Si el Canvas warpea, un clic podría no casar (regla 14): se mide con un botón de prueba.
+- **Moverse con el libro abierto.** Si el contexto `STP_SurvivalBook` deja andar, W/A/S/D cancelan como en la
+  libreta de prueba; si no, basta con enfundar.
+- **Showcase tiene WIP ajeno en el árbol:** P0.5 **no edita la escena**; todo se monta en runtime.
+
+### 5.4 Tests
+
+| Test | Qué fija |
+|---|---|
+| `TakeSheetAssignsTheCurrentZone` / `DrawingCommitsOverTimeAndConsumesOnlyWhenComplete` | Extracción sin cambio de comportamiento |
+| `CancelKeepsWhatWasDrawn` | Cancelar (moverse o enfundar) |
+| `LocateMarksAndRemembersTheFix` | Ubicarme + última ubicación para el plano |
+
+`MapNotebook` sin `UnityEngine`, corre también headless. La pestaña y el bootstrap se verifican en Play con log
+`MAPBOOK` (pestaña creada, panel activo, clics), y el playtest es de Joel.
+
+### 5.5 Commits (~550 líneas → tres)
+
+1. `refactor(mapping): la lógica de la libreta sale de la vista IMGUI` — `MapNotebook` + tests; vistas adaptadas.
+2. `feat(mapping): pestaña Notas en el libro de supervivencia` — `MapNotebookBookTab`.
+3. `feat(mapping): el recuerdo y la libreta en el juego` — bootstrap + interruptor.
+
+### 5.6 Preguntas de playtest
+
+¿Dibujar con el libro en las manos se siente mejor que el panel? ¿La hoja se lee bien en el libro? ¿Echa en falta
+una tecla directa (`N`) o basta con `B` + pestaña?
+
 ### 3.9 El libro de supervivencia de STP: modelo base para la libreta (Joel, 2026-09-13)
 
 Joel propone aprovechar el libro de crafteo/construcción que ya existe como modelo para la libreta, y más adelante
