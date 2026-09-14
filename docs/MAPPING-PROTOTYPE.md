@@ -489,6 +489,23 @@ solo admite UI y el propio libro, así que no se puede andar y no hace falta can
 **Sin verificar en Play:** que la pestaña aparezca en `STP_Showcase` (log `MAPBOOK attach=ok`), el tamaño de letra y
 botones sobre la página de 172 × 205, y los clics sobre el Canvas en World Space.
 
+### 5.8 Libreta en N, página 3D y sin construcciones (Joel, 2026-09-14)
+
+- **Construcciones:** «por ahora desactivar» = ocultar las pestañas de construir del libro
+  (`MapNotebookBookTab.HideConstructionTabs`). El sistema de construcción y su replicación siguen intactos. El libro
+  abre en «Notas».
+- **N:** saca el MISMO libro que `B` y lo abre en «Notas»; con el libro en la mano lo guarda. Solo desde el contexto
+  de input por defecto. **Deuda:** `N` es también `FireMode` del vendor; con un arma en la mano cambia el modo de
+  disparo además de abrir la libreta. Se resuelve reasignando `FireMode` en nuestro mapa de input al salir del
+  prototipo.
+- **Página 3D (Joel: «si es viable y más rápido de lo que parece»): viable, hecha.** El modelo `FP_Book.fbx` no trae
+  clip de pasar página (solo Hold/Idle/Equip/Holster), así que `MapPageFlip` hace una hoja propia: malla de 24
+  columnas curvada en CPU sobre el lomo de la hoja, anverso con la hoja que se va y reverso de papel, URP Unlit opaco
+  (tapa la hoja nueva mientras pasa), 0,45 s, hasta 166° para no entrar en la página izquierda, y sonido
+  `STP_Book_FlipPage` por `AudioManager` (canal Sfx). Siempre pasa hacia la izquierda, también al volver atrás.
+- **Sin verificar en Play:** que la hoja caiga alineada con la página (mismo espacio que el Canvas, sin warp), el
+  sentido de la curva y que tape la hoja nueva.
+
 ### 5.6 Preguntas de playtest
 
 ¿Dibujar con el libro en las manos se siente mejor que el panel? ¿La hoja se lee bien en el libro? ¿Echa en falta
