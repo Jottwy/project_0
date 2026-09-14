@@ -2833,6 +2833,45 @@ fn every_tier_is_contiguous_and_climbable() {
     );
 }
 
+/// ADR-155 L0 — **cuánto suelo construido caería en zona laberinto**, con el plan de hoy sin tocar:
+/// área de los espacios construidos (todas las plantas) cuyo centro está en zona, sobre 12 semillas ×
+/// 9 regiones. Es la medida previa de D6; la banda es la del ADR (30–50 %).
+#[test]
+fn maze_zone_covers_about_forty_percent_of_built_floor() {
+    let m = real_manifest();
+    let seeds = validate::sweep_seeds(sweep_seed_count(12).max(12));
+    let (mut zone_m2, mut all_m2) = (0f64, 0f64);
+    let mut regions_with_zone = 0usize;
+    let mut regions = 0usize;
+    for &seed in &seeds {
+        for &(rx, rz) in NEAR_REGIONS.iter() {
+            let inside = validate::region_inside(&m, seed, Wg3RegionCoord { x: rx, z: rz });
+            let mut here = 0f64;
+            for st in &inside.building.storeys {
+                for (_, sp) in st.built() {
+                    let (cx, cz) = sp.rect.centre_m();
+                    let a = sp.area_m2() as f64;
+                    all_m2 += a;
+                    if super::density::in_maze_zone(inside.building.seed, cx, cz) {
+                        zone_m2 += a;
+                        here += a;
+                    }
+                }
+            }
+            regions += 1;
+            regions_with_zone += (here > 0.0) as usize;
+        }
+    }
+    let pct = zone_m2 * 100.0 / all_m2.max(1.0);
+    println!(
+        "[wg3-maze] {pct:.1} % del suelo construido en zona; {regions_with_zone} de {regions} regiones tocan zona"
+    );
+    assert!(
+        (30.0..50.0).contains(&pct),
+        "zona laberinto sobre suelo construido: {pct:.1} %"
+    );
+}
+
 /// ADR-152 D6 — **toda piscina es legal**: región sin torre, profundidad de la lista, vano en la losa,
 /// fondo y cuatro paredes, escalera completa, y ningún otro macizo de pie dentro del vaso.
 #[test]
