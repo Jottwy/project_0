@@ -37,7 +37,15 @@ namespace BackroomsSurvival.Migration.STPIntegration
     /// crosses a storey — without it the light illuminates B3 alone, wherever the peer stands.
     ///
     /// Removable: delete the file and peers stop casting light; nothing else changes.
+    ///
+    /// PASO 2 DE LA LINTERNA (2026-09-14): cuando lo que hay en la mano es un objeto de agarre MEDIDO
+    /// (<see cref="ProxyHeldItemHook.TryGetBeam"/>, hoy la linterna), la misma luz pasa a FOCO blanco y se coloca
+    /// cada fotograma en la lente, apuntando por el eje del objeto. Antes el vecino con linterna llevaba el punto
+    /// naranja de la antorcha pegado a la mano (captura del arnés). La luz sigue colgando del hueso —el modelo
+    /// se reconstruye al cambiar de objeto— y sólo se mueve en mundo; sin sombras, como exige ADR-042. Corre
+    /// después de ProxyHeldItemHook (<c>DefaultExecutionOrder</c>) para leer la lente ya colocada.
     /// </summary>
+    [DefaultExecutionOrder(50)]
     public sealed class ProxyLightHook : MonoBehaviour
     {
         [Header("Anchor")]
@@ -52,14 +60,66 @@ namespace BackroomsSurvival.Migration.STPIntegration
         [SerializeField, Min(0f)] private float _intensity = 2.5f;
         [SerializeField, Min(0f)] private float _range = 12f;
 
+        [Header("Haz (linterna): los mismos números que el foco de primera persona")]
+        [SerializeField] private Color _beamColor = new Color(0.93f, 0.95f, 1f);
+        [SerializeField, Min(0f)] private float _beamIntensity = 4f;
+        [SerializeField, Min(0f)] private float _beamRange = 18f;
+        [SerializeField, Range(1f, 179f)] private float _beamSpotAngle = 55f;
+        [SerializeField, Range(0f, 179f)] private float _beamInnerSpotAngle = 22f;
+
         private RemotePlayerManager _manager;
         private Transform _hand;
         private Light _light;
         private bool _applied;
+        private ProxyHeldItemHook _held;
+        private bool _isBeam;
 
         private void Awake()
         {
             _hand = FindBone(_handBoneName);
+            _held = GetComponent<ProxyHeldItemHook>();
+        }
+
+        // Foco en la lente mientras la mano lleve un objeto medido; si no, la luz de antorcha de siempre.
+        private void LateUpdate()
+        {
+            if (_light == null || !_light.enabled)
+                return;
+
+            if (_held != null && _held.TryGetBeam(out Vector3 lens, out Quaternion aim))
+            {
+                ConfigureAsBeam(true);
+                _light.transform.SetPositionAndRotation(lens, aim);
+            }
+            else
+            {
+                ConfigureAsBeam(false);
+                _light.transform.localPosition = _localOffset;
+                _light.transform.localRotation = Quaternion.identity;
+            }
+        }
+
+        private void ConfigureAsBeam(bool beam)
+        {
+            if (_isBeam == beam)
+                return;
+            _isBeam = beam;
+            if (beam)
+            {
+                _light.type = LightType.Spot;
+                _light.color = _beamColor;
+                _light.intensity = _beamIntensity;
+                _light.range = _beamRange;
+                _light.spotAngle = _beamSpotAngle;
+                _light.innerSpotAngle = _beamInnerSpotAngle;
+            }
+            else
+            {
+                _light.type = LightType.Point;
+                _light.color = _color;
+                _light.intensity = _intensity;
+                _light.range = _range;
+            }
         }
 
         // Re-arm for pool reuse: a recycled proxy must not inherit the previous occupant's glow.
@@ -114,6 +174,7 @@ namespace BackroomsSurvival.Migration.STPIntegration
             light.range = _range;
             light.shadows = LightShadows.None; // ADR-042: never turn this on, see the class doc
             light.enabled = false;
+            _isBeam = false;
             return light;
         }
 
