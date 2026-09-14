@@ -18541,3 +18541,11 @@ alternaba entre opciones de coste parecido (10–39° de giro por fotograma).
 - El consumidor 2 entre espacios contiguos (D5).
 
 ---
+
+## ADR-151 — Aprobación (2026-09-14) — ACEPTADA (Joel: «me sirve acepto»)
+
+- Aceptado tal cual, con `DAIS_CHANCE` 0,15 escalado por el decaimiento, reparto ≈ 70/30 pegado/exento y pretil con
+  probabilidad (h − 40) / 80.
+- Se empieza por C1.
+
+---
