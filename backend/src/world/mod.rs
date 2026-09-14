@@ -16,6 +16,8 @@ pub mod level4_layout;
 pub mod levels;
 /// ADR-115 — las marcas de saqueo: qué punto de loot ya se llevaron, y cuándo.
 pub mod loot_marks;
+/// ADR-154 — hojas de mapa dibujadas: el registro guardable y el almacén del host.
+pub mod map_sheets;
 /// ADR-043 — deterministic, lazy draw of where the world's robapieles live.
 pub mod phantom_spawn;
 /// ADR-116 — dónde nace cada jugador cuando el mundo los reparte.
