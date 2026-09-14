@@ -18391,3 +18391,47 @@ construido y de las tres concreciones que el texto original no fijaba.
 - **Sin ver en Play** todavía: subir y bajar sin tirones en `WorldGen3Live`.
 
 ---
+
+## ADR-150 — Enmienda 4: el antebrazo que temblaba era un salto de signo, y el destornillador rehecho (2026-09-13) — PROPUESTA (Joel: «la animación de la manivela hace que tenga como un tembleque el antebrazo… el tembleque rompe mucho»; «haz lo mismo con el destornillador»)
+
+### Causa medida
+
+Leyendo las curvas de los `.anim`, `ForearmTwist.3.L` saltaba **160°** de un fotograma a otro dos veces por vuelta de
+cuerda (y 164° al equipar la linterna; 178° al enfundar el destornillador, que venía de su horneador propio). La torsión
+mano/antebrazo se mide en (−180°, 180°]: al cruzar ±180° cambia de signo y los huesos de torsión dan media vuelta. La
+mano no se movía; el antebrazo temblaba. Encima, la mano que sigue al pomo elegía su giro en pasos de 10° por fotograma y
+alternaba entre opciones de coste parecido (10–39° de giro por fotograma).
+
+### Qué se añadió
+
+- **Torsión continua al hornear**: dentro de un clip, cada torsión repartida es el equivalente (±360°) más cercano a la
+  anterior (`BeginTwistContinuity`/`EndTwistContinuity`). En la búsqueda no: cada candidato es independiente.
+- **Seguimiento en tres pasos**: se elige giro (paso 5°) y deslizamiento por fotograma, se suaviza sobre la vuelta
+  (gaussiana circular), se reelige cerca de lo suavizado y se suaviza otra vez. Deslizamiento con tope de 12 mm
+  (con 18 mm el pomo quedaba a 21 mm del centro de los dedos; `WhileCrankingTheLeftHandRidesTheKnob` exige 20).
+- **Test genérico `LosClipsHorneadosNoTiemblan`**: aceleración angular por hueso del brazo en todo clip horneado, tope 90°
+  (lo legítimo medido no pasa de 35°).
+- **`Regrip` prueba la pose que ya había**: empujada 0–20 mm fuera del mango en radial y contra la palma, con el codo
+  del clip base; gana si cuesta menos que la búsqueda. Con la mano en otro sitio del objeto, en los clips de brazo
+  estirado el hombro se adelanta lo justo; si aun así el objeto se separa más de 5 mm, `REGRIP_DRIFT`.
+- **Un clip que no anima el brazo de la portadora no se hornea** (`CLIP_WITHOUT_ARM`).
+
+### Resultados medidos
+
+- Cuerda de la linterna: aceleración máxima **159° → 5°**, pasos de mano ≤ 8°. Peor coste de brazo en la vuelta 22, por
+  `manos-juntas` a fase 0,67 (manos a ~5 mm, el pomo pasa junto al puño derecho). Equipar: aceleración 55°, bajo el tope.
+- Destornillador (`BR_Wieldable_Screwdriver`, mango de 240 mm y 11,5 mm de radio medio): tal cual estaba, pulgar 11,3 mm
+  y palma 6,7 mm dentro, rodea 58°. La búsqueda de `Regrip` daba 31,6 (tope de muñeca en todos los candidatos); la pose
+  actual empujada 19 mm contra la palma cuesta **2,60**, sin penetraciones, rodea 70°. Enfundar: 178° → 26°.
+- Primer horneado del destornillador: los tres `Template_Attack` del vendor salían con el brazo sin llegar (12–31
+  fotogramas) y el objeto a 17–19 mm de la mano, y con 64–81° de brazo inventado sobre plantillas vacías. Se revirtió y
+  quedaron fuera por la regla nueva.
+- EditMode filtrado: 26 tests, 25 verdes, 1 saltado, 0 rojos (incluidos `ToolGripTests` con el destornillador nuevo).
+
+### Pendiente, declarado
+
+- El destornillador sigue siendo un agarre de precisión: dedos a lo largo del mango, no un puño. Un puño exige que su
+  clip base lo lleve en diagonal por la palma, que es cosa de su horneador (`BackroomsToolPoseBaker`).
+- Las manos a ~5 mm a fase 0,67 de la cuerda. Ver en Play.
+
+---

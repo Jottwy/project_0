@@ -24,6 +24,8 @@ namespace BackroomsSurvival.Gameplay.Mapping
         public MapMemorySampler sampler;
         [Tooltip("Lo que se desactiva con la libreta abierta (movimiento y mirada).")]
         public Behaviour playerControl;
+        [Tooltip("P0.4: el plano de la base. Con él abierto, N no abre la libreta.")]
+        public MapAtlasView atlas;
 
         [Header("Dibujo")]
         public float maxDrawSeconds = 3f;
@@ -64,6 +66,34 @@ namespace BackroomsSurvival.Gameplay.Mapping
         private float _crosshairZ;
         private float _crosshairUntil;
 
+        private bool _hasFix;
+        private MapZone _fixZone;
+        private float _fixLocalX;
+        private float _fixLocalZ;
+        private float _fixTime;
+
+        public bool IsOpen => _open;
+        public IReadOnlyList<MapSheet> Sheets => _sheets;
+        public MapSheet CurrentSheet => _current >= 0 ? _sheets[_current] : null;
+        public MapPen Pen => _pen;
+
+        /// <summary>P0.4 — la última vez que «Ubicarme» te reconoció: zona, celdas locales y <c>Time.unscaledTime</c>.</summary>
+        public bool TryGetFix(out MapZone zone, out float localX, out float localZ, out float time)
+        {
+            zone = _fixZone;
+            localX = _fixLocalX;
+            localZ = _fixLocalZ;
+            time = _fixTime;
+            return _hasFix;
+        }
+
+        /// <summary>P0.4 — el plano la cierra al abrirse; un dibujo a medias se cancela como con N.</summary>
+        public void CloseIfOpen()
+        {
+            if (_drawing) Finish(false, "Cancelado: lo trazado se queda.");
+            if (_open) Close();
+        }
+
         private bool _drawing;
         private MapSheetLayer _layer;
         private int _drawIndex;
@@ -93,7 +123,7 @@ namespace BackroomsSurvival.Gameplay.Mapping
             {
                 if (_drawing) Finish(false, "Cancelado: lo trazado se queda.");
                 if (_open) Close();
-                else Open();
+                else if (atlas == null || !atlas.IsOpen) Open();
             }
 
             if (_drawing)
@@ -208,7 +238,11 @@ namespace BackroomsSurvival.Gameplay.Mapping
                 _crosshairX = localX / cellsPerChunk;
                 _crosshairZ = localZ / cellsPerChunk;
                 _crosshairUntil = Time.unscaledTime + crosshairSeconds;
-                _current = best;
+                _hasFix = true;
+                _fixZone = sheet.Zone;
+                _fixLocalX = localX;
+                _fixLocalZ = localZ;
+                _fixTime = Time.unscaledTime;                _current = best;
                 _dirty = true;
                 result = sure ? "seguro" : "dudoso";
                 _status = sure

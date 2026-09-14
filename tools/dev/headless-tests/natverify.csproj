@@ -76,6 +76,7 @@
     <Compile Include="$(Repo)\Assets\Scripts\Gameplay\Mapping\MapSheetStrokeBuilder.cs" />
     <Compile Include="$(Repo)\Assets\Scripts\Gameplay\Mapping\MapSheetRaster.cs" />
     <Compile Include="$(Repo)\Assets\Scripts\Gameplay\Mapping\MapVisionFan.cs" />
+    <Compile Include="$(Repo)\Assets\Scripts\Gameplay\Mapping\MapAtlas.cs" />
   </ItemGroup>
 
   <!-- Los ficheros de test REALES, sin tocar. LanFallbackMetadataTests queda fuera: depende de
@@ -112,6 +113,7 @@
     <Compile Include="$(Repo)\Assets\Tests\EditMode\MapSheetRasterTests.cs" />
     <Compile Include="$(Repo)\Assets\Tests\EditMode\MapRecognitionTests.cs" />
     <Compile Include="$(Repo)\Assets\Tests\EditMode\MapVisionFanTests.cs" />
+    <Compile Include="$(Repo)\Assets\Tests\EditMode\MapAtlasTests.cs" />
   </ItemGroup>
 
 </Project>

@@ -155,6 +155,12 @@ namespace BackroomsSurvival.EditorTools
                 var notebook = go.AddComponent<MapNotebookView>();
                 notebook.sampler = sampler;
                 notebook.playerControl = player.GetComponent<Wg3TestPlayer>();
+                // P0.4: el plano maestro de la base, en M.
+                var atlas = go.AddComponent<MapAtlasView>();
+                atlas.sampler = sampler;
+                atlas.notebook = notebook;
+                atlas.playerControl = notebook.playerControl;
+                notebook.atlas = atlas;
 
                 // Wg3Materials no es [Serializable]: asignarlo aquí a Wg3TestWorld se perdería al
                 // guardar y el mundo saldría magenta. Las referencias van en MappingPlaytestMaterials,

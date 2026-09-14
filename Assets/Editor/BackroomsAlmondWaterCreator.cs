@@ -41,7 +41,7 @@ namespace BackroomsSurvival.EditorTools
     public static class BackroomsAlmondWaterCreator
     {
         private const string DefinitionFolder = "Assets/Resources/Definitions/Item";
-        private const string DefinitionPath = DefinitionFolder + "/BR_Almond Water.asset";
+        internal const string DefinitionPath = DefinitionFolder + "/BR_Almond Water.asset";
 
         private const string PrefabFolder = "Assets/Prefabs/Items";
         private const string PrefabPath = PrefabFolder + "/BR_Pickup_AlmondWater.prefab";
@@ -64,8 +64,8 @@ namespace BackroomsSurvival.EditorTools
 
         private const string MeshFolder =
             "Assets/MeshyImports/almond-water-unity-optimized_20260814_215655";
-        private const string MeshPath = MeshFolder + "/Meshy_AI_almond_water_unity_op_0814195629_texture.fbx";
-        private const string MaterialPath = MeshFolder + "/Material.001.mat";
+        internal const string MeshPath = MeshFolder + "/Meshy_AI_almond_water_unity_op_0814195629_texture.fbx";
+        internal const string MaterialPath = MeshFolder + "/Material.001.mat";
 
         private const string SaveableDatabasePath =
             "Assets/PolymindGames/FPSCore/Data/Resources/Managers/SaveableDatabase.asset";
@@ -76,7 +76,7 @@ namespace BackroomsSurvival.EditorTools
         // same two-step pattern as the spray can (art can land after the item already exists).
         private const string IconPath = "Assets/Art/Items/BR_AlmondWater_Icon.png";
 
-        private const string ItemName = "Almond Water";
+        internal const string ItemName = "Almond Water";
 
         private const string Description =
             "Tastes like nothing. Faintly of almonds, if you think about it too hard.";

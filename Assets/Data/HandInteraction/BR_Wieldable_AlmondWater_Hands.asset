@@ -1,0 +1,104 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: a80ed251287beef4586748727db91f7a, type: 3}
+  m_Name: BR_Wieldable_AlmondWater_Hands
+  m_EditorClassIdentifier: 
+  version: 1
+  wieldablePrefab: {fileID: 3042978137174239742, guid: 1d0c9d8987ed47f4480e8cb2eb01a769, type: 3}
+  modelNodeName: BR_AlmondWaterModel
+  gripMeshNodeName: BR_AlmondWaterModel
+  kind: 0
+  rightHand:
+    role: 4
+    alongAxis: 0.8391024
+    clockDegrees: -106.0391
+    tiltDegrees: 15
+    indexTowardTip: 1
+    offsetMeters: {x: 0, y: 0, z: 0}
+    palmOffsetMeters: 0
+    weight: 1
+    fingers: 0
+    gripPartNodeName: 
+    gripPartAxis: {x: 0, y: 0, z: 0}
+    gripPartMinY01: 0
+    gripPartMaxY01: 1
+    referenceClipPath: 
+    referenceTime: 0
+    autoSearch: 1
+    searchAlongRange: 0.25
+    searchClockRange: 180
+    searchTiltRange: 20
+    resolved: 1
+    resolvedAlongAxis: 0.9391024
+    resolvedIndexTowardTip: 1
+    resolvedClockDegrees: -53.5391
+    resolvedTiltDegrees: 40
+    resolvedPalmOffsetMeters: 0.005
+    resolvedCost: 37.94819
+    resolvedShoulderShift: {x: 0, y: 0, z: 0}
+    resolvedPole: 0
+  leftHand:
+    role: 1
+    alongAxis: 0.5
+    clockDegrees: 0
+    tiltDegrees: 15
+    indexTowardTip: 1
+    offsetMeters: {x: 0, y: 0, z: 0}
+    palmOffsetMeters: 0
+    weight: 1
+    fingers: 0
+    gripPartNodeName: 
+    gripPartAxis: {x: 0, y: 0, z: 0}
+    gripPartMinY01: 0
+    gripPartMaxY01: 1
+    referenceClipPath: 
+    referenceTime: 0
+    autoSearch: 1
+    searchAlongRange: 0.25
+    searchClockRange: 180
+    searchTiltRange: 20
+    resolved: 0
+    resolvedAlongAxis: 0
+    resolvedIndexTowardTip: 1
+    resolvedClockDegrees: 0
+    resolvedTiltDegrees: 0
+    resolvedPalmOffsetMeters: 0
+    resolvedCost: 0
+    resolvedShoulderShift: {x: 0, y: 0, z: 0}
+    resolvedPole: 0
+  secondaryFullWeightDistance: 0.04
+  secondaryZeroWeightDistance: 0.22
+  maxShoulderShiftMeters: 0.12
+  maxNaturalCost: 6
+  sweptPartNodeName: 
+  sweptPartAxis: {x: 0, y: 0, z: 1}
+  sweptClearanceMeters: 0.0085
+  sweptPartMinY01: 0
+  sweptPartMaxY01: 1
+  sweptPartTrialRestDegrees: 0
+  sweptPartActionClipPath: 
+  outputFolder: Assets/Art/Items/AlmondWater/Anim
+  baseClips:
+  - {fileID: 7400000, guid: dd898a9188bde104aa08b7a7a442a14d, type: 2}
+  - {fileID: 7400000, guid: dd9f396deabdb7b4aabe657d267264bc, type: 2}
+  - {fileID: 7400000, guid: a0c56084471dfd5449dbf1f8ea2e5c1b, type: 2}
+  bakedClips:
+  - {fileID: 7400000, guid: 455c486cb6e3fd54dbb02f849fde4e02, type: 2}
+  - {fileID: 7400000, guid: 62bc8a44aa73943458483d35b4ec6d51, type: 2}
+  - {fileID: 7400000, guid: 2ff21ce4b3ad1c3479b14625ec4529e1, type: 2}
+  hasBaseNodeLocal: 1
+  baseNodeLocalPosition: {x: 0, y: 0, z: 0}
+  baseNodeLocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  lastBakeUtc: 2026-09-13T22:59:47.1355122Z
+  resolvedObjectRotationInView: {x: -0.5513155, y: -0.60163146, z: -0.5772674, w: -0.029208861}
+  hasResolvedView: 1
+  notes: "Preparado 2026-09-13 por la API (categor\xEDa generic)."
