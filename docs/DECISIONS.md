@@ -18782,3 +18782,10 @@ alternaba entre opciones de coste parecido (10–39° de giro por fotograma).
 - Sonido (viento, eco), criaturas que asoman por las paredes, loot en la pasarela, bajar al fondo con cuerdas.
 
 ---
+
+## ADR-151 enm. 2, ADR-152 y ADR-153 — Aprobación (2026-09-14) — ACEPTADAS (Joel: «acepto las tres, empieza por las gradas»)
+
+- Gradas (ADR-151 enm. 2), piscina vacía (ADR-152) y abismo (ADR-153) aceptadas tal cual, con sus rebanadas.
+- Orden: C1b gradas → piscina (P1–P4) → abismo (A0 antes de cualquier Rust).
+
+---
