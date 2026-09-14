@@ -40,14 +40,25 @@ namespace BackroomsSurvival.Migration.STPIntegration
         [Tooltip("Aire entre el borde del meñique y la manivela, a lo largo del eje del objeto (m).")]
         [SerializeField, Min(0f)] private float _crankClearance = 0.01f;
 
-        [Tooltip("Muñeca por debajo del hombro, en fracción del largo del brazo.")]
-        [SerializeField] private float _holdDown = 0.72f;
+        [Tooltip("Muñeca por debajo del hombro, en fracción del largo del brazo. Era 0,72; Joel pidió subirla (14-09).")]
+        [SerializeField] private float _holdDown = 0.60f;
 
         [Tooltip("Muñeca por delante del hombro, en fracción del largo del brazo: el brazo algo levantado.")]
-        [SerializeField] private float _holdForward = 0.50f;
+        [SerializeField] private float _holdForward = 0.56f;
 
         [Tooltip("Muñeca hacia fuera del hombro (m). Con 0 la mano quedaba delante de la entrepierna (captura 14-09).")]
-        [SerializeField] private float _holdOutward = 0.08f;
+        [SerializeField] private float _holdOutward = 0.06f;
+
+        [Tooltip("Codo hacia fuera, en fracción del largo del brazo: cuanto menos, más pegado al costado.")]
+        [SerializeField] private float _elbowOutward = 0.15f;
+
+        [Tooltip("Giro de la muñeca con la palma hacia abajo (pronación), en grados. Con 0 la palma miraba al " +
+                 "cuerpo de canto, rígida.")]
+        [SerializeField, Range(0f, 60f)] private float _palmDownDegrees = 20f;
+
+        [Tooltip("La linterna se lleva algo inclinada hacia el suelo de delante, sumada al cabeceo del vecino. " +
+                 "Con 0 y cabeceo 0 el haz salía horizontal a la altura de la cadera y no alumbraba nada cercano.")]
+        [SerializeField, Range(0f, 45f)] private float _beamDownBias = 12f;
 
         [Tooltip("Tope del cabeceo que sigue la linterna, en grados.")]
         [SerializeField, Range(0f, 90f)] private float _beamPitchClamp = 60f;
@@ -270,13 +281,16 @@ namespace BackroomsSurvival.Migration.STPIntegration
             Vector3 target = shoulder - root.up * (_holdDown * armLength) + root.forward * (_holdForward * armLength)
                 + root.right * _holdOutward;
             Vector3 pole = shoulder - root.up * (0.4f * armLength) - root.forward * (0.5f * armLength)
-                + root.right * (0.25f * armLength);
+                + root.right * (_elbowOutward * armLength);
             ProxyGripSolver.TwoBoneIk(_upperArm, _lowerArm, _hand, target, pole);
 
             var frame = Frame();
-            float pitch = Mathf.Clamp(_pitch, -_beamPitchClamp, _beamPitchClamp);
+            float pitch = Mathf.Clamp(_pitch + _beamDownBias, -_beamPitchClamp, _beamPitchClamp);
             Vector3 beam = Quaternion.AngleAxis(pitch, root.right) * root.forward;
-            Vector3 palmTarget = Vector3.ProjectOnPlane(-root.right, beam).normalized;
+            // Palma hacia el cuerpo, girada hacia abajo sobre el propio eje del haz: la muñeca del brazo derecho
+            // prona así sin mover hacia dónde apunta la linterna.
+            Vector3 palmTarget = Quaternion.AngleAxis(_palmDownDegrees, beam)
+                * Vector3.ProjectOnPlane(-root.right, beam).normalized;
             Quaternion current = Quaternion.LookRotation(frame.KnuckleAxis, frame.PalmNormal);
             Quaternion wanted = Quaternion.LookRotation(beam, palmTarget);
             _hand.rotation = wanted * Quaternion.Inverse(current) * _hand.rotation;
