@@ -61,6 +61,22 @@ namespace BackroomsSurvival.Tests.EditMode
         }
 
         [Test]
+        public void ATiltedCylinderCrossesTheFistDiagonallyButStaysOnThePalm()
+        {
+            var f = ProxyGripSolver.Frame(Wrist, IndexK, MiddleK, PinkyK, ThumbPalmSide);
+            const float radius = 0.02f;
+            ProxyGripSolver.PlaceCylinder(f, radius, 0.03f, out var pos, out var rot, 30f);
+
+            Vector3 axis = rot * Vector3.up;
+            Assert.AreEqual(30f, Vector3.Angle(axis, f.KnuckleAxis), 0.01f, "en diagonal por el ángulo pedido");
+            Assert.AreEqual(90f, Vector3.Angle(axis, f.PalmNormal), 0.01f, "sin salirse del plano de la palma");
+
+            Vector3 gripPoint = pos + axis * 0.03f;
+            Vector3 expected = f.KnuckleCentre + f.PalmNormal * (radius + ProxyGripSolver.SkinMetres);
+            Assert.Less(Vector3.Distance(gripPoint, expected), 1e-4f, "el punto agarrado no se mueve");
+        }
+
+        [Test]
         public void WithACrankTheHandGripsAheadOfItAndNeverPastTheEnd()
         {
             float grip = ProxyGripSolver.GripAlongAxis(0f, 0.09f, 0.07f, true, -0.0206f, 0.01f);

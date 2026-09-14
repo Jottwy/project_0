@@ -52,8 +52,8 @@ namespace BackroomsSurvival.Migration.STPIntegration
         [Tooltip("Codo hacia fuera, en fracción del largo del brazo: cuanto menos, más pegado al costado.")]
         [SerializeField] private float _elbowOutward = 0.15f;
 
-        [Tooltip("Giro de la muñeca con la palma hacia abajo (pronación), en grados. Con 0 la palma miraba al " +
-                 "cuerpo de canto, rígida.")]
+        [Tooltip("Giro PREFERIDO de la palma hacia abajo, en grados. Sólo desempata: el giro real lo elige la " +
+                 "búsqueda de naturalidad del brazo.")]
         [SerializeField, Range(0f, 60f)] private float _palmDownDegrees = 20f;
 
         [Tooltip("La linterna se lleva algo inclinada hacia el suelo de delante, sumada al cabeceo del vecino. " +
@@ -106,6 +106,20 @@ namespace BackroomsSurvival.Migration.STPIntegration
         private readonly float[] _curlDegrees = new float[4];
         private float _thumbDegrees;
         private bool _thumbAlongFinger;
+
+        // Elección del brazo por naturalidad (port de la búsqueda de primera persona, 2026-09-14).
+        private static readonly float[] RollCandidates = { -20f, 10f, 40f, 70f };
+        private static readonly float[] TiltCandidates = { -40f, -20f, 0f, 20f, 40f };
+        private static readonly float[] HeightCandidates = { -0.08f, 0f, 0.08f };
+        private const int PoleCount = 3;
+        private const float RechooseDegrees = 8f;
+        private bool _hasChoice;
+        private float _choiceRoll, _choiceTilt, _choiceHeight, _choicePitch;
+        private int _choicePole;
+        private Quaternion _upperRest, _lowerRest, _handRest;
+
+        /// <summary>Coste de naturalidad del brazo derecho en el último fotograma (0 = cómodo). Lo lee el arnés.</summary>
+        public float LastArmCost { get; private set; }
 
         private void Awake()
         {
@@ -239,6 +253,7 @@ namespace BackroomsSurvival.Migration.STPIntegration
         {
             _measured = false;
             _curlSolved = false;
+            _hasChoice = false;
             if (model == null)
                 return;
 
@@ -274,30 +289,21 @@ namespace BackroomsSurvival.Migration.STPIntegration
         private void ApplyMeasuredHold()
         {
             Transform root = transform;
-
-            float armLength = Vector3.Distance(_upperArm.position, _lowerArm.position)
-                + Vector3.Distance(_lowerArm.position, _hand.position);
-            Vector3 shoulder = _upperArm.position;
-            Vector3 target = shoulder - root.up * (_holdDown * armLength) + root.forward * (_holdForward * armLength)
-                + root.right * _holdOutward;
-            Vector3 pole = shoulder - root.up * (0.4f * armLength) - root.forward * (0.5f * armLength)
-                + root.right * (_elbowOutward * armLength);
-            ProxyGripSolver.TwoBoneIk(_upperArm, _lowerArm, _hand, target, pole);
-
-            var frame = Frame();
             float pitch = Mathf.Clamp(_pitch + _beamDownBias, -_beamPitchClamp, _beamPitchClamp);
             Vector3 beam = Quaternion.AngleAxis(pitch, root.right) * root.forward;
-            // Palma hacia el cuerpo, girada hacia abajo sobre el propio eje del haz: la muñeca del brazo derecho
-            // prona así sin mover hacia dónde apunta la linterna.
-            Vector3 palmTarget = Quaternion.AngleAxis(_palmDownDegrees, beam)
-                * Vector3.ProjectOnPlane(-root.right, beam).normalized;
-            Quaternion current = Quaternion.LookRotation(frame.KnuckleAxis, frame.PalmNormal);
-            Quaternion wanted = Quaternion.LookRotation(beam, palmTarget);
-            _hand.rotation = wanted * Quaternion.Inverse(current) * _hand.rotation;
 
-            frame = Frame();
+            // EL BRAZO SE ELIGE POR NATURALIDAD, no se fuerza. Antes la mano se orientaba a la fuerza después del IK
+            // y la muñeca se comía lo que no cuadraba («la muñeca medio torcida», Joel 14-09). Se barren el giro de
+            // la palma sobre el eje del haz, el codo y cuánto adelantar la mano, y gana el de menor coste con la
+            // medida de primera persona (ProxyArmNaturalness). Se elige al coger el objeto y cuando el cabeceo cambia
+            // de verdad; entre medias se reaplica la elección — elegir en cada fotograma alterna y tiembla (ADR-150).
+            if (!_hasChoice || Mathf.Abs(pitch - _choicePitch) > RechooseDegrees)
+                ChooseRightArm(beam, pitch);
+            LastArmCost = PoseRightArm(_choiceRoll, _choiceTilt, _choicePole, _choiceHeight, beam);
+
+            var frame = Frame();
             float grip = ProxyGripSolver.GripAlongAxis(_bodyCentreY, _halfLength, frame.Width, true, _crankY, _crankClearance);
-            ProxyGripSolver.PlaceCylinder(frame, _radius, grip, out Vector3 position, out Quaternion rotation);
+            ProxyGripSolver.PlaceCylinder(frame, _radius, grip, out Vector3 position, out Quaternion rotation, _choiceTilt);
             position -= rotation * new Vector3(_axisOffsetXZ.x, 0f, _axisOffsetXZ.y);
             var t = _instance.transform;
             t.localScale = Vector3.one;
@@ -350,6 +356,101 @@ namespace BackroomsSurvival.Migration.STPIntegration
             rotation = Quaternion.LookRotation(t.up, t.forward);
             return true;
         }
+
+        private void ChooseRightArm(Vector3 beam, float pitch)
+        {
+            _upperRest = _upperArm.localRotation;
+            _lowerRest = _lowerArm.localRotation;
+            _handRest = _hand.localRotation;
+
+            float best = float.MaxValue;
+            float bestRoll = _choiceRoll, bestTilt = _choiceTilt, bestHeight = _choiceHeight;
+            int bestPole = _choicePole;
+            foreach (float roll in RollCandidates)
+            foreach (float tilt in TiltCandidates)
+            foreach (float height in HeightCandidates)
+            for (int pole = 0; pole < PoleCount; pole++)
+            {
+                RestoreArm();
+                float cost = PoseRightArm(roll, tilt, pole, height, beam)
+                    + 0.2f * Sq((roll - _palmDownDegrees) / 60f)
+                    + 0.1f * Sq(tilt / 40f); // a igualdad, el objeto más alineado con los nudillos
+                // A igualdad se queda la que había: dos opciones de coste parecido no alternan.
+                if (_hasChoice && Mathf.Approximately(roll, _choiceRoll) && Mathf.Approximately(tilt, _choiceTilt)
+                    && Mathf.Approximately(height, _choiceHeight) && pole == _choicePole)
+                    cost -= 0.05f;
+                if (cost >= best)
+                    continue;
+                best = cost;
+                bestRoll = roll;
+                bestTilt = tilt;
+                bestHeight = height;
+                bestPole = pole;
+            }
+            RestoreArm();
+
+            // Cambiar de inclinación cambia dónde tocan los dedos: se vuelven a cerrar.
+            if (!_hasChoice || !Mathf.Approximately(bestTilt, _choiceTilt) || !Mathf.Approximately(bestRoll, _choiceRoll))
+                _curlSolved = false;
+            _choiceRoll = bestRoll;
+            _choiceTilt = bestTilt;
+            _choiceHeight = bestHeight;
+            _choicePole = bestPole;
+            _choicePitch = pitch;
+            _hasChoice = true;
+        }
+
+        private void RestoreArm()
+        {
+            _upperArm.localRotation = _upperRest;
+            _lowerArm.localRotation = _lowerRest;
+            _hand.localRotation = _handRest;
+        }
+
+        /// <summary>
+        /// Pone el brazo derecho en un candidato y devuelve su coste de naturalidad: muñeca por IK de dos huesos con
+        /// el codo hacia <paramref name="pole"/>, mano con los nudillos por el haz y la palma girada
+        /// <paramref name="roll"/> grados desde la línea media, y la mitad de esa torsión pasada al antebrazo.
+        /// </summary>
+        private float PoseRightArm(float roll, float tilt, int pole, float height, Vector3 beam)
+        {
+            Transform root = transform;
+            float armLength = Vector3.Distance(_upperArm.position, _lowerArm.position)
+                + Vector3.Distance(_lowerArm.position, _hand.position);
+            Vector3 shoulder = _upperArm.position;
+            Vector3 target = shoulder - root.up * ((_holdDown + height) * armLength)
+                + root.forward * (_holdForward * armLength) + root.right * _holdOutward;
+            ProxyGripSolver.TwoBoneIk(_upperArm, _lowerArm, _hand, target, shoulder + PoleDirection(pole) * armLength);
+
+            var frame = Frame();
+            Vector3 untwisted = frame.PalmNormal;
+            Vector3 palmTarget = Quaternion.AngleAxis(roll, beam) * Vector3.ProjectOnPlane(-root.right, beam).normalized;
+            // El objeto va por el haz y cruza el puño inclinado `tilt`: los nudillos quedan girados −tilt sobre la palma.
+            Vector3 knuckles = Quaternion.AngleAxis(-tilt, palmTarget) * beam;
+            Quaternion current = Quaternion.LookRotation(frame.KnuckleAxis, frame.PalmNormal);
+            Quaternion wanted = Quaternion.LookRotation(knuckles, palmTarget);
+            _hand.rotation = wanted * Quaternion.Inverse(current) * _hand.rotation;
+
+            frame = Frame();
+            ProxyArmNaturalness.ShareForearmTwist(_lowerArm, _hand, frame.PalmNormal, untwisted);
+
+            var measure = ProxyArmNaturalness.Take(shoulder, _lowerArm.position, _hand.position, _middleKnuckle.position,
+                frame.PalmNormal, frame.KnuckleAxis, root.right, root.up, true);
+            return ProxyArmNaturalness.Cost(measure);
+        }
+
+        private Vector3 PoleDirection(int pole)
+        {
+            Transform root = transform;
+            switch (pole)
+            {
+                case 0: return -root.up * 0.4f - root.forward * 0.5f + root.right * _elbowOutward; // atrás, algo fuera
+                case 1: return -root.up - root.forward * 0.15f + root.right * 0.05f;                // abajo, pegado
+                default: return -root.up * 0.5f - root.forward * 0.2f + root.right * 0.45f;         // abierto
+            }
+        }
+
+        private static float Sq(float x) => x * x;
 
         private ProxyGripSolver.HandFrame Frame() => ProxyGripSolver.Frame(
             _hand.position, _indexKnuckle.position, _middleKnuckle.position, _pinkyKnuckle.position, _thumbBase.position);
