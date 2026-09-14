@@ -80,10 +80,15 @@ namespace BackroomsSurvival.Gameplay
         /// punto <paramref name="gripAlongY"/> del eje queda frente al centro de los nudillos a (radio + piel)
         /// hacia la palma, y el +X local mira hacia fuera de la palma.
         /// </summary>
+        /// <remarks>
+        /// <paramref name="tiltDegrees"/> gira el eje del objeto sobre la normal de la palma: el objeto en DIAGONAL
+        /// dentro del puño, como la «inclinación» de la búsqueda de primera persona. Con el eje obligado a ir por la
+        /// línea de nudillos y el antebrazo hacia delante, la muñeca del vecino medía 80° de desviación radial.
+        /// </remarks>
         public static void PlaceCylinder(HandFrame frame, float radius, float gripAlongY,
-            out Vector3 position, out Quaternion rotation)
+            out Vector3 position, out Quaternion rotation, float tiltDegrees = 0f)
         {
-            Vector3 up = frame.KnuckleAxis;
+            Vector3 up = Quaternion.AngleAxis(tiltDegrees, frame.PalmNormal) * frame.KnuckleAxis;
             Vector3 right = frame.PalmNormal;
             Vector3 forward = Vector3.Cross(right, up);
             rotation = Quaternion.LookRotation(forward, up);
