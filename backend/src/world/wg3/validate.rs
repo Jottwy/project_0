@@ -268,8 +268,9 @@ pub fn gates_of(world_seed: u64, region: Wg3RegionCoord) -> Vec<Wg3Gate> {
 /// El edificio de una región, planificado como lo sirve el backend.
 pub fn building_of(world_seed: u64, region: Wg3RegionCoord, storeys: usize) -> RegionBuilding {
     let gates = gates_of(world_seed, region);
-    plan::plan_building_at(
+    plan::plan_building_zoned(
         region.composer_seed(world_seed),
+        composer_seed(world_seed),
         region.bounds(),
         &gates,
         storeys,
