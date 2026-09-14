@@ -502,7 +502,9 @@ botones sobre la página de 172 × 205, y los clics sobre el Canvas en World Spa
   clip de pasar página (solo Hold/Idle/Equip/Holster), así que `MapPageFlip` hace una hoja propia: malla de 24
   columnas curvada en CPU sobre el lomo de la hoja, anverso con la hoja que se va y reverso de papel, URP Unlit opaco
   (tapa la hoja nueva mientras pasa), 0,45 s, hasta 166° para no entrar en la página izquierda, y sonido
-  `STP_Book_FlipPage` por `AudioManager` (canal Sfx). Siempre pasa hacia la izquierda, también al volver atrás.
+  `STP_Book_FlipPage` por `AudioManager` (canal Sfx). **Sentido por número (Joel):** a una hoja mayor, la que se va
+  pasa a la izquierda; a una menor, la que llega viene de la izquierda y se posa (misma curva al revés) con la vieja
+  debajo hasta que aterriza.
 - **Sin verificar en Play:** que la hoja caiga alineada con la página (mismo espacio que el Canvas, sin warp), el
   sentido de la curva y que tape la hoja nueva.
 
