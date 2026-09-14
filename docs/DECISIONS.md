@@ -19183,3 +19183,26 @@ Veredicto del auditor: «OK con cambios». Esta enmienda sustituye lo que dice; 
   mundo servido idéntico.
 
 ---
+
+## ADR-155 — Enmienda 3: L1e con el laberinto encendido en local (2026-09-14) — ACEPTADA (Joel: «vaciarlos si ≤2 salas», «facelings después de L2»)
+
+- **Un hueco `Gap` nunca baja del vano mínimo de 240** (`RegionPlan::problems`): en pared corta, 240 centrado con jamba o
+  ningún hueco. Antes salían de 212–218 cm y el plan se rechazaba (≈ 65 veces en 27 regiones).
+- **Las pasadas de rescate (3, 3b y 4) ya no se saltan las parejas de la zona**; sólo las que ya quedaron unidas por
+  huecos. Sin esto, dos hojas del laberinto con pared demasiado corta para un hueco quedaban sin puerta.
+- **Un pozo de escalera puede tragarse un hueco sobrante** si la pareja conserva otro (`gaps_survive`); dos pozos no
+  pueden llevarse entre los dos todos los huecos de una pareja. Sin esto la región (0,0) no levantaba plantas: 739
+  candidatas muertas por puerta, 0 escaleras.
+- **Corrige la enm. 1 D2: los bolsillos de 1–2 salas del laberinto se vacían** como en el resto del plan. Mandados al
+  enrutador, en 3 de 300 regiones no salía ruta (`[fill] enlaces del plan sin construir`). Los de 3 o más siguen yendo.
+- **Tests ajustados a decisiones ya tomadas, no a fallos:** `the_void_is_deliberate_and_bounded` exime la cota del 99,5 %
+  si más de la mitad de lo construido es laberinto (L1c lo excluye del vacío); `on_the_upper_storey_wg3_does_not_freeze_you`
+  no mide encima de un pozo que llega a esa planta; `built_pieces_block_wg3_navigation` busca un tramo cuya recta de
+  control esté libre (en (0,0) caía sobre un pilar de hall).
+- **Medido encendido:** 211/212 tests WG3 (queda `probe_faceling_draw_under_wg3`, 101 fuera de [54, 90]: se recalibra
+  **después de L2**, cuando esas salas pasen a estilo 12); 27 regiones con 4,1 plantas, mancha 99,7 %, 5,6 islas, nav
+  100 %, zona 33,1 %. **Barrido de 306: 12 rotas frente a 6 de hoy** (15 × plantas altas alcanzadas < 50 %, 3 × mancha
+  mayor corta): no pasa «no peor que hoy», así que `MAZE_BIOME_ENABLED` sigue **apagado** (apagado: 212/212 y 6/306,
+  mundo idéntico). Lo siguiente de L1e es el alcance de las plantas altas dentro del laberinto.
+
+---
