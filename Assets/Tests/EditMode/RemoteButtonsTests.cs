@@ -51,6 +51,21 @@ namespace BackroomsSurvival.Tests
         }
 
         /// <summary>
+        /// El libro abierto (2026-09-14) es el décimo bit y no pisa ninguno de los anteriores: los bits son
+        /// append-only y un peer con build vieja sigue mandando su significado.
+        /// </summary>
+        [Test]
+        public void BookOpenIsTheTenthBitAndCollidesWithNothing()
+        {
+            Assert.AreEqual(512, RemoteButtons.BookOpen);
+            int earlier = RemoteButtons.Aiming | RemoteButtons.Reloading | RemoteButtons.LeanLeft | RemoteButtons.LeanRight
+                        | RemoteButtons.Spraying | RemoteButtons.Seated | RemoteButtons.Cranking
+                        | RemoteButtons.BandagedArmLeft | RemoteButtons.BandagedArmRight;
+            Assert.AreEqual(0, earlier & RemoteButtons.BookOpen);
+            Assert.AreEqual(earlier | RemoteButtons.BookOpen, (ushort)(earlier | RemoteButtons.BookOpen));
+        }
+
+        /// <summary>
         /// Un proxy recién sacado del pool llega con buttons 0, y ese es el estado honesto:
         /// centrado, sin apuntar y sin recargar. Sin centinela y sin necesitarlo.
         /// </summary>
