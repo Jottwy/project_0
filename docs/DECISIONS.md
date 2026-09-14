@@ -19229,3 +19229,33 @@ Veredicto del auditor: «OK con cambios». Esta enmienda sustituye lo que dice; 
   mundo idéntico). Lo siguiente de L1e es el alcance de las plantas altas dentro del laberinto.
 
 ---
+
+## ADR-105 — Enmienda 22: separación mínima entre divisiones de un mismo espacio (2026-09-14) — IMPLEMENTADA, pendiente del visto bueno de Joel
+
+**Contexto.** `many_seeds_produce_valid_regions` con `WG3_SWEEP_SEEDS=34` (306 regiones) fallaba 6/306, todas torres
+altas con sótanos, con «planta N: sólo 0 de X cotas pisables se alcanzan». Dos causas:
+
+1. **Bug, no regla** (ADR-130 + VERTICALITY-ROADMAP D1): `fill::well_mouth_carves` calculaba la cota de la boca con el
+   índice absoluto `(storey_below + 1) * STOREY_HEIGHT_CM`. Con `ground > 0` el recorte caía `ground` plantas más arriba
+   y la pared de la planta de llegada que cruza el tiro quedaba entera. Corregido restando `ground`. Arregla 5 de las 6.
+2. **La regla de esta enmienda.** Las divisiones de un espacio sólo se rechazaban si SE PISABAN (`mine.overlaps`). Dos
+   espolones de paredes opuestas nacían paralelos a 3 cm y solapados 5 m: cada uno deja su hueco y juntos cierran la
+   sala entera. Medido en `0xdccc2d999d273d22` (1,1): el hall del pie de la escalera 5→6 partido a lo largo, la planta 6
+   al 0 %.
+
+**Decisión.** Una división nueva no puede quedar a menos de `PARTITION_SPACING_CM` (= `MIN_GENERATED_WIDTH_CM`, 200 cm,
+la anchura mínima que el generador llama andable) de otra del mismo espacio: se compara su huella inflada con las ya
+puestas. Una sola constante en `fill.rs`; sin wire ni formato de chunk. Cambia el mundo generado (menos divisiones), es
+determinista.
+
+**Medido.**
+- Divisiones (`partitions_land_where_the_grammar_says`, 3 semillas): 7 872 → 7 771 (−1,3 %); mamparas 2 639 → 2 602,
+  medios muros 172 → 160, colgadas 135 → 124.
+- 306 regiones: 306/306 válidas (antes 300/306); mancha mayor 99,5 → 99,7 %, islas 5,3 → 5,1, 4,0 plantas, nav 100 %.
+- 27 regiones: 27/27; con sólo el arreglo 1, 6,0 islas; con los dos, 5,8. Mancha mayor 99,7 %.
+
+**Tests.** `well_mouth_carves_start_at_the_arrival_floor_with_basements` (la boca contra la cota del PLAN, 19 edificios
+con sótanos) y `tall_towers_with_basements_reach_every_storey` (conectividad de las dos regiones del barrido). La sonda
+`probe_region_inside` acepta `WG3_PROBE_SOLIDS="x0,z0,x1,z1"`.
+
+---

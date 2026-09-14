@@ -722,7 +722,43 @@ pub fn fill_building_with(
     }
     out.carves.extend(atrium_carves(building));
     out.carves.extend(hole_carves(building));
-    out.carves.extend(well_mouth_carves(building));
+    // Una ventana (o su rejilla) en la pared que cruza la boca de un pozo se la lleva el recorte de
+    // la boca: queda un hueco sin antepecho y la rejilla flotando sobre el tiro. `fill_storey` no
+    // ve los pozos, así que se quitan aquí. Medido: semilla servida, región (0,0), pozo 1→2.
+    let mouths = well_mouth_carves(building);
+    let over_mouth = |x: i32, z: i32, sx: i32, sz: i32, lo: i32, hi: i32| {
+        mouths.iter().any(|m| {
+            x < m.x_cm + m.size_x_cm
+                && x + sx > m.x_cm
+                && z < m.z_cm + m.size_z_cm
+                && z + sz > m.z_cm
+                && lo < m.top_y_cm
+                && hi > m.bottom_y_cm
+        })
+    };
+    out.carves.retain(|c| {
+        !((is_window(c) || is_slit(c))
+            && over_mouth(
+                c.x_cm,
+                c.z_cm,
+                c.size_x_cm,
+                c.size_z_cm,
+                c.bottom_y_cm,
+                c.top_y_cm,
+            ))
+    });
+    out.solids.retain(|s| {
+        !(is_grille_bar(s)
+            && over_mouth(
+                s.x_cm,
+                s.z_cm,
+                s.size_x_cm,
+                s.size_z_cm,
+                s.bottom_y_cm,
+                s.top_y_cm,
+            ))
+    });
+    out.carves.extend(mouths);
     // ADR-130 D4 (rebanada 2) — los BOQUETES, y van aquí porque todo lo que viene después consulta
     // `out.carves` para esquivar: un mueble delante de un boquete lo tapa.
     let breaches = decay_breaches(building, &out.segments, &out.carves);
@@ -886,7 +922,11 @@ fn well_mouth_carves(building: &RegionBuilding) -> Vec<Wg3Carve> {
         .iter()
         .filter(|w| w.rect.width_cm() > 2 * INSET_CM && w.rect.depth_cm() > 2 * INSET_CM)
         .map(|w| {
-            let floor = (w.storey_below as i32 + 1) * STOREY_HEIGHT_CM;
+            // ADR-130 — la cota es RELATIVA a la calle; el índice cuenta desde el sótano más hondo.
+            // Con `(storey_below + 1)` a secas, en un edificio con sótanos el recorte caía
+            // `ground` plantas más arriba y la pared sobre el tiro quedaba entera: medido en 6 de
+            // 306 regiones del barrido, la planta de llegada al 0 % alcanzable.
+            let floor = (w.storey_below as i32 + 1 - building.ground as i32) * STOREY_HEIGHT_CM;
             Wg3Carve {
                 x_cm: w.rect.min_x_cm + INSET_CM,
                 z_cm: w.rect.min_z_cm + INSET_CM,
@@ -5733,6 +5773,14 @@ const PARTITION_ISLAND_SPAN: (f32, f32) = (0.35, 0.62);
 /// lados, y pedirles cuatro metros dejaba la isla fuera de toda sala por debajo de 21 m de vano.
 const PARTITION_ISLAND_CLEAR_CM: i32 = 250;
 
+/// Separación mínima entre dos divisiones del MISMO espacio, en centímetros.
+///
+/// Sin ella sólo se rechazaba la que SE PISA con otra, y dos espolones de paredes opuestas podían
+/// nacer paralelos a tres centímetros y solapados cinco metros: cada uno deja su hueco y juntos
+/// cierran la sala de punta a punta. Medido en el barrido de 306 regiones (`0xdccc2d999d273d22`,
+/// (1,1)): una planta entera al 0 % alcanzable. Es la anchura mínima que el generador llama andable.
+const PARTITION_SPACING_CM: i32 = super::segment::MIN_GENERATED_WIDTH_CM;
+
 /// Longitud mínima de una división, en centímetros.
 const PARTITION_MIN_LEN_CM: i32 = 350;
 
@@ -6691,7 +6739,9 @@ fn interior_partitions(
                     || holes_above.iter().any(|h| h.overlaps(&foot))
                     || pits_here.iter().any(|p| p.overlaps(&foot))
                     || wells_here.iter().any(|w| w.overlaps(&foot))
-                    || mine.iter().any(|m| m.overlaps(&foot))
+                    || mine
+                        .iter()
+                        .any(|m| m.overlaps(&foot.shrunk(-PARTITION_SPACING_CM)))
                     || pillars.iter().any(|p| {
                         let (x0, z0, x1, z1) = p.bounds();
                         let (a0, b0, a1, b1) = (
@@ -11705,6 +11755,79 @@ mod apron_tests {
         }
         assert!(checked > 200, "sólo {checked} salas de sótano miradas");
         println!("[decaimiento] {checked} salas de sótano con las perillas movidas");
+    }
+
+    /// El recorte de la boca de un pozo arranca EN el suelo de la planta de llegada, también con
+    /// sótanos (ADR-130). Se contrasta con la cota del PLAN, no con la fórmula del emisor: la cuenta
+    /// por índice ya se equivocó una vez y dejó la pared sobre el tiro en todo edificio con sótanos.
+    #[test]
+    fn well_mouth_carves_start_at_the_arrival_floor_with_basements() {
+        let mut wells = 0usize;
+        for seed in 1..20 {
+            let b = plan::plan_building_at(
+                seed,
+                (0.0, 0.0, 150.0, 150.0),
+                &[],
+                4,
+                plan::REGION_BASEMENTS,
+            );
+            assert!(b.ground > 0, "semilla {seed}: sin sótanos no mide nada");
+            let carves = well_mouth_carves(&b);
+            assert_eq!(carves.len(), b.wells.len());
+            for (w, c) in b.wells.iter().zip(&carves) {
+                let arrival = b.storeys[w.storey_below + 1]
+                    .built()
+                    .find(|(_, t)| t.rise_cm == 0 && t.rect.overlaps(&w.rect))
+                    .map(|(_, t)| t.floor_y_cm)
+                    .expect("un pozo sale a un espacio construido y plano");
+                assert_eq!(
+                    c.bottom_y_cm,
+                    arrival,
+                    "semilla {seed}: pozo {}→{} recortado a {} con la llegada a {arrival}",
+                    w.storey_below,
+                    w.storey_below + 1,
+                    c.bottom_y_cm
+                );
+                wells += 1;
+            }
+            // Y sobre la boca no queda ventana ni rejilla: el recorte les quitaría el antepecho.
+            let f = fill_building(&b, &no_catalogue());
+            for c in &carves {
+                let hits = |x: i32, z: i32, sx: i32, sz: i32, lo: i32, hi: i32| {
+                    x < c.x_cm + c.size_x_cm
+                        && x + sx > c.x_cm
+                        && z < c.z_cm + c.size_z_cm
+                        && z + sz > c.z_cm
+                        && lo < c.top_y_cm
+                        && hi > c.bottom_y_cm
+                };
+                assert!(
+                    !f.carves.iter().any(|v| (is_window(v) || is_slit(v))
+                        && hits(
+                            v.x_cm,
+                            v.z_cm,
+                            v.size_x_cm,
+                            v.size_z_cm,
+                            v.bottom_y_cm,
+                            v.top_y_cm
+                        )),
+                    "semilla {seed}: una ventana sobre la boca {c:?}"
+                );
+                assert!(
+                    !f.solids.iter().any(|s| is_grille_bar(s)
+                        && hits(
+                            s.x_cm,
+                            s.z_cm,
+                            s.size_x_cm,
+                            s.size_z_cm,
+                            s.bottom_y_cm,
+                            s.top_y_cm
+                        )),
+                    "semilla {seed}: una rejilla sobre la boca {c:?}"
+                );
+            }
+        }
+        assert!(wells > 100, "sólo {wells} pozos mirados");
     }
 
     /// Los BOQUETES: sólo bajo tierra, con su forma, entre dos tramos y lejos de bocas y ventanas.
