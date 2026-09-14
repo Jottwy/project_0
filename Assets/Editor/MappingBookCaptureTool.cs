@@ -89,43 +89,72 @@ namespace BackroomsSurvival.EditorTools
                 var canvases = new List<Canvas>(book.GetComponentsInChildren<Canvas>(true));
                 foreach (Canvas canvas in canvases) canvas.worldCamera = camera;
 
-                // Encuadre: las dos páginas (menú y contenido) de frente, desde el lado que se ve de la cara del Canvas.
-                Bounds pages = PageBounds(canvases, out Vector3 facing);
-                float distance = pages.extents.magnitude / Mathf.Tan(camera.fieldOfView * 0.5f * Mathf.Deg2Rad) * 1.15f;
-                cameraGo.transform.position = pages.center - facing * distance;
-                cameraGo.transform.rotation = Quaternion.LookRotation(facing, Vector3.up);
+                // Sin Play el libro está en pose de bind (cerrado): se muestrea el clip de sostenerlo abierto.
+                string pose = SampleOpenPose(book);
+
+                // Los brazos en bind tapan el libro: fuera todo renderer cuya malla no sea del libro.
+                var hidden = new List<string>();
+                foreach (Renderer renderer in book.GetComponentsInChildren<Renderer>(true))
+                {
+                    if (renderer is MeshRenderer && renderer.GetComponentInParent<Canvas>() != null) continue;
+                    string mesh = renderer is SkinnedMeshRenderer skinned && skinned.sharedMesh != null ? skinned.sharedMesh.name
+                        : renderer.GetComponent<MeshFilter>() is MeshFilter filter && filter.sharedMesh != null ? filter.sharedMesh.name
+                        : renderer.name;
+                    if (mesh.IndexOf("book", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        mesh.IndexOf("page", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        renderer.name == "PageFlip") continue;
+                    renderer.enabled = false;
+                    hidden.Add(renderer.name + "/" + mesh);
+                }
+
+                // Encuadre: la cara del Canvas de CONTENIDO (el de «Notas»), desde los dos lados por si la cara es la otra.
+                Canvas content = notes != null ? notes.GetComponentInParent<Canvas>().rootCanvas : null;
+                Vector3 facing = content != null ? content.transform.forward : Vector3.forward;
+                Bounds pages = PageBounds(canvases);
+                float distance = pages.extents.magnitude / Mathf.Tan(camera.fieldOfView * 0.5f * Mathf.Deg2Rad) * 1.25f;
+                Vector3 up = content != null ? content.transform.up : Vector3.up;
 
                 var written = new List<string>();
-                notebook.Select(0);
-                tab.RefreshForCapture(memory);
-                tab.RefreshForCapture(memory);
-                written.Add(Shot(camera, texture, "mapbook_01_notas_hoja1"));
+                foreach (float side in new[] { 1f, -1f })
+                {
+                    string tag = side > 0f ? "a" : "b";
+                    cameraGo.transform.position = pages.center - facing * side * distance;
+                    cameraGo.transform.rotation = Quaternion.LookRotation(facing * side, up);
 
-                notebook.Select(1);
-                tab.RefreshForCapture(memory);
-                tab.PoseFlipForCapture(0.4f);
-                written.Add(Shot(camera, texture, "mapbook_02_pasar_adelante_40"));
-                tab.PoseFlipForCapture(0.75f);
-                written.Add(Shot(camera, texture, "mapbook_03_pasar_adelante_75"));
+                    notebook.Select(0);
+                    tab.RefreshForCapture(memory);
+                    tab.PoseFlipForCapture(1f);
+                    tab.RefreshForCapture(memory);
+                    written.Add(Shot(camera, texture, $"mapbook_{tag}1_notas_hoja1"));
 
-                notebook.Select(0);
-                tab.RefreshForCapture(memory);
-                tab.PoseFlipForCapture(0.4f);
-                written.Add(Shot(camera, texture, "mapbook_04_pasar_atras_40"));
-                tab.PoseFlipForCapture(1f);
-                tab.RefreshForCapture(memory);
-                written.Add(Shot(camera, texture, "mapbook_05_notas_final"));
+                    notebook.Select(1);
+                    tab.RefreshForCapture(memory);
+                    tab.PoseFlipForCapture(0.4f);
+                    written.Add(Shot(camera, texture, $"mapbook_{tag}2_pasar_adelante_40"));
+                    tab.PoseFlipForCapture(0.75f);
+                    written.Add(Shot(camera, texture, $"mapbook_{tag}3_pasar_adelante_75"));
 
-                // Plano cerrado de la hoja.
+                    notebook.Select(0);
+                    tab.RefreshForCapture(memory);
+                    tab.PoseFlipForCapture(0.4f);
+                    written.Add(Shot(camera, texture, $"mapbook_{tag}4_pasar_atras_40"));
+                    tab.PoseFlipForCapture(1f);
+                    tab.RefreshForCapture(memory);
+                }
+
+                // Plano cerrado de la hoja, desde el lado a.
                 Bounds sheet = SheetBounds(tab);
                 if (sheet.size.sqrMagnitude > 0f)
                 {
-                    float close = sheet.extents.magnitude / Mathf.Tan(camera.fieldOfView * 0.5f * Mathf.Deg2Rad) * 1.1f;
+                    float close = sheet.extents.magnitude / Mathf.Tan(camera.fieldOfView * 0.5f * Mathf.Deg2Rad) * 1.2f;
                     cameraGo.transform.position = sheet.center - facing * close;
-                    written.Add(Shot(camera, texture, "mapbook_06_hoja_de_cerca"));
+                    cameraGo.transform.rotation = Quaternion.LookRotation(facing, up);
+                    written.Add(Shot(camera, texture, "mapbook_c_hoja_de_cerca"));
                 }
 
-                Debug.Log($"MAPBOOKSHOT ok pages={pages.size} facing={facing} files={string.Join(",", written)}");
+                if (AnimationMode.InAnimationMode()) AnimationMode.StopAnimationMode();
+                Debug.Log($"MAPBOOKSHOT ok pose={pose} pages={pages.size} facing={facing} hidden=[{string.Join(", ", hidden)}] " +
+                          $"files={string.Join(",", written)}");
             }
             catch (Exception exception)
             {
@@ -133,6 +162,7 @@ namespace BackroomsSurvival.EditorTools
             }
             finally
             {
+                if (AnimationMode.InAnimationMode()) AnimationMode.StopAnimationMode();
                 RenderTexture.active = null;
                 texture.Release();
                 Object.DestroyImmediate(texture);
@@ -194,25 +224,46 @@ namespace BackroomsSurvival.EditorTools
 
         private static long Key(int x, int z) => ((long)x << 32) ^ (uint)z;
 
-        private static Bounds PageBounds(List<Canvas> canvases, out Vector3 facing)
+        private const string BookModelPath = "Assets/PolymindGames/STP/Art/Models/Wieldables/SurvivalBook/FP_Book.fbx";
+
+        /// <summary>
+        /// Muestrea <c>Book_Idle</c> (o <c>Book_Hold</c>) sobre el Animator del wieldable para abrir el libro sin Play, como
+        /// hace la memoria del proyecto con <c>Template_Idle</c>. Devuelve qué pudo muestrear.
+        /// </summary>
+        private static string SampleOpenPose(GameObject book)
+        {
+            AnimationClip clip = null;
+            foreach (Object asset in AssetDatabase.LoadAllAssetsAtPath(BookModelPath))
+            {
+                if (!(asset is AnimationClip candidate) || candidate.name.StartsWith("__preview")) continue;
+                if (candidate.name == "Book_Idle") { clip = candidate; break; }
+                if (candidate.name == "Book_Hold") clip = candidate;
+            }
+
+            Animator animator = book.GetComponentInChildren<Animator>(true);
+            if (clip == null || animator == null) return $"sin pose (clip={clip != null} animator={animator != null})";
+
+            if (!AnimationMode.InAnimationMode()) AnimationMode.StartAnimationMode();
+            AnimationMode.BeginSampling();
+            AnimationMode.SampleAnimationClip(animator.gameObject, clip, clip.length * 0.5f);
+            AnimationMode.EndSampling();
+            return $"{clip.name}@{animator.name}";
+        }
+
+        private static Bounds PageBounds(List<Canvas> canvases)
         {
             var corners = new Vector3[4];
             var bounds = new Bounds();
             bool any = false;
-            facing = Vector3.forward;
             foreach (Canvas canvas in canvases)
             {
                 if (!canvas.isRootCanvas) continue;
-                var rect = (RectTransform)canvas.transform;
-                rect.GetWorldCorners(corners);
+                ((RectTransform)canvas.transform).GetWorldCorners(corners);
                 foreach (Vector3 corner in corners)
                 {
                     if (!any) { bounds = new Bounds(corner, Vector3.zero); any = true; }
                     else bounds.Encapsulate(corner);
                 }
-
-                // La cara visible de un Canvas mira a −forward: la cámara se pone en ese lado, mirando a +forward.
-                facing = rect.forward;
             }
 
             return bounds;
