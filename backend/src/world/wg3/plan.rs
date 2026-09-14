@@ -96,6 +96,8 @@ const SALT_CEILING: u32 = 0x9A17_000D;
 const SALT_MEGA: u32 = 0x9A17_000E;
 /// Sal de la PLANTA ABIERTA de oficina: qué par de hermanas se funde en la sala grande.
 const SALT_OPEN_PLAN: u32 = 0x9A17_0010;
+/// ADR-155 — sal de los huecos de la zona laberinto: cuántos, de qué ancho y con cuánta pared entre ellos.
+const SALT_GAP: u32 = 0x9A17_0011;
 
 /// ADR-120 D3 — las perillas de la GRAMÁTICA de composición.
 ///
@@ -420,6 +422,15 @@ const MAZE_ZONE_DEPTH: u8 = 2;
 /// ADR-155 D2 / enm. 1 — área a la que PARA la subdivisión dentro de la zona. Hojas de 15 × 30 m de
 /// media, entre los 10 y 25 m de lado que pide el ADR y bajo el tope de tramo de 25 m.
 const MAZE_TARGET_AREA_M2: f32 = 450.0;
+/// ADR-155 D2 — anchos de un hueco de la zona laberinto. Por encima de `DOORWAY_CM` y hasta 4 m: el
+/// tabique a trozos de Level 0, no una puerta.
+const MAZE_GAP_WIDTHS_CM: [i32; 5] = [240, 280, 320, 360, 400];
+/// ADR-155 enm. 1/2 — trozo de pared mínimo entre dos huecos y en cada esquina. Igual que
+/// `fill::OPENING_JAMB_CM`: por debajo de ~100 cm el ráster convierte el trozo en una celda maciza o
+/// lo borra, y 180 es la jamba que el relleno ya usa para no pisar vanos.
+const MAZE_GAP_PIECE_CM: i32 = 180;
+/// ADR-155 — cuánto puede crecer al azar ese trozo, para que los huecos no caigan a paso fijo.
+const MAZE_GAP_PIECE_EXTRA_CM: i32 = 320;
 
 /// Dónde puede caer un corte dentro del lado que parte, en tantos por uno.
 ///
@@ -1194,6 +1205,10 @@ pub enum LinkKind {
     /// Dos espacios que NO se tocan. **Es lo único que llega al enrutador**, y llega como encargo:
     /// «une esto con esto», no «busca a ver qué quedó suelto».
     Route,
+    /// ADR-155 D2 — uno de VARIOS huecos entre dos hojas de la zona laberinto, en la misma pared.
+    /// Para el relleno es un vano como `Doorway`; la diferencia es que no se desalinea: su sitio lo
+    /// fija el reparto de trozos de pared.
+    Gap,
 }
 
 /// Una conexión que el plan DECIDE que existe, antes de que haya geometría que la pueda cumplir.
@@ -3851,6 +3866,28 @@ impl Planner {
             });
         }
 
+        // 2b — ADR-155 D2: la ZONA LABERINTO. Toda pared entre dos hojas de la zona se abre en varios
+        //      huecos anchos con trozos de pared entre ellos. Va antes de la 3 para que sus uniones
+        //      cuenten al rescatar lo suelto, y las pasadas 3, 3b y 4 ya no tocan esas parejas.
+        for &(i, j, ..) in &adj {
+            if !(self.spaces[i].maze && self.spaces[j].maze)
+                || !self.spaces[i].role.is_built()
+                || !self.spaces[j].role.is_built()
+            {
+                continue;
+            }
+            for (w, x, z) in gaps_along_wall(self.seed, self.spaces[i].rect, self.spaces[j].rect) {
+                self.links.push(PlannedLink {
+                    a: i,
+                    b: j,
+                    width_cm: w,
+                    kind: LinkKind::Gap,
+                    at_x_cm: x,
+                    at_z_cm: z,
+                });
+            }
+        }
+
         // 3 — las salas que no tocan ninguna banda cuelgan de una vecina que sí llegue. Es la suite
         //     de despachos a la que se entra por otro despacho, y es arquitectura normal: sin esto
         //     habría que meter corredor hasta la última puerta y volveríamos a la cuadrícula.
@@ -3875,6 +3912,9 @@ impl Planner {
                     continue;
                 }
                 if self.spaces[i].role.is_circulation() || self.spaces[j].role.is_circulation() {
+                    continue;
+                }
+                if self.spaces[i].maze && self.spaces[j].maze {
                     continue;
                 }
                 let (ri, rj) = (uf.find(i), uf.find(j));
@@ -3907,7 +3947,7 @@ impl Planner {
             if !self.spaces[i].role.is_built() || !self.spaces[j].role.is_built() {
                 continue;
             }
-            if uf.find(i) == uf.find(j) {
+            if uf.find(i) == uf.find(j) || (self.spaces[i].maze && self.spaces[j].maze) {
                 continue;
             }
             uf.union(i, j);
@@ -3929,6 +3969,9 @@ impl Planner {
                 continue;
             }
             if self.linked(i, j) {
+                continue;
+            }
+            if self.spaces[i].maze && self.spaces[j].maze {
                 continue;
             }
             let (mx, mz) = ((x as f32) / CM_PER_M, (z as f32) / CM_PER_M);
@@ -4364,7 +4407,9 @@ impl Planner {
             // coordenada a lo largo de la pared).
             let mut mine: Vec<(usize, bool, i32, i32)> = Vec::new();
             for (k, l) in self.links.iter().enumerate() {
-                if l.kind == LinkKind::Route || (l.a != s && l.b != s) {
+                // ADR-155 — un hueco de la zona laberinto no se mueve: su sitio lo fija el reparto
+                // de trozos de pared, y correrlo podría dejarlo encima de su vecino.
+                if l.kind == LinkKind::Route || l.kind == LinkKind::Gap || (l.a != s && l.b != s) {
                     continue;
                 }
                 let half = l.width_cm / 2 + DOOR_JAMB_CM;
@@ -5758,6 +5803,51 @@ fn door_along_wall(seed: i32, a: PlanRect, b: PlanRect, w: i32, x: i32, z: i32) 
     }
 }
 
+/// ADR-155 D2 / enm. 2 — los HUECOS de la zona laberinto en la pared que comparten `a` y `b`, como
+/// `(ancho, x, z)`: anchos de [`MAZE_GAP_WIDTHS_CM`] con un trozo de pared de [`MAZE_GAP_PIECE_CM`] como
+/// mínimo en cada esquina y entre dos huecos. Una pared que no da para eso lleva un único vano normal
+/// centrado, y una que ni para eso, ninguno. Determinista por la posición de la pared (R3).
+fn gaps_along_wall(seed: i32, a: PlanRect, b: PlanRect) -> Vec<(i32, i32, i32)> {
+    let Some((len, cx, cz)) = rects_share_wall(a, b) else {
+        return Vec::new();
+    };
+    let vertical = (a.max_x_cm - b.min_x_cm).abs() <= 1 || (b.max_x_cm - a.min_x_cm).abs() <= 1;
+    let (lo, hi) = if vertical {
+        (a.min_z_cm.max(b.min_z_cm), a.max_z_cm.min(b.max_z_cm))
+    } else {
+        (a.min_x_cm.max(b.min_x_cm), a.max_x_cm.min(b.max_x_cm))
+    };
+    let at = |c: i32| if vertical { (cx, c) } else { (c, cz) };
+    let narrow = MAZE_GAP_WIDTHS_CM[0];
+    if len < narrow + 2 * MAZE_GAP_PIECE_CM {
+        let w = DOORWAY_CM.min(len - 2 * DOOR_JAMB_CM);
+        if w < super::segment::MIN_GENERATED_WIDTH_CM {
+            return Vec::new();
+        }
+        let (x, z) = at((lo + hi) / 2);
+        return vec![(w, x, z)];
+    }
+    let mut st = hash::stream_at(seed, cx as f32 / CM_PER_M, cz as f32 / CM_PER_M, SALT_GAP);
+    let mut out = Vec::new();
+    let mut cursor = lo + MAZE_GAP_PIECE_CM + (st.next01() * MAZE_GAP_PIECE_CM as f32) as i32;
+    while cursor + narrow + MAZE_GAP_PIECE_CM <= hi {
+        let k = (st.next01() * MAZE_GAP_WIDTHS_CM.len() as f32) as usize;
+        let w = MAZE_GAP_WIDTHS_CM[k.min(MAZE_GAP_WIDTHS_CM.len() - 1)]
+            .min(hi - MAZE_GAP_PIECE_CM - cursor);
+        // Ancho par a la decena: el centro cae en centímetro entero y las dos jambas miden lo mismo.
+        let w = w - w % 20;
+        let (x, z) = at(cursor + w / 2);
+        out.push((w, x, z));
+        cursor += w + MAZE_GAP_PIECE_CM + (st.next01() * MAZE_GAP_PIECE_EXTRA_CM as f32) as i32;
+    }
+    // El primer trozo sorteado puede comerse el sitio del único hueco: entonces, uno centrado.
+    if out.is_empty() {
+        let (x, z) = at((lo + hi) / 2);
+        out.push((narrow, x, z));
+    }
+    out
+}
+
 /// Union-find con compresión de caminos. Propio y no el de `route.rs` porque aquél es privado de
 /// aquel módulo, y exportarlo ataría dos cosas que no tienen por qué moverse juntas.
 struct UnionFind {
@@ -6013,5 +6103,80 @@ mod misalign_tests {
             let b = plan_storey_with(seed, BOUNDS, &[], 0, true, &[], CEILING_VARIETY, 1.0);
             assert_eq!(a.links, b.links, "semilla {seed}");
         }
+    }
+}
+
+/// ADR-155 L1d — los huecos de la zona laberinto: trozo de pared ≥ `MAZE_GAP_PIECE_CM` en cada
+/// esquina y entre dos huecos, ninguno se pisa, todos en la pared común y deterministas.
+#[cfg(test)]
+mod maze_gap_tests {
+    use super::*;
+
+    fn rect(x0: i32, z0: i32, x1: i32, z1: i32) -> PlanRect {
+        PlanRect {
+            min_x_cm: x0,
+            min_z_cm: z0,
+            max_x_cm: x1,
+            max_z_cm: z1,
+        }
+    }
+
+    #[test]
+    fn maze_gaps_leave_wall_pieces_and_never_overlap() {
+        let mut walls_with_many = 0usize;
+        for seed in 0..200 {
+            for len in [600, 900, 1500, 2500] {
+                // Pared vertical en x = 1000 entre dos hojas, desplazada por la semilla.
+                let z0 = seed * 37;
+                let a = rect(0, z0, 1000, z0 + len);
+                let b = rect(1000, z0, 2000, z0 + len);
+                let gaps = gaps_along_wall(seed, a, b);
+                assert!(!gaps.is_empty(), "pared de {len}: sin huecos");
+                assert_eq!(gaps, gaps_along_wall(seed, a, b), "no determinista");
+                let mut spans: Vec<(i32, i32)> = gaps
+                    .iter()
+                    .map(|&(w, x, z)| {
+                        assert_eq!(x, 1000, "hueco fuera de la pared");
+                        // El último hueco de la pared puede recortarse al sitio que queda.
+                        assert!(
+                            (MAZE_GAP_WIDTHS_CM[0]..=MAZE_GAP_WIDTHS_CM[4]).contains(&w)
+                                && w % 20 == 0,
+                            "ancho {w}"
+                        );
+                        (z - w / 2, z + w / 2)
+                    })
+                    .collect();
+                spans.sort_unstable();
+                let mut cursor = z0;
+                for (lo, hi) in &spans {
+                    assert!(
+                        lo - cursor >= MAZE_GAP_PIECE_CM,
+                        "semilla {seed} pared {len}: trozo de {} cm antes de {lo}..{hi}",
+                        lo - cursor
+                    );
+                    cursor = *hi;
+                }
+                assert!(
+                    z0 + len - cursor >= MAZE_GAP_PIECE_CM,
+                    "semilla {seed} pared {len}: esquina final de {} cm",
+                    z0 + len - cursor
+                );
+                walls_with_many += (gaps.len() >= 2) as usize;
+            }
+        }
+        assert!(
+            walls_with_many > 200,
+            "casi ninguna pared con varios huecos: {walls_with_many}"
+        );
+    }
+
+    #[test]
+    fn a_short_maze_wall_gets_one_centred_doorway_or_none() {
+        let a = rect(0, 0, 1000, 450);
+        let b = rect(1000, 0, 2000, 450);
+        assert_eq!(gaps_along_wall(7, a, b), vec![(DOORWAY_CM, 1000, 225)]);
+        let tiny_a = rect(0, 0, 1000, 220);
+        let tiny_b = rect(1000, 0, 2000, 220);
+        assert!(gaps_along_wall(7, tiny_a, tiny_b).is_empty());
     }
 }

@@ -6852,7 +6852,7 @@ fn probe_region_plan() {
         let mut kinds = [0usize; 4];
         for l in &p.links {
             kinds[match l.kind {
-                LinkKind::Doorway => 0,
+                LinkKind::Doorway | LinkKind::Gap => 0,
                 LinkKind::Access => 1,
                 LinkKind::Junction => 2,
                 LinkKind::Route => 3,
@@ -7795,7 +7795,7 @@ fn dump_region_plans() {
                 LinkKind::Route => ("#f87171", " stroke-dasharray=\"6 4\""),
                 LinkKind::Junction => ("#fed7aa", ""),
                 LinkKind::Access => ("#e2e8f0", ""),
-                LinkKind::Doorway => ("#94a3b8", ""),
+                LinkKind::Doorway | LinkKind::Gap => ("#94a3b8", ""),
             };
             // **La arista va FLOJA y la puerta va FUERTE, y eso lo decidió mirar el volcado.** Con
             // las aristas a plena opacidad, los cincuenta accesos de un corredor convergen a su
