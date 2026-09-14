@@ -18954,3 +18954,12 @@ alternaba entre opciones de coste parecido (10–39° de giro por fotograma).
    ver la misma hoja; morir y abrir la hoja desde el cadáver.
 
 ---
+
+## ADR-154 — Aprobación (2026-09-14) — ACEPTADA (Joel: «apruebo, opción a, empieza P1a»)
+
+- ADR-154 aceptado tal cual, con las condiciones del auditor ya incorporadas en el texto.
+- **D6 cerrada, opción (a):** en P1 una hoja de mapa **no se puede soltar al suelo**; se lleva encima o cae en el cadáver.
+  Añadir `props` a los objetos soltados queda para M5 (corcho, asalto).
+- Orden: P1a → P1b → P1c → P1d.
+
+---
