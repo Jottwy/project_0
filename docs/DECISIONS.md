@@ -19114,3 +19114,42 @@ atravesada), y el daño no se pinta en triángulos que mezclan dos zonas ni en l
 - Sonido de zumbido de fluorescente y humedad.
 
 ---
+
+## ADR-155 — Enmienda 1: revisión de la auditoría de arquitectura antes de aprobar (2026-09-14) — PROPUESTA
+
+Veredicto del auditor: «OK con cambios». Esta enmienda sustituye lo que dice; lo demás de ADR-155 queda.
+
+- **D4 — estilo 12, no 10.** ADR-153 D1/D4 (aceptado) ya reservó 10 (`ABYSS_STYLE`) y 11 (`ABYSS_LIGHT_STYLE`). El
+  laberinto usa **`MAZE_STYLE` = 12**. Y **no se aplica a todo espacio de la zona**: el estilo codifica el papel
+  (`style_of`), y ADR-105 enm. 19 (moqueta y falso techo con `style == 0`) y `Wg3LightCadence.IsDarkOffice` lo leen.
+  Dentro de la zona, los espacios de papel **oficina, escalera y pozo conservan su estilo** (conviven como hoy); el 12
+  va sólo a los papeles genéricos (nave, servicio, callejón, pasillo que quede). Test C#: `Wg3StyleMaterials` tiñe el 12 y
+  `IsDarkOffice` no lo toma por despacho.
+- **D3 — enmienda explícita a ADR-105 enm. 14 D2**: el tope de 240 del carácter laberinto pasa, **sólo dentro de la
+  zona**, a un techo por hoja sorteado en {240, 260, 280, 300}. Fuera de la zona, el carácter laberinto sigue en 240.
+- **D1 — escala y pozos.**
+  - La región mide 150 m, así que la zona se decide **por rectángulo de los primeros cortes del BSP** (región, mitad o
+    cuarto) y una megazona son de una a varias regiones contiguas, no «varias salas».
+  - Metros en unidades de PLAN (= mundo mientras ADR-128 no esté en el código).
+  - Los pozos de escalera **se excavan después del plan como hoy** (`dig_wells`): la zona no los reserva ni los rodea;
+    el test mide pozos y plantas por región con zona.
+- **D2 — enlaces y bocas.**
+  - `adjacencies()` guarda un enlace por pareja (plan.rs:4176): se añade un **enlace de adyacencia múltiple**, sólo para
+    parejas dentro de la zona.
+  - **Trozo de pared mínimo entre bocas y en la esquina ≥ `OPENING_JAMB_CM`** (180), y `segment::problems()` pasa a
+    **rechazar bocas solapadas o con trozo menor**: por debajo de ~100 cm el ráster convierte el trozo en una celda
+    maciza o lo borra.
+  - Los enlaces de borde con el plan normal se asignan **antes** que las bocas múltiples, para que `tap_mouth`
+    (route.rs:971) encuentre lado libre; un bolsillo de la zona sin enlace a junta no se vacía en silencio: falla el test.
+  - **Regla de parada**: dentro de la zona, `TARGET_AREA_M2` propio para hojas de 10–25 m (declarado, medido con las dos
+    cuentas de la regla de tamaños).
+- **D6 — medidas que se añaden.**
+  - Barrido de **300 regiones** con los listones de ADR-124 D4 (3,2 plantas, 8 agujeros de referencia, **0/300 rotas**),
+    además de las 27.
+  - `openings_dropped == 0` (fill.rs:10291).
+  - Test de trozo de pared mínimo y bocas sin solape.
+  - Pozos y plantas por región con zona frente a sin zona.
+  - `a_hole_drops_you_a_whole_storey` revisado a la vista, no relajado.
+  - Semillas con el spawn dentro de una zona y con juntas dentro de la zona.
+
+---
