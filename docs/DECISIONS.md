@@ -18435,3 +18435,27 @@ alternaba entre opciones de coste parecido (10–39° de giro por fotograma).
 - Las manos a ~5 mm a fase 0,67 de la cuerda. Ver en Play.
 
 ---
+
+### ADR-149 — Enmienda 3 (2026-09-14): R2b — la ropa protege en el servidor, se rompe con `body_hit` y su rotura viaja en `props`
+
+**Estado:** PROPUESTA (Joel: «sigue arranca»). Concreta D7 y D9 para R2b y añade un evento a la tabla de impacto. Sin bump.
+
+1. **`report_protection {prot:[15]}`** (cliente → backend): protección 0-100 por zona de la prenda más exterior (base × factor
+   del estado). La manda `BackroomsGarmentPrototype` al conectar y cada vez que cambia (comprobación cada 0,5 s). El backend
+   la guarda en `Player.protection` sin persistir (`serde(skip)`) y la recorta a 0-100; lo que no sea número cuenta 0.
+2. **Mitigación en el servidor** en todas las rutas con zona: `report_damage`, robapieles host y joiner, PvP (las dos) y
+   entidades. La salud y la lesión usan `daño × (1 − prot/100)`; `report_damage` llega BRUTO y se mitiga una sola vez (test).
+   En PvP la mitigación se aplica antes de `apply_pvp_damage_grant`, así que la invulnerabilidad sigue siendo la de ADR-029.
+3. **Evento nuevo `body_hit {zone, cause, damage}`** (backend → cliente, JSON libre, sin bump) por cada golpe aplicado, con
+   el daño BRUTO: el cliente rompe con él la prenda que lo recibió, también cuando el golpe no pasó por su `DamageReceived`.
+   Causas: la del cliente en `report_damage`; `Slash` para el zarpazo del robapieles; `Undefined` para PvP y entidades (no
+   rasgan tela hasta que R3 lleve arma y zona). Con backend el cliente ya no mitiga en local.
+4. **La rotura en `props` (D9):** `ItemPropertyDefinition` propia `BR_Garment Zones` (tipo Double) declarada por las prendas
+   con zonas; `GarmentState` empaqueta 8 zonas × 4 bits (3 de daño, 1 de bolsillo roto) y escribe la propiedad en cada
+   cambio. Viaja por `ItemProps` (inventario, muerte, cadáver, suelo) sin tocar el esquema de guardado. Como un cambio de
+   propiedad no dispara `SlotChanged`, `InventoryReporter.MarkDirty()` arma el reporte a mano.
+5. **Verificación:** `cargo test` 1571/0 y sonda IPC (50 % en el pecho: un golpe de 16 baja 8 de salud, deja rasguño y el
+   `body_hit` lleva 16 y la causa). EditMode: empaquetado ida y vuelta, propiedad declarada en la chaqueta, lectura de
+   `body_hit`.
+
+---
