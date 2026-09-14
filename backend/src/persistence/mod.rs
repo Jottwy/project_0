@@ -1,6 +1,8 @@
 //! Persistence domain: JSON save/load and (Phase 5) distributed save merge.
 
 pub mod lock;
+/// ADR-154 D5 — hojas de mapa del host, en su propio fichero junto al save del mundo.
+pub mod map_sheets_save;
 pub mod player_save;
 pub mod save;
 

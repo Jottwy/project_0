@@ -152,18 +152,65 @@ namespace BackroomsSurvival.Gameplay.Mapping
             float cost = (float)(stroke.LengthCells * memory.CellSizeM) * pen.CostPerMetre;
             if (pen.Ink < cost) return false;
 
-            uint state = Mix((uint)sheet.Seed, (uint)sheet.Layers.IndexOf(layer), (uint)index);
+            // ADR-154 D2: la clave del aleatorio es la de la CAPA y la posición en la tanda, las dos guardadas con el tramo.
+            uint state = Mix((uint)sheet.Seed, (uint)layer.Key, (uint)index);
             if (stroke.Old && Unit(ref state) < OldGapChance) return true;
 
             pen.Ink -= cost;
-            // La tinta se cobra UNA vez por pared; las pasadas son el gesto, no más pared dibujada.
-            int passes = stroke.Old
-                ? 1
-                : FreshPasses + (stroke.LengthCells >= 4 && Unit(ref state) < ThirdPassChance ? 1 : 0);
-            for (int pass = 0; pass < passes; pass++)
-                layer.Strokes.Add(new MapStroke(Sketch(stroke, sheet.Zone, memory.CellsPerChunk, pass, ref state), stroke.Old));
+            var run = new MapRun(stroke.Vertical, stroke.Line, stroke.From, stroke.To, stroke.Old, index);
+            AddPasses(layer, run, sheet.Zone, memory.CellsPerChunk, ref state);
+            layer.Runs.Add(run);
             for (int k = 0; k < stroke.KeyCount; k++) sheet.AddEdge(_keys[stroke.KeyStart + k]);
             return true;
+        }
+
+        /// <summary>
+        /// ADR-154 D2 — rehace los trazos de todas las capas a partir de sus tramos guardados, con la misma clave con la
+        /// que se trazaron, y marca sus aristas: la hoja cargada se pinta idéntica a la dibujada. En una hoja pasada a
+        /// limpio los tramos salen rectos.
+        /// </summary>
+        public static void Redraw(MapSheet sheet, int cellsPerChunk)
+        {
+            foreach (MapSheetLayer layer in sheet.Layers)
+            {
+                layer.Strokes.Clear();
+                foreach (MapRun run in layer.Runs)
+                {
+                    if (sheet.Clean)
+                    {
+                        layer.Strokes.Add(CleanStroke(run, sheet.Zone, cellsPerChunk));
+                    }
+                    else
+                    {
+                        uint state = Mix((uint)sheet.Seed, (uint)layer.Key, (uint)run.DrawIndex);
+                        // Un tramo viejo guardado pasó el sorteo del hueco: se consume igual para seguir la misma serie.
+                        if (run.Old) Unit(ref state);
+                        AddPasses(layer, run, sheet.Zone, cellsPerChunk, ref state);
+                    }
+
+                    for (int pos = run.From; pos < run.To; pos++) sheet.AddEdge(EdgeKey(run.Vertical, run.Line, pos));
+                }
+            }
+        }
+
+        /// <summary>P0.4 — el tramo pasado a limpio: una recta firme en celdas locales.</summary>
+        public static MapStroke CleanStroke(MapRun run, MapZone zone, int cellsPerChunk)
+        {
+            float across = run.Line - (run.Vertical ? zone.ChunkX : zone.ChunkZ) * cellsPerChunk;
+            float a = run.From - (run.Vertical ? zone.ChunkZ : zone.ChunkX) * cellsPerChunk;
+            float b = run.To - (run.Vertical ? zone.ChunkZ : zone.ChunkX) * cellsPerChunk;
+            return new MapStroke(run.Vertical ? new[] { across, a, across, b } : new[] { a, across, b, across }, false,
+                steady: true);
+        }
+
+        private static void AddPasses(MapSheetLayer layer, MapRun run, MapZone zone, int cellsPerChunk, ref uint state)
+        {
+            // La tinta se cobra UNA vez por pared; las pasadas son el gesto, no más pared dibujada.
+            int passes = run.Old
+                ? 1
+                : FreshPasses + (run.LengthCells >= 4 && Unit(ref state) < ThirdPassChance ? 1 : 0);
+            for (int pass = 0; pass < passes; pass++)
+                layer.Strokes.Add(new MapStroke(Sketch(run, zone, cellsPerChunk, pass, ref state), run.Old));
         }
 
         /// <summary>
@@ -294,7 +341,7 @@ namespace BackroomsSurvival.Gameplay.Mapping
         /// Temblor punto a punto, ondulación lenta de pulso, algo de torsión, extremos que se pasan o se quedan
         /// cortos (las esquinas no cierran limpias) y, a partir de la segunda pasada, desplazada y a veces más corta.
         /// </summary>
-        private static float[] Sketch(PendingStroke stroke, MapZone zone, int cellsPerChunk, int pass, ref uint state)
+        private static float[] Sketch(MapRun stroke, MapZone zone, int cellsPerChunk, int pass, ref uint state)
         {
             float jitter = stroke.Old ? 0.2f : 0.07f;
             int length = stroke.LengthCells;

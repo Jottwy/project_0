@@ -26,13 +26,27 @@ MonoBehaviour:
   _rarity: {fileID: 11400000, guid: 5b78dfb1a8130fe4cab70086731e2ddd, type: 2}
   _actions:
   - {fileID: 11400000, guid: cfea35ee23f1fda47a276a7b208543f9, type: 2}
-  _properties: []
+  _properties:
+  - _itemPropertyId: 1291352897
+    _useRandomValue: 0
+    _valueRange: {x: 0, y: 0}
+  - _itemPropertyId: 1296422759
+    _useRandomValue: 0
+    _valueRange: {x: 0, y: 0}
   _data:
   - rid: 7414096679504707684
   - rid: 7414096679504707685
+  - rid: 3885882211262268060
   references:
     version: 2
     RefIds:
+    - rid: 3885882211262268060
+      type: {class: GarmentZonesData, ns: BackroomsSurvival.Gameplay.Body, asm: BackroomsSurvival}
+      data:
+        _zones:
+        - Zone: 0
+          Protection: 0.1
+          PocketSlots: 0
     - rid: 7414096679504707684
       type: {class: CraftingData, ns: PolymindGames.InventorySystem, asm: PolymindGames}
       data:

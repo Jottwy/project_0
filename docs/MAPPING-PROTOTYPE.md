@@ -508,6 +508,102 @@ botones sobre la página de 172 × 205, y los clics sobre el Canvas en World Spa
 - **Sin verificar en Play:** que la hoja caiga alineada con la página (mismo espacio que el Canvas, sin warp), el
   sentido de la curva y que tape la hoja nueva.
 
+## 6. P1 — Hojas como objetos (ADR-154, ACEPTADA 2026-09-14, D6 = no se sueltan)
+
+### 6.1 P1a — la hoja guardable en C# (hecho, 2026-09-14)
+
+- `75cc450a` **clave de trazo explícita**: `MapSheetLayer.Key` (monótona, sustituye a `IndexOf`) y `Runs` con el
+  `DrawIndex` de cada tramo que llegó al papel; `MapSheetStrokeBuilder.Redraw` rehace trazos y aristas desde los tramos.
+  Las limpias guardan sus tramos y se rehacen rectas. Sin cambio visible (`MapSheetStrokesTests` igual).
+- `240ba803` **`MapSheetRecord`** + JSON compacto solo de enteros (posiciones en centésimas de celda, grosor en
+  centésimas de píxel), topes del ADR con `Validate`, `FromSheet`/`ToSheet`. Golden común
+  `tools/dev/fixtures/map_sheet_record.golden.json`, generado con Python y no con el codec: el de Rust (P1b) tiene que
+  escribirlo byte a byte igual. Git lo convierte a CRLF en Windows: los dos lados comparan sin el salto final.
+- Tests: headless 64/64 de mapeado; **en Unity 60/60** fixture a fixture (`MapSheetRecord` 5, `MapSheetRedraw` 4,
+  `MapNotebook` 4, `MapMemory` 14, `MapRecognition` 8, `MapAtlas` 7, `MapSheetRaster` 5, `MapSheetStrokes` 9,
+  `MapVisionFan` 4).
+- **Trampa del runner:** un filtro con varias alternativas `(A|B|C)` cuenta de menos (13 de 22) sin fallar nada; se
+  verifica fixture a fixture.
+
+### 6.2 P1b — almacén y guardado en el backend (plan, pendiente de Joel)
+
+ADR-154 D2, D3, D5. **Rust solo, sin wire ni Unity**: los mensajes `map_sheet_*` son P1c. Nada de esto se ve en el
+juego todavía; se verifica con `cargo test`.
+
+**Lo que ya existe y se copia (verificado 2026-09-14):**
+- **Modelo puro + almacén en `NetworkManager`:** `world/spray.rs` (`SprayStore`, `net.sprays`), guardado en `SaveFile`.
+- **Fichero aparte con el mismo contrato de robustez:** `persistence/player_save.rs` (ADR-045): tmp+rename atómico,
+  `.bak` si no sirve, versión mayor, `load_or_fresh` que nunca tumba al que llama.
+- **Contador robusto:** `hydrate_from_save` restaura `next_corpse_id = max(guardado, id máximo + 1, 1)`.
+- **Autosave:** `game_loop.rs`, `if net.is_host && tick % AUTOSAVE_EVERY == 0` y el guardado al desconectarse Unity;
+  `resolve_save_path(seed)` respeta `SAVE_PATH`. Tests con `std::env::temp_dir()`.
+
+**Diseño:**
+1. **`backend/src/world/map_sheets.rs` (modelo, sin IO).** `MapSheetRecord` con serde en el MISMO orden de campos
+   que el golden (`id, rev, zone, seed, clean, label, layers[layer_key, pen_argb, width_cpx, runs [[i32;6]]], links,
+   marks`), `zone: Option<MapZone>`. `MapSheetStore { sheets: BTreeMap<u64, MapSheetRecord>, next_sheet_id,
+   total_bytes, dirty }` con:
+   - `create(zone, paper) -> Result<(id, seed), Reject>`: id monótono, `seed` derivada del id con una mezcla fija.
+   - `append(id, delta) -> Result<(rev, layer_keys), Reject>`: asigna `layer_key` = máximo + 1, **no reordena nada**,
+     valida topes ANTES de tocar (si rechaza, la hoja queda igual).
+   - `get(id)`, `validate(record)` con los topes del ADR (32 capas, 1500 tramos, 16 enlaces, 64 marcas, etiqueta 64,
+     claves crecientes, tramos no vacíos) y topes globales (2000 hojas, 8 MB contados con el JSON compacto de cada hoja).
+   - `handle_create(is_host, …)`: `Reject::NotHost` fuera del host (la usará P1c).
+2. **`backend/src/persistence/map_sheets_save.rs` (IO).** `MapSheetsFile { version, next_sheet_id, sheets: Vec }`
+   en **JSON compacto** (no pretty: presupuesto de tamaño). Ruta derivada de la del mundo:
+   `<carpeta del save>/map_sheets/<nombre del save>.json` (con `SAVE_PATH=/x/foo.json` → `/x/map_sheets/foo.json`).
+   Mismo contrato que `player_save.rs`.
+3. **`SaveFile`:** `#[serde(default)] next_map_sheet_id: u64`, el contador espejo del mundo; `build_save`/`save_world`
+   lo reciben.
+4. **`NetworkManager.map_sheets: MapSheetStore`** (como `sprays`). En `hydrate_from_save` se carga el fichero y
+   `next_sheet_id = max(fichero, save del mundo, id máximo + 1, 1)`. En el autosave y en el guardado al desconectarse,
+   **si es host y `dirty`**, se escribe el fichero y `dirty` vuelve a false solo si salió bien.
+
+**Tests (`cargo test`):**
+
+| Test | Qué fija |
+|---|---|
+| `golden_writes_byte_for_byte` / `golden_reads_and_rewrites_identically` | Oráculo común con C# (`tools/dev/fixtures`) |
+| `create_assigns_monotonic_ids_never_reused` | Ids |
+| `append_assigns_layer_keys_in_order_and_keeps_run_order` | Clave de trazo (D2) |
+| `append_over_a_cap_is_rejected_and_changes_nothing` | Topes por hoja y `unknown_id` |
+| `global_caps_reject_before_writing` | 2000 hojas / 8 MB |
+| `create_off_host_is_not_host` | D3 |
+| `only_changes_mark_dirty` | Autosave solo si cambió |
+| `sheets_file_round_trips` / `unusable_file_goes_to_bak_and_starts_fresh` | Contrato de fichero |
+| `ids_survive_losing_the_sheets_file` | `max` con el contador del mundo (D5) |
+| `sheets_path_follows_save_path` | `SAVE_PATH` |
+| `measured_sizes` | **Mide** el JSON de una hoja llena (1500 tramos) y de 2000 hojas típicas (~60 tramos, como la de las capturas: 996 B) |
+
+**Aviso de números:** con ~30 B por tramo, una hoja llena ronda 45 KB, así que el tope de 8 MB se alcanza con unas 180
+hojas llenas (o miles de hojas normales). `measured_sizes` lo mide; si el tope global no casa con partidas reales, se
+propone enmienda de ADR-154 con la medida, no se cambia a mano.
+
+**Commits (~650 líneas → dos):**
+1. `feat(backend): almacén de hojas de mapa con golden común` — `map_sheets.rs` + tests del modelo.
+2. `feat(backend): las hojas de mapa se guardan con el mundo` — fichero, contador en `SaveFile`, hidratar y autosave
+   + tests de persistencia.
+
+**Verificación:** `cargo test` de los módulos nuevos y la suite entera en verde (todo rojo de `cargo test` es nuevo desde
+08-22). `rustfmt` solo sobre los ficheros tocados (formatear `main.rs` o un `mod.rs` reescribe WIP ajeno). Sin
+`cargo build --release` ni despliegue: no hay nada que ejecutar aún.
+
+**Riesgo:** `game_loop.rs` y `network/mod.rs` los tocan otras sesiones; los cambios ahí son pocas líneas y se hacen al
+final, sobre el tronco recién rebasado.
+
+### 6.3 Resultado de P1b (2026-09-14, plan validado por Joel)
+
+- `1bf4b210` **modelo** (`world/map_sheets.rs`): el JSON sale **byte a byte igual que el golden** (y que C#). Medido: hoja
+  llena (1500 tramos) = **39 592 B**; 2000 hojas típicas (60 tramos) = **3 384 359 B**, dentro de los 8 MB: no hace
+  falta enmendar el tope.
+- Commit 2 **guardado**: `persistence/map_sheets_save.rs`, contador espejo en `SaveFile` y `SaveMeta` (desvío del plan:
+  por `SaveMeta` y no por un parámetro nuevo de `save_world`, así las 12 llamadas no cambian), `net.map_sheets` cargado
+  tras `save_meta_base` y `save_map_sheets_if_dirty` en autosave, salida y desconexión.
+- Tests: `cargo test --locked` de hojas **15/15** y **suite entera 1591 passed, 0 failed, 106 ignored**.
+- **No se ve en el juego todavía**: no hay mensajes. P1c los añade (wire 68 → 69).
+- Trampas: el crate es solo binario (`--lib` falla); el `cargo fmt --check` del hook falla por formato ajeno pendiente
+  de ADR-149 (`game_loop.rs`, `body.rs`), así que `rustfmt` se pasa solo a los ficheros propios.
+
 ### 5.6 Preguntas de playtest
 
 ¿Dibujar con el libro en las manos se siente mejor que el panel? ¿La hoja se lee bien en el libro? ¿Echa en falta

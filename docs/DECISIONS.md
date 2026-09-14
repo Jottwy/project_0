@@ -18804,6 +18804,206 @@ alternaba entre opciones de coste parecido (10–39° de giro por fotograma).
 
 ---
 
+## ADR-154 — Hojas de mapa como objetos: item con `sheet_id`, almacén del host y hoja guardada como foto (2026-09-14) — PROPUESTA (Joel: «adr p1 porfavor»; M0 de `MAPPING-ROADMAP.md` §11, P1 de `MAPPING-PROTOTYPE.md`; código sólo tras su aprobación)
+
+### Contexto
+
+- P0 de cartografía está hecho y jugado (`MAPPING-PROTOTYPE.md` §2–§5): recuerdo de 60 s, dibujo a boli desde el
+  recuerdo, flechas de borde, «Ubicarme», ver lejos, plano de la base y libreta en el libro de supervivencia (`N`).
+  Todo vive en memoria: **al cerrar el juego las hojas desaparecen** y nadie más las ve.
+- D5 de `MAPPING-ROADMAP.md` (cerrada por Joel, 13-09): **las hojas son objeto**; lo que llevas cae en el cadáver.
+- Hechos verificados hoy en el código:
+  - `ItemProperty` del vendor guarda un `double`: **cabe el identificador de una hoja, no la hoja**.
+  - `InventoryReporter` (ADR-045 Fase 3) ya envía `props` por instancia y `InventoryStackV2.props` se guarda por
+    jugador; `DeathLootReporter` también envía `props` (`ItemProps.Read`) y `CorpseStack.props` los conserva
+    (ADR-072). **Un `sheet_id` viaja gratis con inventario y cadáver.**
+  - `DroppedItem` (`backend/src/world/chunk/items.rs`) y `StpItemReplicator` **no llevan `props`**: una hoja soltada
+    en el suelo perdería su `sheet_id`.
+  - Ningún datagrama pasa de 1200 B de payload (ADR-113); el precedente de datos largos troceados en páginas fiables
+    es el roster (`backend/src/network/roster.rs`).
+  - Wire hoy: 68 (`WireSchema.Expected`).
+
+### D1 — La hoja es un item con `sheet_id`
+
+- Item nuevo **`BR_MapSheet`** (tamaño de pila 1, peso de papel), con dos propiedades de instancia:
+  `map_sheet_id` (entero exacto en el `double`, 0 = en blanco) y `map_paper` (tipo de papel, 0 = folio).
+- La libreta de `N` lista las **hojas que llevas en el inventario**, no una lista propia. «Coger hoja» consume una
+  hoja en blanco del inventario (P1 da un taco inicial para jugar; el loot de papel es M3/M5).
+- La libreta de 24 páginas, el taco con contador, carpeta y archivador NO entran aquí (M5).
+
+### D2 — El almacén es del host y la hoja se guarda como FOTO de lo dibujado
+
+- El backend del host mantiene `map_sheets: BTreeMap<u64, MapSheetRecord>` (ordenado: regla 13). `sheet_id` lo
+  asigna el host, monótono y **nunca reutilizado**.
+- `MapSheetRecord`:
+  `{ id, rev, zone: {chunk_x, chunk_z, storey}?, seed, clean, layers: [{layer_key, pen_argb, width_px, runs:
+  [[vertical, line, from, to, old, draw_index], …]}], links: [{to, side, local_x, local_z}], marks: [{kind, local_x,
+  local_z, argb}], label }`. Los tramos van como arrays planos de enteros para abaratar el JSON.
+- **Se guardan los TRAMOS de pared dibujados** (lo que ya calcula `MapSheetStrokeBuilder`: línea, desde, hasta,
+  viejo), no píxeles ni trazos. El trazo a mano se regenera en el cliente con las MISMAS entradas que tuvo al dibujarse:
+  hoy `Commit` usa `Mix(sheet.Seed, IndexOf(layer), _drawIndex)`, y `_drawIndex` es la posición en `_pending` de ESA
+  sesión de dibujo, que cambia en cada `Build`. Por eso cada tramo guarda su **`draw_index`** original, cada capa su
+  **`layer_key`** (número de capa que asigna el host al añadirla, monótono por hoja, en vez de `IndexOf`) y la hoja su
+  **`seed`** (la fija el host al crearla, derivada del `sheet_id` con una mezcla fija; hoy es `id*7919+13` con un id
+  local). **Ni el host ni el cliente reordenan tramos ni capas guardados.** P1a cambia `Commit`/`Sketch` para tomar
+  esa clave explícita en vez de `IndexOf`.
+- Solo se guardan los tramos que **llegaron al papel** (el hueco del recuerdo viejo ya descontado, con la misma
+  clave), así que la foto no cambia al volver a pintarla.
+- **Nunca se regenera desde la semilla del mundo**: con displacement, regenerar «arreglaría» hojas viejas y mataría
+  la mecánica (pilar 1).
+- Topes por hoja: 32 capas, **1500 tramos**, 16 enlaces, 64 marcas, etiqueta de 64 caracteres. Topes globales:
+  **2000 hojas y 8 MB** de fichero. Por encima, el host rechaza el cambio (no trunca en silencio). Estimación a medir en
+  P1b: ~30 B de JSON por tramo en array plano ⇒ una hoja llena ≈ 45 KB.
+- Consecuencia aceptada: si mañana cambia `Sketch`, las hojas guardadas se ven con el trazo nuevo. La geometría
+  (qué paredes) no cambia.
+
+### D3 — Autoridad
+
+- **El recuerdo y el dibujo viven en el cliente** (solo usa geometría que ya tiene cargada). Es cooperativo: mismo
+  nivel de confianza que `report_inventory` y `report_death_loot`.
+- **El host es dueño del almacén**: asigna ids, aplica los cambios y los guarda.
+- La tinta sigue siendo del cliente y **no se guarda en P1** (los bolis como item son M3).
+- **Backend que no es host** (el de un joiner): el autosave solo corre `if net.is_host` (ADR-032) y su inventario lo
+  guarda el host (ADR-045), así que en P1 **rechaza `map_sheet_create` con `not_host`** y la libreta de ese jugador
+  sigue volátil, como en P0. Las hojas del joiner llegan con P2.
+
+### D4 — Mensajes IPC (familia `map_sheet_*`, convención `action_type` de `report_inventory`)
+
+| Mensaje | Sentido | Qué lleva |
+|---|---|---|
+| `map_sheet_create` | cliente → backend | `request_id`, `zone?`, `paper` |
+| `map_sheet_created` | backend → cliente | `request_id`, `sheet_id`, `seed` |
+| `map_sheet_append` | cliente → backend | `sheet_id`, delta: capas nuevas (sin `layer_key`), enlaces y marcas nuevos |
+| `map_sheet_appended` | backend → cliente | `sheet_id`, `rev`, `layer_key` asignado a cada capa nueva |
+| `map_sheet_get` | cliente → backend | `sheet_id`, `known_rev` |
+| `map_sheet_record` | backend → cliente | registro completo, o `unchanged` si `known_rev` = `rev` |
+| `map_sheet_rejected` | backend → cliente | `sheet_id`/`request_id`, `reason` (`not_host`, `cap`, `unknown_id`) |
+
+- **P1 es solo IPC local** (tramas de hasta 16 MB, ordenadas): un registro viaja entero, sin trocear.
+- **La red entre peers (P2) NO se decide aquí**: trocear un registro por debajo de 1200 B (ADR-113), si esos paquetes
+  son fiables (ADR-039) y cuántos caben sin agotar reintentos (ADR-062) va en una enmienda de P2 con medidas. No se
+  reutiliza la paginación del roster, que parte por elemento y va fuera de `is_reliable` a propósito.
+- Solo se AÑADE: dibujar nunca borra. En P1 hay un único escritor (el jugador del host), así que el orden de capas es
+  el de llegada y `layer_key` lo fija el backend. Dos escritores sobre la misma hoja es P2.
+- El payload se pide **al abrir la hoja**, nunca con el inventario.
+- Bump de `WIRE_SCHEMA_VERSION` y `WireSchema.Expected` en el MISMO commit, en la rebanada que añade los mensajes
+  (subir el wire por mensajes solo IPC es la convención de `ipc-wire-schema.md`).
+
+### D5 — Guardado (enmienda de ADR-032)
+
+- `map_sheets` va en el autosave del mundo del host (cada 3 min y al salir), **solo si cambió**, en su propio fichero
+  junto al save del mundo: la ruta se deriva de `resolve_save_path` (respeta `SAVE_PATH`) con la **misma clave de mundo**
+  que `world_{seed}.json`. Si hoy dos mundos comparten seed (`SERVED_SEED ≡ 42`), comparten también hojas, igual que
+  comparten save del mundo: es la deuda de identidad del mundo, no una nueva; cuando el mundo gane otra clave, las hojas
+  la siguen.
+- **`next_sheet_id` robusto:** se guarda en el fichero de hojas Y en `world_{seed}.json`; al cargar vale
+  `max(los dos guardados, id máximo cargado + 1)`, como `next_entity_id` en ADR-032 punto 7. Si el fichero de hojas
+  falta o sale corrupto (`.bak`), los ids no se reutilizan: los items que ya nombran hojas perdidas quedan ilegibles.
+- Los dos ficheros no son atómicos entre sí; se acepta: el peor caso es una hoja con dibujo de 3 min menos.
+- Las hojas **no se borran en P1** aunque ya nadie las lleve. Recoger huérfanas (sin item que las nombre durante N
+  días) es M5. Un item cuyo `sheet_id` no está en el almacén (crash entre `created` y `report_inventory`, o fichero
+  perdido) se muestra en la libreta como **«Hoja ilegible»** y no se puede dibujar en ella.
+- Test de ida y vuelta: crear, añadir, guardar, cargar y comparar el registro serializado.
+- **Oráculo común:** un JSON golden (`tools/dev/fixtures/map_sheet_record.golden.json`) que leen y escriben igual los
+  tests de C# (P1a) y de Rust (P1b), para que los dos codecs no puedan divergir sin que falle uno.
+
+### D6 — Muerte, cadáver y suelo
+
+- Al morir, la hoja cae en el cadáver con su `map_sheet_id` (ya lo hacen `DeathLootReporter` y `CorpseStack`). Quien
+  la recoja la abre con `map_sheet_get`: en P1, solo el host local; entre peers, P2.
+- **Soltar una hoja al suelo**: `DroppedItem` no lleva `props`, así que la hoja perdería su contenido. **Pregunta
+  abierta (Joel):** (a) en P1 la hoja no se puede soltar, solo guardar o morir con ella; o (b) se añaden `props` a los
+  objetos soltados y replicados (toca `StpItemReplicator` y `DroppedItem`: otra enmienda y más wire).
+  Recomendado: (a) ahora y (b) cuando exista el corcho o el asalto (M5).
+- **Contenedores construidos:** no sincronizan contenido (FARMING-ROADMAP §0) y en P1 no se verifica si conservan
+  `props`. Una hoja guardada en un cofre construido hereda esa deuda; se mide en P1d y, si pierde el id, entra en la
+  misma pregunta que el suelo.
+- `BR_MapSheet` declara sus dos propiedades en la definición del item: `ItemProps.Read` solo lee las que tienen
+  generador, y el tope es `MAX_PROPS_PER_STACK = 8`.
+
+### D7 — Qué cambia respecto a `MAPPING-ROADMAP.md` §9
+
+- Allí la hoja eran celdas en rejilla de bits con RLE; aquí son **tramos de pared**, que es lo que dibuja y reconoce el
+  prototipo P0.
+- Allí el host descontaba papel y tinta; aquí la tinta queda en el cliente hasta M3.
+
+### D8 — Fuera de este ADR
+
+- Red entre peers, copiar y volcar (P2, M6); plano de la base persistente y limpias (M8, cuando exista «base» en el
+  juego); letra, tintas y papeles (M3); marcas de texto (M4); displacement (M9, ADR-067).
+
+### Alternativas descartadas
+
+- **La hoja dentro de `ItemProperty`**: solo guarda un `double`.
+- **El contenido dentro de `report_inventory`**: viaja cada ~1 s con todo el inventario y pasaría de 1200 B con dos
+  hojas.
+- **Guardar píxeles (PNG) en vez de tramos**: ~100 veces más grande, y «Ubicarme» necesita las aristas, no la imagen.
+- **Guardar la hoja en el cliente (fichero local)**: se perdería con el mundo del host y nadie más la podría abrir.
+
+### Rebanadas
+
+1. **P1a (C#, sin wire):** `MapSheetRecord` + codec JSON puro (tramos, enlaces, marcas, topes); `Commit`/`Sketch` con
+   clave explícita (`seed`, `layer_key`, `draw_index`); regenerar `MapSheet` desde el registro. Tests: ida y vuelta,
+   topes, golden común y **mismo dibujo tras regenerar** (rasterización idéntica píxel a píxel).
+2. **P1b (Rust, sin wire):** almacén `map_sheets` en el backend, `append` con topes, `not_host`, autosave solo si cambió,
+   `next_sheet_id` robusto. Tests: ida y vuelta, golden común, ids no reutilizados tras perder el fichero, rechazos, y
+   **tamaño medido** de una hoja llena y de 2000 hojas.
+3. **P1c (wire 68 → 69):** mensajes `map_sheet_*` por IPC, en las dos puntas en el mismo commit.
+4. **P1d (Unity):** item `BR_MapSheet`; la libreta usa las hojas del inventario, crea con `map_sheet_create`, sube cada
+   dibujo con `map_sheet_append` y abre con `map_sheet_get`. Verificación en Play: dibujar, salir, volver a entrar y
+   ver la misma hoja; morir y abrir la hoja desde el cadáver.
+
+---
+
+## ADR-154 — Aprobación (2026-09-14) — ACEPTADA (Joel: «apruebo, opción a, empieza P1a»)
+
+- ADR-154 aceptado tal cual, con las condiciones del auditor ya incorporadas en el texto.
+- **D6 cerrada, opción (a):** en P1 una hoja de mapa **no se puede soltar al suelo**; se lleva encima o cae en el cadáver.
+  Añadir `props` a los objetos soltados queda para M5 (corcho, asalto).
+- Orden: P1a → P1b → P1c → P1d.
+
+---
+
+### ADR-149 — Enmienda 5 (2026-09-14): R4a/R4b — la ropa se ve, y se ve rota
+
+**Estado:** PROPUESTA (Joel: «debe renderizar la chaqueta», «datos en sus items», «forma por causa, sitio fijo», «capas y
+piel»). Sin wire nuevo. Guardado: una propiedad de item más (ADR-072, `ItemProps`), sin cambiar el formato de la existente.
+
+1. **R4a, la ropa en el muñeco del inventario.** Nuestras prendas no tienen malla propia: reusan la de un donante del vendor
+   (camisa para la chaqueta, pantalón militar, botas) duplicada con material teñido, como overrides de la variante
+   `BR_UI_Player`. Pantalón y calzado entran en la lista de ropa del `CharacterClothing` del vendor; la prenda de encima
+   (`Outer`, hueco que el vendor no mira) la enciende `BackroomsOuterClothing` ADEMÁS de lo del torso, hinchada 7 mm. El
+   jugador local sigue sin cuerpo en 3.ª persona; el avatar remoto y los brazos 1P no cambian aquí.
+2. **La ropa de serie del vendor protege y se rompe por zonas** (camisetas, camisa, pantalones, botas, gorros): se AÑADEN
+   `GarmentZonesData` y las propiedades a sus assets de item (solo datos, nunca código; sin bolsillos). Si una reimportación
+   del pack los pisa, el creador los repone. Cifras sin balancear.
+3. **Tipo de corte por zona** (`GarmentCut`: bala, puñalada, tajo; el desgarro es siempre un zarpazo), en la propiedad nueva
+   `Garment Cuts` (2 bits por zona). `Garment Zones` conserva su formato: los guardados viejos siguen valiendo y un corte
+   sin tipo se pinta como tajo.
+4. **Shader `Backrooms/Garment Lit`** (copia de URP/Lit 17.0.4, Forward+, dos caras): cada malla de prenda es una copia
+   horneada con la zona de cada vértice (uv3, por el hueso dominante) y sus metros alrededor del eje de la zona (uv4). La
+   forma sale de la causa y cae en un sitio fijo de la zona (al frente, a media altura): bala ~1 cm con borde quemado,
+   puñalada ~3 cm, tajo ~9 cm, zarpazo tres desgarros de ~11 cm. La cinta y la costura siguen esa forma. Mismo recorte en
+   sombra, profundidad y normales.
+5. **Lo de debajo se ve.** Por el agujero de la capa de encima se ve la de dentro; donde la prenda MÁS INTERIOR de una zona
+   está abierta se ve la piel: se compone en GPU la máscara de piel del vendor (`_OpacityMask_*`) juntando las dos capas y
+   destapando esas zonas con un mapa de zonas horneado en el UV del cuerpo. Coste aceptado: algo de piel puede asomar al
+   moverse en una zona rota.
+6. **Pendiente:** sitio exacto del golpe (necesita punto en `body_hit` y guardado: ADR aparte), avatar remoto (pantalón y
+   calzado re-horneando; la chaqueta pide hueco de equipo en el wire), mangas en 1P, guantes con malla.
+
+---
+
+### ADR-149 — Enmienda 5, nota (2026-09-14): capas y bordes tras verlo renderizado
+
+Verificado con capturas del muñeco (sin Play). Corrige el punto 1 de la enmienda 5: la prenda de encima NO se hincha 7 mm;
+con solo hincharla, la camiseta (malla más holgada) la atravesaba. Ahora se hincha 4 mm y se dibuja 2,5 cm adelantada hacia
+la cámara (`_GarmentViewBias`, también en profundidad y normales), sin engordar la silueta; la de dentro no se toca. El eje
+de cada zona de brazo o pierna sale del esqueleto (una manga corta es más ancha que larga y la dirección principal salía
+atravesada), y el daño no se pinta en triángulos que mezclan dos zonas ni en la mitad de atrás de la zona.
+
+---
+
 ## ADR-152 — Enmienda 1: P1 hecha, profundidades de 20 en 20 y peldaño propio, vista en Play (2026-09-14) — ACEPTADA
 
 - **P1** en tronco (`be7418d9`). `fill::pools_of` / `pool_geometry`; `pit_rects_of` devuelve también el vaso con su
@@ -18821,6 +19021,7 @@ alternaba entre opciones de coste parecido (10–39° de giro por fotograma).
 - **Play** (semilla servida, arnés de captura): bajada y subida de una de 120 y bajada de una de 180, sin atascos;
   salto máximo por paso 7 cm. En la de 180, 16 fotogramas en el aire bajando: a revisar si el paseo cae por el borde
   en vez de por la escalera.
-- **P2** (azulejo) sigue: el estilo 9 se pinta aún con el tinte por defecto.
+- **P2** (azulejo): el estilo 9 se viste con `Resources/Materials/TileWall` (URP Lit) en suelo, paredes y peldaños,
+  apenas enfriado; sin wire ni Rust.
 
 ---

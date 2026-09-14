@@ -100,15 +100,51 @@ namespace BackroomsSurvival.Gameplay.Mapping
         }
     }
 
+    /// <summary>
+    /// ADR-154 D2 — un tramo de pared que LLEGÓ al papel, en celdas de MUNDO, con la clave con la que se trazó. Es lo
+    /// que se guarda: los trazos a mano se regeneran a partir de él (<see cref="MapSheetStrokeBuilder.Redraw"/>).
+    /// </summary>
+    public readonly struct MapRun
+    {
+        public readonly bool Vertical;
+        public readonly int Line;
+        public readonly int From;
+        public readonly int To;
+        public readonly bool Old;
+        /// <summary>Posición del tramo en la tanda de dibujo que lo trazó: entra en el aleatorio del trazo.</summary>
+        public readonly int DrawIndex;
+
+        public MapRun(bool vertical, int line, int from, int to, bool old, int drawIndex)
+        {
+            Vertical = vertical;
+            Line = line;
+            From = from;
+            To = to;
+            Old = old;
+            DrawIndex = drawIndex;
+        }
+
+        public int LengthCells => To - From;
+    }
+
     /// <summary>Todo lo dibujado de una vez con una misma herramienta.</summary>
     public sealed class MapSheetLayer
     {
+        /// <summary>ADR-154 D2 — número de capa en la hoja (monótono); entra en el aleatorio del trazo.</summary>
+        public readonly int Key;
         public readonly uint Argb;
         public readonly float WidthPx;
         public readonly List<MapStroke> Strokes = new List<MapStroke>();
+        /// <summary>Los tramos que llegaron al papel, en orden de trazado. Nunca se reordenan.</summary>
+        public readonly List<MapRun> Runs = new List<MapRun>();
 
-        public MapSheetLayer(uint argb, float widthPx)
+        public MapSheetLayer(uint argb, float widthPx) : this(0, argb, widthPx)
         {
+        }
+
+        public MapSheetLayer(int key, uint argb, float widthPx)
+        {
+            Key = key;
             Argb = argb;
             WidthPx = widthPx;
         }
@@ -175,10 +211,17 @@ namespace BackroomsSurvival.Gameplay.Mapping
             keys.Sort();
         }
 
-        public MapSheetLayer BeginLayer(MapPen pen)
+        /// <summary>ADR-154 D2 — la clave que recibirá la próxima capa.</summary>
+        public int NextLayerKey { get; private set; }
+
+        public MapSheetLayer BeginLayer(MapPen pen) => AddLayer(NextLayerKey, pen.Argb, pen.WidthPx);
+
+        /// <summary>Añade una capa con clave dada (al cargar un registro guardado).</summary>
+        public MapSheetLayer AddLayer(int key, uint argb, float widthPx)
         {
-            var layer = new MapSheetLayer(pen.Argb, pen.WidthPx);
+            var layer = new MapSheetLayer(key, argb, widthPx);
             Layers.Add(layer);
+            if (key >= NextLayerKey) NextLayerKey = key + 1;
             return layer;
         }
     }

@@ -14,6 +14,15 @@ namespace BackroomsSurvival.Gameplay.Body
         Sewn = 4,
     }
 
+    /// <summary>ADR-149 R4b: qué abrió la tela (da la forma del agujero). El desgarro es siempre un zarpazo. Ordinal estable.</summary>
+    public enum GarmentCut : byte
+    {
+        None = 0,
+        Bullet = 1,
+        Stab = 2,
+        Slash = 3,
+    }
+
     public enum GarmentRepair : byte
     {
         Tape = 1,
@@ -39,15 +48,21 @@ namespace BackroomsSurvival.Gameplay.Body
         /// <summary>Nombre de la <c>ItemPropertyDefinition</c> (asset <c>BR_Garment Zones</c>).</summary>
         public const string PropertyName = "Garment Zones";
 
+        /// <summary>ADR-149 R4b: el tipo de corte por zona, 2 bits por zona (asset <c>BR_Garment Cuts</c>).</summary>
+        public const string CutsPropertyName = "Garment Cuts";
+
         private static readonly ConditionalWeakTable<Item, GarmentState> Table = new();
         private static int s_propertyId = int.MinValue;
+        private static int s_cutsPropertyId = int.MinValue;
         private ItemProperty _property;
+        private ItemProperty _cutsProperty;
 
         /// <summary>Sube con cualquier cambio de cualquier prenda: la UI lo sondea en vez de suscribirse.</summary>
         public static int Version { get; private set; }
 
         private readonly GarmentDamage[] _zones = new GarmentDamage[GarmentZonesData.MaxZones];
         private readonly bool[] _pocketBroken = new bool[GarmentZonesData.MaxZones];
+        private readonly GarmentCut[] _cuts = new GarmentCut[GarmentZonesData.MaxZones];
 
         public static GarmentState Of(Item item) => Table.GetValue(item, Load);
 
@@ -61,8 +76,43 @@ namespace BackroomsSurvival.Gameplay.Body
                 state._property = property;
                 state.Unpack((uint)property.Double);
             }
+            if (s_cutsPropertyId == int.MinValue)
+                s_cutsPropertyId = ItemPropertyDefinition.GetWithName(CutsPropertyName)?.Id ?? 0;
+            if (s_cutsPropertyId != 0 && item.TryGetProperty(s_cutsPropertyId, out var cuts))
+            {
+                state._cutsProperty = cuts;
+                state.UnpackCuts((uint)cuts.Double);
+            }
             return state;
         }
+
+        /// <summary>Los 8 cortes en 16 bits, 2 por zona, la zona 0 en los bits bajos.</summary>
+        public uint PackCuts()
+        {
+            uint packed = 0;
+            for (int i = 0; i < GarmentZonesData.MaxZones; i++)
+                packed |= (uint)((byte)_cuts[i] & 0x3) << (2 * i);
+            return packed;
+        }
+
+        public void UnpackCuts(uint packed)
+        {
+            for (int i = 0; i < GarmentZonesData.MaxZones; i++)
+                _cuts[i] = (GarmentCut)((packed >> (2 * i)) & 0x3);
+        }
+
+        public GarmentCut CutOf(int zoneIndex) => _cuts[zoneIndex];
+
+        /// <summary>Lo que lee el shader por zona: daño + 8 · corte.</summary>
+        public float VisualCode(int zoneIndex) => (float)_zones[zoneIndex] + 8f * (float)_cuts[zoneIndex];
+
+        public static GarmentCut CutFor(DamageType type) => type switch
+        {
+            DamageType.Ballistic => GarmentCut.Bullet,
+            DamageType.Pierce => GarmentCut.Stab,
+            DamageType.Slash => GarmentCut.Slash,
+            _ => GarmentCut.None,
+        };
 
         /// <summary>Los 8 estados de zona en 32 bits: 3 de daño y 1 de bolsillo roto por zona, la zona 0 en los bits bajos.</summary>
         public uint Pack()
@@ -88,6 +138,7 @@ namespace BackroomsSurvival.Gameplay.Body
         {
             Version++;
             if (_property != null) _property.Double = Pack();
+            if (_cutsProperty != null) _cutsProperty.Double = PackCuts();
         }
 
         public GarmentDamage DamageOf(int zoneIndex) => _zones[zoneIndex];
@@ -128,6 +179,7 @@ namespace BackroomsSurvival.Gameplay.Body
             if (Rank(hit) >= Rank(_zones[zoneIndex]) && _zones[zoneIndex] != hit)
             {
                 _zones[zoneIndex] = hit;
+                _cuts[zoneIndex] = CutFor(type);
                 changed = true;
             }
             if (zone.PocketSlots > 0 && !_pocketBroken[zoneIndex])

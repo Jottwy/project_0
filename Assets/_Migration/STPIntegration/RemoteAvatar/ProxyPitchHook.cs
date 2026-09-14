@@ -1,3 +1,4 @@
+using BackroomsSurvival.Gameplay;
 using BackroomsSurvival.Net;
 using UnityEngine;
 
@@ -20,6 +21,13 @@ namespace BackroomsSurvival.Migration.STPIntegration
     /// as ProxyCrouchHook, no change to RemotePlayerManager. Attach to the avatar root (same GameObject
     /// as the Animator). Removable: delete the file and the proxy simply looks forward; locomotion,
     /// jump, pickup and crouch are unaffected.
+    ///
+    /// PASADA 1a (2026-09-14): para un JUGADOR el cabeceo ya no se suma, se APUNTA. Sumado sobre el clip
+    /// de agachado (cabeza a 70° hacia el suelo, medido) el peer agachado miraba al suelo con cabeceo 0.
+    /// Ahora se mide la cabeza tras el Animator y se corrige la diferencia, repartida entre pecho,
+    /// cuello y cabeza (<see cref="ProxyHeadPitchSolver"/>). Los huesos salen del Animator humanoide que
+    /// pinta la malla visible; el rig ES Humanoid (lo de "GENERIC" de arriba está desfasado). Criaturas,
+    /// sentados, forma real y cadáveres siguen por la ruta sumada de abajo, sin cambios.
     /// </summary>
     public sealed class ProxyPitchHook : MonoBehaviour
     {
@@ -49,6 +57,14 @@ namespace BackroomsSurvival.Migration.STPIntegration
         private bool _hasRig;
         private float _current;
 
+        // Cabeceo ABSOLUTO (pasada 1a, 2026-09-14): huesos humanoides del esqueleto que pinta la malla
+        // visible y el eje de mirada de la cabeza calibrado en la pose por defecto del prefab.
+        private Transform _humanHead;
+        private Transform _humanNeck;
+        private Transform _humanChest;
+        private Vector3 _headLocalLook;
+        private bool _hasHuman;
+
         private void Awake()
         {
             _head = FindBone("Head");
@@ -56,6 +72,45 @@ namespace BackroomsSurvival.Migration.STPIntegration
             _upperSpine = FindBone("UpperSpine");
             _middleSpine = FindBone("MiddleSpine");
             _hasRig = _head != null; // no head bone → nothing to drive
+            ResolveHumanoid();
+        }
+
+        /// <summary>
+        /// El Animator que hay que medir es el del esqueleto al que está pegada la malla que se VE, no el
+        /// primero que aparezca: un proxy puede llevar dos humanoides vivos (ProxySeatedHook, ADR-131).
+        ///
+        /// La calibración va en Awake porque aquí el Animator todavía no ha posado nada: los huesos están
+        /// en la pose por defecto del prefab, de pie y mirando al frente del raíz. Medido con el arnés: de
+        /// pie con cabeceo 0 la cabeza sale a +6°, o sea que esa pose es una referencia sana.
+        /// </summary>
+        private void ResolveHumanoid()
+        {
+            Animator animator = null;
+            foreach (var smr in GetComponentsInChildren<SkinnedMeshRenderer>(true))
+            {
+                if (!smr.enabled || !smr.gameObject.activeInHierarchy)
+                    continue;
+                var bone = smr.rootBone != null ? smr.rootBone
+                    : (smr.bones != null && smr.bones.Length > 0 ? smr.bones[0] : null);
+                if (bone == null)
+                    continue;
+                var owner = bone.GetComponentInParent<Animator>();
+                if (owner == null || !owner.isHuman)
+                    continue;
+                animator = owner;
+                break;
+            }
+            if (animator == null)
+                return;
+
+            _humanHead = animator.GetBoneTransform(HumanBodyBones.Head);
+            if (_humanHead == null)
+                return;
+            _humanNeck = animator.GetBoneTransform(HumanBodyBones.Neck);
+            _humanChest = animator.GetBoneTransform(HumanBodyBones.UpperChest)
+                ?? animator.GetBoneTransform(HumanBodyBones.Chest);
+            _headLocalLook = ProxyHeadPitchSolver.LocalLookAxis(_humanHead.rotation, transform.forward);
+            _hasHuman = true;
         }
 
         // Re-arm for pool reuse: clear the applied pitch so a recycled proxy never starts pre-tilted.
@@ -63,14 +118,24 @@ namespace BackroomsSurvival.Migration.STPIntegration
 
         private void LateUpdate()
         {
-            if (!_hasRig)
+            if (!_hasRig && !_hasHuman)
                 return;
 
-            float target = ResolvePitch();
+            float target = ResolvePitch(out bool absolute);
             float t = 1f - Mathf.Exp(-Mathf.Max(0f, _lerpSpeed) * Time.deltaTime);
             _current = Mathf.Lerp(_current, target, t);
 
             float p = _invertPitch ? -_current : _current;
+
+            if (absolute && _hasHuman)
+            {
+                ProxyHeadPitchSolver.AimHead(transform, _humanChest, _humanNeck, _humanHead, _headLocalLook,
+                    ProxyHeadPitchSolver.HeadTarget(p));
+                return;
+            }
+
+            if (!_hasRig)
+                return;
             Vector3 axis = transform.right; // yaw-oriented right of the avatar root
 
             // Root→leaf so bends accumulate. Spine lean (only past the threshold) first, then the
@@ -82,12 +147,22 @@ namespace BackroomsSurvival.Migration.STPIntegration
             ApplyBend(_head, p * HeadShare, axis);
         }
 
-        /// <summary>This proxy's networked pitch (degrees), via the RemotePlayerManager view whose root is us.</summary>
-        private float ResolvePitch()
+        /// <summary>
+        /// This proxy's networked pitch (degrees), via the RemotePlayerManager view whose root is us.
+        ///
+        /// <paramref name="absolute"/> sólo para un JUGADOR de pie o agachado. Criaturas, el vigilante
+        /// sentado (su cabeza la apunta ProxySeatedHook), la forma real del robapieles y un cadáver se
+        /// quedan con el giro sumado de siempre: con cabeceo 0 no tocan nada, que es lo que hacían, y un
+        /// cabeceo absoluto les enderezaría la cabeza que su propio clip o hook decide.
+        /// </summary>
+        private float ResolvePitch(out bool absolute)
         {
+            absolute = false;
             if (!ProxyViewLookup.TryResolve(transform, ref _manager, out var view))
                 return 0f;
 
+            absolute = view.species == 0 && !view.revealed && !view.dead
+                && !RemoteButtons.Has(view.buttons, RemoteButtons.Seated);
             return view.pitch;
         }
 
