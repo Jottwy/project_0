@@ -807,6 +807,17 @@ pub fn fill_building_with(
         &out.segments,
         &blocks_for_platforms,
     ));
+    // ADR-151 — los estrados, después de las tarimas (sólo miran las salas que ellas dejan) y de todo
+    // lo que cuelga del techo, que se come su altura libre.
+    let daises = dais_platforms(
+        building,
+        manifest,
+        &placed,
+        &out.segments,
+        &out.solids,
+        &out.carves,
+    );
+    out.solids.extend(daises);
     // ADR-129 — el atrezo, el último: esquiva todo lo que está a ras de suelo, y lo que frena deja
     // su macizo invisible.
     // Los CUBÍCULOS (2026-09-06) van antes: reparten el despacho en puestos con mamparas, y el
@@ -7122,6 +7133,307 @@ fn floor_platforms(
                     shape: SHAPE_BOX,
                 });
                 cut = end;
+            }
+        }
+    }
+    out
+}
+
+/// ADR-151 — **el ESTRADO**: una tarima alta, de 40 a 120 cm, que a diferencia de la de 20 no se sube
+/// sin pensarlo y por eso trae su acceso. Un estrado sin acceso es suelo que el ráster ofrece y nadie
+/// alcanza: si el acceso no cabe, no hay estrado.
+const DAIS_CHANCE: f32 = 0.15;
+/// Alturas posibles, de menor a mayor. Múltiplos de la contrahuella: los peldaños salen exactos.
+const DAIS_HEIGHTS_CM: [i32; 5] = [40, 60, 80, 100, 120];
+const DAIS_MIN_AREA_M2: f32 = 60.0;
+const DAIS_MIN_DEPTH_CM: i32 = 200;
+const DAIS_MIN_SPAN_CM: i32 = 300;
+/// Largo máximo: media pared de una nave, no la pared entera.
+const DAIS_MAX_SPAN_CM: i32 = 1200;
+/// Margen del estrado pegado a las esquinas de su pared.
+const DAIS_CORNER_MARGIN_CM: i32 = 150;
+/// Altura libre que tiene que quedar encima (D1).
+const DAIS_HEADROOM_CM: i32 = 240;
+/// Nada del estrado ni de su acceso a menos de esto de una boca: a 40 cm, delante de una puerta la tapia.
+const DAIS_MOUTH_CLEAR_CM: i32 = 150;
+/// D2 — la parte exenta del sorteo. Hasta la rebanada C3 esa parte no emite.
+const DAIS_FREESTANDING_SHARE: f32 = 0.30;
+/// Peldaños del acceso. **60 de huella y no 50**: con la celda del ráster de 50, una celda puede tocar
+/// dos peldaños de 50 y su vecina saltar 40 cm, más que el escalón. Con 60, nunca más de uno.
+const DAIS_STEP_RISE_CM: i32 = 20;
+const DAIS_STEP_RUN_CM: i32 = 60;
+const DAIS_ACCESS_WIDTH_CM: i32 = 200;
+/// Suelo libre al pie del acceso.
+const DAIS_LANDING_CM: i32 = 100;
+const SALT_DAIS: u32 = 0xB1_11_A0_10;
+
+/// ¿Es este macizo un estrado? Por la forma: alto de la lista y lado corto de al menos 2 m.
+pub(super) fn is_dais(s: &Wg3Solid) -> bool {
+    s.shape == SHAPE_BOX
+        && !s.is_hidden()
+        && !s.is_decoration()
+        && DAIS_HEIGHTS_CM.contains(&(s.top_y_cm - s.bottom_y_cm))
+        && s.size_x_cm.min(s.size_z_cm) >= DAIS_MIN_DEPTH_CM
+}
+
+/// ¿Es un peldaño del acceso de un estrado? 60 × 200 exactos, de 20 a 100 de alto.
+pub(super) fn is_dais_step(s: &Wg3Solid) -> bool {
+    let h = s.top_y_cm - s.bottom_y_cm;
+    s.shape == SHAPE_BOX
+        && !s.is_hidden()
+        && !s.is_decoration()
+        && s.size_x_cm.min(s.size_z_cm) == DAIS_STEP_RUN_CM
+        && s.size_x_cm.max(s.size_z_cm) == DAIS_ACCESS_WIDTH_CM
+        && h % DAIS_STEP_RISE_CM == 0
+        && (DAIS_STEP_RISE_CM..DAIS_HEIGHTS_CM[DAIS_HEIGHTS_CM.len() - 1]).contains(&h)
+}
+
+/// ADR-151 C1 — estrados pegados a una pared, con peldaños centrados en su frente.
+///
+/// Lo que ya hay en `solids` y `carves` manda: la tarima (una sala con tarima no lleva estrado), todo
+/// macizo que pise la huella del estrado con su acceso por debajo de la altura libre que pide —incluido
+/// lo que cuelga del techo— y los agujeros y bocas de pozo ya emitidos. Rampa, pretil, exento y de pared a pared son las rebanadas C2 y C3.
+fn dais_platforms(
+    building: &RegionBuilding,
+    manifest: &Wg3Manifest,
+    placements: &[Wg3Placement],
+    segments: &[Wg3Segment],
+    solids: &[Wg3Solid],
+    carves: &[Wg3Carve],
+) -> Vec<Wg3Solid> {
+    use super::plan::PlanRect;
+
+    let mut out = Vec::new();
+    let seed = building.seed;
+    let taken: Vec<(f32, f32, f32, f32)> = placements
+        .iter()
+        .filter_map(|p| {
+            manifest
+                .pieces
+                .get(p.piece as usize)
+                .map(|piece| p.bounds(piece))
+        })
+        .collect();
+    let doors = segment_door_points(segments);
+    let solid_rect = |t: &Wg3Solid| PlanRect {
+        min_x_cm: t.x_cm,
+        min_z_cm: t.z_cm,
+        max_x_cm: t.x_cm + t.size_x_cm,
+        max_z_cm: t.z_cm + t.size_z_cm,
+    };
+    let carve_rect = |c: &Wg3Carve| PlanRect {
+        min_x_cm: c.x_cm,
+        min_z_cm: c.z_cm,
+        max_x_cm: c.x_cm + c.size_x_cm,
+        max_z_cm: c.z_cm + c.size_z_cm,
+    };
+    for (n, plan) in building.storeys.iter().enumerate() {
+        let mut keep_out: Vec<PlanRect> = building
+            .wells
+            .iter()
+            .filter(|w| w.storey_below + 1 == n || w.storey_below == n)
+            .map(|w| w.rect.shrunk(-50))
+            .collect();
+        if n == building.ground {
+            keep_out.extend(pit_rects_of(building, segments));
+        }
+        for (_, s) in plan.built() {
+            if s.is_composite()
+                || s.rise_cm != 0
+                || s.role.is_circulation()
+                || s.role == SpaceRole::Stair
+                || is_atrium(s)
+                || s.area_m2() < DAIS_MIN_AREA_M2
+            {
+                continue;
+            }
+            let r = s.rect;
+            let (cx, cz) = r.centre_m();
+            if taken
+                .iter()
+                .any(|&(x0, z0, x1, z1)| cx > x0 && cx < x1 && cz > z0 && cz < z1)
+            {
+                continue;
+            }
+            if solids.iter().any(|t| {
+                is_platform(t)
+                    && t.bottom_y_cm == s.floor_y_cm
+                    && r.contains_point(t.x_cm + t.size_x_cm / 2, t.z_cm + t.size_z_cm / 2)
+            }) {
+                continue;
+            }
+            let mut st = super::hash::stream_at(seed, cx, cz, SALT_DAIS);
+            if st.next01() >= DAIS_CHANCE * (1.0 - decay_of(s)) {
+                continue;
+            }
+            if st.next01() < DAIS_FREESTANDING_SHARE {
+                continue;
+            }
+            let side = (st.next01() * 4.0) as i32 % 4;
+            let clear = clear_height_cm(s);
+            let fits = DAIS_HEIGHTS_CM
+                .iter()
+                .filter(|&&h| h + DAIS_HEADROOM_CM <= clear)
+                .count();
+            if fits == 0 {
+                continue;
+            }
+            let h = DAIS_HEIGHTS_CM[(st.next01() * fits as f32) as usize % fits];
+
+            let inner = r.shrunk(WALL_T_CM);
+            let along_x = side % 2 == 0;
+            let (perp, run) = if along_x {
+                (inner.depth_cm(), inner.width_cm())
+            } else {
+                (inner.width_cm(), inner.depth_cm())
+            };
+            let steps = h / DAIS_STEP_RISE_CM - 1;
+            let depth = ((perp / 3) / 10 * 10).max(DAIS_MIN_DEPTH_CM);
+            let reach_depth = depth + steps * DAIS_STEP_RUN_CM + DAIS_LANDING_CM;
+            let m = DAIS_CORNER_MARGIN_CM;
+            let span = run - 2 * m;
+            if reach_depth > perp || span < DAIS_MIN_SPAN_CM {
+                continue;
+            }
+            // **Media pared, no la pared entera**: una pared entera casi siempre tiene una boca o un
+            // pilar en algún punto. Tres sitios a lo largo —centro y los dos extremos—, empezando por
+            // uno sorteado; se queda el primero que esté libre.
+            let len = ((run / 2) / 10 * 10)
+                .clamp(DAIS_MIN_SPAN_CM, DAIS_MAX_SPAN_CM)
+                .min(span);
+            let slots = [(run - len) / 2, m, run - m - len];
+            let first = (st.next01() * 3.0) as usize % 3;
+            // La franja pegada al lado sorteado, de fondo `d`, desde `a` a lo largo de la pared.
+            let strip = |d: i32, a: i32| match side {
+                0 => PlanRect {
+                    min_x_cm: inner.min_x_cm + a,
+                    min_z_cm: inner.max_z_cm - d,
+                    max_x_cm: inner.min_x_cm + a + len,
+                    max_z_cm: inner.max_z_cm,
+                },
+                1 => PlanRect {
+                    min_x_cm: inner.max_x_cm - d,
+                    min_z_cm: inner.min_z_cm + a,
+                    max_x_cm: inner.max_x_cm,
+                    max_z_cm: inner.min_z_cm + a + len,
+                },
+                2 => PlanRect {
+                    min_x_cm: inner.min_x_cm + a,
+                    min_z_cm: inner.min_z_cm,
+                    max_x_cm: inner.min_x_cm + a + len,
+                    max_z_cm: inner.min_z_cm + d,
+                },
+                _ => PlanRect {
+                    min_x_cm: inner.min_x_cm,
+                    min_z_cm: inner.min_z_cm + a,
+                    max_x_cm: inner.min_x_cm + d,
+                    max_z_cm: inner.min_z_cm + a + len,
+                },
+            };
+            let ceiling = s.floor_y_cm + h + DAIS_HEADROOM_CM;
+            let mut chosen = None;
+            for i in 0..slots.len() {
+                let a = slots[(first + i) % slots.len()];
+                // El estrado con su acceso y el rellano al pie: lo que tiene que estar libre entero.
+                let reach = strip(reach_depth, a);
+                if keep_out.iter().any(|k| k.overlaps(&reach)) {
+                    continue;
+                }
+                // Los vanos YA emitidos que atraviesan este suelo o el de arriba: un agujero, la boca
+                // de un pozo. Un macizo es inmune a los vanos y taparía el suyo.
+                // Sólo lo que atraviesa una LOSA: las puertas y ventanas de la pared ya las mira
+                // la comprobación de bocas.
+                if carves.iter().any(|c| {
+                    (c.bottom_y_cm < s.floor_y_cm
+                        || c.top_y_cm > s.floor_y_cm + STOREY_HEIGHT_CM - DAIS_HEADROOM_CM / 2)
+                        && c.bottom_y_cm < s.floor_y_cm + STOREY_HEIGHT_CM + 50
+                        && c.top_y_cm > s.floor_y_cm - 50
+                        && carve_rect(c).overlaps(&reach)
+                }) {
+                    continue;
+                }
+                let near_mouth = reach.shrunk(-DAIS_MOUTH_CLEAR_CM);
+                if doors
+                    .iter()
+                    .any(|&(x, z, y)| y == s.floor_y_cm && near_mouth.contains_point(x, z))
+                {
+                    continue;
+                }
+                if solids.iter().any(|t| {
+                    !t.is_decoration()
+                        && t.bottom_y_cm < ceiling
+                        && t.top_y_cm > s.floor_y_cm
+                        && solid_rect(t).overlaps(&reach)
+                }) {
+                    continue;
+                }
+                chosen = Some(strip(depth, a));
+                break;
+            }
+            let Some(foot) = chosen else {
+                continue;
+            };
+
+            let style = style_of(s.role);
+            let (from, to) = if along_x {
+                (foot.min_x_cm, foot.max_x_cm)
+            } else {
+                (foot.min_z_cm, foot.max_z_cm)
+            };
+            let total = to - from;
+            let pieces = (total + MAX_SOLID_CM - 1) / MAX_SOLID_CM;
+            let mut cut = from;
+            for k in 1..=pieces {
+                let end = from + (total * k) / pieces;
+                let (x, z, sx, sz) = if along_x {
+                    (cut, foot.min_z_cm, end - cut, foot.depth_cm())
+                } else {
+                    (foot.min_x_cm, cut, foot.width_cm(), end - cut)
+                };
+                out.push(Wg3Solid {
+                    x_cm: x,
+                    z_cm: z,
+                    size_x_cm: sx,
+                    size_z_cm: sz,
+                    bottom_y_cm: s.floor_y_cm,
+                    top_y_cm: s.floor_y_cm + h,
+                    style,
+                    yaw_deg: 0,
+                    shape: SHAPE_BOX,
+                });
+                cut = end;
+            }
+            // Los peldaños, centrados en el frente, del estrado hacia la sala: cada uno 20 más bajo.
+            let a0 = (from + to) / 2 - DAIS_ACCESS_WIDTH_CM / 2;
+            let (front, outward) = match side {
+                0 => (foot.min_z_cm, -1),
+                1 => (foot.min_x_cm, -1),
+                2 => (foot.max_z_cm, 1),
+                _ => (foot.max_x_cm, 1),
+            };
+            for i in 0..steps {
+                let near = front + outward * i * DAIS_STEP_RUN_CM;
+                let lo = if outward < 0 {
+                    near - DAIS_STEP_RUN_CM
+                } else {
+                    near
+                };
+                let (x, z, sx, sz) = if along_x {
+                    (a0, lo, DAIS_ACCESS_WIDTH_CM, DAIS_STEP_RUN_CM)
+                } else {
+                    (lo, a0, DAIS_STEP_RUN_CM, DAIS_ACCESS_WIDTH_CM)
+                };
+                out.push(Wg3Solid {
+                    x_cm: x,
+                    z_cm: z,
+                    size_x_cm: sx,
+                    size_z_cm: sz,
+                    bottom_y_cm: s.floor_y_cm,
+                    top_y_cm: s.floor_y_cm + h - DAIS_STEP_RISE_CM * (i + 1),
+                    style,
+                    yaw_deg: 0,
+                    shape: SHAPE_BOX,
+                });
             }
         }
     }

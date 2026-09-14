@@ -8969,6 +8969,10 @@ fn probe_dump_regions_json() {
                     ("viga", false)
                 } else if fill::is_platform(s) {
                     ("tarima", true)
+                } else if fill::is_dais(s) {
+                    ("estrado", true)
+                } else if fill::is_dais_step(s) {
+                    ("peldaño de estrado", true)
                 } else if fill::is_grille_bar(s) {
                     ("rejilla", true)
                 } else if fill::is_hung_band(s) {
