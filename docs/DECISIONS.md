@@ -18803,3 +18803,24 @@ alternaba entre opciones de coste parecido (10–39° de giro por fotograma).
   Suite `world::wg3`: 206 verdes.
 
 ---
+
+## ADR-152 — Enmienda 1: P1 hecha, profundidades de 20 en 20 y peldaño propio, vista en Play (2026-09-14) — ACEPTADA
+
+- **P1** en tronco (`be7418d9`). `fill::pools_of` / `pool_geometry`; `pit_rects_of` devuelve también el vaso con su
+  pared y **1 m** de margen, así que todo emisor que esquiva un pozo esquiva la piscina.
+- **Desviaciones de D1/D3, medidas:**
+  - Profundidades **{120, 160, 180}**, no {120, 150, 180}: con peldaños de 20, 150 deja el último a 30 del borde, por
+    encima del escalón de 27.
+  - Peldaño de **60 × 180** (no el 60 × 200 del estrado): forma propia, o `every_dais_is_reachable_both_ways` y el
+    cliente (`Wg3Looks.IsWalkableTop`) lo tomarían por peldaño de estrado.
+  - Vaso a seis décimas del sitio libre por eje, a 50 cm de mundo, con 150 de margen a las paredes del tramo y 150 a
+    toda boca.
+- **Medida**: 57 piscinas en 12 semillas × 9 regiones, todas legales y recorribles en los dos sentidos
+  (`every_pool_is_legal`, `every_pool_is_reachable_both_ways`). Barrido de 27 regiones: 27/27, 182819 cotas (antes
+  182847), mancha mayor 99,7 %, 6,0 islas, nav 100 %. Suite `world::wg3`: 208 verdes.
+- **Play** (semilla servida, arnés de captura): bajada y subida de una de 120 y bajada de una de 180, sin atascos;
+  salto máximo por paso 7 cm. En la de 180, 16 fotogramas en el aire bajando: a revisar si el paseo cae por el borde
+  en vez de por la escalera.
+- **P2** (azulejo) sigue: el estilo 9 se pinta aún con el tinte por defecto.
+
+---
