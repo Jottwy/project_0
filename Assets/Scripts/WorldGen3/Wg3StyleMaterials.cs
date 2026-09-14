@@ -218,9 +218,10 @@ namespace BackroomsSurvival.WorldGen3
         /// <summary>ADR-152 — espejo de <c>fill::POOL_STYLE</c>.</summary>
         public const byte PoolStyle = 9;
 
-        /// <summary>ADR-152 P2 — el azulejo blanco que ya vive en <c>Resources/Materials</c> (URP Lit).
-        /// Cubre suelo, paredes y peldaños del vaso: todo lo que emite la piscina es de su estilo, así
-        /// que no hay que distinguir ranuras.</summary>
+        /// <summary>ADR-152 P2 — el azulejo: <c>Tiles 1</c> del pack de oficina copiado a
+        /// <c>Resources/Wg3Materials/Wg3_PoolTile</c> (URP Lit). <c>Materials/TileWall</c> no servía: pese al
+        /// nombre es un papel de chevrones, y la piscina salía empapelada. Cubre suelo, paredes y peldaños
+        /// del vaso: todo lo que emite la piscina es de su estilo, así que no hay que distinguir ranuras.</summary>
         private static void ApplyPoolTile(Material[] mats)
         {
             if (!Overrides.TryGetValue(PoolTilePath, out Material tile) || tile == null)
@@ -240,7 +241,7 @@ namespace BackroomsSurvival.WorldGen3
                 mats[Wg3MeshBuilder.SubMesh.Decoration] = tile;
         }
 
-        private const string PoolTilePath = "Materials/TileWall";
+        private const string PoolTilePath = "Wg3Materials/Wg3_PoolTile";
 
         private static Material[] Build(Wg3Materials baseSet, byte style, Wg3Look look)
         {
