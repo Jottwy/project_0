@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using BackroomsSurvival.Gameplay;
 using BackroomsSurvival.Net;
 using PolymindGames;
 using PolymindGames.InventorySystem;
@@ -35,6 +36,22 @@ namespace BackroomsSurvival.Migration.STPIntegration
         [Tooltip("Per-category grip poses. Calibrate the asset live during Play.")]
         [SerializeField] private GripPoseSet _gripPoses;
 
+        [Header("Agarre medido (objetos con manivela: la linterna)")]
+        [Tooltip("Aire entre el borde del meñique y la manivela, a lo largo del eje del objeto (m).")]
+        [SerializeField, Min(0f)] private float _crankClearance = 0.01f;
+
+        [Tooltip("Muñeca por debajo del hombro, en fracción del largo del brazo.")]
+        [SerializeField] private float _holdDown = 0.72f;
+
+        [Tooltip("Muñeca por delante del hombro, en fracción del largo del brazo: el brazo algo levantado.")]
+        [SerializeField] private float _holdForward = 0.50f;
+
+        [Tooltip("Muñeca hacia fuera del hombro (m). Con 0 la mano quedaba delante de la entrepierna (captura 14-09).")]
+        [SerializeField] private float _holdOutward = 0.08f;
+
+        [Tooltip("Tope del cabeceo que sigue la linterna, en grados.")]
+        [SerializeField, Range(0f, 90f)] private float _beamPitchClamp = 60f;
+
         // Right-hand finger bones of the MaleSurvivor skeleton, grouped by the two curl scalars.
         private static readonly string[] ThumbBoneNames =
         {
@@ -65,6 +82,20 @@ namespace BackroomsSurvival.Migration.STPIntegration
         private Quaternion[] _thumbBind;
         private Quaternion[] _fingerBind;
 
+        // Agarre medido (paso 1 de la linterna, 2026-09-14).
+        private Transform _upperArm, _lowerArm;
+        private Transform _indexKnuckle, _middleKnuckle, _pinkyKnuckle, _thumbBase;
+        private Transform[][] _curlChains;   // índice, corazón, anular, meñique
+        private Transform[] _thumbChain;
+        private bool _measured;
+        private float _radius, _bodyCentreY, _halfLength, _crankY;
+        private Vector2 _axisOffsetXZ;
+        private float _pitch;
+        private bool _curlSolved;
+        private readonly float[] _curlDegrees = new float[4];
+        private float _thumbDegrees;
+        private bool _thumbAlongFinger;
+
         private void Awake()
         {
             var bones = BuildBoneMap();
@@ -72,7 +103,32 @@ namespace BackroomsSurvival.Migration.STPIntegration
             _carryHook = GetComponent<ProxyCarryHook>();
             CacheFingerChain(bones, ThumbBoneNames, out _thumbBones, out _thumbBind);
             CacheFingerChain(bones, FingerBoneNames, out _fingerBones, out _fingerBind);
+
+            bones.TryGetValue("UpperArm.R", out _upperArm);
+            bones.TryGetValue("LowerArm.R", out _lowerArm);
+            bones.TryGetValue("IndexFinger.1.R", out _indexKnuckle);
+            bones.TryGetValue("MiddleFinger.1.R", out _middleKnuckle);
+            bones.TryGetValue("PinkyFinger.1.R", out _pinkyKnuckle);
+            bones.TryGetValue("ThumbFinger.1.R", out _thumbBase);
+            _curlChains = new[]
+            {
+                Chain(bones, "IndexFinger"), Chain(bones, "MiddleFinger"),
+                Chain(bones, "RingFinger"), Chain(bones, "PinkyFinger"),
+            };
+            _thumbChain = Chain(bones, "ThumbFinger");
         }
+
+        private static Transform[] Chain(Dictionary<string, Transform> bones, string finger)
+        {
+            var chain = new Transform[3];
+            for (int i = 0; i < 3; i++)
+                bones.TryGetValue($"{finger}.{i + 1}.R", out chain[i]);
+            return chain;
+        }
+
+        private bool HasHandRig =>
+            _hand != null && _upperArm != null && _lowerArm != null && _indexKnuckle != null
+            && _middleKnuckle != null && _pinkyKnuckle != null && _thumbBase != null;
 
         // Re-arm for pool reuse: drop any held model and force a re-apply against the fresh peer.
         private void OnEnable()
@@ -125,6 +181,12 @@ namespace BackroomsSurvival.Migration.STPIntegration
             if (_instance == null)
                 return;
 
+            if (_measured && HasHandRig)
+            {
+                ApplyMeasuredHold();
+                return;
+            }
+
             var grip = _gripPoses != null ? _gripPoses.Resolve(_category) : null;
 
             var t = _instance.transform;
@@ -148,12 +210,117 @@ namespace BackroomsSurvival.Migration.STPIntegration
             var go = Instantiate(pickup.gameObject, _hand, false);
             ProxyRigUtil.NeutralizeToVisualOnly(go);
             ProxyRigUtil.SetLayerRecursive(go, _hand.gameObject.layer);
+            MeasureHeldModel(go);
             // ADR-133: AFTER neutralizing (which destroys every MonoBehaviour on the model), and on
             // the model rather than on this avatar so it needs no re-bake of the prefab. Does
             // nothing for a model without a "Crank" child. See ProxyCrankHook for why it lives here.
             ProxyCrankHook.AttachIfCranked(go, transform);
             return go; // placement is applied in LateUpdate (live-calibratable)
         }
+
+        /// <summary>
+        /// ¿Se puede medir el agarre de este modelo? Hoy, sólo un cuerpo alargado en su +Y local con un hijo
+        /// "Crank" (la linterna): es el único objeto cuyo eje, lente y pieza lateral están fijados por su
+        /// propio creador (lente en +Y, manivela a −0,0206 m del centro). El resto sigue con GripPoseSet.
+        /// Item-agnóstico como ProxyCrankHook: pregunta por la forma, no por el nombre.
+        /// </summary>
+        private void MeasureHeldModel(GameObject model)
+        {
+            _measured = false;
+            _curlSolved = false;
+            if (model == null)
+                return;
+
+            var filter = model.GetComponent<MeshFilter>();
+            Transform crank = null;
+            foreach (var t in model.GetComponentsInChildren<Transform>(true))
+            {
+                if (t.name != ProxyCrankHook.CrankNodeName) continue;
+                crank = t;
+                break;
+            }
+            if (filter == null || filter.sharedMesh == null || crank == null)
+                return;
+
+            Bounds b = filter.sharedMesh.bounds;
+            Vector3 e = b.extents;
+            if (e.y < e.x || e.y < e.z)
+                return; // no es alargado en +Y: no sabemos dónde está su lente
+
+            _radius = (e.x + e.z) * 0.5f;
+            _bodyCentreY = b.center.y;
+            _halfLength = e.y;
+            _axisOffsetXZ = new Vector2(b.center.x, b.center.z);
+            _crankY = model.transform.InverseTransformPoint(crank.position).y;
+            _measured = true;
+        }
+
+        /// <summary>
+        /// Brazo algo levantado hacia delante (IK de dos huesos), nudillos hacia donde mira el vecino con la
+        /// palma hacia el cuerpo, objeto a (radio + piel) de los nudillos por delante de la manivela y dedos
+        /// cerrados hasta tocar. El cierre se resuelve UNA vez por objeto y luego sólo se aplica.
+        /// </summary>
+        private void ApplyMeasuredHold()
+        {
+            Transform root = transform;
+
+            float armLength = Vector3.Distance(_upperArm.position, _lowerArm.position)
+                + Vector3.Distance(_lowerArm.position, _hand.position);
+            Vector3 shoulder = _upperArm.position;
+            Vector3 target = shoulder - root.up * (_holdDown * armLength) + root.forward * (_holdForward * armLength)
+                + root.right * _holdOutward;
+            Vector3 pole = shoulder - root.up * (0.4f * armLength) - root.forward * (0.5f * armLength)
+                + root.right * (0.25f * armLength);
+            ProxyGripSolver.TwoBoneIk(_upperArm, _lowerArm, _hand, target, pole);
+
+            var frame = Frame();
+            float pitch = Mathf.Clamp(_pitch, -_beamPitchClamp, _beamPitchClamp);
+            Vector3 beam = Quaternion.AngleAxis(pitch, root.right) * root.forward;
+            Vector3 palmTarget = Vector3.ProjectOnPlane(-root.right, beam).normalized;
+            Quaternion current = Quaternion.LookRotation(frame.KnuckleAxis, frame.PalmNormal);
+            Quaternion wanted = Quaternion.LookRotation(beam, palmTarget);
+            _hand.rotation = wanted * Quaternion.Inverse(current) * _hand.rotation;
+
+            frame = Frame();
+            float grip = ProxyGripSolver.GripAlongAxis(_bodyCentreY, _halfLength, frame.Width, true, _crankY, _crankClearance);
+            ProxyGripSolver.PlaceCylinder(frame, _radius, grip, out Vector3 position, out Quaternion rotation);
+            position -= rotation * new Vector3(_axisOffsetXZ.x, 0f, _axisOffsetXZ.y);
+            var t = _instance.transform;
+            t.localScale = Vector3.one;
+            t.SetPositionAndRotation(position, rotation);
+
+            Vector3 axisPoint = position + rotation * new Vector3(_axisOffsetXZ.x, 0f, _axisOffsetXZ.y);
+            Vector3 axisDir = rotation * Vector3.up;
+
+            if (!_curlSolved)
+            {
+                for (int i = 0; i < _curlChains.Length; i++)
+                    _curlDegrees[i] = ProxyGripSolver.CurlToTouch(_curlChains[i], frame.KnuckleAxis, axisPoint, axisDir, _radius);
+
+                // El pulgar no flexiona sobre la línea de nudillos: se prueba también sobre el eje de los dedos y
+                // se queda el que llega a tocar con menos giro.
+                float alongKnuckles = ProxyGripSolver.CurlToTouch(_thumbChain, frame.KnuckleAxis, axisPoint, axisDir, _radius);
+                ProxyGripSolver.Curl(_thumbChain, frame.KnuckleAxis, -alongKnuckles);
+                float alongFinger = ProxyGripSolver.CurlToTouch(_thumbChain, frame.FingerAxis, axisPoint, axisDir, _radius);
+                _thumbAlongFinger = Mathf.Abs(alongFinger) > 0f
+                    && (Mathf.Approximately(alongKnuckles, 0f) || Mathf.Abs(alongFinger) <= Mathf.Abs(alongKnuckles));
+                if (!_thumbAlongFinger)
+                {
+                    ProxyGripSolver.Curl(_thumbChain, frame.FingerAxis, -alongFinger);
+                    ProxyGripSolver.Curl(_thumbChain, frame.KnuckleAxis, alongKnuckles);
+                }
+                _thumbDegrees = _thumbAlongFinger ? alongFinger : alongKnuckles;
+                _curlSolved = true;
+                return;
+            }
+
+            for (int i = 0; i < _curlChains.Length; i++)
+                ProxyGripSolver.Curl(_curlChains[i], frame.KnuckleAxis, _curlDegrees[i]);
+            ProxyGripSolver.Curl(_thumbChain, _thumbAlongFinger ? frame.FingerAxis : frame.KnuckleAxis, _thumbDegrees);
+        }
+
+        private ProxyGripSolver.HandFrame Frame() => ProxyGripSolver.Frame(
+            _hand.position, _indexKnuckle.position, _middleKnuckle.position, _pinkyKnuckle.position, _thumbBase.position);
 
         private static void ApplyCurl(Transform[] bones, Quaternion[] bind, float curlDeg, Vector3 axis)
         {
@@ -210,6 +377,7 @@ namespace BackroomsSurvival.Migration.STPIntegration
                 return false;
 
             heldItem = view.heldItem;
+            _pitch = view.pitch;
             return true;
         }
     }
