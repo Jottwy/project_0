@@ -97,6 +97,7 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
                 WirePitchHook(instance);
                 WireGroundingHook(instance);
                 WireClothingHook(instance);
+                WireBackroomsGarments(instance); // ADR-149 R4a: nuestras prendas en el guardarropa del proxy
                 WireHeldItemHook(instance);
                 WireCarryHook(instance); // ADR-049 — after the held-item hook, whose hand it defers to
                 WireHitReactionHook(instance);
@@ -438,6 +439,22 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
                 Debug.LogWarning("[RemoteAvatarPrefabBuilder] CharacterClothing._attachToCharacter not found; " +
                     "the proxy may attempt an inventory bind (potential NRE).");
             }
+        }
+
+        // ADR-149 R4a (sin wire): el pantalón y el calzado de trabajo ya viajan en `equipment` (Legs/Feet), pero el guardarropa
+        // del proxy no los conocía y SetClothing dejaba ese hueco vacío. Los añade el builder de prendas (malla de donante del
+        // vendor, material teñido). La chaqueta y la rotura remotas piden wire (borrador de ADR-149 enm. 7). Idempotente, y
+        // escrito por el builder porque un override a mano no sobrevive al siguiente re-horneado.
+        private static void WireBackroomsGarments(GameObject root)
+        {
+            var clothing = root.GetComponentInChildren<CharacterClothing>(true);
+            if (clothing == null)
+            {
+                Debug.LogWarning("[RemoteAvatarPrefabBuilder] No CharacterClothing: Backrooms garments not wired.");
+                return;
+            }
+            int wired = BackroomsSurvival.EditorTools.BackroomsGarmentVisualsBuilder.WireRemoteAvatar(clothing);
+            Debug.Log($"[RemoteAvatarPrefabBuilder] Backrooms garments in the proxy wardrobe: {wired}");
         }
 
         /// <summary>

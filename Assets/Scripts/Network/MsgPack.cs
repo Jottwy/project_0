@@ -123,6 +123,22 @@ namespace BackroomsSurvival.Net
             WriteU32(bits.U);
         }
 
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Explicit)]
+        private struct DoubleBits
+        {
+            [System.Runtime.InteropServices.FieldOffset(0)] public double D;
+            [System.Runtime.InteropServices.FieldOffset(0)] public ulong U;
+        }
+
+        /// <summary>float64. Para lo que no cabe en float32: las propiedades de item empaquetadas en bits (ADR-072; la rotura
+        /// de una prenda usa 32 bits y un float32 solo es exacto hasta 2^24).</summary>
+        public void WriteDouble(double d)
+        {
+            Add(0xcb); // float64
+            var bits = new DoubleBits { D = d };
+            WriteU64(bits.U);
+        }
+
         public void WriteBool(bool v) => Add(v ? (byte)0xc3 : (byte)0xc2);
 
         /// <summary>Opaque byte payload as the MessagePack bin family (0xc4/0xc5/0xc6), which is

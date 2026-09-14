@@ -279,6 +279,30 @@ namespace BackroomsSurvival.Net
             }
         }
 
+        /// <summary>Reads a float-family or int-family value as double, without the float32 truncation of
+        /// <see cref="ReadFloat"/>. For item property values (ADR-072), which can pack 32 bits.</summary>
+        public double ReadDouble()
+        {
+            byte c = NextByte();
+            if (c <= 0x7f) return c;
+            if (c >= 0xe0) return (sbyte)c;
+            switch (c)
+            {
+                case 0xc0: return 0d;
+                case 0xcc: return ReadU8();
+                case 0xcd: return ReadU16();
+                case 0xce: return ReadU32();
+                case 0xcf: return ReadU64();
+                case 0xd0: return (sbyte)ReadU8();
+                case 0xd1: return (short)ReadU16();
+                case 0xd2: return (int)ReadU32();
+                case 0xd3: return (long)ReadU64();
+                case 0xca: return ReadF32();
+                case 0xcb: return ReadF64();
+                default: throw new Exception($"Expected float-like value, got 0x{c:x2}");
+            }
+        }
+
         /// <summary>Reads a bool value. Anything else (including nil) reads as false, matching
         /// IPCParse.B's `Get(d, key) is bool b &amp;&amp; b` fallback.</summary>
         public bool ReadBool()

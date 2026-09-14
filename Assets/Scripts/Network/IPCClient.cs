@@ -782,7 +782,8 @@ namespace BackroomsSurvival.Net
             {
                 w.WriteMapHeader(2);
                 w.WriteString("id"); w.WriteInt(props[p].id);
-                w.WriteString("value"); w.WriteFloat((float)props[p].value);
+                // float64: la rotura de una prenda empaqueta 32 bits y float32 solo es exacto hasta 2^24 (el backend guarda f64).
+                w.WriteString("value"); w.WriteDouble(props[p].value);
             }
         }
 

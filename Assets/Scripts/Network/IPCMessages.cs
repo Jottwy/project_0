@@ -460,7 +460,7 @@ namespace BackroomsSurvival.Net
                 {
                     var pk = r.ReadKey();
                     if (MsgPackReader.Is(pk, "id")) prop.id = (int)r.ReadInt();
-                    else if (MsgPackReader.Is(pk, "value")) prop.value = r.ReadFloat();
+                    else if (MsgPackReader.Is(pk, "value")) prop.value = r.ReadDouble(); // 32 bits empaquetados: nunca float32
                     else r.Skip();
                 }
                 list.Add(prop);
@@ -601,6 +601,14 @@ namespace BackroomsSurvival.Net
             if (v is double dd) return (float)dd;
             if (v is long ll) return ll;
             return 0f;
+        }
+
+        /// <summary>Como <see cref="ToFloat"/> pero sin truncar a float32 (propiedades de item, ADR-072).</summary>
+        public static double ToDouble(object v)
+        {
+            if (v is double dd) return dd;
+            if (v is long ll) return ll;
+            return 0d;
         }
 
         public static long ToLong(object v)

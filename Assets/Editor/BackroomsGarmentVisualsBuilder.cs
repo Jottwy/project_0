@@ -72,12 +72,44 @@ namespace BackroomsSurvival.EditorTools
                 return 0;
             }
 
+            var outers = new List<(SkinnedMeshRenderer Renderer, int Id, Texture2D Mask)>();
+            int wired = WireLooks(clothing, outers);
+
+            var outer = clothing.GetComponent<BackroomsOuterClothing>();
+            if (outer == null) outer = clothing.gameObject.AddComponent<BackroomsOuterClothing>();
+            var os = new SerializedObject(outer);
+            os.FindProperty("_outerContainer").stringValue = BackroomsBackpackPrototypeCreator.OuterContainer;
+            var outerRenderers = os.FindProperty("_outerRenderers");
+            outerRenderers.arraySize = outers.Count;
+            for (int i = 0; i < outers.Count; i++) outerRenderers.GetArrayElementAtIndex(i).objectReferenceValue = outers[i].Renderer;
+            SetInts(os.FindProperty("_outerIds"), outers.ConvertAll(o => o.Id));
+            os.ApplyModifiedPropertiesWithoutUndo();
+
+            WireDamage(clothing, new SerializedObject(clothing).FindProperty("_clothing"), outers);
+            // R4c: las mangas de primera persona usan los materiales de arriba.
+            BackroomsSleeveBuilder.Build();
+            return wired;
+        }
+
+        /// <summary>
+        /// Avatar remoto (ADR-149 R4a, sin wire): pantalón y calzado de trabajo, que ya viajan en <c>equipment</c>, entran en el
+        /// guardarropa del proxy. Sin la prenda de encima ni la rotura (piden wire: borrador de ADR-149 enm. 7) y sin componentes
+        /// de UI, que en el proxy no tienen inventario.
+        /// </summary>
+        public static int WireRemoteAvatar(CharacterClothing clothing) => clothing != null ? WireLooks(clothing, null) : 0;
+
+        /// <summary>
+        /// Nuestras prendas en la lista de ropa de un <see cref="CharacterClothing"/>, con malla de donante y material teñido.
+        /// Con <paramref name="outers"/> la de encima se prepara aparte (va sobre el torso); sin él, se omite.
+        /// </summary>
+        private static int WireLooks(CharacterClothing clothing, List<(SkinnedMeshRenderer Renderer, int Id, Texture2D Mask)> outers)
+        {
             var so = new SerializedObject(clothing);
             var lists = so.FindProperty("_clothing");
-            var outers = new List<(SkinnedMeshRenderer Renderer, int Id, Texture2D Mask)>();
             int wired = 0;
             foreach (var look in Looks)
             {
+                if (look.Outer && outers == null) continue;
                 var definition = LoadGarment(look.Garment);
                 if (definition == null) continue;
                 var items = lists.GetArrayElementAtIndex((int)look.Point).FindPropertyRelative("Items");
@@ -110,20 +142,6 @@ namespace BackroomsSurvival.EditorTools
             }
             so.ApplyModifiedPropertiesWithoutUndo();
             PrefabUtility.RecordPrefabInstancePropertyModifications(clothing);
-
-            var outer = clothing.GetComponent<BackroomsOuterClothing>();
-            if (outer == null) outer = clothing.gameObject.AddComponent<BackroomsOuterClothing>();
-            var os = new SerializedObject(outer);
-            os.FindProperty("_outerContainer").stringValue = BackroomsBackpackPrototypeCreator.OuterContainer;
-            var outerRenderers = os.FindProperty("_outerRenderers");
-            outerRenderers.arraySize = outers.Count;
-            for (int i = 0; i < outers.Count; i++) outerRenderers.GetArrayElementAtIndex(i).objectReferenceValue = outers[i].Renderer;
-            SetInts(os.FindProperty("_outerIds"), outers.ConvertAll(o => o.Id));
-            os.ApplyModifiedPropertiesWithoutUndo();
-
-            WireDamage(clothing, new SerializedObject(clothing).FindProperty("_clothing"), outers);
-            // R4c: las mangas de primera persona usan los materiales de arriba.
-            BackroomsSleeveBuilder.Build();
             return wired;
         }
 
@@ -501,10 +519,10 @@ namespace BackroomsSurvival.EditorTools
                 material = new Material(donor) { name = look.RendererName };
                 AssetDatabase.CreateAsset(material, look.MaterialPath);
             }
-            else if (material.shader != donor.shader)
-            {
-                material.shader = donor.shader;
-            }
+            // Siempre el shader de rotura, venga de donde venga el donante: el material es compartido por el muñeco y el avatar
+            // remoto, y el donante del proxy es un material del vendor (URP/Lit). Sin datos de zona la prenda sale sana.
+            var garmentShader = Shader.Find(ShaderName);
+            material.shader = garmentShader != null ? garmentShader : donor.shader;
             material.CopyPropertiesFromMaterial(donor);
             if (material.HasProperty("_BaseColor")) material.SetColor("_BaseColor", look.Tint);
             // La de encima se hincha; la copia del donante lo habría dejado a 0.

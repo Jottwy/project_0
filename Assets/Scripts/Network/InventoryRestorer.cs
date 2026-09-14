@@ -204,7 +204,7 @@ namespace BackroomsSurvival.Net
                         props.Add(new ItemPropertyValue
                         {
                             id = (int)IPCParse.ToLong(IPCParse.Get(pm, "id")),
-                            value = IPCParse.ToFloat(IPCParse.Get(pm, "value")),
+                            value = IPCParse.ToDouble(IPCParse.Get(pm, "value")),
                         });
                     }
                 }
