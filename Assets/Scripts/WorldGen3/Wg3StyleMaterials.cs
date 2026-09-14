@@ -98,9 +98,10 @@ namespace BackroomsSurvival.WorldGen3
                 // le dan a los primeros metros y de ahí para abajo se pierde en el negro de la
                 // cámara: es lo que hace que cuarenta metros se lean como cuarenta metros.
                 case 8: return Make(0.30f, 0.30f, 0.30f, 0.30f, 0.30f, 0.30f);
-                // ADR-152 P2 — la PISCINA vacía: azulejo (ver `PoolStyle`) apenas enfriado. Blanco
-                // tirando a cian, que es lo único de la planta baja que no es cálido.
-                case PoolStyle: return Make(0.90f, 1.00f, 1.04f, 0.90f, 1.00f, 1.04f);
+                // ADR-152 P2 — la PISCINA vacía: azulejo (ver `PoolStyle`) aclarado a lo Poolrooms.
+                // `Wg3_PoolTile` trae `_BaseColor` 0,745: estos factores lo dejan en ~(0,92, 0,98,
+                // 1,00), blanco apenas cian, que es lo único de la planta baja que no es cálido.
+                case PoolStyle: return Make(1.24f, 1.32f, 1.34f, 1.24f, 1.32f, 1.34f);
                 // Oficina y cualquier número que el servidor añada mañana: el juego base, sin tocar.
                 default: return Make(1f, 1f, 1f, 1f, 1f, 1f);
             }
