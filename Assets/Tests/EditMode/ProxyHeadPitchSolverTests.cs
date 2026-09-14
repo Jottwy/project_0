@@ -113,6 +113,14 @@ namespace BackroomsSurvival.Tests.EditMode
         }
 
         [Test]
+        public void TheHeadFollowsEightyPercentOfTheCameraAndTheEyesTheRest()
+        {
+            Assert.AreEqual(0f, ProxyHeadPitchSolver.HeadTarget(0f), 0.001f);
+            Assert.AreEqual(-48f, ProxyHeadPitchSolver.HeadTarget(-60f), 0.001f);
+            Assert.AreEqual(71.2f, ProxyHeadPitchSolver.HeadTarget(89f), 0.001f);
+        }
+
+        [Test]
         public void TheChestTakesPartOfTheLookSoTheNeckIsNotAHinge()
         {
             var s = ProxyHeadPitchSolver.Distribute(-60f);
