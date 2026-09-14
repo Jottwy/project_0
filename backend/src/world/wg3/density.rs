@@ -86,6 +86,44 @@ pub fn class_name(class: u8) -> &'static str {
     }
 }
 
+/// ADR-155 D1 (enm. 1) — **el campo del BIOMA LABERINTO**. Celda gruesa de dos regiones por lado: lo
+/// que hace que la zona sea una MEGAzona y no manchas sueltas.
+pub const MAZE_ZONE_COARSE_CELL: f32 = 300.0;
+/// Celda fina de un cuarto de región (150 m), alineada con la rejilla de regiones: recorta el borde
+/// de la megazona por cuartos, que es la unidad que el plan puede decidir en sus primeros cortes.
+pub const MAZE_ZONE_FINE_CELL: f32 = 75.0;
+/// Umbral del valor mezclado `0,75·gruesa + 0,25·fina`. La suma de dos uniformes no es uniforme: su
+/// distribución es un trapecio, y en el tramo central `P(v < t) = (t − 0,125) / 0,75`. Para el 40 %
+/// que pidió Joel, `t = 0,425`. Cuenta hecha, no perilla: el test mide el reparto.
+pub const MAZE_ZONE_THRESHOLD: f32 = 0.425;
+
+const SALT_MAZE_COARSE: u32 = 0xDE45_0155;
+const SALT_MAZE_FINE: u32 = 0xDE45_0156;
+
+/// ¿Cae este punto (metros de PLAN) en zona laberinto? Función pura de la posición, como los demás
+/// campos: dos regiones vecinas coinciden sin hablarse.
+pub fn in_maze_zone(world_seed: i32, x: f32, z: f32) -> bool {
+    let coarse = cell(
+        world_seed,
+        x,
+        z,
+        MAZE_ZONE_COARSE_CELL,
+        0.0,
+        0.0,
+        SALT_MAZE_COARSE,
+    );
+    let fine = cell(
+        world_seed,
+        x,
+        z,
+        MAZE_ZONE_FINE_CELL,
+        0.0,
+        0.0,
+        SALT_MAZE_FINE,
+    );
+    coarse * 0.75 + fine * 0.25 < MAZE_ZONE_THRESHOLD
+}
+
 /// Ruido de celda, vecino más próximo. Copia de `scale::cell` a propósito (R4): dos campos que
 /// comparten función se mueven juntos el día que uno cambie, y el de escala tiene un oráculo.
 fn cell(world_seed: i32, x: f32, z: f32, size: f32, off_x: f32, off_z: f32, salt: u32) -> f32 {
@@ -202,6 +240,45 @@ mod tests {
         assert!(
             mean >= 8.0,
             "la densidad cambia cada {mean:.1} m: eso es ruido, no zonas"
+        );
+    }
+
+    /// ADR-155 D6 — la zona laberinto cubre ≈ 40 % del plano (diez semillas, ±3 km a paso de 10 m) y
+    /// va por megazonas: andando en línea recta, dentro o fuera aguanta del orden de una región.
+    #[test]
+    fn the_maze_zone_is_forty_percent_in_megazones() {
+        let (mut inside, mut total) = (0usize, 0usize);
+        let mut runs = Vec::new();
+        for seed in 0..10 {
+            let mut z = -3000.0f32;
+            while z < 3000.0 {
+                let mut last = in_maze_zone(seed, -3000.0, z);
+                let mut run = 0usize;
+                let mut x = -3000.0f32;
+                while x < 3000.0 {
+                    let here = in_maze_zone(seed, x, z);
+                    inside += here as usize;
+                    total += 1;
+                    if here == last {
+                        run += 10;
+                    } else {
+                        runs.push(run);
+                        run = 10;
+                        last = here;
+                    }
+                    x += 10.0;
+                }
+                runs.push(run);
+                z += 150.0;
+            }
+        }
+        let pct = inside as f32 * 100.0 / total as f32;
+        let mean = runs.iter().sum::<usize>() as f32 / runs.len() as f32;
+        println!("[maze-zone] {pct:.1} % del plano en zona; tramo medio {mean:.0} m");
+        assert!((36.0..44.0).contains(&pct), "zona laberinto {pct:.1} %");
+        assert!(
+            mean >= 150.0,
+            "la zona cambia cada {mean:.0} m: eso no es una megazona"
         );
     }
 
