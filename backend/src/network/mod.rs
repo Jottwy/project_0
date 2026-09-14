@@ -452,6 +452,9 @@ pub struct NetworkManager {
     /// one travels alone (`ServerMessage::SprayPlaced`). On the host it grows from
     /// `ClientMessage::SprayPlace`; on joiners it will grow from the relayed packet.
     pub sprays: crate::world::spray::SprayStore,
+    /// ADR-154: hojas de mapa dibujadas. Solo el host las guarda (`persistence::map_sheets_save`);
+    /// en un joiner queda vacío (ADR-154 D3).
+    pub map_sheets: crate::world::map_sheets::MapSheetStore,
     /// ADR-068: client-generated place ids already accepted, so a reliable retransmit of one
     /// painting paints exactly one spray. Same dedup pattern as `processed_stp_places`.
     pub processed_spray_places: BoundedDedupeSet<u64>,
@@ -743,6 +746,7 @@ impl NetworkManager {
             local_position: [0.0, 1.8, 0.0],
             assigned_spawn_from_host: None,
             sprays: crate::world::spray::SprayStore::new(),
+            map_sheets: crate::world::map_sheets::MapSheetStore::new(),
             processed_spray_places: BoundedDedupeSet::with_capacity(DEDUPE_CAP),
             requested_spray_chunks: std::collections::HashSet::with_capacity(128),
             processed_stp_pickup_grants: BoundedDedupeSet::with_capacity(DEDUPE_CAP),
