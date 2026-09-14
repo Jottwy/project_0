@@ -102,4 +102,6 @@ números y las perillas están en el ADR; el primer día es una sesión de `plan
 ## Reglas de la semana
 - Un cambio visual por vez, captura antes/después, y lo que Joel da por bueno no se toca sin avisar.
 - Nada nuevo de gramática fuera del día 4. Si aparece una idea buena, va a la lista v2.
+  **Excepción (Joel, 13-09):** los estrados de 40–120 cm con acceso (ADR-151, fase C) entran por petición expresa, y
+  cumplen la misma regla de medida que cualquier día: barrido de 27 regiones antes y después.
 - Rojo de `cargo test` es nuevo siempre; el barrido de 27 regiones se corre al cerrar cada día.

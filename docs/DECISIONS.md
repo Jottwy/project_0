@@ -18435,3 +18435,109 @@ alternaba entre opciones de coste parecido (10–39° de giro por fotograma).
 - Las manos a ~5 mm a fase 0,67 de la cuerda. Ver en Play.
 
 ---
+
+## ADR-122 — Enmienda 2: vista en Play, y la cuña enrasada por arriba (2026-09-14) — ACEPTADA
+
+- **Paseo en Play**: `CharacterController` a 1,4 m/s por una rampa servida en `WorldGen3Live`, en los dos sentidos, con
+  el arnés de captura. Llega arriba y abajo, salto máximo de 1,5 cm por paso, 0 fotogramas en el aire. Cierra el «sin ver
+  en Play» de la enmienda 1.
+- **Arreglo `2e25b2e7`**: el +1 cm de D3 levantaba la cuña ENTERA y su testa asomaba 1 cm sobre la tira de la puerta, una
+  raya negra vista desde arriba. `Wg3RampGeometry.WedgeVolume` sólo levanta el extremo bajo; el alto queda enrasado.
+  `Wg3RampGeometryTests` fija el tope en 0,60.
+- Sin wire ni Rust. El consumidor 2 pasa a ADR-151.
+
+---
+
+## ADR-151 — Estrados: tarimas altas de 40 a 120 cm con acceso propio, y la rampa entre dos cotas de una sala (2026-09-14) — PROPUESTA (Joel pidió la gramática de tarimas/plataformas como fase C el 13-09; código sólo tras su aprobación)
+
+### Contexto
+
+- La única tarima es la de ADR-105 enm. 13 (`fill::floor_platforms`): 20 cm, pegada a una pared, sin acceso porque 20
+  cae por debajo del escalón (27). **Valor validado: no se toca.**
+- ADR-122 D4 dejó el consumidor 2 (rampa entre cotas distintas) sin productor.
+- `WG3-ALPHA1-ROADMAP.md` prohíbe gramática fuera del día 4. Joel lo pide expresamente: excepción anotada allí.
+- Respuestas de Joel (14-09): alturas fijas; bordes «un poco de todo»; pegado a pared y exento, «combinación de las dos»;
+  consumidor 2, «combinación de las 2».
+
+### D1 — Qué es un estrado
+
+- Macizo `SHAPE_BOX` de alto **h ∈ {40, 60, 80, 100, 120}**, apoyado en el suelo de su espacio y troceado a
+  `MAX_SOLID_CM` como la tarima. Fondo ≥ 200, largo ≥ 300.
+- Espacio elegible: construido, no compuesto, `rise_cm == 0`, no circulación, no escalera, no atrio, área ≥ 60 m², y
+  **sin tarima de 20**: la tarima sortea antes, igual que hoy, y el estrado sólo mira las salas que ella deja.
+- Mismo `keep_out` que la tarima (pozos, agujeros de arriba, bloques gruesos con `BLOCK_GAP_CM`, piezas del catálogo) y
+  además **un frente libre de 150 cm ante toda boca de la sala**: a 40 cm, un estrado delante de una puerta la tapia.
+- Techo: sólo si `clear_height_cm(s) − h ≥ 240`. Por papel: Hall 450 y Spine 360 → hasta 120; 320 → hasta 80; 280 → 40.
+  Con planta encima manda `max_clear_cm`.
+- Sorteo por centro de sala con `SALT_DAIS`; `DAIS_CHANCE` 0,15 escalado por el decaimiento de ADR-130 D4 como toda la
+  carpintería (en el fondo desaparece). Constante a medir en el barrido, no perilla nueva por carácter.
+- Tests: `fill::is_dais` por forma (alto en la lista, lado corto ≥ 200), clasificado antes que los genéricos.
+
+### D2 — Dónde: pegado y exento
+
+- **Pegado** (≈ 70 %): contra un lado sorteado, como la tarima, con 150 de margen a las esquinas.
+- **Exento** (≈ 30 %): sólo en salas ≥ 150 m², como isla con un anillo libre ≥ 250 cm hasta toda pared, bloque, pilar y
+  boca. Con menos, el ráster conservador deja un pasillo de una celda que se lee como hueco atrapado.
+- Nada encima de nada (ADR-095 D2 intacto): el estrado es suelo alto de la misma sala, no una entreplanta.
+
+### D3 — Acceso obligatorio
+
+- Todo estrado tiene al menos un acceso desde el suelo de su sala, en un frente libre y perpendicular al borde:
+  - **h ≤ 100**: rampa `Wg3Ramp` (canal de wire 68, sin bump) de largo 5h (200–500 cm), ancho ≥ 150, `dir` hacia el
+    estrado; o peldaños. Sorteo 50/50.
+  - **h = 120**: sólo peldaños; la rampa pediría 6 m.
+  - **Peldaños** = cajas de 20 cm de contrahuella y 50 de huella (la celda del ráster), ancho ≥ 150: por debajo del
+    escalón del jugador y de `MAX_WALK_STEP_CM` (27).
+- Si no cabe el acceso delante, **no hay estrado**. Nunca se emite uno sin acceso.
+
+### D4 — Bordes: un poco de todo
+
+- Los bordes libres (sin pared ni acceso) de un estrado llevan **pretil** (caja de 20 de grueso y 110 de alto,
+  `PARAPET_T_CM`/`PARAPET_H_CM` de ADR-104) con probabilidad (h − 40) / 80: 40 nunca, 60 el 25 %, 80 el 50 %, 100 el
+  75 %, 120 siempre. **Sorteo por estrado, no por borde**: medio estrado con barandilla se lee roto.
+- Sin pretil el borde es caída libre: el jugador baja saltando (≤ 1,2 m; el daño por caída es el del vendor). La
+  navegación no baja (`nav::floors_at` corta a un escalón): para una criatura, la cara superior sólo se alcanza por el
+  acceso.
+- El pretil nunca cierra el frente del acceso.
+
+### D5 — Consumidor 2 de ADR-122: la combinación
+
+- **Se implementa en su forma interior**: el estrado pegado que ocupa la sala **de pared a pared** parte la sala en dos
+  cotas (media planta), y su rampa de acceso es exactamente la rampa entre cotas distintas de ADR-122 D4 (≤ 100 cm,
+  1:5). Mismo emisor, sin tocar el plan.
+- **La forma entre espacios CONTIGUOS** (dos espacios del plan a cotas distintas unidos por rampa en la boca) queda
+  escrita y **no entra en esta fase**: cambia el plan (`plan.rs`, `route::MAX_STEP_CM` 18 entre tramos), es regla de
+  layout y pide su propio test de conectividad. Enmienda propia tras medir C1–C3; Joel puede adelantarla.
+
+### D6 — Sin wire, sin chunk, sin guardado
+
+- Estrado, peldaños y pretil son `Wg3Solid` caja; la rampa es `Wg3Ramp` de wire 68. Sin bump. En el cliente, nada que
+  cambiar salvo verlo: se viste con `style_of(role)` como la tarima.
+- Cambia el mundo servido de WG3 (macizos nuevos): se mide antes y después. `PHASE1_GOLDENS` son de `grid_gen` y no se
+  tocan.
+
+### D7 — Puerta de tests
+
+- `every_dais_is_legal`: alto en la lista, apoyo en el suelo de su sala, ≥ 240 libres encima, fuera de `keep_out` y del
+  frente de las bocas.
+- `every_dais_is_reachable_both_ways`: `nav::find_path` del suelo de la sala a la cara superior y de vuelta, 3 semillas ×
+  9 regiones.
+- Conectividad desde el spawn (regla dura 13) y barrido de 27 regiones antes/después: 27/27 válidas, mancha mayor e
+  islas no peores que hoy (99,7 %, 6,0), nav 100 %.
+- Determinismo: sorteos por posición, sin iterar `HashMap`.
+
+### Rebanadas (cada una en verde, ≤ 300 líneas de diff)
+
+- **C0** docs: este ADR, ADR-122 enm. 2 y la excepción del roadmap.
+- **C1** Rust: estrado pegado + peldaños + `is_dais` + tests de D7.
+- **C2** Rust: acceso por rampa + pretiles (D3, D4).
+- **C3** Rust: exento y de pared a pared (D2, D5).
+- **C4** Play: capturas y paseo con el arnés. **C5** docs: enmienda de estado y STATE.
+
+### Lo que NO decide
+
+- Loot o atrezo encima del estrado: el atrezo ya esquiva los macizos emitidos antes (`props_clear_solids_and_mouths`).
+- Material propio del estrado.
+- El consumidor 2 entre espacios contiguos (D5).
+
+---
