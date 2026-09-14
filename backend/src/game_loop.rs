@@ -545,10 +545,31 @@ fn resolve_phantom_density_scale(
 fn save_meta_now(
     base: &crate::persistence::save::SaveMeta,
     tick: u64,
+    next_map_sheet_id: u64,
 ) -> crate::persistence::save::SaveMeta {
     crate::persistence::save::SaveMeta {
         created_at: base.created_at.clone(),
         play_time_seconds: world_now_seconds(base.play_time_seconds, tick),
+        next_map_sheet_id,
+    }
+}
+
+/// ADR-154 D5 — escribe el fichero de hojas junto a cada guardado del mundo, SOLO si hubo cambios;
+/// `dirty` vuelve a false solo si la escritura salió bien. El que llama ya comprobó `is_host`.
+fn save_map_sheets_if_dirty(net: &mut NetworkManager, path: &std::path::Path) {
+    if !net.map_sheets.is_dirty() {
+        return;
+    }
+    match crate::persistence::map_sheets_save::save_store(path, &net.map_sheets) {
+        Ok(()) => {
+            net.map_sheets.mark_saved();
+            info!(
+                "ADR-154: {} hojas de mapa guardadas en {}",
+                net.map_sheets.len(),
+                path.display()
+            );
+        }
+        Err(e) => warn!("ADR-154: no se pudieron guardar las hojas de mapa: {e}"),
     }
 }
 
@@ -1029,6 +1050,17 @@ pub async fn run(
     // agujero que este ADR cierra.
     net.play_time_base_seconds = save_meta_base.play_time_seconds;
 
+    // ADR-154 D5: las hojas de mapa del host, en su fichero junto al save del mundo. Se cargan
+    // aunque no haya save del mundo (si ese fichero se perdió, las hojas siguen valiendo) y el
+    // contador del mundo entra en el `max` para no reutilizar ids. Un joiner no guarda hojas (D3).
+    let map_sheets_path = crate::persistence::map_sheets_save::sheets_path(&save_path);
+    if net.is_host {
+        net.map_sheets = crate::persistence::map_sheets_save::load_store(
+            &map_sheets_path,
+            save_meta_base.next_map_sheet_id,
+        );
+    }
+
     let dt = 1.0 / TICK_HZ as f32;
     let entity_dt = dt * ENTITY_TICK_EVERY as f32;
     let dev_freeze_survival = env_flag_enabled("DEV_FREEZE_SURVIVAL");
@@ -1343,7 +1375,11 @@ pub async fn run(
                                 &session_name,
                                 &world,
                                 &player,
-                                &save_meta_now(&save_meta_base, tick),
+                                &save_meta_now(
+                                    &save_meta_base,
+                                    tick,
+                                    net.map_sheets.next_sheet_id(),
+                                ),
                                 &net.stp_items,
                                 &net.stp_buildings,
                                 &net.stp_carryables,
@@ -1358,6 +1394,7 @@ pub async fn run(
                                 ),
                                 Err(e) => warn!("ADR-032: save-on-shutdown failed: {e}"),
                             }
+                            save_map_sheets_if_dirty(&mut net, &map_sheets_path);
                         } else {
                             info!("ADR-032: save-on-shutdown on non-host — nothing to persist, exiting");
                         }
@@ -1864,7 +1901,7 @@ pub async fn run(
                     &session_name,
                     &world,
                     &player,
-                    &save_meta_now(&save_meta_base, tick),
+                    &save_meta_now(&save_meta_base, tick, net.map_sheets.next_sheet_id()),
                     &net.stp_items,
                     &net.stp_buildings,
                     &net.stp_carryables,
@@ -1879,6 +1916,7 @@ pub async fn run(
                     ),
                     Err(e) => warn!("ADR-032: world save on local IPC disconnect failed: {e}"),
                 }
+                save_map_sheets_if_dirty(&mut net, &map_sheets_path);
             }
             if let (Some(path), Some(key)) = (&player_save_path, &player.identity_key) {
                 match crate::persistence::player_save::save_player(path, key, &player) {
@@ -3209,7 +3247,7 @@ pub async fn run(
                 &session_name,
                 &world,
                 &player,
-                &save_meta_now(&save_meta_base, tick),
+                &save_meta_now(&save_meta_base, tick, net.map_sheets.next_sheet_id()),
                 &net.stp_items,
                 &net.stp_buildings,
                 &net.stp_carryables,
@@ -3221,6 +3259,7 @@ pub async fn run(
                 Ok(()) => info!("ADR-032: autosave written to {}", save_path.display()),
                 Err(e) => warn!("ADR-032: autosave failed: {e}"),
             }
+            save_map_sheets_if_dirty(&mut net, &map_sheets_path);
         }
 
         // ADR-045 Fase 2: per-player autosave, same cadence as the world autosave above but

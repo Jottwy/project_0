@@ -133,6 +133,11 @@ pub struct SaveFile {
     /// comportamiento de hoy exactamente, sin migración ni `.bak` (ADR-032 punto 5).
     #[serde(default)]
     pub loot_marks: Vec<crate::world::loot_marks::LootMark>,
+    /// ADR-154 D5 — espejo del contador de hojas de mapa. Las hojas van en su propio fichero
+    /// (`persistence::map_sheets_save`); si ese fichero se pierde, este número impide reutilizar
+    /// ids que ya nombran items. `#[serde(default)]` = un save anterior a ADR-154 carga con 0.
+    #[serde(default)]
+    pub next_map_sheet_id: u64,
 }
 
 fn default_phantom_density_scale() -> f32 {
@@ -152,6 +157,8 @@ pub struct SaveMeta {
     /// Total acumulado INCLUIDA la sesión en curso. Lo calcula el llamante, que es el único
     /// que sabe cuánto lleva corriendo (aquí no hay acceso al contador de ticks).
     pub play_time_seconds: u64,
+    /// ADR-154 D5 — el siguiente id de hoja de mapa en el momento de guardar.
+    pub next_map_sheet_id: u64,
 }
 
 impl SaveMeta {
@@ -160,6 +167,7 @@ impl SaveMeta {
         Self {
             created_at: Some(save.created_at.clone()),
             play_time_seconds: save.play_time_seconds,
+            next_map_sheet_id: save.next_map_sheet_id,
         }
     }
 }
@@ -190,6 +198,7 @@ impl SaveFile {
             phantom_density_scale: 1.0,
             sprays: Vec::new(),
             loot_marks: Vec::new(),
+            next_map_sheet_id: 0,
         }
     }
 
@@ -319,6 +328,7 @@ pub fn build_save(
     save.phantom_density_scale = phantom_density_scale;
     save.sprays = sprays.to_vec();
     save.loot_marks = loot_marks.to_vec();
+    save.next_map_sheet_id = meta.next_map_sheet_id;
     save
 }
 
@@ -922,6 +932,7 @@ mod tests {
         let meta = SaveMeta {
             created_at: None,
             play_time_seconds: 60,
+            next_map_sheet_id: 0,
         };
 
         println!("\n=== F0.4 · reparto serialización vs I/O del autosave ===");
