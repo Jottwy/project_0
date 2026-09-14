@@ -7000,6 +7000,7 @@ fn plan_with_a_gap(blocked: bool) -> plan::RegionPlan {
             atrium_storeys: 0,
             ceiling_clear_cm: 0,
             open_plan: false,
+            maze: false,
         }
     };
 

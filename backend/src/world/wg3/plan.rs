@@ -409,6 +409,18 @@ const MIN_SIDE_CM: i32 = 500;
 /// no pintaba nada. Con 12 el que corta es siempre `TARGET_AREA_M2`, que es lo que se quería.
 const MAX_DEPTH: u8 = 12;
 
+/// ADR-155 enm. 2 — **interruptor del bioma laberinto en el PLAN.** Apagado hasta que los huecos
+/// múltiples (L1d) y sus barridos (L1e) estén en verde: con esto a `false` el mundo servido es el de
+/// antes al centímetro, aunque el edificio ya lleve la semilla de la zona.
+const MAZE_BIOME_ENABLED: bool = false;
+/// ADR-155 enm. 1 D1 — profundidad del BSP a la que se decide la zona: los CUARTOS de región (~75 m).
+/// Por encima (región, mitades) la zona sería una región entera o nada; por debajo, un tablero de
+/// casillas sueltas sin megazona que recorrer. Los hijos heredan la marca.
+const MAZE_ZONE_DEPTH: u8 = 2;
+/// ADR-155 D2 / enm. 1 — área a la que PARA la subdivisión dentro de la zona. Hojas de 15 × 30 m de
+/// media, entre los 10 y 25 m de lado que pide el ADR y bajo el tope de tramo de 25 m.
+const MAZE_TARGET_AREA_M2: f32 = 450.0;
+
 /// Dónde puede caer un corte dentro del lado que parte, en tantos por uno.
 ///
 /// **No es la mitad, y eso es la mitad del aspecto.** Un corte centrado da hijos iguales, y un árbol
@@ -832,6 +844,9 @@ pub struct PlannedSpace {
     /// para ser eso. Sin la marca habría que adivinarlo por el área, y por área también pasan salas
     /// que el reparto dio grandes por su cuenta.
     pub open_plan: bool,
+    /// ADR-155 — **hoja del bioma laberinto.** No se vacía, no se funde, no se deforma y un bolsillo
+    /// suyo no se declara vacío en silencio: la zona es una planta continua o no es nada.
+    pub maze: bool,
 }
 
 impl PlannedSpace {
@@ -1466,6 +1481,9 @@ struct Node {
     /// Este nodo es la planta abierta de su planta: sale como hoja aunque tenga el área de una nave,
     /// y con papel de oficina. Ver [`Planner::fuse_open_plan`].
     open_plan: bool,
+    /// ADR-155 — el nodo cae en zona laberinto: sus cortes no tallan pasillo y paran en
+    /// [`MAZE_TARGET_AREA_M2`]. Se decide en [`MAZE_ZONE_DEPTH`] y se hereda.
+    maze: bool,
 }
 
 impl Node {
@@ -1477,6 +1495,7 @@ impl Node {
             children: None,
             dropped: false,
             open_plan: false,
+            maze: false,
         }
     }
 }
@@ -1710,6 +1729,32 @@ pub fn plan_storey_with(
     ceiling_variety: f32,
     misalign_chance: f32,
 ) -> RegionPlan {
+    plan_storey_zoned(
+        None,
+        seed,
+        bounds,
+        gates,
+        base_y_cm,
+        may_sink,
+        atria_below,
+        ceiling_variety,
+        misalign_chance,
+    )
+}
+
+/// [`plan_storey_with`] con la semilla del mundo para el bioma laberinto (ADR-155).
+#[allow(clippy::too_many_arguments)]
+pub fn plan_storey_zoned(
+    zone_seed: Option<i32>,
+    seed: i32,
+    bounds: (f32, f32, f32, f32),
+    gates: &[Wg3Gate],
+    base_y_cm: i32,
+    may_sink: bool,
+    atria_below: &[PlanRect],
+    ceiling_variety: f32,
+    misalign_chance: f32,
+) -> RegionPlan {
     let root = PlanRect {
         min_x_cm: (bounds.0 * CM_PER_M).round() as i32,
         min_z_cm: (bounds.1 * CM_PER_M).round() as i32,
@@ -1719,6 +1764,7 @@ pub fn plan_storey_with(
 
     let mut planner = Planner {
         seed,
+        zone_seed,
         base_y_cm,
         nodes: vec![Node::leaf(root, 0)],
         spaces: Vec::new(),
@@ -2009,7 +2055,8 @@ pub fn plan_building_deep(
     // medido: 41 pares de caras coplanares a −0,24 en la región (0,0)—, por lo mismo que una
     // planta alta no se hunde sobre la de abajo.
     // La planta baja no tiene nada debajo, así que no hay atrios que abrirle a nadie.
-    let mut out = vec![plan_storey_with(
+    let mut out = vec![plan_storey_zoned(
+        zone_seed,
         seed,
         bounds,
         gates,
@@ -2045,7 +2092,8 @@ pub fn plan_building_deep(
             .filter(|s| s.role == SpaceRole::Hall)
             .map(|s| s.rect)
             .collect();
-        let plan = plan_storey_with(
+        let plan = plan_storey_zoned(
+            zone_seed,
             storey_seed(seed, n),
             up,
             &[],
@@ -2096,7 +2144,8 @@ pub fn plan_building_deep(
         // así que reintentar es legal.
         if dug.is_empty() {
             if let Some(tb) = tower_bounds(&out[n - 1]) {
-                let retry = plan_storey_with(
+                let retry = plan_storey_zoned(
+                    zone_seed,
                     storey_seed(seed, n),
                     tb,
                     &[],
@@ -2129,7 +2178,8 @@ pub fn plan_building_deep(
     let mut downs: Vec<RegionPlan> = Vec::new();
     let mut down_wells: Vec<StairWell> = Vec::new();
     for k in 1..=basements {
-        let mut lower = plan_storey_with(
+        let mut lower = plan_storey_zoned(
+            zone_seed,
             storey_seed(seed, 1000 + k),
             bounds,
             &[],
@@ -3161,6 +3211,8 @@ fn side_of_point_in(r: &PlanRect, x_cm: i32, z_cm: i32) -> Option<u8> {
 
 struct Planner {
     seed: i32,
+    /// ADR-155 — semilla del MUNDO para el campo del laberinto. `None` = sin bioma.
+    zone_seed: Option<i32>,
     /// Cota del suelo de la planta que se está planificando (ADR-102 D1). Cero en la baja.
     base_y_cm: i32,
     /// La caja de la región. Hace falta para saber si un bloque toca el borde, que es lo que decide
@@ -3192,7 +3244,8 @@ impl Planner {
             let rect = self.nodes[node].rect;
             let depth = self.nodes[node].depth;
 
-            let Some((axis, at_cm, band_cm)) = self.decide_split(rect, depth) else {
+            let maze = self.nodes[node].maze;
+            let Some((axis, at_cm, band_cm)) = self.decide_split(rect, depth, maze) else {
                 continue;
             };
 
@@ -3248,6 +3301,9 @@ impl Planner {
             self.nodes.push(Node::leaf(b_rect, depth + 1));
             self.band_of_node.push(None);
             self.nodes[node].children = Some((a, b));
+            // ADR-155 — la zona se hereda, y se decide una sola vez al llegar a los cuartos.
+            self.nodes[a].maze = maze || self.starts_maze(a_rect, depth + 1);
+            self.nodes[b].maze = maze || self.starts_maze(b_rect, depth + 1);
         }
     }
 
@@ -3292,6 +3348,10 @@ impl Planner {
             // Y su corte no puede haber tallado banda: entre las dos hermanas hay un corredor, y la
             // unión de las dos NO es el rectángulo del padre.
             if self.band_of_node[n].is_some() {
+                continue;
+            }
+            // ADR-155 — la planta abierta es de oficina; en la zona laberinto no se funde nada.
+            if self.nodes[n].maze {
                 continue;
             }
             let rect = self.nodes[n].rect;
@@ -3410,6 +3470,19 @@ impl Planner {
         }
     }
 
+    /// ADR-155 enm. 1 D1 — ¿empieza aquí una zona laberinto? Sólo en [`MAZE_ZONE_DEPTH`], sólo con
+    /// semilla de mundo y con el interruptor puesto, y por el centro del rectángulo.
+    fn starts_maze(&self, rect: PlanRect, depth: u8) -> bool {
+        let Some(zone_seed) = self.zone_seed else {
+            return false;
+        };
+        if !MAZE_BIOME_ENABLED || depth != MAZE_ZONE_DEPTH {
+            return false;
+        }
+        let (cx, cz) = rect.centre_m();
+        super::density::in_maze_zone(zone_seed, cx, cz)
+    }
+
     /// ¿En qué lado de este espacio cae el punto? `None` si no está sobre ninguna de sus paredes.
     fn side_of_point(&self, space: usize, x_cm: i32, z_cm: i32) -> Option<u8> {
         side_of_point_in(&self.spaces[space].rect, x_cm, z_cm)
@@ -3420,7 +3493,7 @@ impl Planner {
     /// Devuelve `(eje, posición del centro de la banda, ancho de banda)`. El ancho es 0 cuando el
     /// corte no talla corredor, y entonces los dos hijos comparten la línea exacta — que es como
     /// acaban dos salas pared con pared.
-    fn decide_split(&self, rect: PlanRect, depth: u8) -> Option<(u8, i32, i32)> {
+    fn decide_split(&self, rect: PlanRect, depth: u8, maze: bool) -> Option<(u8, i32, i32)> {
         if depth >= MAX_DEPTH {
             return None;
         }
@@ -3428,7 +3501,10 @@ impl Planner {
         let class = self.scale_class(cx, cz);
         let weird = class == scale::SCALE_WEIRD;
 
-        let base_band = if depth < CORRIDOR_DEPTH {
+        // ADR-155 D2 — dentro de la zona NO se talla pasillo: las hojas quedan pegadas.
+        let base_band = if maze {
+            0
+        } else if depth < CORRIDOR_DEPTH {
             BAND_WIDTH_CM[depth as usize]
         } else if rect.area_m2() >= STUB_MIN_AREA_M2 {
             // Un corte profundo talla corredor sólo si le toca: es el corredor ciego.
@@ -3460,7 +3536,9 @@ impl Planner {
 
         // El área objetivo es lo que para la subdivisión, y es donde el campo de escala pasa a
         // decidir tamaños de espacio en vez de sesgar un sorteo de pieza.
-        let target = if class == scale::SCALE_WEIRD {
+        let target = if maze {
+            MAZE_TARGET_AREA_M2
+        } else if class == scale::SCALE_WEIRD {
             let mut s = hash::stream_at(self.seed, cx, cz, SALT_STOP);
             let f = WEIRD_SPREAD.0 + s.next01() * (WEIRD_SPREAD.1 - WEIRD_SPREAD.0);
             TARGET_AREA_M2[scale::SCALE_WEIRD as usize] * f
@@ -3632,6 +3710,7 @@ impl Planner {
             // sola puerta (`sink_dead_ends`), que es la única forma de que no se le escape a nadie.
             let s = self.push_space(rect, role, depth, 0, 0);
             self.spaces[s].open_plan = self.nodes[n].open_plan;
+            self.spaces[s].maze = self.nodes[n].maze;
         }
     }
 
@@ -3646,7 +3725,8 @@ impl Planner {
             // Ni la circulación ni la planta abierta: la sala que se acaba de fundir para que exista
             // no puede desaparecer en el sorteo siguiente. Sería el único hueco de la región que se
             // ha decidido dos veces y en direcciones contrarias.
-            if s.role.is_circulation() || s.open_plan {
+            // Ni la zona laberinto (ADR-155): un hueco en ella la parte, y la zona es una planta continua.
+            if s.role.is_circulation() || s.open_plan || s.maze {
                 continue;
             }
             let (cx, cz) = s.rect.centre_m();
@@ -4144,7 +4224,10 @@ impl Planner {
                 .filter(|&i| self.spaces[i].role.is_built() && uf.find(i) == root_b)
                 .collect();
             let has_gate = pocket.iter().any(|&i| gates_in.contains(&i));
-            if pocket.len() <= 2 && !has_gate {
+            // ADR-155 enm. 1 D2 — un bolsillo de la zona laberinto NO se vacía en silencio: va al
+            // enrutador, y si tampoco sale, que lo cante el test de la zona.
+            let in_maze = pocket.iter().any(|&i| self.spaces[i].maze);
+            if pocket.len() <= 2 && !has_gate && !in_maze {
                 for i in pocket {
                     self.spaces[i].role = SpaceRole::Void;
                 }
@@ -4443,6 +4526,8 @@ impl Planner {
             ceiling_clear_cm: 0,
             // Lo pone `emit_leaves` a la ÚNICA hoja fundida, si es que hubo alguna.
             open_plan: false,
+            // Lo pone `emit_leaves` desde el nodo; una banda nunca es de la zona.
+            maze: false,
         });
         self.spaces.len() - 1
     }
@@ -5151,6 +5236,8 @@ fn may_deform(s: &PlannedSpace, keep_hard: &[PlanRect]) -> bool {
         // envolvente caía de 380 a 196 m² y las filas de puestos, que se reparten sobre el rectángulo
         // interior, quedaban colgando fuera de la huella. Una sala menos deformada no es un precio.
         && !s.open_plan
+        // Ni la zona laberinto (ADR-155): sus huecos múltiples se reparten sobre la pared recta.
+        && !s.maze
         && s.rise_cm == 0
         && !keep_hard.iter().any(|k| s.hits_rect(k))
 }
