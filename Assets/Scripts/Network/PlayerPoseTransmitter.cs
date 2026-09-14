@@ -476,6 +476,11 @@ namespace BackroomsSurvival.Net
             if (wieldable is CrankFlashlightWieldable flashlight && flashlight.IsCranking)
                 bits |= RemoteButtons.Cranking;
 
+            // Libro de supervivencia abierto (bit 9). También ANTES del corte por arma de fuego. El libro no pasa por la
+            // funda, así que sin este bit el vecino veía en la mano lo que quedara en la funda.
+            if (IsSurvivalBook(wieldable))
+                bits |= RemoteButtons.BookOpen;
+
             if (wieldable is not IFirearm firearm)
                 return bits;
 
@@ -489,6 +494,23 @@ namespace BackroomsSurvival.Net
             if (magazine != null && magazine.IsReloading)
                 bits |= RemoteButtons.Reloading;
             return bits;
+        }
+
+        // ¿El wieldable activo es el libro de supervivencia? Se reconoce por su interfaz (SurvivalBookUI cuelga del propio
+        // wieldable: MapNotebookBookTab lo sube con GetComponentInParent<WieldableTool>). Se pregunta UNA vez por
+        // wieldable y se recuerda por referencia: esto corre en cada pose.
+        private object _bookProbeFor;
+        private bool _bookProbeResult;
+
+        private bool IsSurvivalBook(object wieldable)
+        {
+            if (ReferenceEquals(wieldable, _bookProbeFor))
+                return _bookProbeResult;
+            _bookProbeFor = wieldable;
+            var component = wieldable as Component;
+            _bookProbeResult = component != null
+                && component.GetComponentInChildren<PolymindGames.UserInterface.SurvivalBookUI>(true) != null;
+            return _bookProbeResult;
         }
 
         /// <summary>

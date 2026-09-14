@@ -163,6 +163,10 @@ namespace BackroomsSurvival.Migration.STPIntegration
 
             absolute = view.species == 0 && !view.revealed && !view.dead
                 && !RemoteButtons.Has(view.buttons, RemoteButtons.Seated);
+            // Leyendo, la cabeza baja al libro: el cabeceo de la cámara de quien lee no dice nada, el libro le llena la
+            // pantalla (bit BookOpen, 2026-09-14).
+            if (absolute && RemoteButtons.Has(view.buttons, RemoteButtons.BookOpen))
+                return ProxyBookHold.ReadingPitchDegrees;
             return view.pitch;
         }
 
