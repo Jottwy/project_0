@@ -731,6 +731,10 @@ pub fn fill_building_with(
     let (pit_carves, pit_solids) = pit_geometry(building, &out.segments);
     out.carves.extend(pit_carves);
     out.solids.extend(pit_solids);
+    // ADR-152 — las piscinas vacías de la planta baja: vano en la losa, vaso y escalera.
+    let (pool_carves, pool_solids) = pool_geometry(building, &out.segments);
+    out.carves.extend(pool_carves);
+    out.solids.extend(pool_solids);
     out.solids.extend(atrium_solids(building));
     out.solids.extend(atrium_aprons(building));
     // ADR-119 enm. 1 — los pilares, que ya no son sólo del atrio. Va DESPUÉS del bucle de plantas
@@ -1216,11 +1220,20 @@ pub(super) fn pit_clusters_of(
 }
 
 /// ADR-126 D5 — las huellas que nadie de la planta baja debe pisar, con medio metro de margen.
+///
+/// ADR-152 — y las PISCINAS, con su pared y un metro: todo el que esquiva un pozo esquiva el vaso, y
+/// el metro deja salir por la escalera sin darse con un estrado en el borde.
 fn pit_rects_of(building: &RegionBuilding, segments: &[Wg3Segment]) -> Vec<super::plan::PlanRect> {
-    pit_clusters_of(building, segments)
+    let mut out: Vec<super::plan::PlanRect> = pit_clusters_of(building, segments)
         .iter()
         .map(|c| c.footprint().shrunk(-50))
-        .collect()
+        .collect();
+    out.extend(
+        pools_of(building, segments)
+            .iter()
+            .map(|p| p.rect.shrunk(-(WALL_T_CM + 100))),
+    );
+    out
 }
 
 /// ADR-126 D3 — lo que una rejilla emite: un vano por pozo, la tierra entre pozos y la cámara.
@@ -1345,6 +1358,285 @@ fn pit_geometry(
         ];
         for w in &walls {
             solids.push(boxed(w, chamber_floor, earth_bottom, PIT_STYLE));
+        }
+    }
+    (carves, solids)
+}
+
+/// ADR-152 — lados del vaso de la PISCINA vacía: el largo y el corto.
+const POOL_MIN_LONG_CM: i32 = 400;
+const POOL_MAX_LONG_CM: i32 = 1200;
+const POOL_MIN_SHORT_CM: i32 = 300;
+const POOL_MAX_SHORT_CM: i32 = 800;
+/// ADR-152 enm. 1 — profundidades, múltiplos de la contrahuella de 20: con 150 el último peldaño
+/// dejaría 30 hasta el borde, más que el escalón de 27.
+pub(super) const POOL_DEPTHS_CM: [i32; 3] = [120, 160, 180];
+const POOL_MIN_AREA_M2: f32 = 80.0;
+const POOL_CHANCE: f32 = 0.06;
+/// Suelo libre entre la pared del vaso y las paredes del tramo.
+const POOL_MARGIN_CM: i32 = 150;
+/// Ninguna boca de la sala a menos de esto del borde.
+const POOL_MOUTH_CLEAR_CM: i32 = 150;
+/// ADR-152 enm. 1 — peldaños de la escalera del vaso: 60 de huella como los del estrado y **180 de
+/// ancho**, para que la forma no se confunda con la de un peldaño de estrado (60 × 200).
+pub(super) const POOL_STEP_WIDTH_CM: i32 = 180;
+/// ADR-152 D2 — el estilo del azulejo. El cliente lo pinta con el tinte por defecto hasta P2.
+pub const POOL_STYLE: u8 = 9;
+const SALT_POOL: u32 = 0xA9_04_15;
+
+/// ADR-152 — una piscina ya sorteada: el vaso (interior), su cota de borde y su profundidad. La
+/// escalera va pegada al extremo MÍNIMO del eje largo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Pool {
+    pub rect: super::plan::PlanRect,
+    pub floor_y_cm: i32,
+    pub depth_cm: i32,
+    pub along_x: bool,
+}
+
+impl Pool {
+    /// Cota del fondo del vaso.
+    pub fn bottom_y_cm(&self) -> i32 {
+        self.floor_y_cm - self.depth_cm
+    }
+    /// Peldaños de la escalera: el de arriba queda a 20 del borde y el de abajo a 20 del fondo.
+    pub fn steps(&self) -> i32 {
+        self.depth_cm / DAIS_STEP_RISE_CM - 1
+    }
+}
+
+/// ADR-152 D1 — la piscina de UN espacio de la planta baja, si le toca. Definición única: la usan el
+/// emisor, quienes la esquivan (vía [`pit_rects_of`]) y los tests.
+fn pool_of(
+    building: &RegionBuilding,
+    s: &PlannedSpace,
+    segments: &[Wg3Segment],
+    doors: &[(i32, i32, i32)],
+) -> Option<Pool> {
+    use super::plan::PlanRect;
+
+    if s.is_composite()
+        || s.rise_cm != 0
+        || s.role.is_circulation()
+        || s.role == SpaceRole::Stair
+        || is_atrium(s)
+        || s.area_m2() < POOL_MIN_AREA_M2
+    {
+        return None;
+    }
+    // Exclusiva con la rejilla de pozos: una sala hundida por dos sitios no se lee.
+    if pit_cluster_of(building, s, segments).is_some() {
+        return None;
+    }
+    let r = s.rect;
+    let (cx, cz) = r.centre_m();
+    let mut st = super::hash::stream_at(building.seed, cx, cz, SALT_POOL);
+    if st.next01() >= POOL_CHANCE * (1.0 - decay_of(s)) {
+        return None;
+    }
+    // Seis décimas del sitio libre por eje, a medio metro.
+    let room = 2 * (POOL_MARGIN_CM + WALL_T_CM);
+    let size = |free: i32| ((free - room) * 6 / 10).div_euclid(50) * 50;
+    let along_x = r.width_cm() >= r.depth_cm();
+    let (long_max, short_max) = (POOL_MAX_LONG_CM, POOL_MAX_SHORT_CM);
+    let (w, d) = if along_x {
+        (
+            size(r.width_cm()).min(long_max),
+            size(r.depth_cm()).min(short_max),
+        )
+    } else {
+        (
+            size(r.width_cm()).min(short_max),
+            size(r.depth_cm()).min(long_max),
+        )
+    };
+    let (long, short) = if along_x { (w, d) } else { (d, w) };
+    if long < POOL_MIN_LONG_CM || short < POOL_MIN_SHORT_CM {
+        return None;
+    }
+    // Profundidades cuya escalera deja un metro de fondo libre.
+    let fits: Vec<i32> = POOL_DEPTHS_CM
+        .iter()
+        .copied()
+        .filter(|&h| (h / DAIS_STEP_RISE_CM - 1) * DAIS_STEP_RUN_CM + DAIS_LANDING_CM <= long)
+        .collect();
+    if fits.is_empty() {
+        return None;
+    }
+    let depth_cm = fits[(st.next01() * fits.len() as f32) as usize % fits.len()];
+    let x0 = (r.min_x_cm + (r.width_cm() - w) / 2).div_euclid(50) * 50;
+    let z0 = (r.min_z_cm + (r.depth_cm() - d) / 2).div_euclid(50) * 50;
+    let rect = PlanRect {
+        min_x_cm: x0,
+        min_z_cm: z0,
+        max_x_cm: x0 + w,
+        max_z_cm: z0 + d,
+    };
+    // Con su pared y el margen, dentro del suelo de ESTE espacio y de UN tramo (la regla del pozo).
+    let clear = rect.shrunk(-(WALL_T_CM + POOL_MARGIN_CM));
+    if !s.covers_rect(&clear) {
+        return None;
+    }
+    let inside_one_segment = segments.iter().any(|g| {
+        g.floor_y_cm == s.floor_y_cm && {
+            let inner = PlanRect {
+                min_x_cm: g.x_cm + WALL_T_CM,
+                min_z_cm: g.z_cm + WALL_T_CM,
+                max_x_cm: g.x_cm + g.size_x_cm - WALL_T_CM,
+                max_z_cm: g.z_cm + g.size_z_cm - WALL_T_CM,
+            };
+            inner.contains_rect(&clear)
+        }
+    });
+    if !inside_one_segment {
+        return None;
+    }
+    let near_mouth = rect.shrunk(-(WALL_T_CM + POOL_MOUTH_CLEAR_CM));
+    if doors
+        .iter()
+        .any(|&(x, z, y)| y == s.floor_y_cm && near_mouth.contains_point(x, z))
+    {
+        return None;
+    }
+    if building.wells.iter().any(|wl| {
+        (wl.storey_below == building.ground || wl.storey_below + 1 == building.ground)
+            && wl.rect.shrunk(-50).overlaps(&clear)
+    }) {
+        return None;
+    }
+    Some(Pool {
+        rect,
+        floor_y_cm: s.floor_y_cm,
+        depth_cm,
+        along_x,
+    })
+}
+
+/// ADR-152 — todas las piscinas del edificio: sólo planta baja y sólo sin torre (en una torre el vaso
+/// entraría en el sótano).
+pub(super) fn pools_of(building: &RegionBuilding, segments: &[Wg3Segment]) -> Vec<Pool> {
+    if building.ground > 0 {
+        return Vec::new();
+    }
+    let doors = segment_door_points(segments);
+    building
+        .storeys
+        .get(building.ground)
+        .map(|plan| {
+            plan.built()
+                .filter_map(|(_, s)| pool_of(building, s, segments, &doors))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// ¿Es un peldaño de la escalera de una piscina? Por la forma: 60 × 180 y estilo de piscina.
+pub(super) fn is_pool_step(s: &Wg3Solid) -> bool {
+    s.style == POOL_STYLE
+        && s.shape == SHAPE_BOX
+        && s.size_x_cm.min(s.size_z_cm) == DAIS_STEP_RUN_CM
+        && s.size_x_cm.max(s.size_z_cm) == POOL_STEP_WIDTH_CM
+}
+
+/// ADR-152 D2/D3 — lo que emite una piscina: el vano en la losa, el fondo, las cuatro paredes por
+/// fuera del vaso hasta la losa y la escalera pegada al extremo mínimo del eje largo.
+fn pool_geometry(
+    building: &RegionBuilding,
+    segments: &[Wg3Segment],
+) -> (Vec<Wg3Carve>, Vec<Wg3Solid>) {
+    let mut carves = Vec::new();
+    let mut solids = Vec::new();
+    let boxed = |x: i32, z: i32, sx: i32, sz: i32, y0: i32, y1: i32| Wg3Solid {
+        x_cm: x,
+        z_cm: z,
+        size_x_cm: sx,
+        size_z_cm: sz,
+        bottom_y_cm: y0,
+        top_y_cm: y1,
+        style: POOL_STYLE,
+        yaw_deg: 0,
+        shape: SHAPE_BOX,
+    };
+    for p in pools_of(building, segments) {
+        let r = p.rect;
+        let floor = p.floor_y_cm;
+        let bottom = p.bottom_y_cm();
+        carves.push(Wg3Carve {
+            x_cm: r.min_x_cm,
+            z_cm: r.min_z_cm,
+            size_x_cm: r.width_cm(),
+            size_z_cm: r.depth_cm(),
+            bottom_y_cm: floor - SLAB_THICKNESS_CM - 1,
+            top_y_cm: floor + CARVE_FLOOR_GUARD_CM,
+        });
+        let o = r.shrunk(-WALL_T_CM);
+        solids.push(boxed(
+            o.min_x_cm,
+            o.min_z_cm,
+            o.width_cm(),
+            o.depth_cm(),
+            bottom - SLAB_THICKNESS_CM,
+            bottom,
+        ));
+        let wall_top = floor - SLAB_THICKNESS_CM;
+        let t = WALL_T_CM;
+        solids.push(boxed(
+            o.min_x_cm,
+            o.min_z_cm,
+            o.width_cm(),
+            t,
+            bottom,
+            wall_top,
+        ));
+        solids.push(boxed(
+            o.min_x_cm,
+            r.max_z_cm,
+            o.width_cm(),
+            t,
+            bottom,
+            wall_top,
+        ));
+        solids.push(boxed(
+            o.min_x_cm,
+            r.min_z_cm,
+            t,
+            r.depth_cm(),
+            bottom,
+            wall_top,
+        ));
+        solids.push(boxed(
+            r.max_x_cm,
+            r.min_z_cm,
+            t,
+            r.depth_cm(),
+            bottom,
+            wall_top,
+        ));
+        // La escalera: el peldaño `i` a `i` huellas del extremo, 20 más bajo que el anterior.
+        let (mx, mz) = ((r.min_x_cm + r.max_x_cm) / 2, (r.min_z_cm + r.max_z_cm) / 2);
+        let half = POOL_STEP_WIDTH_CM / 2;
+        for i in 0..p.steps() {
+            let top = floor - DAIS_STEP_RISE_CM * (i + 1);
+            let run = DAIS_STEP_RUN_CM;
+            solids.push(if p.along_x {
+                boxed(
+                    r.min_x_cm + i * run,
+                    mz - half,
+                    run,
+                    POOL_STEP_WIDTH_CM,
+                    bottom,
+                    top,
+                )
+            } else {
+                boxed(
+                    mx - half,
+                    r.min_z_cm + i * run,
+                    POOL_STEP_WIDTH_CM,
+                    run,
+                    bottom,
+                    top,
+                )
+            });
         }
     }
     (carves, solids)
@@ -10732,7 +11024,12 @@ mod apron_tests {
                 }
                 // ADR-126 — las paredes de la cámara de un pozo miden grosor de pared y viven
                 // bajo el suelo a propósito.
-                if s.style == PIT_STYLE || s.style == PIT_SHAFT_STYLE || s.is_hidden() {
+                // ADR-152 — y las del vaso de una piscina.
+                if s.style == PIT_STYLE
+                    || s.style == PIT_SHAFT_STYLE
+                    || s.style == POOL_STYLE
+                    || s.is_hidden()
+                {
                     continue;
                 }
                 if floors

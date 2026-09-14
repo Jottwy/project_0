@@ -2833,6 +2833,218 @@ fn every_tier_is_contiguous_and_climbable() {
     );
 }
 
+/// ADR-152 D6 — **toda piscina es legal**: región sin torre, profundidad de la lista, vano en la losa,
+/// fondo y cuatro paredes, escalera completa, y ningún otro macizo de pie dentro del vaso.
+#[test]
+fn every_pool_is_legal() {
+    use super::fill::{self, POOL_STYLE};
+    use super::plan::SLAB_THICKNESS_CM;
+
+    let m = real_manifest();
+    // Doce semillas como mínimo: la piscina es rara.
+    let seeds = validate::sweep_seeds(sweep_seed_count(12).max(12));
+    let mut seen = 0usize;
+    let mut failures: Vec<String> = Vec::new();
+    for &seed in &seeds {
+        for &(rx, rz) in NEAR_REGIONS.iter() {
+            let inside = validate::region_inside(&m, seed, Wg3RegionCoord { x: rx, z: rz });
+            let solids = &inside.filled.solids;
+            for p in fill::pools_of(&inside.building, &inside.filled.segments) {
+                seen += 1;
+                let at = format!("semilla {seed:#x} región ({rx},{rz}): piscina {p:?}");
+                let r = p.rect;
+                let bottom = p.bottom_y_cm();
+                if inside.building.ground > 0 {
+                    failures.push(format!("{at} en una torre"));
+                }
+                if !fill::POOL_DEPTHS_CM.contains(&p.depth_cm) {
+                    failures.push(format!("{at} con profundidad fuera de la lista"));
+                }
+                let carved = inside.filled.carves.iter().any(|c| {
+                    c.x_cm == r.min_x_cm
+                        && c.z_cm == r.min_z_cm
+                        && c.size_x_cm == r.width_cm()
+                        && c.size_z_cm == r.depth_cm()
+                        && c.bottom_y_cm < p.floor_y_cm - SLAB_THICKNESS_CM
+                });
+                if !carved {
+                    failures.push(format!("{at} sin vano en la losa"));
+                }
+                let covers = |t: &super::segment::Wg3Solid| {
+                    t.x_cm <= r.min_x_cm
+                        && t.z_cm <= r.min_z_cm
+                        && t.x_cm + t.size_x_cm >= r.max_x_cm
+                        && t.z_cm + t.size_z_cm >= r.max_z_cm
+                };
+                if !solids
+                    .iter()
+                    .any(|t| t.style == POOL_STYLE && t.top_y_cm == bottom && covers(t))
+                {
+                    failures.push(format!("{at} sin fondo"));
+                }
+                // Las de ESTA piscina: dos del mismo fondo en una región suman ocho.
+                let outer = r.shrunk(-fill::WALL_T_CM);
+                let walls = solids
+                    .iter()
+                    .filter(|t| {
+                        t.style == POOL_STYLE
+                            && !fill::is_pool_step(t)
+                            && t.bottom_y_cm == bottom
+                            && t.top_y_cm == p.floor_y_cm - SLAB_THICKNESS_CM
+                            && t.x_cm >= outer.min_x_cm
+                            && t.x_cm + t.size_x_cm <= outer.max_x_cm
+                            && t.z_cm >= outer.min_z_cm
+                            && t.z_cm + t.size_z_cm <= outer.max_z_cm
+                    })
+                    .count();
+                if walls != 4 {
+                    failures.push(format!("{at} con {walls} paredes"));
+                }
+                let steps = solids
+                    .iter()
+                    .filter(|t| {
+                        fill::is_pool_step(t)
+                            && t.bottom_y_cm == bottom
+                            && t.x_cm >= r.min_x_cm
+                            && t.x_cm + t.size_x_cm <= r.max_x_cm
+                            && t.z_cm >= r.min_z_cm
+                            && t.z_cm + t.size_z_cm <= r.max_z_cm
+                    })
+                    .count() as i32;
+                if steps != p.steps() {
+                    failures.push(format!("{at} con {steps} peldaños de {}", p.steps()));
+                }
+                let intruders: Vec<_> = solids
+                    .iter()
+                    .filter(|t| {
+                        t.style != POOL_STYLE
+                            && !t.is_decoration()
+                            && t.bottom_y_cm >= bottom
+                            && t.bottom_y_cm < p.floor_y_cm + 100
+                            && t.x_cm < r.max_x_cm
+                            && t.x_cm + t.size_x_cm > r.min_x_cm
+                            && t.z_cm < r.max_z_cm
+                            && t.z_cm + t.size_z_cm > r.min_z_cm
+                    })
+                    .collect();
+                if let Some(t) = intruders.first() {
+                    failures.push(format!(
+                        "{at} con {} macizos dentro, p. ej. {t:?}",
+                        intruders.len()
+                    ));
+                }
+            }
+        }
+    }
+    println!(
+        "[wg3-pool] {seen} piscinas en {} semillas × {} regiones",
+        seeds.len(),
+        NEAR_REGIONS.len()
+    );
+    assert!(seen > 0, "el productor no ha emitido ninguna piscina");
+    assert!(
+        failures.is_empty(),
+        "{} piscinas ilegales:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+/// ADR-152 D6 — **toda piscina se baja y se sube** por su escalera, con la navegación de las
+/// criaturas: del suelo de la sala, un metro fuera del borde de la escalera, al fondo junto a la
+/// pared de enfrente, y de vuelta.
+#[test]
+fn every_pool_is_reachable_both_ways() {
+    use super::collision::Wg3CollisionCache;
+    use super::fill::{self, WALL_T_CM};
+    use super::nav;
+    use super::world::Wg3WorldCache;
+    use crate::world::Vec3;
+
+    const BODY_M: f32 = 1.8;
+    let m = real_manifest();
+    let seeds = validate::sweep_seeds(sweep_seed_count(12).max(12));
+    let mut total = 0usize;
+    let mut failures: Vec<String> = Vec::new();
+    for &seed in &seeds {
+        for &(rx, rz) in NEAR_REGIONS.iter() {
+            let inside = validate::region_inside(&m, seed, Wg3RegionCoord { x: rx, z: rz });
+            for p in fill::pools_of(&inside.building, &inside.filled.segments) {
+                total += 1;
+                let at = format!("semilla {seed:#x} región ({rx},{rz}): piscina {p:?}");
+                let r = p.rect;
+                let (mx, mz) = ((r.min_x_cm + r.max_x_cm) / 2, (r.min_z_cm + r.max_z_cm) / 2);
+                // El pie a 60 del borde y no a 100: la franja libre que garantiza `pit_rects_of` mide
+                // pared + 100, y a 100 el pie caía pegado al macizo de al lado (medido: a 1 cm).
+                let (fx, fz, bx, bz) = if p.along_x {
+                    (r.min_x_cm - WALL_T_CM - 60, mz, r.max_x_cm - 100, mz)
+                } else {
+                    (mx, r.min_z_cm - WALL_T_CM - 60, mx, r.max_z_cm - 100)
+                };
+                let foot = Vec3::new(
+                    fx as f32 * 0.01,
+                    p.floor_y_cm as f32 * 0.01 + BODY_M,
+                    fz as f32 * 0.01,
+                );
+                let deep = Vec3::new(
+                    bx as f32 * 0.01,
+                    p.bottom_y_cm() as f32 * 0.01 + BODY_M,
+                    bz as f32 * 0.01,
+                );
+                let mut worlds = Wg3WorldCache::default();
+                let mut cache = Wg3CollisionCache::new();
+                cache.prewarm_for_move(&mut worlds, &m, seed, foot, deep);
+                let mut path = Vec::new();
+                let down = nav::find_path(&cache, foot, deep, &mut path).reached;
+                let up = nav::find_path(&cache, deep, foot, &mut path).reached;
+                if !down || !up {
+                    // Qué hay de pie junto al borde de la escalera: lo que suele tapar la salida.
+                    let near: Vec<String> = inside
+                        .filled
+                        .solids
+                        .iter()
+                        .filter(|t| {
+                            !t.is_decoration()
+                                && t.style != fill::POOL_STYLE
+                                && t.bottom_y_cm >= p.floor_y_cm - 20
+                                && t.bottom_y_cm < p.floor_y_cm + 50
+                                && t.x_cm < fx.max(r.min_x_cm) + 200
+                                && t.x_cm + t.size_x_cm > fx.min(r.min_x_cm) - 200
+                                && t.z_cm < fz.max(r.min_z_cm) + 200
+                                && t.z_cm + t.size_z_cm > fz.min(r.min_z_cm) - 200
+                        })
+                        .map(|t| {
+                            format!(
+                                "{}x{} y{}..{} en ({},{}) s{}",
+                                t.size_x_cm,
+                                t.size_z_cm,
+                                t.bottom_y_cm,
+                                t.top_y_cm,
+                                t.x_cm,
+                                t.z_cm,
+                                t.style
+                            )
+                        })
+                        .collect();
+                    failures.push(format!("{at} baja={down} sube={up} cerca: {near:?}"));
+                }
+            }
+        }
+    }
+    println!(
+        "[wg3-pool] {total} piscinas recorridas en {} semillas × {} regiones",
+        seeds.len(),
+        NEAR_REGIONS.len()
+    );
+    assert!(total > 0, "el productor no ha emitido ninguna piscina");
+    assert!(
+        failures.is_empty(),
+        "{} de {total} piscinas no se recorren:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
 /// Sonda (ADR-122 B2): recorre la rampa `WG3_PROBE_RAMP="seed,rx,rz,x_cm,z_cm"` cada 50 cm a lo largo
 /// de su eje, del borde bajo al alto, e imprime por punto el suelo del ráster, el techo libre, si la
 /// navegación lo acepta y las cotas que ofrece a sus cuatro vecinas.

@@ -8949,6 +8949,10 @@ fn probe_dump_regions_json() {
                     ("baldosa levantada", true)
                 } else if s.is_decoration() {
                     ("marco", true)
+                } else if fill::is_pool_step(s) {
+                    ("peldaño de piscina", true)
+                } else if s.style == fill::POOL_STYLE {
+                    ("vaso de piscina", true)
                 } else if s.shape == segment::SHAPE_ARCH {
                     ("arco liso", true)
                 } else if fill::is_round_pilaster(s) {
