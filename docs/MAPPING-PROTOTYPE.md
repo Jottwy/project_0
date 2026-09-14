@@ -407,6 +407,8 @@ plano dura `fixSeconds` = 30 s; el borrador que se ve en una zona es la última 
 
 **Sin verificar en Play:** coste del abanico (`MAPMEM ms_avg`), composición del tablero (`MAPATLAS paint ms`).
 
+**Playtest de Joel (2026-09-14):** «está funcionando espectacular». Ver lejos y plano M validados tal cual.
+
 ### 3.9 El libro de supervivencia de STP: modelo base para la libreta (Joel, 2026-09-13)
 
 Joel propone aprovechar el libro de crafteo/construcción que ya existe como modelo para la libreta, y más adelante
