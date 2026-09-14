@@ -319,6 +319,24 @@ namespace BackroomsSurvival.Migration.STPIntegration
             ProxyGripSolver.Curl(_thumbChain, _thumbAlongFinger ? frame.FingerAxis : frame.KnuckleAxis, _thumbDegrees);
         }
 
+        /// <summary>
+        /// Paso 2 de la linterna: dónde está la lente del objeto medido ESTE fotograma (el +Y de su cuerpo) y
+        /// hacia dónde apunta. Falso si lo que hay en la mano no es de los medidos, y entonces ProxyLightHook se
+        /// queda con su luz de antorcha. Hay que leerlo después del LateUpdate de este hook.
+        /// </summary>
+        public bool TryGetBeam(out Vector3 position, out Quaternion rotation)
+        {
+            position = default;
+            rotation = Quaternion.identity;
+            if (!_measured || _instance == null || !HasHandRig)
+                return false;
+
+            var t = _instance.transform;
+            position = t.TransformPoint(new Vector3(_axisOffsetXZ.x, _bodyCentreY + _halfLength, _axisOffsetXZ.y));
+            rotation = Quaternion.LookRotation(t.up, t.forward);
+            return true;
+        }
+
         private ProxyGripSolver.HandFrame Frame() => ProxyGripSolver.Frame(
             _hand.position, _indexKnuckle.position, _middleKnuckle.position, _pinkyKnuckle.position, _thumbBase.position);
 
