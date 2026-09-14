@@ -2564,6 +2564,180 @@ fn every_served_ramp_is_legal_and_walkable_both_ways() {
     );
 }
 
+/// ADR-151 D7 — **todo estrado es legal**: alto de la lista, apoyado en el suelo de una sala que no es
+/// circulación, con 240 libres encima y con su peldaño de 20 dentro de la misma sala.
+#[test]
+fn every_dais_is_legal() {
+    use super::plan::PlanRect;
+
+    let m = real_manifest();
+    let seeds = validate::sweep_seeds(sweep_seed_count(3));
+    let mut seen = 0usize;
+    let mut failures: Vec<String> = Vec::new();
+    for &seed in &seeds {
+        for &(rx, rz) in NEAR_REGIONS.iter() {
+            let inside = validate::region_inside(&m, seed, Wg3RegionCoord { x: rx, z: rz });
+            let solids = &inside.filled.solids;
+            for d in solids.iter().filter(|s| super::fill::is_dais(s)) {
+                seen += 1;
+                let at = format!("semilla {seed:#x} región ({rx},{rz}): estrado {d:?}");
+                let rect = PlanRect {
+                    min_x_cm: d.x_cm,
+                    min_z_cm: d.z_cm,
+                    max_x_cm: d.x_cm + d.size_x_cm,
+                    max_z_cm: d.z_cm + d.size_z_cm,
+                };
+                let host = inside.building.storeys.iter().find_map(|st| {
+                    st.built()
+                        .find(|(_, sp)| sp.floor_y_cm == d.bottom_y_cm && sp.covers_rect(&rect))
+                        .map(|(_, sp)| sp)
+                });
+                let Some(host) = host else {
+                    failures.push(format!("{at} fuera de toda sala o despegado de su suelo"));
+                    continue;
+                };
+                if host.role.is_circulation() {
+                    failures.push(format!("{at} en circulación"));
+                }
+                let h = d.top_y_cm - d.bottom_y_cm;
+                let clear = super::fill::clear_height_cm(host);
+                if clear - h < 240 {
+                    failures.push(format!("{at} deja {} libres encima", clear - h));
+                }
+                let has_step = solids.iter().any(|t| {
+                    super::fill::is_dais_step(t)
+                        && t.top_y_cm - t.bottom_y_cm == 20
+                        && t.bottom_y_cm == d.bottom_y_cm
+                        && host
+                            .rect
+                            .contains_point(t.x_cm + t.size_x_cm / 2, t.z_cm + t.size_z_cm / 2)
+                });
+                if !has_step {
+                    failures.push(format!("{at} sin peldaño de acceso en su sala"));
+                }
+            }
+        }
+    }
+    println!(
+        "[wg3-dais] {seen} trozos de estrado en {} semillas × {} regiones",
+        seeds.len(),
+        NEAR_REGIONS.len()
+    );
+    assert!(seen > 0, "el productor no ha emitido ningún estrado");
+    assert!(
+        failures.is_empty(),
+        "{} estrados ilegales:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+/// ADR-151 D7 — **todo estrado se sube y se baja** por su acceso, con la navegación de las criaturas.
+///
+/// Se parte del peldaño de 20 (uno por estrado): hacia el estrado es el sentido en el que, a una
+/// huella, hay algo más alto. El pie queda a un metro de él hacia fuera, en el rellano; la cima, a un
+/// metro dentro del estrado pasado el último peldaño.
+#[test]
+fn every_dais_is_reachable_both_ways() {
+    use super::collision::Wg3CollisionCache;
+    use super::nav;
+    use super::world::Wg3WorldCache;
+    use crate::world::Vec3;
+
+    const BODY_M: f32 = 1.8;
+    let m = real_manifest();
+    let seeds = validate::sweep_seeds(sweep_seed_count(3));
+    let mut total = 0usize;
+    let mut failures: Vec<String> = Vec::new();
+    for &seed in &seeds {
+        for &(rx, rz) in NEAR_REGIONS.iter() {
+            let inside = validate::region_inside(&m, seed, Wg3RegionCoord { x: rx, z: rz });
+            let solids = &inside.filled.solids;
+            let inside_of = |t: &super::segment::Wg3Solid, x: i32, z: i32| {
+                x > t.x_cm && x < t.x_cm + t.size_x_cm && z > t.z_cm && z < t.z_cm + t.size_z_cm
+            };
+            for low in solids
+                .iter()
+                .filter(|t| super::fill::is_dais_step(t) && t.top_y_cm - t.bottom_y_cm == 20)
+            {
+                total += 1;
+                let at = format!("semilla {seed:#x} región ({rx},{rz}): peldaño {low:?}");
+                let (cx, cz) = (low.x_cm + low.size_x_cm / 2, low.z_cm + low.size_z_cm / 2);
+                let dirs: [(i32, i32); 2] = if low.size_x_cm < low.size_z_cm {
+                    [(1, 0), (-1, 0)]
+                } else {
+                    [(0, 1), (0, -1)]
+                };
+                let higher = |x: i32, z: i32, than: i32| {
+                    solids.iter().find(|t| {
+                        t.top_y_cm > than && t.bottom_y_cm == low.bottom_y_cm && inside_of(t, x, z)
+                    })
+                };
+                let Some(&(dx, dz)) = dirs
+                    .iter()
+                    .find(|(dx, dz)| higher(cx + dx * 60, cz + dz * 60, low.top_y_cm).is_some())
+                else {
+                    failures.push(format!("{at} sin nada más alto detrás"));
+                    continue;
+                };
+                // Peldaños detrás del de 20, y la cima un metro dentro del estrado.
+                let mut k = 1;
+                while solids.iter().any(|t| {
+                    super::fill::is_dais_step(t)
+                        && t.bottom_y_cm == low.bottom_y_cm
+                        && inside_of(t, cx + dx * 60 * k, cz + dz * 60 * k)
+                }) {
+                    k += 1;
+                }
+                let reach = 60 * k - 30 + 100;
+                let (gx, gz) = (cx + dx * reach, cz + dz * reach);
+                let Some(dais) = solids
+                    .iter()
+                    .find(|t| super::fill::is_dais(t) && inside_of(t, gx, gz))
+                else {
+                    failures.push(format!("{at} sin estrado a {reach} cm"));
+                    continue;
+                };
+                let floor = low.bottom_y_cm as f32 * 0.01;
+                let foot = Vec3::new(
+                    (cx - dx * 100) as f32 * 0.01,
+                    floor + BODY_M,
+                    (cz - dz * 100) as f32 * 0.01,
+                );
+                let top = Vec3::new(
+                    gx as f32 * 0.01,
+                    dais.top_y_cm as f32 * 0.01 + BODY_M,
+                    gz as f32 * 0.01,
+                );
+                let mut worlds = Wg3WorldCache::default();
+                let mut cache = Wg3CollisionCache::new();
+                cache.prewarm_for_move(&mut worlds, &m, seed, foot, top);
+                let mut path = Vec::new();
+                let up = nav::find_path(&cache, foot, top, &mut path).reached;
+                let down = nav::find_path(&cache, top, foot, &mut path).reached;
+                if !up || !down {
+                    failures.push(format!(
+                        "{at} sube={up} baja={down} (estrado de {} cm)",
+                        dais.top_y_cm - dais.bottom_y_cm
+                    ));
+                }
+            }
+        }
+    }
+    println!(
+        "[wg3-dais] {total} estrados recorridos en {} semillas × {} regiones",
+        seeds.len(),
+        NEAR_REGIONS.len()
+    );
+    assert!(total > 0, "el productor no ha emitido ningún estrado");
+    assert!(
+        failures.is_empty(),
+        "{} de {total} estrados no se recorren:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
 /// Sonda (ADR-122 B2): recorre la rampa `WG3_PROBE_RAMP="seed,rx,rz,x_cm,z_cm"` cada 50 cm a lo largo
 /// de su eje, del borde bajo al alto, e imprime por punto el suelo del ráster, el techo libre, si la
 /// navegación lo acepta y las cotas que ofrece a sus cuatro vecinas.
