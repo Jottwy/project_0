@@ -36,40 +36,47 @@ namespace BackroomsSurvival.Migration.STPIntegration
         [Tooltip("Per-category grip poses. Calibrate the asset live during Play.")]
         [SerializeField] private GripPoseSet _gripPoses;
 
-        [Header("Agarre medido (objetos con manivela: la linterna)")]
-        [Tooltip("Aire entre el borde del meñique y la manivela, a lo largo del eje del objeto (m).")]
-        [SerializeField, Min(0f)] private float _crankClearance = 0.01f;
+        // ─── Agarre medido (objetos con manivela: la linterna) ───────────────────────────────────────────
+        // AJUSTES DE CÓDIGO, `readonly` y NO serializados a propósito: el valor por defecto de un [SerializeField] queda
+        // congelado en el prefab ya importado y un número cambiado aquí no llega al juego ni avisa (medido 14-09:
+        // _holdDown 0,60 -> 0,28 dio una captura idéntica al decimal). Cambiarlos es cambiar el código.
 
-        [Tooltip("Muñeca por debajo del hombro, en fracción del largo del brazo. Era 0,72; Joel pidió subirla (14-09).")]
-        [SerializeField] private float _holdDown = 0.60f;
+        // Aire entre el borde del meñique y la manivela, a lo largo del eje del objeto (m).
+        private readonly float _crankClearance = 0.01f;
 
-        [Tooltip("Muñeca por delante del hombro, en fracción del largo del brazo: el brazo algo levantado.")]
-        [SerializeField] private float _holdForward = 0.56f;
+        // Muñeca por debajo del hombro, en fracción del largo del brazo. 0,72 -> 0,60 (subirla un poco) -> 0,28:
+        // Joel pidió las manos al pecho con la linterna a dos manos (14-09); a 0,60 quedaban a la altura de la cadera.
+        private readonly float _holdDown = 0.28f;
 
-        [Tooltip("Muñeca hacia fuera del hombro (m). Con 0 la mano quedaba delante de la entrepierna (captura 14-09).")]
-        [SerializeField] private float _holdOutward = 0.06f;
+        // Muñeca por delante del hombro, en fracción del largo del brazo: el brazo algo levantado.
+        private readonly float _holdForward = 0.56f;
 
-        [Tooltip("Codo hacia fuera, en fracción del largo del brazo: cuanto menos, más pegado al costado.")]
-        [SerializeField] private float _elbowOutward = 0.15f;
+        // Muñeca hacia fuera del hombro (m). Con 0 la mano quedaba delante de la entrepierna (captura 14-09).
+        private readonly float _holdOutward = 0.06f;
 
-        [Tooltip("Muñeca respecto del hombro cuando el objeto es a DOS MANOS (con manivela): negativa = hacia el " +
-                 "centro del cuerpo, para que la izquierda llegue al pomo (m).")]
-        [SerializeField] private float _twoHandOutward = -0.07f;
+        // Codo hacia fuera, en fracción del largo del brazo: cuanto menos, más pegado al costado.
+        private readonly float _elbowOutward = 0.15f;
 
-        [Tooltip("Cierre de anular y meñique de la mano del pomo, que no caben en una pieza corta: se RECOGEN " +
-                 "(lección de la izquierda en la manivela de primera persona, ADR-150 enm. 3).")]
-        [SerializeField, Range(0f, 110f)] private float _tuckedFingersDegrees = 75f;
+        // Muñeca respecto del hombro cuando el objeto es a DOS MANOS: negativa = hacia el centro, para que la izquierda
+        // llegue al pomo (m). Era −0,07; Joel pidió la izquierda «más espaciada» (14-09).
+        private readonly float _twoHandOutward = -0.03f;
 
-        [Tooltip("Giro PREFERIDO de la palma hacia abajo, en grados. Sólo desempata: el giro real lo elige la " +
-                 "búsqueda de naturalidad del brazo.")]
-        [SerializeField, Range(0f, 60f)] private float _palmDownDegrees = 20f;
+        // Por debajo de esta distancia entre los nudillos de las dos manos se castiga que se amontonen (m). Era 0,05.
+        private readonly float _handsApart = 0.08f;
 
-        [Tooltip("La linterna se lleva algo inclinada hacia el suelo de delante, sumada al cabeceo del vecino. " +
-                 "Con 0 y cabeceo 0 el haz salía horizontal a la altura de la cadera y no alumbraba nada cercano.")]
-        [SerializeField, Range(0f, 45f)] private float _beamDownBias = 12f;
+        // Cierre de anular y meñique de la mano del pomo, que no caben en una pieza corta: se RECOGEN (lección de la
+        // izquierda en la manivela de primera persona, ADR-150 enm. 3).
+        private readonly float _tuckedFingersDegrees = 75f;
 
-        [Tooltip("Tope del cabeceo que sigue la linterna, en grados.")]
-        [SerializeField, Range(0f, 90f)] private float _beamPitchClamp = 60f;
+        // Giro PREFERIDO de la palma hacia abajo, en grados. Sólo desempata: el giro real lo elige la búsqueda.
+        private readonly float _palmDownDegrees = 20f;
+
+        // La linterna se lleva algo inclinada hacia el suelo de delante, sumada al cabeceo del vecino. Con 0 y
+        // cabeceo 0 el haz salía horizontal a la altura de la cadera y no alumbraba nada cercano.
+        private readonly float _beamDownBias = 12f;
+
+        // Tope del cabeceo que sigue la linterna, en grados.
+        private readonly float _beamPitchClamp = 60f;
 
         // Right-hand finger bones of the MaleSurvivor skeleton, grouped by the two curl scalars.
         private static readonly string[] ThumbBoneNames =
@@ -116,13 +123,19 @@ namespace BackroomsSurvival.Migration.STPIntegration
         private bool _thumbAlongFinger;
 
         // Elección del brazo por naturalidad (port de la búsqueda de primera persona, 2026-09-14).
-        private static readonly float[] RollCandidates = { -20f, 10f, 40f, 70f };
-        private static readonly float[] TiltCandidates = { -40f, -20f, 0f, 20f, 40f };
+        // A la altura del pecho la muñeca derecha medía 54° de cubital con inclinación ±40° y giro 70°, y mirando 30°
+        // abajo 112° de extensión: el barrido se quedaba corto. Más giro, inclinación hasta ±60° y la linterna algo
+        // cruzada hacia la línea media (un gesto natural con dos manos).
+        private static readonly float[] RollCandidates = { -50f, -20f, 10f, 40f, 70f, 100f };
+        private static readonly float[] TiltCandidates = { -60f, -30f, 0f, 30f, 60f };
         private static readonly float[] HeightCandidates = { -0.08f, 0f, 0.08f };
+        private static readonly float[] YawCandidates = { 0f, -15f };
         private const int PoleCount = 3;
         private const float RechooseDegrees = 8f;
+        private const float RechooseSeconds = 0.5f;
         private bool _hasChoice;
-        private float _choiceRoll, _choiceTilt, _choiceHeight, _choicePitch;
+        private float _choiceRoll, _choiceTilt, _choiceHeight, _choiceYaw, _choicePitch;
+        private float _nextChooseTime;
         private int _choicePole;
         private Quaternion _upperRest, _lowerRest, _handRest;
 
@@ -140,7 +153,8 @@ namespace BackroomsSurvival.Migration.STPIntegration
         private float _knobRadius;
         private bool _twoHanded;
         private bool _hasLeftChoice, _leftCurlSolved;
-        private float _leftClock, _leftSign = 1f;
+        private float _leftClock, _leftSign = 1f, _leftTilt;
+        private static readonly float[] LeftTiltCandidates = { -30f, -15f, 0f, 15f, 30f };
         private int _leftPole;
         private readonly float[] _leftCurl = new float[2];
         private float _leftThumb;
@@ -363,9 +377,12 @@ namespace BackroomsSurvival.Migration.STPIntegration
             // la palma sobre el eje del haz, el codo y cuánto adelantar la mano, y gana el de menor coste con la
             // medida de primera persona (ProxyArmNaturalness). Se elige al coger el objeto y cuando el cabeceo cambia
             // de verdad; entre medias se reaplica la elección — elegir en cada fotograma alterna y tiembla (ADR-150).
-            if (!_hasChoice || Mathf.Abs(pitch - _choicePitch) > RechooseDegrees)
+            if (!_hasChoice || (Mathf.Abs(pitch - _choicePitch) > RechooseDegrees && Time.time >= _nextChooseTime))
+            {
                 ChooseRightArm(beam, pitch);
-            LastArmCost = PoseRightArm(_choiceRoll, _choiceTilt, _choicePole, _choiceHeight, beam);
+                _nextChooseTime = Time.time + RechooseSeconds;
+            }
+            LastArmCost = PoseRightArm(_choiceRoll, _choiceTilt, _choicePole, _choiceHeight, _choiceYaw, beam);
 
             var frame = Frame();
             float grip = ProxyGripSolver.GripAlongAxis(_bodyCentreY, _halfLength, frame.Width, true, _crankY, _crankClearance);
@@ -433,20 +450,22 @@ namespace BackroomsSurvival.Migration.STPIntegration
             _handRest = _hand.localRotation;
 
             float best = float.MaxValue;
-            float bestRoll = _choiceRoll, bestTilt = _choiceTilt, bestHeight = _choiceHeight;
+            float bestRoll = _choiceRoll, bestTilt = _choiceTilt, bestHeight = _choiceHeight, bestYaw = _choiceYaw;
             int bestPole = _choicePole;
+            foreach (float yaw in YawCandidates)
             foreach (float roll in RollCandidates)
             foreach (float tilt in TiltCandidates)
             foreach (float height in HeightCandidates)
             for (int pole = 0; pole < PoleCount; pole++)
             {
                 RestoreArm();
-                float cost = PoseRightArm(roll, tilt, pole, height, beam)
+                float cost = PoseRightArm(roll, tilt, pole, height, yaw, beam)
                     + 0.2f * Sq((roll - _palmDownDegrees) / 60f)
-                    + 0.1f * Sq(tilt / 40f); // a igualdad, el objeto más alineado con los nudillos
+                    + 0.1f * Sq(tilt / 40f)   // a igualdad, el objeto más alineado con los nudillos
+                    + 0.1f * Sq(yaw / 15f);   // y apuntando recto
                 // A igualdad se queda la que había: dos opciones de coste parecido no alternan.
                 if (_hasChoice && Mathf.Approximately(roll, _choiceRoll) && Mathf.Approximately(tilt, _choiceTilt)
-                    && Mathf.Approximately(height, _choiceHeight) && pole == _choicePole)
+                    && Mathf.Approximately(height, _choiceHeight) && Mathf.Approximately(yaw, _choiceYaw) && pole == _choicePole)
                     cost -= 0.05f;
                 if (cost >= best)
                     continue;
@@ -454,6 +473,7 @@ namespace BackroomsSurvival.Migration.STPIntegration
                 bestRoll = roll;
                 bestTilt = tilt;
                 bestHeight = height;
+                bestYaw = yaw;
                 bestPole = pole;
             }
             RestoreArm();
@@ -464,6 +484,7 @@ namespace BackroomsSurvival.Migration.STPIntegration
             _choiceRoll = bestRoll;
             _choiceTilt = bestTilt;
             _choiceHeight = bestHeight;
+            _choiceYaw = bestYaw;
             _choicePole = bestPole;
             _choicePitch = pitch;
             _hasChoice = true;
@@ -481,9 +502,10 @@ namespace BackroomsSurvival.Migration.STPIntegration
         /// el codo hacia <paramref name="pole"/>, mano con los nudillos por el haz y la palma girada
         /// <paramref name="roll"/> grados desde la línea media, y la mitad de esa torsión pasada al antebrazo.
         /// </summary>
-        private float PoseRightArm(float roll, float tilt, int pole, float height, Vector3 beam)
+        private float PoseRightArm(float roll, float tilt, int pole, float height, float yaw, Vector3 beam)
         {
             Transform root = transform;
+            beam = Quaternion.AngleAxis(yaw, root.up) * beam;
             float armLength = Vector3.Distance(_upperArm.position, _lowerArm.position)
                 + Vector3.Distance(_lowerArm.position, _hand.position);
             Vector3 shoulder = _upperArm.position;
@@ -537,13 +559,14 @@ namespace BackroomsSurvival.Migration.STPIntegration
             _handLRest = _handL.localRotation;
 
             float best = float.MaxValue;
-            float bestClock = _leftClock, bestSign = _leftSign;
+            float bestClock = _leftClock, bestSign = _leftSign, bestTilt = _leftTilt;
             int bestPole = _leftPole;
 
-            void Try(float clock, float sign, int pole)
+            void Try(float clock, float sign, float tilt, int pole)
             {
                 RestoreLeftArm();
-                float cost = PoseLeftArm(clock, sign, pole, knob, axis, bodyAxisPoint, bodyAxisDir, rightKnuckles);
+                float cost = PoseLeftArm(clock, sign, tilt, pole, knob, axis, bodyAxisPoint, bodyAxisDir, rightKnuckles)
+                    + 0.1f * Sq(tilt / 30f);
                 if (_hasLeftChoice && Mathf.Approximately(sign, _leftSign) && pole == _leftPole)
                     cost -= 0.05f;
                 if (cost >= best)
@@ -551,20 +574,25 @@ namespace BackroomsSurvival.Migration.STPIntegration
                 best = cost;
                 bestClock = clock;
                 bestSign = sign;
+                bestTilt = tilt;
                 bestPole = pole;
             }
 
             if (!_hasLeftChoice)
             {
+                // Con inclinación: el pomo cruza la mano en diagonal, lo mismo que dejó la muñeca derecha en 0.
+                // Sin ella la izquierda medía 94° de pronación y 24° de flexión («la muñeca medio rota», Joel 14-09).
                 for (float clock = 0f; clock < 360f; clock += 30f)
                     foreach (float sign in new[] { 1f, -1f })
-                        for (int pole = 0; pole < PoleCount; pole++)
-                            Try(clock, sign, pole);
+                        foreach (float tilt in LeftTiltCandidates)
+                            for (int pole = 0; pole < PoleCount; pole++)
+                                Try(clock, sign, tilt, pole);
             }
             else
             {
                 for (float clock = _leftClock - 30f; clock <= _leftClock + 30f + 1e-3f; clock += 15f)
-                    Try(clock, _leftSign, _leftPole);
+                    for (float tilt = _leftTilt - 15f; tilt <= _leftTilt + 15f + 1e-3f; tilt += 15f)
+                        Try(clock, _leftSign, Mathf.Clamp(tilt, -30f, 30f), _leftPole);
             }
 
             RestoreLeftArm();
@@ -572,10 +600,11 @@ namespace BackroomsSurvival.Migration.STPIntegration
                 _leftCurlSolved = false;
             _leftClock = Mathf.Repeat(bestClock, 360f);
             _leftSign = bestSign;
+            _leftTilt = bestTilt;
             _leftPole = bestPole;
             _hasLeftChoice = true;
 
-            LastLeftArmCost = PoseLeftArm(_leftClock, _leftSign, _leftPole, knob, axis, bodyAxisPoint, bodyAxisDir, rightKnuckles);
+            LastLeftArmCost = PoseLeftArm(_leftClock, _leftSign, _leftTilt, _leftPole, knob, axis, bodyAxisPoint, bodyAxisDir, rightKnuckles);
 
             var frame = FrameL();
             if (!_leftCurlSolved)
@@ -611,7 +640,7 @@ namespace BackroomsSurvival.Migration.STPIntegration
         /// codo hacia <paramref name="pole"/>. Coste = naturalidad del brazo + no llegar + nudillos dentro de la
         /// linterna + manos pisándose.
         /// </summary>
-        private float PoseLeftArm(float clock, float sign, int pole, Vector3 knob, Vector3 axis,
+        private float PoseLeftArm(float clock, float sign, float tilt, int pole, Vector3 knob, Vector3 axis,
             Vector3 bodyAxisPoint, Vector3 bodyAxisDir, Vector3 rightKnuckles)
         {
             Transform root = transform;
@@ -621,7 +650,7 @@ namespace BackroomsSurvival.Migration.STPIntegration
             reference.Normalize();
 
             Vector3 palm = Quaternion.AngleAxis(clock, axis) * reference; // de la mano hacia el pomo
-            Vector3 knuckleAxis = axis * sign;
+            Vector3 knuckleAxis = Quaternion.AngleAxis(tilt, palm) * (axis * sign);
             Vector3 knuckleTarget = knob - palm * (_knobRadius + ProxyGripSolver.SkinMetres);
 
             var frame = FrameL();
@@ -647,8 +676,9 @@ namespace BackroomsSurvival.Migration.STPIntegration
             cost += 4f * Sq(LastLeftKnobMiss / 0.02f);
             if (ProxyGripSolver.DistanceToCylinder(frame.KnuckleCentre, bodyAxisPoint, bodyAxisDir, _radius) < ProxyGripSolver.SkinMetres)
                 cost += 20f;
-            if (Vector3.Distance(frame.KnuckleCentre, rightKnuckles) < 0.05f)
-                cost += 10f;
+            float apart = Vector3.Distance(frame.KnuckleCentre, rightKnuckles);
+            if (apart < _handsApart)
+                cost += 10f * Sq((_handsApart - apart) / _handsApart);
             return cost;
         }
 
