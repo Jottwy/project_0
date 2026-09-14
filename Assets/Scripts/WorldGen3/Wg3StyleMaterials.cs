@@ -244,6 +244,20 @@ namespace BackroomsSurvival.WorldGen3
 
         private const string PoolTilePath = "Wg3Materials/Wg3_PoolTile";
 
+        /// <summary>ADR-152 P2 — el azulejo NO es metal. <c>Tiles 1</c> trae de HDRP una MaskMap
+        /// (R metal, G oclusión, A brillo) enchufada en <c>_MetallicGlossMap</c>, y URP lee su R
+        /// (175/255 de media) como metálico al 69 %: sin sonda de reflejos el albedo casi blanco se
+        /// pintaba gris oscuro. Se quita en la variante y no en el .mat (editar YAML a mano es
+        /// frágil).</summary>
+        private static void MakeTileDielectric(Material m)
+        {
+            if (m.HasProperty("_MetallicGlossMap")) m.SetTexture("_MetallicGlossMap", null);
+            m.DisableKeyword("_METALLICSPECGLOSSMAP");
+            m.DisableKeyword("_METALLICGLOSSMAP");
+            if (m.HasProperty("_Metallic")) m.SetFloat("_Metallic", 0f);
+            if (m.HasProperty("_Smoothness")) m.SetFloat("_Smoothness", 0.6f);
+        }
+
         private static Material[] Build(Wg3Materials baseSet, byte style, Wg3Look look)
         {
             Material[] source = baseSet.AsArray();
@@ -275,6 +289,9 @@ namespace BackroomsSurvival.WorldGen3
                     variant.SetColor("_BaseColor", source[i].GetColor("_BaseColor") * factors[i]);
                 if (variant.HasProperty("_Color"))
                     variant.SetColor("_Color", source[i].GetColor("_Color") * factors[i]);
+                if (style == PoolStyle && Overrides.TryGetValue(PoolTilePath, out Material tile)
+                    && ReferenceEquals(source[i], tile))
+                    MakeTileDielectric(variant);
 
                 mats[i] = variant;
             }
