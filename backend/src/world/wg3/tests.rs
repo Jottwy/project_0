@@ -5861,8 +5861,9 @@ fn building_of(rx: i32, rz: i32) -> plan::RegionBuilding {
     let region = Wg3RegionCoord { x: rx, z: rz };
     let bounds = region.bounds();
     let gates = junction::gates_of_region(composer_seed(SERVED_SEED), rx, rz, bounds);
-    plan::plan_building_at(
+    plan::plan_building_zoned(
         region.composer_seed(SERVED_SEED),
+        composer_seed(SERVED_SEED),
         bounds,
         &gates,
         STOREYS,
@@ -5881,8 +5882,9 @@ fn served_building_of(rx: i32, rz: i32) -> plan::RegionBuilding {
     let region = Wg3RegionCoord { x: rx, z: rz };
     let bounds = region.bounds();
     let gates = junction::gates_of_region(composer_seed(SERVED_SEED), rx, rz, bounds);
-    plan::plan_building_at(
+    plan::plan_building_zoned(
         region.composer_seed(SERVED_SEED),
+        composer_seed(SERVED_SEED),
         bounds,
         &gates,
         plan::REGION_STOREYS,

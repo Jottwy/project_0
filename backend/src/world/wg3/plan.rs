@@ -1810,6 +1810,10 @@ pub struct RegionBuilding {
     /// mundos distintos ponían los agujeros en el mismo sitio si un espacio caía igual — y ningún
     /// test lo veía porque el resultado seguía siendo determinista.
     pub seed: i32,
+    /// ADR-155 L1a — la semilla del MUNDO para el campo del bioma laberinto (`density::in_maze_zone`).
+    /// No la de la región: con ella cada región sortearía un campo distinto y la zona se cortaría en
+    /// cada borde. `None` = sin bioma, que es lo que planifican las sondas sin mundo.
+    pub zone_seed: Option<i32>,
 }
 
 impl RegionBuilding {
@@ -1942,7 +1946,36 @@ pub fn plan_building_at(
     storeys: usize,
     basements: usize,
 ) -> RegionBuilding {
-    plan_building_deep(seed, bounds, gates, storeys, basements, CEILING_VARIETY)
+    plan_building_deep(
+        seed,
+        bounds,
+        gates,
+        storeys,
+        basements,
+        CEILING_VARIETY,
+        None,
+    )
+}
+
+/// [`plan_building_at`] con la semilla del mundo para el bioma laberinto (ADR-155): lo que sirve
+/// el backend y lo que mide el validador.
+pub fn plan_building_zoned(
+    seed: i32,
+    zone_seed: i32,
+    bounds: (f32, f32, f32, f32),
+    gates: &[Wg3Gate],
+    storeys: usize,
+    basements: usize,
+) -> RegionBuilding {
+    plan_building_deep(
+        seed,
+        bounds,
+        gates,
+        storeys,
+        basements,
+        CEILING_VARIETY,
+        Some(zone_seed),
+    )
 }
 
 /// [`plan_building`] con la perilla de techos a la vista. Ver [`CEILING_VARIETY`].
@@ -1953,7 +1986,7 @@ pub fn plan_building_with(
     storeys: usize,
     ceiling_variety: f32,
 ) -> RegionBuilding {
-    plan_building_deep(seed, bounds, gates, storeys, 0, ceiling_variety)
+    plan_building_deep(seed, bounds, gates, storeys, 0, ceiling_variety, None)
 }
 
 /// ADR-130 D3 — el edificio entero: `storeys` plantas hacia arriba (contando la calle) y
@@ -1969,6 +2002,7 @@ pub fn plan_building_deep(
     storeys: usize,
     basements: usize,
     ceiling_variety: f32,
+    zone_seed: Option<i32>,
 ) -> RegionBuilding {
     // La planta baja SÍ se hunde: debajo de ella no hay nada que perforar… **salvo que haya
     // sótanos** (ADR-130). Una terraza hundida a −12 es exactamente la losa del techo de B1 —
@@ -2297,6 +2331,7 @@ pub fn plan_building_deep(
         wells,
         seed,
         ground,
+        zone_seed,
     }
 }
 
