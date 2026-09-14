@@ -2738,6 +2738,100 @@ fn every_dais_is_reachable_both_ways() {
     );
 }
 
+/// ADR-151 enm. 2 — **toda grada es continua y se sube escalón a escalón**: cada escalón alto está
+/// abrazado por el de 40 menos (misma pared, mismo largo, sin hueco) y se sube desde la cara de ése por
+/// su peldaño, y se baja. Con `every_dais_is_reachable_both_ways` para el primero, la grada entera se
+/// recorre.
+#[test]
+fn every_tier_is_contiguous_and_climbable() {
+    use super::collision::Wg3CollisionCache;
+    use super::nav;
+    use super::world::Wg3WorldCache;
+    use crate::world::Vec3;
+
+    const BODY_M: f32 = 1.8;
+    let m = real_manifest();
+    // Doce semillas como mínimo, también con `WG3_SWEEP_SEEDS=3`: la grada sólo cabe en naves altas, y
+    // con tres semillas no sale ninguna.
+    let seeds = validate::sweep_seeds(sweep_seed_count(12).max(12));
+    let mut total = 0usize;
+    let mut failures: Vec<String> = Vec::new();
+    for &seed in &seeds {
+        for &(rx, rz) in NEAR_REGIONS.iter() {
+            let inside = validate::region_inside(&m, seed, Wg3RegionCoord { x: rx, z: rz });
+            let solids = &inside.filled.solids;
+            for d in solids.iter().filter(|t| super::fill::is_dais(t)) {
+                let (dx0, dz0) = (d.x_cm, d.z_cm);
+                let (dx1, dz1) = (d.x_cm + d.size_x_cm, d.z_cm + d.size_z_cm);
+                let Some(e) = solids.iter().find(|e| {
+                    super::fill::is_dais(e)
+                        && e.bottom_y_cm == d.bottom_y_cm
+                        && e.top_y_cm == d.top_y_cm - 40
+                        && e.x_cm < dx1
+                        && e.x_cm + e.size_x_cm > dx0
+                        && e.z_cm < dz1
+                        && e.z_cm + e.size_z_cm > dz0
+                }) else {
+                    continue;
+                };
+                total += 1;
+                let at = format!("semilla {seed:#x} región ({rx},{rz}): escalón {d:?} sobre {e:?}");
+                let (ex1, ez1) = (e.x_cm + e.size_x_cm, e.z_cm + e.size_z_cm);
+                if !(e.x_cm <= dx0 && e.z_cm <= dz0 && ex1 >= dx1 && ez1 >= dz1) {
+                    failures.push(format!("{at} no lo abraza"));
+                    continue;
+                }
+                // El frente: el único lado por el que el de abajo sobresale.
+                let (mx, mz) = ((dx0 + dx1) / 2, (dz0 + dz1) / 2);
+                let (fx, fz, ox, oz) = if e.z_cm < dz0 {
+                    (mx, dz0, 0, -1)
+                } else if ez1 > dz1 {
+                    (mx, dz1, 0, 1)
+                } else if e.x_cm < dx0 {
+                    (dx0, mz, -1, 0)
+                } else if ex1 > dx1 {
+                    (dx1, mz, 1, 0)
+                } else {
+                    failures.push(format!("{at} sin frente"));
+                    continue;
+                };
+                // Pie en la cara del de abajo pasado el peldaño; cima un metro dentro.
+                let foot = Vec3::new(
+                    (fx + ox * 130) as f32 * 0.01,
+                    e.top_y_cm as f32 * 0.01 + BODY_M,
+                    (fz + oz * 130) as f32 * 0.01,
+                );
+                let top = Vec3::new(
+                    (fx - ox * 100) as f32 * 0.01,
+                    d.top_y_cm as f32 * 0.01 + BODY_M,
+                    (fz - oz * 100) as f32 * 0.01,
+                );
+                let mut worlds = Wg3WorldCache::default();
+                let mut cache = Wg3CollisionCache::new();
+                cache.prewarm_for_move(&mut worlds, &m, seed, foot, top);
+                let mut path = Vec::new();
+                let up = nav::find_path(&cache, foot, top, &mut path).reached;
+                let down = nav::find_path(&cache, top, foot, &mut path).reached;
+                if !up || !down {
+                    failures.push(format!("{at} sube={up} baja={down}"));
+                }
+            }
+        }
+    }
+    println!(
+        "[wg3-tiers] {total} escalones de grada en {} semillas × {} regiones",
+        seeds.len(),
+        NEAR_REGIONS.len()
+    );
+    assert!(total > 0, "el productor no ha emitido ninguna grada");
+    assert!(
+        failures.is_empty(),
+        "{} de {total} escalones de grada fallan:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
 /// Sonda (ADR-122 B2): recorre la rampa `WG3_PROBE_RAMP="seed,rx,rz,x_cm,z_cm"` cada 50 cm a lo largo
 /// de su eje, del borde bajo al alto, e imprime por punto el suelo del ráster, el techo libre, si la
 /// navegación lo acepta y las cotas que ofrece a sus cuatro vecinas.
