@@ -104,4 +104,6 @@ números y las perillas están en el ADR; el primer día es una sesión de `plan
 - Nada nuevo de gramática fuera del día 4. Si aparece una idea buena, va a la lista v2.
   **Excepción (Joel, 13-09):** los estrados de 40–120 cm con acceso (ADR-151, fase C) entran por petición expresa, y
   cumplen la misma regla de medida que cualquier día: barrido de 27 regiones antes y después.
+  **Excepción (Joel, 14-09):** gradas (ADR-151 enm. 2), piscina vacía (ADR-152) y abismo (ADR-153), en ese orden y con
+  la misma regla de medida. El abismo no abre la verticalidad de la lista v2: se cruza y se cae, no se recorre.
 - Rojo de `cargo test` es nuevo siempre; el barrido de 27 regiones se corre al cerrar cada día.

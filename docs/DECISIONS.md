@@ -18596,3 +18596,189 @@ alternaba entre opciones de coste parecido (10–39° de giro por fotograma).
 - Se empieza por C1.
 
 ---
+
+## ADR-151 — Enmienda 1: C1 hecha y vista en Play, y el suelo de la sala encima (2026-09-14) — ACEPTADA
+
+- **C1** en tronco (`73318762` feat, `501c22c0` test). Barrido de 27 regiones: 27/27, mancha mayor 99,7 %, 6,0 islas, nav
+  100 % (antes 182857 cotas, después 182849). 31 estrados, todos legales y recorribles en los dos sentidos.
+- **Desviaciones de D1/D3, medidas:**
+  - Largo = **media pared** (3–12 m) en tres sitios a lo largo (centro y extremos), no la pared entera: una pared entera
+    casi siempre tiene una boca o un pilar. Con la pared entera salía 1 estrado en 27 regiones.
+  - El `keep_out` mira los **vanos reales** que atraviesan la losa, no los cuadrados candidatos de `hole_squares_above`,
+    que cubrían el centro de toda sala con planta encima.
+  - Peldaño de **60 × 200** (no 50 × ≥ 150): con 60 una celda de 50 del ráster nunca cae entre dos peldaños.
+  - Frecuencia real ≈ 1,1 estrados por región con `DAIS_CHANCE` 0,15.
+- **Play** (arnés de captura, `CharacterController` a 1,4 m/s): sube 40, 60 (dos) y 80 en planta 1 y baja 60; salto
+  máximo por paso 9 cm.
+- **Suelo encima** (Joel, 14-09: «ponle suelo de la sala encima»; enmienda D6 y «material propio» de «Lo que NO decide»):
+  el cliente reconoce estrado y peldaño por la forma (`Wg3Looks.IsWalkableTop`, espejo de `fill::is_dais`/`is_dais_step`)
+  y remata la caja con 2 cm de volumen `Floor`: la cara de arriba lleva el suelo del estilo de la sala (moqueta de
+  oficina en despachos). Misma caja total, colisión igual, sin wire; la tarima de 20 no entra (`5023f1ba`).
+
+---
+
+## ADR-151 — Enmienda 2: GRADAS, estrados escalonados en la misma pared (2026-09-14) — PROPUESTA (Joel: «gradas»)
+
+### D1 — Qué es una grada
+
+- Dos o tres estrados pegados a la **misma** pared, uno delante de otro: **40/80** o **40/80/120**, cada escalón de
+  grada con fondo 200 y el mismo largo. Cada escalón es un `Wg3Solid` caja desde el suelo de la sala: por forma sigue
+  siendo `is_dais` y el cliente le pone suelo encima sin tocar nada.
+- Acceso: una fila de peldaños de 20 × 60 × 200 centrada, del suelo al primer escalón y de cada escalón al siguiente
+  (un peldaño por cada 40 de salto). El peldaño se apoya en el suelo de la sala y atraviesa el escalón de abajo.
+- Fondo total = escalones × 200 + peldaños × 60 + rellano 100 (≈ 8,8 m con tres): sólo naves. Techo como D1:
+  40/80/120 pide 360 libres (Hall, Spine); 40/80 pide 320.
+
+### D2 — Dónde y cuánto
+
+- Sale del mismo sorteo que el estrado pegado: de los estrados pegados que caben, `TIERS_SHARE` ≈ 0,25 son grada (salas
+  ≥ 100 m² con el fondo de D1 libre). El resto de reglas de C1 (media pared, tres sitios, vanos, bocas, macizos) igual.
+- Sin pretil en los escalones intermedios; el más alto sigue D4.
+
+### D3 — Tests
+
+- `every_dais_is_legal` y `every_dais_is_reachable_both_ways` ya cubren cada escalón: el test de recorrido encuentra la
+  cadena de peldaños de cada salto. Se añade `tiers_are_contiguous`: escalones de la misma grada pegados, sin hueco.
+- Barrido de 27 regiones antes y después.
+
+### Rebanada
+
+- **C1b** Rust (≤ 300 líneas), antes de C2. C2 (rampa y pretiles) y C3 (exento, pared a pared) siguen igual.
+
+---
+
+## ADR-152 — La PISCINA VACÍA: un vaso hundido en el suelo de la planta baja, con escalera dentro (2026-09-14) — PROPUESTA (Joel pidió «piscina vacía» el 14-09; código sólo tras su aprobación)
+
+### Contexto
+
+- Todo lo que hay SUBE (tarima, estrado, rampa); lo único que baja es el pozo de ADR-126, y es trampa sin salida (sus
+  cuerdas están en la lista v2). Una piscina seca es la primera cosa que baja y tiene salida, y es de las referencias
+  más reconocibles del mito (Poolrooms) metida en el mundo híbrido.
+- Reutiliza el mecanismo del pozo (`fill::pit_geometry`): vano en la losa + fondo y paredes como `Wg3Solid`. La losa mide
+  12 (`SLAB_THICKNESS_CM`); bajo la planta baja de una región sin torre no hay nada hasta −10 m.
+
+### D1 — Qué es una piscina
+
+- Vaso rectangular de **400–1200 × 300–800**, profundidad **h ∈ {120, 150, 180}**, alineado a 50 cm de mundo.
+- Espacio elegible: **planta baja de una región SIN torre** (`building.ground == 0`, como los pozos: en una torre el vaso
+  entraría en el sótano), construido, no compuesto, `rise_cm == 0`, no circulación, no escalera, no atrio, área ≥ 80 m².
+- **Exclusiva**: una sala con pozos, tarima o estrado no lleva piscina (se sortea después de los pozos y antes de la
+  tarima). Huella con margen dentro de UN solo tramo (la regla de `pit_cluster_of`), 150 libres ante toda boca, fuera de
+  los pozos de escalera.
+- Sorteo por centro de sala con `SALT_POOL`; `POOL_CHANCE` ≈ 0,06 × (1 − decaimiento). A medir en el barrido.
+
+### D2 — Geometría
+
+- Un `Wg3Carve` que abre la losa en la huella (como el del pozo).
+- Fondo: caja de 12 bajo `floor − h`. Paredes: cuatro cajas de `WALL_T_CM` por FUERA de la huella, de `floor − h` a
+  `floor − 12`. Estilo nuevo **`POOL_STYLE` = 9** (azulejo). Sin bordillo con colisión: un canto de 5 cm sería un
+  tropiezo; si hace falta, decoración.
+
+### D3 — Acceso obligatorio
+
+- Escalera dentro, pegada a un lado corto: peldaños de 20 × 60 × 200 (los del estrado) apoyados en el fondo, el más alto
+  a `floor − 20`. 150 → 7 peldaños, 4,2 m. Rampa no: pediría 9 m.
+- Si no cabe la escalera con 100 de rellano en el fondo, no hay piscina.
+
+### D4 — Bordes
+
+- **Sin pretil**: una piscina real no lo lleva. Caída de 1,2–1,8 m con el daño del vendor. `nav::floors_at` sólo baja un
+  escalón: una criatura entra y sale por la escalera.
+
+### D5 — Sin wire
+
+- Vano, cajas y peldaños ya existen. El estilo 9 es un valor nuevo en un byte que ya viaja: el cliente lo pinta con el
+  tinte por defecto (`Wg3StyleMaterials`, `default`) hasta que tenga material. Sin bump.
+
+### D6 — Tests
+
+- `every_pool_is_legal`: profundidad en la lista, fondo y cuatro paredes cerrados, región sin torre, dentro de un tramo.
+- `every_pool_is_reachable_both_ways`: `nav::find_path` del suelo al fondo y de vuelta.
+- El fondo del vaso entra en la mancha mayor por la escalera: si sale como isla, falla el barrido.
+- Barrido de 27 regiones antes y después; conectividad desde el spawn (regla dura 13).
+
+### Rebanadas
+
+- **P1** Rust: vaso + escalera + tests. **P2** cliente: material de azulejo del estilo 9. **P3** Play: capturas y paseo
+  con el arnés. **P4** docs: enmienda de estado.
+
+### Lo que NO decide
+
+- Agua, charcos o sonido de eco. Loot en el fondo (anclas de ADR-129, después). Piscinas en plantas altas o en torres.
+
+---
+
+## ADR-153 — EL ABISMO: un pozo circular de cientos de metros hacia abajo y hacia arriba, cruzado por una pasarela (2026-09-14) — PROPUESTA (idea de Joel del 14-09; código sólo tras su aprobación)
+
+### Contexto
+
+- Joel, 14-09: «una pasarela sobre un atrio… que las paredes sean circulares con muchísimas luces hacia abajo… cientos de
+  metros hacia abajo y que si te caes pues eso, y muchísimos metros hacia arriba también… da mal rollo».
+- Respuestas de Joel: si te caes, **mueres**; entra como **excepción tras gradas y piscina**; pasarela **con y sin
+  pretil, sorteado**.
+- La verticalidad está en la lista v2 de `WG3-ALPHA1-ROADMAP.md`. El abismo NO la abre: no se recorre hacia arriba ni
+  hacia abajo, sólo se cruza y se cae. Excepción anotada allí.
+- Piezas que ya existen: el vacío de atrio a través de plantas (`void_storeys_above`, `atrium_carves`), la cámara de pozo
+  bajo la planta baja (ADR-126, hasta −50 m), el giro en macizos (ADR-121) y la decoración sin colisión.
+
+### D1 — Qué es
+
+- Un cilindro de **Ø 24–40 m** que atraviesa la columna entera de la región: fondo a **floor − D**, boca superior a
+  **floor + U**, con D y U sorteados en **200–400 m**.
+- Pared: polígono de 40–48 lados, cajas giradas (ADR-121) de 50 de grueso troceadas a `MAX_SOLID_CM`. Estilo nuevo
+  **`ABYSS_STYLE` = 10**. Fondo: losa a `floor − D` (el ráster necesita un suelo; nadie llega vivo).
+- Máximo **uno por región**, sólo en regiones sin torre.
+
+### D2 — Dónde
+
+- Una nave de la planta baja que contenga el círculo con 300 de rellano hasta sus paredes; el círculo es un vacío
+  reservado **en el PLAN** en todas las plantas de encima (como la megasala de atrio, que ya sube por encima del
+  edificio). Es regla de layout: pide test de conectividad desde el spawn y va en `plan.rs`.
+- Las esquinas entre círculo y nave quedan como rellano pisable a la cota de la planta baja: ahí llegan las bocas.
+
+### D3 — Pasarela
+
+- Una o dos pasarelas de **150–200** de ancho y 30 de canto, de rellano a rellano por el diámetro, recta o con un quiebro.
+- Pretil de 110 en los dos lados con probabilidad 0,5 **por abismo** (D4 de ADR-151: medio con barandilla se lee roto).
+- Siempre al menos una pasarela que una dos bocas: el abismo no puede partir la planta.
+
+### D4 — Luces
+
+- Anillos y tiras emisivos cada 8–12 m, de `floor − D` a `floor + U`: **decoración** (sin colisión y sin `Light`),
+  estilo nuevo **`ABYSS_LIGHT_STYLE` = 11** con material emisivo. Luces reales sólo en la pasarela, dentro del
+  presupuesto de sombras (`Wg3ShadowBudget.MaxShadowCasters` = 2). La niebla hace el infinito, no la geometría.
+
+### D5 — Caer es morir
+
+- Caída de cientos de metros con el daño del vendor. Red de seguridad: por debajo de `floor − 30 m` dentro del cilindro
+  se aplica daño letal, para que ningún rebote o fallo de colisión deje a nadie vivo en el fondo.
+- `nav::floors_at` no baja: ninguna criatura cae ni sube por el abismo.
+
+### D6 — Wire y medida
+
+- Vano, cajas giradas y decoración ya viajan; los estilos 10 y 11 caen al tinte por defecto hasta tener material. Sin bump
+  previsto.
+- **Riesgo a medir antes de Rust**: número de macizos (≈ 45 lados × 30 tramos de pared + anillos, del orden de 2000 por
+  abismo), tamaño del chunk que los lleva, distancia de dibujo y plano lejano de la cámara, coste de dibujar y aspecto con
+  la niebla. Si no cabe, la pared lejana pasa a malla de cliente y el ADR se enmienda antes de seguir.
+
+### D7 — Tests
+
+- `every_abyss_is_legal`: anillo cerrado, fondo a `floor − D`, pasarela entera sobre el vacío y unida a dos rellanos.
+- `abyss_never_splits_the_storey`: conectividad desde el spawn con el abismo en su sitio.
+- El fondo no cuenta como isla (se declara en el validador, como la cámara de pozo).
+- Barrido de 27 regiones antes y después.
+
+### Rebanadas
+
+- **A0** medida: escena de cliente sin servidor con un cilindro de 600 m, anillos emisivos y la niebla del juego;
+  fotogramas por segundo y capturas para Joel. Sin A0 en verde no hay Rust.
+- **A1** plan: reserva del cilindro en todas las plantas + test de conectividad. **A2** Rust: pared, fondo, pasarela y
+  pretil. **A3** cliente: materiales 10/11 y luces de la pasarela. **A4** muerte bajo `floor − 30 m`, Play y enmienda de
+  estado.
+
+### Lo que NO decide
+
+- Sonido (viento, eco), criaturas que asoman por las paredes, loot en la pasarela, bajar al fondo con cuerdas.
+
+---
