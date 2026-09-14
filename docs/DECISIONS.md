@@ -18789,3 +18789,17 @@ alternaba entre opciones de coste parecido (10–39° de giro por fotograma).
 - Orden: C1b gradas → piscina (P1–P4) → abismo (A0 antes de cualquier Rust).
 
 ---
+
+## ADR-151 — Enmienda 3: gradas bajas de 40/60 donde la alta no cabe (2026-09-14) — ACEPTADA (Joel: «gradas bajas donde no quepan»)
+
+- **Medido con C1b** (`28800d54`): 3 escalones altos de grada en 12 semillas × 9 regiones. Casi toda sala mide 308 libres
+  y 40/80 pide 320 (80 + 240); en las que caben, 5,6–7,6 m de fondo chocan con bocas, vigas y vanos.
+- **Grada baja**: si 40/80 no cabe, escalones de **40 y 60** (60 + 240 = 300 ≤ 308). No 20: esa altura con ese fondo es
+  la tarima validada (ADR-105 enm. 13). No 30: los peldaños son de 20. El salto de 20 entre escalones no lleva peldaño
+  (por debajo del escalón de 27); el de 40 del suelo, sí.
+- **Si la grada no cabe en ningún sitio, sale el estrado de siempre** (C1b ya lo hacía).
+- Barrido de 27 regiones: 27/27, 182847 cotas (antes 182849), mancha mayor 99,7 %, 6,0 islas, nav 100 %; 36 trozos de
+  estrado (antes 31). `every_tier_is_contiguous_and_climbable` (12 semillas): 15 escalones altos, todos recorribles.
+  Suite `world::wg3`: 206 verdes.
+
+---
