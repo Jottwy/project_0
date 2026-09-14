@@ -508,6 +508,23 @@ botones sobre la página de 172 × 205, y los clics sobre el Canvas en World Spa
 - **Sin verificar en Play:** que la hoja caiga alineada con la página (mismo espacio que el Canvas, sin warp), el
   sentido de la curva y que tape la hoja nueva.
 
+## 6. P1 — Hojas como objetos (ADR-154, ACEPTADA 2026-09-14, D6 = no se sueltan)
+
+### 6.1 P1a — la hoja guardable en C# (hecho, 2026-09-14)
+
+- `75cc450a` **clave de trazo explícita**: `MapSheetLayer.Key` (monótona, sustituye a `IndexOf`) y `Runs` con el
+  `DrawIndex` de cada tramo que llegó al papel; `MapSheetStrokeBuilder.Redraw` rehace trazos y aristas desde los tramos.
+  Las limpias guardan sus tramos y se rehacen rectas. Sin cambio visible (`MapSheetStrokesTests` igual).
+- `240ba803` **`MapSheetRecord`** + JSON compacto solo de enteros (posiciones en centésimas de celda, grosor en
+  centésimas de píxel), topes del ADR con `Validate`, `FromSheet`/`ToSheet`. Golden común
+  `tools/dev/fixtures/map_sheet_record.golden.json`, generado con Python y no con el codec: el de Rust (P1b) tiene que
+  escribirlo byte a byte igual. Git lo convierte a CRLF en Windows: los dos lados comparan sin el salto final.
+- Tests: headless 64/64 de mapeado; **en Unity 60/60** fixture a fixture (`MapSheetRecord` 5, `MapSheetRedraw` 4,
+  `MapNotebook` 4, `MapMemory` 14, `MapRecognition` 8, `MapAtlas` 7, `MapSheetRaster` 5, `MapSheetStrokes` 9,
+  `MapVisionFan` 4).
+- **Trampa del runner:** un filtro con varias alternativas `(A|B|C)` cuenta de menos (13 de 22) sin fallar nada; se
+  verifica fixture a fixture.
+
 ### 5.6 Preguntas de playtest
 
 ¿Dibujar con el libro en las manos se siente mejor que el panel? ¿La hoja se lee bien en el libro? ¿Echa en falta
