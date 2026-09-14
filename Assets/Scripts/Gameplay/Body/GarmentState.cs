@@ -21,8 +21,10 @@ namespace BackroomsSurvival.Gameplay.Body
     }
 
     /// <summary>
-    /// ADR-149 D7-D9 + enm. 1, rebanada R1: estado de UNA prenda por zona (daño de la tela y bolsillo roto). En R1 vive en
-    /// memoria por instancia de objeto (<see cref="Of"/>); en R2 pasa a <c>props</c>. Objeto plano para EditMode.
+    /// ADR-149 D7-D9 + enm. 1: estado de UNA prenda por zona (daño de la tela y bolsillo roto). R2b: si la definición declara
+    /// la propiedad <see cref="PropertyName"/>, el estado se guarda empaquetado en ella (4 bits por zona, 32 en un double) y
+    /// viaja con el objeto: inventario, suelo, cadáver y guardado, sin tocar el esquema (ADR-072, <c>ItemProps</c>). Sin la
+    /// propiedad vive solo en memoria. Objeto plano para EditMode.
     /// </summary>
     public sealed class GarmentState
     {
@@ -34,7 +36,12 @@ namespace BackroomsSurvival.Gameplay.Body
         /// <summary>Un zarpazo desde este daño desgarra; menos, solo corta.</summary>
         public const float TearDamage = 20f;
 
+        /// <summary>Nombre de la <c>ItemPropertyDefinition</c> (asset <c>BR_Garment Zones</c>).</summary>
+        public const string PropertyName = "Garment Zones";
+
         private static readonly ConditionalWeakTable<Item, GarmentState> Table = new();
+        private static int s_propertyId = int.MinValue;
+        private ItemProperty _property;
 
         /// <summary>Sube con cualquier cambio de cualquier prenda: la UI lo sondea en vez de suscribirse.</summary>
         public static int Version { get; private set; }
@@ -42,7 +49,46 @@ namespace BackroomsSurvival.Gameplay.Body
         private readonly GarmentDamage[] _zones = new GarmentDamage[GarmentZonesData.MaxZones];
         private readonly bool[] _pocketBroken = new bool[GarmentZonesData.MaxZones];
 
-        public static GarmentState Of(Item item) => Table.GetValue(item, _ => new GarmentState());
+        public static GarmentState Of(Item item) => Table.GetValue(item, Load);
+
+        private static GarmentState Load(Item item)
+        {
+            var state = new GarmentState();
+            if (s_propertyId == int.MinValue)
+                s_propertyId = ItemPropertyDefinition.GetWithName(PropertyName)?.Id ?? 0;
+            if (s_propertyId != 0 && item.TryGetProperty(s_propertyId, out var property))
+            {
+                state._property = property;
+                state.Unpack((uint)property.Double);
+            }
+            return state;
+        }
+
+        /// <summary>Los 8 estados de zona en 32 bits: 3 de daño y 1 de bolsillo roto por zona, la zona 0 en los bits bajos.</summary>
+        public uint Pack()
+        {
+            uint packed = 0;
+            for (int i = 0; i < GarmentZonesData.MaxZones; i++)
+                packed |= (uint)(((byte)_zones[i] & 0x7) | (_pocketBroken[i] ? 0x8 : 0)) << (4 * i);
+            return packed;
+        }
+
+        public void Unpack(uint packed)
+        {
+            for (int i = 0; i < GarmentZonesData.MaxZones; i++)
+            {
+                uint nibble = (packed >> (4 * i)) & 0xF;
+                uint damage = nibble & 0x7;
+                _zones[i] = damage <= (uint)GarmentDamage.Sewn ? (GarmentDamage)damage : GarmentDamage.Intact;
+                _pocketBroken[i] = (nibble & 0x8) != 0;
+            }
+        }
+
+        private void Changed()
+        {
+            Version++;
+            if (_property != null) _property.Double = Pack();
+        }
 
         public GarmentDamage DamageOf(int zoneIndex) => _zones[zoneIndex];
 
@@ -90,7 +136,7 @@ namespace BackroomsSurvival.Gameplay.Body
                 pocketBroke = true;
                 changed = true;
             }
-            if (changed) Version++;
+            if (changed) Changed();
             return changed;
         }
 
@@ -121,7 +167,7 @@ namespace BackroomsSurvival.Gameplay.Body
                 _zones[zoneIndex] = GarmentDamage.Sewn;
                 _pocketBroken[zoneIndex] = false;
             }
-            Version++;
+            Changed();
             return true;
         }
 

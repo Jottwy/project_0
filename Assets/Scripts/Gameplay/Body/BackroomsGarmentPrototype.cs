@@ -11,7 +11,9 @@ namespace BackroomsSurvival.Gameplay.Body
     /// ADR-149 enm. 1, rebanada R1: la ropa por zonas en LOCAL. La prenda más exterior que cubre la zona golpeada protege y
     /// se rompe (<see cref="GarmentState"/>); si la zona tenía bolsillo, lo que llevaba pasa a otro hueco del inventario o cae
     /// al suelo con aviso. Quitarse una prenda con los bolsillos llenos vuelca igual. Coser (aguja e hilo, y tela si es un
-    /// desgarro) o poner cinta. Condiciones de prototipo: solo <c>BR_InventoryTest</c>, inerte con backend.
+    /// desgarro) o poner cinta. Condiciones de prototipo: solo <c>BR_InventoryTest</c>. Con backend (ADR-149 R2b) la
+    /// protección la aplica el servidor: aquí se le manda por zona (<c>report_protection</c>) y la prenda se rompe con cada
+    /// <c>body_hit</c>, también con los golpes que no pasaron por este cliente.
     /// </summary>
     public sealed class BackroomsGarmentPrototype : MonoBehaviour
     {
@@ -41,9 +43,13 @@ namespace BackroomsSurvival.Gameplay.Body
 
         private readonly Dictionary<string, Item> _worn = new();
         private readonly List<ItemStack> _spilled = new();
+        private readonly byte[] _protection = new byte[BodyZones.Count];
+        private readonly byte[] _sentProtection = new byte[BodyZones.Count];
         private Player _player;
         private Inventory _inventory;
-        private bool _inert;
+        private IPCClient _ipc;
+        private bool _protectionSent;
+        private float _nextProtectionCheck;
         private bool _moving;
 
         private void Awake() => Instance = this;
@@ -56,31 +62,63 @@ namespace BackroomsSurvival.Gameplay.Body
 
         private void Update()
         {
-            if (_inert) return;
-            if (IPCClient.TryGetInstance(out var ipc) && ipc.IsConnected)
+            if (_ipc == null && IPCClient.TryGetInstance(out var ipc) && ipc.IsConnected)
             {
-                _inert = true;
-                Unbind();
-                Debug.LogWarning("[Ropa] backend conectado: la ropa por zonas se apaga (prototipo ADR-149 R1).");
-                return;
+                _ipc = ipc;
+                _ipc.AddEventListener(OnGameEvent);
+                _protectionSent = false;
+                Debug.Log("[Ropa] backend conectado: protege el servidor y la ropa se rompe con body_hit (ADR-149 R2b).");
             }
-            if (_inventory != null) return;
+            if (_inventory == null && !TryBind()) return;
+            if (_ipc != null) SyncProtection();
+        }
 
+        private bool TryBind()
+        {
             var players = Player.AllPlayers;
             var inventory = players.Count > 0 ? players[0].Inventory as Inventory : null;
-            if (inventory == null || inventory.Containers == null || inventory.Containers.Count == 0) return;
+            if (inventory == null || inventory.Containers == null || inventory.Containers.Count == 0) return false;
             _player = players[0];
             _inventory = inventory;
             _inventory.SlotChanged += OnSlotChanged;
             foreach (var owner in _pocketOwners) _worn[owner] = WornIn(owner);
+            return true;
         }
 
         private void Unbind()
         {
             if (_inventory != null) _inventory.SlotChanged -= OnSlotChanged;
+            if (_ipc != null) _ipc.RemoveEventListener(OnGameEvent);
+            _ipc = null;
             _inventory = null;
             _player = null;
             _worn.Clear();
+        }
+
+        /// <summary>Cada medio segundo, la protección por zona; si cambió (o nunca se mandó), al backend.</summary>
+        private void SyncProtection()
+        {
+            if (Time.unscaledTime < _nextProtectionCheck) return;
+            _nextProtectionCheck = Time.unscaledTime + 0.5f;
+            for (int z = 0; z < BodyZones.Count; z++)
+            {
+                _protection[z] = 0;
+                if (!TryGetOutermost((BodyZone)z, out _, out var worn, out var data, out int index)) continue;
+                _protection[z] = ToPercent(GarmentState.Of(worn).Protection(index, data.Zones[index]));
+            }
+            if (_protectionSent && System.Linq.Enumerable.SequenceEqual(_protection, _sentProtection)) return;
+            _ipc.SendReportProtection(_protection);
+            System.Array.Copy(_protection, _sentProtection, _protection.Length);
+            _protectionSent = true;
+        }
+
+        public static byte ToPercent(float protection) => (byte)Mathf.Clamp(Mathf.RoundToInt(protection * 100f), 0, 100);
+
+        private void OnGameEvent(GameEventMsg ev)
+        {
+            if (_inventory == null || !BodyStateMirror.TryReadHit(ev, out var zone, out string cause, out float damage)) return;
+            var type = Enum.TryParse(cause, out DamageType parsed) ? parsed : DamageType.Undefined;
+            Absorb(zone, damage, type);
         }
 
         private IItemContainer Find(string name) => _inventory?.FindContainer(ItemContainerFilters.WithName(name));
@@ -124,7 +162,10 @@ namespace BackroomsSurvival.Gameplay.Body
             var garmentZone = data.Zones[index];
             float protection = state.Protection(index, garmentZone);
             if (state.ApplyHit(index, garmentZone, type, damage, out bool pocketBroke))
+            {
                 Debug.Log($"[Ropa] {worn.Name}, {BodyZones.Label(zone)}: {GarmentState.Describe(state.DamageOf(index), state.IsPocketBroken(index))}");
+                InventoryReporter.MarkDirty();
+            }
             if (pocketBroke) SpillZone(layer, data, index);
             return protection;
         }
@@ -152,12 +193,14 @@ namespace BackroomsSurvival.Gameplay.Body
                 _inventory.RemoveItemsById(_thread.Id, 1);
                 if (needsCloth) _inventory.RemoveItemsById(_cloth.Id, 1);
                 state.Repair(index, GarmentRepair.Sew);
+                InventoryReporter.MarkDirty();
                 return $"Cosido: {worn.Name}, {BodyZones.Label(zone)}";
             }
             if (state.CanRepair(index, GarmentRepair.Tape) && Count(_tape) > 0)
             {
                 _inventory.RemoveItemsById(_tape.Id, 1);
                 state.Repair(index, GarmentRepair.Tape);
+                InventoryReporter.MarkDirty();
                 return $"Cinta en {worn.Name}: el bolsillo sigue roto";
             }
             if (needle && thread) return "Falta una tela para coser el desgarro";

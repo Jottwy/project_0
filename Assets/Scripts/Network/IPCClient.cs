@@ -1120,6 +1120,20 @@ namespace BackroomsSurvival.Net
         /// ADR-149 R2a: trata una zona del cuerpo (1 venda, 2 férula). Trust-the-client en el objeto gastado, como
         /// consume_item (ADR-030); el backend valida que la zona lo admita y contesta con body_state. Sin bump.
         /// </summary>
+        /// <summary>
+        /// ADR-149 R2b: la protección 0-100 de la ropa en cada una de las 15 zonas (la prenda más exterior). El backend la
+        /// guarda sin persistir y mitiga con ella todo golpe con zona. Se manda al conectar y cuando cambia. Sin bump.
+        /// </summary>
+        public void SendReportProtection(byte[] protection)
+        {
+            SendActionFrame(ProtocolActionTypes.ReportProtection, 1, w =>
+            {
+                w.WriteString("prot");
+                w.WriteArrayHeader(protection.Length);
+                for (int i = 0; i < protection.Length; i++) w.WriteInt(protection[i]);
+            });
+        }
+
         public void SendTreatZone(int zone, int treatment)
         {
             SendActionFrame(ProtocolActionTypes.TreatZone, 2, w =>

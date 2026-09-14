@@ -28,13 +28,16 @@ MonoBehaviour:
   _rarity: {fileID: 11400000, guid: 5518a16c9a5a70d4585369c90f14f295, type: 2}
   _actions:
   - {fileID: 11400000, guid: cfea35ee23f1fda47a276a7b208543f9, type: 2}
-  _properties: []
+  _properties:
+  - _itemPropertyId: 1291352897
+    _useRandomValue: 0
+    _valueRange: {x: 0, y: 0}
   _data:
-  - rid: 3885882211262267717
+  - rid: 3885882211262267820
   references:
     version: 2
     RefIds:
-    - rid: 3885882211262267717
+    - rid: 3885882211262267820
       type: {class: GarmentZonesData, ns: BackroomsSurvival.Gameplay.Body, asm: BackroomsSurvival}
       data:
         _zones:

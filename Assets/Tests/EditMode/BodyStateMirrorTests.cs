@@ -52,5 +52,27 @@ namespace BackroomsSurvival.Tests
             body.ApplyRaw(zones);
             Assert.IsEmpty(changed, "lo mismo otra vez no avisa");
         }
+
+        [Test]
+        public void ElAvisoDeGolpeTraeZonaCausaYDanoEntero()
+        {
+            var ev = new GameEventMsg
+            {
+                eventType = "body_hit",
+                data = new Dictionary<string, object> { { "zone", 1L }, { "cause", "Pierce" }, { "damage", 16.0 } },
+            };
+            Assert.IsTrue(BodyStateMirror.TryReadHit(ev, out var zone, out string cause, out float damage));
+            Assert.AreEqual(BodyZone.Chest, zone);
+            Assert.AreEqual("Pierce", cause);
+            Assert.AreEqual(16f, damage, 1e-4f);
+
+            var bogus = new GameEventMsg { eventType = "body_hit", data = new Dictionary<string, object> { { "zone", 99L } } };
+            Assert.IsFalse(BodyStateMirror.TryReadHit(bogus, out _, out _, out _), "una zona fuera de rango no se cree");
+            Assert.IsFalse(BodyStateMirror.TryReadHit(new GameEventMsg { eventType = "body_state" }, out _, out _, out _));
+
+            Assert.AreEqual(20, BackroomsGarmentPrototype.ToPercent(0.2f));
+            Assert.AreEqual(100, BackroomsGarmentPrototype.ToPercent(3f));
+            Assert.AreEqual(0, BackroomsGarmentPrototype.ToPercent(-1f));
+        }
     }
 }

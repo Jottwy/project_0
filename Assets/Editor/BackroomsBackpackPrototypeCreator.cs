@@ -193,6 +193,7 @@ namespace BackroomsSurvival.EditorTools
 
             var actionDonor = AssetDatabase.LoadAssetAtPath<ItemDefinition>(DonorPath);
             if (actionDonor == null) { Debug.LogError($"[Prendas] falta el donante '{DonorPath}'"); return new ItemDefinition[0]; }
+            var zonesProperty = EnsureGarmentZonesProperty();
 
             var result = new ItemDefinition[Garments.Length];
             for (int i = 0; i < Garments.Length; i++)
@@ -205,9 +206,53 @@ namespace BackroomsSurvival.EditorTools
                     : garment.Zones.Length > 0 ? new GarmentZonesData(garment.Zones) : null;
                 result[i] = EnsureDefinition(garment.Path, WearableDescription.Describe(garment.Description, GarmentSummary(garment.Zones), 0f, garment.SpeedPct), garment.Weight,
                     artDonor, actionDonor, tag, data);
+                // ADR-149 R2b: la prenda con zonas declara la propiedad donde guarda su rotura (nace sana, sin sorteo).
+                if (garment.Zones.Length > 0 && zonesProperty != null) DeclareProperty(result[i], zonesProperty.Id);
             }
             Debug.Log($"[Prendas] pieza 6 lista: {result.Length} prendas.");
             return result;
+        }
+
+        public const string GarmentZonesPropertyPath = "Assets/Resources/Definitions/ItemProperty/BR_Garment Zones.asset";
+
+        /// <summary>
+        /// ADR-149 R2b: la propiedad de instancia donde vive la rotura de una prenda. Propia, como la salud de la batería de
+        /// la linterna: el restaurador de inventario guarda y devuelve propiedades por id sin conocerlas.
+        /// </summary>
+        public static ItemPropertyDefinition EnsureGarmentZonesProperty()
+        {
+            var property = AssetDatabase.LoadAssetAtPath<ItemPropertyDefinition>(GarmentZonesPropertyPath);
+            if (property == null)
+            {
+                EnsureFolder(Path.GetDirectoryName(GarmentZonesPropertyPath));
+                property = ScriptableObject.CreateInstance<ItemPropertyDefinition>();
+                AssetDatabase.CreateAsset(property, GarmentZonesPropertyPath);
+                property.Validate_EditorOnly(new DataDefinition.ValidationContext(false, DataDefinition.ValidationTrigger.Created));
+            }
+            var so = new SerializedObject(property);
+            so.FindProperty("_propertyType").enumValueIndex = (int)ItemPropertyType.Double;
+            var description = so.FindProperty("_description");
+            if (description != null)
+                description.stringValue = "ADR-149: rotura de la prenda por zona, 4 bits por zona (3 de daño y 1 de bolsillo roto).";
+            so.ApplyModifiedPropertiesWithoutUndo();
+            EditorUtility.SetDirty(property);
+            if (property.Name != GarmentState.PropertyName)
+                Debug.LogError($"[Prendas] '{GarmentZonesPropertyPath}' resuelve a Name='{property.Name}', no '{GarmentState.PropertyName}'.");
+            return property;
+        }
+
+        private static void DeclareProperty(ItemDefinition definition, int propertyId)
+        {
+            if (definition == null) return;
+            var so = new SerializedObject(definition);
+            var props = so.FindProperty("_properties");
+            props.arraySize = 1;
+            var element = props.GetArrayElementAtIndex(0);
+            element.FindPropertyRelative("_itemPropertyId").intValue = propertyId;
+            element.FindPropertyRelative("_useRandomValue").boolValue = false;
+            element.FindPropertyRelative("_valueRange").vector2Value = Vector2.zero;
+            so.ApplyModifiedPropertiesWithoutUndo();
+            EditorUtility.SetDirty(definition);
         }
 
         private static string GarmentSummary(GarmentZone[] zones)

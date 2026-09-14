@@ -94,6 +94,15 @@ namespace BackroomsSurvival.Net
             SendReport();
         }
 
+        /// <summary>
+        /// ADR-149 R2b: una propiedad de instancia cambió sin mover nada (una prenda se rompió o se cosió). El vendor no avisa
+        /// con <c>SlotChanged</c>, así que se arma el mismo reporte con debounce a mano.
+        /// </summary>
+        public static void MarkDirty()
+        {
+            if (_instance != null) _instance.OnSlotChanged(SlotReference.Null, SlotChangeType.CountChanged);
+        }
+
         private void OnSlotChanged(in SlotReference slot, SlotChangeType changeType)
         {
             float now = Time.unscaledTime;

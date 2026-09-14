@@ -462,4 +462,8 @@ tinte sobre la UI piden overlay propio o canvas en Screen Space Camera.
   1562/0 y sonda IPC en Python contra el exe debug. Cliente preparado (zona en `report_damage`, espejo de `body_state` en el
   prototipo), pendiente de aplicar fuera de Play. Siguen R2b (ropa en el servidor), R2c (la venda del juego real como
   espejo, con prueba online de Joel), R3 PvP con zona, R4 visual.
+- **R2b HECHA (2026-09-14, enm. 3)** — `report_protection` y mitigación en el servidor, evento `body_hit` con el que el
+  cliente rompe la prenda, y la rotura guardada en la propiedad `BR_Garment Zones` del objeto. `cargo test` 1571/0, sonda
+  IPC y EditMode en verde. Siguen R2c (la venda del juego real como espejo, con prueba online de Joel), R3 PvP con zona y
+  arma, R4 visual.
 
