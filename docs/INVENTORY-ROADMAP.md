@@ -474,4 +474,8 @@ tinte sobre la UI piden overlay propio o canvas en Screen Space Camera.
 - **R2c hecha, pendiente de prueba online (2026-09-14, enm. 4)** — el cuerpo se monta en toda escena; la venda por brazo
   se deriva de él (el robapieles y el PvP ya abren heridas vendables); leyenda de colores en la vista Heridas. La férula no
   sale en el loot todavía.
+- **Sastrería con pestaña propia (2026-09-14)** — tercera pestaña SASTRERÍA junto a ALREDEDOR y CRAFTEO: la ropa por zonas
+  puesta, zona a zona, con COSER y CINTA, lo que falta para cada uno y los materiales. Sin wire ni guardado. Unificar con
+  Heridas o clic directo en la prenda: pendiente de decidir. Fuera de la escena de pruebas solo avisa (la ropa por zonas
+  sigue siendo prototipo).
 

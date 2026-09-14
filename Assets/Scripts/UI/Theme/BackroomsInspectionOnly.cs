@@ -17,9 +17,12 @@ namespace BackroomsSurvival.UI
 
         protected override void Awake()
         {
-            base.Awake();
+            // El grupo ANTES de base.Awake: si el personaje ya existe, AddBehaviour engancha en el acto y llama a Set. Un
+            // panel que nace apagado y se enciende con TAB abierto (Sastrería, Heridas) reventaba ahí, se quedaba invisible
+            // y cada abrir/cerrar lanzaba una excepción que cortaba a los demás oyentes de la inspección.
             _group = GetComponent<CanvasGroup>();
             Set(false);
+            base.Awake();
         }
 
         protected override void OnCharacterAttached(ICharacter character)

@@ -590,10 +590,13 @@ namespace BackroomsSurvival.EditorTools
             InspectionOnly(aroundHeader.gameObject);
             if (aroundHeader.Find("Name") is RectTransform oldName) Object.DestroyImmediate(oldName.gameObject);
             Tape(aroundHeader, aroundHeader.GetComponent<Image>(), theme);
-            const float aroundTabW = 124f, craftTabW = 108f, tabGap = 4f;
+            const float aroundTabW = 118f, craftTabW = 96f, tailorTabW = 118f, tabGap = 4f;
             var aroundBtn = EnsureToggleButton(aroundHeader, "AroundBtn", "ALREDEDOR", -(RightWidth - 8f - aroundTabW), theme, aroundTabW);
             var craftBtn = EnsureToggleButton(aroundHeader, "CraftBtn", "CRAFTEO",
                 -(RightWidth - 8f - aroundTabW - tabGap - craftTabW), theme, craftTabW);
+            // ADR-149 (Joel, 2026-09-14): la sastrería tiene pestaña propia.
+            var tailorBtn = EnsureToggleButton(aroundHeader, "TailorBtn", "SASTRERÍA",
+                -(RightWidth - 8f - aroundTabW - tabGap - craftTabW - tabGap - tailorTabW), theme, tailorTabW);
             Box(right, "BR_Box", theme, top, InspectorHeight + WindowGap);
             if (right.Find("Workstations") is RectTransform workstations)
             {
@@ -619,6 +622,8 @@ namespace BackroomsSurvival.EditorTools
                 var so = new SerializedObject(aroundToggle);
                 so.FindProperty("_aroundButton").objectReferenceValue = aroundBtn;
                 so.FindProperty("_craftButton").objectReferenceValue = craftBtn;
+                so.FindProperty("_tailorButton").objectReferenceValue = tailorBtn;
+                so.FindProperty("_tailoringPanel").objectReferenceValue = BuildTailoringPanel((RectTransform)right, top, theme, report);
                 so.FindProperty("_workstations").objectReferenceValue = workstations;
                 so.FindProperty("_emptyLabel").objectReferenceValue = empty.gameObject;
                 so.ApplyModifiedPropertiesWithoutUndo();
@@ -697,6 +702,124 @@ namespace BackroomsSurvival.EditorTools
             }
             else report.Missing("HotbarUI");
             report.Count("columnas", 3);
+        }
+
+        private const string TailoringPanelName = "BR_TailoringPanel";
+        private const float TailoringRowHeight = 36f;
+
+        /// <summary>
+        /// ADR-149, pestaña SASTRERÍA (<see cref="BackroomsTailoringPanel"/>): el mismo hueco que las estaciones, una lista con
+        /// scroll y una fila plantilla apagada (nombre, estado, COSER, CINTA) que el panel clona; abajo materiales y aviso.
+        /// </summary>
+        private static GameObject BuildTailoringPanel(RectTransform right, float top, BackroomsUiTheme theme, Report report)
+        {
+            var panel = EnsureRect(right, TailoringPanelName);
+            Inset(panel, 0f, InspectorHeight + WindowGap, 0f, top);
+            IgnoreLayout(panel.gameObject);
+            InspectionOnly(panel.gameObject);
+
+            var title = Label(panel, "Title", "ROPA PUESTA · ZONA A ZONA", theme.MonoBold, 12f, theme.InkDim, TextAlignmentOptions.MidlineLeft);
+            var titleRt = (RectTransform)title.transform;
+            titleRt.anchorMin = new Vector2(0f, 1f);
+            titleRt.anchorMax = Vector2.one;
+            titleRt.pivot = new Vector2(0.5f, 1f);
+            titleRt.offsetMin = new Vector2(BoxPad, -34f);
+            titleRt.offsetMax = new Vector2(-BoxPad, -8f);
+
+            var scroll = EnsureRect(panel, "Scroll", typeof(Image), typeof(ScrollRect));
+            Inset(scroll, BoxPad, 64f, BoxPad, 40f);
+            var scrollImage = scroll.GetComponent<Image>();
+            scrollImage.sprite = null;
+            scrollImage.color = Color.clear;
+            scrollImage.raycastTarget = true;
+            var viewport = EnsureRect(scroll, "Viewport", typeof(RectMask2D));
+            Stretch(viewport);
+            var content = EnsureRect(viewport, "Content", typeof(VerticalLayoutGroup), typeof(ContentSizeFitter));
+            content.anchorMin = new Vector2(0f, 1f);
+            content.anchorMax = Vector2.one;
+            content.pivot = new Vector2(0.5f, 1f);
+            content.offsetMin = Vector2.zero;
+            content.offsetMax = Vector2.zero;
+            var list = content.GetComponent<VerticalLayoutGroup>();
+            list.spacing = 4f;
+            list.childControlWidth = true;
+            list.childControlHeight = true;
+            list.childForceExpandWidth = true;
+            list.childForceExpandHeight = false;
+            content.GetComponent<ContentSizeFitter>().verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+            var scrollRect = scroll.GetComponent<ScrollRect>();
+            scrollRect.viewport = viewport;
+            scrollRect.content = content;
+            scrollRect.horizontal = false;
+            scrollRect.vertical = true;
+            scrollRect.movementType = ScrollRect.MovementType.Clamped;
+            scrollRect.scrollSensitivity = 24f;
+
+            var empty = Label(panel, "Empty", "No llevas ropa que se pueda coser", theme.Mono, 15f, theme.InkDim, TextAlignmentOptions.Center);
+            Inset((RectTransform)empty.transform, BoxPad, 64f, BoxPad, 40f);
+
+            // La fila plantilla vive fuera de la lista y apagada: el panel la clona dentro de Content.
+            var row = EnsureRect(panel, "RowTemplate", typeof(Image), typeof(LayoutElement));
+            Place(row, new Vector2(0f, 1f), new Vector2(0f, 1f), Vector2.zero, new Vector2(RightWidth - 2f * BoxPad, TailoringRowHeight));
+            var rowLayout = row.GetComponent<LayoutElement>();
+            rowLayout.ignoreLayout = false;
+            rowLayout.preferredHeight = TailoringRowHeight;
+            rowLayout.minHeight = TailoringRowHeight;
+            var rowImage = row.GetComponent<Image>();
+            SetSprite(rowImage, theme.SunkenSlot, theme.Tape);
+            rowImage.raycastTarget = true;
+            const float buttonW = 72f, buttonsW = 2f * buttonW + 4f + 12f;
+            var rowName = Label(row, "Name", "Prenda", theme.MonoBold, 13f, theme.Ink, TextAlignmentOptions.MidlineLeft);
+            var nameRt = (RectTransform)rowName.transform;
+            nameRt.anchorMin = new Vector2(0f, 1f);
+            nameRt.anchorMax = Vector2.one;
+            nameRt.pivot = new Vector2(0.5f, 1f);
+            nameRt.offsetMin = new Vector2(10f, -19f);
+            nameRt.offsetMax = new Vector2(-buttonsW, -2f);
+            rowName.overflowMode = TextOverflowModes.Ellipsis;
+            var rowState = Label(row, "State", "estado", theme.Mono, 11f, theme.InkDim, TextAlignmentOptions.MidlineLeft);
+            var stateRt = (RectTransform)rowState.transform;
+            stateRt.anchorMin = Vector2.zero;
+            stateRt.anchorMax = new Vector2(1f, 0f);
+            stateRt.pivot = new Vector2(0.5f, 0f);
+            stateRt.offsetMin = new Vector2(10f, 2f);
+            stateRt.offsetMax = new Vector2(-buttonsW, 18f);
+            rowState.overflowMode = TextOverflowModes.Ellipsis;
+            EnsureToggleButton(row, "SewBtn", "COSER", -(6f + buttonW + 4f), theme, buttonW);
+            EnsureToggleButton(row, "TapeBtn", "CINTA", -6f, theme, buttonW);
+            row.gameObject.SetActive(false);
+
+            var materials = Label(panel, "Materials", "Aguja 0 · Hilo 0 · Tela 0 · Cinta 0", theme.Mono, 12f, theme.Ink, TextAlignmentOptions.MidlineLeft);
+            var materialsRt = (RectTransform)materials.transform;
+            materialsRt.anchorMin = Vector2.zero;
+            materialsRt.anchorMax = new Vector2(1f, 0f);
+            materialsRt.pivot = new Vector2(0.5f, 0f);
+            materialsRt.offsetMin = new Vector2(BoxPad, 34f);
+            materialsRt.offsetMax = new Vector2(-BoxPad, 58f);
+            var notice = Label(panel, "Notice", string.Empty, theme.Mono, 12f, theme.Fluorescent, TextAlignmentOptions.MidlineLeft);
+            var noticeRt = (RectTransform)notice.transform;
+            noticeRt.anchorMin = Vector2.zero;
+            noticeRt.anchorMax = new Vector2(1f, 0f);
+            noticeRt.pivot = new Vector2(0.5f, 0f);
+            noticeRt.offsetMin = new Vector2(BoxPad, 8f);
+            noticeRt.offsetMax = new Vector2(-BoxPad, 32f);
+            notice.overflowMode = TextOverflowModes.Ellipsis;
+
+            var tailoring = panel.GetComponent<BackroomsTailoringPanel>();
+            if (tailoring == null) tailoring = panel.gameObject.AddComponent<BackroomsTailoringPanel>();
+            var so = new SerializedObject(tailoring);
+            so.FindProperty("_content").objectReferenceValue = content;
+            so.FindProperty("_rowTemplate").objectReferenceValue = row;
+            so.FindProperty("_empty").objectReferenceValue = empty;
+            so.FindProperty("_materials").objectReferenceValue = materials;
+            so.FindProperty("_notice").objectReferenceValue = notice;
+            so.FindProperty("_garmentInk").colorValue = theme.Ink;
+            so.FindProperty("_zoneInk").colorValue = theme.InkDim;
+            so.ApplyModifiedPropertiesWithoutUndo();
+
+            panel.gameObject.SetActive(false);
+            report.Count("panel de sastrería", 1);
+            return panel.gameObject;
         }
 
         private static void StationRow(Transform station, string name, float leftPx, TextAlignmentOptions align)

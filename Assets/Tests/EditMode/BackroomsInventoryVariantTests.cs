@@ -131,7 +131,15 @@ namespace BackroomsSurvival.Tests
             AssertWired(body, "_ropaButton", "_heridasButton", "_previewRoot", "_woundsPanel");
             var around = v.GetComponentInChildren<BackroomsAroundViewToggle>(true);
             Assert.IsNotNull(around, "sin conmutador Alrededor | Crafteo");
-            AssertWired(around, "_aroundButton", "_craftButton", "_workstations", "_emptyLabel");
+            AssertWired(around, "_aroundButton", "_craftButton", "_tailorButton", "_workstations", "_emptyLabel", "_tailoringPanel");
+            var tailoring = v.GetComponentInChildren<BackroomsTailoringPanel>(true);
+            Assert.IsNotNull(tailoring, "sin panel de sastrería");
+            AssertWired(tailoring, "_content", "_rowTemplate", "_empty", "_materials", "_notice");
+            var template = (RectTransform)new SerializedObject(tailoring).FindProperty("_rowTemplate").objectReferenceValue;
+            foreach (var child in new[] { "Name", "State", "SewBtn", "TapeBtn" })
+                Assert.IsNotNull(template.Find(child), $"a la fila de sastrería le falta {child}");
+            Assert.IsFalse(template.gameObject.activeSelf, "la plantilla de fila nace apagada");
+            Assert.IsNotNull(tailoring.GetComponent<BackroomsInspectionOnly>(), "la sastrería cuelga fuera de los paneles del vendor");
             Assert.IsNotNull(around.GetComponent<BackroomsInspectionOnly>(),
                 "la cabecera de Alrededor cuelga fuera de los paneles del vendor: sin esto se queda pintada al cerrar TAB");
         }

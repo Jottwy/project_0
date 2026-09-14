@@ -186,25 +186,56 @@ namespace BackroomsSurvival.Gameplay.Body
             var state = GarmentState.Of(worn);
             if (!state.NeedsRepair(index)) return $"{worn.Name}: está bien";
 
-            bool needle = Count(_needle) > 0, thread = Count(_thread) > 0;
-            bool needsCloth = state.NeedsCloth(index), cloth = Count(_cloth) > 0;
-            if (needle && thread && (!needsCloth || cloth))
+            var (needles, threads, cloths, tapes) = Materials();
+            if (GarmentRepairPlan.CanSew(state, index, needles, threads, cloths, out string sewMissing)) return Repair(worn, index, GarmentRepair.Sew);
+            if (GarmentRepairPlan.CanTape(state, index, tapes, out _)) return Repair(worn, index, GarmentRepair.Tape);
+            return state.CanRepair(index, GarmentRepair.Tape) ? $"Falta {sewMissing}, o cinta" : $"Para coser falta: {sewMissing}";
+        }
+
+        /// <summary>Sastrería: cose o pone cinta en una zona concreta de una prenda puesta. Devuelve el aviso para la UI.</summary>
+        public string Repair(Item worn, int index, GarmentRepair repair)
+        {
+            if (_inventory == null) return "Sin jugador";
+            if (worn == null || !worn.Definition.TryGetDataOfType(out GarmentZonesData data) || index < 0 || index >= data.Zones.Count)
+                return "Esa prenda ya no está";
+            var state = GarmentState.Of(worn);
+            string where = $"{worn.Name}, {BodyZones.Label(data.Zones[index].Zone)}";
+            var (needles, threads, cloths, tapes) = Materials();
+            if (repair == GarmentRepair.Sew)
             {
+                if (!GarmentRepairPlan.CanSew(state, index, needles, threads, cloths, out string missing))
+                    return missing.Length == 0 ? $"{where}: nada que coser" : $"Para coser falta: {missing}";
+                bool needsCloth = state.NeedsCloth(index);
                 _inventory.RemoveItemsById(_thread.Id, 1);
                 if (needsCloth) _inventory.RemoveItemsById(_cloth.Id, 1);
                 state.Repair(index, GarmentRepair.Sew);
                 InventoryReporter.MarkDirty();
-                return $"Cosido: {worn.Name}, {BodyZones.Label(zone)}";
+                return $"Cosido: {where}";
             }
-            if (state.CanRepair(index, GarmentRepair.Tape) && Count(_tape) > 0)
+            if (!GarmentRepairPlan.CanTape(state, index, tapes, out string noTape))
+                return noTape.Length == 0 ? $"{where}: no admite cinta" : "Falta cinta";
+            _inventory.RemoveItemsById(_tape.Id, 1);
+            state.Repair(index, GarmentRepair.Tape);
+            InventoryReporter.MarkDirty();
+            return state.IsPocketBroken(index) ? $"Cinta en {where}: el bolsillo sigue roto" : $"Cinta en {where}";
+        }
+
+        /// <summary>Lo que hay en el inventario para coser: agujas, hilo, tela y cinta.</summary>
+        public (int needles, int threads, int cloths, int tapes) Materials()
+            => _inventory == null ? (0, 0, 0, 0) : (Count(_needle), Count(_thread), Count(_cloth), Count(_tape));
+
+        /// <summary>Sastrería: cada zona de cada prenda por zonas puesta, de fuera adentro y en el orden de sus zonas.</summary>
+        public void CollectWornZones(List<WornGarmentZone> zones)
+        {
+            zones.Clear();
+            if (_inventory == null) return;
+            foreach (var name in _layers)
             {
-                _inventory.RemoveItemsById(_tape.Id, 1);
-                state.Repair(index, GarmentRepair.Tape);
-                InventoryReporter.MarkDirty();
-                return $"Cinta en {worn.Name}: el bolsillo sigue roto";
+                var worn = WornIn(name);
+                if (worn == null || !worn.Definition.TryGetDataOfType(out GarmentZonesData data)) continue;
+                for (int i = 0; i < data.Zones.Count && i < GarmentZonesData.MaxZones; i++)
+                    if (Covers(name, data.Zones[i].Zone)) zones.Add(new WornGarmentZone(worn, data, i));
             }
-            if (needle && thread) return "Falta una tela para coser el desgarro";
-            return state.CanRepair(index, GarmentRepair.Tape) ? "Necesitas aguja e hilo, o cinta" : "Para coser: aguja e hilo";
         }
 
         private bool TryGetOutermost(BodyZone zone, out string layer, out Item worn, out GarmentZonesData data, out int index)
