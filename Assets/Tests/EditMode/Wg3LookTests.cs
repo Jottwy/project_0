@@ -51,6 +51,39 @@ namespace BackroomsSurvival.Tests.EditMode
         }
 
         [Test]
+        public void DaisAndStepsHaveAWalkableTop()
+        {
+            // ADR-151: estrados de 40 a 120 con fondo ≥ 200, en cualquier planta y orientación.
+            Assert.IsTrue(Wg3Looks.IsWalkableTop(600, 200, 0, 40), "estrado 40");
+            Assert.IsTrue(Wg3Looks.IsWalkableTop(250, 970, 332, 452), "estrado 120 en planta 1");
+            // Peldaños 60 × 200, de 20 a 100.
+            Assert.IsTrue(Wg3Looks.IsWalkableTop(60, 200, 0, 20), "peldaño bajo");
+            Assert.IsTrue(Wg3Looks.IsWalkableTop(200, 60, 0, 100), "peldaño alto");
+        }
+
+        [Test]
+        public void OtherLowBoxesKeepTheWall()
+        {
+            Assert.IsFalse(Wg3Looks.IsWalkableTop(260, 20, 0, 110), "pretil");
+            Assert.IsFalse(Wg3Looks.IsWalkableTop(600, 150, 0, 40), "fondo < 200");
+            Assert.IsFalse(Wg3Looks.IsWalkableTop(600, 600, 0, 50), "altura fuera de la lista");
+            Assert.IsFalse(Wg3Looks.IsWalkableTop(60, 200, 0, 120), "peldaño a la altura del estrado");
+            Assert.IsFalse(Wg3Looks.IsWalkableTop(800, 800, 0, 20), "tarima de 20: valor validado");
+            Assert.IsFalse(Wg3Looks.IsWalkableTop(50, 50, 0, 300), "pilar");
+        }
+
+        [Test]
+        public void DaisMirrorConstantsMatchTheBackend()
+        {
+            Assert.AreEqual(40, Wg3Looks.DaisMinHeightCm, "fill::DAIS_HEIGHTS_CM[0]");
+            Assert.AreEqual(120, Wg3Looks.DaisMaxHeightCm, "fill::DAIS_HEIGHTS_CM[4]");
+            Assert.AreEqual(200, Wg3Looks.DaisMinDepthCm, "fill::DAIS_MIN_DEPTH_CM");
+            Assert.AreEqual(20, Wg3Looks.DaisStepRiseCm, "fill::DAIS_STEP_RISE_CM");
+            Assert.AreEqual(60, Wg3Looks.DaisStepRunCm, "fill::DAIS_STEP_RUN_CM");
+            Assert.AreEqual(200, Wg3Looks.DaisAccessWidthCm, "fill::DAIS_ACCESS_WIDTH_CM");
+        }
+
+        [Test]
         public void MirrorConstantsMatchTheBackend()
         {
             Assert.AreEqual(12, Wg3Looks.CubicleThicknessCm, "fill::CUBICLE_T_CM");
