@@ -7173,6 +7173,9 @@ const TIERS_MIN_AREA_M2: f32 = 100.0;
 /// Salto entre escalones de la grada (40/80/120) y fondo de cada uno.
 const TIER_RISE_CM: i32 = 40;
 const TIER_DEPTH_CM: i32 = 200;
+/// ADR-151 enm. 3 — la grada BAJA, donde 40/80 no deja 240 libres (el techo de 3,08 de casi toda sala):
+/// 40 y 60. No 20: esa altura y ese fondo son la tarima validada. El salto de 20 no pide peldaño.
+const LOW_TIER_HEIGHTS_CM: [i32; 2] = [40, 60];
 const SALT_TIERS: u32 = 0xB1_11_A0_11;
 
 /// ¿Es este macizo un estrado? Por la forma: alto de la lista y lado corto de al menos 2 m.
@@ -7303,19 +7306,23 @@ fn dais_platforms(
                     + (TIER_RISE_CM / DAIS_STEP_RISE_CM - 1) * DAIS_STEP_RUN_CM
                     + DAIS_LANDING_CM
             };
-            let tiers = {
+            // Las alturas de la grada, de fuera a dentro; vacía si no hay grada.
+            let tier_heights: Vec<i32> = {
                 let mut tt = super::hash::stream_at(seed, cx, cz, SALT_TIERS);
                 let wanted = tt.next01() < TIERS_SHARE && s.area_m2() >= TIERS_MIN_AREA_M2;
                 let fits =
-                    |n: i32| n * TIER_RISE_CM + DAIS_HEADROOM_CM <= clear && tier_reach(n) <= perp;
+                    |top: i32, n: i32| top + DAIS_HEADROOM_CM <= clear && tier_reach(n) <= perp;
+                let tall = |n: i32| (1..=n).map(|k| k * TIER_RISE_CM).collect::<Vec<i32>>();
                 if !wanted {
-                    0
-                } else if fits(3) && tt.next01() < 0.5 {
-                    3
-                } else if fits(2) {
-                    2
+                    Vec::new()
+                } else if fits(3 * TIER_RISE_CM, 3) && tt.next01() < 0.5 {
+                    tall(3)
+                } else if fits(2 * TIER_RISE_CM, 2) {
+                    tall(2)
+                } else if fits(LOW_TIER_HEIGHTS_CM[1], 2) {
+                    LOW_TIER_HEIGHTS_CM.to_vec()
                 } else {
-                    0
+                    Vec::new()
                 }
             };
             let m = DAIS_CORNER_MARGIN_CM;
@@ -7359,14 +7366,21 @@ fn dais_platforms(
                 },
             };
             // Primero la grada, si le tocó; si no cabe en ningún sitio, el estrado de siempre.
-            let candidates = if tiers >= 2 { vec![tiers, 0] } else { vec![0] };
+            let candidates = if tier_heights.is_empty() {
+                vec![Vec::new()]
+            } else {
+                vec![tier_heights, Vec::new()]
+            };
             let mut chosen: Option<(i32, Vec<(i32, i32)>)> = None;
-            for &t in &candidates {
+            for heights in &candidates {
                 // Las capas, de fuera a dentro: (fondo desde la pared, alto). La de fuera es la más
                 // baja y la más honda; cada una de dentro se apoya en el suelo y atraviesa a la de fuera.
-                let layers: Vec<(i32, i32)> = if t >= 2 {
-                    (1..=t)
-                        .map(|k| ((t - k + 1) * TIER_DEPTH_CM, k * TIER_RISE_CM))
+                let n = heights.len() as i32;
+                let layers: Vec<(i32, i32)> = if n >= 2 {
+                    heights
+                        .iter()
+                        .enumerate()
+                        .map(|(k, &hk)| ((n - k as i32) * TIER_DEPTH_CM, hk))
                         .collect()
                 } else {
                     vec![(depth, h)]

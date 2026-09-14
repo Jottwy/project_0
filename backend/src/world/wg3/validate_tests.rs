@@ -2763,10 +2763,11 @@ fn every_tier_is_contiguous_and_climbable() {
             for d in solids.iter().filter(|t| super::fill::is_dais(t)) {
                 let (dx0, dz0) = (d.x_cm, d.z_cm);
                 let (dx1, dz1) = (d.x_cm + d.size_x_cm, d.z_cm + d.size_z_cm);
+                // El escalón de abajo: 40 menos en la grada alta, 20 en la baja (enm. 3).
                 let Some(e) = solids.iter().find(|e| {
                     super::fill::is_dais(e)
                         && e.bottom_y_cm == d.bottom_y_cm
-                        && e.top_y_cm == d.top_y_cm - 40
+                        && (e.top_y_cm == d.top_y_cm - 40 || e.top_y_cm == d.top_y_cm - 20)
                         && e.x_cm < dx1
                         && e.x_cm + e.size_x_cm > dx0
                         && e.z_cm < dz1
