@@ -109,6 +109,17 @@ namespace BackroomsSurvival.Gameplay.Mapping
 
         private bool _forward = true;
 
+        /// <summary>Herramienta de capturas en editor: deja quieta la hoja del último <see cref="Play"/> en <paramref name="progress"/>.</summary>
+        public void PoseForCapture(float progress)
+        {
+            _started = -1f;
+            // Con 1 el paso ha terminado: la hoja ya no se ve (igual que al acabar Play).
+            _renderer.enabled = progress < 1f;
+            float eased = progress * progress * (3f - 2f * progress);
+            Deform(_forward ? eased : 1f - eased);
+            Upload();
+        }
+
         private void LateUpdate()
         {
             if (_started < 0f) return;
