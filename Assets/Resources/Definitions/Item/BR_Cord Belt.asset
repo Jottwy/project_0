@@ -28,11 +28,11 @@ MonoBehaviour:
   - {fileID: 11400000, guid: cfea35ee23f1fda47a276a7b208543f9, type: 2}
   _properties: []
   _data:
-  - rid: 3885882211262267816
+  - rid: 3885882211262267909
   references:
     version: 2
     RefIds:
-    - rid: 3885882211262267816
+    - rid: 3885882211262267909
       type: {class: WearableCapacityData, ns: BackroomsSurvival.Wearables, asm: BackroomsSurvival}
       data:
         _slots: 2

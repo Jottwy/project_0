@@ -18459,3 +18459,26 @@ alternaba entre opciones de coste parecido (10–39° de giro por fotograma).
    `body_hit`.
 
 ---
+
+### ADR-149 — Enmienda 4 (2026-09-14): R2c — el cuerpo en el juego real y la venda por brazo derivada de él
+
+**Estado:** PROPUESTA (Joel: «R2c también, vendas del juego real para que funcione»). Concreta D6. Sin wire ni guardado nuevos.
+
+1. **El cuerpo por zonas se monta en toda escena** (`BackroomsBodyPrototype`, `RuntimeInitializeOnLoadMethod(AfterSceneLoad)` +
+   `DontDestroyOnLoad`) cuando la escena no trae uno; venda y férula se cargan de `Resources`. Se retira para el CUERPO la
+   condición de prototipo «solo `BR_InventoryTest`»; la ropa por zonas y los bolsillos siguen solo allí (necesitan sus
+   contenedores). La vista Heridas funciona así en el juego real.
+2. **`PlayerMedicalState` deja de decidir heridas** mientras el cuerpo está activo (`BodyDriven`): el daño local ya no las
+   abre y el estado de cada brazo se DERIVA del cuerpo (`BodyMedicalBridge`): herido si una zona del brazo (brazo,
+   antebrazo, mano) tiene rasguño o corte sin vendar; vendado si tiene uno vendado; una fractura no cuenta.
+   `RestrictToLeftArm` (Alpha 1, validado por Joel) se conserva: con él las heridas de los dos brazos se pintan y tratan en
+   el izquierdo, como hasta ahora. Los bits 7/8 no cambian de significado (ADR-044).
+3. **La venda (`BandageWieldable`) no se toca:** `ApplyBandage` pasa por `BandageOverride`, que trata la zona abierta más
+   grave del brazo (corte antes que rasguño); con backend manda `treat_zone` y el estado vuelve en `body_state`. El objeto
+   lo sigue gastando el wieldable al completar.
+4. **Consecuencias:** robapieles, PvP y entidades abren heridas vendables (cierra el hueco de STATE «sólo el daño LOCAL abre
+   heridas»). Sin backend el cuerpo también sangra y cojea en el juego real. La férula no sale todavía en el loot: se usa
+   desde la vista Heridas si se tiene.
+5. **Vista Heridas con leyenda de colores** (Joel: «como Project Zomboid»): rasguño, corte, fractura y tratado.
+
+---

@@ -77,6 +77,15 @@ namespace BackroomsSurvival.Gameplay.Medical
         /// </summary>
         public bool RestrictToLeftArm { get; set; } = true;
 
+        /// <summary>
+        /// ADR-149 R2c: el cuerpo por zonas está activo y es quien decide las heridas. El daño local deja de abrirlas aquí y
+        /// el estado de cada brazo llega por <see cref="SetFromBody"/>.
+        /// </summary>
+        public bool BodyDriven { get; set; }
+
+        /// <summary>ADR-149 R2c: si está puesto, vendar trata la zona del cuerpo en vez de este estado (devuelve si se trató).</summary>
+        public Func<BodyPartSide, bool> BandageOverride { get; set; }
+
         private readonly BodyPartCondition[] _conditions = new BodyPartCondition[2];
 
         // Última zona herida: es la que ofrece TryGetWoundedSide, para que vendarse trate lo que
@@ -133,7 +142,7 @@ namespace BackroomsSurvival.Gameplay.Medical
         /// </summary>
         public BodyPartSide? ReportDamage(float damage, Vector3 hitPoint, Vector3 hitForce, Transform reference)
         {
-            if (damage < MinWoundDamage)
+            if (BodyDriven || damage < MinWoundDamage)
                 return null;
 
             var side = ResolveSide(hitPoint, hitForce, reference);
@@ -153,11 +162,24 @@ namespace BackroomsSurvival.Gameplay.Medical
         /// </summary>
         public bool ApplyBandage(BodyPartSide side)
         {
+            if (BandageOverride != null)
+                return _conditions[(int)side] == BodyPartCondition.Wounded && BandageOverride(side);
+
             if (_conditions[(int)side] != BodyPartCondition.Wounded)
                 return false;
 
             Set(side, BodyPartCondition.Bandaged);
             return true;
+        }
+
+        /// <summary>ADR-149 R2c: el estado del brazo que deriva el cuerpo. Solo anuncia si cambia.</summary>
+        public void SetFromBody(BodyPartSide side, BodyPartCondition condition)
+        {
+            if (_conditions[(int)side] == condition)
+                return;
+            if (condition == BodyPartCondition.Wounded)
+                _lastWounded = side;
+            Set(side, condition);
         }
 
         /// <summary>
