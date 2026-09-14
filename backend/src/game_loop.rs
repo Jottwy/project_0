@@ -2358,8 +2358,9 @@ pub async fn run(
                 note_entity_tick(entity_tick_started.elapsed());
                 phases.add(PH_ENT_LEGACY, entity_tick_started.elapsed());
                 if ENTITY_DAMAGE_ENABLED && !dev_freeze_survival && damage > 0.0 {
-                    player.stats.take_damage(damage);
-                    player.body.apply_damage(draw_zone(DamageCause::Other, tick as u32), damage, DamageCause::Other);
+                    let zone = draw_zone(DamageCause::Other, tick as u32);
+                    let hit = apply_body_hit(&mut player.stats, &mut player.body, &player.protection, zone, damage, DamageCause::Other);
+                    let _ = to_clients.send(ServerMessage::Event(body_hit_event(&hit, "Undefined")));
                 }
                 for ev in events {
                     if dev_freeze_survival && ev.event_type == "damage_taken" {
@@ -2818,9 +2819,18 @@ pub async fn run(
                         }
                         PhantomAttackKind::Hit(dmg) => {
                             if !dev_invincible {
-                                player.stats.take_damage(dmg);
-                                // ADR-149 R2: el zarpazo abre herida en brazos, pecho o cabeza (sorteo con el tick).
-                                player.body.apply_damage(draw_zone(DamageCause::PhantomHit, tick as u32), dmg, DamageCause::PhantomHit);
+                                // ADR-149 R2: el zarpazo abre herida en brazos, pecho o cabeza (sorteo con el tick); la ropa para
+                                // parte y se rasga como un zarpazo.
+                                let zone = draw_zone(DamageCause::PhantomHit, tick as u32);
+                                let hit = apply_body_hit(
+                                    &mut player.stats,
+                                    &mut player.body,
+                                    &player.protection,
+                                    zone,
+                                    dmg,
+                                    DamageCause::PhantomHit,
+                                );
+                                let _ = to_clients.send(ServerMessage::Event(body_hit_event(&hit, PHANTOM_HIT_CLIENT_CAUSE)));
                             }
                             let _ = to_clients.send(ServerMessage::Event(GameEvent {
                                 event_type: "phantom_hit".into(),
@@ -4501,17 +4511,21 @@ async fn handle_network_event(
                 );
                 return;
             }
+            // ADR-149 R2: sin zona en la concesión hasta R3 → sorteo genérico con el id de la petición; la ropa para parte.
+            let pvp_zone = draw_zone(DamageCause::Other, request_id as u32);
+            let pvp_damage = mitigate(damage, player.protection[pvp_zone]);
             match apply_pvp_damage_grant(
                 &mut player.stats,
                 &mut net.processed_pvp_grants,
                 attacker_id,
                 request_id,
-                damage,
+                pvp_damage,
                 tick,
             ) {
                 Ok(health) => {
-                    // ADR-149 R2: sin zona en la concesión hasta R3 → sorteo genérico con el id de la petición.
-                    player.body.apply_damage(draw_zone(DamageCause::Other, request_id as u32), damage, DamageCause::Other);
+                    let injury = player.body.apply_damage(pvp_zone, pvp_damage, DamageCause::Other);
+                    let hit = BodyHit { zone: pvp_zone, raw: damage, mitigated: pvp_damage, injury };
+                    let _ = to_clients.send(ServerMessage::Event(body_hit_event(&hit, "Undefined")));
                     info!(
                         "MPTRACE step=PVP event=pvp_damage_applied request_id={} attacker_id={} weapon_id={} damage={:.1} health={:.2}",
                         request_id, attacker_id, weapon_id, damage, health
@@ -4760,9 +4774,11 @@ async fn handle_network_event(
                         );
                         return;
                     }
-                    player.stats.take_damage(damage);
                     // ADR-149 R2: mismo sorteo que en el host, con el id de la concesión como semilla.
-                    player.body.apply_damage(draw_zone(DamageCause::PhantomHit, request_id as u32), damage, DamageCause::PhantomHit);
+                    let zone = draw_zone(DamageCause::PhantomHit, request_id as u32);
+                    let hit =
+                        apply_body_hit(&mut player.stats, &mut player.body, &player.protection, zone, damage, DamageCause::PhantomHit);
+                    let _ = to_clients.send(ServerMessage::Event(body_hit_event(&hit, PHANTOM_HIT_CLIENT_CAUSE)));
                     info!(
                         "MPTRACE step=PH_ATTACK event=phantom_attack_applied kind=hit damage={damage:.1} health={:.2} request_id={request_id}",
                         player.stats.health
@@ -5304,13 +5320,24 @@ async fn handle_action(
             let amount = sanitize_reported_damage(raw);
             let cause = json_str(&action.data, "cause").unwrap_or("unknown");
             if amount > 0.0 && !env_flag_enabled("DEV_FREEZE_SURVIVAL") {
-                player.stats.take_damage(amount);
-                // ADR-149 R2: el cliente manda la zona ya resuelta; sin ella se sortea por causa con el tick.
-                let (zone, injury) = wound_from_report(&mut player.body, &action.data, amount, cause, tick);
+                // ADR-149 R2a/R2b: la zona que resolvió el cliente (o sorteo por causa con el tick); la ropa que declaró para
+                // parte del golpe, y la salud y la lesión usan lo que pasa. El daño llega BRUTO y se mitiga una sola vez.
+                let body_cause = DamageCause::from_client(cause);
+                let zone = report_zone(&action.data, body_cause, tick);
+                let hit = apply_body_hit(&mut player.stats, &mut player.body, &player.protection, zone, amount, body_cause);
+                let _ = to_clients.send(ServerMessage::Event(body_hit_event(&hit, cause)));
                 info!(
-                    "MPTRACE step=DMG event=report_damage_applied amount={:.1} cause={} zone={} injury={} health={:.2}",
-                    amount, cause, zone, injury, player.stats.health
+                    "MPTRACE step=DMG event=report_damage_applied amount={:.1} mitigated={:.1} cause={} zone={} injury={} health={:.2}",
+                    amount, hit.mitigated, cause, zone, hit.injury, player.stats.health
                 );
+            }
+        }
+        // ADR-149 R2b: el cliente declara la protección 0-100 de su ropa por zona (la prenda más exterior). Se sustituye
+        // entera en cada envío; trust-the-client como todo el inventario (ADR-149 D7).
+        "report_protection" => {
+            if let Some(values) = action.data.get("prot").and_then(|v| v.as_array()) {
+                player.protection = parse_protection(values);
+                info!("MPTRACE step=BODY event=report_protection prot={:?}", player.protection);
             }
         }
         // ADR-149 R2: el cliente trata una zona con venda (1) o férula (2). Trust-the-client en el objeto gastado, como
@@ -7008,16 +7035,66 @@ fn apply_pvp_damage_grant(
     Ok(stats.health)
 }
 
+/// ADR-149 R2b — la causa que se manda al cliente con el zarpazo del robapieles: rasga la ropa como un `Slash`.
+const PHANTOM_HIT_CLIENT_CAUSE: &str = "Slash";
+
 /// ADR-149 R2 — la zona de un daño que reporta el cliente: la suya si es válida (la resolvió con hueso, altura y lado);
-/// si falta o está fuera de rango, sorteo por causa con el tick. Devuelve la zona y la lesión abierta.
-fn wound_from_report(body: &mut BodyState, data: &serde_json::Value, amount: f32, cause: &str, tick: u64) -> (usize, u8) {
-    let cause = DamageCause::from_client(cause);
-    let zone = data
-        .get("zone")
+/// si falta o está fuera de rango, sorteo por causa con el tick.
+fn report_zone(data: &serde_json::Value, cause: DamageCause, tick: u64) -> usize {
+    data.get("zone")
         .and_then(|v| v.as_u64())
         .filter(|&z| z < ZONE_COUNT as u64)
-        .map_or_else(|| draw_zone(cause, tick as u32), |z| z as usize);
-    (zone, body.apply_damage(zone, amount, cause))
+        .map_or_else(|| draw_zone(cause, tick as u32), |z| z as usize)
+}
+
+/// ADR-149 R2b — lo que pasa de un golpe con la protección (0-100) de la zona.
+fn mitigate(raw: f32, protection_pct: u8) -> f32 {
+    raw * (1.0 - f32::from(protection_pct.min(100)) / 100.0)
+}
+
+/// ADR-149 R2b — la protección que manda el cliente: 15 números recortados a 0-100; lo que falte o no sea número, 0.
+fn parse_protection(values: &[serde_json::Value]) -> [u8; ZONE_COUNT] {
+    let mut protection = [0u8; ZONE_COUNT];
+    for (slot, value) in protection.iter_mut().zip(values.iter()) {
+        if let Some(v) = value.as_f64().filter(|v| v.is_finite()) {
+            *slot = v.clamp(0.0, 100.0).round() as u8;
+        }
+    }
+    protection
+}
+
+/// Un golpe ya aplicado: zona, daño bruto, lo que pasó la ropa y la lesión que abrió.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct BodyHit {
+    zone: usize,
+    raw: f32,
+    mitigated: f32,
+    injury: u8,
+}
+
+/// ADR-149 R2b — un golpe con zona fuera de PvP: la ropa para parte, y la salud y la lesión usan lo que pasa.
+fn apply_body_hit(
+    stats: &mut crate::player::stats::PlayerStats,
+    body: &mut BodyState,
+    protection: &[u8; ZONE_COUNT],
+    zone: usize,
+    raw: f32,
+    cause: DamageCause,
+) -> BodyHit {
+    let zone = zone.min(ZONE_COUNT - 1);
+    let mitigated = mitigate(raw, protection[zone]);
+    stats.take_damage(mitigated);
+    let injury = body.apply_damage(zone, mitigated, cause);
+    BodyHit { zone, raw, mitigated, injury }
+}
+
+/// ADR-149 R2b — aviso al cliente de cada golpe con su zona y el daño BRUTO, para que rompa la prenda que lo recibió
+/// (también los golpes que no pasaron por él: robapieles, PvP, entidades). `cause` es el `DamageType` del vendor.
+fn body_hit_event(hit: &BodyHit, cause: &str) -> GameEvent {
+    GameEvent {
+        event_type: "body_hit".into(),
+        data: serde_json::json!({ "zone": hit.zone, "cause": cause, "damage": hit.raw }),
+    }
 }
 
 /// ADR-149 R2 — el espejo del cuerpo para el cliente: los 15 bytes de zona, si sangra y lo que frenan las piernas.
@@ -7249,20 +7326,20 @@ async fn process_pvp_hit_candidate_host(
 
             if victim_is_local {
                 // No network hop: the host IS the victim's own backend.
+                let pvp_zone = draw_zone(DamageCause::Other, candidate.request_id as u32);
+                let pvp_damage = mitigate(clamped_damage, player.protection[pvp_zone]);
                 match apply_pvp_damage_grant(
                     &mut player.stats,
                     &mut net.processed_pvp_grants,
                     candidate.attacker_id,
                     candidate.request_id,
-                    clamped_damage,
+                    pvp_damage,
                     tick,
                 ) {
                     Ok(health) => {
-                        player.body.apply_damage(
-                            draw_zone(DamageCause::Other, candidate.request_id as u32),
-                            clamped_damage,
-                            DamageCause::Other,
-                        );
+                        let injury = player.body.apply_damage(pvp_zone, pvp_damage, DamageCause::Other);
+                        let hit = BodyHit { zone: pvp_zone, raw: clamped_damage, mitigated: pvp_damage, injury };
+                        let _ = to_clients.send(ServerMessage::Event(body_hit_event(&hit, "Undefined")));
                         let _ = to_clients.send(ServerMessage::Event(GameEvent {
                             event_type: "pvp_damage_taken".into(),
                             data: serde_json::json!({

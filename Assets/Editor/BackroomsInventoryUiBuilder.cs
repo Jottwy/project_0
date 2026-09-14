@@ -676,7 +676,24 @@ namespace BackroomsSurvival.EditorTools
                 belt.FindProperty("_inventoryTop").floatValue = 44f;
                 belt.FindProperty("_pad").floatValue = BoxPad;
                 belt.FindProperty("_gap").floatValue = CellGap;
+                // Joel (2026-09-14): en juego solo los huecos, que aparecen al usar el cinturón y se desvanecen a los 2 s.
+                var beltLayout = hotbar.transform.Find("Layout");
+                var frame = hotbar.transform.Find("SelectionFrame");
+                belt.FindProperty("_strap").objectReferenceValue = beltLayout.Find(StrapName)?.GetComponent<Image>();
+                // `??` no sirve con componentes de Unity: GetComponent devuelve un nulo falso en el editor.
+                var slotsGroup = beltLayout.GetComponent<CanvasGroup>();
+                if (slotsGroup == null) slotsGroup = beltLayout.gameObject.AddComponent<CanvasGroup>();
+                belt.FindProperty("_slotsGroup").objectReferenceValue = slotsGroup;
+                if (frame != null)
+                {
+                    var frameGroup = frame.GetComponent<CanvasGroup>();
+                    if (frameGroup == null) frameGroup = frame.gameObject.AddComponent<CanvasGroup>();
+                    belt.FindProperty("_frameGroup").objectReferenceValue = frameGroup;
+                }
                 belt.ApplyModifiedPropertiesWithoutUndo();
+                var vendorHotbar = new SerializedObject(hotbar);
+                vendorHotbar.FindProperty("_holsterVisibleDuration").floatValue = 0f; // siempre activo: el fundido es nuestro
+                vendorHotbar.ApplyModifiedPropertiesWithoutUndo();
             }
             else report.Missing("HotbarUI");
             report.Count("columnas", 3);
@@ -1024,6 +1041,15 @@ namespace BackroomsSurvival.EditorTools
         private const string WoundsPanelName = "BR_WoundsPanel";
         private const float WoundZoneW = 0.29f;
         private const float WoundZoneH = 0.1f;
+        /// <summary>Los mismos colores que pinta <c>BackroomsWoundZoneUI</c>.</summary>
+        private static (string, Color)[] WoundLegend(BackroomsUiTheme theme) => new[]
+        {
+            ("rasguño", new Color(0.69f, 0.53f, 0.12f)),
+            ("corte", theme.TapeRed),
+            ("fractura", new Color(0.37f, 0.23f, 0.55f)),
+            ("tratado", new Color(0.29f, 0.35f, 0.23f)),
+        };
+
         private static readonly (BodyZone Zone, float X, float Y)[] WoundZones =
         {
             (BodyZone.Head, 0.355f, 0.06f),
@@ -1118,6 +1144,30 @@ namespace BackroomsSurvival.EditorTools
             }
             report.Count("zonas de heridas", WoundZones.Length);
 
+            // ADR-149 R2c (Joel: «como Project Zomboid»): el color de cada zona dice qué tiene.
+            var legend = EnsureRect(wounds, "Legend", typeof(HorizontalLayoutGroup));
+            legend.anchorMin = new Vector2(0f, 0f);
+            legend.anchorMax = new Vector2(1f, 0f);
+            legend.pivot = new Vector2(0.5f, 0f);
+            legend.sizeDelta = new Vector2(0f, 22f);
+            legend.anchoredPosition = new Vector2(0f, 46f);
+            var legendLayout = legend.GetComponent<HorizontalLayoutGroup>();
+            legendLayout.spacing = 6f;
+            legendLayout.childAlignment = TextAnchor.MiddleCenter;
+            legendLayout.childControlWidth = false;
+            legendLayout.childControlHeight = false;
+            legendLayout.childForceExpandWidth = false;
+            legendLayout.childForceExpandHeight = false;
+            foreach (var (text, color) in WoundLegend(theme))
+            {
+                var chip = EnsureRect(legend, "Chip_" + text, typeof(Image));
+                chip.sizeDelta = new Vector2(78f, 20f);
+                var chipImage = chip.GetComponent<Image>();
+                chipImage.color = color;
+                chipImage.raycastTarget = false;
+                Stretch((RectTransform)Label(chip, "Text", text, theme.MonoBold, 11f, theme.Ink, TextAlignmentOptions.Center).transform);
+            }
+
             // La columna del vendor también reparte a sus hijos: sin esto el panel queda con ancho ~0
             // y cada etiqueta sale letra a letra en vertical.
             IgnoreLayout(wounds.gameObject);
@@ -1132,7 +1182,7 @@ namespace BackroomsSurvival.EditorTools
             foreach (var tmp in wounds.GetComponentsInChildren<TextMeshProUGUI>(true))
                 Retype(tmp, theme, theme.Mono, theme.Ink);
             foreach (var img in wounds.GetComponentsInChildren<Image>(true))
-                if (img.gameObject != wounds.gameObject) SetSprite(img, theme.SunkenSlot, theme.Tape);
+                if (img.gameObject != wounds.gameObject && img.transform.parent.name != "Legend") SetSprite(img, theme.SunkenSlot, theme.Tape);
 
             var toggle = character.GetComponent<BackroomsBodyViewToggle>();
             if (toggle == null) toggle = character.gameObject.AddComponent<BackroomsBodyViewToggle>();

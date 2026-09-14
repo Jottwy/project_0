@@ -83,6 +83,38 @@ namespace BackroomsSurvival.Tests
         }
 
         [Test]
+        public void LaRoturaCabeEnTreintaYDosBitsYVuelveIgual()
+        {
+            var data = Jacket();
+            var state = new GarmentState();
+            Assert.AreEqual(0u, state.Pack(), "sana, cero");
+            state.ApplyHit(0, data.Zones[0], DamageType.Ballistic, 12f, out _);
+            state.ApplyHit(1, data.Zones[1], DamageType.Slash, 25f, out _);
+            state.Repair(1, GarmentRepair.Tape);
+            state.ApplyHit(2, data.Zones[2], DamageType.Pierce, 10f, out _);
+
+            var copy = new GarmentState();
+            copy.Unpack(state.Pack());
+            for (int i = 0; i < GarmentZonesData.MaxZones; i++)
+            {
+                Assert.AreEqual(state.DamageOf(i), copy.DamageOf(i), $"zona {i}");
+                Assert.AreEqual(state.IsPocketBroken(i), copy.IsPocketBroken(i), $"bolsillo {i}");
+            }
+            Assert.AreEqual((double)state.Pack(), (double)(uint)(double)state.Pack(), "un double guarda los 32 bits exactos");
+            var junk = new GarmentState();
+            junk.Unpack(0x7u);
+            Assert.AreEqual(GarmentDamage.Intact, junk.DamageOf(0), "un daño desconocido se lee como sano");
+
+            var property = AssetDatabase.LoadAssetAtPath<ItemPropertyDefinition>("Assets/Resources/Definitions/ItemProperty/BR_Garment Zones.asset");
+            Assert.IsNotNull(property, "falta la propiedad Garment Zones");
+            Assert.AreEqual(GarmentState.PropertyName, property.Name);
+            var jacket = AssetDatabase.LoadAssetAtPath<ItemDefinition>("Assets/Resources/Definitions/Item/BR_Work Jacket.asset");
+            bool declared = false;
+            foreach (var generator in jacket.GetPropertyGenerators()) declared |= generator.Property.Id == property.Id;
+            Assert.IsTrue(declared, "la chaqueta no declara dónde guarda su rotura");
+        }
+
+        [Test]
         public void LaRestriccionDejaSoloLosHuecosSanos()
         {
             Assert.AreEqual(1, GarmentPocketRestriction.Evaluate(4, 2, 1, false, false, 1, "Work Jacket").allowed);

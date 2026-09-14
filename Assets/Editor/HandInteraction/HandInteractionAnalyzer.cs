@@ -328,14 +328,23 @@ namespace BackroomsSurvival.EditorTools.HandInteraction
             var carrier = carrierRight ? profile.rightHand : profile.leftHand;
             var other = carrierRight ? profile.leftHand : profile.rightHand;
 
-            // La portadora: su brazo no se mueve; si ya hay un agarre horneado se conserva entero.
-            carrier.role = HandRole.Keep;
+            // La portadora por defecto en Regrip, no en Keep: medido con la manivela, el
+            // destornillador y el Almond Water, los tres necesitaron Regrip a mano porque el
+            // agarre del donante (una brújula, un hacha…) no encaja con la malla real del objeto
+            // nuevo — Keep sólo tiene sentido si el objeto YA se agarra como el donante, que no es
+            // el caso normal al preparar algo. Regrip prueba de verdad y, si la búsqueda no baja
+            // de maxNaturalCost, sigue pidiendo `force` como siempre: no hornea nada peor que Keep.
+            carrier.role = HandRole.Regrip;
             carrier.alongAxis = ins.carrierAlong;
             carrier.clockDegrees = ins.carrierClockDeg;
 
             if (k == HandInteractionKind.OneHand)
             {
-                other.role = HandRole.Keep;
+                // La otra mano, relajada y no "tal cual del clip": con Keep hereda el gesto del
+                // donante aunque no sujete nada (la brújula deja la izquierda pellizcando el aire
+                // en el Almond Water). Relaxed es el brazo del clip base con dedos en cascada, sin
+                // agarrar nada — lo que corresponde a una mano vacía.
+                other.role = HandRole.Relaxed;
             }
             else
             {

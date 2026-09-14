@@ -71,6 +71,16 @@ namespace BackroomsSurvival.Tests
             var variant = AssetDatabase.LoadAssetAtPath<GameObject>("Assets/Prefabs/UI/BR_UI_Player.prefab");
             var hud = variant.GetComponentInChildren<BackroomsBeltHud>(true);
             Assert.IsNotNull(hud, "sin BackroomsBeltHud en el cinturón");
+
+            // Joel (2026-09-14): en juego solo huecos, visibles al usarlo y desvanecidos a los 2 s.
+            Assert.AreEqual(1f, BackroomsBeltHud.FadeTarget(true, 10f, 0f, 0.85f), "con TAB, entero");
+            Assert.AreEqual(0.85f, BackroomsBeltHud.FadeTarget(false, 10f, 11f, 0.85f), "recién usado, se ve");
+            Assert.AreEqual(0f, BackroomsBeltHud.FadeTarget(false, 12f, 11f, 0.85f), "pasado el rato, desaparece");
+            var fade = new SerializedObject(hud);
+            foreach (var field in new[] { "_strap", "_slotsGroup", "_frameGroup" })
+                Assert.IsNotNull(fade.FindProperty(field).objectReferenceValue, $"BackroomsBeltHud.{field} sin asignar");
+            Assert.AreEqual(0f, new SerializedObject(hud.GetComponent("HotbarUI"))
+                .FindProperty("_holsterVisibleDuration").floatValue, "el vendor no debe esconderlo a los 5 s: lo lleva el fundido");
             var so = new SerializedObject(hud);
             foreach (var field in new[] { "_box", "_layout", "_title", "_selectionFrame" })
                 Assert.IsNotNull(so.FindProperty(field).objectReferenceValue, $"BackroomsBeltHud.{field} sin asignar");

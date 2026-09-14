@@ -1,3 +1,4 @@
+using BackroomsSurvival.Gameplay.Medical;
 using BackroomsSurvival.Net;
 using PolymindGames;
 using PolymindGames.InventorySystem;
@@ -6,11 +7,10 @@ using UnityEngine;
 namespace BackroomsSurvival.Gameplay.Body
 {
     /// <summary>
-    /// ADR-149 rebanada R0: el cuerpo por zonas en LOCAL. Escucha el daño del jugador, decide la zona
-    /// (<see cref="BodyZoneResolver"/>), abre la lesión, sangra, frena por las piernas y trata con venda o férula del
-    /// inventario. Condiciones de prototipo (como ADR-147): solo lo monta <c>BR_InventoryTest</c>. Con backend conectado
-    /// (ADR-149 R2a) deja de decidir: el cuerpo es un espejo de <c>body_state</c> y tratar manda <c>treat_zone</c>. No toca
-    /// <c>PlayerMedicalState</c> ni los bits 7/8 de la venda por brazo: eso es R2c.
+    /// ADR-149: el cuerpo por zonas del jugador local. Sin backend decide en local (zona, lesión, sangrado, cojera); con
+    /// backend (R2a) es un espejo de <c>body_state</c> y tratar manda <c>treat_zone</c>. R2c: se monta solo en cualquier
+    /// escena (la de pruebas trae el suyo con la ropa al lado) y la venda por brazo de <see cref="PlayerMedicalState"/> se
+    /// deriva de él (<see cref="BodyMedicalBridge"/>), así que vendarse trata la zona real del cuerpo.
     /// </summary>
     public sealed class BackroomsBodyPrototype : MonoBehaviour
     {
@@ -37,10 +37,30 @@ namespace BackroomsSurvival.Gameplay.Body
 
         private BackroomsGarmentPrototype _garments;
 
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        private static void ResetStatics() => Instance = null;
+
+        /// <summary>ADR-149 R2c: en toda escena, si la escena no trae el suyo (la de pruebas sí, con la ropa por zonas).</summary>
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
+        private static void Bootstrap()
+        {
+            if (Instance != null) return;
+            var go = new GameObject("[BackroomsBody]");
+            go.AddComponent<BackroomsBodyPrototype>();
+            DontDestroyOnLoad(go);
+        }
+
         private void Awake()
         {
+            if (Instance != null && Instance != this)
+            {
+                Destroy(this);
+                return;
+            }
             Instance = this;
             _garments = GetComponent<BackroomsGarmentPrototype>();
+            if (_bandage == null) _bandage = Resources.Load<ItemDefinition>("Definitions/Item/BR_Bandage");
+            if (_splint == null) _splint = Resources.Load<ItemDefinition>("Definitions/Item/BR_Splint");
         }
 
         private void OnDestroy()
@@ -88,6 +108,12 @@ namespace BackroomsSurvival.Gameplay.Body
             _health.Respawn += OnRespawn;
             _movement.SpeedModifier.AddModifier(GetSpeed);
             Local.Clear();
+            // ADR-149 R2c: la venda por brazo deja de decidir por su cuenta y se deriva del cuerpo.
+            var medical = PlayerMedicalState.Local;
+            medical.BodyDriven = true;
+            medical.BandageOverride = TreatArm;
+            Local.Changed += OnBodyChanged;
+            BodyMedicalBridge.Sync(Local, medical);
             return true;
         }
 
@@ -109,6 +135,12 @@ namespace BackroomsSurvival.Gameplay.Body
                 _health.Respawn -= OnRespawn;
             }
             if (_movement != null) _movement.SpeedModifier.RemoveModifier(GetSpeed);
+            if (_player != null)
+            {
+                Local.Changed -= OnBodyChanged;
+                PlayerMedicalState.Local.BodyDriven = false;
+                PlayerMedicalState.Local.BandageOverride = null;
+            }
             _player = null;
             _health = null;
             _movement = null;
@@ -117,6 +149,20 @@ namespace BackroomsSurvival.Gameplay.Body
         }
 
         private void OnRespawn() => Local.Clear();
+
+        private void OnBodyChanged(BodyZone zone) => BodyMedicalBridge.Sync(Local, PlayerMedicalState.Local);
+
+        /// <summary>La venda del juego (BandageWieldable) trata la zona abierta más grave de ese brazo. Ella gasta el objeto.</summary>
+        private bool TreatArm(BodyPartSide side)
+        {
+            if (!BodyMedicalBridge.TryPickArmZone(Local, side, PlayerMedicalState.Local.RestrictToLeftArm, out var zone)) return false;
+            if (_ipc != null)
+            {
+                _ipc.SendTreatZone((int)zone, (int)BodyTreatment.Bandage);
+                return true;
+            }
+            return Local.Treat(zone, BodyTreatment.Bandage);
+        }
 
         private float GetSpeed() => Local.LegSpeedMultiplier();
 

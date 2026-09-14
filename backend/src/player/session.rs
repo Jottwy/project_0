@@ -45,6 +45,10 @@ pub struct Player {
     /// `PlayerSnapshot.body` y se limpia al reaparecer.
     #[serde(default)]
     pub body: crate::player::body::BodyState,
+    /// ADR-149 R2b: protección 0-100 por zona que declara el cliente (la prenda más exterior que la cubre). Volátil: el
+    /// cliente la reenvía al conectar y al cambiar lo puesto. Trust-the-client (ADR-149 D7).
+    #[serde(skip)]
+    pub protection: [u8; crate::player::body::ZONE_COUNT],
     pub inventory: Inventory,
     pub equipped_stabilizer: Option<StabilizerTier>,
     /// ADR-020: cosmetic crouch state reported by the client, relayed to peers
@@ -197,6 +201,7 @@ impl Player {
             rotation: 0.0,
             stats: PlayerStats::default(),
             body: crate::player::body::BodyState::default(),
+            protection: [0; crate::player::body::ZONE_COUNT],
             inventory: Inventory::new(),
             equipped_stabilizer: None,
             crouch: false,

@@ -462,4 +462,16 @@ tinte sobre la UI piden overlay propio o canvas en Screen Space Camera.
   1562/0 y sonda IPC en Python contra el exe debug. Cliente preparado (zona en `report_damage`, espejo de `body_state` en el
   prototipo), pendiente de aplicar fuera de Play. Siguen R2b (ropa en el servidor), R2c (la venda del juego real como
   espejo, con prueba online de Joel), R3 PvP con zona, R4 visual.
+- **R2b HECHA (2026-09-14, enm. 3)** — `report_protection` y mitigación en el servidor, evento `body_hit` con el que el
+  cliente rompe la prenda, y la rotura guardada en la propiedad `BR_Garment Zones` del objeto. `cargo test` 1571/0, sonda
+  IPC y EditMode en verde. Siguen R2c (la venda del juego real como espejo, con prueba online de Joel), R3 PvP con zona y
+  arma, R4 visual.
+- **Joel (2026-09-14) — orden y dirección:** primero R2c (vendas y férulas del juego real funcionando; la vista Heridas
+  como Project Zomboid: ver la zona, el tipo de herida por color y curarla), después un **panel de sastrería dedicado**
+  (más adelante se decide si se unifica con Heridas), y el **spike visual R4** (falso agujero, cinta y costura) en
+  tercera y primera persona. **IDEAS anotadas, sin empezar:** clic directo sobre la prenda en el muñeco (como en la
+  maqueta) para sastrería y heridas; **cremas** y otros tratamientos.
+- **R2c hecha, pendiente de prueba online (2026-09-14, enm. 4)** — el cuerpo se monta en toda escena; la venda por brazo
+  se deriva de él (el robapieles y el PvP ya abren heridas vendables); leyenda de colores en la vista Heridas. La férula no
+  sale en el loot todavía.
 
