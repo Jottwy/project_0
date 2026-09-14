@@ -2852,7 +2852,9 @@ fn maze_zone_covers_about_forty_percent_of_built_floor() {
                     let (cx, cz) = sp.rect.centre_m();
                     let a = sp.area_m2() as f64;
                     all_m2 += a;
-                    if super::density::in_maze_zone(inside.building.seed, cx, cz) {
+                    // ADR-155 L1a — la zona se sortea con la semilla del MUNDO: con la de la región
+                    // cada región vería un campo distinto y la zona se cortaría en cada borde.
+                    if super::density::in_maze_zone(super::world::composer_seed(seed), cx, cz) {
                         zone_m2 += a;
                         here += a;
                     }
