@@ -96,6 +96,27 @@ namespace BackroomsSurvival.Gameplay.Body
             return false;
         }
 
+        /// <summary>
+        /// ADR-149 enm. 7: en qué hueco de <c>garments</c> viaja una prenda — 0-3 = <c>equipment</c> [Head, Torso, Legs, Feet],
+        /// 4 = la de encima — o -1 si no se lleva puesta.
+        /// </summary>
+        public static int WireSlot(int itemId, int[] equipment, int outer)
+        {
+            if (itemId == 0) return -1;
+            if (outer == itemId) return 4;
+            if (equipment == null) return -1;
+            for (int i = 0; i < equipment.Length && i < 4; i++)
+                if (equipment[i] == itemId) return i;
+            return -1;
+        }
+
+        /// <summary>ADR-149 enm. 7: el estado de una prenda a partir de lo que viaja (mismo empaquetado que sus propiedades).</summary>
+        public static void StateFromWire(GarmentState state, uint damage, ushort cuts)
+        {
+            state.Unpack(damage);
+            state.UnpackCuts(cuts);
+        }
+
         /// <summary>El índice del hueso con más peso en un vértice.</summary>
         public static int DominantBone(BoneWeight weight)
         {

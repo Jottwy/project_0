@@ -395,6 +395,9 @@ namespace BackroomsSurvival.Net
                 view.crouch = rp.crouch; // ADR-020
                 view.pitch = rp.pitch;   // ADR-021
                 view.equipment = rp.equipment; // ADR-022 (rp is fresh per parse → no aliasing)
+                view.outer = rp.outer; // ADR-149 enm. 7
+                view.garmentDamage = rp.garmentDamage; // ADR-149 enm. 7 (fresh per parse → no aliasing)
+                view.garmentCuts = rp.garmentCuts;
                 view.heldItem = rp.heldItem; // ADR-023
                 view.hitSeq = rp.hitSeq; // ADR-024
                 view.revealed = rp.revealed; // ADR-038
@@ -636,6 +639,9 @@ namespace BackroomsSurvival.Net
             view.crouch = false;
             view.pitch = 0f;
             view.equipment = new int[4]; // ADR-022: no stale clothing on a recycled proxy
+            view.outer = 0; // ADR-149 enm. 7: no stale jacket on a recycled proxy
+            view.garmentDamage = new uint[IPCClient.GarmentWireSlots]; // ADR-149 enm. 7: no stale damage
+            view.garmentCuts = new ushort[IPCClient.GarmentWireSlots];
             view.heldItem = 0; // ADR-023: no stale held item on a recycled proxy
             view.hitSeq = 0; // ADR-024: no stale hit counter on a recycled proxy (hook re-arms its sentinel)
             view.dead = false; // ADR-028 post-E3: the pooled SetActive(false) is the pool's, not the flag's
@@ -925,6 +931,11 @@ namespace BackroomsSurvival.Net
         public float pitch;
         // ADR-022: cosmetic worn clothing item IDs [Head, Torso, Legs, Feet] (read by ProxyClothingHook).
         public int[] equipment = new int[4];
+        // ADR-149 enm. 7: cosmetic outer garment id and worn-garment damage/cuts [Head, Torso, Legs, Feet, Outer]
+        // (read by ProxyGarmentHook).
+        public int outer;
+        public uint[] garmentDamage = new uint[IPCClient.GarmentWireSlots];
+        public ushort[] garmentCuts = new ushort[IPCClient.GarmentWireSlots];
         // ADR-023: cosmetic held item ID (read by ProxyHeldItemHook); 0 = empty hands.
         public int heldItem;
         // ADR-024: cosmetic hit-reaction counter (read by ProxyHitReactionHook); 0 = never hit.

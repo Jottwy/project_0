@@ -53,6 +53,8 @@ pub enum NetworkEvent {
         carry_count: u8,
         /// ADR-094: cosmetic species tag (0 human, 1 faceling adulto, 2 faceling niño).
         species: u8,
+        /// ADR-149 enm. 7: cosmetic outer garment + worn-garment damage.
+        garments: crate::network::protocol::GarmentWire,
     },
     WorldInteractRequest {
         requester_id: PeerId,

@@ -485,4 +485,7 @@ tinte sobre la UI piden overlay propio o canvas en Screen Space Camera.
 - **R4c, mangas en primera persona (2026-09-14, enm. 6)** — la chaqueta y la camisa se ven en tus brazos 1P con su rotura:
   funda horneada por malla de brazo, shader con el warp del viewmodel, vigilante bajo `WieldablesRoot`. Falta: avatar
   remoto, guantes, tejido propio por prenda.
-
+- **Avatar remoto, pendiente de prueba online (2026-09-14, enm. 7, wire 69)** — los demás ven tu pantalón y calzado de
+  trabajo, la chaqueta encima y la rotura de las cinco prendas puestas (`garments` en los cosméticos de la pose, solo
+  cuando cambia; `MAX_POSES_PER_BATCH` 14 → 8). `ProxyGarmentHook` en el proxy, máscara de piel compartida con el muñeco
+  (`GarmentSkinComposer`). Falta: prueba con dos jugadores, guantes, sitio exacto del golpe.

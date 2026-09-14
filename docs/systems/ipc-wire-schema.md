@@ -954,3 +954,20 @@ la pose que el último tramo ya predice. Pose delgada 23 → 33 B; `MAX_POSES_PE
 **Sólo P2P**: el IPC con Unity no cambia (`world_state` sigue llevando `position`, ya extrapolada).
 El formato cambió en `f9a7814e` sin mover el número, como hizo ADR-144; se movió después.
 `WireSchema.Expected` a 67 en el mismo commit.
+
+## v68 — en el registro de ADR, no aquí
+
+## v69 — ADR-149 enm. 7 + ADR-022 enm.: la prenda de encima y la rotura de lo puesto viajan (2026-09-14)
+
+**Qué lleva.** `GarmentWire { outer: i32, damage: [u32; 5], cuts: [u16; 5] }`, índices
+`[Head, Torso, Legs, Feet, Outer]`, con el mismo empaquetado que las propiedades `Garment Zones`
+(4 bits por zona) y `Garment Cuts` (2 bits por zona). Todo a cero = nada encima y todo sano.
+
+- **IPC:** `PlayerInput.garments` (cliente → backend) y `RemotePlayerState.garments` (backend → Unity),
+  ambos `#[serde(default)]`.
+- **P2P:** `PlayerUpdate.garments` al final, y dentro de `PoseCosmetics` en `PlayerUpdateBatch`: sólo viaja
+  cuando cambia (ADR-144). Pose en su peor forma 80 → 129 B; `MAX_POSES_PER_BATCH` 14 → 8. La pose delgada
+  no crece.
+- **No** se agranda `equipment: [i32; 4]`: es también el formato de guardado, cadáveres y foto de muerte.
+
+Cosmético y cliente-autoritativo, como `equipment`. `WireSchema.Expected` a 69 en el mismo commit.

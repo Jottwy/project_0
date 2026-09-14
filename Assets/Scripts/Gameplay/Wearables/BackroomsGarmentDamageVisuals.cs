@@ -27,12 +27,6 @@ namespace BackroomsSurvival.Wearables
         private static readonly int ZonesB = Shader.PropertyToID("_GarmentZonesB");
         private static readonly int ZonesC = Shader.PropertyToID("_GarmentZonesC");
         private static readonly int ZonesD = Shader.PropertyToID("_GarmentZonesD");
-        private static readonly int MaskB = Shader.PropertyToID("_MaskB");
-        private static readonly int ZoneMap = Shader.PropertyToID("_ZoneMap");
-        private static readonly int RevealA = Shader.PropertyToID("_RevealA");
-        private static readonly int RevealB = Shader.PropertyToID("_RevealB");
-        private static readonly int RevealC = Shader.PropertyToID("_RevealC");
-        private static readonly int RevealD = Shader.PropertyToID("_RevealD");
         private static readonly BodyPoint[] SkinPoints = { BodyPoint.Torso, BodyPoint.Legs, BodyPoint.Feet };
 
         [Tooltip("Renderers de prenda; el mismo índice en _itemIds, _points y _masks dice qué prenda pinta, en qué parte y qué piel tapa (los rellena el builder).")]
@@ -79,9 +73,7 @@ namespace BackroomsSurvival.Wearables
         protected override void OnDestroy()
         {
             base.OnDestroy();
-            foreach (var rt in _skinMasks)
-                if (rt != null) rt.Release();
-            if (_compose != null) Destroy(_compose);
+            GarmentSkinComposer.Release(_skinMasks, ref _compose);
         }
 
         private void LateUpdate()
@@ -129,39 +121,9 @@ namespace BackroomsSurvival.Wearables
                 Garment(inner, out var innerState, out var innerData);
                 Garment(outer, out var outerState, out var outerData);
                 GarmentVisualState.SkinReveal(innerState, innerData, outerState, outerData, _reveal);
-                bool any = false;
-                foreach (bool r in _reveal) any |= r;
-
-                string property = $"_OpacityMask_{point}";
-                if (!any && outerMask == null)
-                {
-                    // Nada roto ni capa de encima: la máscara del vendor tal cual (por si antes se había compuesto otra).
-                    _body.material.SetTexture(property, innerMask);
-                    continue;
-                }
-
-                var target = SkinMask(point);
-                _compose ??= new Material(_composeShader) { hideFlags = HideFlags.HideAndDontSave };
-                _compose.SetTexture(MaskB, outerMask != null ? outerMask : Texture2D.blackTexture);
-                _compose.SetTexture(ZoneMap, _zoneMap);
-                _compose.SetVector(RevealA, Flags(0));
-                _compose.SetVector(RevealB, Flags(4));
-                _compose.SetVector(RevealC, Flags(8));
-                _compose.SetVector(RevealD, Flags(12));
-                Graphics.Blit(innerMask != null ? innerMask : Texture2D.blackTexture, target, _compose);
-                _body.material.SetTexture(property, target);
+                GarmentSkinComposer.Apply(_body, point, innerMask, outerMask, _reveal, _zoneMap, _composeShader, ref _compose,
+                    _skinMasks, _maskSize);
             }
-        }
-
-        private Vector4 Flags(int start)
-            => new(_reveal[start] ? 1f : 0f, _reveal[start + 1] ? 1f : 0f, _reveal[start + 2] ? 1f : 0f, _reveal[start + 3] ? 1f : 0f);
-
-        private RenderTexture SkinMask(BodyPoint point)
-        {
-            ref var rt = ref _skinMasks[(int)point];
-            if (rt == null)
-                rt = new RenderTexture(_maskSize, _maskSize, 0, RenderTextureFormat.ARGB32) { name = $"BR_SkinMask_{point}", hideFlags = HideFlags.HideAndDontSave };
-            return rt;
         }
 
         private int ActiveIndex(int point)

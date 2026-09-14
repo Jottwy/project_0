@@ -178,6 +178,11 @@ namespace BackroomsSurvival.Net
         public int pitch;
         // ADR-022: cosmetic worn clothing item IDs [Head, Torso, Legs, Feet] (0 = empty).
         public int[] equipment = new int[4];
+        // ADR-149 enm. 7: cosmetic outer garment id (0 = nothing on top) and worn-garment damage/cuts
+        // [Head, Torso, Legs, Feet, Outer], packed like the Garment Zones / Garment Cuts item properties.
+        public int outer;
+        public uint[] garmentDamage = new uint[IPCClient.GarmentWireSlots];
+        public ushort[] garmentCuts = new ushort[IPCClient.GarmentWireSlots];
         // ADR-023: cosmetic held item ID (0 = empty hands).
         public int heldItem;
         // ADR-024: cosmetic hit-reaction counter (monotonic, wrapping; 0 = never hit).
@@ -242,9 +247,40 @@ namespace BackroomsSurvival.Net
                 else if (MsgPackReader.Is(k, "carry_def")) r.carryDef = (int)reader.ReadInt();
                 else if (MsgPackReader.Is(k, "carry_count")) r.carryCount = (int)reader.ReadInt();
                 else if (MsgPackReader.Is(k, "species")) r.species = (int)reader.ReadInt();
+                else if (MsgPackReader.Is(k, "garments")) ReadGarments(reader, r);
                 else reader.Skip();
             }
             return r;
+        }
+
+        /// <summary>ADR-149 enm. 7: `garments` = { outer, damage, cuts }. Tolerante: claves desconocidas se saltan.</summary>
+        private static void ReadGarments(MsgPackReader reader, RemotePlayerMsg r)
+        {
+            int n = reader.ReadMapHeader();
+            for (int i = 0; i < n; i++)
+            {
+                var k = reader.ReadKey();
+                if (MsgPackReader.Is(k, "outer")) r.outer = (int)reader.ReadInt();
+                else if (MsgPackReader.Is(k, "damage"))
+                {
+                    int count = reader.ReadArrayHeader();
+                    for (int j = 0; j < count; j++)
+                    {
+                        long v = reader.ReadInt();
+                        if (j < r.garmentDamage.Length) r.garmentDamage[j] = (uint)v;
+                    }
+                }
+                else if (MsgPackReader.Is(k, "cuts"))
+                {
+                    int count = reader.ReadArrayHeader();
+                    for (int j = 0; j < count; j++)
+                    {
+                        long v = reader.ReadInt();
+                        if (j < r.garmentCuts.Length) r.garmentCuts[j] = (ushort)v;
+                    }
+                }
+                else reader.Skip();
+            }
         }
     }
 

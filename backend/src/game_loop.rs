@@ -2295,6 +2295,9 @@ pub async fn run(
             // relays 0 forever. Covered by the `peer.carry_def` test in network/mod.rs.
             player.carry_def = received_input.carry_def;
             player.carry_count = received_input.carry_count;
+            // ADR-149 enm. 7: record the client-reported outer garment + worn-garment damage (cosmetic;
+            // relayed to peers, not validated). Plain assignment like the block above.
+            player.garments = received_input.garments;
             // ADR-025 respawn-on-demand: while DEAD the server FREEZES the authoritative pose —
             // client-reported movement is ignored (same gating family as DEV_FREEZE_SURVIVAL /
             // take_damage). Any local client drift while dead is corrected by the applier's snap
@@ -3740,6 +3743,7 @@ async fn handle_network_event(
             carry_def,
             carry_count,
             species,
+            garments: _,
         } => {
             debug!(
                 "Remote player received: id={}, pos=({:.2}, {:.2}, {:.2}), rot={:.1}, anim={}, crouch={}, pitch={}, equipment={:?}, held_item={}, hit_seq={}, dead={}, revealed={}, light_on={}, fire_seq={}, buttons={:#06b}, melee_seq={}, vocal_seq={}, vocal_kind={}, carry={}x{}, species={}",
@@ -9123,6 +9127,7 @@ fn build_world_state(
             carry_def: p.carry_def,
             carry_count: p.carry_count,
             species: p.species,
+            garments: p.garments,
         });
     }
 

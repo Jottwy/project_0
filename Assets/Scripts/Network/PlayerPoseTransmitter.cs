@@ -56,6 +56,11 @@ namespace BackroomsSurvival.Net
         private IItemContainer _headEquip, _torsoEquip, _legsEquip, _feetEquip;
         private bool _equipmentResolved;
         private readonly int[] _equipment = new int[4];
+        // ADR-149 enm. 7: la prenda de encima (contenedor nuestro "Outer") y la rotura de lo puesto, reusados.
+        private IItemContainer _outerEquip;
+        private int _outer;
+        private readonly uint[] _garmentDamage = new uint[IPCClient.GarmentWireSlots];
+        private readonly ushort[] _garmentCuts = new ushort[IPCClient.GarmentWireSlots];
         // ADR-023: cached wieldable inventory + holster container, source of the held item ID.
         private IWieldableInventoryCC _wieldableInv;
         private IItemContainer _holster;
@@ -163,6 +168,7 @@ namespace BackroomsSurvival.Net
                 // containers so they re-resolve against the fresh character on the next valid frame.
                 _character = null;
                 _headEquip = _torsoEquip = _legsEquip = _feetEquip = null;
+                _outerEquip = null; // ADR-149 enm. 7
                 _equipmentResolved = false;
                 // ADR-023: drop the cached wieldable inventory/holster too — re-resolve next valid frame.
                 _wieldableInv = null;
@@ -285,7 +291,7 @@ namespace BackroomsSurvival.Net
                 byte carryCount = SampleCarryCount();
                 ipc.SendPlayerInput(_inputSeq, _clientTick, wirePos, vel, moveState, pitch, yaw,
                     (ushort)buttons, crouch, _equipment, heldItem, _hitSeq, lightOn, fireSeq, _meleeSeq,
-                    _carryDef, carryCount);
+                    _carryDef, carryCount, _outer, _garmentDamage, _garmentCuts);
                 _inputSeq++;
                 _clientTick++;
                 LastSent = wirePos;
@@ -325,6 +331,7 @@ namespace BackroomsSurvival.Net
                     _torsoEquip = inventory.FindContainer(ItemContainerFilters.WithTag(ItemConstants.TorsoEquipmentTag));
                     _legsEquip = inventory.FindContainer(ItemContainerFilters.WithTag(ItemConstants.LegsEquipmentTag));
                     _feetEquip = inventory.FindContainer(ItemContainerFilters.WithTag(ItemConstants.FeetEquipmentTag));
+                    _outerEquip = inventory.FindContainer(ItemContainerFilters.WithName("Outer")); // ADR-149 enm. 7
                     _equipmentResolved = true;
                 }
             }
@@ -333,6 +340,28 @@ namespace BackroomsSurvival.Net
             _equipment[1] = SlotItemId(_torsoEquip);
             _equipment[2] = SlotItemId(_legsEquip);
             _equipment[3] = SlotItemId(_feetEquip);
+
+            // ADR-149 enm. 7: la de encima y la rotura de las cinco prendas, con el empaquetado de sus propiedades.
+            _outer = SlotItemId(_outerEquip);
+            PackGarment(0, _headEquip);
+            PackGarment(1, _torsoEquip);
+            PackGarment(2, _legsEquip);
+            PackGarment(3, _feetEquip);
+            PackGarment(4, _outerEquip);
+        }
+
+        private void PackGarment(int slot, IItemContainer container)
+        {
+            var item = container != null && container.SlotsCount > 0 ? container.GetItemAtIndex(0).Item : null;
+            if (item == null || !item.Definition.TryGetDataOfType(out BackroomsSurvival.Gameplay.Body.GarmentZonesData _))
+            {
+                _garmentDamage[slot] = 0;
+                _garmentCuts[slot] = 0;
+                return;
+            }
+            var state = BackroomsSurvival.Gameplay.Body.GarmentState.Of(item);
+            _garmentDamage[slot] = state.Pack();
+            _garmentCuts[slot] = (ushort)state.PackCuts();
         }
 
         // First-slot item id of an equipment container (0 = empty / missing container).

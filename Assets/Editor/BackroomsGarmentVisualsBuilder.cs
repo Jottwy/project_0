@@ -85,7 +85,9 @@ namespace BackroomsSurvival.EditorTools
             SetInts(os.FindProperty("_outerIds"), outers.ConvertAll(o => o.Id));
             os.ApplyModifiedPropertiesWithoutUndo();
 
-            WireDamage(clothing, new SerializedObject(clothing).FindProperty("_clothing"), outers);
+            var visuals = clothing.GetComponent<BackroomsGarmentDamageVisuals>();
+            if (visuals == null) visuals = clothing.gameObject.AddComponent<BackroomsGarmentDamageVisuals>();
+            WireDamage(clothing, new SerializedObject(clothing).FindProperty("_clothing"), outers, visuals);
             // R4c: las mangas de primera persona usan los materiales de arriba.
             BackroomsSleeveBuilder.Build();
             return wired;
@@ -96,7 +98,25 @@ namespace BackroomsSurvival.EditorTools
         /// guardarropa del proxy. Sin la prenda de encima ni la rotura (piden wire: borrador de ADR-149 enm. 7) y sin componentes
         /// de UI, que en el proxy no tienen inventario.
         /// </summary>
-        public static int WireRemoteAvatar(CharacterClothing clothing) => clothing != null ? WireLooks(clothing, null) : 0;
+        public static int WireRemoteAvatar(CharacterClothing clothing)
+        {
+            if (clothing == null) return 0;
+            // ADR-149 enm. 7: también la prenda de encima y la rotura, que ahora viajan en la pose. El hook va en la raíz del
+            // proxy, como ProxyClothingHook, para resolver su vista.
+            var outers = new List<(SkinnedMeshRenderer Renderer, int Id, Texture2D Mask)>();
+            int wired = WireLooks(clothing, outers);
+            var root = clothing.transform.root.gameObject;
+            var hook = root.GetComponent<BackroomsSurvival.Migration.STPIntegration.ProxyGarmentHook>();
+            if (hook == null) hook = root.AddComponent<BackroomsSurvival.Migration.STPIntegration.ProxyGarmentHook>();
+            WireDamage(clothing, new SerializedObject(clothing).FindProperty("_clothing"), outers, hook);
+            var hs = new SerializedObject(hook);
+            var outerRenderers = hs.FindProperty("_outerRenderers");
+            outerRenderers.arraySize = outers.Count;
+            for (int i = 0; i < outers.Count; i++) outerRenderers.GetArrayElementAtIndex(i).objectReferenceValue = outers[i].Renderer;
+            SetInts(hs.FindProperty("_outerIds"), outers.ConvertAll(o => o.Id));
+            hs.ApplyModifiedPropertiesWithoutUndo();
+            return wired;
+        }
 
         /// <summary>
         /// Nuestras prendas en la lista de ropa de un <see cref="CharacterClothing"/>, con malla de donante y material teñido.
@@ -147,8 +167,12 @@ namespace BackroomsSurvival.EditorTools
 
         // ── R4b: shader de rotura y zona por vértice en toda la ropa del muñeco ──
 
+        /// <summary>
+        /// Hornea mallas y materiales de rotura en toda la ropa y rellena en <paramref name="target"/> (el componente del muñeco o
+        /// el hook del proxy: los dos tienen los mismos campos) renderers, prendas, partes, máscaras, cuerpo y mapa de zonas.
+        /// </summary>
         private static void WireDamage(CharacterClothing clothing, SerializedProperty lists,
-            List<(SkinnedMeshRenderer Renderer, int Id, Texture2D Mask)> outers)
+            List<(SkinnedMeshRenderer Renderer, int Id, Texture2D Mask)> outers, Component target)
         {
             var shader = Shader.Find(ShaderName);
             if (shader == null) Debug.LogError($"[GarmentVisuals] no existe el shader {ShaderName}: la rotura no se verá");
@@ -207,9 +231,7 @@ namespace BackroomsSurvival.EditorTools
                 PrefabUtility.RecordPrefabInstancePropertyModifications(renderer);
             }
 
-            var visuals = clothing.GetComponent<BackroomsGarmentDamageVisuals>();
-            if (visuals == null) visuals = clothing.gameObject.AddComponent<BackroomsGarmentDamageVisuals>();
-            var vs = new SerializedObject(visuals);
+            var vs = new SerializedObject(target);
             var rs = vs.FindProperty("_renderers");
             rs.arraySize = renderers.Count;
             for (int i = 0; i < renderers.Count; i++) rs.GetArrayElementAtIndex(i).objectReferenceValue = renderers[i];
@@ -432,7 +454,7 @@ namespace BackroomsSurvival.EditorTools
                 }
                 else
                 {
-                    material.CopyPropertiesFromMaterial(current);
+                    CopySurface(current, material);
                 }
             }
             if (material.shader != shader) material.shader = shader;
@@ -441,6 +463,36 @@ namespace BackroomsSurvival.EditorTools
             SetKeyword(material, "_OCCLUSIONMAP", material.GetTexture("_OcclusionMap") != null);
             EditorUtility.SetDirty(material);
             return material;
+        }
+
+        private static readonly string[] SurfaceTextures = { "_BaseMap", "_BumpMap", "_MetallicGlossMap", "_OcclusionMap", "_EmissionMap", "_SpecGlossMap" };
+        private static readonly string[] SurfaceColors = { "_BaseColor", "_EmissionColor", "_SpecColor" };
+        private static readonly string[] SurfaceFloats = { "_Smoothness", "_Metallic", "_BumpScale", "_OcclusionStrength", "_Cutoff", "_WorkflowMode", "_SmoothnessTextureChannel" };
+
+        /// <summary>
+        /// Copia la superficie (texturas con su escala, colores y valores de URP/Lit) sin tocar lo demás. Nunca
+        /// <c>CopyPropertiesFromMaterial</c> desde un material de OTRO shader: se lleva por delante lo que ese shader no tiene
+        /// (hinchado, adelantamiento, forro, cinta, hilo). Pasaba al re-hornear el avatar remoto, cuyo donante es del vendor.
+        /// </summary>
+        private static void CopySurface(Material from, Material to)
+        {
+            if (from == null || to == null || from == to) return;
+            if (from.shader == to.shader)
+            {
+                to.CopyPropertiesFromMaterial(from);
+                return;
+            }
+            foreach (var name in SurfaceTextures)
+            {
+                if (!from.HasProperty(name) || !to.HasProperty(name)) continue;
+                to.SetTexture(name, from.GetTexture(name));
+                to.SetTextureScale(name, from.GetTextureScale(name));
+                to.SetTextureOffset(name, from.GetTextureOffset(name));
+            }
+            foreach (var name in SurfaceColors)
+                if (from.HasProperty(name) && to.HasProperty(name)) to.SetColor(name, from.GetColor(name));
+            foreach (var name in SurfaceFloats)
+                if (from.HasProperty(name) && to.HasProperty(name)) to.SetFloat(name, from.GetFloat(name));
         }
 
         private static void SetKeyword(Material material, string keyword, bool on)
@@ -523,7 +575,7 @@ namespace BackroomsSurvival.EditorTools
             // remoto, y el donante del proxy es un material del vendor (URP/Lit). Sin datos de zona la prenda sale sana.
             var garmentShader = Shader.Find(ShaderName);
             material.shader = garmentShader != null ? garmentShader : donor.shader;
-            material.CopyPropertiesFromMaterial(donor);
+            CopySurface(donor, material);
             if (material.HasProperty("_BaseColor")) material.SetColor("_BaseColor", look.Tint);
             // La de encima se hincha; la copia del donante lo habría dejado a 0.
             material.SetFloat("_GarmentInflate", look.Outer ? OuterInflate : 0f);

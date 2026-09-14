@@ -616,6 +616,18 @@ impl RosterKind {
 
 // ─── ADR-144: la pose delgada del relay ───
 
+/// ADR-149 enm. 7 + ADR-022 enm. — la ropa de encima y la rotura de lo que se lleva puesto, cosméticas y
+/// cliente-autoritativas como `equipment`. Índices `[Head, Torso, Legs, Feet, Outer]`; `damage` y `cuts`
+/// con el MISMO empaquetado que las propiedades `Garment Zones` (4 bits por zona) y `Garment Cuts` (2 bits
+/// por zona) del cliente. Todo a cero = nada encima y todo sano. Va dentro de `PoseCosmetics`: sólo
+/// viaja cuando cambia (ADR-144), no en cada pose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub struct GarmentWire {
+    pub outer: i32,
+    pub damage: [u32; 5],
+    pub cuts: [u16; 5],
+}
+
 /// ADR-144 — lo COSMÉTICO de una pose: lo que no cambia de una ronda a la siguiente. Viaja dentro
 /// de `PoseWire` sólo cuando cambia (hash por par en el anfitrión) o como reparación periódica.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
@@ -626,6 +638,9 @@ pub struct PoseCosmetics {
     pub carry_count: u8,
     pub species: u8,
     pub vocal_kind: u8,
+    /// ADR-149 enm. 7: al final, posicional (ADR-137).
+    #[serde(default)]
+    pub garments: GarmentWire,
 }
 
 /// ADR-144 — una pose en el LOTE del relay. Lo cinemático y los contadores siempre; lo cosmético
@@ -742,6 +757,7 @@ impl PoseWire {
             carry_def: c.carry_def,
             carry_count: c.carry_count,
             species: c.species,
+            garments: c.garments,
         }
     }
 }
@@ -1082,6 +1098,11 @@ pub enum PacketPayload {
         /// that omits it decodes to 0 (human); wire-compat across the v42→v43 schema bump.
         #[serde(default)]
         species: u8,
+        /// ADR-149 enm. 7 + ADR-022 enm.: la prenda de encima y la rotura de lo puesto (`GarmentWire`).
+        /// Appended last + serde(default) → a v68 peer that omits it decodes to all-zero (nothing on
+        /// top, everything intact); wire-compat across the v68→v69 schema bump.
+        #[serde(default)]
+        garments: GarmentWire,
     },
     ChunkState {
         data: ChunkSyncData,
@@ -1922,6 +1943,7 @@ mod tests {
             carry_def: -1208217892,
             carry_count: 3,
             species: 2,
+            garments: Default::default(),
         };
 
         let named = rmp_serde::to_vec_named(&payload).unwrap().len();
@@ -1952,6 +1974,7 @@ mod tests {
             carry_count: 3,
             species: 2,
             vocal_kind: 7,
+            garments: Default::default(),
         };
         let full = PoseWire {
             pos_cm: PoseWire::quantize_pos([110.0, 1.8, -20.5], origin),
@@ -2000,6 +2023,7 @@ mod tests {
             carry_def,
             carry_count,
             species,
+            garments: _,
         } = back
             .clone()
             .into_player_update(origin, PoseCosmetics::default())
@@ -2078,14 +2102,36 @@ mod tests {
                 carry_count: 3,
                 species: 2,
                 vocal_kind: 2,
+                garments: GarmentWire::default(),
             }),
-            ..wire
+            ..wire.clone()
         })
         .unwrap()
         .len();
-        println!("PoseWire: delgada={thin} B  completa={full} B");
+        // ADR-149 enm. 7: la completa lleva ahora la ropa de encima y la rotura de cinco prendas en el peor
+        // caso (todos los bits puestos). Sólo viaja cuando cambia; la delgada no crece.
+        let worst = rmp_serde::to_vec(&PoseWire {
+            cosmetics: Some(PoseCosmetics {
+                equipment: [101, 202, 303, 404],
+                held_item: 12345,
+                carry_def: -1208217892,
+                carry_count: 3,
+                species: 2,
+                vocal_kind: 2,
+                garments: GarmentWire {
+                    outer: -1208217892,
+                    damage: [u32::MAX; 5],
+                    cuts: [u16::MAX; 5],
+                },
+            }),
+            ..wire.clone()
+        })
+        .unwrap()
+        .len();
+        println!("PoseWire: delgada={thin} B  completa={full} B  completa con ropa={worst} B");
         assert!(thin <= 34, "delgada={thin} B");
-        assert!(full <= 56, "completa={full} B");
+        assert!(full <= 56 + 16, "completa={full} B");
+        assert!(worst <= 110, "completa con ropa={worst} B");
     }
 
     /// ADR-144 D2 — la cuantización satura en vez de dar la vuelta, y el yaw cierra el círculo.
@@ -2175,6 +2221,7 @@ mod tests {
             carry_def: -1208217892,
             carry_count: 3,
             species: 2,
+            garments: Default::default(),
         };
         let header = PacketHeader::new(payload.type_code(), 3, 100, 5000);
         let data = encode_packet(&header, &payload);
@@ -2201,6 +2248,7 @@ mod tests {
                 carry_def,
                 carry_count,
                 species,
+                garments: _,
             } => {
                 assert_eq!(position, [10.0, 1.8, 20.0]);
                 assert_eq!(rotation, 90.0);

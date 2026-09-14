@@ -837,7 +837,8 @@ namespace BackroomsSurvival.Net
         public void SendPlayerInput(uint inputSeq, uint clientTick, Vector3 position,
             Vector3 velocity, byte moveState, float pitch, float yaw, ushort buttons, bool crouch = false,
             int[] equipment = null, int heldItem = 0, byte hitSeq = 0, bool lightOn = false,
-            byte fireSeq = 0, byte meleeSeq = 0, int carryDef = 0, byte carryCount = 0)
+            byte fireSeq = 0, byte meleeSeq = 0, int carryDef = 0, byte carryCount = 0,
+            int outer = 0, uint[] garmentDamage = null, ushort[] garmentCuts = null)
         {
             // Hardening (postmortem of the `crouch` off-by-one, ADR-020): the map header
             // count and the number of pairs written below are kept in sync by hand. We can't
@@ -847,7 +848,7 @@ namespace BackroomsSurvival.Net
             // field drifts them apart (rmp_serde would silently drop the tail, as `crouch`
             // did). Debug.Assert is [Conditional("UNITY_ASSERTIONS")] → stripped from release
             // players; the message is a const literal (zero alloc on the pose hot path).
-            const int FieldCount = 21;
+            const int FieldCount = 22;
             int fields = 0;
 
             var w = RentWriter();
@@ -892,11 +893,30 @@ namespace BackroomsSurvival.Net
             // corrected by the next one.
             w.WriteString("carry_def"); w.WriteInt(carryDef); fields++;
             w.WriteString("carry_count"); w.WriteInt(carryCount); fields++;
+            // ADR-149 enm. 7: la prenda de encima y la rotura de lo puesto [Head, Torso, Legs, Feet, Outer], con el
+            // empaquetado de las propiedades Garment Zones / Garment Cuts. Cosmético, relayed to peers.
+            WriteGarments(w, outer, garmentDamage, garmentCuts); fields++;
 
             Debug.Assert(fields == FieldCount,
                 "SendPlayerInput: field count drifted from the map header — a pair was added/removed without updating WriteMapHeader (rmp_serde would drop the tail).");
             SendFrame(w);
         }
+
+        /// <summary>ADR-149 enm. 7: `garments` = { outer, damage: [u32; 5], cuts: [u16; 5] } (GarmentWire en el backend).</summary>
+        private static void WriteGarments(MsgPackWriter w, int outer, uint[] damage, ushort[] cuts)
+        {
+            w.WriteString("garments"); w.WriteMapHeader(3);
+            w.WriteString("outer"); w.WriteInt(outer);
+            w.WriteString("damage"); w.WriteArrayHeader(GarmentWireSlots);
+            for (int i = 0; i < GarmentWireSlots; i++)
+                w.WriteInt(damage != null && i < damage.Length ? damage[i] : 0u);
+            w.WriteString("cuts"); w.WriteArrayHeader(GarmentWireSlots);
+            for (int i = 0; i < GarmentWireSlots; i++)
+                w.WriteInt(cuts != null && i < cuts.Length ? cuts[i] : (ushort)0);
+        }
+
+        /// <summary>ADR-149 enm. 7: prendas en `garments`, en orden [Head, Torso, Legs, Feet, Outer].</summary>
+        public const int GarmentWireSlots = 5;
 
         /// <summary>
         /// Fase 4.1: ask the backend to generate one chunk via grid_gen and reply

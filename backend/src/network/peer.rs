@@ -131,6 +131,9 @@ pub struct PeerConnection {
     /// must skip it — one datagram at an inert addr is the H10 socket poison. Poses relayed by
     /// the host still apply through `handle_packet` exactly like any peer's.
     pub relay_only: bool,
+    /// ADR-149 enm. 7: cosmetic outer garment + worn-garment damage, set from PlayerUpdate; relayed, not
+    /// authoritative. NOTE: set in handle_packet, NOT in update_player_state — the phantom stays intact.
+    pub garments: super::protocol::GarmentWire,
 }
 
 impl PeerConnection {
@@ -144,6 +147,7 @@ impl PeerConnection {
             carry_count: self.carry_count,
             species: self.species,
             vocal_kind: self.vocal_kind,
+            garments: self.garments,
         }
     }
 
@@ -177,6 +181,7 @@ impl PeerConnection {
             carry_def: 0,
             carry_count: 0,
             relay_only: false,
+            garments: Default::default(),
         }
     }
 

@@ -19048,3 +19048,54 @@ del viewmodel (ADR-077 enm. 2) con uno propio.
 5. **Pendiente:** avatar remoto, guantes con malla, tejido propio por prenda (hoy se muestrea su textura de 3.ª persona).
 
 ---
+
+### ADR-149 — Enmienda 7 + ADR-022 — Enmienda (2026-09-14): la ropa de encima y su rotura en el avatar remoto
+
+**Estado:** ACEPTADA (Joel: «apruebo el ADR»). Cambia el wire de la pose (API pública, regla dura 7): esquema 68 → 69.
+
+**Contexto.** Tras R4a/R4b/R4c la ropa se ve y se ve rota en el muñeco del inventario y en tus brazos 1P. Los demás
+jugadores reciben por la pose (ADR-022) solo `equipment: [i32;4]` = Head/Torso/Legs/Feet. Consecuencias hoy: la chaqueta
+(`Outer`, hueco nuestro) no la ve nadie, y la rotura de ninguna prenda llega a otro jugador. Pantalón y calzado de trabajo
+ya viajan por `equipment` (Legs/Feet) y se resuelven sin wire (paso A, hecho aparte: sus renderers en el avatar remoto).
+
+**Decisión propuesta.**
+1. **Campo nuevo `outer: i32`** en la pose (item id crudo, 0 = nada), NO un 5.º elemento de `equipment`: `[i32;4]` también
+   es el formato de guardado (`persistence/save.rs`), de cadáveres y de la foto de muerte, y agrandarlo los rompería. Mismo
+   recorrido que `equipment` (ADR-022 §Alcance 1-8) con `#[serde(default)]`.
+2. **Rotura por prenda puesta: `garment_damage: [u32;5]` y `garment_cuts: [u16;5]`**, índices `[Head, Torso, Legs, Feet,
+   Outer]`, con el MISMO empaquetado que las propiedades `Garment Zones` (4 bits por zona) y `Garment Cuts` (2 bits por
+   zona) de `GarmentState`. 0 = sana. Cliente-autoritativo y cosmético como `equipment` (el daño que protege lo aplica ya el
+   servidor, ADR-149 R2b; esto es solo lo que se VE). Cada pose, self-healing y late-joiner gratis (misma razón que ADR-022).
+   Coste: 4 + 20 + 10 B ≈ 34 B por pose de payload (msgpack algo más) en el hop de input y en el relay; entra en el traffic
+   gate de ADR-015/074 (medir con P×J en play-test). Alternativa diferida si el gate aprieta: enviar la rotura solo al
+   cambiar + cada N s.
+3. **Receptor.** `RemotePlayerView` += `outer`, `garmentDamage`, `garmentCuts` (a cero en el reset del pool). Nuevo
+   `ProxyGarmentHook` en el proxy (patrón `ProxyClothingHook`: change-detection, sentinela en `OnEnable`): enciende la
+   prenda de encima sobre lo del torso y pasa la rotura al material por MaterialPropertyBlock y a la máscara de piel. La
+   lógica que hoy vive en `BackroomsOuterClothing`/`BackroomsGarmentDamageVisuals` (componentes de UI que leen el
+   inventario) se separa en una parte pura reutilizable por el muñeco y por el proxy.
+4. **Avatar remoto horneado** con la ropa por zonas (mallas horneadas con zona, shader de rotura, chaqueta encima,
+   mapa de zonas del cuerpo), por `RemoteAvatarPrefabBuilder` en UNA sola pasada (memoria: re-horneado de una pasada;
+   `MeshyImports` presente o se pierde la forma real del robapieles).
+5. **Robapieles y facelings** (ADR-016/094): `update_player_state` sin tocar → `outer` 0 y rotura 0: van con ropa sana.
+
+**Alcance Rust** (espejo de ADR-022): `ipc::PlayerInput`, `player::Player`, `game_loop` (junto a `equipment`),
+`ipc::RemotePlayerState`, `protocol::PacketPayload::PlayerUpdate` (+ round-trip test), `peer::PeerConnection` +
+`handle_packet`, `NetworkEvent::RemotePlayerUpdate`, `sync::broadcast_player_update` / `broadcast_peer_poses` /
+`build_world_state`; `WIRE_SCHEMA_VERSION` 69. Recompilar y desplegar a `Builds/Backend/`.
+
+**Alcance C#:** `WireSchema.Expected` 69; `IPCClient.SendPlayerInput` (+3 claves, `FieldCount`); `PlayerPoseTransmitter`
+lee `Outer` y empaqueta la rotura de las 5 prendas; `IPCMessages.RemotePlayerMsg`; `RemotePlayerManager`; `ProxyGarmentHook`;
+paso nuevo en `RemoteAvatarPrefabBuilder`; tests (empaquetado, round-trip del mensaje, avatar horneado).
+
+**Alternativas rechazadas.**
+- Agrandar `equipment` a 5: rompe guardado, cadáveres y foto de muerte.
+- Rotura derivada en el servidor desde `report_inventory`: el backend no sabe qué id de propiedad es cuál (hashes de Unity),
+  depende de la posición del contenedor en la lista, llega con ~1 s de retraso y aun así pide un campo nuevo en la pose.
+- Rotura por canal fiable solo al cambiar: el reliable tiene retransmisiones abiertas y el late-joiner pediría snapshot.
+
+**Aparte, sin wire (hecho antes de esta enmienda):** las propiedades de item viajaban como `float32` y `Garment Zones` usa 32 bits: la rotura de
+las zonas 6-7 (los antebrazos de la chaqueta) se corrompía en inventario, guardado y cadáveres. Ahora el cliente escribe y
+lee `float64`; el backend ya las guardaba en `f64`.
+
+---

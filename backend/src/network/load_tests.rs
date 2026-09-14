@@ -977,6 +977,7 @@ async fn pose_byte_breakdown() {
             carry_def: 12,
             carry_count: 2,
             species: 0,
+            garments: Default::default(),
         }
     }
 
@@ -1018,6 +1019,7 @@ async fn pose_byte_breakdown() {
                 carry_def: 0,
                 carry_count: 0,
                 species,
+                garments: Default::default(),
             },
             _ => unreachable!(),
         }

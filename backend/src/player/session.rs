@@ -65,6 +65,10 @@ pub struct Player {
     /// peers; presentation only — not validated, does not affect inventory/grants/stats.
     #[serde(default)]
     pub equipment: [i32; 4],
+    /// ADR-149 enm. 7: cosmetic outer garment + worn-garment damage `[Head, Torso, Legs, Feet, Outer]`,
+    /// reported by the client and relayed to peers; presentation only — never validated.
+    #[serde(default)]
+    pub garments: crate::network::protocol::GarmentWire,
     /// ADR-023: cosmetic held item ID (0 = empty hands). Reported by the client from its
     /// wieldable holster slot, relayed to peers; presentation only — not validated, does not
     /// affect inventory/grants/combat.
@@ -219,6 +223,7 @@ impl Player {
             melee_seq: 0,
             carry_def: 0,
             carry_count: 0,
+            garments: Default::default(),
             death_loot_reported: false,
             respawn_point: None,
             pending_respawn_point: None,

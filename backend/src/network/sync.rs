@@ -39,7 +39,10 @@ use super::PeerId;
 ///
 /// Se trocea por CUENTA y no midiendo el serializado porque el tamaño de una pose es acotado y
 /// conocido: `animation` es un byte desde ADR-143.
-const MAX_POSES_PER_BATCH: usize = 14;
+// ADR-149 enm. 7: 14 -> 8. Los cosméticos llevan ya la prenda de encima y la rotura de cinco prendas: la
+// pose en su peor forma pasa de ~80 a 129 B, y 14 de ellas (1858 B) no caben en el techo de 1200. Sólo
+// cuesta un datagrama más con más de 8 orígenes a la vez; la pose delgada (lo normal) no crece.
+const MAX_POSES_PER_BATCH: usize = 8;
 
 /// ADR-144 D3 — cada cuántas rondas va la pose completa aunque los cosméticos no hayan cambiado:
 /// la reparación contra el datagrama perdido que llevaba el cambio. 30 rondas = 1 s a 30 Hz.
@@ -953,6 +956,8 @@ pub async fn broadcast_player_update(net: &NetworkManager, player: &Player) {
         // are sealed by a faceling driver onto a `PeerConnection` and travel via
         // `broadcast_peer_poses`, not this path.
         species: player.species,
+        // ADR-149 enm. 7: client-reported outer garment + worn-garment damage, sealed next to `carry_*`.
+        garments: player.garments,
     };
     // Both lines are on the same once-a-second window now. This runs at the full tick rate, so
     // unthrottled it was the single noisiest line in the backend log â€” it formatted three floats
@@ -4039,6 +4044,7 @@ mod chunk_broadcast_tests {
             carry_def: 55,
             carry_count: 2,
             species: 0,
+            garments: Default::default(),
         };
 
         // Un solo encode reutilizado para tres destinos distintos...
@@ -5096,6 +5102,7 @@ mod uplink_probe {
             carry_def: 0,
             carry_count: 0,
             species: 0,
+            garments: Default::default(),
         }
     }
 
@@ -5707,6 +5714,12 @@ mod pose_batch_size_tests {
                 carry_count: u8::MAX,
                 species: u8::MAX,
                 vocal_kind: u8::MAX,
+                // ADR-149 enm. 7: la ropa de encima y la rotura de las cinco prendas, con todos los bits puestos.
+                garments: crate::network::protocol::GarmentWire {
+                    outer: i32::MIN,
+                    damage: [u32::MAX; 5],
+                    cuts: [u16::MAX; 5],
+                },
             }),
         }
     }
