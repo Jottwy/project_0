@@ -18963,3 +18963,43 @@ alternaba entre opciones de coste parecido (10–39° de giro por fotograma).
 - Orden: P1a → P1b → P1c → P1d.
 
 ---
+
+### ADR-149 — Enmienda 5 (2026-09-14): R4a/R4b — la ropa se ve, y se ve rota
+
+**Estado:** PROPUESTA (Joel: «debe renderizar la chaqueta», «datos en sus items», «forma por causa, sitio fijo», «capas y
+piel»). Sin wire nuevo. Guardado: una propiedad de item más (ADR-072, `ItemProps`), sin cambiar el formato de la existente.
+
+1. **R4a, la ropa en el muñeco del inventario.** Nuestras prendas no tienen malla propia: reusan la de un donante del vendor
+   (camisa para la chaqueta, pantalón militar, botas) duplicada con material teñido, como overrides de la variante
+   `BR_UI_Player`. Pantalón y calzado entran en la lista de ropa del `CharacterClothing` del vendor; la prenda de encima
+   (`Outer`, hueco que el vendor no mira) la enciende `BackroomsOuterClothing` ADEMÁS de lo del torso, hinchada 7 mm. El
+   jugador local sigue sin cuerpo en 3.ª persona; el avatar remoto y los brazos 1P no cambian aquí.
+2. **La ropa de serie del vendor protege y se rompe por zonas** (camisetas, camisa, pantalones, botas, gorros): se AÑADEN
+   `GarmentZonesData` y las propiedades a sus assets de item (solo datos, nunca código; sin bolsillos). Si una reimportación
+   del pack los pisa, el creador los repone. Cifras sin balancear.
+3. **Tipo de corte por zona** (`GarmentCut`: bala, puñalada, tajo; el desgarro es siempre un zarpazo), en la propiedad nueva
+   `Garment Cuts` (2 bits por zona). `Garment Zones` conserva su formato: los guardados viejos siguen valiendo y un corte
+   sin tipo se pinta como tajo.
+4. **Shader `Backrooms/Garment Lit`** (copia de URP/Lit 17.0.4, Forward+, dos caras): cada malla de prenda es una copia
+   horneada con la zona de cada vértice (uv3, por el hueso dominante) y sus metros alrededor del eje de la zona (uv4). La
+   forma sale de la causa y cae en un sitio fijo de la zona (al frente, a media altura): bala ~1 cm con borde quemado,
+   puñalada ~3 cm, tajo ~9 cm, zarpazo tres desgarros de ~11 cm. La cinta y la costura siguen esa forma. Mismo recorte en
+   sombra, profundidad y normales.
+5. **Lo de debajo se ve.** Por el agujero de la capa de encima se ve la de dentro; donde la prenda MÁS INTERIOR de una zona
+   está abierta se ve la piel: se compone en GPU la máscara de piel del vendor (`_OpacityMask_*`) juntando las dos capas y
+   destapando esas zonas con un mapa de zonas horneado en el UV del cuerpo. Coste aceptado: algo de piel puede asomar al
+   moverse en una zona rota.
+6. **Pendiente:** sitio exacto del golpe (necesita punto en `body_hit` y guardado: ADR aparte), avatar remoto (pantalón y
+   calzado re-horneando; la chaqueta pide hueco de equipo en el wire), mangas en 1P, guantes con malla.
+
+---
+
+### ADR-149 — Enmienda 5, nota (2026-09-14): capas y bordes tras verlo renderizado
+
+Verificado con capturas del muñeco (sin Play). Corrige el punto 1 de la enmienda 5: la prenda de encima NO se hincha 7 mm;
+con solo hincharla, la camiseta (malla más holgada) la atravesaba. Ahora se hincha 4 mm y se dibuja 2,5 cm adelantada hacia
+la cámara (`_GarmentViewBias`, también en profundidad y normales), sin engordar la silueta; la de dentro no se toca. El eje
+de cada zona de brazo o pierna sale del esqueleto (una manga corta es más ancha que larga y la dirección principal salía
+atravesada), y el daño no se pinta en triángulos que mezclan dos zonas ni en la mitad de atrás de la zona.
+
+---

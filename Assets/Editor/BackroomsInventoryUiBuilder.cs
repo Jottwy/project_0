@@ -64,6 +64,8 @@ namespace BackroomsSurvival.EditorTools
             {
                 var report = new Report();
                 ApplyTheme(root, theme, report);
+                // ADR-149 R4a: nuestras prendas en el muñeco del inventario.
+                report.Count("prendas en el muñeco", BackroomsGarmentVisualsBuilder.WirePreview(root));
                 PrefabUtility.SaveAsPrefabAsset(root, VariantPath);
                 Debug.Log($"[InventoryUiBuilder] Variante guardada en {VariantPath}. {report}");
             }

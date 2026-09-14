@@ -194,6 +194,7 @@ namespace BackroomsSurvival.EditorTools
             var actionDonor = AssetDatabase.LoadAssetAtPath<ItemDefinition>(DonorPath);
             if (actionDonor == null) { Debug.LogError($"[Prendas] falta el donante '{DonorPath}'"); return new ItemDefinition[0]; }
             var zonesProperty = EnsureGarmentZonesProperty();
+            var cutsProperty = EnsureGarmentCutsProperty();
 
             var result = new ItemDefinition[Garments.Length];
             for (int i = 0; i < Garments.Length; i++)
@@ -208,9 +209,119 @@ namespace BackroomsSurvival.EditorTools
                     artDonor, actionDonor, tag, data);
                 // ADR-149 R2b: la prenda con zonas declara la propiedad donde guarda su rotura (nace sana, sin sorteo).
                 if (garment.Zones.Length > 0 && zonesProperty != null) DeclareProperty(result[i], zonesProperty.Id);
+                // ADR-149 R4b: y el tipo de corte de cada zona, en otra propiedad (el formato de la primera no cambia).
+                if (garment.Zones.Length > 0 && cutsProperty != null) AddProperty(result[i], cutsProperty.Id);
             }
-            Debug.Log($"[Prendas] pieza 6 lista: {result.Length} prendas.");
+            int vendor = EnsureVendorGarmentZones(zonesProperty);
+            foreach (var (asset, _) in VendorGarments)
+                if (cutsProperty != null) AddProperty(AssetDatabase.LoadAssetAtPath<ItemDefinition>($"{VendorItemFolder}/{asset}.asset"), cutsProperty.Id);
+            Debug.Log($"[Prendas] pieza 6 lista: {result.Length} prendas; ropa de serie por zonas: {vendor}.");
             return result;
+        }
+
+        /// <summary>
+        /// ADR-149 R4b (Joel, 2026-09-14: «datos en sus items»): la ropa de serie del vendor también protege y se rompe por
+        /// zonas. Solo DATOS en sus assets de item (no código): se AÑADE <see cref="GarmentZonesData"/> y la propiedad donde
+        /// guarda la rotura, sin quitar lo suyo. Sin bolsillos, para no cambiar su inventario. Cifras sin balancear. Si el
+        /// vendor se reimporta y lo pisa, este paso lo repone.
+        /// </summary>
+        public static readonly (string Asset, GarmentZone[] Zones)[] VendorGarments =
+        {
+            ("STP_White T-Shirt", TShirt(0.05f)),
+            ("STP_Red T-Shirt", TShirt(0.05f)),
+            ("STP_Shirt", new[]
+            {
+                new GarmentZone(BodyZone.Chest, 0.08f), new GarmentZone(BodyZone.Abdomen, 0.08f),
+                new GarmentZone(BodyZone.UpperArmL, 0.08f), new GarmentZone(BodyZone.UpperArmR, 0.08f),
+                new GarmentZone(BodyZone.ForearmL, 0.08f), new GarmentZone(BodyZone.ForearmR, 0.08f),
+            }),
+            ("STP_Military Pants", Trousers(0.1f)),
+            ("STP_Jeans", Trousers(0.08f)),
+            ("STP_Short Jeans", new[] { new GarmentZone(BodyZone.ThighL, 0.06f), new GarmentZone(BodyZone.ThighR, 0.06f) }),
+            ("STP_Boots", new[] { new GarmentZone(BodyZone.FootL, 0.25f), new GarmentZone(BodyZone.FootR, 0.25f) }),
+            ("STP_Wool Hat", new[] { new GarmentZone(BodyZone.Head, 0.05f) }),
+            ("STP_Military Hat", new[] { new GarmentZone(BodyZone.Head, 0.1f) }),
+        };
+
+        private static GarmentZone[] TShirt(float protection) => new[]
+        {
+            new GarmentZone(BodyZone.Chest, protection), new GarmentZone(BodyZone.Abdomen, protection),
+            new GarmentZone(BodyZone.UpperArmL, protection), new GarmentZone(BodyZone.UpperArmR, protection),
+        };
+
+        private static GarmentZone[] Trousers(float protection) => new[]
+        {
+            new GarmentZone(BodyZone.ThighL, protection), new GarmentZone(BodyZone.ThighR, protection),
+            new GarmentZone(BodyZone.ShinL, protection), new GarmentZone(BodyZone.ShinR, protection),
+        };
+
+        public static int EnsureVendorGarmentZones(ItemPropertyDefinition zonesProperty)
+        {
+            int ready = 0;
+            foreach (var (asset, zones) in VendorGarments)
+            {
+                var definition = AssetDatabase.LoadAssetAtPath<ItemDefinition>($"{VendorItemFolder}/{asset}.asset");
+                if (definition == null)
+                {
+                    Debug.LogWarning($"[Prendas] falta la prenda del vendor {asset}");
+                    continue;
+                }
+                var so = new SerializedObject(definition);
+                bool changed = false;
+
+                var data = so.FindProperty("_data");
+                int index = -1;
+                for (int i = 0; i < data.arraySize; i++)
+                    if (data.GetArrayElementAtIndex(i).managedReferenceValue is GarmentZonesData) { index = i; break; }
+                var current = index >= 0 ? (GarmentZonesData)data.GetArrayElementAtIndex(index).managedReferenceValue : null;
+                if (!SameZones(current, zones))
+                {
+                    if (index < 0)
+                    {
+                        index = data.arraySize;
+                        data.arraySize++;
+                    }
+                    data.GetArrayElementAtIndex(index).managedReferenceValue = new GarmentZonesData(zones);
+                    changed = true;
+                }
+
+                if (zonesProperty != null)
+                {
+                    var props = so.FindProperty("_properties");
+                    bool declared = false;
+                    for (int i = 0; i < props.arraySize; i++)
+                        if (props.GetArrayElementAtIndex(i).FindPropertyRelative("_itemPropertyId").intValue == zonesProperty.Id) declared = true;
+                    if (!declared)
+                    {
+                        props.arraySize++;
+                        var element = props.GetArrayElementAtIndex(props.arraySize - 1);
+                        element.FindPropertyRelative("_itemPropertyId").intValue = zonesProperty.Id;
+                        element.FindPropertyRelative("_useRandomValue").boolValue = false;
+                        element.FindPropertyRelative("_valueRange").vector2Value = Vector2.zero;
+                        changed = true;
+                    }
+                }
+
+                if (changed)
+                {
+                    so.ApplyModifiedPropertiesWithoutUndo();
+                    EditorUtility.SetDirty(definition);
+                }
+                ready++;
+            }
+            return ready;
+        }
+
+        private static bool SameZones(GarmentZonesData current, GarmentZone[] zones)
+        {
+            if (current == null || current.Zones.Count != zones.Length) return false;
+            for (int i = 0; i < zones.Length; i++)
+            {
+                var a = current.Zones[i];
+                if (a.Zone != zones[i].Zone || !Mathf.Approximately(a.Protection, zones[i].Protection) || a.PocketSlots != zones[i].PocketSlots)
+                    return false;
+            }
+            return true;
         }
 
         public const string GarmentZonesPropertyPath = "Assets/Resources/Definitions/ItemProperty/BR_Garment Zones.asset";
@@ -241,13 +352,57 @@ namespace BackroomsSurvival.EditorTools
             return property;
         }
 
+        public const string GarmentCutsPropertyPath = "Assets/Resources/Definitions/ItemProperty/BR_Garment Cuts.asset";
+
+        /// <summary>ADR-149 R4b: qué abrió cada zona (bala, puñalada, tajo), 2 bits por zona. Da la forma del agujero.</summary>
+        public static ItemPropertyDefinition EnsureGarmentCutsProperty()
+        {
+            var property = AssetDatabase.LoadAssetAtPath<ItemPropertyDefinition>(GarmentCutsPropertyPath);
+            if (property == null)
+            {
+                EnsureFolder(Path.GetDirectoryName(GarmentCutsPropertyPath));
+                property = ScriptableObject.CreateInstance<ItemPropertyDefinition>();
+                AssetDatabase.CreateAsset(property, GarmentCutsPropertyPath);
+                property.Validate_EditorOnly(new DataDefinition.ValidationContext(false, DataDefinition.ValidationTrigger.Created));
+            }
+            var so = new SerializedObject(property);
+            so.FindProperty("_propertyType").enumValueIndex = (int)ItemPropertyType.Double;
+            var description = so.FindProperty("_description");
+            if (description != null)
+                description.stringValue = "ADR-149 R4b: tipo de corte de la prenda por zona, 2 bits por zona (0 nada, 1 bala, 2 puñalada, 3 tajo).";
+            so.ApplyModifiedPropertiesWithoutUndo();
+            EditorUtility.SetDirty(property);
+            if (property.Name != GarmentState.CutsPropertyName)
+                Debug.LogError($"[Prendas] '{GarmentCutsPropertyPath}' resuelve a Name='{property.Name}', no '{GarmentState.CutsPropertyName}'.");
+            return property;
+        }
+
+        /// <summary>Declara la propiedad si no está, sin tocar las demás.</summary>
+        private static void AddProperty(ItemDefinition definition, int propertyId)
+        {
+            if (definition == null) return;
+            var so = new SerializedObject(definition);
+            var props = so.FindProperty("_properties");
+            for (int i = 0; i < props.arraySize; i++)
+                if (props.GetArrayElementAtIndex(i).FindPropertyRelative("_itemPropertyId").intValue == propertyId) return;
+            props.arraySize++;
+            var element = props.GetArrayElementAtIndex(props.arraySize - 1);
+            element.FindPropertyRelative("_itemPropertyId").intValue = propertyId;
+            element.FindPropertyRelative("_useRandomValue").boolValue = false;
+            element.FindPropertyRelative("_valueRange").vector2Value = Vector2.zero;
+            so.ApplyModifiedPropertiesWithoutUndo();
+            EditorUtility.SetDirty(definition);
+        }
+
         private static void DeclareProperty(ItemDefinition definition, int propertyId)
         {
             if (definition == null) return;
             var so = new SerializedObject(definition);
             var props = so.FindProperty("_properties");
-            props.arraySize = 1;
-            var element = props.GetArrayElementAtIndex(0);
+            for (int i = 0; i < props.arraySize; i++)
+                if (props.GetArrayElementAtIndex(i).FindPropertyRelative("_itemPropertyId").intValue == propertyId) return;
+            props.arraySize++;
+            var element = props.GetArrayElementAtIndex(props.arraySize - 1);
             element.FindPropertyRelative("_itemPropertyId").intValue = propertyId;
             element.FindPropertyRelative("_useRandomValue").boolValue = false;
             element.FindPropertyRelative("_valueRange").vector2Value = Vector2.zero;
