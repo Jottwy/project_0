@@ -116,6 +116,7 @@
     <Compile Include="$(Repo)\Assets\Tests\EditMode\MapVisionFanTests.cs" />
     <Compile Include="$(Repo)\Assets\Tests\EditMode\MapAtlasTests.cs" />
     <Compile Include="$(Repo)\Assets\Tests\EditMode\MapNotebookTests.cs" />
+    <Compile Include="$(Repo)\Assets\Tests\EditMode\MapSheetRedrawTests.cs" />
   </ItemGroup>
 
 </Project>

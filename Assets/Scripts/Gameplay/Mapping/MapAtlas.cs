@@ -171,11 +171,10 @@ namespace BackroomsSurvival.Gameplay.Mapping
 
                 Decode(scratch[runStart], out bool vertical, out int line, out int from);
                 Decode(scratch[i - 1], out _, out _, out int last);
-                float across = line - (vertical ? zone.ChunkX : zone.ChunkZ) * cellsPerChunk;
-                float a = from - (vertical ? zone.ChunkZ : zone.ChunkX) * cellsPerChunk;
-                float b = last + 1 - (vertical ? zone.ChunkZ : zone.ChunkX) * cellsPerChunk;
-                layer.Strokes.Add(new MapStroke(
-                    vertical ? new[] { across, a, across, b } : new[] { a, across, b, across }, false, steady: true));
+                // ADR-154: la limpia también guarda sus tramos, para poder guardarse y rehacerse.
+                var run = new MapRun(vertical, line, from, last + 1, false, layer.Runs.Count);
+                layer.Runs.Add(run);
+                layer.Strokes.Add(MapSheetStrokeBuilder.CleanStroke(run, zone, cellsPerChunk));
 
                 for (int k = runStart; k < i; k++) clean.AddEdge(scratch[k]);
                 runStart = i;
