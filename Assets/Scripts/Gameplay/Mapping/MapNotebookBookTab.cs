@@ -24,6 +24,13 @@ namespace BackroomsSurvival.Gameplay.Mapping
     /// </remarks>
     public sealed class MapNotebookBookTab : MonoBehaviour
     {
+        /// <summary>
+        /// Joel, 2026-09-14: «por ahora desactivar todas las construcciones». Se OCULTAN las pestañas de construir del
+        /// libro; el sistema de construcción y su red no se tocan. A <c>false</c> para volver a verlas.
+        /// </summary>
+        public const bool HideConstructionTabs = true;
+        private static readonly string[] ConstructionTabNames = { "BuildingTab", "FireTab", "ShelterTab", "WorkstationTab", "StorageTab" };
+
         private const string TemplateTabName = "BuildingTab";
         private const string TemplateContentName = "BuildingContent";
         private const float CrosshairSeconds = 4f;
@@ -54,12 +61,18 @@ namespace BackroomsSurvival.Gameplay.Mapping
 
         private readonly MapSheetRaster _raster = new MapSheetRaster();
         private Texture2D _texture;
+        private Texture2D _leavingTexture;
+        private MapPageFlip _flip;
+        private UnityEngine.Audio.AudioResource _flipSound;
+
+        public WieldableTool Wieldable => _wieldable;
         private int _paintedVersion = -1;
         private int _paintedSheet = -1;
         private int _sheetButtonsFor = -1;
 
         /// <summary>Monta la pestaña en <paramref name="book"/>. Devuelve null (y lo dice en el log) si el libro no tiene la forma esperada.</summary>
-        public static MapNotebookBookTab Attach(SurvivalBookUI book, MapMemorySampler sampler, MapNotebook notebook, uint paperArgb)
+        public static MapNotebookBookTab Attach(SurvivalBookUI book, MapMemorySampler sampler, MapNotebook notebook, uint paperArgb,
+            UnityEngine.Audio.AudioResource flipSound = null)
         {
             var existing = book.GetComponent<MapNotebookBookTab>();
             if (existing != null) return existing;
@@ -79,6 +92,7 @@ namespace BackroomsSurvival.Gameplay.Mapping
             tab._sampler = sampler;
             tab._notebook = notebook;
             tab._paperArgb = paperArgb;
+            tab._flipSound = flipSound;
             tab._wieldable = book.GetComponentInParent<WieldableTool>();
             tab._group = group;
             tab.Build((RectTransform)templateTab.transform, (RectTransform)templateContent);
@@ -159,6 +173,10 @@ namespace BackroomsSurvival.Gameplay.Mapping
             };
             _cross.gameObject.SetActive(false);
 
+            // Página 3D sobre la hoja: pasa al cambiar de hoja.
+            byte paperR = (byte)(_paperArgb >> 16), paperG = (byte)(_paperArgb >> 8), paperB = (byte)_paperArgb;
+            _flip = MapPageFlip.Create(sheetRect, new Color32(paperR, paperG, paperB, 255));
+
             _sheetRow = NewRect("Sheets", panel, new Vector2(0.04f, 0.17f), new Vector2(0.96f, 0.24f));
             var sheetLayout = _sheetRow.gameObject.AddComponent<HorizontalLayoutGroup>();
             sheetLayout.spacing = 2f;
@@ -184,6 +202,15 @@ namespace BackroomsSurvival.Gameplay.Mapping
             _status.alignment = TextAlignmentOptions.MidlineLeft;
             _status.color = new Color(0.15f, 0.13f, 0.1f, 1f);
 
+            if (HideConstructionTabs)
+            {
+                foreach (string tabName in ConstructionTabNames)
+                {
+                    SelectableButton hidden = FindChild<SelectableButton>(templateTab.parent, tabName);
+                    if (hidden != null) hidden.gameObject.SetActive(false);
+                }
+            }
+
             _group.SelectedChanged += OnSelectedChanged;
             if (_wieldable != null)
             {
@@ -202,6 +229,7 @@ namespace BackroomsSurvival.Gameplay.Mapping
             }
 
             if (_texture != null) Destroy(_texture);
+            if (_leavingTexture != null) Destroy(_leavingTexture);
         }
 
         private void OnSelectedChanged(SelectableButton selected)
@@ -224,7 +252,19 @@ namespace BackroomsSurvival.Gameplay.Mapping
 
         private void OnHolstering() => _notebook.Cancel("Has guardado el libro: dibujo cancelado, lo trazado se queda.");
 
-        private void OnEquipping() => _paintedVersion = -1;
+        private void OnEquipping()
+        {
+            _paintedVersion = -1;
+            // SurvivalBookUI se suscribió antes (en su Awake) y ya hizo SelectDefault: sin pestañas de construir, o si se
+            // abrió con N, el libro se abre en «Notas».
+            if (HideConstructionTabs || _openOnNotes) _group.SelectSelectable(_tab);
+            _openOnNotes = false;
+        }
+
+        private bool _openOnNotes;
+
+        /// <summary>El próximo abrir del libro cae en «Notas» (tecla N).</summary>
+        public void OpenOnNotesNextTime() => _openOnNotes = true;
 
         private MapHere Here => _sampler != null
             ? new MapHere(_sampler.HasSample, _sampler.LastCellX, _sampler.LastCellZ, _sampler.LastStorey)
@@ -273,16 +313,24 @@ namespace BackroomsSurvival.Gameplay.Mapping
 
         private void Repaint()
         {
+            bool turning = _texture != null && _paintedSheet >= 0 && _paintedSheet != _notebook.CurrentIndex;
             _paintedVersion = _notebook.Version;
             _paintedSheet = _notebook.CurrentIndex;
             if (_texture == null)
             {
-                _texture = new Texture2D(_raster.Size, _raster.Size, TextureFormat.RGBA32, false)
-                {
-                    filterMode = FilterMode.Bilinear,
-                    wrapMode = TextureWrapMode.Clamp,
-                };
+                _texture = NewSheetTexture();
                 _sheetImage.texture = _texture;
+            }
+
+            if (turning)
+            {
+                // La hoja que se va, copiada ANTES de pintar la nueva debajo.
+                if (_leavingTexture == null) _leavingTexture = NewSheetTexture();
+                Graphics.CopyTexture(_texture, _leavingTexture);
+                _flip.Play(_leavingTexture);
+                if (_flipSound != null && PolymindGames.AudioManager.Instance != null)
+                    PolymindGames.AudioManager.Instance.PlayClip2D(_flipSound);
+                Debug.Log($"MAPBOOK flip to_sheet={_notebook.CurrentSheet.Id}");
             }
 
             _raster.DrawSheet(_notebook.CurrentSheet, _paperArgb, _sampler.Memory.CellsPerChunk);
@@ -294,6 +342,13 @@ namespace BackroomsSurvival.Gameplay.Mapping
                     ? new Color(0.55f, 0.16f, 0.12f, 0.9f)
                     : ButtonColour;
         }
+
+        private Texture2D NewSheetTexture() =>
+            new Texture2D(_raster.Size, _raster.Size, TextureFormat.RGBA32, false)
+            {
+                filterMode = FilterMode.Bilinear,
+                wrapMode = TextureWrapMode.Clamp,
+            };
 
         private int SheetIndexOf(int button) => Mathf.Max(0, _notebook.Sheets.Count - MaxSheetButtons) + button;
 

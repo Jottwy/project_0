@@ -1,7 +1,10 @@
 using BackroomsSurvival.Net;
+using PolymindGames;
+using PolymindGames.InputSystem;
 using PolymindGames.MovementSystem;
 using PolymindGames.UserInterface;
 using UnityEngine;
+using UnityEngine.InputSystem;
 
 namespace BackroomsSurvival.Gameplay.Mapping
 {
@@ -49,8 +52,11 @@ namespace BackroomsSurvival.Gameplay.Mapping
             _instance = go.AddComponent<MappingRuntime>();
         }
 
+        private const string FlipSoundPath = "Assets/PolymindGames/STP/Data/Audio/Wieldables/STP_Book_FlipPage.asset";
+
         private void Update()
         {
+            HandleNotesKey();
             if (Time.unscaledTime < _nextLookup) return;
             _nextLookup = Time.unscaledTime + LookupSeconds;
 
@@ -80,8 +86,46 @@ namespace BackroomsSurvival.Gameplay.Mapping
             if (_tab == null)
             {
                 SurvivalBookUI book = player.GetComponentInChildren<SurvivalBookUI>(true);
-                if (book != null) _tab = MapNotebookBookTab.Attach(book, _sampler, _notebook, PaperArgb);
+                if (book != null) _tab = MapNotebookBookTab.Attach(book, _sampler, _notebook, PaperArgb, LoadFlipSound());
             }
+        }
+
+        /// <summary>
+        /// Joel, 2026-09-14: la libreta también en <c>N</c>. Saca el MISMO libro (como <c>FPSSurvivalBookInput</c> con
+        /// <c>B</c>) y lo abre en «Notas»; con el libro en la mano, lo guarda. Solo desde el contexto por defecto: con el
+        /// inventario u otro menú abierto no hace nada. <c>N</c> es también <c>FireMode</c> del vendor: con un arma en la
+        /// mano, pulsarla cambia el modo de disparo Y abre la libreta (deuda del prototipo, MAPPING-PROTOTYPE §5.8).
+        /// </summary>
+        private void HandleNotesKey()
+        {
+            Keyboard keyboard = Keyboard.current;
+            if (keyboard == null || !keyboard.nKey.wasPressedThisFrame || _tab == null || _player == null) return;
+            if (_tab.Wieldable == null) return;
+
+            var character = _player.GetComponentInParent<ICharacter>();
+            IWieldablesControllerCC controller = character != null ? character.GetCC<IWieldablesControllerCC>() : null;
+            if (controller == null) return;
+
+            if (ReferenceEquals(controller.ActiveWieldable, _tab.Wieldable))
+            {
+                controller.TryHolsterWieldable(_tab.Wieldable);
+                Debug.Log("MAPBOOK key=N holster");
+                return;
+            }
+
+            if (InputManager.Instance != null && !InputManager.Instance.IsDefaultContext()) return;
+            _tab.OpenOnNotesNextTime();
+            bool equipped = controller.TryEquipWieldable(_tab.Wieldable, 1.35f);
+            Debug.Log($"MAPBOOK key=N equip={equipped}");
+        }
+
+        private static UnityEngine.Audio.AudioResource LoadFlipSound()
+        {
+#if UNITY_EDITOR
+            return UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEngine.Audio.AudioResource>(FlipSoundPath);
+#else
+            return null;
+#endif
         }
     }
 }
