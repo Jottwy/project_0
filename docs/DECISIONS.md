@@ -19310,3 +19310,25 @@ con sótanos) y `tall_towers_with_basements_reach_every_storey` (conectividad de
 `probe_region_inside` acepta `WG3_PROBE_SOLIDS="x0,z0,x1,z1"`.
 
 ---
+
+## ADR-105 — Enmienda 22, visto bueno (2026-09-15) — ACEPTADA (Joel: aprobado en la sesión de consolidación)
+
+Confirmado el visto bueno pendiente que pedía la enmienda 22 (separación mínima entre divisiones + fix de
+`well_mouth_carves` para pozos con sótanos, 306/306 regiones válidas). Sin cambios de código sobre lo ya medido.
+
+---
+
+## ADR-149 — Nota de índice (2026-09-15): las enmiendas 1–8 usan encabezado `###`, no `##`
+
+**Contexto.** `tools/dev/GenDecisionsIndex.py` sólo cuenta líneas que EMPIEZAN por `## ADR-` (regla dura del
+generador: un encabezado que no encaja no se omite en silencio, falla). Las ocho enmiendas de ADR-149
+(`:18034, 18331, 18439, 18463, 18967, 18997, 19029, 19052`) se escribieron con `###`, así que
+`docs/DECISIONS-INDEX.md` las cuenta como cero y el protocolo de lectura de `CLAUDE.md`
+(`grep -n "^## ADR-149" docs/DECISIONS.md`) sólo devuelve la base — que literalmente dice «NO enmienda
+ADR-022 (la pose no cambia)», ya falso desde la enmienda 7.
+
+**Sin editar las enmiendas existentes (regla dura 11).** Para leer ADR-149 completo:
+`grep -n "^## ADR-149\|^### ADR-149" docs/DECISIONS.md`. La última decisión vigente es la Enmienda 7 + ADR-022
+— Enmienda: `outer:i32` y rotura por zona en la pose, wire 69 (`:19052`).
+
+---
