@@ -591,6 +591,19 @@ propone enmienda de ADR-154 con la medida, no se cambia a mano.
 **Riesgo:** `game_loop.rs` y `network/mod.rs` los tocan otras sesiones; los cambios ahí son pocas líneas y se hacen al
 final, sobre el tronco recién rebasado.
 
+### 6.3 Resultado de P1b (2026-09-14, plan validado por Joel)
+
+- `1bf4b210` **modelo** (`world/map_sheets.rs`): el JSON sale **byte a byte igual que el golden** (y que C#). Medido: hoja
+  llena (1500 tramos) = **39 592 B**; 2000 hojas típicas (60 tramos) = **3 384 359 B**, dentro de los 8 MB: no hace
+  falta enmendar el tope.
+- Commit 2 **guardado**: `persistence/map_sheets_save.rs`, contador espejo en `SaveFile` y `SaveMeta` (desvío del plan:
+  por `SaveMeta` y no por un parámetro nuevo de `save_world`, así las 12 llamadas no cambian), `net.map_sheets` cargado
+  tras `save_meta_base` y `save_map_sheets_if_dirty` en autosave, salida y desconexión.
+- Tests: `cargo test --locked` de hojas **15/15** y **suite entera 1591 passed, 0 failed, 106 ignored**.
+- **No se ve en el juego todavía**: no hay mensajes. P1c los añade (wire 68 → 69).
+- Trampas: el crate es solo binario (`--lib` falla); el `cargo fmt --check` del hook falla por formato ajeno pendiente
+  de ADR-149 (`game_loop.rs`, `body.rs`), así que `rustfmt` se pasa solo a los ficheros propios.
+
 ### 5.6 Preguntas de playtest
 
 ¿Dibujar con el libro en las manos se siente mejor que el panel? ¿La hoja se lee bien en el libro? ¿Echa en falta
