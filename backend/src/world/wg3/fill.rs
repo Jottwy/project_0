@@ -7166,6 +7166,14 @@ const DAIS_ACCESS_WIDTH_CM: i32 = 200;
 /// Suelo libre al pie del acceso.
 const DAIS_LANDING_CM: i32 = 100;
 const SALT_DAIS: u32 = 0xB1_11_A0_10;
+/// ADR-151 enm. 2 — la GRADA: de los estrados pegados que caben, esta parte sale escalonada. Sorteo
+/// aparte (`SALT_TIERS`) para que los estrados de C1 no cambien de sitio.
+const TIERS_SHARE: f32 = 0.25;
+const TIERS_MIN_AREA_M2: f32 = 100.0;
+/// Salto entre escalones de la grada (40/80/120) y fondo de cada uno.
+const TIER_RISE_CM: i32 = 40;
+const TIER_DEPTH_CM: i32 = 200;
+const SALT_TIERS: u32 = 0xB1_11_A0_11;
 
 /// ¿Es este macizo un estrado? Por la forma: alto de la lista y lado corto de al menos 2 m.
 pub(super) fn is_dais(s: &Wg3Solid) -> bool {
@@ -7287,12 +7295,32 @@ fn dais_platforms(
             } else {
                 (inner.width_cm(), inner.depth_cm())
             };
-            let steps = h / DAIS_STEP_RISE_CM - 1;
             let depth = ((perp / 3) / 10 * 10).max(DAIS_MIN_DEPTH_CM);
-            let reach_depth = depth + steps * DAIS_STEP_RUN_CM + DAIS_LANDING_CM;
+            // ADR-151 enm. 2 — ¿GRADA? Dos o tres escalones de 40 contra la misma pared, si hay techo,
+            // sala y fondo; si no, el estrado de siempre.
+            let tier_reach = |n: i32| {
+                n * TIER_DEPTH_CM
+                    + (TIER_RISE_CM / DAIS_STEP_RISE_CM - 1) * DAIS_STEP_RUN_CM
+                    + DAIS_LANDING_CM
+            };
+            let tiers = {
+                let mut tt = super::hash::stream_at(seed, cx, cz, SALT_TIERS);
+                let wanted = tt.next01() < TIERS_SHARE && s.area_m2() >= TIERS_MIN_AREA_M2;
+                let fits =
+                    |n: i32| n * TIER_RISE_CM + DAIS_HEADROOM_CM <= clear && tier_reach(n) <= perp;
+                if !wanted {
+                    0
+                } else if fits(3) && tt.next01() < 0.5 {
+                    3
+                } else if fits(2) {
+                    2
+                } else {
+                    0
+                }
+            };
             let m = DAIS_CORNER_MARGIN_CM;
             let span = run - 2 * m;
-            if reach_depth > perp || span < DAIS_MIN_SPAN_CM {
+            if span < DAIS_MIN_SPAN_CM {
                 continue;
             }
             // **Media pared, no la pared entera**: una pared entera casi siempre tiene una boca o un
@@ -7330,110 +7358,138 @@ fn dais_platforms(
                     max_z_cm: inner.min_z_cm + a + len,
                 },
             };
-            let ceiling = s.floor_y_cm + h + DAIS_HEADROOM_CM;
-            let mut chosen = None;
-            for i in 0..slots.len() {
-                let a = slots[(first + i) % slots.len()];
-                // El estrado con su acceso y el rellano al pie: lo que tiene que estar libre entero.
-                let reach = strip(reach_depth, a);
-                if keep_out.iter().any(|k| k.overlaps(&reach)) {
+            // Primero la grada, si le tocó; si no cabe en ningún sitio, el estrado de siempre.
+            let candidates = if tiers >= 2 { vec![tiers, 0] } else { vec![0] };
+            let mut chosen: Option<(i32, Vec<(i32, i32)>)> = None;
+            for &t in &candidates {
+                // Las capas, de fuera a dentro: (fondo desde la pared, alto). La de fuera es la más
+                // baja y la más honda; cada una de dentro se apoya en el suelo y atraviesa a la de fuera.
+                let layers: Vec<(i32, i32)> = if t >= 2 {
+                    (1..=t)
+                        .map(|k| ((t - k + 1) * TIER_DEPTH_CM, k * TIER_RISE_CM))
+                        .collect()
+                } else {
+                    vec![(depth, h)]
+                };
+                let top_h = layers[layers.len() - 1].1;
+                let front_steps = layers[0].1 / DAIS_STEP_RISE_CM - 1;
+                let reach_depth = layers[0].0 + front_steps * DAIS_STEP_RUN_CM + DAIS_LANDING_CM;
+                if reach_depth > perp {
                     continue;
                 }
-                // Los vanos YA emitidos que atraviesan este suelo o el de arriba: un agujero, la boca
-                // de un pozo. Un macizo es inmune a los vanos y taparía el suyo.
-                // Sólo lo que atraviesa una LOSA: las puertas y ventanas de la pared ya las mira
-                // la comprobación de bocas.
-                if carves.iter().any(|c| {
-                    (c.bottom_y_cm < s.floor_y_cm
-                        || c.top_y_cm > s.floor_y_cm + STOREY_HEIGHT_CM - DAIS_HEADROOM_CM / 2)
-                        && c.bottom_y_cm < s.floor_y_cm + STOREY_HEIGHT_CM + 50
-                        && c.top_y_cm > s.floor_y_cm - 50
-                        && carve_rect(c).overlaps(&reach)
-                }) {
-                    continue;
+                let ceiling = s.floor_y_cm + top_h + DAIS_HEADROOM_CM;
+                for i in 0..slots.len() {
+                    let a = slots[(first + i) % slots.len()];
+                    // El estrado con su acceso y el rellano al pie: lo que tiene que estar libre entero.
+                    let reach = strip(reach_depth, a);
+                    if keep_out.iter().any(|k| k.overlaps(&reach)) {
+                        continue;
+                    }
+                    // Los vanos YA emitidos que atraviesan este suelo o el de arriba: un agujero, la
+                    // boca de un pozo. Un macizo es inmune a los vanos y taparía el suyo.
+                    // Sólo lo que atraviesa una LOSA: las puertas y ventanas de la pared ya las mira
+                    // la comprobación de bocas.
+                    if carves.iter().any(|c| {
+                        (c.bottom_y_cm < s.floor_y_cm
+                            || c.top_y_cm > s.floor_y_cm + STOREY_HEIGHT_CM - DAIS_HEADROOM_CM / 2)
+                            && c.bottom_y_cm < s.floor_y_cm + STOREY_HEIGHT_CM + 50
+                            && c.top_y_cm > s.floor_y_cm - 50
+                            && carve_rect(c).overlaps(&reach)
+                    }) {
+                        continue;
+                    }
+                    let near_mouth = reach.shrunk(-DAIS_MOUTH_CLEAR_CM);
+                    if doors
+                        .iter()
+                        .any(|&(x, z, y)| y == s.floor_y_cm && near_mouth.contains_point(x, z))
+                    {
+                        continue;
+                    }
+                    if solids.iter().any(|t| {
+                        !t.is_decoration()
+                            && t.bottom_y_cm < ceiling
+                            && t.top_y_cm > s.floor_y_cm
+                            && solid_rect(t).overlaps(&reach)
+                    }) {
+                        continue;
+                    }
+                    chosen = Some((a, layers.clone()));
+                    break;
                 }
-                let near_mouth = reach.shrunk(-DAIS_MOUTH_CLEAR_CM);
-                if doors
-                    .iter()
-                    .any(|&(x, z, y)| y == s.floor_y_cm && near_mouth.contains_point(x, z))
-                {
-                    continue;
+                if chosen.is_some() {
+                    break;
                 }
-                if solids.iter().any(|t| {
-                    !t.is_decoration()
-                        && t.bottom_y_cm < ceiling
-                        && t.top_y_cm > s.floor_y_cm
-                        && solid_rect(t).overlaps(&reach)
-                }) {
-                    continue;
-                }
-                chosen = Some(strip(depth, a));
-                break;
             }
-            let Some(foot) = chosen else {
+            let Some((a, layers)) = chosen else {
                 continue;
             };
 
             let style = style_of(s.role);
-            let (from, to) = if along_x {
-                (foot.min_x_cm, foot.max_x_cm)
-            } else {
-                (foot.min_z_cm, foot.max_z_cm)
-            };
-            let total = to - from;
-            let pieces = (total + MAX_SOLID_CM - 1) / MAX_SOLID_CM;
-            let mut cut = from;
-            for k in 1..=pieces {
-                let end = from + (total * k) / pieces;
-                let (x, z, sx, sz) = if along_x {
-                    (cut, foot.min_z_cm, end - cut, foot.depth_cm())
+            let mut below = 0;
+            for &(layer_depth, layer_h) in &layers {
+                let foot = strip(layer_depth, a);
+                let (from, to) = if along_x {
+                    (foot.min_x_cm, foot.max_x_cm)
                 } else {
-                    (foot.min_x_cm, cut, foot.width_cm(), end - cut)
+                    (foot.min_z_cm, foot.max_z_cm)
                 };
-                out.push(Wg3Solid {
-                    x_cm: x,
-                    z_cm: z,
-                    size_x_cm: sx,
-                    size_z_cm: sz,
-                    bottom_y_cm: s.floor_y_cm,
-                    top_y_cm: s.floor_y_cm + h,
-                    style,
-                    yaw_deg: 0,
-                    shape: SHAPE_BOX,
-                });
-                cut = end;
-            }
-            // Los peldaños, centrados en el frente, del estrado hacia la sala: cada uno 20 más bajo.
-            let a0 = (from + to) / 2 - DAIS_ACCESS_WIDTH_CM / 2;
-            let (front, outward) = match side {
-                0 => (foot.min_z_cm, -1),
-                1 => (foot.min_x_cm, -1),
-                2 => (foot.max_z_cm, 1),
-                _ => (foot.max_x_cm, 1),
-            };
-            for i in 0..steps {
-                let near = front + outward * i * DAIS_STEP_RUN_CM;
-                let lo = if outward < 0 {
-                    near - DAIS_STEP_RUN_CM
-                } else {
-                    near
+                let total = to - from;
+                let pieces = (total + MAX_SOLID_CM - 1) / MAX_SOLID_CM;
+                let mut cut = from;
+                for k in 1..=pieces {
+                    let end = from + (total * k) / pieces;
+                    let (x, z, sx, sz) = if along_x {
+                        (cut, foot.min_z_cm, end - cut, foot.depth_cm())
+                    } else {
+                        (foot.min_x_cm, cut, foot.width_cm(), end - cut)
+                    };
+                    out.push(Wg3Solid {
+                        x_cm: x,
+                        z_cm: z,
+                        size_x_cm: sx,
+                        size_z_cm: sz,
+                        bottom_y_cm: s.floor_y_cm,
+                        top_y_cm: s.floor_y_cm + layer_h,
+                        style,
+                        yaw_deg: 0,
+                        shape: SHAPE_BOX,
+                    });
+                    cut = end;
+                }
+                // Los peldaños, centrados en el frente de la capa, hacia la sala: cada uno 20 más
+                // bajo, hasta el suelo o hasta la capa de delante (sobre la que se apoyan, atravesándola).
+                let a0 = (from + to) / 2 - DAIS_ACCESS_WIDTH_CM / 2;
+                let (front, outward) = match side {
+                    0 => (foot.min_z_cm, -1),
+                    1 => (foot.min_x_cm, -1),
+                    2 => (foot.max_z_cm, 1),
+                    _ => (foot.max_x_cm, 1),
                 };
-                let (x, z, sx, sz) = if along_x {
-                    (a0, lo, DAIS_ACCESS_WIDTH_CM, DAIS_STEP_RUN_CM)
-                } else {
-                    (lo, a0, DAIS_STEP_RUN_CM, DAIS_ACCESS_WIDTH_CM)
-                };
-                out.push(Wg3Solid {
-                    x_cm: x,
-                    z_cm: z,
-                    size_x_cm: sx,
-                    size_z_cm: sz,
-                    bottom_y_cm: s.floor_y_cm,
-                    top_y_cm: s.floor_y_cm + h - DAIS_STEP_RISE_CM * (i + 1),
-                    style,
-                    yaw_deg: 0,
-                    shape: SHAPE_BOX,
-                });
+                for i in 0..(layer_h - below) / DAIS_STEP_RISE_CM - 1 {
+                    let near = front + outward * i * DAIS_STEP_RUN_CM;
+                    let lo = if outward < 0 {
+                        near - DAIS_STEP_RUN_CM
+                    } else {
+                        near
+                    };
+                    let (x, z, sx, sz) = if along_x {
+                        (a0, lo, DAIS_ACCESS_WIDTH_CM, DAIS_STEP_RUN_CM)
+                    } else {
+                        (lo, a0, DAIS_STEP_RUN_CM, DAIS_ACCESS_WIDTH_CM)
+                    };
+                    out.push(Wg3Solid {
+                        x_cm: x,
+                        z_cm: z,
+                        size_x_cm: sx,
+                        size_z_cm: sz,
+                        bottom_y_cm: s.floor_y_cm,
+                        top_y_cm: s.floor_y_cm + layer_h - DAIS_STEP_RISE_CM * (i + 1),
+                        style,
+                        yaw_deg: 0,
+                        shape: SHAPE_BOX,
+                    });
+                }
+                below = layer_h;
             }
         }
     }
