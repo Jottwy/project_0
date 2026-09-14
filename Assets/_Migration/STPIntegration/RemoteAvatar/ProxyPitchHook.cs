@@ -129,7 +129,8 @@ namespace BackroomsSurvival.Migration.STPIntegration
 
             if (absolute && _hasHuman)
             {
-                ProxyHeadPitchSolver.AimHead(transform, _humanChest, _humanNeck, _humanHead, _headLocalLook, p);
+                ProxyHeadPitchSolver.AimHead(transform, _humanChest, _humanNeck, _humanHead, _headLocalLook,
+                    ProxyHeadPitchSolver.HeadTarget(p));
                 return;
             }
 

@@ -20,14 +20,28 @@ namespace BackroomsSurvival.Gameplay
     /// </summary>
     public static class ProxyHeadPitchSolver
     {
-        /// <summary>Parte de la corrección que se lleva el pecho.</summary>
-        public const float ChestShare = 0.25f;
+        /// <summary>
+        /// Parte de la corrección que se lleva el pecho. Era 0,25: con la cabeza al 80 % el cuello seguía
+        /// doblado a −26° mirando 60° arriba y a 45° mirando 89° abajo (arnés, 2026-09-14). Joel pidió
+        /// que el pecho acompañe más.
+        /// </summary>
+        public const float ChestShare = 0.40f;
 
         /// <summary>Tope del pecho: pasado esto una espalda ya no se dobla más por mirar.</summary>
         public const float ChestCapDegrees = 35f;
 
         /// <summary>Parte de lo que queda tras el pecho que se lleva el cuello; el resto, la cabeza.</summary>
         public const float NeckShare = 0.45f;
+
+        /// <summary>
+        /// Fracción del cabeceo de la cámara que sigue la CABEZA; el resto lo ponen los ojos. Con la
+        /// cabeza al 100 % el cuello quedaba doblado del todo a ±60° y con un pliegue a 89° (arnés,
+        /// 2026-09-14). Propuesta de Joel: 80 %.
+        /// </summary>
+        public const float HeadFollowsPitch = 0.8f;
+
+        /// <summary>Ángulo al que se apunta la cabeza para un cabeceo de cámara dado.</summary>
+        public static float HeadTarget(float cameraPitchDegrees) => cameraPitchDegrees * HeadFollowsPitch;
 
         public struct Split
         {
