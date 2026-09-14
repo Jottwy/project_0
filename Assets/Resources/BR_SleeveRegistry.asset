@@ -1,0 +1,56 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: a239490926b5b984290d5870013cba5c, type: 3}
+  m_Name: BR_SleeveRegistry
+  m_EditorClassIdentifier: 
+  _armMeshes:
+  - {fileID: -1296976969852645106, guid: 7e3722a64b36f56419ba60aa25941402, type: 3}
+  - {fileID: 3487192314196417999, guid: 7e3722a64b36f56419ba60aa25941402, type: 3}
+  - {fileID: -1296976969852645106, guid: 6f5c6a5da9eb876489c7a1a1d01dd56b, type: 3}
+  - {fileID: 3487192314196417999, guid: 6f5c6a5da9eb876489c7a1a1d01dd56b, type: 3}
+  - {fileID: -1296976969852645106, guid: 7b5a9b7e89c2c9c429151cdebea73cfb, type: 3}
+  - {fileID: 3487192314196417999, guid: 7b5a9b7e89c2c9c429151cdebea73cfb, type: 3}
+  - {fileID: -1296976969852645106, guid: 28c7e8e1f7ed6b346b2de82bfd95b3d2, type: 3}
+  - {fileID: 3487192314196417999, guid: 28c7e8e1f7ed6b346b2de82bfd95b3d2, type: 3}
+  - {fileID: -1296976969852645106, guid: 0a272b96f5af4484d94960018f917527, type: 3}
+  - {fileID: 3487192314196417999, guid: 0a272b96f5af4484d94960018f917527, type: 3}
+  - {fileID: -1296976969852645106, guid: 56109a96892a5e940aa7b1f1e8d91d46, type: 3}
+  - {fileID: 3487192314196417999, guid: 56109a96892a5e940aa7b1f1e8d91d46, type: 3}
+  - {fileID: -1296976969852645106, guid: 9df814ff3d679eb4f903419c17808bc4, type: 3}
+  - {fileID: 3487192314196417999, guid: 9df814ff3d679eb4f903419c17808bc4, type: 3}
+  - {fileID: -1296976969852645106, guid: 4c5f6e99e66f5bd498b64de6fc4a4109, type: 3}
+  - {fileID: 3487192314196417999, guid: 4c5f6e99e66f5bd498b64de6fc4a4109, type: 3}
+  - {fileID: -1296976969852645106, guid: 1d509227a8e692f46b5abef7b3d50c4c, type: 3}
+  - {fileID: 3487192314196417999, guid: 1d509227a8e692f46b5abef7b3d50c4c, type: 3}
+  _sleeveMeshes:
+  - {fileID: 4300000, guid: 57fe68ca86dc2304298c4661a3be5e66, type: 2}
+  - {fileID: 4300000, guid: 35d6a4b1d435aea4b9278c705d0a8882, type: 2}
+  - {fileID: 4300000, guid: a90c551ab84176d478e62758cadc7b80, type: 2}
+  - {fileID: 4300000, guid: cceb6613d78e1a64e9cba0de01009839, type: 2}
+  - {fileID: 4300000, guid: efeecf992bcb33144bbeabbb7644cb4c, type: 2}
+  - {fileID: 4300000, guid: 46d04d845bc0fee45b3972e1590ef3e4, type: 2}
+  - {fileID: 4300000, guid: 53db0f77f6322bb4b94ff15f334750cc, type: 2}
+  - {fileID: 4300000, guid: 8364f949a072fe547bb526ed9e5d107c, type: 2}
+  - {fileID: 4300000, guid: 9a335c9cd075de64a875763cd0637c25, type: 2}
+  - {fileID: 4300000, guid: 6ef44ec640afb9c4d9c28df6f1e7a7a3, type: 2}
+  - {fileID: 4300000, guid: 5314387cbdba948458b8b7f843be9919, type: 2}
+  - {fileID: 4300000, guid: e845fba6d6b91984e93aca3e71b7844c, type: 2}
+  - {fileID: 4300000, guid: 0c23d7c996db36c4cb6217354562d423, type: 2}
+  - {fileID: 4300000, guid: 4de42edf4da20964989983f006aea964, type: 2}
+  - {fileID: 4300000, guid: 865caacf60334ad4b98b84e940fd5ecc, type: 2}
+  - {fileID: 4300000, guid: b5db7540fa86c6447991ca91c8f949c2, type: 2}
+  - {fileID: 4300000, guid: 4428290ee1bc21d4b9c4034cf337a7f6, type: 2}
+  - {fileID: 4300000, guid: d82a814f87c26694ab7dbaf117169d28, type: 2}
+  _garmentIds: fa7ddf16dc18d0ff
+  _garmentMaterials:
+  - {fileID: 2100000, guid: a8588d3eb9f1a6e40866f031885ff7a1, type: 2}
+  - {fileID: 2100000, guid: 616fed8598ddc7d4cbcb2a8566903e6d, type: 2}

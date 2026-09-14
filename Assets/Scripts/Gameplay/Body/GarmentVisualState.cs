@@ -73,6 +73,29 @@ namespace BackroomsSurvival.Gameplay.Body
 
         public static bool IsOpen(GarmentDamage damage) => damage == GarmentDamage.Cut || damage == GarmentDamage.Torn;
 
+        /// <summary>
+        /// R4c: la zona de un hueso de los brazos de primera persona (su rig no es el del cuerpo: <c>Forearm.*</c> y los
+        /// <c>ForearmTwist.N.*</c> son antebrazo). La mano y los dedos no llevan manga.
+        /// </summary>
+        public static bool TryFirstPersonZone(string boneName, out BodyZone zone)
+        {
+            zone = BodyZone.ForearmL;
+            if (string.IsNullOrEmpty(boneName)) return false;
+            bool left = boneName.EndsWith(".L");
+            if (!left && !boneName.EndsWith(".R")) return false;
+            if (boneName.StartsWith("UpperArm."))
+            {
+                zone = left ? BodyZone.UpperArmL : BodyZone.UpperArmR;
+                return true;
+            }
+            if (boneName.StartsWith("Forearm.") || boneName.StartsWith("ForearmTwist."))
+            {
+                zone = left ? BodyZone.ForearmL : BodyZone.ForearmR;
+                return true;
+            }
+            return false;
+        }
+
         /// <summary>El índice del hueso con más peso en un vértice.</summary>
         public static int DominantBone(BoneWeight weight)
         {
@@ -91,7 +114,7 @@ namespace BackroomsSurvival.Gameplay.Body
         /// distancia a lo largo del eje desde el centro de la zona.
         /// </summary>
         public static void ProjectZones(Vector3[] positions, BodyZone[] zones, Vector3 up, Vector3 forward, Vector2[] coords,
-            float[] front = null, Vector3[] zoneAxes = null)
+            float[] front = null, Vector3[] zoneAxes = null, Vector3[] zoneReferences = null)
         {
             up = up.sqrMagnitude > 1e-8f ? up.normalized : Vector3.up;
             forward = Vector3.ProjectOnPlane(forward, up);
@@ -119,7 +142,9 @@ namespace BackroomsSurvival.Gameplay.Body
                 // varianza sale atravesada y el daño caía encima del hombro en vez de delante.
                 if (zoneAxes != null && zone < zoneAxes.Length && zoneAxes[zone].sqrMagnitude > 1e-8f) axis = zoneAxes[zone].normalized;
 
-                var reference = Vector3.ProjectOnPlane(forward, axis);
+                var zoneForward = zoneReferences != null && zone < zoneReferences.Length && zoneReferences[zone].sqrMagnitude > 1e-8f
+                    ? zoneReferences[zone] : forward;
+                var reference = Vector3.ProjectOnPlane(zoneForward, axis);
                 if (reference.sqrMagnitude < 0.05f) reference = Vector3.ProjectOnPlane(up, axis);
                 reference.Normalize();
                 var side = Vector3.Cross(axis, reference);

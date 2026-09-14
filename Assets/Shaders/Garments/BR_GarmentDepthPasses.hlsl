@@ -47,7 +47,12 @@ GarmentDepthVaryings GarmentDepthVertex(GarmentDepthAttributes input)
     UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(output);
 
     input.positionOS.xyz += input.normalOS * _GarmentInflate;
+#if defined(BR_GARMENT_FP)
+    input.positionOS.xyz = GarmentWarpToViewModel(input.positionOS.xyz);
+    output.uv = input.zoneCoords * _GarmentFabricTiling + _BaseMap_ST.zw;
+#else
     output.uv = TRANSFORM_TEX(input.texcoord, _BaseMap);
+#endif
     output.garment = float4(input.zoneUV, input.zoneCoords);
     output.normalWS = TransformObjectToWorldNormal(input.normalOS);
 

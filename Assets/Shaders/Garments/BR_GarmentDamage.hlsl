@@ -17,6 +17,23 @@ half4 _GarmentThreadColor;
 float _GarmentInflate; // metros hacia fuera, por la normal: la prenda de encima no pisa la de debajo
 float _GarmentViewBias; // metros hacia la cámara al dibujar: gana la de encima donde se cruza con la de dentro
 
+#if defined(BR_GARMENT_FP)
+// Primera persona (ADR-149 R4c). Globales del vendor, nunca en Properties (ADR-077 enm. 2).
+float _FOV;
+float _FOVEnabled;
+float _GarmentFabricTiling; // la funda no tiene las UV de la prenda: el tejido se muestrea por metros
+
+// El mismo warp que LitFieldOfView: en espacio de objeto, antes de todo lo demás (luz, niebla y profundidad lo heredan).
+float3 GarmentWarpToViewModel(float3 positionOS)
+{
+    if (_FOVEnabled < 0.5)
+        return positionOS;
+    float3 positionVS = TransformWorldToView(TransformObjectToWorld(positionOS));
+    positionVS.xy *= 1.0 / (-tan(_FOV * PI / 360.0) * UNITY_MATRIX_P[1][1]);
+    return TransformWorldToObject(TransformViewToWorld(positionVS));
+}
+#endif
+
 struct GarmentDamage
 {
     float clipMask; // 1: agujero, no se pinta

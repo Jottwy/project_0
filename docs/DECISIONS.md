@@ -19025,3 +19025,26 @@ atravesada), y el daño no se pinta en triángulos que mezclan dos zonas ni en l
   apenas enfriado; sin wire ni Rust.
 
 ---
+
+### ADR-149 — Enmienda 6 (2026-09-14): R4c — la manga en los brazos de primera persona
+
+**Estado:** PROPUESTA (Joel: «sigue con las mangas en 1P»). Sin wire ni guardado. Amplía la lista de shaders que warpean
+del viewmodel (ADR-077 enm. 2) con uno propio.
+
+1. **Funda de manga horneada en el editor** (`BackroomsSleeveBuilder`) por cada malla de brazo 1P de los wieldables (vendor
+   y proyecto; cada FBX trae la suya): los triángulos cuyo hueso dominante es `UpperArm.*`, `Forearm.*` o `ForearmTwist.*`,
+   6 mm por fuera de su normal, con los mismos pesos y bindposes, y en cada vértice su zona y sus metros alrededor del eje
+   del miembro (el frente es la cara que mira a la raíz del rig, donde está la cámara). Se hornea en el editor porque en un
+   build las mallas del vendor no se pueden leer. Registro `Resources/BR_SleeveRegistry`: malla de brazo → funda, prenda →
+   material de primera persona.
+2. **Shader `Backrooms/Garment Lit FP`**, generado del de 3.ª persona con `BR_GARMENT_FP`: el mismo warp que
+   `LitFieldOfView` (en espacio de objeto, con `_FOV`/`_FOVEnabled` globales, nunca en Properties) en todas las pasadas, y
+   el tejido muestreado por metros (la funda no tiene las UV de la prenda). Entra en la lista de `ViewmodelWarpTests`.
+3. **`FirstPersonSleeves`** (DontDestroyOnLoad, como `FirstPersonBandageHook`) repasa las mallas `LeftArm`/`RightArm` bajo
+   `WieldablesRoot` (así cubre también el reloj, que no es el wieldable activo), pone al lado de cada una su funda con sus
+   huesos, capa y sin sombra, y la enciende si su brazo se ve y lo puesto (encima primero, luego el torso) tiene manga larga
+   (cubre un antebrazo) con material 1P. La rotura llega por MaterialPropertyBlock; por un agujero se ve el brazo.
+4. **Prendas con manga 1P:** chaqueta de trabajo y camisa del vendor. Una camiseta no llega al antebrazo y no se ve.
+5. **Pendiente:** avatar remoto, guantes con malla, tejido propio por prenda (hoy se muestrea su textura de 3.ª persona).
+
+---

@@ -482,4 +482,7 @@ tinte sobre la UI piden overlay propio o canvas en Screen Space Camera.
   encima de lo del torso, pantalón y calzado con mallas del vendor teñidas) y se ve rota: forma según la causa (bala,
   puñalada, tajo, zarpazo) en un sitio fijo de la zona, cinta y costura con esa forma, la prenda de debajo o la piel por el
   agujero. La ropa de serie también se rompe. Falta: sitio exacto del golpe (ADR aparte), avatar remoto, mangas 1P, guantes.
+- **R4c, mangas en primera persona (2026-09-14, enm. 6)** — la chaqueta y la camisa se ven en tus brazos 1P con su rotura:
+  funda horneada por malla de brazo, shader con el warp del viewmodel, vigilante bajo `WieldablesRoot`. Falta: avatar
+  remoto, guantes, tejido propio por prenda.
 

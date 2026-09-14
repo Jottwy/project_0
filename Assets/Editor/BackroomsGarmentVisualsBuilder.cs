@@ -122,6 +122,8 @@ namespace BackroomsSurvival.EditorTools
             os.ApplyModifiedPropertiesWithoutUndo();
 
             WireDamage(clothing, new SerializedObject(clothing).FindProperty("_clothing"), outers);
+            // R4c: las mangas de primera persona usan los materiales de arriba.
+            BackroomsSleeveBuilder.Build();
             return wired;
         }
 

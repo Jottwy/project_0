@@ -26,12 +26,13 @@ namespace BackroomsSurvival.Tests
             "Assets/Resources/Wieldables",
         };
 
-        /// <summary>Los tres shaders que warpean: objetos, piel y UI diegética.</summary>
+        /// <summary>Los shaders que warpean: objetos, piel, UI diegética y ropa de primera persona (ADR-149 R4c).</summary>
         private static readonly string[] WarpShaderPaths =
         {
             "Assets/PolymindGames/FPSCore/Code/Shaders/LitFieldOfView.shadergraph",
             "Assets/PolymindGames/FPSCore/Code/Shaders/LitFieldOfView_SSS.shadergraph",
             "Assets/Art/Watch/BR_UIWarp.shader",
+            "Assets/Shaders/Garments/BR_GarmentLitFP.shader",
         };
 
         private const string WorldShaderName = "Universal Render Pipeline/Lit";

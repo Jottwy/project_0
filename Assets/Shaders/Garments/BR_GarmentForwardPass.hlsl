@@ -163,6 +163,9 @@ Varyings LitPassVertex(Attributes input)
     UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(output);
 
     input.positionOS.xyz += input.normalOS * _GarmentInflate;
+#if defined(BR_GARMENT_FP)
+    input.positionOS.xyz = GarmentWarpToViewModel(input.positionOS.xyz);
+#endif
     VertexPositionInputs vertexInput = GetVertexPositionInputs(input.positionOS.xyz);
     VertexNormalInputs normalInput = GetVertexNormalInputs(input.normalOS, input.tangentOS);
 
@@ -173,7 +176,11 @@ Varyings LitPassVertex(Attributes input)
         fogFactor = ComputeFogFactor(vertexInput.positionCS.z);
     #endif
 
+#if defined(BR_GARMENT_FP)
+    output.uv = input.zoneCoords * _GarmentFabricTiling + _BaseMap_ST.zw;
+#else
     output.uv = TRANSFORM_TEX(input.texcoord, _BaseMap);
+#endif
     output.garment = float4(input.zoneUV, input.zoneCoords);
 
     output.normalWS = normalInput.normalWS;
@@ -245,6 +252,15 @@ void LitPassFragment(
     SurfaceData surfaceData;
     InitializeStandardLitSurfaceData(input.uv, surfaceData);
 
+#if defined(BR_GARMENT_FP)
+    // La funda no tiene las UV de la prenda y su textura es un atlas: a trozos salía a bloques. Color medio de la textura
+    // (mip alto) y un tejido procedural por metros, con la normal plana.
+    half3 fabric = SAMPLE_TEXTURE2D_LOD(_BaseMap, sampler_BaseMap, float2(0.5, 0.5), 10).rgb * _BaseColor.rgb;
+    float2 weave = input.garment.zw * 900.0;
+    half grain = 0.92 + 0.05 * (sin(weave.x) + sin(weave.y)) + 0.08 * (GarmentHash(floor(input.garment.zw * 220.0)) - 0.5);
+    surfaceData.albedo = fabric * grain;
+    surfaceData.normalTS = half3(0, 0, 1);
+#endif
     bool front = IS_FRONT_VFACE(isFrontFace, true, false);
     surfaceData.albedo *= 1.0 - lerp(0.55, 0.85, damage.burn) * damage.edge;
     surfaceData.albedo *= 1.0 - 0.2 * damage.scar;
