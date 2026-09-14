@@ -4,7 +4,7 @@
 > `docs/SESSION-LOG.md`, donde vive todo el histórico. Aquí sólo lo vigente.
 
 ## Estado
-- **WorldGen3 es el mundo servido.** Wire **68** en las dos puntas (`ipc/server.rs:38`, `WireSchema.cs:25`) — ADR-122 enm. 1, la rampa (13-09).
+- **WorldGen3 es el mundo servido.** Wire **69** en las dos puntas (`ipc/server.rs:38`, `WireSchema.cs:25`) — ADR-149 enm. 7, ropa y rotura (15-09).
 - **Contrato WG3 v1 = Alpha 1** (`docs/WG3-ALPHA1-ROADMAP.md`): días 1–2 hechos; 3 y 5 APARCADOS detrás de la tanda de oficinas (Joel, 06-09).
 - **Multijugador por Steam, SIN LAG** (10-09): **253,8 → 13,9 KB/s**, cola → **0**. **Build 25238618 SUBIDA con todo (wire 63), SIN rama: Joel la habilita.**
 - **El commit tiene gate** (`tools/dev/validate-scope.ps1`, hook PreToolUse): rojo = el commit no se ejecuta. Alcance por `git diff --cached`.
@@ -28,6 +28,8 @@
 - **ADR-145 completo en código** (D1-D7), enmienda de estado escrita. Sin ver en Play; EditMode sin ejecutar.
 
 ## Riesgos abiertos
+- **ADR-155 enm. 3 vs ADR-105 enm. 22**: base de validación 6/306 quedó vieja (ahora 0/306); remedir L1e si se retoma.
+- **`MAX_POSES_PER_BATCH` 14→8** (ADR-149 enm. 7, `garments`): sin medir datagramas/s con N=50.
 - **Autoridad del servidor CERRADA, también la última línea** (12-09): dueño al demoler (`78e156e6`), cantidad y posición contra el roster
   (`ebb42911`/`bb3c7e5c`), y ya las TRES rutas de construcción miden alcance y rechazan sin pose (`STP_PICKUP_MAX_DISTANCE`, 8 tests).
 - **Espejos C#↔Rust sin oráculo.** Sin `the_identity_mirror_golden_values` (B4-b), `Wg3Identity.cs` queda verde sin nada que lo
@@ -44,10 +46,8 @@
 - **EditMode: 1 528 tests, 12 rojos** medidos el 12-09 headless: los 12 del 08-09 (`Wg3Composer` ×3, `Wg3DensityField` ×2, `Wg3ScaleField`,
   `StorageRackDisplay` ×2, `Wg3LightCadence`, `IgdProtocol` flaky, `OfficeAmbience`, `ZoneAmbienceSet`). El 13.º, `ViewmodelWarpTests` por la
   venda con URP/Lit, ARREGLADO el 12-09 (`BR_Bandage_FP_Material`). En cargo, `phantom_sprints_after_patience_exceeded` **flaquea cargado**.
-- **Auditoría del 02-09, tres ALTO sin corregir** (`AUDIT-2026-08-28.md`): A28-29 un sobre «Relayed» se cree sin comparar el origen UDP con
-  el relay (`classify_inbound`); A28-30 descripción UPnP sin tope (`StackOverflowException`); A28-31 `spawnedOnDeplete` nunca vuelve a `false`.
-- **Ramas viejas CERRADO** (06-09, 34.ª tanda). Aparcados a propósito por Joel: tres wip del 03-09 con base vieja y rebase pendiente —
-  teselado estocástico (`558afb54`), decals de suciedad (`cb61b99c`), sonda de cajas (`1c8237ff`).
+- **Auditoría 02-09, tres ALTO** (`AUDIT-2026-08-28.md`): A28-29 «Relayed» sin comparar UDP; A28-30 UPnP sin tope; A28-31 spawnedOnDeplete no resetea.
+- **Ramas viejas CERRADO** (06-09). Aparcados a propósito: teselado estocástico (`558afb54`), decals (`cb61b99c`), sonda de cajas (`1c8237ff`).
 
 ## NO tocar
 > Detalle completo, verbatim, en `docs/SESSION-LOG.md` (bloques «NO tocar» y «Última sesión» de 2026-08-03).
@@ -82,7 +82,7 @@
   es el teatro del robapieles. `BWTRACE`/`ENTTRACE` en `warn!` a propósito: devolver a `info!` al terminar.
 - **Atribución de teleports**: `TP_WATCH`/`RESOLVE_DIAG` activos en `game_loop.rs` («REMOVE after diagnosis»); falta playtest y LEER los logs (ADR-026).
 - **Entidades PvE (Lurker/Crawler/Shadow) con daño DESACTIVADO** desde 2026-07-07: eran la causa de las muertes silenciosas. Apagadas a propósito.
-- **`docs/DECISIONS.md`** (1,38 MB) ilegible entero; se lee por `DECISIONS-INDEX.md` + `grep`. Alternativa sin decidir: un fichero por ADR.
+- **`docs/DECISIONS.md`** (1,38 MB) ilegible; se lee por `DECISIONS-INDEX.md` + `grep`. ADR-149 enm. 1-8 en `###`: invisibles a ambos (nota-puntero 15-09).
 - **`STOREY_HEIGHT_CM` (332) no sube con un número** (380–480: 1/9 regiones válidas); `storey_of_floor_cm` clasifica una planta ABAJO en la costura de 664.
 - **Sin ver en juego (06-09)**: monitor y despacho oscuro, recepción, techo roto, decaimiento del cliente en B3 (r2b), audio en Play; carteles SÍ.
 - **Venda**: sólo el daño LOCAL abre heridas (el autoritativo llega por `SetHealthSilent` sin evento, ADR-025), así que hoy no deja herida que
@@ -94,6 +94,14 @@
   STP; `TODO(balance)` de loot; doc-comments stale; el agarre TOCA pero no RODEA (el bote cuelga de la tapa) y el pulgar entra 12,8 mm sin puerta.
 
 ## Últimas tandas
+
+### 2026-09-15 — 56.ª tanda: consolidación multiparallel — mapping, ropa, laberinto
+- **Fusión multiparallel a `migration/worldgraph-v1`**: Mapping P1c (7 commits, IPC hojas, wire 70 SIN activar), BookOpen bit 9 (`ProxyBookHold.cs`, sin ADR,
+  bit libre ADR-044), ADR-155 L0–L1e (código hecho, `MAZE_BIOME_ENABLED = false` a propósito), ADR-105 enm. 22 visto bueno (separación 200 cm, pozos).
+- **ADR-149 enm. 7 + ADR-022**: ropa (`outer:i32`, rotura por zona), dos sesiones en paralelo (`058320d0`,`49dd4ade`). **Wire 68→69**.
+- **Base validación: 300/306 → 306/306 regiones** tras ADR-105 enm. 22 (fix `well_mouth_carves` + regla divisiones; 27/27 ✓).
+- **Build headless**: matar `backrooms_server.exe`, cerrar Editor (permiso Joel). Cargo 1597/0/107, rustfmt ✓, C# 0 errores, release ✓. Backend deployado,
+  cliente Steam BuildID 25310397 SIN SetLive. Editor cerrado al terminar.
 
 ### 2026-09-13 — 55.ª tanda (paralela): el inventario nuevo también en STP_Showcase, solo la interfaz y por enganche
 - **Opción A de Joel, sin tocar el YAML del vendor** (`482b1ffd`, `5b513fd2`): `BackroomsShowcasePlayerUi` instancia `BR_UI_Player` y el `GameMode` la
