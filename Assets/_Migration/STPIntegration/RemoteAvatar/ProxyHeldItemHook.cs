@@ -52,6 +52,14 @@ namespace BackroomsSurvival.Migration.STPIntegration
         [Tooltip("Codo hacia fuera, en fracción del largo del brazo: cuanto menos, más pegado al costado.")]
         [SerializeField] private float _elbowOutward = 0.15f;
 
+        [Tooltip("Muñeca respecto del hombro cuando el objeto es a DOS MANOS (con manivela): negativa = hacia el " +
+                 "centro del cuerpo, para que la izquierda llegue al pomo (m).")]
+        [SerializeField] private float _twoHandOutward = -0.07f;
+
+        [Tooltip("Cierre de anular y meñique de la mano del pomo, que no caben en una pieza corta: se RECOGEN " +
+                 "(lección de la izquierda en la manivela de primera persona, ADR-150 enm. 3).")]
+        [SerializeField, Range(0f, 110f)] private float _tuckedFingersDegrees = 75f;
+
         [Tooltip("Giro PREFERIDO de la palma hacia abajo, en grados. Sólo desempata: el giro real lo elige la " +
                  "búsqueda de naturalidad del brazo.")]
         [SerializeField, Range(0f, 60f)] private float _palmDownDegrees = 20f;
@@ -121,6 +129,34 @@ namespace BackroomsSurvival.Migration.STPIntegration
         /// <summary>Coste de naturalidad del brazo derecho en el último fotograma (0 = cómodo). Lo lee el arnés.</summary>
         public float LastArmCost { get; private set; }
 
+        // Mano izquierda en el pomo de la manivela: la linterna es de DOS manos (Joel, 14-09), igual que en primera
+        // persona, donde la izquierda va en el pomo también en reposo y lo sigue al dar cuerda.
+        private Transform _upperArmL, _lowerArmL, _handL;
+        private Transform _indexKnuckleL, _middleKnuckleL, _pinkyKnuckleL, _thumbBaseL;
+        private Transform[][] _curlChainsL;
+        private Transform[] _thumbChainL;
+        private Transform _crank;
+        private Vector3 _knobLocal;
+        private float _knobRadius;
+        private bool _twoHanded;
+        private bool _hasLeftChoice, _leftCurlSolved;
+        private float _leftClock, _leftSign = 1f;
+        private int _leftPole;
+        private readonly float[] _leftCurl = new float[2];
+        private float _leftThumb;
+        private Quaternion _upperLRest, _lowerLRest, _handLRest;
+
+        /// <summary>Coste de naturalidad del brazo izquierdo en el último fotograma. Lo lee el arnés.</summary>
+        public float LastLeftArmCost { get; private set; }
+
+        /// <summary>Metros entre los nudillos de la izquierda y donde tendrían que estar para agarrar el pomo (0 = lo
+        /// agarra). Lo lee el arnés: en una captura no se distingue «sobre el pomo» de «cerca del pomo».</summary>
+        public float LastLeftKnobMiss { get; private set; }
+
+        private bool HasLeftRig =>
+            _handL != null && _upperArmL != null && _lowerArmL != null && _indexKnuckleL != null
+            && _middleKnuckleL != null && _pinkyKnuckleL != null && _thumbBaseL != null;
+
         private void Awake()
         {
             var bones = BuildBoneMap();
@@ -141,13 +177,27 @@ namespace BackroomsSurvival.Migration.STPIntegration
                 Chain(bones, "RingFinger"), Chain(bones, "PinkyFinger"),
             };
             _thumbChain = Chain(bones, "ThumbFinger");
+
+            bones.TryGetValue("UpperArm.L", out _upperArmL);
+            bones.TryGetValue("LowerArm.L", out _lowerArmL);
+            bones.TryGetValue("Hand.L", out _handL);
+            bones.TryGetValue("IndexFinger.1.L", out _indexKnuckleL);
+            bones.TryGetValue("MiddleFinger.1.L", out _middleKnuckleL);
+            bones.TryGetValue("PinkyFinger.1.L", out _pinkyKnuckleL);
+            bones.TryGetValue("ThumbFinger.1.L", out _thumbBaseL);
+            _curlChainsL = new[]
+            {
+                Chain(bones, "IndexFinger", "L"), Chain(bones, "MiddleFinger", "L"),
+                Chain(bones, "RingFinger", "L"), Chain(bones, "PinkyFinger", "L"),
+            };
+            _thumbChainL = Chain(bones, "ThumbFinger", "L");
         }
 
-        private static Transform[] Chain(Dictionary<string, Transform> bones, string finger)
+        private static Transform[] Chain(Dictionary<string, Transform> bones, string finger, string side = "R")
         {
             var chain = new Transform[3];
             for (int i = 0; i < 3; i++)
-                bones.TryGetValue($"{finger}.{i + 1}.R", out chain[i]);
+                bones.TryGetValue($"{finger}.{i + 1}.{side}", out chain[i]);
             return chain;
         }
 
@@ -254,6 +304,10 @@ namespace BackroomsSurvival.Migration.STPIntegration
             _measured = false;
             _curlSolved = false;
             _hasChoice = false;
+            _twoHanded = false;
+            _hasLeftChoice = false;
+            _leftCurlSolved = false;
+            _crank = null;
             if (model == null)
                 return;
 
@@ -279,6 +333,18 @@ namespace BackroomsSurvival.Migration.STPIntegration
             _axisOffsetXZ = new Vector2(b.center.x, b.center.z);
             _crankY = model.transform.InverseTransformPoint(crank.position).y;
             _measured = true;
+
+            // EL POMO: el brazo de la manivela sale por su +Y local desde el pivote (malla medida: centro y 0,03,
+            // semialto 0,03) y gira sobre su Z. El pomo se toma cerca del extremo del brazo.
+            var crankFilter = crank.GetComponent<MeshFilter>();
+            if (crankFilter != null && crankFilter.sharedMesh != null)
+            {
+                Bounds cb = crankFilter.sharedMesh.bounds;
+                _knobLocal = new Vector3(cb.center.x, cb.center.y + cb.extents.y * 0.75f, cb.center.z);
+                _knobRadius = Mathf.Max(0.006f, Mathf.Min(cb.extents.x, cb.extents.z) * 0.8f);
+                _crank = crank;
+                _twoHanded = true;
+            }
         }
 
         /// <summary>
@@ -311,6 +377,9 @@ namespace BackroomsSurvival.Migration.STPIntegration
 
             Vector3 axisPoint = position + rotation * new Vector3(_axisOffsetXZ.x, 0f, _axisOffsetXZ.y);
             Vector3 axisDir = rotation * Vector3.up;
+
+            if (_twoHanded && HasLeftRig && _crank != null)
+                ApplyLeftHandOnKnob(axisPoint, axisDir, frame.KnuckleCentre);
 
             if (!_curlSolved)
             {
@@ -419,7 +488,7 @@ namespace BackroomsSurvival.Migration.STPIntegration
                 + Vector3.Distance(_lowerArm.position, _hand.position);
             Vector3 shoulder = _upperArm.position;
             Vector3 target = shoulder - root.up * ((_holdDown + height) * armLength)
-                + root.forward * (_holdForward * armLength) + root.right * _holdOutward;
+                + root.forward * (_holdForward * armLength) + root.right * (_twoHanded ? _twoHandOutward : _holdOutward);
             ProxyGripSolver.TwoBoneIk(_upperArm, _lowerArm, _hand, target, shoulder + PoleDirection(pole) * armLength);
 
             var frame = Frame();
@@ -451,6 +520,151 @@ namespace BackroomsSurvival.Migration.STPIntegration
         }
 
         private static float Sq(float x) => x * x;
+
+        /// <summary>
+        /// La izquierda en el pomo, cada fotograma: el pomo gira con la cuerda y la mano lo sigue. La primera vez se
+        /// barren entera la posición alrededor del pomo, el sentido de los nudillos y el codo; después sólo una
+        /// ventana de ±30° alrededor de la elección anterior, así que la mano rueda con el pomo sin saltar
+        /// (elegir → seguir cerca, lección del tembleque de primera persona).
+        /// </summary>
+        private void ApplyLeftHandOnKnob(Vector3 bodyAxisPoint, Vector3 bodyAxisDir, Vector3 rightKnuckles)
+        {
+            Vector3 knob = _crank.TransformPoint(_knobLocal);
+            Vector3 axis = _crank.TransformDirection(Vector3.forward).normalized;
+
+            _upperLRest = _upperArmL.localRotation;
+            _lowerLRest = _lowerArmL.localRotation;
+            _handLRest = _handL.localRotation;
+
+            float best = float.MaxValue;
+            float bestClock = _leftClock, bestSign = _leftSign;
+            int bestPole = _leftPole;
+
+            void Try(float clock, float sign, int pole)
+            {
+                RestoreLeftArm();
+                float cost = PoseLeftArm(clock, sign, pole, knob, axis, bodyAxisPoint, bodyAxisDir, rightKnuckles);
+                if (_hasLeftChoice && Mathf.Approximately(sign, _leftSign) && pole == _leftPole)
+                    cost -= 0.05f;
+                if (cost >= best)
+                    return;
+                best = cost;
+                bestClock = clock;
+                bestSign = sign;
+                bestPole = pole;
+            }
+
+            if (!_hasLeftChoice)
+            {
+                for (float clock = 0f; clock < 360f; clock += 30f)
+                    foreach (float sign in new[] { 1f, -1f })
+                        for (int pole = 0; pole < PoleCount; pole++)
+                            Try(clock, sign, pole);
+            }
+            else
+            {
+                for (float clock = _leftClock - 30f; clock <= _leftClock + 30f + 1e-3f; clock += 15f)
+                    Try(clock, _leftSign, _leftPole);
+            }
+
+            RestoreLeftArm();
+            if (_hasLeftChoice && !Mathf.Approximately(bestSign, _leftSign))
+                _leftCurlSolved = false;
+            _leftClock = Mathf.Repeat(bestClock, 360f);
+            _leftSign = bestSign;
+            _leftPole = bestPole;
+            _hasLeftChoice = true;
+
+            LastLeftArmCost = PoseLeftArm(_leftClock, _leftSign, _leftPole, knob, axis, bodyAxisPoint, bodyAxisDir, rightKnuckles);
+
+            var frame = FrameL();
+            if (!_leftCurlSolved)
+            {
+                // Índice y corazón cierran hasta tocar el pomo; anular y meñique, que no caben, se recogen con el
+                // mismo signo de cierre que el índice. El pulgar opone por el eje de los dedos.
+                _leftCurl[0] = ProxyGripSolver.CurlToTouch(_curlChainsL[0], frame.KnuckleAxis, knob, axis, _knobRadius);
+                _leftCurl[1] = ProxyGripSolver.CurlToTouch(_curlChainsL[1], frame.KnuckleAxis, knob, axis, _knobRadius);
+                _leftThumb = ProxyGripSolver.CurlToTouch(_thumbChainL, frame.FingerAxis, knob, axis, _knobRadius);
+                _leftCurlSolved = true;
+            }
+            else
+            {
+                ProxyGripSolver.Curl(_curlChainsL[0], frame.KnuckleAxis, _leftCurl[0]);
+                ProxyGripSolver.Curl(_curlChainsL[1], frame.KnuckleAxis, _leftCurl[1]);
+                ProxyGripSolver.Curl(_thumbChainL, frame.FingerAxis, _leftThumb);
+            }
+            float tuckSign = _leftCurl[0] < 0f ? -1f : 1f;
+            ProxyGripSolver.Curl(_curlChainsL[2], frame.KnuckleAxis, tuckSign * _tuckedFingersDegrees);
+            ProxyGripSolver.Curl(_curlChainsL[3], frame.KnuckleAxis, tuckSign * _tuckedFingersDegrees);
+        }
+
+        private void RestoreLeftArm()
+        {
+            _upperArmL.localRotation = _upperLRest;
+            _lowerArmL.localRotation = _lowerLRest;
+            _handL.localRotation = _handLRest;
+        }
+
+        /// <summary>
+        /// Pone la izquierda en un candidato: la palma mira al pomo desde <paramref name="clock"/> grados alrededor de
+        /// su eje, los nudillos van por el eje en el sentido <paramref name="sign"/>, y el brazo llega por IK con el
+        /// codo hacia <paramref name="pole"/>. Coste = naturalidad del brazo + no llegar + nudillos dentro de la
+        /// linterna + manos pisándose.
+        /// </summary>
+        private float PoseLeftArm(float clock, float sign, int pole, Vector3 knob, Vector3 axis,
+            Vector3 bodyAxisPoint, Vector3 bodyAxisDir, Vector3 rightKnuckles)
+        {
+            Transform root = transform;
+            Vector3 reference = Vector3.ProjectOnPlane(-root.forward, axis);
+            if (reference.sqrMagnitude < 1e-6f)
+                reference = Vector3.ProjectOnPlane(root.up, axis);
+            reference.Normalize();
+
+            Vector3 palm = Quaternion.AngleAxis(clock, axis) * reference; // de la mano hacia el pomo
+            Vector3 knuckleAxis = axis * sign;
+            Vector3 knuckleTarget = knob - palm * (_knobRadius + ProxyGripSolver.SkinMetres);
+
+            var frame = FrameL();
+            Quaternion wanted = Quaternion.LookRotation(knuckleAxis, palm);
+            Quaternion delta = wanted * Quaternion.Inverse(Quaternion.LookRotation(frame.KnuckleAxis, frame.PalmNormal));
+            Vector3 wristTarget = knuckleTarget - delta * (frame.KnuckleCentre - _handL.position);
+
+            float armLength = Vector3.Distance(_upperArmL.position, _lowerArmL.position)
+                + Vector3.Distance(_lowerArmL.position, _handL.position);
+            Vector3 shoulder = _upperArmL.position;
+            ProxyGripSolver.TwoBoneIk(_upperArmL, _lowerArmL, _handL, wristTarget, shoulder + PoleDirectionL(pole) * armLength);
+
+            frame = FrameL();
+            Vector3 untwisted = frame.PalmNormal;
+            _handL.rotation = wanted * Quaternion.Inverse(Quaternion.LookRotation(frame.KnuckleAxis, frame.PalmNormal)) * _handL.rotation;
+            frame = FrameL();
+            ProxyArmNaturalness.ShareForearmTwist(_lowerArmL, _handL, frame.PalmNormal, untwisted);
+
+            var measure = ProxyArmNaturalness.Take(shoulder, _lowerArmL.position, _handL.position, _middleKnuckleL.position,
+                frame.PalmNormal, frame.KnuckleAxis, root.right, root.up, false);
+            float cost = ProxyArmNaturalness.Cost(measure);
+            LastLeftKnobMiss = Vector3.Distance(frame.KnuckleCentre, knuckleTarget);
+            cost += 4f * Sq(LastLeftKnobMiss / 0.02f);
+            if (ProxyGripSolver.DistanceToCylinder(frame.KnuckleCentre, bodyAxisPoint, bodyAxisDir, _radius) < ProxyGripSolver.SkinMetres)
+                cost += 20f;
+            if (Vector3.Distance(frame.KnuckleCentre, rightKnuckles) < 0.05f)
+                cost += 10f;
+            return cost;
+        }
+
+        private Vector3 PoleDirectionL(int pole)
+        {
+            Transform root = transform;
+            switch (pole)
+            {
+                case 0: return -root.up * 0.4f - root.forward * 0.5f - root.right * _elbowOutward;
+                case 1: return -root.up - root.forward * 0.15f - root.right * 0.05f;
+                default: return -root.up * 0.5f - root.forward * 0.2f - root.right * 0.45f;
+            }
+        }
+
+        private ProxyGripSolver.HandFrame FrameL() => ProxyGripSolver.Frame(
+            _handL.position, _indexKnuckleL.position, _middleKnuckleL.position, _pinkyKnuckleL.position, _thumbBaseL.position);
 
         private ProxyGripSolver.HandFrame Frame() => ProxyGripSolver.Frame(
             _hand.position, _indexKnuckle.position, _middleKnuckle.position, _pinkyKnuckle.position, _thumbBase.position);
