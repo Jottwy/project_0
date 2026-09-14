@@ -34,11 +34,11 @@ MonoBehaviour:
     _useRandomValue: 0
     _valueRange: {x: 0, y: 0}
   _data:
-  - rid: 3885882211262268174
+  - rid: 3885882211262268242
   references:
     version: 2
     RefIds:
-    - rid: 3885882211262268174
+    - rid: 3885882211262268242
       type: {class: GarmentZonesData, ns: BackroomsSurvival.Gameplay.Body, asm: BackroomsSurvival}
       data:
         _zones:
