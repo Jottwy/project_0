@@ -472,6 +472,23 @@ se quedan como banco de pruebas; `M` y el plano siguen solo en `MappingPlaytest`
 2. `feat(mapping): pestaña Notas en el libro de supervivencia` — `MapNotebookBookTab`.
 3. `feat(mapping): el recuerdo y la libreta en el juego` — bootstrap + interruptor.
 
+### 5.7 Resultado (2026-09-14, plan validado por Joel)
+
+**Hecho, en el tronco:**
+- `ce6cbd4e` `MapNotebook` puro; `MapNotebookView` (IMGUI) y `MapAtlasView` lo usan sin cambio de comportamiento.
+- `87206fb9` `MapNotebookBookTab`: pestaña «Notas» construida (no clonada) junto a `BuildingTab` y panel junto a
+  `BuildingContent`; hoja con `AspectRatioFitter`, fila de hojas (últimas 8), «Coger hoja» (pasa a «Mapear aquí»
+  cuando «Ubicarme» no te reconoce), «Dibujar», «Ubicarme», tinta y estado, cruceta de 4 s. Enfundar cancela.
+- `088ce63e` `MappingRuntime`: solo editor; crea muestreador y libreta para el `CharacterControllerMotor` local.
+- Tests en Unity: **52/52** de mapeado (por grupos: `MapNotebook` 4, `MapMemory` 14, `MapRecognition`+`MapAtlas` 15,
+  `MapSheet` 14, `MapVisionFan`+`Wg3MaterialsSerialization` 5). Headless 55/55.
+
+**Corrección de §5.1:** el libro **no** usa `BR_UIWarp` (solo el reloj); con el libro abierto el contexto de input
+solo admite UI y el propio libro, así que no se puede andar y no hace falta cancelar con W/A/S/D.
+
+**Sin verificar en Play:** que la pestaña aparezca en `STP_Showcase` (log `MAPBOOK attach=ok`), el tamaño de letra y
+botones sobre la página de 172 × 205, y los clics sobre el Canvas en World Space.
+
 ### 5.6 Preguntas de playtest
 
 ¿Dibujar con el libro en las manos se siente mejor que el panel? ¿La hoja se lee bien en el libro? ¿Echa en falta
