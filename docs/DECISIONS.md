@@ -19025,3 +19025,92 @@ atravesada), y el daño no se pinta en triángulos que mezclan dos zonas ni en l
   apenas enfriado; sin wire ni Rust.
 
 ---
+
+## ADR-155 — El bioma LABERINTO: megazonas de Level 0 clásico que conviven con el plan de salas y pasillos (2026-09-14) — PROPUESTA (Joel pidió «megachunks laberínticos como los backrooms originales» el 14-09; código sólo tras su aprobación)
+
+### Contexto
+
+- Joel, 14-09: «en vez de tanto pasillo… megachunks de una vez que sean más laberínticas como los backrooms originales…
+  que exista también lo que hay ahora, todo junto con reglas correctas, tal vez por biomas, pero que vivan todos».
+- Respuestas de Joel: **Level 0 clásico** (planta enorme de moqueta, paredes sueltas y tabiques a trozos, muchos cruces
+  y bucles, techo bajo con fluorescentes, **alturas algo alternadas**); **~40 %** del mundo; **reaprovechar los
+  materiales de ahora amarilleándolos, sin tirar nada**; va **antes** que espiral, rampas largas y abismo; se sigue con
+  excepciones en `WG3-ALPHA1-ROADMAP.md`.
+- Lo que hay: `fill::Character::Maze` (fill.rs:172) ya existe, pero sólo **rellena** salas (tabiques, `grid_maze`,
+  techo 300) donde el ruido de `character_at` cae; el **plan** (`plan_region`: BSP + pasillos tallados en los primeros
+  cortes + enrutador) es el mismo en todo el mundo.
+- ADR-124: quitar pasillos tocando constantes rompe el enrutador (enlaces entre espacios que no se tocan). Este ADR no lo
+  intenta: dentro de la zona **no hay pasillos que enrutar**, sólo espacios que se tocan.
+- Tope de tramo generado: 25 m (`segment::MAX_SEGMENT_M`); raster de 50 cm.
+
+### D1 — La zona: un campo de bioma que el PLAN lee antes de cortar
+
+- `biome_at(seed, x, z)`: ruido de **baja frecuencia** (celda del orden de 150–250 m, varias salas por zona), umbral
+  calibrado para que la zona cubra **≈ 40 % del suelo construido** en el barrido. Determinista, sin `HashMap`.
+- Lo lee `plan_region` **antes** de subdividir: cada rectángulo del BSP sabe si su centro cae en zona laberinto.
+- Fuera de la zona, el plan de hoy sin tocar un número. Dentro, D2.
+- Quedan fuera de la zona, siempre: las torres (ADR-130), los pozos de escalera y sus rellanos, y las bocas de región
+  (juntas, 4/4): el plan las reserva como hoy y la zona las rodea.
+
+### D2 — Dentro de la zona: sin pasillos, hojas pegadas y muchas bocas
+
+- **Sin tallado de pasillos** en los cortes que caen dentro de la zona: el BSP sigue cortando hasta hojas de 10–25 m
+  (respetando el tope de tramo) y las hojas se quedan pegadas unas a otras.
+- **Enlaces por adyacencia**: toda pared compartida entre dos hojas de la zona lleva **varias bocas anchas** (2–4 m cada
+  una, un tramo de pared entre ellas). Así la pared de 25 m se lee como tabique a trozos y la zona como una planta
+  continua; los bucles salen solos porque cada hoja toca a varias.
+- **Borde de zona**: cada lado que toca el plan normal lleva **al menos dos** enlaces a los espacios o pasillos de fuera,
+  para que la zona no quede colgada de una sola puerta.
+- El enrutador sólo ve enlaces entre espacios que se tocan (lo que ADR-124 dijo que sí sabe hacer).
+
+### D3 — El relleno: carácter forzado, techo bajo y alterno, fluorescentes
+
+- Todo espacio de la zona usa `Character::Maze` **por zona**, no por el ruido de `character_at`: tabiques sueltos,
+  `grid_maze`, muros bajos (lo que ya existe, sin cambiar sus knobs).
+- **Techo bajo y alterno**: `ceiling_clear_cm` por hoja sorteado en {240, 260, 280, 300}. Las juntas de altura entre hojas
+  vecinas se resuelven como hoy entre espacios de techo distinto (faldón).
+- Luminarias con la cadencia regular de siempre (`Wg3LightCadence`): cuadrícula de fluorescentes.
+- **Todo lo demás vive dentro**: estrados, gradas, piscinas, pozos y atrezo siguen sorteándose en la zona con sus reglas;
+  lo que no quepa con techo bajo (gradas altas, estrados de 120) se cae solo por sus propias reglas de altura libre.
+
+### D4 — El aspecto: los materiales de hoy, amarilleados
+
+- Los espacios de la zona salen con **estilo nuevo `MAZE_STYLE` = 10** (valor nuevo en un byte que ya viaja: sin bump,
+  como el 9 de la piscina). El cliente lo tiñe sobre los **cuatro materiales base de siempre** (papel, moqueta, techo,
+  decoración) hacia el amarillo sucio de Level 0: moqueta húmeda más oscura, papel amarillo mostaza, placa de techo
+  crema. Sin texturas nuevas; mejorar los materiales base se permite si beneficia a todo.
+- Regla de `Wg3StyleMaterials`: se separa por **tono**, no por brillo (el amarillo por encima del azul es un orden de
+  canales que ninguna lámpara fabrica).
+
+### D5 — Sin wire, sin chunk, sin guardado
+
+- Plan y relleno cambian dentro del servidor; salen `Wg3Segment`, `Wg3Solid` y `Wg3Carve` como hoy. Estilo 10 cae al
+  tinte por defecto en un cliente viejo. Sin bump de `WIRE_SCHEMA_VERSION`.
+- Cambia el mundo servido de WG3 entero (el plan): se mide antes y después y los tests calibrados sobre regiones de
+  referencia (agujeros, pozos, planta abierta) se revisan a la vista, no se relajan por detrás (lección de ADR-124 D3).
+
+### D6 — Puerta de tests y medida
+
+- Barrido de 27 regiones antes y después: 27/27 válidas, mancha mayor ≥ 99,5 %, islas no peores que 6,0 de media, nav
+  100 %, juntas 4/4.
+- `maze_zone_covers_about_forty_percent`: fracción de suelo construido en zona entre 30 y 50 % sobre 12 semillas.
+- `maze_zone_is_connected_and_loopy`: dentro de cada zona, grafo de hojas conexo y con **bucles** (enlaces ≥ hojas);
+  cada lado de borde con ≥ 2 enlaces.
+- Conectividad desde el spawn (regla dura 13) en regiones con zona.
+- Los tests de estrados, gradas y piscina siguen en verde con la zona puesta.
+
+### Rebanadas (cada una en verde, ≤ 300 líneas de diff)
+
+- **L0** medida: `biome_at` y su fracción en el barrido, **sin cambiar el plan** (sólo el test de reparto).
+- **L1** plan: dentro de la zona, sin pasillos y enlaces por adyacencia con varias bocas; test de conexión y bucles.
+- **L2** relleno: carácter forzado, techo alterno, estilo 10.
+- **L3** cliente: tinte amarillo del estilo 10.
+- **L4** Play: capturas y paseo; enmienda de estado.
+
+### Lo que NO decide
+
+- Escaleras en espiral, rampas largas entre plantas, rampas deslizantes y el abismo (ADR-153): siguen en cola, después.
+- Salas «infinitas» (naves muy largas con niebla): posible variante de la zona, en su propia enmienda.
+- Sonido de zumbido de fluorescente y humedad.
+
+---
