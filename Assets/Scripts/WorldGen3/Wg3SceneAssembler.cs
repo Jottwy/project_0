@@ -1512,9 +1512,11 @@ namespace BackroomsSurvival.WorldGen3
 
             // Una sola caja, y por eso este canal existe: un tramo habría traído además su losa de
             // suelo y la de techo, coplanares con las del atrio.
-            if (!SolidVolumeOf(solid, out Wg3Volume volume, out Vector3 origin, out float sy))
+            if (!SolidVolumeOf(solid, out Wg3Volume volume, out Vector3 origin, out float sy,
+                    out bool capped, out Wg3Volume cap))
                 return null;
-            var volumes = new List<Wg3Volume>(1) { volume };
+            var volumes = new List<Wg3Volume>(2) { volume };
+            if (capped) volumes.Add(cap);
 
             var go = new GameObject(name);
             go.hideFlags = HideFlags.DontSave;
@@ -1536,8 +1538,7 @@ namespace BackroomsSurvival.WorldGen3
 
             go.AddComponent<MeshFilter>().sharedMesh = mesh;
             var renderer = go.AddComponent<MeshRenderer>();
-            Material[] mats = MaterialsForSolid(materials, solid.BaseStyle,
-                Wg3Looks.ForSolid(solid.sizeXCm, solid.sizeZCm, solid.bottomYCm, solid.topYCm),
+            Material[] mats = MaterialsForSolid(materials, solid.BaseStyle, LookOfSolid(solid),
                 TileMaterialOf(solid, sy));
             if (mats != null) renderer.sharedMaterials = mats;
             // Un megapilar cruza el atrio de suelo a techo, así que lleva las dos plantas y se
@@ -1575,9 +1576,12 @@ namespace BackroomsSurvival.WorldGen3
         /// </summary>
         /// <returns>Falso si el macizo es degenerado y no hay nada que montar.</returns>
         private static bool SolidVolumeOf(BackroomsSurvival.Net.Wg3SolidMsg solid,
-            out Wg3Volume volume, out Vector3 origin, out float sy)
+            out Wg3Volume volume, out Vector3 origin, out float sy,
+            out bool capped, out Wg3Volume cap)
         {
             volume = default;
+            capped = false;
+            cap = default;
             float sx = solid.sizeXCm / 100f;
             float sz = solid.sizeZCm / 100f;
             sy = (solid.topYCm - solid.bottomYCm) / 100f;
@@ -1613,6 +1617,25 @@ namespace BackroomsSurvival.WorldGen3
                     ? Wg3VolumeKind.Pillar
                     : (sy <= FlatDecorationMaxM ? Wg3VolumeKind.Decoration : Wg3VolumeKind.Casing),
             };
+
+            // ADR-151 — un estrado o un peldaño se PISA: sus últimos centímetros van como volumen de
+            // SUELO, que la malla manda a la submalla de suelo (el de la sala, por estilo) y cuyo
+            // canto se lee como la moqueta doblando el borde. La caja de abajo y la losa suman la
+            // misma caja, así que la colisión no cambia; la cara que se tocan la poda HiddenFaces.
+            if (solid.shape == Wg3Shape.Box && !solid.IsDecoration && !solid.IsHidden
+                && Mathf.Abs(Mathf.DeltaAngle(solid.yawDeg, 0f)) < 0.01f
+                && Wg3Looks.IsWalkableTop(solid.sizeXCm, solid.sizeZCm, solid.bottomYCm, solid.topYCm))
+            {
+                volume.size.y = sy - WalkableCapM;
+                volume.center.y = origin.y + volume.size.y * 0.5f;
+                cap = new Wg3Volume
+                {
+                    center = origin + new Vector3(sx * 0.5f, sy - WalkableCapM * 0.5f, sz * 0.5f),
+                    size = new Vector3(sx, WalkableCapM, sz),
+                    kind = Wg3VolumeKind.Floor,
+                };
+                capped = true;
+            }
             return true;
         }
 
@@ -1620,6 +1643,20 @@ namespace BackroomsSurvival.WorldGen3
         /// 20). Va en la clave del fundido porque distingue dos juegos de materiales que por estilo
         /// y aspecto serían el mismo.</summary>
         private enum TileMaterial : byte { None = 0, FromCeiling = 1, FromFloor = 2 }
+
+        /// <summary>ADR-151 — canto de la losa de suelo que remata un estrado o un peldaño.</summary>
+        private const float WalkableCapM = 0.02f;
+
+        /// <summary>El aspecto de un macizo. Un estrado de despacho lleva la moqueta de oficina, la
+        /// misma que el suelo de su sala (<see cref="Wg3Looks.ForSegment"/>); el resto, la regla de
+        /// siempre.</summary>
+        private static Wg3Look LookOfSolid(BackroomsSurvival.Net.Wg3SolidMsg solid)
+        {
+            if (solid.BaseStyle == Wg3Looks.OfficeStyle
+                && Wg3Looks.IsWalkableTop(solid.sizeXCm, solid.sizeZCm, solid.bottomYCm, solid.topYCm))
+                return Wg3Look.Office;
+            return Wg3Looks.ForSolid(solid.sizeXCm, solid.sizeZCm, solid.bottomYCm, solid.topYCm);
+        }
 
         private static TileMaterial TileMaterialOf(BackroomsSurvival.Net.Wg3SolidMsg solid, float sy)
         {
@@ -1767,7 +1804,8 @@ namespace BackroomsSurvival.WorldGen3
             for (int i = 0; i < solids.Count; i++)
             {
                 var solid = solids[i];
-                if (!SolidVolumeOf(solid, out Wg3Volume vol, out Vector3 origin, out float sy))
+                if (!SolidVolumeOf(solid, out Wg3Volume vol, out Vector3 origin, out float sy,
+                        out bool capped, out Wg3Volume cap))
                     continue;
 
                 // Los dos que no se pueden fundir van por el camino de siempre, uno a uno. El
@@ -1783,7 +1821,7 @@ namespace BackroomsSurvival.WorldGen3
                 var key = new FuseKey(
                     Wg3StoreyLayers.ForSurface(origin.y, sy),
                     solid.BaseStyle,
-                    Wg3Looks.ForSolid(solid.sizeXCm, solid.sizeZCm, solid.bottomYCm, solid.topYCm),
+                    LookOfSolid(solid),
                     TileMaterialOf(solid, sy));
 
                 if (!groups.TryGetValue(key, out List<Wg3Volume> bucket))
@@ -1792,6 +1830,7 @@ namespace BackroomsSurvival.WorldGen3
                     groups[key] = bucket;
                 }
                 bucket.Add(vol);
+                if (capped) bucket.Add(cap);
             }
 
             // ORDEN ESTABLE, y no es cosmético: el recorrido de un Dictionary no está definido, y

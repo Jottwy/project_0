@@ -75,5 +75,37 @@ namespace BackroomsSurvival.WorldGen3
                 return Wg3Look.Partition;
             return Wg3Look.Base;
         }
+
+        /// <summary>Espejo de <c>fill::DAIS_HEIGHTS_CM</c> (ADR-151 D1): 40 a 120 de 20 en 20.</summary>
+        public const int DaisMinHeightCm = 40;
+        public const int DaisMaxHeightCm = 120;
+        /// <summary>Espejo de <c>fill::DAIS_MIN_DEPTH_CM</c>.</summary>
+        public const int DaisMinDepthCm = 200;
+        /// <summary>Espejo de <c>fill::DAIS_STEP_RISE_CM</c>, <c>DAIS_STEP_RUN_CM</c> y
+        /// <c>DAIS_ACCESS_WIDTH_CM</c>.</summary>
+        public const int DaisStepRiseCm = 20;
+        public const int DaisStepRunCm = 60;
+        public const int DaisAccessWidthCm = 200;
+
+        /// <summary>
+        /// ADR-151 — ¿esta caja se PISA por arriba? Un estrado o uno de sus peldaños, reconocidos por
+        /// la forma igual que <c>fill::is_dais</c> y <c>fill::is_dais_step</c> (el llamador ya ha
+        /// descartado lo oculto, la decoración y lo que no es caja). Lleva el suelo de la sala en la
+        /// cara de arriba: con la pared entera se leía como un bloque forrado de papel.
+        ///
+        /// La tarima de 20 (ADR-105 enm. 13) NO entra: su huella es la de la sala y ningún peldaño
+        /// mide 60 × 200 con 20 de alto y huella de sala a la vez; es valor validado y no se toca.
+        /// </summary>
+        public static bool IsWalkableTop(int sizeXCm, int sizeZCm, int bottomYCm, int topYCm)
+        {
+            int h = topYCm - bottomYCm;
+            int thin = sizeXCm < sizeZCm ? sizeXCm : sizeZCm;
+            int wide = sizeXCm < sizeZCm ? sizeZCm : sizeXCm;
+            bool dais = h >= DaisMinHeightCm && h <= DaisMaxHeightCm && h % DaisStepRiseCm == 0
+                && thin >= DaisMinDepthCm;
+            bool step = thin == DaisStepRunCm && wide == DaisAccessWidthCm
+                && h % DaisStepRiseCm == 0 && h >= DaisStepRiseCm && h < DaisMaxHeightCm;
+            return dais || step;
+        }
     }
 }
