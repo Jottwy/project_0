@@ -6702,8 +6702,16 @@ fn the_void_is_deliberate_and_bounded() {
             ratio * 100.0
         );
         // Y no el 100 %: un edificio sin patios ni zonas muertas no es un Backrooms, es un almacén.
+        // Salvo que la región sea sobre todo zona laberinto (ADR-155 L1c): ahí no hay vacío
+        // intencionado por decisión, y el 100 % es esa decisión y no lo que sobró.
+        let maze: f32 = p
+            .spaces
+            .iter()
+            .filter(|s| s.maze && s.role.is_built())
+            .map(|s| s.area_m2())
+            .sum();
         assert!(
-            ratio < 0.995,
+            ratio < 0.995 || maze > built * 0.5,
             "({rx},{rz}) planifica el {:.1} % — no queda un solo hueco intencionado",
             ratio * 100.0
         );
@@ -9886,6 +9894,18 @@ fn on_the_upper_storey_wg3_does_not_freeze_you() {
             // lado sigue a más de un metro de cualquier pared en una sala de más de seis.
             let (cx, cz) = space.rect.centre_m();
             let cx = cx + 1.5;
+            // Ni sobre un pozo de escalera que llega a esta planta: caer por él también es geometría
+            // correcta. ADR-155 L1e — con el laberinto los pozos caen en salas que antes no los tenían.
+            let (px, pz) = ((cx * 100.0) as i32, (cz * 100.0) as i32);
+            if b.wells.iter().any(|w| {
+                w.storey_below == b.ground
+                    && px > w.rect.min_x_cm - 50
+                    && px < w.rect.max_x_cm + 50
+                    && pz > w.rect.min_z_cm - 50
+                    && pz < w.rect.max_z_cm + 50
+            }) {
+                continue;
+            }
             let feet = space.floor_y_cm as f32 / 100.0;
             let pos = Vec3::new(cx, feet + PLAYER_BASE_Y, cz);
 
@@ -10934,18 +10954,24 @@ fn built_pieces_block_wg3_navigation() {
     let mut cache = Wg3CollisionCache::new();
     let region = Wg3ServedWorld::plan_region(&m, SERVED_SEED, Wg3RegionCoord { x: 0, z: 0 });
 
-    // Un sitio de pie de verdad y un tramo corto que lo cruza, dentro del mismo espacio.
-    let seg = region
+    // Un sitio de pie de verdad y un tramo corto que lo cruza, dentro del mismo espacio — y LIBRE
+    // antes de construir nada: una sala grande puede llevar un pilar en medio (ADR-155 L1e, un hall
+    // del laberinto en (0,0)), y eso es contenido del mundo, no el control fallando.
+    let (cx, cz, y, a, b) = region
         .segments()
         .iter()
-        .find(|s| s.size_x_cm > 800 && s.size_z_cm > 800)
-        .expect("hace falta un espacio ancho para tender dos metros de recta");
-    let cx = (seg.x_cm + seg.size_x_cm / 2) as f32 / 100.0;
-    let cz = (seg.z_cm + seg.size_z_cm / 2) as f32 / 100.0;
-    let y = seg.floor_y_cm as f32 / 100.0 + PLAYER_BASE_Y;
-    let a = Vec3::new(cx - 1.5, y, cz);
-    let b = Vec3::new(cx + 1.5, y, cz);
-    cache.prewarm_for_move(&mut worlds, &m, SERVED_SEED, a, b);
+        .filter(|s| s.size_x_cm > 800 && s.size_z_cm > 800)
+        .find_map(|seg| {
+            let cx = (seg.x_cm + seg.size_x_cm / 2) as f32 / 100.0;
+            let cz = (seg.z_cm + seg.size_z_cm / 2) as f32 / 100.0;
+            let y = seg.floor_y_cm as f32 / 100.0 + PLAYER_BASE_Y;
+            let a = Vec3::new(cx - 1.5, y, cz);
+            let b = Vec3::new(cx + 1.5, y, cz);
+            cache.prewarm_for_move(&mut worlds, &m, SERVED_SEED, a, b);
+            crate::world::wg3::nav::segment_is_clear(&cache, a, b, 0.35)
+                .then_some((cx, cz, y, a, b))
+        })
+        .expect("hace falta un espacio ancho con dos metros de recta libres");
 
     assert_eq!(
         cache.blocked_cell_count(),

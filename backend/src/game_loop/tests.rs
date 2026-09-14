@@ -15263,8 +15263,22 @@ async fn player_joined_marks_the_host_only_when_the_peer_is_the_host() {
 /// ADR-149 R2 — la zona que manda el cliente manda; si falta o es basura, se sortea por causa con el tick.
 #[test]
 fn a_reported_zone_wins_and_a_missing_or_bogus_one_is_drawn() {
-    assert_eq!(report_zone(&serde_json::json!({ "amount": 16.0, "zone": 13 }), DamageCause::Other, 7), 13);
-    assert_eq!(report_zone(&serde_json::json!({ "amount": 30.0 }), DamageCause::Fall, 42), draw_zone(DamageCause::Fall, 42));
+    assert_eq!(
+        report_zone(
+            &serde_json::json!({ "amount": 16.0, "zone": 13 }),
+            DamageCause::Other,
+            7
+        ),
+        13
+    );
+    assert_eq!(
+        report_zone(
+            &serde_json::json!({ "amount": 30.0 }),
+            DamageCause::Fall,
+            42
+        ),
+        draw_zone(DamageCause::Fall, 42)
+    );
     assert_eq!(
         report_zone(&serde_json::json!({ "zone": 99 }), DamageCause::Other, 5),
         draw_zone(DamageCause::Other, 5),
@@ -15281,19 +15295,56 @@ fn clothing_protection_mitigates_health_and_wound_but_the_event_keeps_the_raw_hi
     let mut protection = [0u8; ZONE_COUNT];
     protection[1] = 50;
 
-    let hit = apply_body_hit(&mut stats, &mut body, &protection, 1, 16.0, DamageCause::Other);
+    let hit = apply_body_hit(
+        &mut stats,
+        &mut body,
+        &protection,
+        1,
+        16.0,
+        DamageCause::Other,
+    );
     assert!((hit.mitigated - 8.0).abs() < 1e-4);
-    assert!((stats.health - 92.0).abs() < 1e-4, "la salud baja lo mitigado");
-    assert_eq!(hit.injury, INJURY_SCRATCH, "16 a medias es un rasguño, no un corte");
+    assert!(
+        (stats.health - 92.0).abs() < 1e-4,
+        "la salud baja lo mitigado"
+    );
+    assert_eq!(
+        hit.injury, INJURY_SCRATCH,
+        "16 a medias es un rasguño, no un corte"
+    );
     let event = body_hit_event(&hit, "Pierce");
     assert_eq!(event.event_type, "body_hit");
     assert_eq!(event.data["zone"].as_u64(), Some(1));
     assert_eq!(event.data["cause"].as_str(), Some("Pierce"));
-    assert!((event.data["damage"].as_f64().unwrap() - 16.0).abs() < 1e-4, "la prenda se rompe con el golpe entero");
+    assert!(
+        (event.data["damage"].as_f64().unwrap() - 16.0).abs() < 1e-4,
+        "la prenda se rompe con el golpe entero"
+    );
 
-    let bare = apply_body_hit(&mut stats, &mut body, &protection, 5, 16.0, DamageCause::Other);
-    assert_eq!(bare.injury, INJURY_CUT, "sin ropa en la zona, el golpe entero");
-    assert_eq!(apply_body_hit(&mut stats, &mut body, &protection, 99, 1.0, DamageCause::Other).zone, ZONE_COUNT - 1);
+    let bare = apply_body_hit(
+        &mut stats,
+        &mut body,
+        &protection,
+        5,
+        16.0,
+        DamageCause::Other,
+    );
+    assert_eq!(
+        bare.injury, INJURY_CUT,
+        "sin ropa en la zona, el golpe entero"
+    );
+    assert_eq!(
+        apply_body_hit(
+            &mut stats,
+            &mut body,
+            &protection,
+            99,
+            1.0,
+            DamageCause::Other
+        )
+        .zone,
+        ZONE_COUNT - 1
+    );
 }
 
 /// ADR-149 R2b — la protección que llega del cliente se recorta y no se cree lo que no es número.
@@ -15325,8 +15376,12 @@ fn the_body_state_event_mirrors_the_fifteen_zones() {
 fn a_snapshot_without_body_loads_healthy_and_a_new_one_keeps_it() {
     let mut player = Player::new(1, String::from("Host"));
     player.body.apply_damage(5, 16.0, DamageCause::Other);
-    let mut value = serde_json::to_value(crate::persistence::save::PlayerSnapshot::from_player(&player)).unwrap();
-    let kept: crate::persistence::save::PlayerSnapshot = serde_json::from_value(value.clone()).unwrap();
+    let mut value = serde_json::to_value(crate::persistence::save::PlayerSnapshot::from_player(
+        &player,
+    ))
+    .unwrap();
+    let kept: crate::persistence::save::PlayerSnapshot =
+        serde_json::from_value(value.clone()).unwrap();
     assert_eq!(kept.body.len(), 1);
 
     value.as_object_mut().unwrap().remove("body");
@@ -15336,4 +15391,3 @@ fn a_snapshot_without_body_loads_healthy_and_a_new_one_keeps_it() {
     apply_player_snapshot(&mut restored, kept);
     assert_eq!(restored.body.raw(), player.body.raw());
 }
-

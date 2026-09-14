@@ -2674,16 +2674,20 @@ fn dig_wells(
 
     // Todos los huecos de cada espacio, no sólo el primero. Hacen falta los dos usos: el PRIMERO dice
     // por dónde se entra, y TODOS dicen si el recorte se lleva alguno por delante.
-    let mut doors: Vec<Vec<(i32, i32)>> = vec![Vec::new(); below.spaces.len()];
-    for l in &below.links {
-        doors[l.a].push((l.at_x_cm, l.at_z_cm));
-        doors[l.b].push((l.at_x_cm, l.at_z_cm));
+    // ADR-155: el tercer campo es el enlace si es un hueco de la zona laberinto, que el corte puede
+    // tragarse mientras la pareja conserve otro hueco.
+    let mut doors: Vec<Vec<(i32, i32, Option<usize>)>> = vec![Vec::new(); below.spaces.len()];
+    for (k, l) in below.links.iter().enumerate() {
+        let gap = (l.kind == LinkKind::Gap).then_some(k);
+        doors[l.a].push((l.at_x_cm, l.at_z_cm, gap));
+        doors[l.b].push((l.at_x_cm, l.at_z_cm, gap));
     }
     for g in &below.gates {
-        doors[g.space].push((g.x_cm, g.z_cm));
+        doors[g.space].push((g.x_cm, g.z_cm, None));
     }
 
-    let mut candidates: Vec<(u64, usize, usize, usize, u8, bool)> = Vec::new();
+    type Candidate = (u64, usize, usize, usize, u8, bool, Vec<usize>);
+    let mut candidates: Vec<Candidate> = Vec::new();
     let (mut k_run, mut k_band, mut k_door) = (0u32, 0u32, 0u32);
     for (i, s) in below.spaces.iter().enumerate() {
         if !s.role.is_built() || s.role.is_circulation() || s.rise_cm != 0 {
@@ -2705,7 +2709,7 @@ fn dig_wells(
             // no había con qué repartir.
             for side in doors[i]
                 .iter()
-                .filter_map(|&(dx, dz)| side_of_point_in(&base, dx, dz))
+                .filter_map(|&(dx, dz, _)| side_of_point_in(&base, dx, dz))
                 .collect::<Vec<_>>()
             {
                 // Los peldaños se alejan de la puerta, así que el tiro corre perpendicular a su pared.
@@ -2731,7 +2735,7 @@ fn dig_wells(
                 // posición.
                 let (cx, cz) = base.centre_m();
                 let first_low = hash::stream_at(seed, cx, cz, SALT_WELL).next01() < 0.5;
-                let mut chosen: Option<(PlanRect, usize, bool)> = None;
+                let mut chosen: Option<(PlanRect, usize, bool, Vec<usize>)> = None;
                 for low in [first_low, !first_low] {
                     let (stair, flank) = stair_and_flank(&base, side, run_cm, low);
                     // Lo que le queda al espacio: esta parte recortada más las otras intactas. Tiene
@@ -2752,10 +2756,22 @@ fn dig_wells(
                     if !left_space.set_parts(&left) {
                         continue;
                     }
-                    if doors[i].iter().any(|&(x, z)| {
-                        !door_fits_in(&left_space, x, z)
-                            && !flank.is_some_and(|f| door_fits_on(&f, x, z))
-                    }) {
+                    let mut swallowed: Vec<usize> = Vec::new();
+                    let blocked = doors[i].iter().any(|&(x, z, gap)| {
+                        if door_fits_in(&left_space, x, z)
+                            || flank.is_some_and(|f| door_fits_on(&f, x, z))
+                        {
+                            return false;
+                        }
+                        match gap {
+                            Some(k) => {
+                                swallowed.push(k);
+                                false
+                            }
+                            None => true,
+                        }
+                    });
+                    if blocked || !gaps_survive(below, &swallowed) {
                         k_door += 1;
                         continue;
                     }
@@ -2764,11 +2780,11 @@ fn dig_wells(
                         continue;
                     }
                     if let Some(j) = landing_over(above, &stair, side) {
-                        chosen = Some((stair, j, low));
+                        chosen = Some((stair, j, low, swallowed));
                         break;
                     }
                 }
-                let Some((stair, j, low)) = chosen else {
+                let Some((stair, j, low, swallowed)) = chosen else {
                     k_band += 1;
                     continue;
                 };
@@ -2781,6 +2797,7 @@ fn dig_wells(
                     j,
                     side,
                     low,
+                    swallowed,
                 ));
                 // Una orientación por espacio: la sala se parte una sola vez.
                 break;
@@ -2802,21 +2819,32 @@ fn dig_wells(
     // **REPARTIDAS, no las primeras que salgan.** Una escalera sirve si se tropieza con ella, y con
     // todas juntas en una esquina la mitad de la región sigue sin salida aunque el contador diga seis.
     // Se toman por orden de sorteo y se descarta la que caiga cerca de una ya tomada.
-    candidates.sort_unstable_by_key(|&(k, i, ..)| (k, i));
+    candidates.sort_unstable_by_key(|c| (c.0, c.1));
     let mut taken: Vec<(usize, usize, usize, u8, bool)> = Vec::new();
-    for &(_, i, pi, j, side, low) in &candidates {
+    let mut gone: Vec<usize> = Vec::new();
+    for (_, i, pi, j, side, low, swallowed) in &candidates {
         if taken.len() >= WELLS_PER_REGION {
             break;
         }
-        let (cx, cz) = below.spaces[i].rect.centre_m();
+        let (cx, cz) = below.spaces[*i].rect.centre_m();
         let far = taken.iter().all(|&(ti, ..)| {
             let (tx, tz) = below.spaces[ti].rect.centre_m();
             let (dx, dz) = ((cx - tx) * CM_PER_M, (cz - tz) * CM_PER_M);
             dx * dx + dz * dz >= (WELL_SPACING_CM * WELL_SPACING_CM) as f32
         });
-        if far {
-            taken.push((i, pi, j, side, low));
+        // Dos pozos no pueden tragarse entre los dos todos los huecos de una misma pareja.
+        let mut all_gone = gone.clone();
+        all_gone.extend_from_slice(swallowed);
+        if far && gaps_survive(below, &all_gone) {
+            taken.push((*i, *pi, *j, *side, *low));
+            gone = all_gone;
         }
+    }
+    // Los huecos tragados se quitan ANTES de partir: el corte reparte los enlaces que quedan.
+    gone.sort_unstable();
+    gone.dedup();
+    for k in gone.into_iter().rev() {
+        below.links.remove(k);
     }
 
     // El corte se hace DESPUÉS de elegirlas todas, y no sobre la marcha: partir un espacio le cambia
@@ -2834,6 +2862,17 @@ fn dig_wells(
             }
         })
         .collect()
+}
+
+/// ADR-155 — si quitar los huecos `gone` deja a cada pareja tocada con otro hueco que la una.
+fn gaps_survive(plan: &RegionPlan, gone: &[usize]) -> bool {
+    gone.iter().all(|&k| {
+        let (a, b) = (plan.links[k].a, plan.links[k].b);
+        plan.links
+            .iter()
+            .enumerate()
+            .any(|(m, l)| !gone.contains(&m) && ((l.a == a && l.b == b) || (l.a == b && l.b == a)))
+    })
 }
 
 /// Le pone techo a los espacios de `below` que tengan algo CONSTRUIDO encima (ADR-102 D2).
@@ -3914,7 +3953,7 @@ impl Planner {
                 if self.spaces[i].role.is_circulation() || self.spaces[j].role.is_circulation() {
                     continue;
                 }
-                if self.spaces[i].maze && self.spaces[j].maze {
+                if self.spaces[i].maze && self.spaces[j].maze && self.linked(i, j) {
                     continue;
                 }
                 let (ri, rj) = (uf.find(i), uf.find(j));
@@ -4267,10 +4306,10 @@ impl Planner {
                 .filter(|&i| self.spaces[i].role.is_built() && uf.find(i) == root_b)
                 .collect();
             let has_gate = pocket.iter().any(|&i| gates_in.contains(&i));
-            // ADR-155 enm. 1 D2 — un bolsillo de la zona laberinto NO se vacía en silencio: va al
-            // enrutador, y si tampoco sale, que lo cante el test de la zona.
-            let in_maze = pocket.iter().any(|&i| self.spaces[i].maze);
-            if pocket.len() <= 2 && !has_gate && !in_maze {
+            // ADR-155 enm. 3 (corrige la enm. 1 D2) — el laberinto trata sus bolsillos pequeños como
+            // el resto: medido con el bioma encendido, 3 de 300 regiones mandaban al enrutador un
+            // bolsillo de una o dos salas sin vecinos y el enrutador no sacaba ruta.
+            if pocket.len() <= 2 && !has_gate {
                 for i in pocket {
                     self.spaces[i].role = SpaceRole::Void;
                 }
@@ -5820,12 +5859,13 @@ fn gaps_along_wall(seed: i32, a: PlanRect, b: PlanRect) -> Vec<(i32, i32, i32)> 
     let at = |c: i32| if vertical { (cx, c) } else { (c, cz) };
     let narrow = MAZE_GAP_WIDTHS_CM[0];
     if len < narrow + 2 * MAZE_GAP_PIECE_CM {
-        let w = DOORWAY_CM.min(len - 2 * DOOR_JAMB_CM);
-        if w < super::segment::MIN_GENERATED_WIDTH_CM {
+        // Un vano del plan no baja de `DOORWAY_CM` (`RegionPlan::problems`): o cabe entero con
+        // jamba, o esta pared no lleva hueco y la pareja la cosen las pasadas de siempre.
+        if len < DOORWAY_CM + 2 * DOOR_JAMB_CM {
             return Vec::new();
         }
         let (x, z) = at((lo + hi) / 2);
-        return vec![(w, x, z)];
+        return vec![(DOORWAY_CM, x, z)];
     }
     let mut st = hash::stream_at(seed, cx as f32 / CM_PER_M, cz as f32 / CM_PER_M, SALT_GAP);
     let mut out = Vec::new();

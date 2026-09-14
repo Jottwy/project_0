@@ -193,7 +193,9 @@ impl BodyState {
         }
         let injury = self.injury_of(zone);
         match treatment {
-            Treatment::Bandage => (injury == INJURY_SCRATCH || injury == INJURY_CUT) && !self.is_bandaged(zone),
+            Treatment::Bandage => {
+                (injury == INJURY_SCRATCH || injury == INJURY_CUT) && !self.is_bandaged(zone)
+            }
             Treatment::Splint => injury == INJURY_FRACTURE && !self.is_splinted(zone),
         }
     }
@@ -216,7 +218,11 @@ impl BodyState {
         for zone in 0..ZONE_COUNT {
             match self.injury_of(zone) {
                 INJURY_SCRATCH => {
-                    let limit = if self.is_bandaged(zone) { BANDAGED_HEAL_SECONDS } else { SCRATCH_HEAL_SECONDS };
+                    let limit = if self.is_bandaged(zone) {
+                        BANDAGED_HEAL_SECONDS
+                    } else {
+                        SCRATCH_HEAL_SECONDS
+                    };
                     self.heal_step(zone, limit, dt);
                 }
                 INJURY_CUT => {
@@ -241,7 +247,11 @@ impl BodyState {
         let mut speed: f32 = 1.0;
         for zone in THIGH_L..ZONE_COUNT {
             if self.injury_of(zone) == INJURY_FRACTURE {
-                let s = if self.is_splinted(zone) { SPLINTED_FRACTURE_SPEED } else { FRACTURE_SPEED };
+                let s = if self.is_splinted(zone) {
+                    SPLINTED_FRACTURE_SPEED
+                } else {
+                    FRACTURE_SPEED
+                };
                 speed = speed.min(s);
             }
         }
@@ -265,7 +275,11 @@ impl BodyState {
     pub fn to_save(&self) -> Vec<BodyZoneSave> {
         (0..ZONE_COUNT)
             .filter(|&z| self.zones[z] != 0)
-            .map(|z| BodyZoneSave { zone: z as u8, state: self.zones[z], heal_s: self.heal[z].round().clamp(0.0, 65535.0) as u16 })
+            .map(|z| BodyZoneSave {
+                zone: z as u8,
+                state: self.zones[z],
+                heal_s: self.heal[z].round().clamp(0.0, 65535.0) as u16,
+            })
             .collect()
     }
 
@@ -312,7 +326,9 @@ mod tests {
     }
 
     fn f(v: &serde_json::Value, key: &str) -> f32 {
-        v[key].as_f64().unwrap_or_else(|| panic!("falta {key} en el oráculo")) as f32
+        v[key]
+            .as_f64()
+            .unwrap_or_else(|| panic!("falta {key} en el oráculo")) as f32
     }
 
     #[test]
@@ -325,13 +341,29 @@ mod tests {
         assert_eq!(f(&o, "fracture_blunt_damage"), FRACTURE_BLUNT_DAMAGE);
         assert_eq!(f(&o, "scratch_heal_seconds"), SCRATCH_HEAL_SECONDS);
         assert_eq!(f(&o, "bandaged_heal_seconds"), BANDAGED_HEAL_SECONDS);
-        assert_eq!(f(&o, "splinted_fracture_heal_seconds"), SPLINTED_FRACTURE_HEAL_SECONDS);
+        assert_eq!(
+            f(&o, "splinted_fracture_heal_seconds"),
+            SPLINTED_FRACTURE_HEAL_SECONDS
+        );
         assert_eq!(f(&o, "bleed_per_second"), BLEED_PER_SECOND);
         assert_eq!(f(&o, "fracture_speed"), FRACTURE_SPEED);
         assert_eq!(f(&o, "splinted_fracture_speed"), SPLINTED_FRACTURE_SPEED);
-        for (name, cause) in [("fall", DamageCause::Fall), ("generic", DamageCause::Other), ("phantom_hit", DamageCause::PhantomHit)] {
-            let expected: Vec<u8> = o["weights"][name].as_array().unwrap().iter().map(|w| w.as_u64().unwrap() as u8).collect();
-            assert_eq!(expected.as_slice(), weights_for(cause).as_slice(), "pesos de {name}");
+        for (name, cause) in [
+            ("fall", DamageCause::Fall),
+            ("generic", DamageCause::Other),
+            ("phantom_hit", DamageCause::PhantomHit),
+        ] {
+            let expected: Vec<u8> = o["weights"][name]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|w| w.as_u64().unwrap() as u8)
+                .collect();
+            assert_eq!(
+                expected.as_slice(),
+                weights_for(cause).as_slice(),
+                "pesos de {name}"
+            );
         }
     }
 
@@ -345,7 +377,11 @@ mod tests {
                 _ => DamageCause::Other,
             };
             let seed = d["seed"].as_u64().unwrap() as u32;
-            assert_eq!(draw_zone(cause, seed) as u64, d["zone"].as_u64().unwrap(), "sorteo {d}");
+            assert_eq!(
+                draw_zone(cause, seed) as u64,
+                d["zone"].as_u64().unwrap(),
+                "sorteo {d}"
+            );
         }
         for c in o["injuries"].as_array().unwrap() {
             let cause = DamageCause::from_client(c["cause"].as_str().unwrap());
@@ -361,7 +397,11 @@ mod tests {
         assert!(body.take_dirty());
         assert!(body.is_bleeding());
         assert!((body.tick(2.0) - BLEED_PER_SECOND * 2.0).abs() < 1e-5);
-        assert_eq!(body.apply_damage(5, 10.0, DamageCause::Other), INJURY_NONE, "un rasguño no tapa un corte");
+        assert_eq!(
+            body.apply_damage(5, 10.0, DamageCause::Other),
+            INJURY_NONE,
+            "un rasguño no tapa un corte"
+        );
         assert!(!body.treat(5, Treatment::Splint));
         assert!(body.treat(5, Treatment::Bandage));
         assert!(!body.treat(5, Treatment::Bandage));
@@ -388,8 +428,14 @@ mod tests {
     fn out_of_range_zones_and_non_wounds_do_nothing() {
         let mut body = BodyState::default();
         assert_eq!(body.apply_damage(15, 50.0, DamageCause::Other), INJURY_NONE);
-        assert_eq!(body.apply_damage(HEAD, f32::NAN, DamageCause::Other), INJURY_NONE);
-        assert_eq!(body.apply_damage(HEAD, 50.0, DamageCause::NoWound), INJURY_NONE);
+        assert_eq!(
+            body.apply_damage(HEAD, f32::NAN, DamageCause::Other),
+            INJURY_NONE
+        );
+        assert_eq!(
+            body.apply_damage(HEAD, 50.0, DamageCause::NoWound),
+            INJURY_NONE
+        );
         assert!(!body.take_dirty());
     }
 
@@ -410,7 +456,21 @@ mod tests {
         let mut restored = BodyState::from_save(&back);
         assert!(restored.take_dirty(), "restaurar avisa al cliente");
         assert_eq!(restored.raw(), body.raw());
-        let bogus = [BodyZoneSave { zone: 99, state: 2, heal_s: 0 }, BodyZoneSave { zone: 1, state: 7, heal_s: 0 }];
-        assert!(BodyState::from_save(&bogus).raw().iter().all(|&z| z == 0), "lo desconocido no entra");
+        let bogus = [
+            BodyZoneSave {
+                zone: 99,
+                state: 2,
+                heal_s: 0,
+            },
+            BodyZoneSave {
+                zone: 1,
+                state: 7,
+                heal_s: 0,
+            },
+        ];
+        assert!(
+            BodyState::from_save(&bogus).raw().iter().all(|&z| z == 0),
+            "lo desconocido no entra"
+        );
     }
 }
