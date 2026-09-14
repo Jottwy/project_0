@@ -3143,3 +3143,64 @@ fn probe_ramp_columns() {
         t += 0.5;
     }
 }
+
+/// ADR-155 L1b — SONDA: los trozos de pared que dejan hoy las bocas de cada lado de tramo, y las bocas
+/// que se pisan. Medido 2026-09-14 (27 regiones): 50.580 lados con boca, 0 solapes, 10.060 trozos
+/// de menos de 10 cm y 2.198 de 30–39. **Ninguna regla universal cabe en `Wg3Segment::problems`**:
+/// el trozo mínimo lo rompen esquinas legítimas, y el «sin solapes» lo rompe al menos un tramo del
+/// barrido de `many_seeds_plan_and_fill_cleanly` (semilla 0xc0ec04ec221b58f9, región (-2,2)). Los
+/// huecos del laberinto se vigilan en su propio test (L1d/L1e).
+#[test]
+#[ignore]
+fn probe_wall_pieces_between_openings() {
+    let m = real_manifest();
+    let seeds = validate::sweep_seeds(sweep_seed_count(3));
+    let mut hist: std::collections::BTreeMap<i32, usize> = std::collections::BTreeMap::new();
+    let (mut overlaps, mut pieces, mut sides) = (0usize, 0usize, 0usize);
+    for &seed in &seeds {
+        for &(rx, rz) in NEAR_REGIONS.iter() {
+            let inside = validate::region_inside(&m, seed, Wg3RegionCoord { x: rx, z: rz });
+            for s in &inside.filled.segments {
+                for side in 0..4u8 {
+                    let len = if side % 2 == 0 {
+                        s.size_x_cm
+                    } else {
+                        s.size_z_cm
+                    };
+                    let mut cuts: Vec<(i32, i32)> = s
+                        .openings
+                        .iter()
+                        .filter(|o| o.side % 4 == side)
+                        .map(|o| (o.offset_cm - o.width_cm / 2, o.offset_cm + o.width_cm / 2))
+                        .collect();
+                    if cuts.is_empty() {
+                        continue;
+                    }
+                    sides += 1;
+                    cuts.sort();
+                    let mut cursor = 0;
+                    for (lo, hi) in cuts {
+                        if lo < cursor {
+                            overlaps += 1;
+                        } else if lo > cursor {
+                            pieces += 1;
+                            *hist.entry(((lo - cursor) / 10) * 10).or_default() += 1;
+                        }
+                        cursor = cursor.max(hi);
+                    }
+                    if cursor < len {
+                        pieces += 1;
+                        *hist.entry(((len - cursor) / 10) * 10).or_default() += 1;
+                    }
+                }
+            }
+        }
+    }
+    let small: Vec<(i32, usize)> = hist
+        .iter()
+        .filter(|(k, _)| **k < 200)
+        .map(|(k, v)| (*k, *v))
+        .collect();
+    println!("[wall-pieces] {sides} lados con boca, {pieces} trozos, {overlaps} bocas solapadas");
+    println!("[wall-pieces] trozos < 200 cm por decena: {small:?}");
+}
