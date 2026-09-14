@@ -604,6 +604,62 @@ final, sobre el tronco recién rebasado.
 - Trampas: el crate es solo binario (`--lib` falla); el `cargo fmt --check` del hook falla por formato ajeno pendiente
   de ADR-149 (`game_loop.rs`, `body.rs`), así que `rustfmt` se pasa solo a los ficheros propios.
 
+### 6.4 P1c — mensajes IPC y wire (plan, pendiente de Joel)
+
+ADR-154 D4. **Solo IPC local** (Unity ↔ su backend); la red entre peers es P2. La libreta todavía no los usa: eso es P1d.
+
+**Lo verificado hoy (2026-09-14):**
+- **El wire ya está en 69** (lo subió ADR-149 enm. 7 esta mañana), no en 68 como decía el ADR: P1c sube **69 → 70**, y se
+  vuelve a mirar justo antes de tocarlo por si otra sesión lo cambia en medio. `WIRE_SCHEMA_VERSION`
+  (`backend/src/ipc/server.rs:38`) y `WireSchema.Expected` (`Assets/Scripts/Network/WireSchema.cs:25`) van en el mismo
+  commit; `the_csharp_mirror_declares_the_same_wire_schema_version` los ata.
+- IPC en msgpack con marco de 4 B; tope `MAX_FRAME_BYTES` = 16 MB (un registro lleno son 40 KB: sin trocear).
+- Rust: acciones en el `match action.action_type.as_str()` de `game_loop.rs`, `action.data` como `serde_json::Value`;
+  respuesta con `to_clients.send(ServerMessage::Event(GameEvent { event_type, data }))` al Unity local.
+- C#: `IPCClient.SendActionFrame(actionType, fields, writer)`, constantes en `ProtocolActionTypes.cs`; eventos por
+  `AddEventListener`, con `GameEventMsg.data` como árbol de objetos (`IPCParse`).
+
+**Diseño: el contenido viaja como TEXTO JSON dentro del mensaje.** Registro y delta van en un campo `json` (cadena) con
+el MISMO JSON compacto del golden. Así las dos puntas reutilizan el codec que ya está probado byte a byte
+(`MapSheetRecord.FromJson/ToJson` en C#, serde en Rust) en vez de escribir a mano un árbol msgpack anidado de tramos.
+
+| Mensaje | Sentido | Campos |
+|---|---|---|
+| `map_sheet_create` | Unity → backend | `request_id` (u32 del cliente), `zone` (`chunk_x`,`chunk_z`,`storey`) o nada |
+| `map_sheet_append` | Unity → backend | `request_id`, `sheet_id`, `json` (delta: `layers[pen_argb,width_cpx,runs]`, `links`, `marks`) |
+| `map_sheet_get` | Unity → backend | `request_id`, `sheet_id`, `known_rev` |
+| `map_sheet_created` | backend → Unity | `request_id`, `sheet_id`, `seed` |
+| `map_sheet_appended` | backend → Unity | `request_id`, `sheet_id`, `rev`, `layer_keys` |
+| `map_sheet_record` | backend → Unity | `request_id`, `sheet_id`, `rev`, `unchanged` (bool), `json` (registro, vacío si `unchanged`) |
+| `map_sheet_rejected` | backend → Unity | `request_id`, `sheet_id`, `reason` |
+
+- **Dos detalles que el ADR no fijaba y se anotan como enmienda 1 de ADR-154 (en el commit de docs):** todo mensaje
+  lleva `request_id` (el que responde lo copia, para casar respuesta y petición), y `reason` gana **`bad_payload`**
+  (JSON ilegible o que no valida), además de `not_host`, `cap` y `unknown_id`.
+- El backend no reordena ni corrige nada del delta: lo valida entero con los topes de `MapSheetStore::append`.
+
+**Piezas:**
+1. **Rust, puro** (`world/map_sheets.rs`): `MapSheetDelta` con serde (`NewLayer` sin `layer_key`) y
+   `handle_action(is_host, &mut store, action_type, &data) -> Option<(event_type, data)>`, sin tocar `game_loop`. Tests:
+   crear en host y fuera de host, añadir devuelve claves y `rev`, pedir con `known_rev` igual da `unchanged`, id
+   desconocido, JSON roto ⇒ `bad_payload`, topes ⇒ `cap`, y **golden del delta** común.
+2. **C#, puro** (`Gameplay/Mapping`): `MapSheetDelta` JSON (escribe y lee, mismo formato), `MapSheetDelta.FromLayer`
+   (capa nueva de la libreta → delta) y `MapSheetEvents.TryParse` (árbol de `GameEventMsg.data` → resultado tipado).
+   Tests EditMode y headless con el mismo golden del delta (`tools/dev/fixtures/map_sheet_delta.golden.json`).
+3. **Wire 70, en UN commit:** tres brazos en el `match` de `game_loop.rs` que llaman a `handle_action`;
+   `ProtocolActionTypes` + `IPCClient.SendMapSheetCreate/Append/Get`; `WIRE_SCHEMA_VERSION` y `WireSchema.Expected` a 70;
+   entrada `## v70` en `docs/systems/ipc-wire-schema.md`.
+4. **Despliegue (trampa conocida):** tras el bump, `cargo build --release` y `CopyReleaseBackendToBuild.ps1`, y comprobar
+   que el exe de `Builds/Backend/` lleva `map_sheet_create` y que ninguna fuente es más nueva que él. Sin esto, Unity con
+   wire 70 contra un backend 69 **no arranca** (`wire_schema_mismatch`).
+
+**Verificación:** `cargo test --locked` entero en verde; tests EditMode de mapeado fixture a fixture; test del wire; y una
+**sonda IPC** contra el backend desplegado (crear, añadir, pedir) que lea los eventos de vuelta, sin Unity.
+
+**Commits (~600 líneas → cuatro):** docs (enmienda 1 + plan) → Rust puro → C# puro → wire 70 + despliegue.
+
+**Fuera:** que la libreta los use (P1d), red entre peers (P2), soltar hojas (M5).
+
 ### 5.6 Preguntas de playtest
 
 ¿Dibujar con el libro en las manos se siente mejor que el panel? ¿La hoja se lee bien en el libro? ¿Echa en falta
