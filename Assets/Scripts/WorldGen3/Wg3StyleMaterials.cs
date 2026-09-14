@@ -98,6 +98,9 @@ namespace BackroomsSurvival.WorldGen3
                 // le dan a los primeros metros y de ahí para abajo se pierde en el negro de la
                 // cámara: es lo que hace que cuarenta metros se lean como cuarenta metros.
                 case 8: return Make(0.30f, 0.30f, 0.30f, 0.30f, 0.30f, 0.30f);
+                // ADR-152 P2 — la PISCINA vacía: azulejo (ver `PoolStyle`) apenas enfriado. Blanco
+                // tirando a cian, que es lo único de la planta baja que no es cálido.
+                case PoolStyle: return Make(0.90f, 1.00f, 1.04f, 0.90f, 1.00f, 1.04f);
                 // Oficina y cualquier número que el servidor añada mañana: el juego base, sin tocar.
                 default: return Make(1f, 1f, 1f, 1f, 1f, 1f);
             }
@@ -212,10 +215,38 @@ namespace BackroomsSurvival.WorldGen3
             return true;
         }
 
+        /// <summary>ADR-152 — espejo de <c>fill::POOL_STYLE</c>.</summary>
+        public const byte PoolStyle = 9;
+
+        /// <summary>ADR-152 P2 — el azulejo blanco que ya vive en <c>Resources/Materials</c> (URP Lit).
+        /// Cubre suelo, paredes y peldaños del vaso: todo lo que emite la piscina es de su estilo, así
+        /// que no hay que distinguir ranuras.</summary>
+        private static void ApplyPoolTile(Material[] mats)
+        {
+            if (!Overrides.TryGetValue(PoolTilePath, out Material tile) || tile == null)
+            {
+                tile = Resources.Load<Material>(PoolTilePath);
+                if (tile == null)
+                {
+                    if (WarnedOverrides.Add(PoolTilePath))
+                        Debug.LogWarning($"[wg3] falta Resources/{PoolTilePath}: la piscina sale con el material base");
+                    return;
+                }
+                Overrides[PoolTilePath] = tile;
+            }
+            mats[Wg3MeshBuilder.SubMesh.Floor] = tile;
+            mats[Wg3MeshBuilder.SubMesh.Structure] = tile;
+            if (mats.Length > Wg3MeshBuilder.SubMesh.Decoration)
+                mats[Wg3MeshBuilder.SubMesh.Decoration] = tile;
+        }
+
+        private const string PoolTilePath = "Materials/TileWall";
+
         private static Material[] Build(Wg3Materials baseSet, byte style, Wg3Look look)
         {
             Material[] source = baseSet.AsArray();
             ApplyLook(source, look);
+            if (style == PoolStyle) ApplyPoolTile(source);
             // Sin tinte no hay variante que crear: se devuelven los materiales TAL CUAL, base o
             // sustituidos. Y el aspecto de oficina siempre cae aquí, porque un despacho es el estilo
             // 0 y el 0 no tiñe.
