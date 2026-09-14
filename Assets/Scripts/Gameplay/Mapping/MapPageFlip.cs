@@ -92,15 +92,22 @@ namespace BackroomsSurvival.Gameplay.Mapping
             _renderer.enabled = false;
         }
 
-        /// <summary>Pasa la hoja: <paramref name="leaving"/> es lo que se ve en el anverso mientras se va.</summary>
-        public void Play(Texture leaving)
+        /// <summary>
+        /// Pasa una hoja con <paramref name="page"/> en el anverso. <paramref name="forward"/> (a una hoja de número
+        /// mayor): la hoja que SE VA sale de la página y pasa a la izquierda. Hacia atrás: la hoja que LLEGA viene de la
+        /// izquierda y se posa, recorriendo la misma curva al revés.
+        /// </summary>
+        public void Play(Texture page, bool forward)
         {
-            _front.SetTexture("_BaseMap", leaving);
+            _front.SetTexture("_BaseMap", page);
+            _forward = forward;
             _started = Time.unscaledTime;
             _renderer.enabled = true;
-            Deform(0f);
+            Deform(forward ? 0f : 1f);
             Upload();
         }
+
+        private bool _forward = true;
 
         private void LateUpdate()
         {
@@ -114,7 +121,8 @@ namespace BackroomsSurvival.Gameplay.Mapping
             }
 
             // Arranca despacio, acelera en el aire y se posa.
-            Deform(p * p * (3f - 2f * p));
+            float eased = p * p * (3f - 2f * p);
+            Deform(_forward ? eased : 1f - eased);
             Upload();
         }
 

@@ -63,6 +63,7 @@ namespace BackroomsSurvival.Gameplay.Mapping
         private Texture2D _texture;
         private Texture2D _leavingTexture;
         private MapPageFlip _flip;
+        private bool _restoreAfterFlip;
         private UnityEngine.Audio.AudioResource _flipSound;
 
         public WieldableTool Wieldable => _wieldable;
@@ -293,6 +294,12 @@ namespace BackroomsSurvival.Gameplay.Mapping
         {
             if (_sampler == null || _sampler.Memory == null) return;
             if (_notebook.Drawing) _notebook.Step(_sampler.Memory, Time.deltaTime);
+            if (_restoreAfterFlip && !_flip.Playing)
+            {
+                _sheetImage.texture = _texture;
+                _restoreAfterFlip = false;
+            }
+
             if (!_panel.activeInHierarchy) return;
 
             bool drawing = _notebook.Drawing;
@@ -314,6 +321,7 @@ namespace BackroomsSurvival.Gameplay.Mapping
         private void Repaint()
         {
             bool turning = _texture != null && _paintedSheet >= 0 && _paintedSheet != _notebook.CurrentIndex;
+            bool forward = _notebook.CurrentIndex > _paintedSheet;
             _paintedVersion = _notebook.Version;
             _paintedSheet = _notebook.CurrentIndex;
             if (_texture == null)
@@ -324,13 +332,25 @@ namespace BackroomsSurvival.Gameplay.Mapping
 
             if (turning)
             {
-                // La hoja que se va, copiada ANTES de pintar la nueva debajo.
+                // La hoja vieja, copiada ANTES de pintar la nueva en _texture.
                 if (_leavingTexture == null) _leavingTexture = NewSheetTexture();
                 Graphics.CopyTexture(_texture, _leavingTexture);
-                _flip.Play(_leavingTexture);
+                if (forward)
+                {
+                    // Avanzar: la vieja se levanta y se va a la izquierda; debajo ya está la nueva.
+                    _flip.Play(_leavingTexture, true);
+                }
+                else
+                {
+                    // Volver: la nueva llega desde la izquierda; debajo sigue la vieja hasta que se posa.
+                    _sheetImage.texture = _leavingTexture;
+                    _flip.Play(_texture, false);
+                    _restoreAfterFlip = true;
+                }
+
                 if (_flipSound != null && PolymindGames.AudioManager.Instance != null)
                     PolymindGames.AudioManager.Instance.PlayClip2D(_flipSound);
-                Debug.Log($"MAPBOOK flip to_sheet={_notebook.CurrentSheet.Id}");
+                Debug.Log($"MAPBOOK flip to_sheet={_notebook.CurrentSheet.Id} forward={forward}");
             }
 
             _raster.DrawSheet(_notebook.CurrentSheet, _paperArgb, _sampler.Memory.CellsPerChunk);
