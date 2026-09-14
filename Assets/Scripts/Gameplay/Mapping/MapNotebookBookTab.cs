@@ -290,10 +290,34 @@ namespace BackroomsSurvival.Gameplay.Mapping
             Debug.Log($"MAPBOOK click=locate result={result}");
         }
 
+        private MapMemory _captureMemory;
+
+        private MapMemory Memory => _captureMemory != null ? _captureMemory : _sampler != null ? _sampler.Memory : null;
+
+        /// <summary>
+        /// Herramienta de capturas en editor (sin Play, <c>MappingBookCaptureTool</c>): muestra «Notas» y pinta con
+        /// <paramref name="memory"/> en vez del muestreador.
+        /// </summary>
+        public void RefreshForCapture(MapMemory memory)
+        {
+            _captureMemory = memory;
+            if (!_panel.activeSelf) OnSelectedChanged(_tab);
+            Refresh();
+        }
+
+        /// <summary>Herramienta de capturas: congela el último paso de página en <paramref name="progress"/> (0..1).</summary>
+        public void PoseFlipForCapture(float progress) => _flip.PoseForCapture(progress);
+
         private void Update()
         {
-            if (_sampler == null || _sampler.Memory == null) return;
-            if (_notebook.Drawing) _notebook.Step(_sampler.Memory, Time.deltaTime);
+            MapMemory memory = Memory;
+            if (memory == null) return;
+            if (_notebook.Drawing) _notebook.Step(memory, Time.deltaTime);
+            Refresh();
+        }
+
+        private void Refresh()
+        {
             if (_restoreAfterFlip && !_flip.Playing)
             {
                 _sheetImage.texture = _texture;
@@ -348,12 +372,12 @@ namespace BackroomsSurvival.Gameplay.Mapping
                     _restoreAfterFlip = true;
                 }
 
-                if (_flipSound != null && PolymindGames.AudioManager.Instance != null)
+                if (Application.isPlaying && _flipSound != null && PolymindGames.AudioManager.Instance != null)
                     PolymindGames.AudioManager.Instance.PlayClip2D(_flipSound);
                 Debug.Log($"MAPBOOK flip to_sheet={_notebook.CurrentSheet.Id} forward={forward}");
             }
 
-            _raster.DrawSheet(_notebook.CurrentSheet, _paperArgb, _sampler.Memory.CellsPerChunk);
+            _raster.DrawSheet(_notebook.CurrentSheet, _paperArgb, Memory.CellsPerChunk);
             _texture.LoadRawTextureData(_raster.Rgba);
             _texture.Apply(false);
 
@@ -374,7 +398,11 @@ namespace BackroomsSurvival.Gameplay.Mapping
 
         private void RebuildSheetButtons()
         {
-            foreach (Button button in _sheetButtons) Destroy(button.gameObject);
+            foreach (Button button in _sheetButtons)
+            {
+                if (Application.isPlaying) Destroy(button.gameObject);
+                else DestroyImmediate(button.gameObject);
+            }
             _sheetButtons.Clear();
             _sheetButtonsFor = _notebook.Sheets.Count;
 
@@ -402,7 +430,7 @@ namespace BackroomsSurvival.Gameplay.Mapping
             if (elapsed < 1f && Mathf.Repeat(elapsed * 4f, 1f) > 0.6f) alpha *= 0.25f;
             foreach (Image bar in _crossBars) bar.color = new Color(CrossColour.r, CrossColour.g, CrossColour.b, alpha);
 
-            int cellsPerChunk = _sampler.Memory.CellsPerChunk;
+            int cellsPerChunk = Memory.CellsPerChunk;
             var anchor = new Vector2(_notebook.FixLocalX / cellsPerChunk, _notebook.FixLocalZ / cellsPerChunk);
             _cross.anchorMin = anchor;
             _cross.anchorMax = anchor;
