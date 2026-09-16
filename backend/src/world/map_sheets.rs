@@ -334,9 +334,9 @@ impl MapSheetStore {
     pub fn append(&mut self, id: u64, delta: MapSheetDelta) -> Result<(u32, Vec<i32>), Reject> {
         let current = self.sheets.get(&id).ok_or(Reject::UnknownId)?;
         let mut next = current.clone();
-        let mut key = next.layers.last().map_or(0, |layer| layer.layer_key + 1);
         let mut keys = Vec::with_capacity(delta.layers.len());
-        for layer in delta.layers {
+        let first_key = next.layers.last().map_or(0, |layer| layer.layer_key + 1);
+        for (key, layer) in (first_key..).zip(delta.layers) {
             next.layers.push(MapSheetLayer {
                 layer_key: key,
                 pen_argb: layer.pen_argb,
@@ -344,7 +344,6 @@ impl MapSheetStore {
                 runs: layer.runs,
             });
             keys.push(key);
-            key += 1;
         }
         next.links.extend(delta.links);
         next.marks.extend(delta.marks);

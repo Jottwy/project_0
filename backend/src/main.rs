@@ -40,6 +40,9 @@ mod ipc;
 mod network;
 mod persistence;
 mod player;
+/// SmilerSandbox — Fase 1 de `docs/SMILER-DESIGN.md` §22, PROTOTIPO AISLADO sin llamador
+/// todavía: nadie más lo invoca (ver el encabezado del módulo para el alcance exacto).
+mod smiler;
 mod utils;
 mod world;
 
@@ -198,6 +201,15 @@ fn is_host_from_env(
 #[tokio::main]
 async fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+
+    // Desvío total ANTES de montar nada del servidor real: el sandbox del Smiler es un binario
+    // de facto aparte que solo comparte el `Cargo.toml` (sin `lib.rs`, un `src/bin/` propio no
+    // podría ver `crate::world`/`crate::smiler`, ver smiler/mod.rs). Nunca corre junto al IPC ni
+    // al P2P — `return` aquí es la frontera completa.
+    if std::env::var("SMILER_SANDBOX").ok().as_deref() == Some("1") {
+        smiler::sandbox::run().await;
+        return;
+    }
 
     info!(
         "Backrooms Survival backend v{} starting",

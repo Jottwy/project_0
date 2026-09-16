@@ -1178,7 +1178,7 @@ impl NetworkManager {
         // F0.3: las desconexiones decididas fuera del camino de recepción (hoy: desborde de la
         // cola de veredictos en `send_verdict`) salen por aquí, para que el game loop las vea
         // como cualquier otra `PeerDisconnected` y no haga falta un segundo camino de teardown.
-        let mut events: Vec<NetworkEvent> = self.pending_events.drain(..).collect();
+        let mut events: Vec<NetworkEvent> = std::mem::take(&mut self.pending_events);
         for pkt in incoming {
             // ADR-140 D4: un lote de poses se ABRE aquí, en paquetes sueltos con el emisor de cada
             // entrada en la cabecera, y sigue por el camino de siempre. Se hace en este punto y no

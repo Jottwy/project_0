@@ -101,6 +101,12 @@ pub fn is_limb(zone: usize) -> bool {
 
 /// La lesión que abre un golpe, pura (`BodyState.InjuryFor`).
 pub fn injury_for(damage: f32, cause: DamageCause, zone: usize) -> u8 {
+    // `damage < MIN_WOUND_DAMAGE` no es lo mismo si `damage` fuera NaN (`neg_cmp_op_on_partial_ord`):
+    // la negada trata un NaN como "sin herida", tal cual lleva haciendo desde siempre este código.
+    // El `allow` conserva ese comportamiento exacto en vez de arriesgar el caso NaN sin verificar
+    // primero todas las llamadas — fix mecánico de clippy, ver `docs/systems/ipc-wire-schema.md`
+    // hermano en espíritu: no tocar semántica de un sistema núcleo sin que lo pida la tarea.
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
     if !(damage >= MIN_WOUND_DAMAGE) || cause == DamageCause::NoWound {
         return INJURY_NONE;
     }
@@ -232,10 +238,8 @@ impl BodyState {
                         bleed += BLEED_PER_SECOND * dt;
                     }
                 }
-                INJURY_FRACTURE => {
-                    if self.is_splinted(zone) {
-                        self.heal_step(zone, SPLINTED_FRACTURE_HEAL_SECONDS, dt);
-                    }
+                INJURY_FRACTURE if self.is_splinted(zone) => {
+                    self.heal_step(zone, SPLINTED_FRACTURE_HEAL_SECONDS, dt);
                 }
                 _ => {}
             }
