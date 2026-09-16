@@ -40,6 +40,9 @@ mod ipc;
 mod network;
 mod persistence;
 mod player;
+/// SmilerSandbox — Fase 1 de `docs/SMILER-DESIGN.md` §22, PROTOTIPO AISLADO sin llamador
+/// todavía: nadie más lo invoca (ver el encabezado del módulo para el alcance exacto).
+mod smiler;
 mod utils;
 mod world;
 
