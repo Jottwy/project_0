@@ -12,14 +12,16 @@
 //! - Sin VFX, sin partículas, sin sonrisa: [`flow::SmilerNode`] es un proxy de depuración
 //!   (esferas grises en el sentido del plan), nunca gameplay ni wire.
 //! - Sin sonido, sin ataque, sin persecución de un jugador real.
-//! - **Sin wire y sin `game_loop`.** Este módulo no tiene todavía ningún llamador: es un
-//!   prototipo aislado que sólo se ejercita desde sus propios tests (`cargo test`). Conectarlo al
-//!   bucle de juego, al relay de poses o a cualquier entidad servida es trabajo de una fase
+//! - **Sin `game_loop` y sin el wire de producción.** [`sandbox::run`] es el único llamador, y es
+//!   un modo aparte del mismo binario (`SMILER_SANDBOX=1`, ver su doc comment) que habla por un
+//!   socket de depuración propio — nunca por `PacketPayload` ni `WIRE_SCHEMA_VERSION`. Conectar
+//!   esto al bucle de juego real o al wire de producción sigue siendo trabajo de una fase
 //!   posterior, con su propio ADR (regla dura 7: cambiar el wire exige ADR antes de tocar código).
 //!
-//! No hay ADR propio todavía porque no hace falta uno para un módulo que nadie llama: las seis
+//! No hay ADR propio todavía porque el sandbox no toca ningún protocolo existente: las seis
 //! preguntas abiertas de `docs/SMILER-DESIGN.md` (luz, conductos, VFX, puertas, ataque, plan de
-//! fases) siguen sin resolver y no las resuelve este código — sólo valida que el modelo de
-//! propagación en sí es viable antes de comprometer ninguna de esas decisiones.
+//! fases) siguen sin resolver y no las resuelve este código — sólo hace observable en vivo que el
+//! modelo de propagación es viable, antes de comprometer ninguna de esas decisiones.
 
 pub mod flow;
+pub mod sandbox;
