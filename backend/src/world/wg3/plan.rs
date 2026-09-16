@@ -3909,9 +3909,10 @@ impl Planner {
         //      huecos anchos con trozos de pared entre ellos. Va antes de la 3 para que sus uniones
         //      cuenten al rescatar lo suelto, y las pasadas 3, 3b y 4 ya no tocan esas parejas.
         for &(i, j, ..) in &adj {
-            if !(self.spaces[i].maze && self.spaces[j].maze)
-                || !self.spaces[i].role.is_built()
-                || !self.spaces[j].role.is_built()
+            if !(self.spaces[i].maze
+                && self.spaces[j].maze
+                && self.spaces[i].role.is_built()
+                && self.spaces[j].role.is_built())
             {
                 continue;
             }
